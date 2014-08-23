@@ -36,8 +36,6 @@ volatile bool RunLoops = true;
 uint32 MailMessagesSent = 0;
 uint32 ChatMessagesSent = 0;
 
-TimeoutManager timeout_manager;
-
 Database database;
 LFGuildManager lfguildmanager;
 std::string WorldShortName;
@@ -58,6 +56,8 @@ void CatchSignal(int sig_num) {
 int main() {
 	RegisterExecutablePlatform(ExePlatformQueryServ);
 	set_exception_handler();
+
+	TimeoutManager::Init();
 
 	Timer LFGuildExpireTimer(60000);
 
@@ -121,7 +121,7 @@ int main() {
 		}
 		worldserver->Process();
 
-		timeout_manager.CheckTimeouts();
+		TimeoutManager::Get().CheckTimeouts();
 
 		Sleep(100);
 	}

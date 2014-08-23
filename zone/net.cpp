@@ -85,7 +85,6 @@
 volatile bool RunLoops = true;
 extern volatile bool ZoneLoaded;
 
-TimeoutManager timeout_manager;
 NetConnection net;
 EntityList entity_list;
 WorldServer worldserver;
@@ -111,6 +110,8 @@ extern void MapOpcodes();
 int main(int argc, char** argv) {
 	RegisterExecutablePlatform(ExePlatformZone);
 	set_exception_handler();
+
+	TimeoutManager::Init();
 
 	const char *zone_name;
 
@@ -392,7 +393,7 @@ int main(int argc, char** argv) {
 		}
 
 		//check for timeouts in other threads
-		timeout_manager.CheckTimeouts();
+		TimeoutManager::Get().CheckTimeouts();
 
 		if (worldserver.Connected()) {
 			worldwasconnected = true;

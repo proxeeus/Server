@@ -29,7 +29,6 @@
 #include <string>
 #include <sstream>
 
-TimeoutManager timeout_manager;
 template<> ServiceLocator* EQEmu::Singleton<ServiceLocator>::_inst = nullptr;
 
 void CatchSignal(int sig_num)
@@ -42,9 +41,10 @@ int main()
 	RegisterExecutablePlatform(ExePlatformLogin);
 	set_exception_handler();
 
+	TimeoutManager::Init();
+
 	bool run_server = true;
 	Options opts;
-
 	ServiceLocator::Init();
 	ServiceLocator &service_loc = ServiceLocator::Get();
 	service_loc.SetServerRunning(&run_server);

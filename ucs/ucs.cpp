@@ -37,8 +37,6 @@ volatile bool RunLoops = true;
 uint32 MailMessagesSent = 0;
 uint32 ChatMessagesSent = 0;
 
-TimeoutManager timeout_manager;
-
 Clientlist *CL;
 
 ChatChannelList *ChannelList;
@@ -69,6 +67,8 @@ std::string GetMailPrefix() {
 int main() {
 	RegisterExecutablePlatform(ExePlatformUCS);
 	set_exception_handler();
+
+	TimeoutManager::Init();
 
 	// Check every minute for unused channels we can delete
 	//
@@ -163,7 +163,7 @@ int main() {
 		}
 		worldserver->Process();
 
-		timeout_manager.CheckTimeouts();
+		TimeoutManager::Get().CheckTimeouts();
 
 		Sleep(100);
 	}

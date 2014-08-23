@@ -21,14 +21,16 @@
 
 #include "timeoutmgr.h"
 
+template<> TimeoutManager* EQEmu::Singleton<TimeoutManager>::_inst = nullptr;
+
 Timeoutable::Timeoutable(uint32 check_frequency)
  : next_check(check_frequency)
 {
-	timeout_manager.AddMember(this);
+	TimeoutManager::Get().AddMember(this);
 }
 
 Timeoutable::~Timeoutable() {
-	timeout_manager.DeleteMember(this);
+	TimeoutManager::Get().DeleteMember(this);
 }
 
 

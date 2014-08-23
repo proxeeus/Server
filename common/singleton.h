@@ -7,9 +7,9 @@ namespace EQEmu
 	class Singleton
 	{
 	public:
-		Singleton() { _inst = static_cast<T*>(this); }
+		Singleton() { }
 		~Singleton() { if(_inst) { delete _inst; } _inst = nullptr; }
-		static T& Init() { _inst = new T(); return *_inst; }
+		static T& Init() { if(!_inst) { _inst = new T(); } return *_inst; }
 		static T& Get() { return *_inst; }
 	private:
 		Singleton(const Singleton<T>&);

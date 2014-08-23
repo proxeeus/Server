@@ -86,7 +86,6 @@
 #include "ucs.h"
 #include "queryserv.h"
 
-TimeoutManager timeout_manager;
 EQStreamFactory eqsf(WorldStream,9000);
 EmuTCPServer tcps;
 ClientList client_list;
@@ -112,6 +111,8 @@ void CatchSignal(int sig_num);
 int main(int argc, char** argv) {
 	RegisterExecutablePlatform(ExePlatformWorld);
 	set_exception_handler();
+
+	TimeoutManager::Init();
 
 	// Load server configuration
 	_log(WORLD__INIT, "Loading server configuration..");
@@ -439,7 +440,7 @@ int main(int argc, char** argv) {
 		}
 
 		//check for timeouts in other threads
-		timeout_manager.CheckTimeouts();
+		TimeoutManager::Get().CheckTimeouts();
 
 		loginserverlist.Process();
 

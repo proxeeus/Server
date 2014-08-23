@@ -25,6 +25,7 @@
 
 #include "types.h"
 #include "timer.h"
+#include "singleton.h"
 
 #include <vector>
 
@@ -45,7 +46,7 @@ private:
 	Timer next_check;
 };
 
-class TimeoutManager {
+class TimeoutManager : public EQEmu::Singleton<TimeoutManager> {
 	friend class Timeoutable;
 public:
 	TimeoutManager();
@@ -60,7 +61,5 @@ protected:
 
 	std::vector<Timeoutable *> members;
 };
-
-extern TimeoutManager timeout_manager;
 
 #endif
