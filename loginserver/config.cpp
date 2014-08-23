@@ -17,9 +17,8 @@
 */
 #include "../common/debug.h"
 #include "config.h"
-#include "error_log.h"
+#include "login_server.h"
 
-extern ErrorLog *server_log;
 /**
 * Retrieves the variable we want from our title or theme
 * First gets the map from the title
@@ -46,9 +45,10 @@ std::string Config::GetVariable(std::string title, std::string parameter)
 */
 void Config::Parse(const char *file_name)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	if(file_name == nullptr)
 	{
-		server_log->Log(log_error, "Config::Parse(), file_name passed was null.");
+		service_loc.GetServerLog()->Log(log_error, "Config::Parse(), file_name passed was null.");
 		return;
 	}
 
@@ -71,7 +71,7 @@ void Config::Parse(const char *file_name)
 				++iter;
 				if(iter == tokens.end())
 				{
-					server_log->Log(log_error, "Config::Parse(), EOF before title done parsing.");
+					service_loc.GetServerLog()->Log(log_error, "Config::Parse(), EOF before title done parsing.");
 					fclose(input);
 					vars.clear();
 					return;
@@ -104,7 +104,7 @@ void Config::Parse(const char *file_name)
 				mode++;
 				if((*iter).compare("=") != 0)
 				{
-					server_log->Log(log_error, "Config::Parse(), invalid parse token where = should be.");
+					service_loc.GetServerLog()->Log(log_error, "Config::Parse(), invalid parse token where = should be.");
 					fclose(input);
 					vars.clear();
 					return;
@@ -133,7 +133,7 @@ void Config::Parse(const char *file_name)
 	}
 	else
 	{
-		server_log->Log(log_error, "Config::Parse(), file was unable to be opened for parsing.");
+		service_loc.GetServerLog()->Log(log_error, "Config::Parse(), file was unable to be opened for parsing.");
 	}
 }
 

@@ -31,6 +31,7 @@ SET(eqlogin_headers
 	login_structures.h
 	options.h
 	server_manager.h
+	service_locator.h
 	world_server.h
 )
 

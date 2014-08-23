@@ -174,6 +174,7 @@ SET(common_headers
 	serverinfo.h
 	servertalk.h
 	shareddb.h
+	singleton.h
 	skills.h
 	spdat.h
     string_util.h

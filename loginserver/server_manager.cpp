@@ -17,28 +17,24 @@
 */
 #include "server_manager.h"
 #include "login_server.h"
-#include "error_log.h"
 #include "login_structures.h"
 #include <stdlib.h>
 
-extern ErrorLog *server_log;
-extern LoginServer server;
-extern bool run_server;
-
 ServerManager::ServerManager()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	char error_buffer[TCPConnection_ErrorBufferSize];
 
-	int listen_port = atoi(server.config->GetVariable("options", "listen_port").c_str());
+	int listen_port = atoi(service_loc.GetConfig()->GetVariable("options", "listen_port").c_str());
 	tcps = new EmuTCPServer(listen_port, true);
 	if(tcps->Open(listen_port, error_buffer))
 	{
-		server_log->Log(log_network, "ServerManager listening on port %u", listen_port);
+		service_loc.GetServerLog()->Log(log_network, "ServerManager listening on port %u", listen_port);
 	}
 	else
 	{
-		server_log->Log(log_error, "ServerManager fatal error opening port on %u: %s", listen_port, error_buffer);
-		run_server = false;
+		service_loc.GetServerLog()->Log(log_error, "ServerManager fatal error opening port on %u: %s", listen_port, error_buffer);
+		*(service_loc.GetServerRunning()) = false;
 	}
 }
 
@@ -53,18 +49,19 @@ ServerManager::~ServerManager()
 
 void ServerManager::Process()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	ProcessDisconnect();
 	EmuTCPConnection *tcp_c = nullptr;
 	while(tcp_c = tcps->NewQueuePop())
 	{
 		in_addr tmp;
 		tmp.s_addr = tcp_c->GetrIP();
-		server_log->Log(log_network, "New world server connection from %s:%d", inet_ntoa(tmp), tcp_c->GetrPort());
+		service_loc.GetServerLog()->Log(log_network, "New world server connection from %s:%d", inet_ntoa(tmp), tcp_c->GetrPort());
 
 		WorldServer *cur = GetServerByAddress(tcp_c->GetrIP());
 		if(cur)
 		{
-			server_log->Log(log_network, "World server already existed for %s, removing existing connection and updating current.", inet_ntoa(tmp));
+			service_loc.GetServerLog()->Log(log_network, "World server already existed for %s, removing existing connection and updating current.", inet_ntoa(tmp));
 			cur->GetConnection()->Free();
 			cur->SetConnection(tcp_c);
 			cur->Reset();
@@ -81,7 +78,7 @@ void ServerManager::Process()
 	{
 		if((*iter)->Process() == false)
 		{
-			server_log->Log(log_world, "World server %s had a fatal error and had to be removed from the login.", (*iter)->GetLongName().c_str());
+			service_loc.GetServerLog()->Log(log_world, "World server %s had a fatal error and had to be removed from the login.", (*iter)->GetLongName().c_str());
 			delete (*iter);
 			iter = world_servers.erase(iter);
 		}
@@ -94,6 +91,7 @@ void ServerManager::Process()
 
 void ServerManager::ProcessDisconnect()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	list<WorldServer*>::iterator iter = world_servers.begin();
 	while(iter != world_servers.end())
 	{
@@ -102,7 +100,7 @@ void ServerManager::ProcessDisconnect()
 		{
 			in_addr tmp;
 			tmp.s_addr = c->GetrIP();
-			server_log->Log(log_network, "World server disconnected from the server, removing server and freeing connection.");
+			service_loc.GetServerLog()->Log(log_network, "World server disconnected from the server, removing server and freeing connection.");
 			c->Free();
 			delete (*iter);
 			iter = world_servers.erase(iter);
@@ -131,6 +129,7 @@ WorldServer* ServerManager::GetServerByAddress(unsigned int address)
 
 EQApplicationPacket *ServerManager::CreateServerListPacket(Client *c)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	unsigned int packet_size = sizeof(ServerListHeader_Struct);
 	unsigned int server_count = 0;
 	in_addr in;
@@ -151,15 +150,15 @@ EQApplicationPacket *ServerManager::CreateServerListPacket(Client *c)
 
 		if(world_ip.compare(client_ip) == 0)
 		{
-			packet_size += (*iter)->GetLongName().size() + (*iter)->GetLocalIP().size() + 24;
+			packet_size += (unsigned int)((*iter)->GetLongName().size() + (*iter)->GetLocalIP().size() + 24);
 		}
-		else if(client_ip.find(server.options.GetLocalNetwork()) != string::npos)
+		else if(client_ip.find(service_loc.GetOptions()->GetLocalNetwork()) != string::npos)
 		{
-			packet_size += (*iter)->GetLongName().size() + (*iter)->GetLocalIP().size() + 24;
+			packet_size += (unsigned int)((*iter)->GetLongName().size() + (*iter)->GetLocalIP().size() + 24);
 		}
 		else
 		{
-			packet_size += (*iter)->GetLongName().size() + (*iter)->GetRemoteIP().size() + 24;
+			packet_size += (unsigned int)((*iter)->GetLongName().size() + (*iter)->GetRemoteIP().size() + 24);
 		}
 
 		server_count++;
@@ -197,7 +196,7 @@ EQApplicationPacket *ServerManager::CreateServerListPacket(Client *c)
 			memcpy(data_ptr, (*iter)->GetLocalIP().c_str(), (*iter)->GetLocalIP().size());
 			data_ptr += ((*iter)->GetLocalIP().size() + 1);
 		}
-		else if(client_ip.find(server.options.GetLocalNetwork()) != string::npos)
+		else if(client_ip.find(service_loc.GetOptions()->GetLocalNetwork()) != string::npos)
 		{
 			memcpy(data_ptr, (*iter)->GetLocalIP().c_str(), (*iter)->GetLocalIP().size());
 			data_ptr += ((*iter)->GetLocalIP().size() + 1);
@@ -268,6 +267,7 @@ EQApplicationPacket *ServerManager::CreateServerListPacket(Client *c)
 
 void ServerManager::SendUserToWorldRequest(unsigned int server_id, unsigned int client_account_id)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	list<WorldServer*>::iterator iter = world_servers.begin();
 	bool found = false;
 	while(iter != world_servers.end())
@@ -281,7 +281,7 @@ void ServerManager::SendUserToWorldRequest(unsigned int server_id, unsigned int 
 			(*iter)->GetConnection()->SendPacket(outapp);
 			found = true;
 
-			if(server.options.IsDumpInPacketsOn())
+			if(service_loc.GetOptions()->IsDumpInPacketsOn())
 			{
 				DumpPacket(outapp);
 			}
@@ -290,9 +290,9 @@ void ServerManager::SendUserToWorldRequest(unsigned int server_id, unsigned int 
 		++iter;
 	}
 
-	if(!found && server.options.IsTraceOn())
+	if(!found && service_loc.GetOptions()->IsTraceOn())
 	{
-		server_log->Log(log_client_error, "Client requested a user to world but supplied an invalid id of %u.", server_id);
+		service_loc.GetServerLog()->Log(log_client_error, "Client requested a user to world but supplied an invalid id of %u.", server_id);
 	}
 }
 

@@ -16,53 +16,49 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 #include "client_manager.h"
-#include "error_log.h"
 #include "login_server.h"
-
-extern ErrorLog *server_log;
-extern LoginServer server;
-extern bool run_server;
 
 ClientManager::ClientManager()
 {
-	int titanium_port = atoi(server.config->GetVariable("Titanium", "port").c_str());
+	ServiceLocator &service_loc = ServiceLocator::Get();
+	int titanium_port = atoi(service_loc.GetConfig()->GetVariable("Titanium", "port").c_str());
 	titanium_stream = new EQStreamFactory(LoginStream, titanium_port);
 	titanium_ops = new RegularOpcodeManager;
-	if(!titanium_ops->LoadOpcodes(server.config->GetVariable("Titanium", "opcodes").c_str()))
+	if(!titanium_ops->LoadOpcodes(service_loc.GetConfig()->GetVariable("Titanium", "opcodes").c_str()))
 	{
-		server_log->Log(log_error, "ClientManager fatal error: couldn't load opcodes for Titanium file %s.",
-			server.config->GetVariable("Titanium", "opcodes").c_str());
-		run_server = false;
+		service_loc.GetServerLog()->Log(log_error, "ClientManager fatal error: couldn't load opcodes for Titanium file %s.",
+			service_loc.GetConfig()->GetVariable("Titanium", "opcodes").c_str());
+		*(service_loc.GetServerRunning()) = false;
 	}
 
 	if(titanium_stream->Open())
 	{
-		server_log->Log(log_network, "ClientManager listening on Titanium stream.");
+		service_loc.GetServerLog()->Log(log_network, "ClientManager listening on Titanium stream.");
 	}
 	else
 	{
-		server_log->Log(log_error, "ClientManager fatal error: couldn't open Titanium stream.");
-		run_server = false;
+		service_loc.GetServerLog()->Log(log_error, "ClientManager fatal error: couldn't open Titanium stream.");
+		*(service_loc.GetServerRunning()) = false;
 	}
 
-	int sod_port = atoi(server.config->GetVariable("SoD", "port").c_str());
+	int sod_port = atoi(service_loc.GetConfig()->GetVariable("SoD", "port").c_str());
 	sod_stream = new EQStreamFactory(LoginStream, sod_port);
 	sod_ops = new RegularOpcodeManager;
-	if(!sod_ops->LoadOpcodes(server.config->GetVariable("SoD", "opcodes").c_str()))
+	if(!sod_ops->LoadOpcodes(service_loc.GetConfig()->GetVariable("SoD", "opcodes").c_str()))
 	{
-		server_log->Log(log_error, "ClientManager fatal error: couldn't load opcodes for SoD file %s.",
-			server.config->GetVariable("SoD", "opcodes").c_str());
-		run_server = false;
+		service_loc.GetServerLog()->Log(log_error, "ClientManager fatal error: couldn't load opcodes for SoD file %s.",
+			service_loc.GetConfig()->GetVariable("SoD", "opcodes").c_str());
+		*(service_loc.GetServerRunning()) = false;
 	}
 
 	if(sod_stream->Open())
 	{
-		server_log->Log(log_network, "ClientManager listening on SoD stream.");
+		service_loc.GetServerLog()->Log(log_network, "ClientManager listening on SoD stream.");
 	}
 	else
 	{
-		server_log->Log(log_error, "ClientManager fatal error: couldn't open SoD stream.");
-		run_server = false;
+		service_loc.GetServerLog()->Log(log_error, "ClientManager fatal error: couldn't open SoD stream.");
+		*(service_loc.GetServerRunning()) = false;
 	}
 }
 
@@ -93,13 +89,14 @@ ClientManager::~ClientManager()
 
 void ClientManager::Process()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	ProcessDisconnect();
 	EQStream *cur = titanium_stream->Pop();
 	while(cur)
 	{
 		struct in_addr in;
 		in.s_addr = cur->GetRemoteIP();
-		server_log->Log(log_network, "New Titanium client connection from %s:%d", inet_ntoa(in), ntohs(cur->GetRemotePort()));
+		service_loc.GetServerLog()->Log(log_network, "New Titanium client connection from %s:%d", inet_ntoa(in), ntohs(cur->GetRemotePort()));
 
 		cur->SetOpcodeManager(&titanium_ops);
 		Client *c = new Client(cur, cv_titanium);
@@ -112,7 +109,7 @@ void ClientManager::Process()
 	{
 		struct in_addr in;
 		in.s_addr = cur->GetRemoteIP();
-		server_log->Log(log_network, "New SoD client connection from %s:%d", inet_ntoa(in), ntohs(cur->GetRemotePort()));
+		service_loc.GetServerLog()->Log(log_network, "New SoD client connection from %s:%d", inet_ntoa(in), ntohs(cur->GetRemotePort()));
 
 		cur->SetOpcodeManager(&sod_ops);
 		Client *c = new Client(cur, cv_sod);
@@ -125,7 +122,7 @@ void ClientManager::Process()
 	{
 		if((*iter)->Process() == false)
 		{
-			server_log->Log(log_client, "Client had a fatal error and had to be removed from the login.");
+			service_loc.GetServerLog()->Log(log_client, "Client had a fatal error and had to be removed from the login.");
 			delete (*iter);
 			iter = clients.erase(iter);
 		}
@@ -138,13 +135,14 @@ void ClientManager::Process()
 
 void ClientManager::ProcessDisconnect()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		EQStream *c = (*iter)->GetConnection();
 		if(c->CheckClosed())
 		{
-			server_log->Log(log_network, "Client disconnected from the server, removing client.");
+			service_loc.GetServerLog()->Log(log_network, "Client disconnected from the server, removing client.");
 			delete (*iter);
 			iter = clients.erase(iter);
 		}
@@ -167,12 +165,13 @@ void ClientManager::UpdateServerList()
 
 void ClientManager::RemoveExistingClient(unsigned int account_id)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		if((*iter)->GetAccountID() == account_id)
 		{
-			server_log->Log(log_network, "Client attempting to log in and existing client already logged in, removing existing client.");
+			service_loc.GetServerLog()->Log(log_network, "Client attempting to log in and existing client already logged in, removing existing client.");
 			delete (*iter);
 			iter = clients.erase(iter);
 		}
@@ -185,6 +184,7 @@ void ClientManager::RemoveExistingClient(unsigned int account_id)
 
 Client *ClientManager::GetClient(unsigned int account_id)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	Client *cur = nullptr;
 	int count = 0;
 	list<Client*>::iterator iter = clients.begin();
@@ -200,7 +200,7 @@ Client *ClientManager::GetClient(unsigned int account_id)
 
 	if(count > 1)
 	{
-		server_log->Log(log_client_error, "More than one client with a given account_id existed in the client list.");
+		service_loc.GetServerLog()->Log(log_client_error, "More than one client with a given account_id existed in the client list.");
 	}
 	return cur;
 }

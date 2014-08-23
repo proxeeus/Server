@@ -20,26 +20,21 @@
 
 #ifdef EQEMU_POSTGRESQL_ENABLED
 #include "database_postgresql.h"
-#include "error_log.h"
 #include "login_server.h"
-
-extern ErrorLog *server_log;
-extern LoginServer server;
-
-#pragma comment(lib, "libpq.lib")
 
 DatabasePostgreSQL::DatabasePostgreSQL(string user, string pass, string host, string port, string name)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	db = nullptr;
 	db = PQsetdbLogin(host.c_str(), port.c_str(), nullptr, nullptr, name.c_str(), user.c_str(), pass.c_str());
 	if(!db)
 	{
-		server_log->Log(log_database, "Failed to connect to PostgreSQL Database.");
+		service_loc.GetServerLog()->Log(log_database, "Failed to connect to PostgreSQL Database.");
 	}
 
 	if(PQstatus(db) != CONNECTION_OK)
 	{
-		server_log->Log(log_database, "Failed to connect to PostgreSQL Database.");
+		service_loc.GetServerLog()->Log(log_database, "Failed to connect to PostgreSQL Database.");
 		PQfinish(db);
 		db = nullptr;
 	}
@@ -73,8 +68,9 @@ bool DatabasePostgreSQL::GetLoginDataFromAccountName(string name, string &passwo
 		}
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
-	query << "SELECT LoginServerID, AccountPassword FROM " << server.options.GetAccountTable() << " WHERE AccountName = '";
+	query << "SELECT LoginServerID, AccountPassword FROM " << service_loc.GetOptions()->GetAccountTable() << " WHERE AccountName = '";
 	query << name;
 	query << "'";
 
@@ -83,7 +79,7 @@ bool DatabasePostgreSQL::GetLoginDataFromAccountName(string name, string &passwo
 	char *error = PQresultErrorMessage(res);
 	if(strlen(error) > 0)
 	{
-		server_log->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
+		service_loc.GetServerLog()->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
 		PQclear(res);
 		return false;
 	}
@@ -121,11 +117,12 @@ bool DatabasePostgreSQL::GetWorldRegistration(string long_name, string short_nam
 		}
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
 	query << "SELECT WSR.ServerID, WSR.ServerTagDescription, WSR.ServerTrusted, SLT.ServerListTypeID, ";
-	query << "SLT.ServerListTypeDescription, SAR.AccountName, SAR.AccountPassword FROM " << server.options.GetWorldRegistrationTable();
-	query << " AS WSR JOIN " << server.options.GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID JOIN ";
-	query << server.options.GetWorldAdminRegistrationTable() << " AS SAR ON WSR.ServerAdminID = SAR.ServerAdminID WHERE WSR.ServerShortName";
+	query << "SLT.ServerListTypeDescription, SAR.AccountName, SAR.AccountPassword FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
+	query << " AS WSR JOIN " << service_loc.GetOptions()->GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID JOIN ";
+	query << service_loc.GetOptions()->GetWorldAdminRegistrationTable() << " AS SAR ON WSR.ServerAdminID = SAR.ServerAdminID WHERE WSR.ServerShortName";
 	query << " = '";
 	query << short_name;
 	query << "'";
@@ -135,7 +132,7 @@ bool DatabasePostgreSQL::GetWorldRegistration(string long_name, string short_nam
 	char *error = PQresultErrorMessage(res);
 	if(strlen(error) > 0)
 	{
-		server_log->Log(log_database, "Database error in DatabasePostgreSQL::GetWorldRegistration(): %s", error);
+		service_loc.GetServerLog()->Log(log_database, "Database error in DatabasePostgreSQL::GetWorldRegistration(): %s", error);
 		PQclear(res);
 		return false;
 	}
@@ -178,8 +175,9 @@ void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, string ip_address)
 		}
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
-	query << "UPDATE " << server.options.GetAccountTable() << " SET LastIPAddress = '";
+	query << "UPDATE " << service_loc.GetOptions()->GetAccountTable() << " SET LastIPAddress = '";
 	query << ip_address;
 	query << "', LastLoginDate = current_date where LoginServerID = ";
 	query << id;
@@ -188,7 +186,7 @@ void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, string ip_address)
 	char *error = PQresultErrorMessage(res);
 	if(strlen(error) > 0)
 	{
-		server_log->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
+		service_loc.GetServerLog()->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
 	}
 	PQclear(res);
 }
@@ -213,8 +211,9 @@ void DatabasePostgreSQL::UpdateWorldRegistration(unsigned int id, string long_na
 		}
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
-	query << "UPDATE " << server.options.GetWorldRegistrationTable() << " SET ServerLastLoginDate = current_date, ServerLastIPAddr = '";
+	query << "UPDATE " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerLastLoginDate = current_date, ServerLastIPAddr = '";
 	query << ip_address;
 	query << "', ServerLongName = '";
 	query << long_name;
@@ -225,10 +224,9 @@ void DatabasePostgreSQL::UpdateWorldRegistration(unsigned int id, string long_na
 	char *error = PQresultErrorMessage(res);
 	if(strlen(error) > 0)
 	{
-		server_log->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
+		service_loc.GetServerLog()->Log(log_database, "Database error in DatabasePostgreSQL::GetLoginDataFromAccountName(): %s", error);
 	}
 	PQclear(res);
 }
 
 #endif
-

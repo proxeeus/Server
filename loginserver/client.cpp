@@ -16,13 +16,9 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 #include "client.h"
-#include "error_log.h"
 #include "login_server.h"
 #include "login_structures.h"
 #include "../common/misc_functions.h"
-
-extern ErrorLog *server_log;
-extern LoginServer server;
 
 Client::Client(EQStream *c, ClientVersion v)
 {
@@ -36,15 +32,16 @@ Client::Client(EQStream *c, ClientVersion v)
 
 bool Client::Process()
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	EQApplicationPacket *app = connection->PopPacket();
 	while(app)
 	{
-		if(server.options.IsTraceOn())
+		if(service_loc.GetOptions()->IsTraceOn())
 		{
-			server_log->Log(log_network, "Application packet received from client (size %u)", app->Size());
+			service_loc.GetServerLog()->Log(log_network, "Application packet received from client (size %u)", app->Size());
 		}
 
-		if(server.options.IsDumpInPacketsOn())
+		if(service_loc.GetOptions()->IsDumpInPacketsOn())
 		{
 			DumpPacket(app);
 		}
@@ -53,9 +50,9 @@ bool Client::Process()
 		{
 		case OP_SessionReady:
 			{
-				if(server.options.IsTraceOn())
+				if(service_loc.GetOptions()->IsTraceOn())
 				{
-					server_log->Log(log_network, "Session ready received from client.");
+					service_loc.GetServerLog()->Log(log_network, "Session ready received from client.");
 				}
 				Handle_SessionReady((const char*)app->pBuffer, app->Size());
 				break;
@@ -64,13 +61,13 @@ bool Client::Process()
 			{
 				if(app->Size() < 20)
 				{
-					server_log->Log(log_network_error, "Login received but it is too small, discarding.");
+					service_loc.GetServerLog()->Log(log_network_error, "Login received but it is too small, discarding.");
 					break;
 				}
 
-				if(server.options.IsTraceOn())
+				if(service_loc.GetOptions()->IsTraceOn())
 				{
-					server_log->Log(log_network, "Login received from client.");
+					service_loc.GetServerLog()->Log(log_network, "Login received from client.");
 				}
 
 				Handle_Login((const char*)app->pBuffer, app->Size());
@@ -78,9 +75,9 @@ bool Client::Process()
 			}
 		case OP_ServerListRequest:
 			{
-				if(server.options.IsTraceOn())
+				if(service_loc.GetOptions()->IsTraceOn())
 				{
-					server_log->Log(log_network, "Server list request received from client.");
+					service_loc.GetServerLog()->Log(log_network, "Server list request received from client.");
 				}
 
 				SendServerListPacket();
@@ -90,7 +87,7 @@ bool Client::Process()
 			{
 				if(app->Size() < sizeof(PlayEverquestRequest_Struct))
 				{
-					server_log->Log(log_network_error, "Play received but it is too small, discarding.");
+					service_loc.GetServerLog()->Log(log_network_error, "Play received but it is too small, discarding.");
 					break;
 				}
 
@@ -101,7 +98,7 @@ bool Client::Process()
 			{
 				char dump[64];
 				app->build_header_dump(dump);
-				server_log->Log(log_network_error, "Recieved unhandled application packet from the client: %s.", dump);
+				service_loc.GetServerLog()->Log(log_network_error, "Recieved unhandled application packet from the client: %s.", dump);
 			}
 		}
 
@@ -114,22 +111,23 @@ bool Client::Process()
 
 void Client::Handle_SessionReady(const char* data, unsigned int size)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	if(status != cs_not_sent_session_ready)
 	{
-		server_log->Log(log_network_error, "Session ready received again after already being received.");
+		service_loc.GetServerLog()->Log(log_network_error, "Session ready received again after already being received.");
 		return;
 	}
 
 	if(size < sizeof(unsigned int))
 	{
-		server_log->Log(log_network_error, "Session ready was too small.");
+		service_loc.GetServerLog()->Log(log_network_error, "Session ready was too small.");
 		return;
 	}
 
 	unsigned int mode = *((unsigned int*)data);
 	if(mode == (unsigned int)lm_from_world)
 	{
-		server_log->Log(log_network, "Session ready indicated logged in from world(unsupported feature), disconnecting.");
+		service_loc.GetServerLog()->Log(log_network, "Session ready indicated logged in from world(unsupported feature), disconnecting.");
 		connection->Close();
 		return;
 	}
@@ -146,7 +144,7 @@ void Client::Handle_SessionReady(const char* data, unsigned int size)
 		outapp->pBuffer[10] = 0x01;
 		outapp->pBuffer[11] = 0x65;
 
-		if(server.options.IsDumpOutPacketsOn())
+		if(service_loc.GetOptions()->IsDumpOutPacketsOn())
 		{
 			DumpPacket(outapp);
 		}
@@ -157,13 +155,13 @@ void Client::Handle_SessionReady(const char* data, unsigned int size)
 	else
 	{
 		const char *msg = "ChatMessage";
-		EQApplicationPacket *outapp = new EQApplicationPacket(OP_ChatMessage, 16 + strlen(msg));
+		EQApplicationPacket *outapp = new EQApplicationPacket(OP_ChatMessage, 16 + (uint32)strlen(msg));
 		outapp->pBuffer[0] = 0x02;
 		outapp->pBuffer[10] = 0x01;
 		outapp->pBuffer[11] = 0x65;
 		strcpy((char*)(outapp->pBuffer + 15), msg);
 
-		if(server.options.IsDumpOutPacketsOn())
+		if(service_loc.GetOptions()->IsDumpOutPacketsOn())
 		{
 			DumpPacket(outapp);
 		}
@@ -175,15 +173,16 @@ void Client::Handle_SessionReady(const char* data, unsigned int size)
 
 void Client::Handle_Login(const char* data, unsigned int size)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	if(status != cs_waiting_for_login)
 	{
-		server_log->Log(log_network_error, "Login received after already having logged in.");
+		service_loc.GetServerLog()->Log(log_network_error, "Login received after already having logged in.");
 		return;
 	}
 
 	if((size - 12) % 8 != 0)
 	{
-		server_log->Log(log_network_error, "Login received packet of size: %u, this would cause a block corruption, discarding.", size);
+		service_loc.GetServerLog()->Log(log_network_error, "Login received packet of size: %u, this would cause a block corruption, discarding.", size);
 		return;
 	}
 
@@ -196,39 +195,39 @@ void Client::Handle_Login(const char* data, unsigned int size)
 	string d_pass_hash;
 
 #ifdef WIN32
-	e_buffer = server.eq_crypto->DecryptUsernamePassword(data, size, server.options.GetEncryptionMode());
+	e_buffer = service_loc.GetEncryption()->DecryptUsernamePassword(data, size, service_loc.GetOptions()->GetEncryptionMode());
 
-	int buffer_len = strlen(e_buffer);
+	int buffer_len = (int)strlen(e_buffer);
 	e_hash.assign(e_buffer, buffer_len);
 	e_user.assign((e_buffer + buffer_len + 1), strlen(e_buffer + buffer_len + 1));
 
-	if(server.options.IsTraceOn())
+	if(service_loc.GetOptions()->IsTraceOn())
 	{
-		server_log->Log(log_client, "User: %s", e_user.c_str());
-		server_log->Log(log_client, "Hash: %s", e_hash.c_str());
+		service_loc.GetServerLog()->Log(log_client, "User: %s", e_user.c_str());
+		service_loc.GetServerLog()->Log(log_client, "Hash: %s", e_hash.c_str());
 	}
 
-	server.eq_crypto->DeleteHeap(e_buffer);
+	service_loc.GetEncryption()->DeleteHeap(e_buffer);
 #else
-	e_buffer = DecryptUsernamePassword(data, size, server.options.GetEncryptionMode());
+	e_buffer = DecryptUsernamePassword(data, size, service_loc.GetOptions()->GetEncryptionMode());
 
 	int buffer_len = strlen(e_buffer);
 	e_hash.assign(e_buffer, buffer_len);
 	e_user.assign((e_buffer + buffer_len + 1), strlen(e_buffer + buffer_len + 1));
 
-	if(server.options.IsTraceOn())
+	if(service_loc.GetOptions()->IsTraceOn())
 	{
-		server_log->Log(log_client, "User: %s", e_user.c_str());
-		server_log->Log(log_client, "Hash: %s", e_hash.c_str());
+		service_loc.GetServerLog()->Log(log_client, "User: %s", e_user.c_str());
+		service_loc.GetServerLog()->Log(log_client, "Hash: %s", e_hash.c_str());
 	}
 
 	_HeapDeleteCharBuffer(e_buffer);
 #endif
 
 	bool result;
-	if(server.db->GetLoginDataFromAccountName(e_user, d_pass_hash, d_account_id) == false)
+	if(service_loc.GetDatabase()->GetLoginDataFromAccountName(e_user, d_pass_hash, d_account_id) == false)
 	{
-		server_log->Log(log_client_error, "Error logging in, user %s does not exist in the database.", e_user.c_str());
+		service_loc.GetServerLog()->Log(log_client_error, "Error logging in, user %s does not exist in the database.", e_user.c_str());
 		result = false;
 	}
 	else
@@ -245,10 +244,10 @@ void Client::Handle_Login(const char* data, unsigned int size)
 
 	if(result)
 	{
-		server.CM->RemoveExistingClient(d_account_id);
+		service_loc.GetClientManager()->RemoveExistingClient(d_account_id);
 		in_addr in;
 		in.s_addr = connection->GetRemoteIP();
-		server.db->UpdateLSAccountData(d_account_id, string(inet_ntoa(in)));
+		service_loc.GetDatabase()->UpdateLSAccountData(d_account_id, string(inet_ntoa(in)));
 		GenerateKey();
 		account_id = d_account_id;
 		account_name = e_user;
@@ -287,9 +286,9 @@ void Client::Handle_Login(const char* data, unsigned int size)
 
 #ifdef WIN32
 		unsigned int e_size;
-		char *encrypted_buffer = server.eq_crypto->Encrypt((const char*)lrbs, 75, e_size);
+		char *encrypted_buffer = service_loc.GetEncryption()->Encrypt((const char*)lrbs, 75, e_size);
 		memcpy(llas->encrypt, encrypted_buffer, 80);
-		server.eq_crypto->DeleteHeap(encrypted_buffer);
+		service_loc.GetEncryption()->DeleteHeap(encrypted_buffer);
 #else
 		unsigned int e_size;
 		char *encrypted_buffer = Encrypt((const char*)lrbs, 75, e_size);
@@ -297,7 +296,7 @@ void Client::Handle_Login(const char* data, unsigned int size)
 		_HeapDeleteCharBuffer(encrypted_buffer);
 #endif
 
-		if(server.options.IsDumpOutPacketsOn())
+		if(service_loc.GetOptions()->IsDumpOutPacketsOn())
 		{
 			DumpPacket(outapp);
 		}
@@ -317,7 +316,7 @@ void Client::Handle_Login(const char* data, unsigned int size)
 		llas->unknown5 = llrs->unknown5;
 		memcpy(llas->unknown6, FailedLoginResponseData, sizeof(FailedLoginResponseData));
 
-		if(server.options.IsDumpOutPacketsOn())
+		if(service_loc.GetOptions()->IsDumpOutPacketsOn())
 		{
 			DumpPacket(outapp);
 		}
@@ -329,9 +328,10 @@ void Client::Handle_Login(const char* data, unsigned int size)
 
 void Client::Handle_Play(const char* data)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	if(status != cs_logged_in)
 	{
-		server_log->Log(log_client_error, "Client sent a play request when they either were not logged in, discarding.");
+		service_loc.GetServerLog()->Log(log_client_error, "Client sent a play request when they either were not logged in, discarding.");
 		return;
 	}
 
@@ -339,22 +339,23 @@ void Client::Handle_Play(const char* data)
 	unsigned int server_id_in = (unsigned int)play->ServerNumber;
 	unsigned int sequence_in = (unsigned int)play->Sequence;
 
-	if(server.options.IsTraceOn())
+	if(service_loc.GetOptions()->IsTraceOn())
 	{
-		server_log->Log(log_network, "Play received from client, server number %u sequence %u.", server_id_in, sequence_in);
+		service_loc.GetServerLog()->Log(log_network, "Play received from client, server number %u sequence %u.", server_id_in, sequence_in);
 	}
 
 	this->play_server_id = (unsigned int)play->ServerNumber;
 	play_sequence_id = sequence_in;
 	play_server_id = server_id_in;
-	server.SM->SendUserToWorldRequest(server_id_in, account_id);
+	service_loc.GetServerManager()->SendUserToWorldRequest(server_id_in, account_id);
 }
 
 void Client::SendServerListPacket()
 {
-	EQApplicationPacket *outapp = server.SM->CreateServerListPacket(this);
+	ServiceLocator &service_loc = ServiceLocator::Get();
+	EQApplicationPacket *outapp = service_loc.GetServerManager()->CreateServerListPacket(this);
 
-	if(server.options.IsDumpOutPacketsOn())
+	if(service_loc.GetOptions()->IsDumpOutPacketsOn())
 	{
 		DumpPacket(outapp);
 	}
@@ -365,10 +366,11 @@ void Client::SendServerListPacket()
 
 void Client::SendPlayResponse(EQApplicationPacket *outapp)
 {
-	if(server.options.IsTraceOn())
+	ServiceLocator &service_loc = ServiceLocator::Get();
+	if(service_loc.GetOptions()->IsTraceOn())
 	{
-		server_log->Log(log_network_trace, "Sending play response for %s.", GetAccountName().c_str());
-		server_log->LogPacket(log_network_trace, (const char*)outapp->pBuffer, outapp->size);
+		service_loc.GetServerLog()->Log(log_network_trace, "Sending play response for %s.", GetAccountName().c_str());
+		service_loc.GetServerLog()->LogPacket(log_network_trace, (const char*)outapp->pBuffer, outapp->size);
 	}
 	connection->QueuePacket(outapp);
 	status = cs_logged_in;

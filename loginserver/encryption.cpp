@@ -17,16 +17,15 @@
 */
 #include "../common/debug.h"
 #include "encryption.h"
-#include "error_log.h"
+#include "login_server.h"
 #include <string>
-
-extern ErrorLog *server_log;
 
 bool Encryption::LoadCrypto(std::string name)
 {
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	if(!Load(name.c_str()))
 	{
-		server_log->Log(log_error, "Failed to load %s from the operating system.", name.c_str());
+		service_loc.GetServerLog()->Log(log_error, "Failed to load %s from the operating system.", name.c_str());
 		return false;
 	}
 	else
@@ -34,21 +33,21 @@ bool Encryption::LoadCrypto(std::string name)
 		encrypt_func = (DLLFUNC_Encrypt)GetSym("Encrypt");
 		if(encrypt_func == NULL)
 		{
-			server_log->Log(log_error, "Failed to attach Encrypt.");
+			service_loc.GetServerLog()->Log(log_error, "Failed to attach Encrypt.");
 			Unload();
 			return false;
 		}
 		decrypt_func = (DLLFUNC_DecryptUsernamePassword)GetSym("DecryptUsernamePassword");
 		if(decrypt_func == NULL)
 		{
-			server_log->Log(log_error, "Failed to attach DecryptUsernamePassword.");
+			service_loc.GetServerLog()->Log(log_error, "Failed to attach DecryptUsernamePassword.");
 			Unload();
 			return false;
 		}
 		delete_func = (DLLFUNC_HeapDelete)GetSym("_HeapDeleteCharBuffer");
 		if(delete_func == NULL)
 		{
-			server_log->Log(log_error, "Failed to attach _HeapDeleteCharBuffer.");
+			service_loc.GetServerLog()->Log(log_error, "Failed to attach _HeapDeleteCharBuffer.");
 			Unload();
 			return false;
 		}

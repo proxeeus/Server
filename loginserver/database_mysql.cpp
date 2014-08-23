@@ -20,13 +20,7 @@
 
 #ifdef EQEMU_MYSQL_ENABLED
 #include "database_mysql.h"
-#include "error_log.h"
 #include "login_server.h"
-
-extern ErrorLog *server_log;
-extern LoginServer server;
-
-#pragma comment(lib, "mysqlclient.lib")
 
 DatabaseMySQL::DatabaseMySQL(string user, string pass, string host, string port, string name)
 {
@@ -34,6 +28,7 @@ DatabaseMySQL::DatabaseMySQL(string user, string pass, string host, string port,
 	this->pass = pass;
 	this->host = host;
 	this->name = name;
+	ServiceLocator &service_loc = ServiceLocator::Get();
 
 	db = mysql_init(nullptr);
 	if(db)
@@ -43,13 +38,13 @@ DatabaseMySQL::DatabaseMySQL(string user, string pass, string host, string port,
 		if(!mysql_real_connect(db, host.c_str(), user.c_str(), pass.c_str(), name.c_str(), atoi(port.c_str()), nullptr, 0))
 		{
 			mysql_close(db);
-			server_log->Log(log_database, "Failed to connect to MySQL database. Error: %s", mysql_error(db));
+			service_loc.GetServerLog()->Log(log_database, "Failed to connect to MySQL database. Error: %s", mysql_error(db));
 			exit(1);
 		}
 	}
 	else
 	{
-		server_log->Log(log_database, "Failed to create db object in MySQL database.");
+		service_loc.GetServerLog()->Log(log_database, "Failed to create db object in MySQL database.");
 	}
 }
 
@@ -68,16 +63,17 @@ bool DatabaseMySQL::GetLoginDataFromAccountName(string name, string &password, u
 		return false;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	MYSQL_RES *res;
 	MYSQL_ROW row;
 	stringstream query(stringstream::in | stringstream::out);
-	query << "SELECT LoginServerID, AccountPassword FROM " << server.options.GetAccountTable() << " WHERE AccountName = '";
+	query << "SELECT LoginServerID, AccountPassword FROM " << service_loc.GetOptions()->GetAccountTable() << " WHERE AccountName = '";
 	query << name;
 	query << "'";
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 		return false;
 	}
 
@@ -94,7 +90,7 @@ bool DatabaseMySQL::GetLoginDataFromAccountName(string name, string &password, u
 		}
 	}
 
-	server_log->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
+	service_loc.GetServerLog()->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
 	return false;
 }
 
@@ -106,6 +102,7 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 		return false;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	MYSQL_RES *res;
 	MYSQL_ROW row;
 	char escaped_short_name[101];
@@ -114,15 +111,15 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 	escaped_short_name[length+1] = 0;
 	stringstream query(stringstream::in | stringstream::out);
 	query << "SELECT WSR.ServerID, WSR.ServerTagDescription, WSR.ServerTrusted, SLT.ServerListTypeID, ";
-	query << "SLT.ServerListTypeDescription, WSR.ServerAdminID FROM " << server.options.GetWorldRegistrationTable();
-	query << " AS WSR JOIN " << server.options.GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID";
+	query << "SLT.ServerListTypeDescription, WSR.ServerAdminID FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
+	query << " AS WSR JOIN " << service_loc.GetOptions()->GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID";
 	query << " WHERE WSR.ServerShortName = '";
 	query << escaped_short_name;
 	query << "'";
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 		return false;
 	}
 
@@ -142,12 +139,12 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 			if(db_account_id > 0)
 			{
 				stringstream query(stringstream::in | stringstream::out);
-				query << "SELECT AccountName, AccountPassword FROM " << server.options.GetWorldAdminRegistrationTable();
+				query << "SELECT AccountName, AccountPassword FROM " << service_loc.GetOptions()->GetWorldAdminRegistrationTable();
 				query << " WHERE ServerAdminID = " << db_account_id;
 
 				if(mysql_query(db, query.str().c_str()) != 0)
 				{
-					server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+					service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 					return false;
 				}
 
@@ -163,14 +160,14 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 					}
 				}
 
-				server_log->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
+				service_loc.GetServerLog()->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
 				return false;
 			}
 			return true;
 		}
 	}
 
-	server_log->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
+	service_loc.GetServerLog()->Log(log_database, "Mysql query returned no result: %s", query.str().c_str());
 	return false;
 }
 
@@ -181,15 +178,16 @@ void DatabaseMySQL::UpdateLSAccountData(unsigned int id, string ip_address)
 		return;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
-	query << "UPDATE " << server.options.GetAccountTable() << " SET LastIPAddress = '";
+	query << "UPDATE " << service_loc.GetOptions()->GetAccountTable() << " SET LastIPAddress = '";
 	query << ip_address;
 	query << "', LastLoginDate = now() where LoginServerID = ";
 	query << id;
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 	}
 }
 
@@ -200,15 +198,16 @@ void DatabaseMySQL::UpdateLSAccountInfo(unsigned int id, string name, string pas
 		return;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	stringstream query(stringstream::in | stringstream::out);
-	query << "REPLACE " << server.options.GetAccountTable() << " SET LoginServerID = ";
+	query << "REPLACE " << service_loc.GetOptions()->GetAccountTable() << " SET LoginServerID = ";
 	query << id << ", AccountName = '" << name << "', AccountPassword = sha('";
 	query << password << "'), AccountCreateDate = now(), AccountEmail = '" << email;
 	query << "', LastIPAddress = '0.0.0.0', LastLoginDate = now()";
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 	}
 }
 
@@ -219,12 +218,13 @@ void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, string long_name, s
 		return;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	char escaped_long_name[101];
 	unsigned long length;
 	length = mysql_real_escape_string(db, escaped_long_name, long_name.substr(0, 100).c_str(), long_name.substr(0, 100).length());
 	escaped_long_name[length+1] = 0;
 	stringstream query(stringstream::in | stringstream::out);
-	query << "UPDATE " << server.options.GetWorldRegistrationTable() << " SET ServerLastLoginDate = now(), ServerLastIPAddr = '";
+	query << "UPDATE " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerLastLoginDate = now(), ServerLastIPAddr = '";
 	query << ip_address;
 	query << "', ServerLongName = '";
 	query << escaped_long_name;
@@ -233,7 +233,7 @@ void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, string long_name, s
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 	}
 }
 
@@ -244,6 +244,7 @@ bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name,
 		return false;
 	}
 
+	ServiceLocator &service_loc = ServiceLocator::Get();
 	MYSQL_RES *res;
 	MYSQL_ROW row;
 	char escaped_long_name[201];
@@ -254,11 +255,11 @@ bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name,
 	length = mysql_real_escape_string(db, escaped_short_name, short_name.substr(0, 100).c_str(), short_name.substr(0, 100).length());
 	escaped_short_name[length+1] = 0;
 	stringstream query(stringstream::in | stringstream::out);
-	query << "SELECT max(ServerID) FROM " << server.options.GetWorldRegistrationTable();
+	query << "SELECT max(ServerID) FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
 
 	if(mysql_query(db, query.str().c_str()) != 0)
 	{
-		server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+		service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 		return false;
 	}
 
@@ -271,21 +272,20 @@ bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name,
 			mysql_free_result(res);
 
 			stringstream query(stringstream::in | stringstream::out);
-			query << "INSERT INTO " << server.options.GetWorldRegistrationTable() << " SET ServerID = " << id;
+			query << "INSERT INTO " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerID = " << id;
 			query << ", ServerLongName = '" << escaped_long_name << "', ServerShortName = '" << escaped_short_name;
 			query << "', ServerListTypeID = 3, ServerAdminID = 0, ServerTrusted = 0, ServerTagDescription = ''";
 
 			if(mysql_query(db, query.str().c_str()) != 0)
 			{
-				server_log->Log(log_database, "Mysql query failed: %s", query.str().c_str());
+				service_loc.GetServerLog()->Log(log_database, "Mysql query failed: %s", query.str().c_str());
 				return false;
 			}
 			return true;
 		}
 	}
-	server_log->Log(log_database, "World registration did not exist in the database for %s %s", long_name.c_str(), short_name.c_str());
+	service_loc.GetServerLog()->Log(log_database, "World registration did not exist in the database for %s %s", long_name.c_str(), short_name.c_str());
 	return false;
 }
 
 #endif
-
