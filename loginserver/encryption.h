@@ -21,6 +21,7 @@
 #ifdef WIN32
 #include <windows.h>
 #include <string>
+#include "encryption_interface.h"
 
 typedef char*(*DLLFUNC_DecryptUsernamePassword)(const char*, unsigned int, int);
 typedef char*(*DLLFUNC_Encrypt)(const char*, unsigned int, unsigned int&);
@@ -30,7 +31,7 @@ typedef void(*DLLFUNC_HeapDelete)(char*);
 * Basic windows encryption plugin.
 * Handles the managment of the plugin.
 */
-class Encryption
+class Encryption : public EncryptionInterface
 {
 public:
 	/**
@@ -46,28 +47,28 @@ public:
 	/**
 	* Returns true if the dll is loaded, otherwise false.
 	*/
-	inline bool	Loaded() { return (h_dll != nullptr); }
+	virtual bool Loaded() { return (h_dll != nullptr); }
 
 	/**
 	* Loads the plugin.
 	* True if there are no errors, false if there was an error.
 	*/
-	bool LoadCrypto(std::string name);
+	virtual bool LoadCrypto(std::string name);
 
 	/**
 	* Wrapper around the plugin's decrypt function.
 	*/
-	char* DecryptUsernamePassword(const char* encryptedBuffer, unsigned int bufferSize, int mode);
+	virtual char* DecryptUsernamePassword(const char* encryptedBuffer, unsigned int bufferSize, int mode);
 
 	/**
 	* Wrapper around the plugin's encrypt function.
 	*/
-	char* Encrypt(const char* buffer, unsigned int bufferSize, unsigned int &outSize);
+	virtual char* Encrypt(const char* buffer, unsigned int bufferSize, unsigned int &outSize);
 
 	/**
 	* Wrapper around the plugin's delete function.
 	*/
-	void DeleteHeap(char* buffer);
+	virtual void DeleteHeap(char* buffer);
 
 private:
 	/**

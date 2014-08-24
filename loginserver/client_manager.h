@@ -23,14 +23,13 @@
 #include "../common/eq_stream_type.h"
 #include "../common/eq_stream_factory.h"
 #include "client.h"
+#include "client_manager_interface.h"
 #include <list>
-
-using namespace std;
 
 /**
 * Client manager class, holds all the client objects and does basic processing.
 */
-class ClientManager
+class ClientManager : public ClientManagerInterface
 {
 public:
 	/**
@@ -46,22 +45,22 @@ public:
 	/**
 	* Processes every client in the internal list, removes them if necessary.
 	*/
-	void Process();
+	virtual void Process();
 
 	/**
 	* Sends a new server list to every client.
 	*/
-	void UpdateServerList();
+	virtual void UpdateServerList();
 
 	/**
 	* Removes a client with a certain account id.
 	*/
-	void RemoveExistingClient(unsigned int account_id);
+	virtual void RemoveExistingClient(unsigned int account_id);
 
 	/**
 	* Gets a client (if exists) by their account id.
 	*/
-	Client *GetClient(unsigned int account_id);
+	virtual Client *GetClient(unsigned int account_id);
 private:
 
 	/**
@@ -69,7 +68,7 @@ private:
 	*/
 	void ProcessDisconnect();
 
-	list<Client*> clients;
+	std::list<Client*> clients;
 	OpcodeManager *titanium_ops;
 	EQStreamFactory *titanium_stream;
 	OpcodeManager *sod_ops;

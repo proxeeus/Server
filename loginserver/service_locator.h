@@ -12,11 +12,11 @@ public:
 	void SetServerRunning(bool *v) { server_running = v; }
 	bool *GetServerRunning() { return server_running; }
 
-	void SetServerLog(ErrorLog *v) { server_log = v; }
-	ErrorLog *GetServerLog() { return server_log; }
+	void SetServerLog(ErrorLogInterface *v) { server_log = v; }
+	ErrorLogInterface *GetServerLog() { return server_log; }
 
-	void SetConfig(Config *v) { config = v; }
-	Config *GetConfig() { return config; }
+	void SetConfig(ConfigInterface *v) { config = v; }
+	ConfigInterface *GetConfig() { return config; }
 
 	void SetDatabase(Database *v) { db = v; }
 	Database *GetDatabase() { return db; }
@@ -24,29 +24,29 @@ public:
 	void SetOptions(Options *v) { options = v; }
 	Options *GetOptions() { return options; }
 
-	void SetServerManager(ServerManager *v) { SM = v; }
-	ServerManager *GetServerManager() { return SM; }
+	void SetServerManager(ServerManagerInterface *v) { sm = v; }
+	ServerManagerInterface *GetServerManager() { return sm; }
 
-	void SetClientManager(ClientManager *v) { CM = v; }
-	ClientManager *GetClientManager() { return CM; }
+	void SetClientManager(ClientManagerInterface *v) { cm = v; }
+	ClientManagerInterface *GetClientManager() { return cm; }
 
 #ifdef WIN32
-	void SetEncryption(Encryption *v) { eq_crypto = v; }
-	Encryption *GetEncryption() { return eq_crypto; }
+	void SetEncryption(EncryptionInterface *v) { eq_crypto = v; }
+	EncryptionInterface *GetEncryption() { return eq_crypto; }
 #endif
 
 private:
 	bool* server_running;
-	ErrorLog *server_log;
-
-	Config *config;
+	ErrorLogInterface *server_log;
+	ConfigInterface *config;
+	
 	Database *db;
 	Options *options;
-	ServerManager *SM;
-	ClientManager *CM;
+	ServerManagerInterface *sm;
+	ClientManagerInterface *cm;
 
 #ifdef WIN32
-	Encryption *eq_crypto;
+	EncryptionInterface *eq_crypto;
 #endif
 };
 

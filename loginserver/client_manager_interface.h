@@ -15,48 +15,22 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
-#ifndef EQEMU_ERROR_LOG_H
-#define EQEMU_ERROR_LOG_H
+#ifndef EQEMU_CLIENT_MANAGER_INTERFACE_H
+#define EQEMU_CLIENT_MANAGER_INTERFACE_H
 
-#include <stdio.h>
-#include <stdarg.h>
-#include <time.h>
-#include <string>
-
-#include "../common/mutex.h"
-#include "error_log_interface.h"
-
-/**
- * Basic error logging class.
- * Thread safe logging class that records time and date to both a file and to console(if exists).
- */
-class ErrorLog : public ErrorLogInterface
+class ClientManagerInterface
 {
 public:
-	/**
-	* Constructor: opens the log file for writing and creates our mutex for writing to the log.
-	*/
-	ErrorLog(const char* file_name);
+	ClientManagerInterface() { }
+	~ClientManagerInterface() { }
 
-	/**
-	* Closes the file and destroys the mutex.
-	*/
-	virtual ~ErrorLog();
+	virtual void Process() = 0;
 
-	/**
-	* Writes to the log system a variable message.
-	*/
-	virtual void Log(eqLogType type, const char *message, ...);
+	virtual void UpdateServerList() = 0;
 
-	/**
-	* Writes to the log system a packet.
-	*/
-	virtual void LogPacket(eqLogType type, const char *data, size_t size);
+	virtual void RemoveExistingClient(unsigned int account_id) = 0;
 
-private:
-	Mutex *log_mutex;
-	FILE* error_log;
+	virtual Client *GetClient(unsigned int account_id) = 0;
 };
 
 #endif
-

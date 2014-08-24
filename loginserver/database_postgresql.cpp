@@ -22,7 +22,7 @@
 #include "database_postgresql.h"
 #include "login_server.h"
 
-DatabasePostgreSQL::DatabasePostgreSQL(string user, string pass, string host, string port, string name)
+DatabasePostgreSQL::DatabasePostgreSQL(std::string user, std::string pass, std::string host, std::string port, std::string name)
 {
 	ServiceLocator &service_loc = ServiceLocator::Get();
 	db = nullptr;
@@ -48,7 +48,7 @@ DatabasePostgreSQL::~DatabasePostgreSQL()
 	}
 }
 
-bool DatabasePostgreSQL::GetLoginDataFromAccountName(string name, string &password, unsigned int &id)
+bool DatabasePostgreSQL::GetLoginDataFromAccountName(std::string name, std::string &password, unsigned int &id)
 {
 	if(!db)
 	{
@@ -69,7 +69,7 @@ bool DatabasePostgreSQL::GetLoginDataFromAccountName(string name, string &passwo
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "SELECT LoginServerID, AccountPassword FROM " << service_loc.GetOptions()->GetAccountTable() << " WHERE AccountName = '";
 	query << name;
 	query << "'";
@@ -96,8 +96,8 @@ bool DatabasePostgreSQL::GetLoginDataFromAccountName(string name, string &passwo
 	return false;
 }
 
-bool DatabasePostgreSQL::GetWorldRegistration(string long_name, string short_name, unsigned int &id, string &desc, unsigned int &list_id,
-		unsigned int &trusted, string &list_desc, string &account, string &password)
+bool DatabasePostgreSQL::GetWorldRegistration(std::string long_name, std::string short_name, unsigned int &id, std::string &desc, unsigned int &list_id,
+		unsigned int &trusted, std::string &list_desc, std::string &account, std::string &password)
 {
 	if(!db)
 	{
@@ -118,7 +118,7 @@ bool DatabasePostgreSQL::GetWorldRegistration(string long_name, string short_nam
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "SELECT WSR.ServerID, WSR.ServerTagDescription, WSR.ServerTrusted, SLT.ServerListTypeID, ";
 	query << "SLT.ServerListTypeDescription, SAR.AccountName, SAR.AccountPassword FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
 	query << " AS WSR JOIN " << service_loc.GetOptions()->GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID JOIN ";
@@ -155,7 +155,7 @@ bool DatabasePostgreSQL::GetWorldRegistration(string long_name, string short_nam
 	return false;
 }
 
-void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, string ip_address)
+void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, std::string ip_address)
 {
 	if(!db)
 	{
@@ -176,7 +176,7 @@ void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, string ip_address)
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "UPDATE " << service_loc.GetOptions()->GetAccountTable() << " SET LastIPAddress = '";
 	query << ip_address;
 	query << "', LastLoginDate = current_date where LoginServerID = ";
@@ -191,7 +191,7 @@ void DatabasePostgreSQL::UpdateLSAccountData(unsigned int id, string ip_address)
 	PQclear(res);
 }
 
-void DatabasePostgreSQL::UpdateWorldRegistration(unsigned int id, string long_name, string ip_address)
+void DatabasePostgreSQL::UpdateWorldRegistration(unsigned int id, std::string long_name, std::string ip_address)
 {
 	if(!db)
 	{
@@ -212,7 +212,7 @@ void DatabasePostgreSQL::UpdateWorldRegistration(unsigned int id, string long_na
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "UPDATE " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerLastLoginDate = current_date, ServerLastIPAddr = '";
 	query << ip_address;
 	query << "', ServerLongName = '";

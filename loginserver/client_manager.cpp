@@ -117,7 +117,7 @@ void ClientManager::Process()
 		cur = sod_stream->Pop();
 	}
 
-	list<Client*>::iterator iter = clients.begin();
+	std::list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		if((*iter)->Process() == false)
@@ -136,7 +136,7 @@ void ClientManager::Process()
 void ClientManager::ProcessDisconnect()
 {
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	list<Client*>::iterator iter = clients.begin();
+	std::list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		EQStream *c = (*iter)->GetConnection();
@@ -155,7 +155,7 @@ void ClientManager::ProcessDisconnect()
 
 void ClientManager::UpdateServerList()
 {
-	list<Client*>::iterator iter = clients.begin();
+	std::list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		(*iter)->SendServerListPacket();
@@ -166,7 +166,7 @@ void ClientManager::UpdateServerList()
 void ClientManager::RemoveExistingClient(unsigned int account_id)
 {
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	list<Client*>::iterator iter = clients.begin();
+	std::list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		if((*iter)->GetAccountID() == account_id)
@@ -187,7 +187,7 @@ Client *ClientManager::GetClient(unsigned int account_id)
 	ServiceLocator &service_loc = ServiceLocator::Get();
 	Client *cur = nullptr;
 	int count = 0;
-	list<Client*>::iterator iter = clients.begin();
+	std::list<Client*>::iterator iter = clients.begin();
 	while(iter != clients.end())
 	{
 		if((*iter)->GetAccountID() == account_id)

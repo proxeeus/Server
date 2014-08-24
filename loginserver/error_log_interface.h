@@ -15,48 +15,42 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
-#ifndef EQEMU_ERROR_LOG_H
-#define EQEMU_ERROR_LOG_H
-
-#include <stdio.h>
-#include <stdarg.h>
-#include <time.h>
-#include <string>
-
-#include "../common/mutex.h"
-#include "error_log_interface.h"
+#ifndef EQEMU_ERROR_LOG_INTERFACE_H
+#define EQEMU_ERROR_LOG_INTERFACE_H
 
 /**
- * Basic error logging class.
- * Thread safe logging class that records time and date to both a file and to console(if exists).
+ * Dictates the log type specified in ErrorLog for Log(...)
  */
-class ErrorLog : public ErrorLogInterface
+enum eqLogType
+{
+	log_debug,
+	log_error,
+	log_database,
+	log_network,
+	log_network_trace,
+	log_network_error,
+	log_world,
+	log_world_error,
+	log_client,
+	log_client_error,
+	_log_largest_type
+};
+
+class ErrorLogInterface
 {
 public:
-	/**
-	* Constructor: opens the log file for writing and creates our mutex for writing to the log.
-	*/
-	ErrorLog(const char* file_name);
-
-	/**
-	* Closes the file and destroys the mutex.
-	*/
-	virtual ~ErrorLog();
+	ErrorLogInterface() { }
+	virtual ~ErrorLogInterface() { }
 
 	/**
 	* Writes to the log system a variable message.
 	*/
-	virtual void Log(eqLogType type, const char *message, ...);
+	virtual void Log(eqLogType type, const char *message, ...) = 0;
 
 	/**
 	* Writes to the log system a packet.
 	*/
-	virtual void LogPacket(eqLogType type, const char *data, size_t size);
-
-private:
-	Mutex *log_mutex;
-	FILE* error_log;
+	virtual void LogPacket(eqLogType type, const char *data, size_t size) = 0;
 };
 
 #endif
-

@@ -27,8 +27,6 @@
 #endif
 #include <string>
 
-using namespace std;
-
 enum ClientVersion
 {
 	cv_titanium,
@@ -68,78 +66,77 @@ public:
 	/**
 	* Processes the client's connection and does various actions.
 	*/
-	bool Process();
+	virtual bool Process();
 
 	/**
 	* Sends our reply to session ready packet.
 	*/
-	void Handle_SessionReady(const char* data, unsigned int size);
+	virtual void Handle_SessionReady(const char* data, unsigned int size);
 
 	/**
 	* Verifies login and send a reply.
 	*/
-	void Handle_Login(const char* data, unsigned int size);
+	virtual void Handle_Login(const char* data, unsigned int size);
 
 	/**
 	* Sends a packet to the requested server to see if the client is allowed or not.
 	*/
-	void Handle_Play(const char* data);
+	virtual void Handle_Play(const char* data);
 
 	/**
 	* Sends a server list packet to the client.
 	*/
-	void SendServerListPacket();
+	virtual void SendServerListPacket();
 
 	/**
 	* Sends the input packet to the client and clears our play response states.
 	*/
-	void SendPlayResponse(EQApplicationPacket *outapp);
+	virtual void SendPlayResponse(EQApplicationPacket *outapp);
 
 	/**
 	* Generates a random login key for the client during login.
 	*/
-	void GenerateKey();
+	virtual void GenerateKey();
 
 	/**
 	* Gets the account id of this client.
 	*/
-	unsigned int GetAccountID() const { return account_id; }
+	virtual unsigned int GetAccountID() const { return account_id; }
 
 	/**
 	* Gets the account name of this client.
 	*/
-	string GetAccountName() const { return account_name; }
+	virtual std::string GetAccountName() const { return account_name; }
 
 	/**
 	* Gets the key generated at login for this client.
 	*/
-	string GetKey() const { return key; }
+	virtual std::string GetKey() const { return key; }
 
 	/**
 	* Gets the server selected to be played on for this client.
 	*/
-	unsigned int GetPlayServerID() const { return play_server_id; }
+	virtual unsigned int GetPlayServerID() const { return play_server_id; }
 
 	/**
 	* Gets the play sequence state for this client.
 	*/
-	unsigned int GetPlaySequence() const { return play_sequence_id; }
+	virtual unsigned int GetPlaySequence() const { return play_sequence_id; }
 
 	/**
 	* Gets the connection for this client.
 	*/
-	EQStream *GetConnection() { return connection; }
+	virtual EQStream *GetConnection() { return connection; }
 private:
 	EQStream *connection;
 	ClientVersion version;
 	ClientStatus status;
 
-	string account_name;
+	std::string account_name;
 	unsigned int account_id;
 	unsigned int play_server_id;
 	unsigned int play_sequence_id;
-	string key;
+	std::string key;
 };
 
 #endif
-

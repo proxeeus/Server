@@ -26,12 +26,13 @@
 #include "../common/packet_dump.h"
 #include "world_server.h"
 #include "client.h"
+#include "server_manager_interface.h"
 #include <list>
 
 /**
 * Server manager class, deals with management of the world servers.
 */
-class ServerManager
+class ServerManager : public ServerManagerInterface
 {
 public:
 	/**
@@ -47,27 +48,27 @@ public:
 	/**
 	* Does basic processing for all the servers.
 	*/
-	void Process();
+	virtual void Process();
 
 	/**
 	* Sends a request to world to see if the client is banned or suspended.
 	*/
-	void SendUserToWorldRequest(unsigned int server_id, unsigned int client_account_id);
+	virtual void SendUserToWorldRequest(unsigned int server_id, unsigned int client_account_id);
 
 	/**
 	* Creates a server list packet for the client.
 	*/
-	EQApplicationPacket *CreateServerListPacket(Client *c);
+	virtual EQApplicationPacket *CreateServerListPacket(Client *c);
 
 	/**
 	* Checks to see if there is a server exists with this name, ignoring option.
 	*/
-	bool ServerExists(std::string l_name, std::string s_name, WorldServer *ignore = nullptr);
+	virtual bool ServerExists(std::string l_name, std::string s_name, WorldServer *ignore = nullptr);
 
 	/**
 	* Destroys a server with this name, ignoring option.
 	*/
-	void DestroyServerByName(std::string l_name, std::string s_name, WorldServer *ignore = nullptr);
+	virtual void DestroyServerByName(std::string l_name, std::string s_name, WorldServer *ignore = nullptr);
 
 private:
 	/**

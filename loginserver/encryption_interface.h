@@ -15,48 +15,26 @@
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
-#ifndef EQEMU_ERROR_LOG_H
-#define EQEMU_ERROR_LOG_H
+#ifndef EQEMU_ENCRYPTION_INTERFACE_H
+#define EQEMU_ENCRYPTION_INTERFACE_H
+#ifdef WIN32
 
-#include <stdio.h>
-#include <stdarg.h>
-#include <time.h>
-#include <string>
-
-#include "../common/mutex.h"
-#include "error_log_interface.h"
-
-/**
- * Basic error logging class.
- * Thread safe logging class that records time and date to both a file and to console(if exists).
- */
-class ErrorLog : public ErrorLogInterface
+class EncryptionInterface
 {
 public:
-	/**
-	* Constructor: opens the log file for writing and creates our mutex for writing to the log.
-	*/
-	ErrorLog(const char* file_name);
+	EncryptionInterface() { };
+	~EncryptionInterface() { }
 
-	/**
-	* Closes the file and destroys the mutex.
-	*/
-	virtual ~ErrorLog();
+	virtual bool Loaded() = 0;
 
-	/**
-	* Writes to the log system a variable message.
-	*/
-	virtual void Log(eqLogType type, const char *message, ...);
+	virtual bool LoadCrypto(std::string name) = 0;
 
-	/**
-	* Writes to the log system a packet.
-	*/
-	virtual void LogPacket(eqLogType type, const char *data, size_t size);
+	virtual char* DecryptUsernamePassword(const char* encryptedBuffer, unsigned int bufferSize, int mode) = 0;
 
-private:
-	Mutex *log_mutex;
-	FILE* error_log;
+	virtual char* Encrypt(const char* buffer, unsigned int bufferSize, unsigned int &outSize) = 0;
+
+	virtual void DeleteHeap(char* buffer) = 0;
 };
 
 #endif
-
+#endif

@@ -20,17 +20,21 @@ ENDIF(MSVC OR MINGW)
 SET(eqlogin_headers
 	client.h
 	client_manager.h
+	client_manager_interface.h
 	config.h
 	database.h
 	database_mysql.h
 	database_postgresql.h
 	encryption.h
+	encryption_interface.h
 	eq_crypto_api.h
 	error_log.h
+	error_log_interface.h
 	login_server.h
 	login_structures.h
 	options.h
 	server_manager.h
+	server_manager_interface.h
 	service_locator.h
 	world_server.h
 )

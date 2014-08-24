@@ -188,11 +188,11 @@ void Client::Handle_Login(const char* data, unsigned int size)
 
 	status = cs_logged_in;
 
-	string e_user;
-	string e_hash;
+	std::string e_user;
+	std::string e_hash;
 	char *e_buffer = nullptr;
 	unsigned int d_account_id = 0;
-	string d_pass_hash;
+	std::string d_pass_hash;
 
 #ifdef WIN32
 	e_buffer = service_loc.GetEncryption()->DecryptUsernamePassword(data, size, service_loc.GetOptions()->GetEncryptionMode());
@@ -247,7 +247,7 @@ void Client::Handle_Login(const char* data, unsigned int size)
 		service_loc.GetClientManager()->RemoveExistingClient(d_account_id);
 		in_addr in;
 		in.s_addr = connection->GetRemoteIP();
-		service_loc.GetDatabase()->UpdateLSAccountData(d_account_id, string(inet_ntoa(in)));
+		service_loc.GetDatabase()->UpdateLSAccountData(d_account_id, std::string(inet_ntoa(in)));
 		GenerateKey();
 		account_id = d_account_id;
 		account_name = e_user;

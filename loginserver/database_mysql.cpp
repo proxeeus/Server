@@ -22,7 +22,7 @@
 #include "database_mysql.h"
 #include "login_server.h"
 
-DatabaseMySQL::DatabaseMySQL(string user, string pass, string host, string port, string name)
+DatabaseMySQL::DatabaseMySQL(std::string user, std::string pass, std::string host, std::string port, std::string name)
 {
 	this->user = user;
 	this->pass = pass;
@@ -56,7 +56,7 @@ DatabaseMySQL::~DatabaseMySQL()
 	}
 }
 
-bool DatabaseMySQL::GetLoginDataFromAccountName(string name, string &password, unsigned int &id)
+bool DatabaseMySQL::GetLoginDataFromAccountName(std::string name, std::string &password, unsigned int &id)
 {
 	if(!db)
 	{
@@ -66,7 +66,7 @@ bool DatabaseMySQL::GetLoginDataFromAccountName(string name, string &password, u
 	ServiceLocator &service_loc = ServiceLocator::Get();
 	MYSQL_RES *res;
 	MYSQL_ROW row;
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "SELECT LoginServerID, AccountPassword FROM " << service_loc.GetOptions()->GetAccountTable() << " WHERE AccountName = '";
 	query << name;
 	query << "'";
@@ -94,8 +94,8 @@ bool DatabaseMySQL::GetLoginDataFromAccountName(string name, string &password, u
 	return false;
 }
 
-bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, unsigned int &id, string &desc, unsigned int &list_id,
-		unsigned int &trusted, string &list_desc, string &account, string &password)
+bool DatabaseMySQL::GetWorldRegistration(std::string long_name, std::string short_name, unsigned int &id, std::string &desc, unsigned int &list_id,
+										 unsigned int &trusted, std::string &list_desc, std::string &account, std::string &password)
 {
 	if(!db)
 	{
@@ -109,7 +109,7 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 	unsigned long length;
 	length = mysql_real_escape_string(db, escaped_short_name, short_name.substr(0, 100).c_str(), short_name.substr(0, 100).length());
 	escaped_short_name[length+1] = 0;
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "SELECT WSR.ServerID, WSR.ServerTagDescription, WSR.ServerTrusted, SLT.ServerListTypeID, ";
 	query << "SLT.ServerListTypeDescription, WSR.ServerAdminID FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
 	query << " AS WSR JOIN " << service_loc.GetOptions()->GetWorldServerTypeTable() << " AS SLT ON WSR.ServerListTypeID = SLT.ServerListTypeID";
@@ -138,7 +138,7 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 
 			if(db_account_id > 0)
 			{
-				stringstream query(stringstream::in | stringstream::out);
+				std::stringstream query(std::stringstream::in | std::stringstream::out);
 				query << "SELECT AccountName, AccountPassword FROM " << service_loc.GetOptions()->GetWorldAdminRegistrationTable();
 				query << " WHERE ServerAdminID = " << db_account_id;
 
@@ -171,7 +171,7 @@ bool DatabaseMySQL::GetWorldRegistration(string long_name, string short_name, un
 	return false;
 }
 
-void DatabaseMySQL::UpdateLSAccountData(unsigned int id, string ip_address)
+void DatabaseMySQL::UpdateLSAccountData(unsigned int id, std::string ip_address)
 {
 	if(!db)
 	{
@@ -179,7 +179,7 @@ void DatabaseMySQL::UpdateLSAccountData(unsigned int id, string ip_address)
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "UPDATE " << service_loc.GetOptions()->GetAccountTable() << " SET LastIPAddress = '";
 	query << ip_address;
 	query << "', LastLoginDate = now() where LoginServerID = ";
@@ -191,7 +191,7 @@ void DatabaseMySQL::UpdateLSAccountData(unsigned int id, string ip_address)
 	}
 }
 
-void DatabaseMySQL::UpdateLSAccountInfo(unsigned int id, string name, string password, string email)
+void DatabaseMySQL::UpdateLSAccountInfo(unsigned int id, std::string name, std::string password, std::string email)
 {
 	if(!db)
 	{
@@ -199,7 +199,7 @@ void DatabaseMySQL::UpdateLSAccountInfo(unsigned int id, string name, string pas
 	}
 
 	ServiceLocator &service_loc = ServiceLocator::Get();
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "REPLACE " << service_loc.GetOptions()->GetAccountTable() << " SET LoginServerID = ";
 	query << id << ", AccountName = '" << name << "', AccountPassword = sha('";
 	query << password << "'), AccountCreateDate = now(), AccountEmail = '" << email;
@@ -211,7 +211,7 @@ void DatabaseMySQL::UpdateLSAccountInfo(unsigned int id, string name, string pas
 	}
 }
 
-void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, string long_name, string ip_address)
+void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, std::string long_name, std::string ip_address)
 {
 	if(!db)
 	{
@@ -223,7 +223,7 @@ void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, string long_name, s
 	unsigned long length;
 	length = mysql_real_escape_string(db, escaped_long_name, long_name.substr(0, 100).c_str(), long_name.substr(0, 100).length());
 	escaped_long_name[length+1] = 0;
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "UPDATE " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerLastLoginDate = now(), ServerLastIPAddr = '";
 	query << ip_address;
 	query << "', ServerLongName = '";
@@ -237,7 +237,7 @@ void DatabaseMySQL::UpdateWorldRegistration(unsigned int id, string long_name, s
 	}
 }
 
-bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name, unsigned int &id)
+bool DatabaseMySQL::CreateWorldRegistration(std::string long_name, std::string short_name, unsigned int &id)
 {
 	if(!db)
 	{
@@ -254,7 +254,7 @@ bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name,
 	escaped_long_name[length+1] = 0;
 	length = mysql_real_escape_string(db, escaped_short_name, short_name.substr(0, 100).c_str(), short_name.substr(0, 100).length());
 	escaped_short_name[length+1] = 0;
-	stringstream query(stringstream::in | stringstream::out);
+	std::stringstream query(std::stringstream::in | std::stringstream::out);
 	query << "SELECT max(ServerID) FROM " << service_loc.GetOptions()->GetWorldRegistrationTable();
 
 	if(mysql_query(db, query.str().c_str()) != 0)
@@ -271,7 +271,7 @@ bool DatabaseMySQL::CreateWorldRegistration(string long_name, string short_name,
 			id = atoi(row[0]) + 1;
 			mysql_free_result(res);
 
-			stringstream query(stringstream::in | stringstream::out);
+			std::stringstream query(std::stringstream::in | std::stringstream::out);
 			query << "INSERT INTO " << service_loc.GetOptions()->GetWorldRegistrationTable() << " SET ServerID = " << id;
 			query << ", ServerLongName = '" << escaped_long_name << "', ServerShortName = '" << escaped_short_name;
 			query << "', ServerListTypeID = 3, ServerAdminID = 0, ServerTrusted = 0, ServerTagDescription = ''";
