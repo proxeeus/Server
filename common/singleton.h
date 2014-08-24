@@ -8,8 +8,8 @@ namespace EQEmu
 	{
 	public:
 		Singleton() { }
-		~Singleton() { if(_inst) { delete _inst; } _inst = nullptr; }
-		static T& Init() { if(!_inst) { _inst = new T(); } return *_inst; }
+		~Singleton() { }
+		static T* Allocate() { if(!_inst) { _inst = new T(); } return _inst; }
 		static T& Get() { return *_inst; }
 	private:
 		Singleton(const Singleton<T>&);

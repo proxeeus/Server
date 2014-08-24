@@ -28,6 +28,7 @@
 #include <signal.h>
 #include <string>
 #include <sstream>
+#include <memory>
 
 template<> ServiceLocator* EQEmu::Singleton<ServiceLocator>::_inst = nullptr;
 
@@ -41,14 +42,13 @@ int main()
 	RegisterExecutablePlatform(ExePlatformLogin);
 	set_exception_handler();
 
-	TimeoutManager::Init();
+	std::unique_ptr<TimeoutManager> timeout_manager(TimeoutManager::Allocate());
 
 	bool run_server = true;
 	Options opts;
-	ServiceLocator::Init();
-	ServiceLocator &service_loc = ServiceLocator::Get();
-	service_loc.SetServerRunning(&run_server);
-	service_loc.SetOptions(&opts);
+	std::unique_ptr<ServiceLocator> service_locator(ServiceLocator::Allocate());
+	service_locator->SetServerRunning(&run_server);
+	service_locator->SetOptions(&opts);
 
 	//Create our error log, is of format login_<number>.log
 	time_t current_time = time(nullptr);
@@ -58,24 +58,24 @@ int main()
 #else
 	log_name << "./logs/login_" << (unsigned int)current_time << ".log";
 #endif
-	ErrorLog *log = new ErrorLog(log_name.str().c_str());
-	service_loc.SetServerLog(log);
+	ErrorLog *log_bp = new ErrorLog(log_name.str().c_str());
+	std::unique_ptr<ErrorLog> log(log_bp);
+	service_locator->SetServerLog(log_bp);
 	log->Log(log_debug, "Logging System Init.");
 
 	if(signal(SIGINT, CatchSignal) == SIG_ERR)	{
 		log->Log(log_error, "Could not set signal handler");
-		delete log;
 		return 1;
 	}
 	if(signal(SIGTERM, CatchSignal) == SIG_ERR)	{
 		log->Log(log_error, "Could not set signal handler");
-		delete log;
 		return 1;
 	}
 	
 	//Create our subsystem and parse the ini file.
-	Config *config = new Config();
-	service_loc.SetConfig(config);
+	Config *config_bp = new Config();
+	std::unique_ptr<Config> config(config_bp);
+	service_locator->SetConfig(config_bp);
 	log->Log(log_debug, "Config System Init.");
 	config->Parse("login.ini");
 
@@ -189,18 +189,17 @@ int main()
 	{
 		log->Log(log_error, "Database Initialization Failure.");
 		log->Log(log_debug, "Config System Shutdown.");
-		delete config;
 		log->Log(log_debug, "Log System Shutdown.");
-		delete log;
 		return 1;
 	}
 
-	service_loc.SetDatabase(db);
+	service_locator->SetDatabase(db);
 
 #if WIN32
 	//initialize our encryption.
 	log->Log(log_debug, "Encryption Initialize.");
-	Encryption *eq_crypto = new Encryption();
+	Encryption *eq_crypto_bp = new Encryption();
+	std::unique_ptr<Encryption> eq_crypto(eq_crypto_bp);
 	if(eq_crypto->LoadCrypto(config->GetVariable("security", "plugin")))
 	{
 		log->Log(log_debug, "Encryption Loaded Successfully.");
@@ -209,64 +208,53 @@ int main()
 	{
 		//We can't run without encryption, cleanup and exit.
 		log->Log(log_error, "Encryption Failed to Load.");
-		delete eq_crypto;
 		log->Log(log_debug, "Database System Shutdown.");
-		delete db;
 		log->Log(log_debug, "Config System Shutdown.");
-		delete config;
 		log->Log(log_debug, "Log System Shutdown.");
-		delete log;
 		return 1;
 	}
 	
-	service_loc.SetEncryption(eq_crypto);
+	service_locator->SetEncryption(eq_crypto_bp);
 #endif
 
 	//create our server manager.
 	log->Log(log_debug, "Server Manager Initialize.");
-	ServerManager *sm = new ServerManager();
+	ServerManager *sm_bp = new ServerManager();
+	std::unique_ptr<ServerManager> sm(sm_bp);
 	if(!sm)
 	{
 		//We can't run without a server manager, cleanup and exit.
 		log->Log(log_error, "Server Manager Failed to Start.");
 #ifdef WIN32
 		log->Log(log_debug, "Encryption System Shutdown.");
-		delete eq_crypto;
 #endif
 		log->Log(log_debug, "Database System Shutdown.");
-		delete db;
 		log->Log(log_debug, "Config System Shutdown.");
-		delete config;
 		log->Log(log_debug, "Log System Shutdown.");
-		delete log;
 		return 1;
 	}
 	
-	service_loc.SetServerManager(sm);
+	service_locator->SetServerManager(sm_bp);
 
 	//create our client manager.
 	log->Log(log_debug, "Client Manager Initialize.");
-	ClientManager *cm = new ClientManager();
+	ClientManager *cm_bp = new ClientManager();
+	std::unique_ptr<ClientManager> cm(cm_bp);
 	if(!cm)
 	{
 		//We can't run without a client manager, cleanup and exit.
 		log->Log(log_error, "Client Manager Failed to Start.");
 		log->Log(log_debug, "Server Manager Shutdown.");
-		delete sm;
 #ifdef WIN32
 		log->Log(log_debug, "Encryption System Shutdown.");
-		delete eq_crypto;
 #endif
 		log->Log(log_debug, "Database System Shutdown.");
-		delete db;
 		log->Log(log_debug, "Config System Shutdown.");
-		delete config;
 		log->Log(log_debug, "Log System Shutdown.");
-		delete log;
 		return 1;
 	}
 	
-	service_loc.SetClientManager(cm);
+	service_locator->SetClientManager(cm_bp);
 
 #ifdef WIN32
 #ifdef UNICODE
@@ -287,19 +275,13 @@ int main()
 
 	log->Log(log_debug, "Server Shutdown.");
 	log->Log(log_debug, "Client Manager Shutdown.");
-	delete cm;
 	log->Log(log_debug, "Server Manager Shutdown.");
-	delete sm;
 #ifdef WIN32
 	log->Log(log_debug, "Encryption System Shutdown.");
-	delete eq_crypto;
 #endif
 	log->Log(log_debug, "Database System Shutdown.");
-	delete db;
 	log->Log(log_debug, "Config System Shutdown.");
-	delete config;
 	log->Log(log_debug, "Log System Shutdown.");
-	delete log;
 	return 0;
 }
 

@@ -42,7 +42,6 @@
 #include "../common/memory_mapped_file.h"
 #include "../common/eqemu_exception.h"
 #include "../common/spdat.h"
-
 #include "zone_config.h"
 #include "masterentity.h"
 #include "worldserver.h"
@@ -53,17 +52,15 @@
 #include "titles.h"
 #include "guild_mgr.h"
 #include "tasks.h"
-
 #include "quest_parser_collection.h"
 #include "embparser.h"
 #include "lua_parser.h"
 #include "client_logs.h"
 #include "questmgr.h"
-
 #include <iostream>
 #include <string>
 #include <fstream>
-
+#include <memory>
 #include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
@@ -111,7 +108,7 @@ int main(int argc, char** argv) {
 	RegisterExecutablePlatform(ExePlatformZone);
 	set_exception_handler();
 
-	TimeoutManager::Init();
+	std::unique_ptr<TimeoutManager> timeout_manager(TimeoutManager::Allocate());
 
 	const char *zone_name;
 

@@ -29,6 +29,7 @@
 #include "worldserver.h"
 #include "lfguild.h"
 #include <list>
+#include <memory>
 #include <signal.h>
 
 volatile bool RunLoops = true;
@@ -57,7 +58,7 @@ int main() {
 	RegisterExecutablePlatform(ExePlatformQueryServ);
 	set_exception_handler();
 
-	TimeoutManager::Init();
+	std::unique_ptr<TimeoutManager> timeout_manager(TimeoutManager::Allocate());
 
 	Timer LFGuildExpireTimer(60000);
 
@@ -68,7 +69,6 @@ int main() {
 	if (!queryservconfig::LoadConfig()) {
 
 		_log(QUERYSERV__INIT, "Loading server configuration failed.");
-
 		return 1;
 	}
 
@@ -125,6 +125,8 @@ int main() {
 
 		Sleep(100);
 	}
+
+	return 0;
 }
 
 void UpdateWindowTitle(char* iNewTitle) {

@@ -16,15 +16,6 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 #include "../common/debug.h"
-
-#include <iostream>
-#include <string.h>
-#include <stdio.h>
-#include <stdlib.h>
-
-#include <signal.h>
-
-#include "../common/debug.h"
 #include "../common/queue.h"
 #include "../common/timer.h"
 #include "../common/eq_stream_factory.h"
@@ -86,6 +77,13 @@
 #include "ucs.h"
 #include "queryserv.h"
 
+#include <iostream>
+#include <memory>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <signal.h>
+
 EQStreamFactory eqsf(WorldStream,9000);
 EmuTCPServer tcps;
 ClientList client_list;
@@ -112,7 +110,7 @@ int main(int argc, char** argv) {
 	RegisterExecutablePlatform(ExePlatformWorld);
 	set_exception_handler();
 
-	TimeoutManager::Init();
+	std::unique_ptr<TimeoutManager> timeout_manager(TimeoutManager::Allocate());
 
 	// Load server configuration
 	_log(WORLD__INIT, "Loading server configuration..");

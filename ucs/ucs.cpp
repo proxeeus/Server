@@ -30,6 +30,7 @@
 #include "chatchannel.h"
 #include "worldserver.h"
 #include <list>
+#include <memory>
 #include <signal.h>
 
 volatile bool RunLoops = true;
@@ -68,7 +69,7 @@ int main() {
 	RegisterExecutablePlatform(ExePlatformUCS);
 	set_exception_handler();
 
-	TimeoutManager::Init();
+	std::unique_ptr<TimeoutManager> timeout_manager(TimeoutManager::Allocate());
 
 	// Check every minute for unused channels we can delete
 	//
@@ -81,7 +82,6 @@ int main() {
 	if (!ucsconfig::LoadConfig()) {
 
 		_log(UCS__INIT, "Loading server configuration failed.");
-
 		return 1;
 	}
 
@@ -126,7 +126,7 @@ int main() {
 	if(Config->ChatPort != Config->MailPort)
 	{
 		_log(UCS__ERROR, "MailPort and CharPort must be the same in eqemu_config.xml for UCS.");
-		exit(1);
+		return 1;
 	}
 
 	CL = new Clientlist(Config->ChatPort);
@@ -172,6 +172,7 @@ int main() {
 
 	CL->CloseAllConnections();
 
+	return 0;
 }
 
 void UpdateWindowTitle(char* iNewTitle) {
