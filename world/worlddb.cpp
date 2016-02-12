@@ -313,6 +313,32 @@ int WorldDatabase::MoveCharacterToBind(int CharID, uint8 bindnum)
 	return zone_id;
 }
 
+// "Hard" get of the ZoneId for Titanium clients. Overrides any other start zone Id that may have been found. Because fuck it.
+int GetTitaniumStartZone(PlayerProfile_Struct* in_pp)
+{
+	Log.Out(Logs::General, Logs::Status, "Calling GetTitaniumStartZone...");
+	// Same zone for all these races
+		switch (in_pp->race)
+		{
+		case 2:													// **Barbarian
+			return 29;											// Halas
+		case 3:													// **Erudite
+			if (in_pp->class_ == 5 || in_pp->class_ == 11)		// Shadow Knight or Necromancer
+				return 75;										// Paineel
+			else
+				return 24;										// Erudin
+		case 6:													// **Dark Elf
+			return 41;											// Neriak Commons
+		case 8:													// **Dwarf
+			return 60;											// South Kaladim
+		case 12:												// **Gnome
+			return 55;											// Ak'Anon
+		default:
+			break;
+		}
+	return 0;
+}
+
 bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct* in_cc,bool isTitanium)
 {
 	// SoF doesn't send the player_choice field in character creation, it now sends the real zoneID instead.
@@ -330,7 +356,7 @@ bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct*
 	// see if we have an entry for start_zone. We can support both titanium & SOF+ by having two entries per class/race/deity combo with different zone_ids
 	std::string query = StringFormat("SELECT x, y, z, heading, start_zone, bind_id FROM start_zones WHERE zone_id = %i "
 		"AND player_class = %i AND player_deity = %i AND player_race = %i",
-		in_cc->start_zone, in_cc->class_, in_cc->deity, in_cc->race);
+		GetTitaniumStartZone(in_pp), in_cc->class_, in_cc->deity, in_cc->race);
     auto results = QueryDatabase(query);
 	if(!results.Success()) {
 		return false;
