@@ -6,7 +6,7 @@
 #include "quest_parser_collection.h"
 #include "../common/string_util.h"
 
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 
 // This constructor is used during the bot create command
 Bot::Bot(NPCType npcTypeData, Client* botOwner) : NPC(&npcTypeData, nullptr, glm::vec4(), 0, false), rest_timer(1) {
@@ -1179,7 +1179,7 @@ uint16 Bot::GetPrimarySkillValue() {
 				break;
 			}
 			case ItemType2HPiercing: {
-				skill = Skill1HPiercing; // change to Skill2HPiercing once activated
+				skill = Skill2HPiercing;
 				break;
 			}
 			case ItemTypeMartial: {
@@ -2026,6 +2026,16 @@ void Bot::LoadPetBuffs(SpellBuff_Struct* petBuffs, uint32 botPetSaveId) {
 		petBuffs[buffIndex].spellid = atoi(row[0]);
 		petBuffs[buffIndex].level = atoi(row[1]);
 		petBuffs[buffIndex].duration = atoi(row[2]);
+		//Work around for loading the counters and setting them back to max. Need entry in DB for saved counters
+		if(CalculatePoisonCounters(petBuffs[buffIndex].spellid) > 0)
+			petBuffs[buffIndex].counters = CalculatePoisonCounters(petBuffs[buffIndex].spellid);
+		else if(CalculateDiseaseCounters(petBuffs[buffIndex].spellid) > 0)
+			petBuffs[buffIndex].counters = CalculateDiseaseCounters(petBuffs[buffIndex].spellid);
+		else if(CalculateCurseCounters(petBuffs[buffIndex].spellid) > 0)
+			petBuffs[buffIndex].counters = CalculateCurseCounters(petBuffs[buffIndex].spellid);
+		else if(CalculateCorruptionCounters(petBuffs[buffIndex].spellid) > 0)
+			petBuffs[buffIndex].counters = CalculateCorruptionCounters(petBuffs[buffIndex].spellid);
+
 		buffIndex++;
 	}
 	query = StringFormat("DELETE FROM `bot_pet_buffs` WHERE `pets_index` = %u;", botPetSaveId);
@@ -2286,7 +2296,7 @@ bool Bot::Process() {
 
 		BuffProcess();
 		CalcRestState();
-		if(curfp)
+		if(currently_fleeing)
 			ProcessFlee();
 
 		if(GetHP() < GetMaxHP())
@@ -2685,7 +2695,7 @@ void Bot::AI_Process() {
 
 	if(GetHasBeenSummoned()) {
 		if(IsBotCaster() || IsBotArcher()) {
-			if (AImovement_timer->Check()) {
+			if (AI_movement_timer->Check()) {
 				if(!GetTarget() || (IsBotCaster() && !IsBotCasterCombatRange(GetTarget())) || (IsBotArcher() && IsArcheryRange(GetTarget())) || (DistanceSquaredNoZ(static_cast<glm::vec3>(m_Position), m_PreSummonLocation) < 10)) {
 					if(GetTarget())
 						FaceTarget(GetTarget());
@@ -2831,7 +2841,7 @@ void Bot::AI_Process() {
 				}
 			}
 
-			if(AImovement_timer->Check()) {
+			if(AI_movement_timer->Check()) {
 				if(!IsMoving() && GetClass() == ROGUE && !BehindMob(GetTarget(), GetX(), GetY())) {
 					// Move the rogue to behind the mob
 					float newX = 0;
@@ -2967,7 +2977,7 @@ void Bot::AI_Process() {
 					AI_PursueCastCheck();
 			}
 
-			if (AImovement_timer->Check()) {
+			if (AI_movement_timer->Check()) {
 				if(!IsRooted()) {
 					Log.Out(Logs::Detail, Logs::AI, "Pursuing %s while engaged.", GetTarget()->GetCleanName());
 					CalculateNewPosition2(GetTarget()->GetX(), GetTarget()->GetY(), GetTarget()->GetZ(), GetRunspeed());
@@ -2995,7 +3005,7 @@ void Bot::AI_Process() {
 		if (m_PlayerState & static_cast<uint32>(PlayerState::Aggressive))
 			SendRemovePlayerState(PlayerState::Aggressive);
 
-		if(!IsMoving() && AIthink_timer->Check() && !spellend_timer.Enabled()) {
+		if(!IsMoving() && AI_think_timer->Check() && !spellend_timer.Enabled()) {
 			if(GetBotStance() != BotStancePassive) {
 				if(!AI_IdleCastCheck() && !IsCasting())
 					BotMeditate(true);
@@ -3004,7 +3014,7 @@ void Bot::AI_Process() {
 				BotMeditate(true);
 		}
 
-		if(AImovement_timer->Check()) {
+		if(AI_movement_timer->Check()) {
 			if(GetFollowID()) {
 				Mob* follow = entity_list.GetMob(GetFollowID());
 				if(follow) {
@@ -3737,9 +3747,9 @@ Bot* Bot::LoadBot(uint32 botID, std::string* errorMessage)
 		" `drakkin_tattoo`,"
 		" `drakkin_details`,"
 		" `ac`,"				/*not in-use[26]*/
-		" `atk`,"
+		" `atk`,"				/*not in-use[27]*/
 		" `hp`,"
-		" `mana`,"				/*not in-use[29]*/
+		" `mana`,"
 		" `str`,"				/*not in-use[30]*/
 		" `sta`,"				/*not in-use[31]*/
 		" `cha`,"				/*not in-use[32]*/
@@ -3753,8 +3763,8 @@ Bot* Bot::LoadBot(uint32 botID, std::string* errorMessage)
 		" `poison`,"			/*not in-use[40]*/
 		" `disease`,"			/*not in-use[41]*/
 		" `corruption`,"		/*not in-use[42]*/
-		" `show_helm`,"
-		" `follow_distance`"
+		" `show_helm`,"//43
+		" `follow_distance`"//44
 		" FROM `bot_data`"
 		" WHERE `bot_id` = '%u'",
 		botID
@@ -3791,8 +3801,8 @@ Bot* Bot::LoadBot(uint32 botID, std::string* errorMessage)
 		atoi(row[23]),
 		atoi(row[24]),
 		atoi(row[25]),
-		atoi(row[27]),
 		atoi(row[28]),
+		atoi(row[29]),
 		defaultNPCTypeStruct.MR,
 		defaultNPCTypeStruct.CR,
 		defaultNPCTypeStruct.DR,
@@ -5453,7 +5463,7 @@ int32 Bot::CalcBotAAFocus(BotfocusType type, uint32 aa_ID, uint32 points, uint16
 					LimitFound = true;
 				break;
 			case SE_LimitMaxLevel:
-				spell_level = spell.classes[(GetClass() % 16) - 1];
+				spell_level = spell.classes[(GetClass() % 17) - 1];
 				lvldiff = spell_level - base1;
 				//every level over cap reduces the effect by base2 percent unless from a clicky when ItemCastsUseFocus is true
 				if(lvldiff > 0 && (spell_level <= RuleI(Character, MaxLevel) || RuleB(Character, ItemCastsUseFocus) == false)) {
@@ -5467,7 +5477,7 @@ int32 Bot::CalcBotAAFocus(BotfocusType type, uint32 aa_ID, uint32 points, uint16
 				}
 				break;
 			case SE_LimitMinLevel:
-				if((spell.classes[(GetClass() % 16) - 1]) < base1)
+				if((spell.classes[(GetClass() % 17) - 1]) < base1)
 					LimitFound = true;
 				break;
 			case SE_LimitCastTimeMin:
@@ -5905,7 +5915,7 @@ int32 Bot::CalcBotFocusEffect(BotfocusType bottype, uint16 focus_id, uint16 spel
 			case SE_LimitMaxLevel:{
 				if (IsNPC())
 					break;
-				spell_level = spell.classes[(GetClass() % 16) - 1];
+				spell_level = spell.classes[(GetClass() % 17) - 1];
 				lvldiff = (spell_level - focus_spell.base[i]);
 				if(lvldiff > 0 && (spell_level <= RuleI(Character, MaxLevel) || RuleB(Character, ItemCastsUseFocus) == false)) {
 					if(focus_spell.base2[i] > 0) {
@@ -5921,7 +5931,7 @@ int32 Bot::CalcBotFocusEffect(BotfocusType bottype, uint16 focus_id, uint16 spel
 			case SE_LimitMinLevel:
 				if (IsNPC())
 					break;
-				if (spell.classes[(GetClass() % 16) - 1] < focus_spell.base[i])
+				if (spell.classes[(GetClass() % 17) - 1] < focus_spell.base[i])
 					return 0;
 				break;
 
@@ -6226,31 +6236,44 @@ float Bot::GetProcChances(float ProcBonus, uint16 hand) {
 	return ProcChance;
 }
 
-int Bot::GetMonkHandToHandDamage(void) {
-	static int damage[66] = {
-		// 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
-		99, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7,
-		8, 8, 8, 8, 8, 9, 9, 9, 9, 9,10,10,10,10,10,11,11,11,11,11,
-		12,12,12,12,12,13,13,13,13,13,14,14,14,14,14,14,14,14,14,14,
-		14,14,15,15,15,15 };
+int Bot::GetHandToHandDamage(void) {
+	if (RuleB(Combat, UseRevampHandToHand)) {
+		// everyone uses this in the revamp!
+		int skill = GetSkill(SkillHandtoHand);
+		int epic = 0;
+		if (CastToNPC()->GetEquipment(MaterialHands) == 10652 && GetLevel() > 46)
+			epic = 280;
+		if (epic > skill)
+			skill = epic;
+		return skill / 15 + 3;
+	}
 
-		uint32 botWeaponId = INVALID_ID;
-		botWeaponId = CastToNPC()->GetEquipment(MaterialHands);
-		if(botWeaponId == 10652)
+	static uint8 mnk_dmg[] = {99,
+				4, 4, 4, 4, 5, 5, 5, 5, 5, 6,           // 1-10
+				6, 6, 6, 6, 7, 7, 7, 7, 7, 8,           // 11-20
+				8, 8, 8, 8, 9, 9, 9, 9, 9, 10,          // 21-30
+				10, 10, 10, 10, 11, 11, 11, 11, 11, 12, // 31-40
+				12, 12, 12, 12, 13, 13, 13, 13, 13, 14, // 41-50
+				14, 14, 14, 14, 14, 14, 14, 14, 14, 14, // 51-60
+				14, 14};                                // 61-62
+	static uint8 bst_dmg[] = {99,
+				4, 4, 4, 4, 4, 5, 5, 5, 5, 5,        // 1-10
+				5, 6, 6, 6, 6, 6, 6, 7, 7, 7,        // 11-20
+				7, 7, 7, 8, 8, 8, 8, 8, 8, 9,        // 21-30
+				9, 9, 9, 9, 9, 10, 10, 10, 10, 10,   // 31-40
+				10, 11, 11, 11, 11, 11, 11, 12, 12}; // 41-49
+	if (GetClass() == MONK) {
+		if (CastToNPC()->GetEquipment(MaterialHands) == 10652 && GetLevel() > 50)
 			return 9;
-		else {
-			int Level = GetLevel();
-			if(Level > 65)
-				return 19;
-			else
-				return damage[Level];
-		}
-
-		int Level = GetLevel();
-		if (Level > 65)
-			return 19;
-		else
-			return damage[Level];
+		if (level > 62)
+			return 15;
+		return mnk_dmg[level];
+	} else if (GetClass() == BEASTLORD) {
+		if (level > 49)
+			return 13;
+		return bst_dmg[level];
+	}
+	return 2;
 }
 
 bool Bot::TryFinishingBlow(Mob *defender, SkillUseTypes skillinuse) {
@@ -6470,7 +6493,7 @@ void Bot::RogueBackstab(Mob* other, bool min_damage, int ReuseTime) {
 		ndamage = -5;
 
 	DoSpecialAttackDamage(other, SkillBackstab, ndamage, min_hit, hate, ReuseTime);
-	DoAnim(animPiercing);
+	DoAnim(anim1HPiercing);
 }
 
 void Bot::RogueAssassinate(Mob* other) {
@@ -6482,7 +6505,7 @@ void Bot::RogueAssassinate(Mob* other) {
 			other->Damage(this, -5, SPELL_UNKNOWN, SkillBackstab);
 	}
 
-	DoAnim(animPiercing);
+	DoAnim(anim1HPiercing);
 }
 
 void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
@@ -7002,8 +7025,7 @@ void Bot::SetAttackTimer() {
 		int speed = 0;
 		int delay = 36;
 		if (ItemToUse == nullptr) {
-			if ((GetClass() == MONK) || (GetClass() == BEASTLORD))
-				delay = GetMonkHandToHandDelay();
+			delay = GetHandToHandDelay();
 		} else {
 			delay = ItemToUse->Delay;
 		}
@@ -7061,7 +7083,7 @@ int32 Bot::GetActSpellDamage(uint16 spell_id, int32 value, Mob* target) {
 
 			value -= GetBotFocusEffect(BotfocusFcDamageAmt, spell_id);
 
-			if(itembonuses.SpellDmg && spells[spell_id].classes[(GetClass() % 16) - 1] >= GetLevel() - 5)
+			if(itembonuses.SpellDmg && spells[spell_id].classes[(GetClass() % 17) - 1] >= GetLevel() - 5)
 				value += (GetExtraSpellAmt(spell_id, itembonuses.SpellDmg, value) * ratio / 100);
 
 			entity_list.MessageClose(this, false, 100, MT_SpellCrits, "%s delivers a critical blast! (%d)", GetName(), -value);
@@ -7080,7 +7102,7 @@ int32 Bot::GetActSpellDamage(uint16 spell_id, int32 value, Mob* target) {
 
 	value -= GetBotFocusEffect(BotfocusFcDamageAmtCrit, spell_id);
 	value -= GetBotFocusEffect(BotfocusFcDamageAmt, spell_id);
-	if(itembonuses.SpellDmg && spells[spell_id].classes[(GetClass() % 16) - 1] >= GetLevel() - 5)
+	if(itembonuses.SpellDmg && spells[spell_id].classes[(GetClass() % 17) - 1] >= GetLevel() - 5)
 		value += GetExtraSpellAmt(spell_id, itembonuses.SpellDmg, value);
 
 	return value;
@@ -7113,7 +7135,7 @@ int32 Bot::GetActSpellHealing(uint16 spell_id, int32 value, Mob* target) {
 		value += GetBotFocusEffect(BotfocusFcHealAmt, spell_id);
 		value += target->GetFocusIncoming(focusFcHealAmtIncoming, SE_FcHealAmtIncoming, this, spell_id);
 
-		if(itembonuses.HealAmt && spells[spell_id].classes[(GetClass() % 16) - 1] >= GetLevel() - 5)
+		if(itembonuses.HealAmt && spells[spell_id].classes[(GetClass() % 17) - 1] >= GetLevel() - 5)
 			value += (GetExtraSpellAmt(spell_id, itembonuses.HealAmt, value) * modifier);
 
 		value += (value * target->GetHealRate(spell_id, this) / 100);
@@ -7217,7 +7239,7 @@ int32 Bot::GetActSpellCasttime(uint16 spell_id, int32 casttime) {
 }
 
 int32 Bot::GetActSpellCost(uint16 spell_id, int32 cost) {
-	if(this->itembonuses.Clairvoyance && spells[spell_id].classes[(GetClass()%16) - 1] >= GetLevel() - 5) {
+	if(this->itembonuses.Clairvoyance && spells[spell_id].classes[(GetClass()%17) - 1] >= GetLevel() - 5) {
 		int32 mana_back = (this->itembonuses.Clairvoyance * zone->random.Int(1, 100) / 100);
 		if(mana_back > cost)
 			mana_back = cost;
@@ -8807,7 +8829,7 @@ void Bot::CalcItemBonuses(StatBonuses* newbon)
 		newbon->EnduranceRegen = CalcEnduranceRegenCap();
 }
 
-void Bot::AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug, bool isTribute) {
+void Bot::AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug, bool isTribute, int rec_override) {
 	if(!inst || !inst->IsType(ItemClassCommon))
 	{
 		return;
@@ -8826,12 +8848,13 @@ void Bot::AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug, 
 			return;
 	}
 
-	if(GetLevel() < item->ReqLevel)
+	if(GetLevel() < inst->GetItemRequiredLevel(true))
 	{
 		return;
 	}
 
-	if(GetLevel() >= item->RecLevel)
+	auto rec_level = isAug ? rec_override : inst->GetItemRecommendedLevel(true);
+	if(GetLevel() >= rec_level)
 	{
 		newbon->AC += item->AC;
 		newbon->HP += item->HP;
@@ -8885,55 +8908,54 @@ void Bot::AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug, 
 	else
 	{
 		int lvl = GetLevel();
-		int reclvl = item->RecLevel;
 
-		newbon->AC += CalcRecommendedLevelBonus( lvl, reclvl, item->AC );
-		newbon->HP += CalcRecommendedLevelBonus( lvl, reclvl, item->HP );
-		newbon->Mana += CalcRecommendedLevelBonus( lvl, reclvl, item->Mana );
-		newbon->Endurance += CalcRecommendedLevelBonus( lvl, reclvl, item->Endur );
-		newbon->ATK += CalcRecommendedLevelBonus( lvl, reclvl, item->Attack );
-		newbon->STR += CalcRecommendedLevelBonus( lvl, reclvl, (item->AStr + item->HeroicStr) );
-		newbon->STA += CalcRecommendedLevelBonus( lvl, reclvl, (item->ASta + item->HeroicSta) );
-		newbon->DEX += CalcRecommendedLevelBonus( lvl, reclvl, (item->ADex + item->HeroicDex) );
-		newbon->AGI += CalcRecommendedLevelBonus( lvl, reclvl, (item->AAgi + item->HeroicAgi) );
-		newbon->INT += CalcRecommendedLevelBonus( lvl, reclvl, (item->AInt + item->HeroicInt) );
-		newbon->WIS += CalcRecommendedLevelBonus( lvl, reclvl, (item->AWis + item->HeroicWis) );
-		newbon->CHA += CalcRecommendedLevelBonus( lvl, reclvl, (item->ACha + item->HeroicCha) );
+		newbon->AC += CalcRecommendedLevelBonus( lvl, rec_level, item->AC );
+		newbon->HP += CalcRecommendedLevelBonus( lvl, rec_level, item->HP );
+		newbon->Mana += CalcRecommendedLevelBonus( lvl, rec_level, item->Mana );
+		newbon->Endurance += CalcRecommendedLevelBonus( lvl, rec_level, item->Endur );
+		newbon->ATK += CalcRecommendedLevelBonus( lvl, rec_level, item->Attack );
+		newbon->STR += CalcRecommendedLevelBonus( lvl, rec_level, (item->AStr + item->HeroicStr) );
+		newbon->STA += CalcRecommendedLevelBonus( lvl, rec_level, (item->ASta + item->HeroicSta) );
+		newbon->DEX += CalcRecommendedLevelBonus( lvl, rec_level, (item->ADex + item->HeroicDex) );
+		newbon->AGI += CalcRecommendedLevelBonus( lvl, rec_level, (item->AAgi + item->HeroicAgi) );
+		newbon->INT += CalcRecommendedLevelBonus( lvl, rec_level, (item->AInt + item->HeroicInt) );
+		newbon->WIS += CalcRecommendedLevelBonus( lvl, rec_level, (item->AWis + item->HeroicWis) );
+		newbon->CHA += CalcRecommendedLevelBonus( lvl, rec_level, (item->ACha + item->HeroicCha) );
 
-		newbon->MR += CalcRecommendedLevelBonus( lvl, reclvl, (item->MR + item->HeroicMR) );
-		newbon->FR += CalcRecommendedLevelBonus( lvl, reclvl, (item->FR + item->HeroicFR) );
-		newbon->CR += CalcRecommendedLevelBonus( lvl, reclvl, (item->CR + item->HeroicCR) );
-		newbon->PR += CalcRecommendedLevelBonus( lvl, reclvl, (item->PR + item->HeroicPR) );
-		newbon->DR += CalcRecommendedLevelBonus( lvl, reclvl, (item->DR + item->HeroicDR) );
-		newbon->Corrup += CalcRecommendedLevelBonus( lvl, reclvl, (item->SVCorruption + item->HeroicSVCorrup) );
+		newbon->MR += CalcRecommendedLevelBonus( lvl, rec_level, (item->MR + item->HeroicMR) );
+		newbon->FR += CalcRecommendedLevelBonus( lvl, rec_level, (item->FR + item->HeroicFR) );
+		newbon->CR += CalcRecommendedLevelBonus( lvl, rec_level, (item->CR + item->HeroicCR) );
+		newbon->PR += CalcRecommendedLevelBonus( lvl, rec_level, (item->PR + item->HeroicPR) );
+		newbon->DR += CalcRecommendedLevelBonus( lvl, rec_level, (item->DR + item->HeroicDR) );
+		newbon->Corrup += CalcRecommendedLevelBonus( lvl, rec_level, (item->SVCorruption + item->HeroicSVCorrup) );
 
-		newbon->STRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicStr );
-		newbon->STACapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicSta );
-		newbon->DEXCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicDex );
-		newbon->AGICapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicAgi );
-		newbon->INTCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicInt );
-		newbon->WISCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicWis );
-		newbon->CHACapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicCha );
-		newbon->MRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicMR );
-		newbon->CRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicFR );
-		newbon->FRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicCR );
-		newbon->PRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicPR );
-		newbon->DRCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicDR );
-		newbon->CorrupCapMod += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicSVCorrup );
+		newbon->STRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicStr );
+		newbon->STACapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicSta );
+		newbon->DEXCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicDex );
+		newbon->AGICapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicAgi );
+		newbon->INTCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicInt );
+		newbon->WISCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicWis );
+		newbon->CHACapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicCha );
+		newbon->MRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicMR );
+		newbon->CRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicFR );
+		newbon->FRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicCR );
+		newbon->PRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicPR );
+		newbon->DRCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicDR );
+		newbon->CorrupCapMod += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicSVCorrup );
 
-		newbon->HeroicSTR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicStr );
-		newbon->HeroicSTA += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicSta );
-		newbon->HeroicDEX += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicDex );
-		newbon->HeroicAGI += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicAgi );
-		newbon->HeroicINT += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicInt );
-		newbon->HeroicWIS += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicWis );
-		newbon->HeroicCHA += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicCha );
-		newbon->HeroicMR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicMR );
-		newbon->HeroicFR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicFR );
-		newbon->HeroicCR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicCR );
-		newbon->HeroicPR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicPR );
-		newbon->HeroicDR += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicDR );
-		newbon->HeroicCorrup += CalcRecommendedLevelBonus( lvl, reclvl, item->HeroicSVCorrup );
+		newbon->HeroicSTR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicStr );
+		newbon->HeroicSTA += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicSta );
+		newbon->HeroicDEX += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicDex );
+		newbon->HeroicAGI += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicAgi );
+		newbon->HeroicINT += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicInt );
+		newbon->HeroicWIS += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicWis );
+		newbon->HeroicCHA += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicCha );
+		newbon->HeroicMR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicMR );
+		newbon->HeroicFR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicFR );
+		newbon->HeroicCR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicCR );
+		newbon->HeroicPR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicPR );
+		newbon->HeroicDR += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicDR );
+		newbon->HeroicCorrup += CalcRecommendedLevelBonus( lvl, rec_level, item->HeroicSVCorrup );
 	}
 
 	//FatherNitwit: New style haste, shields, and regens
@@ -9102,10 +9124,8 @@ void Bot::AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug, 
 
 	if (!isAug)
 	{
-		int i;
-		for (i = 0; i < EmuConstants::ITEM_COMMON_SIZE; i++) {
-			AddItemBonuses(inst->GetAugment(i),newbon,true);
-		}
+		for (int i = 0; i < EmuConstants::ITEM_COMMON_SIZE; i++)
+			AddItemBonuses(inst->GetAugment(i),newbon,true, false, rec_level);
 	}
 
 }
@@ -13754,11 +13774,10 @@ std::string Bot::CreateSayLink(Client* c, const char* message, const char* name)
 	}
 	safe_delete_array(escaped_string);
 
-	sayid += 500000;
-
 	Client::TextLink linker;
 	linker.SetLinkType(linker.linkItemData);
-	linker.SetProxyItemID(sayid);
+	linker.SetProxyItemID(SAYLINK_ITEM_ID);
+	linker.SetProxyAugment1ID(sayid);
 	linker.SetProxyText(name);
 
 	auto say_link = linker.GenerateLink();

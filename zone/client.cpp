@@ -53,7 +53,7 @@ extern volatile bool RunLoops;
 extern QueryServ* QServ;
 extern EntityList entity_list;
 extern Zone* zone;
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 extern WorldServer worldserver;
 extern uint32 numclients;
 extern PetitionList petition_list;
@@ -371,7 +371,7 @@ Client::~Client() {
 		GetTarget()->IsTargeted(-1);
 
 	//if we are in a group and we are not zoning, force leave the group
-	if(isgrouped && !zoning && ZoneLoaded)
+	if(isgrouped && !zoning && is_zone_loaded)
 		LeaveGroup();
 
 	UpdateWho(2);
@@ -2343,11 +2343,17 @@ bool Client::HasSkill(SkillUseTypes skill_id) const {
 }
 
 bool Client::CanHaveSkill(SkillUseTypes skill_id) const {
+	if (GetClientVersion() < ClientVersion::RoF2 && class_ == BERSERKER && skill_id == Skill1HPiercing)
+		skill_id = Skill2HPiercing;
+
 	return(database.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)) > 0);
 	//if you don't have it by max level, then odds are you never will?
 }
 
 uint16 Client::MaxSkill(SkillUseTypes skillid, uint16 class_, uint16 level) const {
+	if (GetClientVersion() < ClientVersion::RoF2 && class_ == BERSERKER && skillid == Skill1HPiercing)
+		skillid = Skill2HPiercing;
+
 	return(database.GetSkillCap(class_, skillid, level));
 }
 
@@ -2577,12 +2583,7 @@ bool Client::BindWound(Mob* bindmob, bool start, bool fail){
 			else {
 				// send bindmob "stand still"
 				if(!bindmob->IsAIControlled() && bindmob != this ) {
-					bind_out->type = 2; // ?
-					//bind_out->type = 3; // ?
-					bind_out->to = GetID(); // ?
-					bindmob->CastToClient()->QueuePacket(outapp);
-					bind_out->type = 0;
-					bind_out->to = 0;
+					bindmob->CastToClient()->Message_StringID(clientMessageYellow, YOU_ARE_BEING_BANDAGED);
 				}
 				else if (bindmob->IsAIControlled() && bindmob != this ){
 					; // Tell IPC to stand still?
@@ -2668,7 +2669,7 @@ bool Client::BindWound(Mob* bindmob, bool start, bool fail){
 					else {
 						//I dont have the real, live
 						Message(15, "You cannot bind wounds above %d%% hitpoints.", max_percent);
-						if(bindmob->IsClient())
+						if(bindmob != this && bindmob->IsClient())
 							bindmob->CastToClient()->Message(15, "You cannot have your wounds bound above %d%% hitpoints.", max_percent);
 						// Too many hp message goes here.
 					}
@@ -4216,7 +4217,10 @@ uint16 Client::GetPrimarySkillValue()
 			}
 			case ItemType2HPiercing: // 2H Piercing
 			{
-				skill = Skill1HPiercing; // change to Skill2HPiercing once activated
+				if (IsClient() && CastToClient()->GetClientVersion() < ClientVersion::RoF2)
+					skill = Skill1HPiercing;
+				else
+					skill = Skill2HPiercing;
 				break;
 			}
 			case ItemTypeMartial: // Hand to Hand
@@ -4634,7 +4638,7 @@ void Client::HandleLDoNOpen(NPC *target)
 					AddEXP(target->GetLevel()*target->GetLevel()*2625/10, GetLevelCon(target->GetLevel()));
 				}
 			}
-			target->Death(this, 1, SPELL_UNKNOWN, SkillHandtoHand);
+			target->Death(this, 0, SPELL_UNKNOWN, SkillHandtoHand);
 		}
 	}
 }
@@ -4955,11 +4959,11 @@ void Client::ShowSkillsWindow()
 	const char* SkillName[] = {"1H Blunt","1H Slashing","2H Blunt","2H Slashing","Abjuration","Alteration","Apply Poison","Archery",
 		"Backstab","Bind Wound","Bash","Block","Brass Instruments","Channeling","Conjuration","Defense","Disarm","Disarm Traps","Divination",
 		"Dodge","Double Attack","Dragon Punch","Dual Wield","Eagle Strike","Evocation","Feign Death","Flying Kick","Forage","Hand to Hand",
-		"Hide","Kick","Meditate","Mend","Offense","Parry","Pick Lock","Piercing","Ripost","Round Kick","Safe Fall","Sense Heading",
+		"Hide","Kick","Meditate","Mend","Offense","Parry","Pick Lock","1H Piercing","Ripost","Round Kick","Safe Fall","Sense Heading",
 		"Singing","Sneak","Specialize Abjuration","Specialize Alteration","Specialize Conjuration","Specialize Divination","Specialize Evocation","Pick Pockets",
 		"Stringed Instruments","Swimming","Throwing","Tiger Claw","Tracking","Wind Instruments","Fishing","Make Poison","Tinkering","Research",
 		"Alchemy","Baking","Tailoring","Sense Traps","Blacksmithing","Fletching","Brewing","Alcohol Tolerance","Begging","Jewelry Making",
-		"Pottery","Percussion Instruments","Intimidation","Berserking","Taunt","Frenzy","Remove Traps","Triple Attack"};
+		"Pottery","Percussion Instruments","Intimidation","Berserking","Taunt","Frenzy","Remove Traps","Triple Attack","2H Piercing"};
 	for(int i = 0; i <= (int)HIGHEST_SKILL; i++)
 		Skills[SkillName[i]] = (SkillUseTypes)i;
 
@@ -6808,7 +6812,8 @@ void Client::SendStatsWindow(Client* client, bool use_window)
 	/*	AC		*/	indP << "<c \"#CCFF00\">AC: " << CalcAC() << "</c><br>" <<
 	/*	AC2		*/	indP << "- Mit: " << GetACMit() << " | Avoid: " << GetACAvoid() << " | Spell: " << spellbonuses.AC << " | Shield: " << shield_ac << "<br>" <<
 	/*	Haste	*/	indP << "<c \"#CCFF00\">Haste: " << GetHaste() << "</c><br>" <<
-	/*	Haste2	*/	indP << " - Item: " << itembonuses.haste << " + Spell: " << (spellbonuses.haste + spellbonuses.hastetype2) << " (Cap: " << RuleI(Character, HasteCap) << ") | Over: " << (spellbonuses.hastetype3 + ExtraHaste) << "<br><br>" <<
+	/*	Haste2	*/	indP << " - Item: " << itembonuses.haste << " + Spell: " << (spellbonuses.haste + spellbonuses.hastetype2) << " (Cap: " << RuleI(Character, HasteCap) << ") | Over: " << (spellbonuses.hastetype3 + ExtraHaste) << "<br>" <<
+	/*	RunSpeed*/	indP << "<c \"#CCFF00\">Runspeed: " << GetRunspeed() << "</c><br>" <<
 	/* RegenLbl	*/	indL << indS << "Regen<br>" << indS << indP << indP << " Base | Items (Cap) " << indP << " | Spell | A.A.s | Total<br>" <<
 	/*	Regen	*/	regen_string << "<br>" <<
 	/*	Stats	*/	stat_field << "<br><br>" <<
@@ -8360,21 +8365,19 @@ void Client::ShowNumHits()
 	return;
 }
 
-float Client::GetQuiverHaste()
+int Client::GetQuiverHaste(int delay)
 {
-	float quiver_haste = 0;
+	const ItemInst *pi = nullptr;
 	for (int r = EmuConstants::GENERAL_BEGIN; r <= EmuConstants::GENERAL_END; r++) {
-		const ItemInst *pi = GetInv().GetItem(r);
-		if (!pi)
-			continue;
-		if (pi->IsType(ItemClassContainer) && pi->GetItem()->BagType == BagTypeQuiver) {
-			float temp_wr = (pi->GetItem()->BagWR / RuleI(Combat, QuiverWRHasteDiv));
-			quiver_haste = std::max(temp_wr, quiver_haste);
-		}
+		pi = GetInv().GetItem(r);
+		if (pi && pi->IsType(ItemClassContainer) && pi->GetItem()->BagType == BagTypeQuiver &&
+		    pi->GetItem()->BagWR > 0)
+			break;
+		if (r == EmuConstants::GENERAL_END)
+			// we will get here if we don't find a valid quiver
+			return 0;
 	}
-	if (quiver_haste > 0)
-		quiver_haste = 1.0f / (1.0f + static_cast<float>(quiver_haste) / 100.0f);
-	return quiver_haste;
+	return (pi->GetItem()->BagWR * 0.0025f * delay) + 1;
 }
 
 void Client::SendColoredText(uint32 color, std::string message)
@@ -8429,7 +8432,19 @@ void Client::TextLink::Reset()
 	m_ItemData = nullptr;
 	m_LootData = nullptr;
 	m_ItemInst = nullptr;
+	m_Proxy_unknown_1 = NOT_USED;
 	m_ProxyItemID = NOT_USED;
+	m_ProxyAugment1ID = NOT_USED;
+	m_ProxyAugment2ID = NOT_USED;
+	m_ProxyAugment3ID = NOT_USED;
+	m_ProxyAugment4ID = NOT_USED;
+	m_ProxyAugment5ID = NOT_USED;
+	m_ProxyAugment6ID = NOT_USED;
+	m_ProxyIsEvolving = NOT_USED;
+	m_ProxyEvolveGroup = NOT_USED;
+	m_ProxyEvolveLevel = NOT_USED;
+	m_ProxyOrnamentIcon = NOT_USED;
+	m_ProxyHash = NOT_USED;
 	m_ProxyText = nullptr;
 	m_TaskUse = false;
 	m_Link.clear();
@@ -8445,8 +8460,8 @@ void Client::TextLink::generate_body()
 
 	RoF2: "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X" (56)
 	RoF:  "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%1X"  "%05X" "%08X" (55)
-	SoF:  "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X"		"%1X" "%04X" "%1X"  "%05X" "%08X" (50)
-	6.2:  "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X"		"%1X" "%04X" "%1X"		 "%08X" (45)
+	SoF:  "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X"        "%1X" "%04X" "%1X"  "%05X" "%08X" (50)
+	6.2:  "%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X"        "%1X" "%04X" "%1X"         "%08X" (45)
 	*/
 
 	memset(&m_LinkBodyStruct, 0, sizeof(TextLinkBody_Struct));
@@ -8498,13 +8513,36 @@ void Client::TextLink::generate_body()
 		break;
 	}
 
-	if (m_ProxyItemID != NOT_USED) {
+	if (m_Proxy_unknown_1)
+		m_LinkBodyStruct.unknown_1 = m_Proxy_unknown_1;
+	if (m_ProxyItemID)
 		m_LinkBodyStruct.item_id = m_ProxyItemID;
-	}
+	if (m_ProxyAugment1ID)
+		m_LinkBodyStruct.augment_1 = m_ProxyAugment1ID;
+	if (m_ProxyAugment2ID)
+		m_LinkBodyStruct.augment_2 = m_ProxyAugment2ID;
+	if (m_ProxyAugment3ID)
+		m_LinkBodyStruct.augment_3 = m_ProxyAugment3ID;
+	if (m_ProxyAugment4ID)
+		m_LinkBodyStruct.augment_4 = m_ProxyAugment4ID;
+	if (m_ProxyAugment5ID)
+		m_LinkBodyStruct.augment_5 = m_ProxyAugment5ID;
+	if (m_ProxyAugment6ID)
+		m_LinkBodyStruct.augment_6 = m_ProxyAugment6ID;
+	if (m_ProxyIsEvolving)
+		m_LinkBodyStruct.is_evolving = m_ProxyIsEvolving;
+	if (m_ProxyEvolveGroup)
+		m_LinkBodyStruct.evolve_group = m_ProxyEvolveGroup;
+	if (m_ProxyEvolveLevel)
+		m_LinkBodyStruct.evolve_level = m_ProxyEvolveLevel;
+	if (m_ProxyOrnamentIcon)
+		m_LinkBodyStruct.ornament_icon = m_ProxyOrnamentIcon;
+	if (m_ProxyHash)
+		m_LinkBodyStruct.hash = m_ProxyHash;
 
-	if (m_TaskUse) {
+
+	if (m_TaskUse)
 		m_LinkBodyStruct.hash = 0x14505DC2;
-	}
 
 	m_LinkBody = StringFormat(
 		"%1X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%05X" "%1X" "%04X" "%02X" "%05X" "%08X",
@@ -8521,7 +8559,7 @@ void Client::TextLink::generate_body()
 		(0xFF & m_LinkBodyStruct.evolve_level),
 		(0x000FFFFF & m_LinkBodyStruct.ornament_icon),
 		(0xFFFFFFFF & m_LinkBodyStruct.hash)
-		);
+	);
 }
 
 void Client::TextLink::generate_text()

@@ -530,6 +530,11 @@ void Lua_Client::UnmemSpell(int slot, bool update_client) {
 	self->UnmemSpell(slot, update_client);
 }
 
+void Lua_Client::UnmemSpellBySpellID(int32 spell_id) {
+	Lua_Safe_Call_Void();
+	self->UnmemSpellBySpellID(spell_id);
+}
+
 void Lua_Client::UnmemSpellAll() {
 	Lua_Safe_Call_Void();
 	self->UnmemSpellAll();
@@ -573,6 +578,16 @@ void Lua_Client::UnscribeSpellAll(bool update_client) {
 void Lua_Client::TrainDisc(int itemid) {
 	Lua_Safe_Call_Void();
 	self->TrainDiscipline(itemid);
+}
+
+void Lua_Client::TrainDiscBySpellID(int32 spell_id) {
+	Lua_Safe_Call_Void();
+	self->TrainDiscBySpellID(spell_id);
+}
+
+int Lua_Client::GetDiscSlotBySpellID(int32 spell_id) {
+	Lua_Safe_Call_Int();
+	return self->GetDiscSlotBySpellID(spell_id);
 }
 
 void Lua_Client::UntrainDisc(int slot) {
@@ -1052,6 +1067,11 @@ void Lua_Client::MarkSingleCompassLoc(float in_x, float in_y, float in_z, int co
 	self->MarkSingleCompassLoc(in_x, in_y, in_z, count);
 }
 
+void Lua_Client::ClearCompassMark() {
+	Lua_Safe_Call_Void();
+	self->MarkSingleCompassLoc(0,0,0,0);
+}
+
 int Lua_Client::GetNextAvailableSpellBookSlot() {
 	Lua_Safe_Call_Int();
 	return self->GetNextAvailableSpellBookSlot();
@@ -1426,6 +1446,7 @@ luabind::scope lua_register_client() {
 		.def("MemSpell", (void(Lua_Client::*)(int,int,bool))&Lua_Client::MemSpell)
 		.def("UnmemSpell", (void(Lua_Client::*)(int))&Lua_Client::UnmemSpell)
 		.def("UnmemSpell", (void(Lua_Client::*)(int,bool))&Lua_Client::UnmemSpell)
+		.def("UnmemSpellBySpellID", (void(Lua_Client::*)(int32))&Lua_Client::UnmemSpellBySpellID)
 		.def("UnmemSpellAll", (void(Lua_Client::*)(void))&Lua_Client::UnmemSpellAll)
 		.def("UnmemSpellAll", (void(Lua_Client::*)(bool))&Lua_Client::UnmemSpellAll)
 		.def("ScribeSpell", (void(Lua_Client::*)(int,int))&Lua_Client::ScribeSpell)
@@ -1435,6 +1456,8 @@ luabind::scope lua_register_client() {
 		.def("UnscribeSpellAll", (void(Lua_Client::*)(void))&Lua_Client::UnscribeSpellAll)
 		.def("UnscribeSpellAll", (void(Lua_Client::*)(bool))&Lua_Client::UnscribeSpellAll)
 		.def("TrainDisc", (void(Lua_Client::*)(int))&Lua_Client::TrainDisc)
+		.def("TrainDiscBySpellID", (void(Lua_Client::*)(int32))&Lua_Client::TrainDiscBySpellID)
+		.def("GetDiscSlotBySpellID", (int(Lua_Client::*)(int32))&Lua_Client::GetDiscSlotBySpellID)
 		.def("UntrainDisc", (void(Lua_Client::*)(int))&Lua_Client::UntrainDisc)
 		.def("UntrainDisc", (void(Lua_Client::*)(int,bool))&Lua_Client::UntrainDisc)
 		.def("UntrainDiscAll", (void(Lua_Client::*)(void))&Lua_Client::UntrainDiscAll)
@@ -1530,6 +1553,7 @@ luabind::scope lua_register_client() {
 		.def("GrantAlternateAdvancementAbility", (bool(Lua_Client::*)(int, int, bool))&Lua_Client::GrantAlternateAdvancementAbility)
 		.def("MarkSingleCompassLoc", (void(Lua_Client::*)(float,float,float))&Lua_Client::MarkSingleCompassLoc)
 		.def("MarkSingleCompassLoc", (void(Lua_Client::*)(float,float,float,int))&Lua_Client::MarkSingleCompassLoc)
+		.def("ClearCompassMark",(void(Lua_Client::*)(void))&Lua_Client::ClearCompassMark)
 		.def("GetNextAvailableSpellBookSlot", (int(Lua_Client::*)(void))&Lua_Client::GetNextAvailableSpellBookSlot)
 		.def("GetNextAvailableSpellBookSlot", (int(Lua_Client::*)(int))&Lua_Client::GetNextAvailableSpellBookSlot)
 		.def("FindSpellBookSlotBySpellID", (int(Lua_Client::*)(int))&Lua_Client::FindSpellBookSlotBySpellID)

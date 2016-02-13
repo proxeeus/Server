@@ -51,7 +51,7 @@
 #endif
 
 extern Zone *zone;
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 extern WorldServer worldserver;
 extern NetConnection net;
 extern uint32 numclients;
@@ -468,17 +468,27 @@ void EntityList::CorpseProcess()
 
 void EntityList::MobProcess()
 {
-#ifdef IDLE_WHEN_EMPTY
-	if (numclients < 1)
-		return;
-#endif
+	bool mob_dead;
+
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
 		uint16 id = it->first;
 		Mob *mob = it->second;
 
 		size_t sz = mob_list.size();
-		bool p_val = mob->Process();
+
+#ifdef IDLE_WHEN_EMPTY
+		// spawn_events can cause spawns and deaths while zone empty.
+		// At the very least, process that.
+		if (numclients < 1) {
+			mob_dead = mob->CastToNPC()->GetDepop();
+		}	
+		else {
+			mob_dead = !mob->Process();
+		}
+#else
+		mob_dead = !mob->Process();
+#endif
 		size_t a_sz = mob_list.size();
 
 		if(a_sz > sz) {
@@ -491,7 +501,7 @@ void EntityList::MobProcess()
 			++it;
 		}
 
-		if(!p_val) {
+		if(mob_dead) {
 			if(mob->IsNPC()) {
 				entity_list.RemoveNPC(id);
 			}
@@ -631,6 +641,7 @@ void EntityList::AddNPC(NPC *npc, bool SendSpawnPacket, bool dontqueue)
 {
 	npc->SetID(GetFreeID());
 	npc->SetMerchantProbability((uint8) zone->random.Int(0, 99));
+
 	parse->EventNPC(EVENT_SPAWN, npc, nullptr, "", 0);
 
 	uint16 emoteid = npc->GetEmoteID();
@@ -658,6 +669,16 @@ void EntityList::AddNPC(NPC *npc, bool SendSpawnPacket, bool dontqueue)
 
 	npc_list.insert(std::pair<uint16, NPC *>(npc->GetID(), npc));
 	mob_list.insert(std::pair<uint16, Mob *>(npc->GetID(), npc));
+
+	/* Zone controller process EVENT_SPAWN_ZONE */
+	if (RuleB(Zone, UseZoneController)) {
+		if (entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID) && npc->GetNPCTypeID() != ZONE_CONTROLLER_NPC_ID){
+			char data_pass[100] = { 0 };
+			snprintf(data_pass, 99, "%d %d", npc->GetID(), npc->GetNPCTypeID());
+			parse->EventNPC(EVENT_SPAWN_ZONE, entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID)->CastToNPC(), nullptr, data_pass, 0);
+		}
+	}
+
 }
 
 void EntityList::AddMerc(Merc *merc, bool SendSpawnPacket, bool dontqueue)
@@ -2340,7 +2361,7 @@ void EntityList::Clear()
 
 void EntityList::UpdateWho(bool iSendFullUpdate)
 {
-	if ((!worldserver.Connected()) || !ZoneLoaded)
+	if ((!worldserver.Connected()) || !is_zone_loaded)
 		return;
 	uint32 tmpNumUpdates = numclients + 5;
 	ServerPacket* pack = 0;
@@ -2437,6 +2458,8 @@ void EntityList::Depop(bool StartSpawnTimer)
 
 			if (pnpc->IsFindable())
 				UpdateFindableNPCState(pnpc, true);
+
+			pnpc->WipeHateList();
 
 			pnpc->Depop(StartSpawnTimer);
 		}

@@ -1250,6 +1250,54 @@ namespace RoF2
 		dest->FastQueuePacket(&outapp);
 	}
 
+	ENCODE(OP_GuildBank)
+	{
+		auto in = *p;
+		*p = nullptr;
+		auto outapp = new EQApplicationPacket(OP_GuildBank, in->size + 4); // all of them are 4 bytes bigger
+
+		// The first action in the enum was removed, everything 1 less
+		// Normally we cast them to their structs, but there are so many here! will only do when it's easier
+		switch (in->ReadUInt32()) {
+		case 10: // GuildBankAcknowledge
+			outapp->WriteUInt32(9);
+			outapp->WriteUInt32(in->ReadUInt32());
+			outapp->WriteUInt32(0);
+			break;
+		case 5: // GuildBankDeposit (ack)
+			outapp->WriteUInt32(4);
+			outapp->WriteUInt32(in->ReadUInt32());
+			outapp->WriteUInt32(0);
+			outapp->WriteUInt32(in->ReadUInt32());
+			break;
+		case 1: { // GuildBankItemUpdate
+			auto emu = (GuildBankItemUpdate_Struct *)in->pBuffer;
+			auto eq = (structs::GuildBankItemUpdate_Struct *)outapp->pBuffer;
+			eq->Action = 0;
+			OUT(Unknown004);
+			eq->Unknown08 = 0;
+			OUT(SlotID);
+			OUT(Area);
+			OUT(Unknown012);
+			OUT(ItemID);
+			OUT(Icon);
+			OUT(Quantity);
+			OUT(Permissions);
+			OUT(AllowMerge);
+			OUT(Useable);
+			OUT_str(ItemName);
+			OUT_str(Donator);
+			OUT_str(WhoFor);
+			OUT(Unknown226);
+			break;
+		}
+		default:
+			break;
+		}
+		delete in;
+		dest->FastQueuePacket(&outapp);
+	}
+
 	ENCODE(OP_GuildMemberList)
 	{
 		//consume the packet
@@ -2423,13 +2471,14 @@ namespace RoF2
 		outapp->WriteSInt32(234);	// Endurance Total ?
 		outapp->WriteSInt32(345);	// Mana Total ?
 
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
-		outapp->WriteUInt32(0);		// Unknown
+		// these are needed to fix display bugs
+		outapp->WriteUInt32(0x19);		// base CR
+		outapp->WriteUInt32(0x19);		// base FR
+		outapp->WriteUInt32(0x19);		// base MR
+		outapp->WriteUInt32(0xf);		// base DR
+		outapp->WriteUInt32(0xf);		// base PR
+		outapp->WriteUInt32(0xf);		// base PhR?
+		outapp->WriteUInt32(0xf);		// base Corrup
 		outapp->WriteUInt32(0);		// Unknown
 		outapp->WriteUInt32(0);		// Unknown
 		outapp->WriteUInt32(0);		// Unknown
@@ -4027,6 +4076,17 @@ namespace RoF2
 			if (strlen(emu->suffix))
 				PacketSize += strlen(emu->suffix) + 1;
 
+			if (emu->DestructibleObject || emu->class_ == 62)
+			{
+				if (emu->DestructibleObject)
+					PacketSize = PacketSize - 4;	// No bodytype
+
+				PacketSize += 53;	// Fixed portion
+				PacketSize += strlen(emu->DestructibleModel) + 1;
+				PacketSize += strlen(emu->DestructibleName2) + 1;
+				PacketSize += strlen(emu->DestructibleString) + 1;
+			}
+
 			bool ShowName = 1;
 			if (emu->bodytype >= 66)
 			{
@@ -4061,7 +4121,14 @@ namespace RoF2
 			VARSTRUCT_ENCODE_STRING(Buffer, emu->name);
 			VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->spawnId);
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->level);
-			VARSTRUCT_ENCODE_TYPE(float, Buffer, SpawnSize - 0.7);	// Eye Height?
+			if (emu->DestructibleObject)
+			{
+				VARSTRUCT_ENCODE_TYPE(float, Buffer, 10);	// was int and 0x41200000
+			}
+			else
+			{
+				VARSTRUCT_ENCODE_TYPE(float, Buffer, SpawnSize - 0.7);	// Eye Height?
+			}
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->NPC);
 
 			structs::Spawn_Struct_Bitfields *Bitfields = (structs::Spawn_Struct_Bitfields*)Buffer;
@@ -4081,6 +4148,12 @@ namespace RoF2
 			Bitfields->targetable_with_hotkey = emu->targetable_with_hotkey ? 1 : 0;
 			Bitfields->showname = ShowName;
 
+			if (emu->DestructibleObject)
+			{
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0x1d600000);
+				Buffer = Buffer - 4;
+			}
+
 			// Not currently found
 			// Bitfields->statue = 0;
 			// Bitfields->buyer = 0;
@@ -4089,21 +4162,66 @@ namespace RoF2
 
 			uint8 OtherData = 0;
 
+			if (emu->class_ == 62) //LDoN Chest
+				OtherData = OtherData | 0x04;
+
 			if (strlen(emu->title))
 				OtherData = OtherData | 16;
 
 			if (strlen(emu->suffix))
 				OtherData = OtherData | 32;
 
+			if (emu->DestructibleObject)
+				OtherData = OtherData | 0xe1;	// Live has 0xe1 for OtherData
+
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, OtherData);
 
-			VARSTRUCT_ENCODE_TYPE(float, Buffer, -1);	// unknown3
+			if (emu->DestructibleObject)
+			{
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0x00000000);
+			}
+			else
+			{
+				VARSTRUCT_ENCODE_TYPE(float, Buffer, -1);	// unknown3
+			}
 			VARSTRUCT_ENCODE_TYPE(float, Buffer, 0);	// unknown4
 
-			// Setting this next field to zero will cause a crash. Looking at ShowEQ, if it is zero, the bodytype field is not
-			// present. Will sort that out later.
-			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 1);	// This is a properties count field
-			VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->bodytype);
+			if (emu->DestructibleObject || emu->class_ == 62)
+			{
+				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleModel);
+				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleName2);
+				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleString);
+
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleAppearance);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk1);
+
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleID1);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleID2);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleID3);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleID4);
+
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk2);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk3);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk4);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk5);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk6);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk7);
+				VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->DestructibleUnk8);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->DestructibleUnk9);
+			}
+
+
+			if (!emu->DestructibleObject)
+			{
+				// Setting this next field to zero will cause a crash. Looking at ShowEQ, if it is zero, the bodytype field is not
+				// present. Will sort that out later.
+				VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 1);	// This is a properties count field
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->bodytype);
+			}
+			else
+			{
+				VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0);
+			}
 
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->curHp);
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->haircolor);
@@ -4739,6 +4857,92 @@ namespace RoF2
 		DECODE_FORWARD(OP_GroupInvite);
 	}
 
+	DECODE(OP_GuildBank)
+	{
+		// all actions are 1 off due to the removal of one of enums
+		switch (__packet->ReadUInt32()) {
+		case 2: {// GuildBankPromote
+			DECODE_LENGTH_EXACT(structs::GuildBankPromote_Struct);
+			SETUP_DIRECT_DECODE(GuildBankPromote_Struct, structs::GuildBankPromote_Struct);
+			emu->Action = 3;
+			IN(Unknown04);
+			IN(Slot);
+			IN(Slot2);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		case 3: { // GuildBankViewItem
+			DECODE_LENGTH_EXACT(structs::GuildBankViewItem_Struct);
+			SETUP_DIRECT_DECODE(GuildBankViewItem_Struct, structs::GuildBankViewItem_Struct);
+			emu->Action = 4;
+			IN(Unknown04);
+			IN(SlotID);
+			IN(Area);
+			IN(Unknown12);
+			IN(Unknown16);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		case 4: { // GuildBankDeposit
+			__packet->WriteUInt32(5);
+			return;
+		}
+		case 5: { // GuildBankPermissions
+			DECODE_LENGTH_EXACT(structs::GuildBankPermissions_Struct);
+			SETUP_DIRECT_DECODE(GuildBankPermissions_Struct, structs::GuildBankPermissions_Struct);
+			emu->Action = 6;
+			IN(Unknown04);
+			IN(SlotID);
+			IN(Unknown10);
+			IN(ItemID);
+			IN(Permissions);
+			strn0cpy(emu->MemberName, eq->MemberName, 64);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		case 6: { // GuildBankWithdraw
+			DECODE_LENGTH_EXACT(structs::GuildBankWithdrawItem_Struct);
+			SETUP_DIRECT_DECODE(GuildBankWithdrawItem_Struct, structs::GuildBankWithdrawItem_Struct);
+			emu->Action = 7;
+			IN(Unknown04);
+			IN(SlotID);
+			IN(Area);
+			IN(Unknown12);
+			IN(Quantity);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		case 7: { // GuildBankSplitStacks
+			DECODE_LENGTH_EXACT(structs::GuildBankWithdrawItem_Struct);
+			SETUP_DIRECT_DECODE(GuildBankWithdrawItem_Struct, structs::GuildBankWithdrawItem_Struct);
+			emu->Action = 8;
+			IN(Unknown04);
+			IN(SlotID);
+			IN(Area);
+			IN(Unknown12);
+			IN(Quantity);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		case 8: { // GuildBankMergeStacks
+			DECODE_LENGTH_EXACT(structs::GuildBankWithdrawItem_Struct);
+			SETUP_DIRECT_DECODE(GuildBankWithdrawItem_Struct, structs::GuildBankWithdrawItem_Struct);
+			emu->Action = 9;
+			IN(Unknown04);
+			IN(SlotID);
+			IN(Area);
+			IN(Unknown12);
+			IN(Quantity);
+			FINISH_DIRECT_DECODE();
+			return;
+		}
+		default:
+			Log.Out(Logs::Detail, Logs::Netcode, "Unhandled OP_GuildBank action");
+			__packet->SetOpcode(OP_Unknown); /* invalidate the packet */
+			return;
+		}
+	}
+
 	DECODE(OP_GuildDemote)
 	{
 		DECODE_LENGTH_EXACT(structs::GuildDemoteStruct);
@@ -5298,19 +5502,19 @@ namespace RoF2
 		hdr.unknown044 = 0;
 		hdr.unknown048 = 0;
 		hdr.unknown052 = 0;
-		hdr.isEvolving = item->EvolvingLevel > 0 ? 1 : 0;
+		hdr.isEvolving = item->EvolvingItem;
 		ss.write((const char*)&hdr, sizeof(RoF2::structs::ItemSerializationHeader));
 
-		if (item->EvolvingLevel > 0) {
+		if (item->EvolvingItem > 0) {
 			RoF2::structs::EvolvingItem evotop;
 			evotop.unknown001 = 0;
 			evotop.unknown002 = 0;
 			evotop.unknown003 = 0;
 			evotop.unknown004 = 0;
 			evotop.evoLevel = item->EvolvingLevel;
-			evotop.progress = 95.512;
+			evotop.progress = 0;
 			evotop.Activated = 1;
-			evotop.evomaxlevel = 7;
+			evotop.evomaxlevel = item->EvolvingMax;
 			ss.write((const char*)&evotop, sizeof(RoF2::structs::EvolvingItem));
 		}
 		//ORNAMENT IDFILE / ICON
@@ -5420,7 +5624,7 @@ namespace RoF2
 		ibs.Races = item->Races;
 		ibs.Deity = item->Deity;
 		ibs.SkillModValue = item->SkillModValue;
-		ibs.SkillModMax = 0xffffffff;
+		ibs.SkillModMax = item->SkillModMax;
 		ibs.SkillModType = (int8)(item->SkillModType);
 		ibs.SkillModExtra = 0;
 		ibs.BaneDmgRace = item->BaneDmgRace;

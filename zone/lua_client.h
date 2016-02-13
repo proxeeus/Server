@@ -131,6 +131,7 @@ public:
 	void MemSpell(int spell_id, int slot, bool update_client);
 	void UnmemSpell(int slot);
 	void UnmemSpell(int slot, bool update_client);
+	void UnmemSpellBySpellID(int32 spell_id);
 	void UnmemSpellAll();
 	void UnmemSpellAll(bool update_client);
 	void ScribeSpell(int spell_id, int slot);
@@ -140,6 +141,8 @@ public:
 	void UnscribeSpellAll();
 	void UnscribeSpellAll(bool update_client);
 	void TrainDisc(int itemid);
+	void TrainDiscBySpellID(int32 spell_id);
+	int GetDiscSlotBySpellID(int32 spell_id);
 	void UntrainDisc(int slot);
 	void UntrainDisc(int slot, bool update_client);
 	void UntrainDiscAll();
@@ -237,6 +240,7 @@ public:
 	bool GrantAlternateAdvancementAbility(int aa_id, int points, bool ignore_cost);
 	void MarkSingleCompassLoc(float in_x, float in_y, float in_z);
 	void MarkSingleCompassLoc(float in_x, float in_y, float in_z, int count);
+	void ClearCompassMark();
 	int GetNextAvailableSpellBookSlot();
 	int GetNextAvailableSpellBookSlot(int start);
 	int FindSpellBookSlotBySpellID(int spell_id);

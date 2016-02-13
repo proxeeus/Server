@@ -51,7 +51,7 @@
 **
 */
 struct ItemEffect_Struct {
-	int16	Effect;
+	int32	Effect;
 	uint8	Type;
 	uint8	Level;
 	uint8	Level2;
@@ -83,7 +83,7 @@ struct Item_Struct {
 	char	Lore[80];		// Lore Name: *=lore, &=summoned, #=artifact, ~=pending lore
 	char	IDFile[30];		// Visible model
 	uint32	ID;				// Unique ID (also PK for DB)
-	uint8	Weight;			// Item weight * 10
+	int32	Weight;			// Item weight * 10
 	uint8	NoRent;			// No Rent: 0=norent, 255=not norent
 	uint8	NoDrop;			// No Drop: 0=nodrop, 255=not nodrop
 	uint8	Size;			// Size: 0=tiny, 1=small, 2=medium, 3=large, 4=giant
@@ -130,6 +130,7 @@ struct Item_Struct {
 	uint32	Deity;			// Bitmask of Deities that can equip this item
 	//uint32	Unk033
 	int32	SkillModValue;	// % Mod to skill specified in SkillModType
+	int32	SkillModMax;	// Max skill point modification
 	uint32	SkillModType;	// Type of skill for SkillModValue to apply to
 	uint32	BaneDmgRace;	// Bane Damage Race
 	int8	BaneDmgAmt;		// Bane Damage Body Amount
@@ -159,7 +160,7 @@ struct Item_Struct {
 	//uint32	Unk059;
 	union {
 		uint32 Fulfilment;	// Food fulfilment (How long it lasts)
-		int16 CastTime;		// Cast Time for clicky effects, in milliseconds
+		uint32 CastTime;		// Cast Time for clicky effects, in milliseconds
 	};
 	uint32 EliteMaterial;
 	int32	ProcRate;
@@ -218,7 +219,10 @@ struct Item_Struct {
 	// Begin SoF Fields
 	int32 SVCorruption;
 	uint32 Purity;
+	uint8 EvolvingItem;
+	uint32 EvolvingID;
 	uint8 EvolvingLevel;
+	uint8 EvolvingMax;
 	uint32 BackstabDmg;
 	uint32 DSMitigation;
 	int32 HeroicStr;

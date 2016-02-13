@@ -76,7 +76,7 @@ bool Mob::AttackAnimation(SkillUseTypes &skillinuse, int Hand, const ItemInst* w
 			case ItemType1HPiercing: // Piercing
 			{
 				skillinuse = Skill1HPiercing;
-				type = animPiercing;
+				type = anim1HPiercing;
 				break;
 			}
 			case ItemType1HBlunt: // 1H Blunt
@@ -93,7 +93,10 @@ bool Mob::AttackAnimation(SkillUseTypes &skillinuse, int Hand, const ItemInst* w
 			}
 			case ItemType2HPiercing: // 2H Piercing
 			{
-				skillinuse = Skill1HPiercing; // change to Skill2HPiercing once activated
+				if (IsClient() && CastToClient()->GetClientVersion() < ClientVersion::RoF2)
+					skillinuse = Skill1HPiercing;
+				else
+					skillinuse = Skill2HPiercing;
 				type = anim2HWeapon;
 				break;
 			}
@@ -127,7 +130,7 @@ bool Mob::AttackAnimation(SkillUseTypes &skillinuse, int Hand, const ItemInst* w
 			}
 			case Skill1HPiercing: // Piercing
 			{
-				type = animPiercing;
+				type = anim1HPiercing;
 				break;
 			}
 			case Skill1HBlunt: // 1H Blunt
@@ -140,7 +143,7 @@ bool Mob::AttackAnimation(SkillUseTypes &skillinuse, int Hand, const ItemInst* w
 				type = anim2HSlashing; //anim2HWeapon
 				break;
 			}
-			case 99: // 2H Piercing // change to Skill2HPiercing once activated
+			case Skill2HPiercing: // 2H Piercing
 			{
 				type = anim2HWeapon;
 				break;
@@ -846,7 +849,7 @@ int Mob::GetWeaponDamage(Mob *against, const Item_Struct *weapon_item) {
 		}
 		else{
 			if((GetClass() == MONK || GetClass() == BEASTLORD) && GetLevel() >= 30){
-				dmg = GetMonkHandToHandDamage();
+				dmg = GetHandToHandDamage();
 			}
 			else if(GetOwner() && GetLevel() >= RuleI(Combat, PetAttackMagicLevel)){
 				//pets wouldn't actually use this but...
@@ -868,12 +871,7 @@ int Mob::GetWeaponDamage(Mob *against, const Item_Struct *weapon_item) {
 			dmg = dmg <= 0 ? 1 : dmg;
 		}
 		else{
-			if(GetClass() == MONK || GetClass() == BEASTLORD){
-				dmg = GetMonkHandToHandDamage();
-			}
-			else{
-				dmg = 1;
-			}
+			dmg = GetHandToHandDamage();
 		}
 	}
 
@@ -933,236 +931,108 @@ int Mob::GetWeaponDamage(Mob *against, const ItemInst *weapon_item, uint32 *hate
 	int banedmg = 0;
 	int x = 0;
 
-	if(!against || against->GetInvul() || against->GetSpecialAbility(IMMUNE_MELEE)){
+	if (!against || against->GetInvul() || against->GetSpecialAbility(IMMUNE_MELEE))
 		return 0;
-	}
 
-	//check for items being illegally attained
-	if(weapon_item){
-		const Item_Struct *mWeaponItem = weapon_item->GetItem();
-		if(mWeaponItem){
-			if(mWeaponItem->ReqLevel > GetLevel()){
-				return 0;
-			}
-
-			if(!weapon_item->IsEquipable(GetBaseRace(), GetClass())){
-				return 0;
-			}
-		}
-		else{
+	// check for items being illegally attained
+	if (weapon_item) {
+		if (!weapon_item->GetItem())
 			return 0;
-		}
+
+		if (weapon_item->GetItemRequiredLevel(true) > GetLevel())
+			return 0;
+
+		if (!weapon_item->IsEquipable(GetBaseRace(), GetClass()))
+			return 0;
 	}
 
-	if(against->GetSpecialAbility(IMMUNE_MELEE_NONMAGICAL)){
-		if(weapon_item){
+	if (against->GetSpecialAbility(IMMUNE_MELEE_NONMAGICAL)) {
+		if (weapon_item) {
 			// check to see if the weapon is magic
-			bool MagicWeapon = false;
-			if(weapon_item->GetItem() && weapon_item->GetItem()->Magic)
-				MagicWeapon = true;
-			else
-				if(spellbonuses.MagicWeapon || itembonuses.MagicWeapon)
-					MagicWeapon = true;
+			bool MagicWeapon = weapon_item->GetItemMagical(true) || spellbonuses.MagicWeapon || itembonuses.MagicWeapon;
+			if (MagicWeapon) {
+				auto rec_level = weapon_item->GetItemRecommendedLevel(true);
+				if (IsClient() && GetLevel() < rec_level)
+					dmg = CastToClient()->CalcRecommendedLevelBonus(
+					    GetLevel(), rec_level, weapon_item->GetItemWeaponDamage(true));
 				else
-					// An augment on the weapon that is marked magic makes
-					// the item magical.
-					for(x = 0; MagicWeapon == false && x < EmuConstants::ITEM_COMMON_SIZE; x++)
-					{
-						if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem())
-						{
-							if (weapon_item->GetAugment(x)->GetItem()->Magic)
-								MagicWeapon = true;
-						}
-					}
-
-			if(MagicWeapon) {
-
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					dmg = CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->Damage);
-				}
-				else{
-					dmg = weapon_item->GetItem()->Damage;
-				}
-
-				for(int x = 0; x < EmuConstants::ITEM_COMMON_SIZE; x++){
-					if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem()){
-						dmg += weapon_item->GetAugment(x)->GetItem()->Damage;
-						if (hate) *hate += weapon_item->GetAugment(x)->GetItem()->Damage + weapon_item->GetAugment(x)->GetItem()->ElemDmgAmt;
-					}
-				}
+					dmg = weapon_item->GetItemWeaponDamage(true);
 				dmg = dmg <= 0 ? 1 : dmg;
-			}
-			else
+			} else {
 				return 0;
-		}
-		else{
-			bool MagicGloves=false;
+			}
+		} else {
+			bool MagicGloves = false;
 			if (IsClient()) {
-				ItemInst *gloves=CastToClient()->GetInv().GetItem(MainHands);
-				if (gloves != nullptr) {
-					MagicGloves = gloves->GetItem()->Magic;
-				}
+				const ItemInst *gloves = CastToClient()->GetInv().GetItem(MainHands);
+				if (gloves)
+					MagicGloves = gloves->GetItemMagical(true);
 			}
 
-			if((GetClass() == MONK || GetClass() == BEASTLORD)) {
-				if(MagicGloves || GetLevel() >= 30){
-					dmg = GetMonkHandToHandDamage();
-					if (hate) *hate += dmg;
+			if (GetClass() == MONK || GetClass() == BEASTLORD) {
+				if (MagicGloves || GetLevel() >= 30) {
+					dmg = GetHandToHandDamage();
+					if (hate)
+						*hate += dmg;
 				}
-			}
-			else if(GetOwner() && GetLevel() >= RuleI(Combat, PetAttackMagicLevel)){ //pets wouldn't actually use this but...
-				dmg = 1;															//it gives us an idea if we can hit
-			}
-			else if(MagicGloves || GetSpecialAbility(SPECATK_MAGICAL)){
+			} else if (GetOwner() &&
+				   GetLevel() >=
+				       RuleI(Combat, PetAttackMagicLevel)) { // pets wouldn't actually use this but...
+				dmg = 1; // it gives us an idea if we can hit
+			} else if (MagicGloves || GetSpecialAbility(SPECATK_MAGICAL)) {
 				dmg = 1;
-			}
-			else
+			} else
 				return 0;
 		}
-	}
-	else{
-		if(weapon_item){
-			if(weapon_item->GetItem()){
+	} else {
+		if (weapon_item) {
+			if (weapon_item->GetItem()) {
+				auto rec_level = weapon_item->GetItemRecommendedLevel(true);
+				if (IsClient() && GetLevel() < rec_level) {
+					dmg = CastToClient()->CalcRecommendedLevelBonus(
+					    GetLevel(), rec_level, weapon_item->GetItemWeaponDamage(true));
+				} else {
+					dmg = weapon_item->GetItemWeaponDamage(true);
+				}
 
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					dmg = CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->Damage);
-				}
-				else{
-					dmg = weapon_item->GetItem()->Damage;
-				}
-
-				for (int x = 0; x < EmuConstants::ITEM_COMMON_SIZE; x++){
-					if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem()){
-						dmg += weapon_item->GetAugment(x)->GetItem()->Damage;
-						if (hate) *hate += weapon_item->GetAugment(x)->GetItem()->Damage + weapon_item->GetAugment(x)->GetItem()->ElemDmgAmt;
-					}
-				}
 				dmg = dmg <= 0 ? 1 : dmg;
 			}
-		}
-		else{
-			if(GetClass() == MONK || GetClass() == BEASTLORD){
-				dmg = GetMonkHandToHandDamage();
-				if (hate) *hate += dmg;
-			}
-			else{
-				dmg = 1;
-			}
+		} else {
+			dmg = GetHandToHandDamage();
+			if (hate)
+				*hate += dmg;
 		}
 	}
 
 	int eledmg = 0;
-	if(!against->GetSpecialAbility(IMMUNE_MAGIC)){
-		if(weapon_item && weapon_item->GetItem() && weapon_item->GetItem()->ElemDmgAmt){
-			if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-				eledmg = CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->ElemDmgAmt);
-			}
-			else{
-				eledmg = weapon_item->GetItem()->ElemDmgAmt;
-			}
-
-			if(eledmg)
-			{
-				eledmg = (eledmg * against->ResistSpell(weapon_item->GetItem()->ElemDmgType, 0, this) / 100);
-			}
-		}
-
-		if(weapon_item){
-			for (int x = 0; x < EmuConstants::ITEM_COMMON_SIZE; x++){
-				if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem()){
-					if(weapon_item->GetAugment(x)->GetItem()->ElemDmgAmt)
-						eledmg += (weapon_item->GetAugment(x)->GetItem()->ElemDmgAmt * against->ResistSpell(weapon_item->GetAugment(x)->GetItem()->ElemDmgType, 0, this) / 100);
-				}
-			}
-		}
+	if (!against->GetSpecialAbility(IMMUNE_MAGIC)) {
+		if (weapon_item && weapon_item->GetItem() && weapon_item->GetItemElementalFlag(true))
+			// the client actually has the way this is done, it does not appear to check req!
+			eledmg = against->ResistElementalWeaponDmg(weapon_item);
 	}
 
-	if(against->GetSpecialAbility(IMMUNE_MELEE_EXCEPT_BANE)){
-		if(weapon_item && weapon_item->GetItem()){
-			if(weapon_item->GetItem()->BaneDmgBody == against->GetBodyType()){
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					banedmg += CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->BaneDmgAmt);
-				}
-				else{
-					banedmg += weapon_item->GetItem()->BaneDmgAmt;
-				}
-			}
+	if (weapon_item && weapon_item->GetItem() &&
+			(weapon_item->GetItemBaneDamageBody(true) || weapon_item->GetItemBaneDamageRace(true)))
+		banedmg = against->CheckBaneDamage(weapon_item);
 
-			if(weapon_item->GetItem()->BaneDmgRace == against->GetRace()){
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					banedmg += CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->BaneDmgRaceAmt);
-				}
-				else{
-					banedmg += weapon_item->GetItem()->BaneDmgRaceAmt;
-				}
-			}
-
-			for (int x = 0; x < EmuConstants::ITEM_COMMON_SIZE; x++){
-				if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem()){
-					if(weapon_item->GetAugment(x)->GetItem()->BaneDmgBody == against->GetBodyType()){
-						banedmg += weapon_item->GetAugment(x)->GetItem()->BaneDmgAmt;
-					}
-
-					if(weapon_item->GetAugment(x)->GetItem()->BaneDmgRace == against->GetRace()){
-						banedmg += weapon_item->GetAugment(x)->GetItem()->BaneDmgRaceAmt;
-					}
-				}
-			}
-		}
-
-		if(!eledmg && !banedmg)
-		{
-			if(!GetSpecialAbility(SPECATK_BANE))
+	if (against->GetSpecialAbility(IMMUNE_MELEE_EXCEPT_BANE)) {
+		if (!eledmg && !banedmg) {
+			if (!GetSpecialAbility(SPECATK_BANE))
 				return 0;
 			else
 				return 1;
-		}
-		else {
+		} else {
 			dmg += (banedmg + eledmg);
-			if (hate) *hate += banedmg;
+			if (hate)
+				*hate += banedmg;
 		}
-	}
-	else{
-		if(weapon_item && weapon_item->GetItem()){
-			if(weapon_item->GetItem()->BaneDmgBody == against->GetBodyType()){
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					banedmg += CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->BaneDmgAmt);
-				}
-				else{
-					banedmg += weapon_item->GetItem()->BaneDmgAmt;
-				}
-			}
-
-			if(weapon_item->GetItem()->BaneDmgRace == against->GetRace()){
-				if(IsClient() && GetLevel() < weapon_item->GetItem()->RecLevel){
-					banedmg += CastToClient()->CalcRecommendedLevelBonus(GetLevel(), weapon_item->GetItem()->RecLevel, weapon_item->GetItem()->BaneDmgRaceAmt);
-				}
-				else{
-					banedmg += weapon_item->GetItem()->BaneDmgRaceAmt;
-				}
-			}
-
-			for (int x = 0; x < EmuConstants::ITEM_COMMON_SIZE; x++){
-				if(weapon_item->GetAugment(x) && weapon_item->GetAugment(x)->GetItem()){
-					if(weapon_item->GetAugment(x)->GetItem()->BaneDmgBody == against->GetBodyType()){
-						banedmg += weapon_item->GetAugment(x)->GetItem()->BaneDmgAmt;
-					}
-
-					if(weapon_item->GetAugment(x)->GetItem()->BaneDmgRace == against->GetRace()){
-						banedmg += weapon_item->GetAugment(x)->GetItem()->BaneDmgRaceAmt;
-					}
-				}
-			}
-		}
+	} else {
 		dmg += (banedmg + eledmg);
-		if (hate) *hate += banedmg;
+		if (hate)
+			*hate += banedmg;
 	}
 
-	if(dmg <= 0){
-		return 0;
-	}
-	else
-		return dmg;
+	return std::max(0, dmg);
 }
 
 //note: throughout this method, setting `damage` to a negative is a way to
@@ -1785,10 +1655,10 @@ bool NPC::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 				skillinuse = Skill2HSlashing;
 				break;
 			case ItemType1HPiercing:
-				//skillinuse = Skill1HPiercing;
-				//break;
+				skillinuse = Skill1HPiercing;
+				break;
 			case ItemType2HPiercing:
-				skillinuse = Skill1HPiercing; // change to Skill2HPiercing once activated
+				skillinuse = Skill2HPiercing;
 				break;
 			case ItemType1HBlunt:
 				skillinuse = Skill1HBlunt;
@@ -1815,11 +1685,6 @@ bool NPC::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 	int16 charges = 0;
 	ItemInst weapon_inst(weapon, charges);
 	AttackAnimation(skillinuse, Hand, &weapon_inst);
-
-	// Remove this once Skill2HPiercing is activated
-	//Work-around for there being no 2HP skill - We use 99 for the 2HB animation and 36 for pierce messages
-	if(skillinuse == 99)
-		skillinuse = static_cast<SkillUseTypes>(36);
 
 	//basically "if not immune" then do the attack
 	if((weapon_damage) > 0) {
@@ -2009,15 +1874,15 @@ void NPC::Damage(Mob* other, int32 damage, uint16 spell_id, SkillUseTypes attack
 	}
 }
 
-bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack_skill) {
-	Log.Out(Logs::Detail, Logs::Combat, "Fatal blow dealt by %s with %d damage, spell %d, skill %d", killerMob->GetName(), damage, spell, attack_skill);
+bool NPC::Death(Mob* killer_mob, int32 damage, uint16 spell, SkillUseTypes attack_skill) {
+	Log.Out(Logs::Detail, Logs::Combat, "Fatal blow dealt by %s with %d damage, spell %d, skill %d", killer_mob->GetName(), damage, spell, attack_skill);
 
 	Mob *oos = nullptr;
-	if(killerMob) {
-		oos = killerMob->GetOwnerOrSelf();
+	if(killer_mob) {
+		oos = killer_mob->GetOwnerOrSelf();
 
 		char buffer[48] = { 0 };
-		snprintf(buffer, 47, "%d %d %d %d", killerMob ? killerMob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
+		snprintf(buffer, 47, "%d %d %d %d", killer_mob ? killer_mob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
 		if(parse->EventNPC(EVENT_DEATH, this, oos, buffer, 0) != 0)
 		{
 			if(GetHP() < 0) {
@@ -2026,15 +1891,15 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 			return false;
 		}
 
-		if(killerMob && killerMob->IsClient() && (spell != SPELL_UNKNOWN) && damage > 0) {
+		if(killer_mob && killer_mob->IsClient() && (spell != SPELL_UNKNOWN) && damage > 0) {
 			char val1[20]={0};
 			entity_list.MessageClose_StringID(this, false, 100, MT_NonMelee, HIT_NON_MELEE,
-				killerMob->GetCleanName(), GetCleanName(), ConvertArray(damage, val1));
+				killer_mob->GetCleanName(), GetCleanName(), ConvertArray(damage, val1));
 		}
 	} else {
 
 		char buffer[48] = { 0 };
-		snprintf(buffer, 47, "%d %d %d %d", killerMob ? killerMob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
+		snprintf(buffer, 47, "%d %d %d %d", killer_mob ? killer_mob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
 		if(parse->EventNPC(EVENT_DEATH, this, nullptr, buffer, 0) != 0)
 		{
 			if(GetHP() < 0) {
@@ -2072,21 +1937,21 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 	EQApplicationPacket* app= new EQApplicationPacket(OP_Death,sizeof(Death_Struct));
 	Death_Struct* d = (Death_Struct*)app->pBuffer;
 	d->spawn_id = GetID();
-	d->killer_id = killerMob ? killerMob->GetID() : 0;
+	d->killer_id = killer_mob ? killer_mob->GetID() : 0;
 	d->bindzoneid = 0;
 	d->spell_id = spell == SPELL_UNKNOWN ? 0xffffffff : spell;
 	d->attack_skill = SkillDamageTypes[attack_skill];
 	d->damage = damage;
 	app->priority = 6;
-	entity_list.QueueClients(killerMob, app, false);
+	entity_list.QueueClients(killer_mob, app, false);
 
 	if(respawn2) {
 		respawn2->DeathReset(1);
 	}
 
-	if (killerMob) {
+	if (killer_mob) {
 		if(GetClass() != LDON_TREASURE)
-			hate_list.AddEntToHateList(killerMob, damage);
+			hate_list.AddEntToHateList(killer_mob, damage);
 	}
 
 	safe_delete(app);
@@ -2148,8 +2013,8 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 		{
 			if(!IsLdonTreasure && MerchantType == 0) {
 				kr->SplitExp((finalxp), this);
-				if(killerMob && (kr->IsRaidMember(killerMob->GetName()) || kr->IsRaidMember(killerMob->GetUltimateOwner()->GetName())))
-					killerMob->TrySpellOnKill(killed_level,spell);
+				if(killer_mob && (kr->IsRaidMember(killer_mob->GetName()) || kr->IsRaidMember(killer_mob->GetUltimateOwner()->GetName())))
+					killer_mob->TrySpellOnKill(killed_level,spell);
 			}
 			/* Send the EVENT_KILLED_MERIT event for all raid members */
 			for (int i = 0; i < MAX_RAID_MEMBERS; i++) {
@@ -2193,8 +2058,8 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 		{
 			if(!IsLdonTreasure && MerchantType == 0) {
 				kg->SplitExp((finalxp), this);
-				if(killerMob && (kg->IsGroupMember(killerMob->GetName()) || kg->IsGroupMember(killerMob->GetUltimateOwner()->GetName())))
-					killerMob->TrySpellOnKill(killed_level,spell);
+				if(killer_mob && (kg->IsGroupMember(killer_mob->GetName()) || kg->IsGroupMember(killer_mob->GetUltimateOwner()->GetName())))
+					killer_mob->TrySpellOnKill(killed_level,spell);
 			}
 			/* Send the EVENT_KILLED_MERIT event and update kill tasks
 			* for all group members */
@@ -2244,8 +2109,8 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 					if(!GetOwner() || (GetOwner() && !GetOwner()->IsClient()))
 					{
 						give_exp_client->AddEXP((finalxp), conlevel);
-						if(killerMob && (killerMob->GetID() == give_exp_client->GetID() || killerMob->GetUltimateOwner()->GetID() == give_exp_client->GetID()))
-							killerMob->TrySpellOnKill(killed_level,spell);
+						if(killer_mob && (killer_mob->GetID() == give_exp_client->GetID() || killer_mob->GetUltimateOwner()->GetID() == give_exp_client->GetID()))
+							killer_mob->TrySpellOnKill(killed_level,spell);
 					}
 				}
 			}
@@ -2393,20 +2258,30 @@ bool NPC::Death(Mob* killerMob, int32 damage, uint16 spell, SkillUseTypes attack
 			uint16 emoteid = oos->GetEmoteID();
 			if(emoteid != 0)
 				oos->CastToNPC()->DoNPCEmote(KILLEDNPC, emoteid);
-			killerMob->TrySpellOnKill(killed_level, spell);
+			killer_mob->TrySpellOnKill(killed_level, spell);
 		}
 	}
 
 	WipeHateList();
 	p_depop = true;
-	if(killerMob && killerMob->GetTarget() == this) //we can kill things without having them targeted
-		killerMob->SetTarget(nullptr); //via AE effects and such..
+	if(killer_mob && killer_mob->GetTarget() == this) //we can kill things without having them targeted
+		killer_mob->SetTarget(nullptr); //via AE effects and such..
 
 	entity_list.UpdateFindableNPCState(this, true);
 
 	char buffer[48] = { 0 };
-	snprintf(buffer, 47, "%d %d %d %d", killerMob ? killerMob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
+	snprintf(buffer, 47, "%d %d %d %d", killer_mob ? killer_mob->GetID() : 0, damage, spell, static_cast<int>(attack_skill));
 	parse->EventNPC(EVENT_DEATH_COMPLETE, this, oos, buffer, 0);
+
+	/* Zone controller process EVENT_DEATH_ZONE (Death events) */
+	if (RuleB(Zone, UseZoneController)) {
+		if (entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID) && this->GetNPCTypeID() != ZONE_CONTROLLER_NPC_ID){
+			char data_pass[100] = { 0 };
+			snprintf(data_pass, 99, "%d %d %d %d %d", killer_mob ? killer_mob->GetID() : 0, damage, spell, static_cast<int>(attack_skill), this->GetNPCTypeID());
+			parse->EventNPC(EVENT_DEATH_ZONE, entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID)->CastToNPC(), nullptr, data_pass, 0);
+		}
+	}
+
 	return true;
 }
 
@@ -2421,6 +2296,11 @@ void Mob::AddToHateList(Mob* other, uint32 hate /*= 0*/, int32 damage /*= 0*/, b
 	if(damage < 0){
 		hate = 1;
 	}
+
+	if (iYellForHelp)
+		SetPrimaryAggro(true);
+	else
+		SetAssistAggro(true);
 
 	bool wasengaged = IsEngaged();
 	Mob* owner = other->GetOwner();
@@ -2688,82 +2568,140 @@ uint8 Mob::GetWeaponDamageBonus(const Item_Struct *weapon, bool offhand)
 		}
 	} else {
 		// 2h damage bonus
+		int damage_bonus = 1 + (level - 28) / 3;
 		if (delay <= 27)
-			return 1 + ((level - 28) / 3);
-		else if (delay < 40)
-			return 1 + ((level - 28) / 3) + ((level - 30) / 5);
-		else if (delay < 43)
-			return 2 + ((level - 28) / 3) + ((level - 30) / 5) + ((delay - 40) / 3);
-		else if (delay < 45)
-			return 3 + ((level - 28) / 3) + ((level - 30) / 5) + ((delay - 40) / 3);
-		else if (delay >= 45)
-			return 4 + ((level - 28) / 3) + ((level - 30) / 5) + ((delay - 40) / 3);
+			return damage_bonus + 1;
+		// Client isn't reflecting what the dev quoted, this matches better
+		if (level > 29) {
+			int level_bonus = (level - 30) / 5 + 1;
+			if (level > 50) {
+				level_bonus++;
+				int level_bonus2 = level - 50;
+				if (level > 67)
+					level_bonus2 += 5;
+				else if (level > 59)
+					level_bonus2 += 4;
+				else if (level > 58)
+					level_bonus2 += 3;
+				else if (level > 56)
+					level_bonus2 += 2;
+				else if (level > 54)
+					level_bonus2++;
+				level_bonus += level_bonus2 * delay / 40;
+			}
+			damage_bonus += level_bonus;
+		}
+		if (delay >= 40) {
+			int delay_bonus = (delay - 40) / 3 + 1;
+			if (delay >= 45)
+				delay_bonus += 2;
+			else if (delay >= 43)
+				delay_bonus++;
+			damage_bonus += delay_bonus;
+		}
+		return damage_bonus;
 	}
 }
 
-int Mob::GetMonkHandToHandDamage(void)
+int Mob::GetHandToHandDamage(void)
 {
-	// Kaiyodo - Determine a monk's fist damage. Table data from www.monkly-business.com
-	// saved as static array - this should speed this function up considerably
-	static int damage[66] = {
-	// 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
-		99, 4, 4, 4, 4, 5, 5, 5, 5, 5, 6, 6, 6, 6, 6, 7, 7, 7, 7, 7,
-		 8, 8, 8, 8, 8, 9, 9, 9, 9, 9,10,10,10,10,10,11,11,11,11,11,
-		12,12,12,12,12,13,13,13,13,13,14,14,14,14,14,14,14,14,14,14,
-		14,14,15,15,15,15 };
-
-	// Have a look to see if we have epic fists on
-
-	if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652)
-		return(9);
-	else
-	{
-		int Level = GetLevel();
-		if (Level > 65)
-			return(19);
-		else
-			return damage[Level];
+	if (RuleB(Combat, UseRevampHandToHand)) {
+		// everyone uses this in the revamp!
+		int skill = GetSkill(SkillHandtoHand);
+		int epic = 0;
+		if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652 && GetLevel() > 46)
+			epic = 280;
+		if (epic > skill)
+			skill = epic;
+		return skill / 15 + 3;
 	}
+
+	static uint8 mnk_dmg[] = {99,
+				4, 4, 4, 4, 5, 5, 5, 5, 5, 6,           // 1-10
+				6, 6, 6, 6, 7, 7, 7, 7, 7, 8,           // 11-20
+				8, 8, 8, 8, 9, 9, 9, 9, 9, 10,          // 21-30
+				10, 10, 10, 10, 11, 11, 11, 11, 11, 12, // 31-40
+				12, 12, 12, 12, 13, 13, 13, 13, 13, 14, // 41-50
+				14, 14, 14, 14, 14, 14, 14, 14, 14, 14, // 51-60
+				14, 14};                                // 61-62
+	static uint8 bst_dmg[] = {99,
+				4, 4, 4, 4, 4, 5, 5, 5, 5, 5,        // 1-10
+				5, 6, 6, 6, 6, 6, 6, 7, 7, 7,        // 11-20
+				7, 7, 7, 8, 8, 8, 8, 8, 8, 9,        // 21-30
+				9, 9, 9, 9, 9, 10, 10, 10, 10, 10,   // 31-40
+				10, 11, 11, 11, 11, 11, 11, 12, 12}; // 41-49
+	if (GetClass() == MONK) {
+		if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652 && GetLevel() > 50)
+			return 9;
+		if (level > 62)
+			return 15;
+		return mnk_dmg[level];
+	} else if (GetClass() == BEASTLORD) {
+		if (level > 49)
+			return 13;
+		return bst_dmg[level];
+	}
+	return 2;
 }
 
-int Mob::GetMonkHandToHandDelay(void)
+int Mob::GetHandToHandDelay(void)
 {
-	// Kaiyodo - Determine a monk's fist delay. Table data from www.monkly-business.com
-	// saved as static array - this should speed this function up considerably
-	static int delayshuman[66] = {
-	//  0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
-		99,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,
-		36,36,36,36,36,35,35,35,35,35,34,34,34,34,34,33,33,33,33,33,
-		32,32,32,32,32,31,31,31,31,31,30,30,30,29,29,29,28,28,28,27,
-		26,24,22,20,20,20  };
-	static int delaysiksar[66] = {
-	//  0  1  2  3  4  5  6  7  8  9  10 11 12 13 14 15 16 17 18 19
-		99,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,36,
-		36,36,36,36,36,36,36,36,36,36,35,35,35,35,35,34,34,34,34,34,
-		33,33,33,33,33,32,32,32,32,32,31,31,31,30,30,30,29,29,29,28,
-		27,24,22,20,20,20 };
-
-	// Have a look to see if we have epic fists on
-	if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652)
-		return(16);
-	else
-	{
-		int Level = GetLevel();
-		if (GetRace() == HUMAN)
-		{
-			if (Level > 65)
-				return(24);
-			else
-				return delayshuman[Level];
-		}
-		else	//heko: iksar table
-		{
-			if (Level > 65)
-				return(25);
-			else
-				return delaysiksar[Level];
-		}
+	if (RuleB(Combat, UseRevampHandToHand)) {
+		// everyone uses this in the revamp!
+		int skill = GetSkill(SkillHandtoHand);
+		int epic = 0;
+		int iksar = 0;
+		if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652 && GetLevel() > 46)
+			epic = 280;
+		else if (GetRace() == IKSAR)
+			iksar = 1;
+		if (epic > skill)
+			skill = epic;
+		return iksar - skill / 21 + 38;
 	}
+
+	int delay = 35;
+	static uint8 mnk_hum_delay[] = {99,
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 11-20
+				35, 35, 35, 35, 35, 35, 35, 34, 34, 34, // 21-30
+				34, 33, 33, 33, 33, 32, 32, 32, 32, 31, // 31-40
+				31, 31, 31, 30, 30, 30, 30, 29, 29, 29, // 41-50
+				29, 28, 28, 28, 28, 27, 27, 27, 27, 26, // 51-60
+				24, 22};                                // 61-62
+	static uint8 mnk_iks_delay[] = {99,
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 11-20
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 34, // 21-30
+				34, 34, 34, 34, 34, 33, 33, 33, 33, 33, // 31-40
+				33, 32, 32, 32, 32, 32, 32, 31, 31, 31, // 41-50
+				31, 31, 31, 30, 30, 30, 30, 30, 30, 29, // 51-60
+				25, 23};                                // 61-62
+	static uint8 bst_delay[] = {99,
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
+				35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 11-20
+				35, 35, 35, 35, 35, 35, 35, 35, 34, 34, // 21-30
+				34, 34, 34, 33, 33, 33, 33, 33, 32, 32, // 31-40
+				32, 32, 32, 31, 31, 31, 31, 31, 30, 30, // 41-50
+				30, 30, 30, 29, 29, 29, 29, 29, 28, 28, // 51-60
+				28, 28, 28, 27, 27, 27, 27, 27, 26, 26, // 61-70
+				26, 26, 26};                            // 71-73
+
+	if (GetClass() == MONK) {
+		// Have a look to see if we have epic fists on
+		if (IsClient() && CastToClient()->GetItemIDAt(12) == 10652 && GetLevel() > 50)
+			return 16;
+		int level = GetLevel();
+		if (level > 62)
+			return GetRace() == IKSAR ? 21 : 20;
+		return GetRace() == IKSAR ? mnk_iks_delay[level] : mnk_hum_delay[level];
+	} else if (GetClass() == BEASTLORD) {
+		int level = GetLevel();
+		if (level > 73)
+			return 25;
+		return bst_delay[level];
+	}
+	return 35;
 }
 
 int32 Mob::ReduceDamage(int32 damage)
@@ -4612,28 +4550,27 @@ void Client::SetAttackTimer()
 
 		int hhe = itembonuses.HundredHands + spellbonuses.HundredHands;
 		int speed = 0;
-		int delay = 36;
-		float quiver_haste = 0.0f;
+		int delay = 3500;
 
 		//if we have no weapon..
-		if (ItemToUse == nullptr) {
-			//above checks ensure ranged weapons do not fall into here
-			// Work out if we're a monk
-			if (GetClass() == MONK || GetClass() == BEASTLORD)
-				delay = GetMonkHandToHandDelay();
-		} else {
-			//we have a weapon, use its delay
-			delay = ItemToUse->Delay;
-			if (ItemToUse->ItemType == ItemTypeBow || ItemToUse->ItemType == ItemTypeLargeThrowing)
-				quiver_haste = GetQuiverHaste();
-		}
-		if (RuleB(Spells, Jun182014HundredHandsRevamp))
-			speed = static_cast<int>(((delay / haste_mod) + ((hhe / 1000.0f) * (delay / haste_mod))) * 100);
+		if (ItemToUse == nullptr)
+			delay = 100 * GetHandToHandDelay();
 		else
-			speed = static_cast<int>(((delay / haste_mod) + ((hhe / 100.0f) * delay)) * 100);
-		// this is probably wrong
-		if (quiver_haste > 0)
-			speed *= quiver_haste;
+			//we have a weapon, use its delay
+			delay = 100 * ItemToUse->Delay;
+
+		speed = delay / haste_mod;
+
+		if (ItemToUse && ItemToUse->ItemType == ItemTypeBow) {
+			// Live actually had a bug here where they would return the non-modified attack speed
+			// rather than the cap ...
+			speed = std::max(speed - GetQuiverHaste(speed), RuleI(Combat, QuiverHasteCap));
+		} else {
+			if (RuleB(Spells, Jun182014HundredHandsRevamp))
+				speed = static_cast<int>(speed + ((hhe / 1000.0f) * speed));
+			else
+				speed = static_cast<int>(speed + ((hhe / 100.0f) * delay));
+		}
 		TimerToUse->SetAtTrigger(std::max(RuleI(Combat, MinHastedDelay), speed), true, true);
 	}
 }

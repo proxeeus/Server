@@ -278,6 +278,7 @@ struct StatBonuses {
 	float	AggroRange;							// when calculate just replace original value with this
 	float	AssistRange;
 	int32	skillmod[HIGHEST_SKILL+1];
+	int32	skillmodmax[HIGHEST_SKILL+1];
 	int		effective_casting_level;
 	int		reflect_chance;						// chance to reflect incoming spell
 	uint32	singingMod;
@@ -510,7 +511,7 @@ typedef struct
 //make DoAnim take it instead of int, to enforce its use.
 enum {	//type arguments to DoAnim
 	animKick				= 1,
-	animPiercing			= 2,	//might be piercing?
+	anim1HPiercing			= 2,	//might be piercing?
 	anim2HSlashing			= 3,
 	anim2HWeapon			= 4,
 	anim1HWeapon			= 5,

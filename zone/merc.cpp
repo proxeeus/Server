@@ -18,7 +18,7 @@
 #include "../common/string_util.h"
 #include "../common/rulesys.h"
 
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 
 Merc::Merc(const NPCType* d, float x, float y, float z, float heading)
 : NPC(d, nullptr, glm::vec4(x, y, z, heading), 0, false), endupkeep_timer(1000), rest_timer(1), confidence_timer(6000), check_target_timer(2000)
@@ -1428,7 +1428,7 @@ void Merc::AI_Process() {
 
 					if(RuleB(Combat, EnableFearPathing)) {
 						CalculateNewFearpoint();
-						if(curfp) {
+						if(currently_fleeing) {
 							return;
 						}
 					}
@@ -1500,7 +1500,7 @@ void Merc::AI_Process() {
 				}
 			}
 
-			if(AImovement_timer->Check())
+			if(AI_movement_timer->Check())
 			{
 				if(!IsMoving() && GetClass() == ROGUE && !BehindMob(GetTarget(), GetX(), GetY()))
 				{
@@ -1645,7 +1645,7 @@ void Merc::AI_Process() {
 				AI_PursueCastCheck();
 			}
 
-			if (AImovement_timer->Check())
+			if (AI_movement_timer->Check())
 			{
 				if(!IsRooted()) {
 					Log.Out(Logs::Detail, Logs::AI, "Pursuing %s while engaged.", GetTarget()->GetCleanName());
@@ -1687,7 +1687,7 @@ void Merc::AI_Process() {
 		if(!check_target_timer.Enabled())
 			check_target_timer.Start(2000, false);
 
-		if(!IsMoving() && AIthink_timer->Check() && !spellend_timer.Enabled())
+		if(!IsMoving() && AI_think_timer->Check() && !spellend_timer.Enabled())
 		{
 			//TODO: Implement passive stances.
 			//if(GetStance() != MercStancePassive) {
@@ -1698,7 +1698,7 @@ void Merc::AI_Process() {
 			}
 		}
 
-		if(AImovement_timer->Check())
+		if(AI_movement_timer->Check())
 		{
 			if(GetFollowID())
 			{
@@ -2678,7 +2678,7 @@ int16 Merc::GetFocusEffect(focusType type, uint16 spell_id) {
 int32 Merc::GetActSpellCost(uint16 spell_id, int32 cost)
 {
 	// Formula = Unknown exact, based off a random percent chance up to mana cost(after focuses) of the cast spell
-	if(this->itembonuses.Clairvoyance && spells[spell_id].classes[(GetClass()%16) - 1] >= GetLevel() - 5)
+	if(this->itembonuses.Clairvoyance && spells[spell_id].classes[(GetClass()%17) - 1] >= GetLevel() - 5)
 	{
 		int16 mana_back = this->itembonuses.Clairvoyance * zone->random.Int(1, 100) / 100;
 		// Doesnt generate mana, so best case is a free spell
@@ -5777,7 +5777,7 @@ bool Merc::RemoveMercFromGroup(Merc* merc, Group* group) {
 			{
 				merc->SetFollowID(0);
 
-				if (group->GroupCount() <= 2 && merc->GetGroup() == group && ZoneLoaded)
+				if (group->GroupCount() <= 2 && merc->GetGroup() == group && is_zone_loaded)
 				{
 					group->DisbandGroup();
 				}

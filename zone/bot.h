@@ -171,7 +171,7 @@ public:
 	uint16 BotGetSpellType(int spellslot) { return AIspells[spellslot].type; }
 	uint16 BotGetSpellPriority(int spellslot) { return AIspells[spellslot].priority; }
 	virtual float GetProcChances(float ProcBonus, uint16 hand);
-	virtual int GetMonkHandToHandDamage(void);
+	virtual int GetHandToHandDamage(void);
 	virtual bool TryFinishingBlow(Mob *defender, SkillUseTypes skillinuse);
 	virtual void DoRiposte(Mob* defender);
 	inline virtual int32 GetATK() const { return ATK + itembonuses.ATK + spellbonuses.ATK + ((GetSTR() + GetSkill(SkillOffense)) * 9 / 10); }
@@ -193,7 +193,7 @@ public:
 	virtual int32 CheckAggroAmount(uint16 spellid);
 	virtual void CalcBonuses();
 	void CalcItemBonuses(StatBonuses* newbon);
-	void AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug = false, bool isTribute = false);
+	void AddItemBonuses(const ItemInst *inst, StatBonuses* newbon, bool isAug = false, bool isTribute = false, int rec_override = 0);
 	int CalcRecommendedLevelBonus(uint8 level, uint8 reclevel, int basestat);
 	virtual void MakePet(uint16 spell_id, const char* pettype, const char *petname = nullptr);
 	virtual FACTION_VALUE GetReverseFactionCon(Mob* iOther);

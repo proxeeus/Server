@@ -55,7 +55,7 @@
 
 extern QueryServ* QServ;
 extern Zone* zone;
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 extern WorldServer worldserver;
 extern PetitionList petition_list;
 extern EntityList entity_list;
@@ -1153,6 +1153,11 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 			{
 				const Item_Struct* item = inst->GetItem();
 
+				if (RuleB(Character, RestrictSpellScribing) && !item->IsEquipable(GetRace(), GetClass())) {
+					Message_StringID(13, CANNOT_USE_ITEM);
+					break;
+				}
+
 				if(item && item->Scroll.Effect == (int32)(memspell->spell_id))
 				{
 					ScribeSpell(memspell->spell_id, memspell->slot);
@@ -1547,6 +1552,11 @@ void Client::OPGMTraining(const EQApplicationPacket *app)
 			//this is the highest level that the trainer can train you to, this is enforced clientside so we can't just
 			//Set it to 1 with CanHaveSkill or you wont be able to train past 1.
 		}
+	}
+
+	if (GetClientVersion() < ClientVersion::RoF2 && GetClass() == BERSERKER) {
+		gmtrain->skills[Skill1HPiercing] = gmtrain->skills[Skill2HPiercing];
+		gmtrain->skills[Skill2HPiercing] = 0;
 	}
 //#pragma GCC pop_options
 

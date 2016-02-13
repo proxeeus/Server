@@ -101,7 +101,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 
 
 extern Zone* zone;
-extern volatile bool ZoneLoaded;
+extern volatile bool is_zone_loaded;
 extern WorldServer worldserver;
 
 // this is run constantly for every mob
@@ -1268,6 +1268,14 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 		}
 	}
 
+	// we're done casting, now try to apply the spell
+	if( !SpellFinished(spell_id, spell_target, slot, mana_used, inventory_slot, resist_adjust) )
+	{
+		Log.Out(Logs::Detail, Logs::Spells, "Casting of %d canceled: SpellFinished returned false.", spell_id);
+		InterruptSpell();
+		return;
+	}
+
 	if(IsClient()) {
 		CheckNumHitsRemaining(NumHit::MatchingSpells);
 		TrySympatheticProc(target, spell_id);
@@ -1276,14 +1284,6 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 	TryTwincast(this, target, spell_id);
 
 	TryTriggerOnCast(spell_id, 0);
-
-	// we're done casting, now try to apply the spell
-	if( !SpellFinished(spell_id, spell_target, slot, mana_used, inventory_slot, resist_adjust) )
-	{
-		Log.Out(Logs::Detail, Logs::Spells, "Casting of %d canceled: SpellFinished returned false.", spell_id);
-		InterruptSpell();
-		return;
-	}
 
 	if(DeleteChargeFromSlot >= 0)
 		CastToClient()->DeleteItemInInventory(DeleteChargeFromSlot, 1, true);
@@ -2267,7 +2267,9 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, uint16 slot, uint16 
 		}
 	}
 	// one may want to check if this is a disc or not, but we actually don't, there are non disc stuff that have end cost
-	if (spells[spell_id].EndurCost) {
+	// lets not consume end for custom items that have disc procs.
+	// One might also want to filter out USE_ITEM_SPELL_SLOT, but DISCIPLINE_SPELL_SLOT are both #defined to the same thing ...
+	if (spells[spell_id].EndurCost && !isproc) {
 		auto end_cost = spells[spell_id].EndurCost;
 		if (mgb)
 			end_cost *= 2;
@@ -3138,7 +3140,7 @@ int Mob::AddBuff(Mob *caster, uint16 spell_id, int duration, int32 level_overrid
 				Log.Out(Logs::Detail, Logs::Spells, "Adding buff %d will overwrite spell %d in slot %d with caster level %d",
 						spell_id, curbuf.spellid, buffslot, curbuf.casterlevel);
 				// If this is the first buff it would override, use its slot
-				if (!will_overwrite)
+				if (!will_overwrite && !IsDisciplineBuff(spell_id))
 					emptyslot = buffslot;
 				will_overwrite = true;
 				overwrite_slots.push_back(buffslot);
@@ -3188,7 +3190,7 @@ int Mob::AddBuff(Mob *caster, uint16 spell_id, int duration, int32 level_overrid
 
 			// if we hadn't found a free slot before, or if this is earlier
 			// we use it
-			if (emptyslot == -1 || *cur < emptyslot)
+			if (emptyslot == -1 || (*cur < emptyslot && !IsDisciplineBuff(spell_id)))
 				emptyslot = *cur;
 		}
 	}
@@ -4908,6 +4910,16 @@ void Client::UnmemSpell(int slot, bool update_client)
 	}
 }
 
+void Client::UnmemSpellBySpellID(int32 spell_id)
+{
+	for(int i = 0; i < MAX_PP_MEMSPELL; i++) {
+		if(m_pp.mem_spells[i] == spell_id) {
+			UnmemSpell(i, true);
+			break;
+		}
+	}
+}
+
 void Client::UnmemSpellAll(bool update_client)
 {
 	int i;
@@ -5298,12 +5310,26 @@ void Client::SendBuffDurationPacket(Buffs_Struct &buff)
 	EQApplicationPacket* outapp;
 	outapp = new EQApplicationPacket(OP_Buff, sizeof(SpellBuffFade_Struct));
 	SpellBuffFade_Struct* sbf = (SpellBuffFade_Struct*) outapp->pBuffer;
+	int index;
 
 	sbf->entityid = GetID();
 	sbf->slot = 2;
 	sbf->spellid = buff.spellid;
 	sbf->slotid = 0;
 	sbf->level = buff.casterlevel > 0 ? buff.casterlevel : GetLevel();
+
+	// We really don't know what to send as sbf->effect.
+	// The code used to send level (and still does for cases we don't know)
+	//
+	// The fixes below address known issues with sending level in this field.
+	// Typically, when the packet is sent, or when the user
+	// next does something on the UI that causes an update (like opening a
+	// pack), the stats updated by the spell in question get corrupted.
+	// 
+	// The values were determined by trial and error.  I could not find a 
+	// pattern or find a field in spells_new that would work.
+
+	sbf->effect=sbf->level;
 
 	if (IsEffectInSpell(buff.spellid, SE_TotalHP))
 	{
@@ -5315,25 +5341,45 @@ void Client::SendBuffDurationPacket(Buffs_Struct &buff)
 	else if (IsEffectInSpell(buff.spellid, SE_CurrentHP))
 	{
 		// This is mostly a problem when we try and update duration on a
-		// dot or a hp->mana conversion.  Zero cancels the effect, any
-		// other value has the GUI doing that value at the same time server
-		// is doing theirs.  This makes the two match.
-		int index = GetSpellEffectIndex(buff.spellid, SE_CurrentHP);
+		// dot or a hp->mana conversion.  Zero cancels the effect
+		// Sending teh actual change again seems to work.
+		index = GetSpellEffectIndex(buff.spellid, SE_CurrentHP);
 		sbf->effect = abs(spells[buff.spellid].base[index]);
 	}
 	else if (IsEffectInSpell(buff.spellid, SE_SeeInvis))
 	{
-		// Wish I knew what this sbf->effect field was trying to tell
-		// the client.  10 seems to not break SeeInvis spells.  Level,
+		// 10 seems to not break SeeInvis spells.  Level,
 		// which is what the old client sends breaks the client at at 
 		// least level 9, maybe more.
 		sbf->effect = 10;
 	}
-	else
+	else if (IsEffectInSpell(buff.spellid, SE_ArmorClass) ||
+			 IsEffectInSpell(buff.spellid, SE_ResistFire) ||
+			 IsEffectInSpell(buff.spellid, SE_ResistCold) ||
+			 IsEffectInSpell(buff.spellid, SE_ResistPoison) ||
+			 IsEffectInSpell(buff.spellid, SE_ResistDisease) ||
+			 IsEffectInSpell(buff.spellid, SE_ResistMagic) ||
+			 IsEffectInSpell(buff.spellid, SE_STR) ||
+			 IsEffectInSpell(buff.spellid, SE_STA) ||
+			 IsEffectInSpell(buff.spellid, SE_DEX) ||
+			 IsEffectInSpell(buff.spellid, SE_WIS) ||
+			 IsEffectInSpell(buff.spellid, SE_INT) ||
+			 IsEffectInSpell(buff.spellid, SE_AGI))
 	{
-		// Default to what old code did until we find a better fix for
-		// other spell lines.
-		sbf->effect=sbf->level;
+		// This seems to work.  Previosly stats got corrupted when sending
+		// level.
+		sbf->effect = 46;
+	}
+	else if (IsEffectInSpell(buff.spellid, SE_CHA))
+	{
+		index = GetSpellEffectIndex(buff.spellid, SE_CHA);
+		sbf->effect = abs(spells[buff.spellid].base[index]);
+		// Only use this valie if its not a spacer.
+		if (sbf->effect != 0)
+		{
+			// Same as other stats, need this to prevent a double update.
+			sbf->effect = 46;
+		}
 	}
 
 	sbf->bufffade = 0;
