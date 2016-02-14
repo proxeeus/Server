@@ -313,32 +313,6 @@ int WorldDatabase::MoveCharacterToBind(int CharID, uint8 bindnum)
 	return zone_id;
 }
 
-// "Hard" get of the ZoneId for Titanium clients. Overrides any other start zone Id that may have been found. Because fuck it.
-int GetTitaniumStartZone(PlayerProfile_Struct* in_pp)
-{
-	Log.Out(Logs::General, Logs::Status, "Calling GetTitaniumStartZone...");
-	// Same zone for all these races
-		switch (in_pp->race)
-		{
-		case 2:													// **Barbarian
-			return 29;											// Halas
-		case 3:													// **Erudite
-			if (in_pp->class_ == 5 || in_pp->class_ == 11)		// Shadow Knight or Necromancer
-				return 75;										// Paineel
-			else
-				return 24;										// Erudin
-		case 6:													// **Dark Elf
-			return 41;											// Neriak Commons
-		case 8:													// **Dwarf
-			return 60;											// South Kaladim
-		case 12:												// **Gnome
-			return 55;											// Ak'Anon
-		default:
-			break;
-		}
-	return 0;
-}
-
 bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct* in_cc,bool isTitanium)
 {
 	// SoF doesn't send the player_choice field in character creation, it now sends the real zoneID instead.
@@ -354,9 +328,11 @@ bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct*
 	in_pp->x = in_pp->y = in_pp->z = in_pp->heading = in_pp->zone_id = 0;
 	in_pp->binds[0].x = in_pp->binds[0].y = in_pp->binds[0].z = in_pp->binds[0].zoneId = in_pp->binds[0].instance_id = 0;
 	// see if we have an entry for start_zone. We can support both titanium & SOF+ by having two entries per class/race/deity combo with different zone_ids
-	std::string query = StringFormat("SELECT x, y, z, heading, start_zone, bind_id FROM start_zones WHERE zone_id = %i "
-		"AND player_class = %i AND player_deity = %i AND player_race = %i",
-		GetTitaniumStartZone(in_pp), in_cc->class_, in_cc->deity, in_cc->race);
+
+	std::string query = StringFormat("SELECT x,y,z,zone_id,bind_id FROM start_zones WHERE player_choice=%i AND player_class=%i "
+		"AND player_deity=%i AND player_race=%i",
+		in_cc->start_zone, in_cc->class_, in_cc->deity, in_cc->race);
+
     auto results = QueryDatabase(query);
 	if(!results.Success()) {
 		return false;
@@ -371,12 +347,12 @@ bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct*
     else {
 		Log.Out(Logs::General, Logs::Status, "Found starting location in start_zones");
 		auto row = results.begin();
+
 		in_pp->x = atof(row[0]);
 		in_pp->y = atof(row[1]);
 		in_pp->z = atof(row[2]);
-		in_pp->heading = atof(row[3]);
-		in_pp->zone_id = atoi(row[4]);
-		in_pp->binds[0].zoneId = atoi(row[5]);
+		in_pp->zone_id = atoi(row[3]);
+		in_pp->binds[0].zoneId = atoi(row[4]);
 	}
 
 	if(in_pp->x == 0 && in_pp->y == 0 && in_pp->z == 0)
