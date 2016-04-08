@@ -1,5 +1,5 @@
 /*	EQEMu: Everquest Server Emulator
-	Copyright (C) 2001-2003 EQEMu Development Team (http://eqemulator.org)
+	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.org)
 
 	This program is free software; you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -44,6 +44,9 @@ extern volatile bool RunLoops;
 #include "zonedb.h"
 #include "petitions.h"
 #include "command.h"
+#ifdef BOTS
+#include "bot_command.h"
+#endif
 #include "string_ids.h"
 
 #include "guild_mgr.h"
@@ -120,7 +123,7 @@ Client::Client(EQStreamInterface* ieqs)
 	camp_timer(29000),
 	process_timer(100),
 	stamina_timer(40000),
-	zoneinpacket_timer(3000),
+	zoneinpacket_timer(1000),
 	linkdead_timer(RuleI(Zone,ClientLinkdeadMS)),
 	dead_timer(2000),
 	global_channel_timer(1000),
@@ -436,6 +439,7 @@ void Client::SendZoneInPackets()
 	outapp->priority = 6;
 	if (!GetHideMe()) entity_list.QueueClients(this, outapp, true);
 	safe_delete(outapp);
+	SetSpawned();
 	if (GetPVP())	//force a PVP update until we fix the spawn struct
 		SendAppearancePacket(AT_PVP, GetPVP(), true, false);
 
@@ -1045,6 +1049,24 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			}
 			break;
 		}
+
+#ifdef BOTS
+		if (message[0] == BOT_COMMAND_CHAR) {
+			if (bot_command_dispatch(this, message) == -2) {
+				if (parse->PlayerHasQuestSub(EVENT_COMMAND)) {
+					int i = parse->EventPlayer(EVENT_COMMAND, this, message, 0);
+					if (i == 0 && !RuleB(Chat, SuppressCommandErrors)) {
+						Message(13, "Bot command '%s' not recognized.", message);
+					}
+				}
+				else {
+					if (!RuleB(Chat, SuppressCommandErrors))
+						Message(13, "Bot command '%s' not recognized.", message);
+				}
+			}
+			break;
+		}
+#endif
 
 		Mob* sender = this;
 		if (GetPet() && GetPet()->FindType(SE_VoiceGraft))
@@ -2356,7 +2378,11 @@ uint16 Client::MaxSkill(SkillUseTypes skillid, uint16 class_, uint16 level) cons
 	return(database.GetSkillCap(class_, skillid, level));
 }
 
-uint8 Client::SkillTrainLevel(SkillUseTypes skillid, uint16 class_){
+uint8 Client::SkillTrainLevel(SkillUseTypes skillid, uint16 class_)
+{
+	if (GetClientVersion() < ClientVersion::RoF2 && class_ == BERSERKER && skillid == Skill1HPiercing)
+		skillid = Skill2HPiercing;
+
 	return(database.GetTrainLevel(class_, skillid, RuleI(Character, MaxLevel)));
 }
 
@@ -2706,7 +2732,7 @@ void Client::SetMaterial(int16 in_slot, uint32 item_id) {
 	if (item && (item->ItemClass==ItemClassCommon))
 	{
 		uint8 matslot = Inventory::CalcMaterialFromSlot(in_slot);
-		if (matslot != _MaterialInvalid)
+		if (matslot != MaterialInvalid)
 		{
 			m_pp.item_material[matslot] = GetEquipmentMaterial(matslot);
 		}
@@ -3048,7 +3074,7 @@ void Client::SetTint(int16 in_slot, uint32 color) {
 void Client::SetTint(int16 in_slot, Color_Struct& color) {
 
 	uint8 matslot = Inventory::CalcMaterialFromSlot(in_slot);
-	if (matslot != _MaterialInvalid)
+	if (matslot != MaterialInvalid)
 	{
 		m_pp.item_tint[matslot].Color = color.Color;
 		database.SaveCharacterMaterialColor(this->CharacterID(), in_slot, color.Color);
@@ -3123,58 +3149,58 @@ void Client::LinkDead()
 }
 
 uint8 Client::SlotConvert(uint8 slot,bool bracer){
-	uint8 slot2=0; // why are we returning MainCharm instead of INVALID_INDEX? (must be a pre-charm segment...)
+	uint8 slot2 = 0; // why are we returning MainCharm instead of INVALID_INDEX? (must be a pre-charm segment...)
 	if(bracer)
-		return MainWrist2;
+		return SlotWrist2;
 	switch(slot){
 		case MaterialHead:
-			slot2=MainHead;
+			slot2 = SlotHead;
 			break;
 		case MaterialChest:
-			slot2=MainChest;
+			slot2 = SlotChest;
 			break;
 		case MaterialArms:
-			slot2=MainArms;
+			slot2 = SlotArms;
 			break;
 		case MaterialWrist:
-			slot2=MainWrist1;
+			slot2 = SlotWrist1;
 			break;
 		case MaterialHands:
-			slot2=MainHands;
+			slot2 = SlotHands;
 			break;
 		case MaterialLegs:
-			slot2=MainLegs;
+			slot2 = SlotLegs;
 			break;
 		case MaterialFeet:
-			slot2=MainFeet;
+			slot2 = SlotFeet;
 			break;
 		}
 	return slot2;
 }
 
 uint8 Client::SlotConvert2(uint8 slot){
-	uint8 slot2=0; // same as above...
+	uint8 slot2 = 0; // same as above...
 	switch(slot){
-		case MainHead:
-			slot2=MaterialHead;
+		case SlotHead:
+			slot2 = MaterialHead;
 			break;
-		case MainChest:
-			slot2=MaterialChest;
+		case SlotChest:
+			slot2 = MaterialChest;
 			break;
-		case MainArms:
-			slot2=MaterialArms;
+		case SlotArms:
+			slot2 = MaterialArms;
 			break;
-		case MainWrist1:
-			slot2=MaterialWrist;
+		case SlotWrist1:
+			slot2 = MaterialWrist;
 			break;
-		case MainHands:
-			slot2=MaterialHands;
+		case SlotHands:
+			slot2 = MaterialHands;
 			break;
-		case MainLegs:
-			slot2=MaterialLegs;
+		case SlotLegs:
+			slot2 = MaterialLegs;
 			break;
-		case MainFeet:
-			slot2=MaterialFeet;
+		case SlotFeet:
+			slot2 = MaterialFeet;
 			break;
 		}
 	return slot2;
@@ -3561,7 +3587,7 @@ void Client::Insight(uint32 t_id)
 	}
 	strcat(resists," to disease.");
 
-	Message(0,"Your target is a level %i %s. It appears %s and %s for its level. It seems %s",who->GetLevel(),GetEQClassName(who->GetClass(),1),dmg,hitpoints,resists);
+	Message(0,"Your target is a level %i %s. It appears %s and %s for its level. It seems %s",who->GetLevel(),GetClassIDName(who->GetClass(),1),dmg,hitpoints,resists);
 }
 
 void Client::GetGroupAAs(GroupLeadershipAA_Struct *into) const {
@@ -4178,14 +4204,14 @@ bool Client::GroupFollow(Client* inviter) {
 uint16 Client::GetPrimarySkillValue()
 {
 	SkillUseTypes skill = HIGHEST_SKILL; //because nullptr == 0, which is 1H Slashing, & we want it to return 0 from GetSkill
-	bool equiped = m_inv.GetItem(MainPrimary);
+	bool equiped = m_inv.GetItem(SlotPrimary);
 
 	if (!equiped)
 		skill = SkillHandtoHand;
 
 	else {
 
-		uint8 type = m_inv.GetItem(MainPrimary)->GetItem()->ItemType; //is this the best way to do this?
+		uint8 type = m_inv.GetItem(SlotPrimary)->GetItem()->ItemType; //is this the best way to do this?
 
 		switch (type)
 		{
@@ -4950,36 +4976,27 @@ void Client::ShowSkillsWindow()
 {
 	const char *WindowTitle = "Skills";
 	std::string WindowText;
-	// using a map for easy alphabetizing of the skills list
-	std::map<std::string, SkillUseTypes> Skills;
-	std::map<std::string, SkillUseTypes>::iterator it;
+	std::map<SkillUseTypes, std::string> Skills = EQEmu::GetSkillUseTypesMap();
 
-	// this list of names must keep the same order as that in common/skills.h
-	const char* SkillName[] = {"1H Blunt","1H Slashing","2H Blunt","2H Slashing","Abjuration","Alteration","Apply Poison","Archery",
-		"Backstab","Bind Wound","Bash","Block","Brass Instruments","Channeling","Conjuration","Defense","Disarm","Disarm Traps","Divination",
-		"Dodge","Double Attack","Dragon Punch","Dual Wield","Eagle Strike","Evocation","Feign Death","Flying Kick","Forage","Hand to Hand",
-		"Hide","Kick","Meditate","Mend","Offense","Parry","Pick Lock","1H Piercing","Ripost","Round Kick","Safe Fall","Sense Heading",
-		"Singing","Sneak","Specialize Abjuration","Specialize Alteration","Specialize Conjuration","Specialize Divination","Specialize Evocation","Pick Pockets",
-		"Stringed Instruments","Swimming","Throwing","Tiger Claw","Tracking","Wind Instruments","Fishing","Make Poison","Tinkering","Research",
-		"Alchemy","Baking","Tailoring","Sense Traps","Blacksmithing","Fletching","Brewing","Alcohol Tolerance","Begging","Jewelry Making",
-		"Pottery","Percussion Instruments","Intimidation","Berserking","Taunt","Frenzy","Remove Traps","Triple Attack","2H Piercing"};
-	for(int i = 0; i <= (int)HIGHEST_SKILL; i++)
-		Skills[SkillName[i]] = (SkillUseTypes)i;
+	if (GetClientVersion() < ClientVersion::RoF2)
+		Skills[Skill1HPiercing] = "Piercing";
 
 	// print out all available skills
-	for(it = Skills.begin(); it != Skills.end(); ++it) {
-		if(GetSkill(it->second) > 0 || MaxSkill(it->second) > 0) {
-			WindowText += it->first;
-			// line up the values
-			for (int j = 0; j < EmuConstants::ITEM_COMMON_SIZE; j++)
-				WindowText += "&nbsp;";
-			WindowText += itoa(this->GetSkill(it->second));
-			if (MaxSkill(it->second) > 0) {
-				WindowText += "/";
-				WindowText += itoa(this->GetMaxSkillAfterSpecializationRules(it->second,this->MaxSkill(it->second)));
-			}
-			WindowText += "<br>";
+	for (auto skills_iter : Skills) {
+		if (skills_iter.first == Skill2HPiercing && GetClientVersion() < ClientVersion::RoF2)
+			continue;
+		if (!GetSkill(skills_iter.first) && !MaxSkill(skills_iter.first))
+			continue;
+
+		WindowText += skills_iter.second;
+		// line up the values
+		WindowText += "&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;";
+		WindowText += itoa(this->GetSkill(skills_iter.first));
+		if (MaxSkill(skills_iter.first) > 0) {
+			WindowText += "/";
+			WindowText += itoa(this->GetMaxSkillAfterSpecializationRules(skills_iter.first, this->MaxSkill(skills_iter.first)));
 		}
+		WindowText += "<br>";
 	}
 	this->SendPopupToClient(WindowTitle, WindowText.c_str());
 }
@@ -5375,7 +5392,7 @@ bool Client::TryReward(uint32 claim_id)
 	// save
 	uint32 free_slot = 0xFFFFFFFF;
 
-	for (int i = EmuConstants::GENERAL_BEGIN; i <= EmuConstants::GENERAL_END; ++i) {
+	for (int i = EQEmu::Constants::GENERAL_BEGIN; i <= EQEmu::Constants::GENERAL_END; ++i) {
 		ItemInst *item = GetInv().GetItem(i);
 		if (!item) {
 			free_slot = i;
@@ -5721,30 +5738,30 @@ void Client::ProcessInspectRequest(Client* requestee, Client* requester) {
 			}
 		}
 
-		inst = requestee->GetInv().GetItem(MainPowerSource);
+		inst = requestee->GetInv().GetItem(SlotPowerSource);
 
 		if(inst) {
 			item = inst->GetItem();
 			if(item) {
 				// we shouldn't do this..but, that's the way it's coded atm...
 				// (this type of action should be handled exclusively in the client translator)
-				strcpy(insr->itemnames[SoF::slots::MainPowerSource], item->Name);
-				insr->itemicons[SoF::slots::MainPowerSource] = item->Icon;
+				strcpy(insr->itemnames[SoF::inventory::SlotPowerSource], item->Name);
+				insr->itemicons[SoF::inventory::SlotPowerSource] = item->Icon;
 			}
 			else
-				insr->itemicons[SoF::slots::MainPowerSource] = 0xFFFFFFFF;
+				insr->itemicons[SoF::inventory::SlotPowerSource] = 0xFFFFFFFF;
 		}
 
-		inst = requestee->GetInv().GetItem(MainAmmo);
+		inst = requestee->GetInv().GetItem(SlotAmmo);
 
 		if(inst) {
 			item = inst->GetItem();
 			if(item) {
-				strcpy(insr->itemnames[SoF::slots::MainAmmo], item->Name);
-				insr->itemicons[SoF::slots::MainAmmo] = item->Icon;
+				strcpy(insr->itemnames[SoF::inventory::SlotAmmo], item->Name);
+				insr->itemicons[SoF::inventory::SlotAmmo] = item->Icon;
 			}
 			else
-				insr->itemicons[SoF::slots::MainAmmo] = 0xFFFFFFFF;
+				insr->itemicons[SoF::inventory::SlotAmmo] = 0xFFFFFFFF;
 		}
 
 		strcpy(insr->text, requestee->GetInspectMessage().text);
@@ -6290,7 +6307,7 @@ void Client::Doppelganger(uint16 spell_id, Mob *target, const char *name_overrid
 	made_npc->drakkin_details = GetDrakkinDetails();
 	made_npc->d_melee_texture1 = GetEquipmentMaterial(MaterialPrimary);
 	made_npc->d_melee_texture2 = GetEquipmentMaterial(MaterialSecondary);
-	for (int i = EmuConstants::MATERIAL_BEGIN; i <= EmuConstants::MATERIAL_END; i++)	{
+	for (int i = EQEmu::Constants::MATERIAL_BEGIN; i <= EQEmu::Constants::MATERIAL_END; i++)	{
 		made_npc->armor_tint[i] = GetEquipmentColor(i);
 	}
 	made_npc->loottable_id = 0;
@@ -7555,13 +7572,18 @@ void Client::GarbleMessage(char *message, uint8 variance)
 	int delimiter_count = 0;
 
 	// Don't garble # commands
-	if (message[0] == '#')
+	if (message[0] == COMMAND_CHAR)
 		return;
+
+#ifdef BOTS
+	if (message[0] == BOT_COMMAND_CHAR)
+		return;
+#endif
 
 	for (size_t i = 0; i < strlen(message); i++) {
 		// Client expects hex values inside of a text link body
 		if (message[i] == delimiter) {
-			if (!(delimiter_count & 1)) { i += EmuConstants::TEXT_LINK_BODY_LENGTH; }
+			if (!(delimiter_count & 1)) { i += EQEmu::Constants::TEXT_LINK_BODY_LENGTH; }
 			++delimiter_count;
 			continue;
 		}
@@ -7986,17 +8008,17 @@ void Client::TickItemCheck()
 	if(zone->tick_items.empty()) { return; }
 
 	//Scan equip slots for items
-	for(i = EmuConstants::EQUIPMENT_BEGIN; i <= EmuConstants::EQUIPMENT_END; i++)
+	for (i = EQEmu::Constants::EQUIPMENT_BEGIN; i <= EQEmu::Constants::EQUIPMENT_END; i++)
 	{
 		TryItemTick(i);
 	}
 	//Scan main inventory + cursor
-	for(i = EmuConstants::GENERAL_BEGIN; i <= MainCursor; i++)
+	for (i = EQEmu::Constants::GENERAL_BEGIN; i <= SlotCursor; i++)
 	{
 		TryItemTick(i);
 	}
 	//Scan bags
-	for(i = EmuConstants::GENERAL_BAGS_BEGIN; i <= EmuConstants::CURSOR_BAG_END; i++)
+	for (i = EQEmu::Constants::GENERAL_BAGS_BEGIN; i <= EQEmu::Constants::CURSOR_BAG_END; i++)
 	{
 		TryItemTick(i);
 	}
@@ -8012,7 +8034,7 @@ void Client::TryItemTick(int slot)
 
 	if(zone->tick_items.count(iid) > 0)
 	{
-		if( GetLevel() >= zone->tick_items[iid].level && zone->random.Int(0, 100) >= (100 - zone->tick_items[iid].chance) && (zone->tick_items[iid].bagslot || slot <= EmuConstants::EQUIPMENT_END) )
+		if (GetLevel() >= zone->tick_items[iid].level && zone->random.Int(0, 100) >= (100 - zone->tick_items[iid].chance) && (zone->tick_items[iid].bagslot || slot <= EQEmu::Constants::EQUIPMENT_END))
 		{
 			ItemInst* e_inst = (ItemInst*)inst;
 			parse->EventItem(EVENT_ITEM_TICK, this, e_inst, nullptr, "", slot);
@@ -8020,9 +8042,9 @@ void Client::TryItemTick(int slot)
 	}
 
 	//Only look at augs in main inventory
-	if(slot > EmuConstants::EQUIPMENT_END) { return; }
+	if (slot > EQEmu::Constants::EQUIPMENT_END) { return; }
 
-	for (int x = AUG_BEGIN; x < EmuConstants::ITEM_COMMON_SIZE; ++x)
+	for (int x = AUG_BEGIN; x < EQEmu::Constants::ITEM_COMMON_SIZE; ++x)
 	{
 		ItemInst * a_inst = inst->GetAugment(x);
 		if(!a_inst) { continue; }
@@ -8043,17 +8065,17 @@ void Client::TryItemTick(int slot)
 void Client::ItemTimerCheck()
 {
 	int i;
-	for(i = EmuConstants::EQUIPMENT_BEGIN; i <= EmuConstants::EQUIPMENT_END; i++)
+	for (i = EQEmu::Constants::EQUIPMENT_BEGIN; i <= EQEmu::Constants::EQUIPMENT_END; i++)
 	{
 		TryItemTimer(i);
 	}
 
-	for(i = EmuConstants::GENERAL_BEGIN; i <= MainCursor; i++)
+	for (i = EQEmu::Constants::GENERAL_BEGIN; i <= SlotCursor; i++)
 	{
 		TryItemTimer(i);
 	}
 
-	for(i = EmuConstants::GENERAL_BAGS_BEGIN; i <= EmuConstants::CURSOR_BAG_END; i++)
+	for (i = EQEmu::Constants::GENERAL_BAGS_BEGIN; i <= EQEmu::Constants::CURSOR_BAG_END; i++)
 	{
 		TryItemTimer(i);
 	}
@@ -8075,11 +8097,11 @@ void Client::TryItemTimer(int slot)
 		++it_iter;
 	}
 
-	if(slot > EmuConstants::EQUIPMENT_END) {
+	if (slot > EQEmu::Constants::EQUIPMENT_END) {
 		return;
 	}
 
-	for (int x = AUG_BEGIN; x < EmuConstants::ITEM_COMMON_SIZE; ++x)
+	for (int x = AUG_BEGIN; x < EQEmu::Constants::ITEM_COMMON_SIZE; ++x)
 	{
 		ItemInst * a_inst = inst->GetAugment(x);
 		if(!a_inst) {
@@ -8367,12 +8389,12 @@ void Client::ShowNumHits()
 int Client::GetQuiverHaste(int delay)
 {
 	const ItemInst *pi = nullptr;
-	for (int r = EmuConstants::GENERAL_BEGIN; r <= EmuConstants::GENERAL_END; r++) {
+	for (int r = EQEmu::Constants::GENERAL_BEGIN; r <= EQEmu::Constants::GENERAL_END; r++) {
 		pi = GetInv().GetItem(r);
 		if (pi && pi->IsType(ItemClassContainer) && pi->GetItem()->BagType == BagTypeQuiver &&
 		    pi->GetItem()->BagWR > 0)
 			break;
-		if (r == EmuConstants::GENERAL_END)
+		if (r == EQEmu::Constants::GENERAL_END)
 			// we will get here if we don't find a valid quiver
 			return 0;
 	}
@@ -8406,7 +8428,7 @@ std::string Client::TextLink::GenerateLink()
 	generate_body();
 	generate_text();
 
-	if ((m_LinkBody.length() == EmuConstants::TEXT_LINK_BODY_LENGTH) && (m_LinkText.length() > 0)) {
+	if ((m_LinkBody.length() == EQEmu::Constants::TEXT_LINK_BODY_LENGTH) && (m_LinkText.length() > 0)) {
 		m_Link.push_back(0x12);
 		m_Link.append(m_LinkBody);
 		m_Link.append(m_LinkText);
@@ -8598,7 +8620,7 @@ void Client::TextLink::generate_text()
 bool Client::TextLink::DegenerateLinkBody(TextLinkBody_Struct& textLinkBodyStruct, const std::string& textLinkBody)
 {
 	memset(&textLinkBodyStruct, 0, sizeof(TextLinkBody_Struct));
-	if (textLinkBody.length() != EmuConstants::TEXT_LINK_BODY_LENGTH) { return false; }
+	if (textLinkBody.length() != EQEmu::Constants::TEXT_LINK_BODY_LENGTH) { return false; }
 
 	textLinkBodyStruct.unknown_1 = (uint8)strtol(textLinkBody.substr(0, 1).c_str(), nullptr, 16);
 	textLinkBodyStruct.item_id = (uint32)strtol(textLinkBody.substr(1, 5).c_str(), nullptr, 16);
@@ -8636,7 +8658,7 @@ bool Client::TextLink::GenerateLinkBody(std::string& textLinkBody, const TextLin
 		(0xFFFFFFFF & textLinkBodyStruct.hash)
 		);
 
-	if (textLinkBody.length() != EmuConstants::TEXT_LINK_BODY_LENGTH) { return false; }
+	if (textLinkBody.length() != EQEmu::Constants::TEXT_LINK_BODY_LENGTH) { return false; }
 	return true;
 }
 
@@ -8659,7 +8681,7 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 		AddMoneyToPP(copper, silver, gold, platinum, false);
 
 	if (itemid > 0)
-		SummonItem(itemid, 0, 0, 0, 0, 0, 0, false, MainPowerSource);
+		SummonItem(itemid, 0, 0, 0, 0, 0, 0, false, SlotPowerSource);
 
 	if (faction)
 	{

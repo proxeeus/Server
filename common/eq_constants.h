@@ -1,5 +1,5 @@
 /*	EQEMu: Everquest Server Emulator
-	Copyright (C) 2001-2003 EQEMu Development Team (http://eqemulator.net)
+	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.net)
 
 	This program is free software; you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -32,17 +32,17 @@ enum LightTypes
 	lightTypeTorch,
 	lightTypeTinyGlowingSkull,
 	lightTypeSmallLantern,
-	lightTypeSteinOfMoggok,
+	lightTypeSteinOfMoggok, // 5
 	lightTypeLargeLantern,
 	lightTypeFlamelessLantern,
 	lightTypeGlobeOfStars,
 	lightTypeLightGlobe,
-	lightTypeLightstone,
+	lightTypeLightstone, // 10
 	lightTypeGreaterLightstone,
 	lightTypeFireBeetleEye,
 	lightTypeColdlight,
 	lightTypeUnknown1,
-	lightTypeUnknown2
+	lightTypeUnknown2 // 15
 };
 
 #define LIGHT_TYPES_COUNT 16
@@ -58,12 +58,12 @@ enum LightLevels
 	lightLevelTorch,
 	lightLevelSmallMagic,
 	lightLevelRedLight,
-	lightLevelBlueLight,
+	lightLevelBlueLight, // 5
 	lightLevelSmallLantern,
 	lightLevelMagicLantern,
 	lightLevelLargeLantern,
 	lightLevelLargeMagic,
-	lightLevelBrilliant
+	lightLevelBrilliant // 10
 };
 
 #define LIGHT_LEVELS_COUNT 11
@@ -111,62 +111,62 @@ enum ItemUseTypes : uint8
 /*9140*/	ItemType1HPiercing,
 /*9139*/	ItemType1HBlunt,
 /*9142*/	ItemType2HBlunt,
-/*5504*/	ItemTypeBow,
+/*5504*/	ItemTypeBow, // 5
 /*----*/	ItemTypeUnknown1,
 /*----*/	ItemTypeLargeThrowing,
 /*5505*/	ItemTypeShield,
 /*5506*/	ItemTypeScroll,
-/*5507*/	ItemTypeArmor,
+/*5507*/	ItemTypeArmor, // 10
 /*5508*/	ItemTypeMisc,			// a lot of random crap has this item use.
 /*7564*/	ItemTypeLockPick,
 /*----*/	ItemTypeUnknown2,
 /*5509*/	ItemTypeFood,
-/*5510*/	ItemTypeDrink,
+/*5510*/	ItemTypeDrink, // 15
 /*5511*/	ItemTypeLight,
 /*5512*/	ItemTypeCombinable,		// not all stackable items are this use...
 /*5513*/	ItemTypeBandage,
 /*----*/	ItemTypeSmallThrowing,
-/*----*/	ItemTypeSpell,			// spells and tomes
+/*----*/	ItemTypeSpell, // 20	// spells and tomes
 /*5514*/	ItemTypePotion,
 /*----*/	ItemTypeUnknown3,
 /*0406*/	ItemTypeWindInstrument,
 /*0407*/	ItemTypeStringedInstrument,
-/*0408*/	ItemTypeBrassInstrument,
+/*0408*/	ItemTypeBrassInstrument, // 25
 /*0405*/	ItemTypePercussionInstrument,
 /*5515*/	ItemTypeArrow,
 /*----*/	ItemTypeUnknown4,
 /*5521*/	ItemTypeJewelry,
-/*----*/	ItemTypeSkull,
+/*----*/	ItemTypeSkull, // 30
 /*5516*/	ItemTypeBook,			// skill-up tomes/books? (would probably need a pp flag if true...)
 /*5517*/	ItemTypeNote,
 /*5518*/	ItemTypeKey,
 /*----*/	ItemTypeCoin,
-/*5520*/	ItemType2HPiercing,
+/*5520*/	ItemType2HPiercing, // 35
 /*----*/	ItemTypeFishingPole,
 /*----*/	ItemTypeFishingBait,
 /*5519*/	ItemTypeAlcohol,
 /*----*/	ItemTypeKey2,			// keys and satchels?? (questable keys?)
-/*----*/	ItemTypeCompass,
+/*----*/	ItemTypeCompass, // 40
 /*----*/	ItemTypeUnknown5,
 /*----*/	ItemTypePoison,			// might be wrong, but includes poisons
 /*----*/	ItemTypeUnknown6,
 /*----*/	ItemTypeUnknown7,
-/*5522*/	ItemTypeMartial,
+/*5522*/	ItemTypeMartial, // 45
 /*----*/	ItemTypeUnknown8,
 /*----*/	ItemTypeUnknown9,
 /*----*/	ItemTypeUnknown10,
 /*----*/	ItemTypeUnknown11,
-/*----*/	ItemTypeSinging,
+/*----*/	ItemTypeSinging, // 50
 /*5750*/	ItemTypeAllInstrumentTypes,
 /*5776*/	ItemTypeCharm,
 /*----*/	ItemTypeDye,
 /*----*/	ItemTypeAugmentation,
-/*----*/	ItemTypeAugmentationSolvent,
+/*----*/	ItemTypeAugmentationSolvent, // 55
 /*----*/	ItemTypeAugmentationDistiller,
 /*----*/	ItemTypeUnknown12,
 /*----*/	ItemTypeFellowshipKit,
 /*----*/	ItemTypeUnknown13,
-/*----*/	ItemTypeRecipe,
+/*----*/	ItemTypeRecipe, // 60
 /*----*/	ItemTypeAdvancedRecipe,
 /*----*/	ItemTypeJournal,		// only one(1) database entry
 /*----*/	ItemTypeAltCurrency,	// alt-currency (as opposed to coinage)
@@ -237,32 +237,32 @@ enum AugmentationUseTypes : uint8 {
 	AugTypeGeneralMultipleStat,
 	AugTypeGeneralSpellEffect,
 	AugTypeWeaponGeneral,
-	AugTypeWeaponElemDamage,
+	AugTypeWeaponElemDamage, // 5
 	AugTypeWeaponBaseDamage,
 	AugTypeGeneralGroup,
 	AugTypeGeneralRaid,
 	AugTypeGeneralDragonsPoints,
-	AugTypeCraftedCommon,
+	AugTypeCraftedCommon, // 10
 	AugTypeCraftedGroup1,
 	AugTypeCraftedRaid1,
 	AugTypeEnergeiacGroup,
 	AugTypeEnergeiacRaid,
-	AugTypeEmblem,
+	AugTypeEmblem, // 15
 	AugTypeCraftedGroup2,
 	AugTypeCraftedRaid2,
 	AugTypeUnknown1,
 	AugTypeUnknown2,
-	AugTypeOrnamentation,
+	AugTypeOrnamentation, // 20
 	AugTypeSpecialOrnamentation,
 	AugTypeUnknown3,
 	AugTypeUnknown4,
 	AugTypeUnknown5,
-	AugTypeUnknown6,
+	AugTypeUnknown6, // 25
 	AugTypeUnknown7,
 	AugTypeUnknown8,
 	AugTypeUnknown9,
 	AugTypeUnknown10,
-	AugTypeEpic25,
+	AugTypeEpic25, // 30
 	AugTypeTest,
 	_AugTypeCount,
 	AugTypeAll = 255
@@ -280,17 +280,17 @@ enum AugmentationRestrictionTypes : uint8 {
 /*9135*/	AugRestrWeapons,
 /*9136*/	AugRestr1HWeapons,
 /*9137*/	AugRestr2HWeapons,
-/*9138*/	AugRestr1HSlash,
+/*9138*/	AugRestr1HSlash, // 5
 /*9139*/	AugRestr1HBlunt,
 /*9140*/	AugRestrPiercing,
 /*9148*/	AugRestrHandToHand,
 /*9141*/	AugRestr2HSlash,
-/*9142*/	AugRestr2HBlunt,
+/*9142*/	AugRestr2HBlunt, // 10
 /*9143*/	AugRestr2HPierce,
 /*9144*/	AugRestrBows,
 /*9145*/	AugRestrShields,
 /*8052*/	AugRestr1HSlash1HBluntOrHandToHand,
-/*9200*/	AugRestr1HBluntOrHandToHand,		// no listed peq entries
+/*9200*/	AugRestr1HBluntOrHandToHand, // 15	// no listed peq entries
 
 // these three appear to be post-RoF (12-10-2012) and can not be verified until RoF (05-10-2013) is supported
 /*????*/	AugRestrUnknown1,
@@ -317,57 +317,57 @@ enum ContainerUseTypes : uint8
 /*3402*/	BagTypeQuiver,
 /*3403*/	BagTypeBeltPouch,
 /*3404*/	BagTypeWristPouch,
-/*3405*/	BagTypeBackPack,
+/*3405*/	BagTypeBackPack, // 5
 /*3406*/	BagTypeSmallChest,
 /*3407*/	BagTypeLargeChest,
 /*----*/	BagTypeBandolier,				// <*Database Reference Only>
 /*3408*/	BagTypeMedicineBag,
-/*3409*/	BagTypeToolBox,
+/*3409*/	BagTypeToolBox, // 10
 /*3410*/	BagTypeLexicon,
 /*3411*/	BagTypeMortar,
 /*3412*/	BagTypeSelfDusting,				// Quest container (Auto-clear contents?)
 /*3413*/	BagTypeMixingBowl,
-/*3414*/	BagTypeOven,
+/*3414*/	BagTypeOven, // 15
 /*3415*/	BagTypeSewingKit,
 /*3416*/	BagTypeForge,
 /*3417*/	BagTypeFletchingKit,
 /*3418*/	BagTypeBrewBarrel,
-/*3419*/	BagTypeJewelersKit,
+/*3419*/	BagTypeJewelersKit, // 20
 /*3420*/	BagTypePotteryWheel,
 /*3421*/	BagTypeKiln,
 /*3422*/	BagTypeKeymaker,				// (no database entries as of peq rev 69)
 /*3423*/	BagTypeWizardsLexicon,
-/*3424*/	BagTypeMagesLexicon,
+/*3424*/	BagTypeMagesLexicon, // 25
 /*3425*/	BagTypeNecromancersLexicon,
 /*3426*/	BagTypeEnchantersLexicon,
 /*----*/	BagTypeUnknown1,				// (a coin pouch/purse?) (no database entries as of peq rev 69)
 /*----*/	BagTypeConcordanceofResearch,	// <*Database Reference Only>
-/*3427*/	BagTypeAlwaysWorks,				// Quest container (Never-fail combines?)
+/*3427*/	BagTypeAlwaysWorks, // 30		// Quest container (Never-fail combines?)
 /*3428*/	BagTypeKoadaDalForge,			// High Elf
 /*3429*/	BagTypeTeirDalForge,			// Dark Elf
 /*3430*/	BagTypeOggokForge,				// Ogre
 /*3431*/	BagTypeStormguardForge,			// Dwarf
-/*3432*/	BagTypeAkanonForge,				// Gnome
+/*3432*/	BagTypeAkanonForge, // 35		// Gnome
 /*3433*/	BagTypeNorthmanForge,			// Barbarian
 /*----*/	BagTypeUnknown2,				// (no database entries as of peq rev 69)
 /*3434*/	BagTypeCabilisForge,			// Iksar
 /*3435*/	BagTypeFreeportForge,			// Human 1
-/*3436*/	BagTypeRoyalQeynosForge,		// Human 2
+/*3436*/	BagTypeRoyalQeynosForge, // 40	// Human 2
 /*3439*/	BagTypeHalflingTailoringKit,
 /*3438*/	BagTypeErudTailoringKit,
 /*3440*/	BagTypeFierDalTailoringKit,		// Wood Elf
 /*3441*/	BagTypeFierDalFletchingKit,		// Wood Elf
-/*3437*/	BagTypeIksarPotteryWheel,
+/*3437*/	BagTypeIksarPotteryWheel, // 45
 /*3442*/	BagTypeTackleBox,
 /*3443*/	BagTypeTrollForge,
 /*3445*/	BagTypeFierDalForge,			// Wood Elf
 /*3444*/	BagTypeValeForge,				// Halfling
-/*3446*/	BagTypeErudForge,
+/*3446*/	BagTypeErudForge, // 50
 /*----*/	BagTypeTradersSatchel,			// <*Database Reference Only> (db: Yellow Trader's Satchel Token?)
 /*5785*/	BagTypeGuktaForge,				// Froglok (no database entries as of peq rev 69)
 /*3359*/	BagTypeAugmentationSealer,
 /*----*/	BagTypeIceCreamChurn,			// <*Database Reference Only>
-/*6325*/	BagTypeTransformationmold,		// Ornamentation
+/*6325*/	BagTypeTransformationmold, // 55	// Ornamentation
 /*6340*/	BagTypeDetransformationmold,	// Ornamentation Stripper
 /*5400*/	BagTypeUnattuner,
 /*7684*/	BagTypeTradeskillBag,
@@ -390,30 +390,47 @@ enum {
 	ET_Scroll = 7
 };
 
-//SpawnAppearance types:
-#define AT_Die			0	// this causes the client to keel over and zone to bind point
-#define AT_WhoLevel		1	// the level that shows up on /who
-#define AT_Invis		3	// 0 = visible, 1 = invisible
-#define AT_PVP			4	// 0 = blue, 1 = pvp (red)
-#define AT_Light		5	// light type emitted by player (lightstone, shiny shield)
-#define AT_Anim			14	// 100=standing, 110=sitting, 111=ducking, 115=feigned, 105=looting
-#define AT_Sneak		15	// 0 = normal, 1 = sneaking
-#define AT_SpawnID		16	// server to client, sets player spawn id
-#define AT_HP			17	// Client->Server, my HP has changed (like regen tic)
-#define AT_Linkdead		18	// 0 = normal, 1 = linkdead
-#define AT_Levitate		19	// 0=off, 1=flymode, 2=levitate
-#define AT_GM			20	// 0 = normal, 1 = GM - all odd numbers seem to make it GM
-#define AT_Anon			21	// 0 = normal, 1 = anon, 2 = roleplay
-#define AT_GuildID		22
-#define AT_GuildRank	23	// 0=member, 1=officer, 2=leader
-#define AT_AFK			24	// 0 = normal, 1 = afk
-#define AT_Pet			25	// Param is EntityID of owner, or 0 for when charm breaks
-#define AT_Split		28	// 0 = normal, 1 = autosplit on
-#define AT_Size			29	// spawn's size
-#define AT_NPCName		31	// change PC's name's color to NPC color 0 = normal, 1 = npc name
-#define AT_ShowHelm		43	// 0 = do not show helmet graphic, 1 = show graphic
-#define AT_DamageState	44	// The damage state of a destructible object (0 through 4)
-//#define AT_Trader		300	// Bazzar Trader Mode
+//SpawnAppearance types: (compared two clients for server-originating types: SoF & RoF2)
+#define AT_Die 0			// this causes the client to keel over and zone to bind point (default action)
+#define AT_WhoLevel 1		// the level that shows up on /who
+//#define AT_2 2			// unknown
+#define AT_Invis 3			// 0 = visible, 1 = invisible
+#define AT_PVP 4			// 0 = blue, 1 = pvp (red)
+#define AT_Light 5			// light type emitted by player (lightstone, shiny shield)
+#define AT_Anim 14			// 100=standing, 110=sitting, 111=ducking, 115=feigned, 105=looting
+#define AT_Sneak 15			// 0 = normal, 1 = sneaking
+#define AT_SpawnID 16		// server to client, sets player spawn id
+#define AT_HP 17			// Client->Server, my HP has changed (like regen tic)
+#define AT_Linkdead 18		// 0 = normal, 1 = linkdead
+#define AT_Levitate 19		// 0=off, 1=flymode, 2=levitate
+#define AT_GM 20			// 0 = normal, 1 = GM - all odd numbers seem to make it GM
+#define AT_Anon 21			// 0 = normal, 1 = anon, 2 = roleplay
+#define AT_GuildID 22
+#define AT_GuildRank 23		// 0=member, 1=officer, 2=leader
+#define AT_AFK 24			// 0 = normal, 1 = afk
+#define AT_Pet 25			// Param is EntityID of owner, or 0 for when charm breaks
+//#define AT_27 27			// unknown
+#define AT_Split 28			// 0 = normal, 1 = autosplit on (not showing in SoF+) (client-to-server only)
+#define AT_Size 29			// spawn's size (present: SoF, absent: RoF2)
+//#define AT_30 30			// unknown
+#define AT_NPCName 31		// change PC's name's color to NPC color 0 = normal, 1 = npc name
+//#define AT_32 32			// unknown
+//#define AT_33 33			// unknown
+//#define AT_34 34			// unknown (present: SoF, absent: RoF2)
+//#define AT_35 35			// unknown
+//#define AT_36 36			// unknown
+//#define AT_37 37			// unknown
+//#define AT_38 38			// unknown
+//#define AT_39 39			// unknown
+#define AT_ShowHelm 43		// 0 = hide graphic, 1 = show graphic
+#define AT_DamageState 44	// The damage state of a destructible object (0 through 4)
+//#define AT_46 46			// unknown
+//#define AT_48 48			// unknown
+//#define AT_49 49			// unknown
+//#define AT_52 52			// (absent: SoF, present: RoF2) (not a replacement for RoF absent 29 or 34)
+//#define AT_53 53			// (absent: SoF, present: RoF2) (not a replacement for RoF absent 29 or 34)
+
+//#define AT_Trader 300		// Bazaar Trader Mode (not present in SoF or RoF2)
 
 // animations for AT_Anim
 #define ANIM_FREEZE	102
@@ -519,15 +536,40 @@ typedef enum {
 #define MT_StrikeThrough		339
 #define MT_Stun					340
 
+// TODO: Really should combine above and below into one
+
 //from showeq
 enum ChatColor
 {
+	/*
 	CC_Default					= 0,
 	CC_DarkGrey					= 1,
 	CC_DarkGreen				= 2,
 	CC_DarkBlue					= 3,
 	CC_Purple					= 5,
 	CC_LightGrey				= 6,
+	*/
+
+	CC_WhiteSmoke				= 0,	// FF|F0F0F0
+	CC_Green					= 2,	// FF|008000
+	CC_BrightBlue				= 3,	// FF|0040FF
+	CC_Magenta					= 5,	// FF|F000F0
+	CC_Gray						= 6,	// FF|808080
+	CC_LightGray				= 7,	// FF|E0E0E0
+	//CC_WhiteSmoke2				= 10,	// FF|F0F0F0
+	CC_DarkGray					= 12,	// FF|A0A0A0
+	CC_Red						= 13,	// FF|F00000
+	CC_Lime						= 14,	// FF|00F000
+	CC_Yellow					= 15,	// FF|F0F000
+	CC_Blue						= 16,	// FF|0000F0
+	CC_LightNavy				= 17,	// FF|0000AF
+	CC_Cyan						= 18,	// FF|00F0F0
+	CC_Black					= 20,	// FF|000000
+	
+	// any index <= 255 that is not defined above
+	CC_DimGray					= 1,	// FF|606060
+	CC_Default					= 1,
+
 	CC_User_Say					= 256,
 	CC_User_Tell				= 257,
 	CC_User_Group				= 258,
@@ -809,19 +851,19 @@ static const uint8 SkillDamageTypes[HIGHEST_SKILL + 1] = // change to _SkillServ
 **	Material use slots
 **
 */
-enum MaterialUseSlots : uint8
+enum MaterialSlots : uint8
 {
 	MaterialHead = 0,
 	MaterialChest,
 	MaterialArms,
 	MaterialWrist,
 	MaterialHands,
-	MaterialLegs,
+	MaterialLegs, // 5
 	MaterialFeet,
 	MaterialPrimary,
 	MaterialSecondary,
-	_MaterialCount,
-	_MaterialInvalid = 255
+	MaterialCount,
+	MaterialInvalid = 255
 };
 
 /*
@@ -858,71 +900,73 @@ enum MaterialUseSlots : uint8
 **
 */
 
-enum InventoryMapTypes : int16 {
-	MapPossessions = 0,
-	MapBank,
-	MapSharedBank,
-	MapTrade,
-	MapWorld,
-	MapLimbo,
-	MapTribute,
-	MapTrophyTribute,
-	MapGuildTribute,
-	MapMerchant,
-	MapDeleted,
-	MapCorpse,
-	MapBazaar,
-	MapInspect,
-	MapRealEstate,
-	MapViewMODPC,
-	MapViewMODBank,
-	MapViewMODSharedBank,
-	MapViewMODLimbo,
-	MapAltStorage,
-	MapArchived,
-	MapMail,
-	MapGuildTrophyTribute,
-	MapKrono,
-	MapOther,
-	_MapCount
+enum InventoryTypes : int16
+{
+	TypePossessions = 0,
+	TypeBank,
+	TypeSharedBank,
+	TypeTrade,
+	TypeWorld,
+	TypeLimbo, // 5
+	TypeTribute,
+	TypeTrophyTribute,
+	TypeGuildTribute,
+	TypeMerchant,
+	TypeDeleted, // 10
+	TypeCorpse,
+	TypeBazaar,
+	TypeInspect,
+	TypeRealEstate,
+	TypeViewMODPC, // 15
+	TypeViewMODBank,
+	TypeViewMODSharedBank,
+	TypeViewMODLimbo,
+	TypeAltStorage,
+	TypeArchived, // 20
+	TypeMail,
+	TypeGuildTrophyTribute,
+	TypeKrono,
+	TypeOther,
+	TypeCount
 };
 
-enum InventoryMainTypes : int16 {
-	MainCharm = 0,
-	MainEar1,
-	MainHead,
-	MainFace,
-	MainEar2,
-	MainNeck,
-	MainShoulders,
-	MainArms,
-	MainBack,
-	MainWrist1,
-	MainWrist2,
-	MainRange,
-	MainHands,
-	MainPrimary,
-	MainSecondary,
-	MainFinger1,
-	MainFinger2,
-	MainChest,
-	MainLegs,
-	MainFeet,
-	MainWaist,
-	MainPowerSource = 9999, // temp
-	MainAmmo = 21, // temp
-	MainGeneral1,
-	MainGeneral2,
-	MainGeneral3,
-	MainGeneral4,
-	MainGeneral5,
-	MainGeneral6,
-	MainGeneral7,
-	MainGeneral8,
-	//MainGeneral9,
-	//MainGeneral10,
-	MainCursor,
-	_MainCount
+enum PossessionsSlots : int16
+{
+	SlotCharm = 0,
+	SlotEar1,
+	SlotHead,
+	SlotFace,
+	SlotEar2,
+	SlotNeck, // 5
+	SlotShoulders,
+	SlotArms,
+	SlotBack,
+	SlotWrist1,
+	SlotWrist2, // 10
+	SlotRange,
+	SlotHands,
+	SlotPrimary,
+	SlotSecondary,
+	SlotFinger1, // 15
+	SlotFinger2,
+	SlotChest,
+	SlotLegs,
+	SlotFeet,
+	SlotWaist, // 20
+	SlotPowerSource = 9999, // temp
+	SlotAmmo = 21, // temp
+	SlotGeneral1,
+	SlotGeneral2,
+	SlotGeneral3,
+	SlotGeneral4, // 25
+	SlotGeneral5,
+	SlotGeneral6,
+	SlotGeneral7,
+	SlotGeneral8,
+	//SlotGeneral9,
+	//SlotGeneral10,
+	SlotCursor, // 30
+	SlotCount
 };
 
 #define INVALID_INDEX	-1
@@ -931,8 +975,8 @@ enum InventoryMainTypes : int16 {
 
 // yes..these are redundant... but, they help to identify and define what is actually being performed
 // plus, since they're pre-op's, they don't affect the actual binary size
-#define MAP_BEGIN	0
-#define MAIN_BEGIN	0
+#define TYPE_BEGIN	0
+#define SLOT_BEGIN	0
 #define SUB_BEGIN	0
 #define AUG_BEGIN	0
 

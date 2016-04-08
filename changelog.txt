@@ -1,5 +1,25 @@
 EQEMu Changelog (Started on Sept 24, 2003 15:50)
 -------------------------------------------------------
+== 04/07/2016 ==
+Uleat: Rework of eq_dictionary to facilitate inventory work
+
+== 04/05/2016 ==
+Uleat: Moved database query code out of bot.cpp and into the new BotDatabase class
+
+== 03/25/2016 ==
+Uleat: Fix for heal rotation 'Stack Overflow' error
+Kayen: Defensive procs will now only proc once per attack round (instead of every attack chance). 
+       Live like modifier added that decreases defensive proc chance if you are higher level then your attacker.
+
+== 03/24/2016 ==
+Kayen: Fix for AE taunt to use correct range and hate modifier.
+       Fix for spell effect version of taunt to use correct range.
+Uleat: Activation of new 'Bots' command system
+	- You will need to re-run cmake to capture the file additions and then re-compile your server binaries
+	- You will also need to manually run eqemu_update.pl and select the bots update option - you should have 2 pending updates: 9001 & 9002
+	- The new command system is accessed with the '^' character - start with '^help' and see where that takes you
+	- More information can be found on the eqemu forums
+
 == 03/05/2016 ==
 mackal: Implement extra bind points (secondary recall)
 	For SE_Gate, base2 is which bind to use (starting at 1)

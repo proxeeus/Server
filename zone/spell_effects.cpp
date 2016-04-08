@@ -616,7 +616,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Flesh To Bone");
 #endif
 				if(IsClient()){
-					ItemInst* transI = CastToClient()->GetInv().GetItem(MainCursor);
+					ItemInst* transI = CastToClient()->GetInv().GetItem(SlotCursor);
 					if(transI && transI->IsType(ItemClassCommon) && transI->IsStackable()){
 						uint32 fcharges = transI->GetCharges();
 							//Does it sound like meat... maybe should check if it looks like meat too...
@@ -626,7 +626,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 								strstr(transI->GetItem()->Name, "Flesh") ||
 								strstr(transI->GetItem()->Name, "parts") ||
 								strstr(transI->GetItem()->Name, "Parts")){
-								CastToClient()->DeleteItemInInventory(MainCursor, fcharges, true);
+								CastToClient()->DeleteItemInInventory(SlotCursor, fcharges, true);
 								CastToClient()->SummonItem(13073, fcharges);
 							}
 							else{
@@ -1157,7 +1157,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 						if (SummonedItem) {
 							c->PushItemOnCursor(*SummonedItem);
-							c->SendItemPacket(MainCursor, SummonedItem, ItemPacketSummonItem);
+							c->SendItemPacket(SlotCursor, SummonedItem, ItemPacketSummonItem);
 							safe_delete(SummonedItem);
 						}
 						SummonedItem = database.CreateItem(spell.base[i], charges);
@@ -1270,7 +1270,9 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Melee Absorb Rune: %+i", effect_value);
 #endif
-				effect_value = ApplySpellEffectiveness(caster, spell_id, effect_value);
+				if (caster)
+					effect_value = caster->ApplySpellEffectiveness(spell_id, effect_value);
+				
 				buffs[buffslot].melee_rune = effect_value;
 				break;
 			}
@@ -1427,7 +1429,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					}
 				}
 
-				for(int x = EmuConstants::MATERIAL_BEGIN; x <= EmuConstants::MATERIAL_TINT_END; x++)
+				for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++)
 					SendWearChange(x);
 
 				if (caster == this &&
@@ -1453,7 +1455,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						);
 						caster->SendAppearancePacket(AT_Size, static_cast<uint32>(caster->GetTarget()->GetSize()));
 
-						for(int x = EmuConstants::MATERIAL_BEGIN; x <= EmuConstants::MATERIAL_TINT_END; x++)
+						for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++)
 							caster->SendWearChange(x);
 				}
 			}
@@ -2214,7 +2216,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Rampage");
 #endif
 				if(caster)
-					entity_list.AEAttack(caster, 30, MainPrimary, 0, true); // on live wars dont get a duration ramp, its a one shot deal
+					entity_list.AEAttack(caster, 30, SlotPrimary, 0, true); // on live wars dont get a duration ramp, its a one shot deal
 
 				break;
 			}
@@ -2230,17 +2232,18 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				break;
 			}
 
-			case SE_AETaunt://Dook- slapped it in the spell effect so client does the animations
-			{			// and incase there are similar spells we havent found yet
+			case SE_AETaunt:
+			{			
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "AE Taunt");
 #endif
 				if(caster && caster->IsClient()){
-					float range = 0.0f;
-					if (spells[spell_id].base2[i])
-						range = (float)spells[spell_id].base[i];
+					//Live AE Taunt range is hardcoded at 40 (Spells for AE taunt all use zero range) Target type should be self only.
+					float range = 40;
+					if (spells[spell_id].max[i])//custom support if you want to alter range of AE Taunt.
+						range = spells[spell_id].max[i];
 
-					entity_list.AETaunt(caster->CastToClient(), range);
+					entity_list.AETaunt(caster->CastToClient(), range, spells[spell_id].base[i]);
 				}
 				break;
 			}
@@ -2650,10 +2653,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_Taunt:
 			{
 				if (IsNPC()){
-					caster->Taunt(this->CastToNPC(), false, static_cast<float>(spell.base[i]));
-
-					if (spell.base2[i] > 0)
-						CastToNPC()->SetHateAmountOnEnt(caster, (CastToNPC()->GetHateAmount(caster) + spell.base2[i]));
+					caster->Taunt(this->CastToNPC(), false, static_cast<float>(spell.base[i]), true, spell.base2[i]);
 				}
 				break;
 			}
@@ -3014,7 +3014,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 	if (SummonedItem) {
 		Client *c=CastToClient();
 		c->PushItemOnCursor(*SummonedItem);
-		c->SendItemPacket(MainCursor, SummonedItem, ItemPacketSummonItem);
+		c->SendItemPacket(SlotCursor, SummonedItem, ItemPacketSummonItem);
 		safe_delete(SummonedItem);
 	}
 
@@ -3022,7 +3022,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 }
 
 int Mob::CalcSpellEffectValue(uint16 spell_id, int effect_id, int caster_level, uint32 instrument_mod, Mob *caster,
-			      int ticsremaining)
+			      int ticsremaining, uint16 caster_id)
 {
 	int formula, base, max, effect_value;
 
@@ -3050,13 +3050,13 @@ int Mob::CalcSpellEffectValue(uint16 spell_id, int effect_id, int caster_level, 
 	    spells[spell_id].effectid[effect_id] != SE_ManaRegen_v2) {
 
 		int oval = effect_value;
-		int mod = ApplySpellEffectiveness(caster, spell_id, instrument_mod, true);
+		int mod = ApplySpellEffectiveness(spell_id, instrument_mod, true, caster_id);
 		effect_value = effect_value * mod / 10;
 		Log.Out(Logs::Detail, Logs::Spells, "Effect value %d altered with bard modifier of %d to yeild %d",
 			oval, mod, effect_value);
 	}
 
-	effect_value = mod_effect_value(effect_value, spell_id, spells[spell_id].effectid[effect_id], caster);
+	effect_value = mod_effect_value(effect_value, spell_id, spells[spell_id].effectid[effect_id], caster, caster_id);
 
 	return effect_value;
 }
@@ -3809,7 +3809,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 				else{
 					SendAppearancePacket(AT_Size, 6);
 				}
-				for(int x = EmuConstants::MATERIAL_BEGIN; x <= EmuConstants::MATERIAL_TINT_END; x++){
+				for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++){
 					SendWearChange(x);
 				}
 				break;
@@ -5126,7 +5126,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 
 		const Item_Struct* TempItem = 0;
 
-		for(int x = EmuConstants::EQUIPMENT_BEGIN; x <= EmuConstants::EQUIPMENT_END; x++)
+		for (int x = EQEmu::Constants::EQUIPMENT_BEGIN; x <= EQEmu::Constants::EQUIPMENT_END; x++)
 		{
 			if (SympatheticProcList.size() > MAX_SYMPATHETIC_PROCS)
 				continue;
@@ -5146,7 +5146,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 				}
 			}
 
-			for (int y = AUG_BEGIN; y < EmuConstants::ITEM_COMMON_SIZE; ++y)
+			for (int y = AUG_BEGIN; y < EQEmu::Constants::ITEM_COMMON_SIZE; ++y)
 			{
 				if (SympatheticProcList.size() > MAX_SYMPATHETIC_PROCS)
 					continue;
@@ -5261,7 +5261,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 		int16 focus_max_real = 0;
 
 		//item focus
-		for(int x = EmuConstants::EQUIPMENT_BEGIN; x <= EmuConstants::EQUIPMENT_END; x++)
+		for (int x = EQEmu::Constants::EQUIPMENT_BEGIN; x <= EQEmu::Constants::EQUIPMENT_END; x++)
 		{
 			TempItem = nullptr;
 			ItemInst* ins = GetInv().GetItem(x);
@@ -5295,7 +5295,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 				}
 			}
 
-			for (int y = AUG_BEGIN; y < EmuConstants::ITEM_COMMON_SIZE; ++y)
+			for (int y = AUG_BEGIN; y < EQEmu::Constants::ITEM_COMMON_SIZE; ++y)
 			{
 				ItemInst *aug = nullptr;
 				aug = ins->GetAugment(y);
@@ -5333,7 +5333,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 		}
 
 		//Tribute Focus
-		for(int x = EmuConstants::TRIBUTE_BEGIN; x <= EmuConstants::TRIBUTE_END; ++x)
+		for (int x = EQEmu::Constants::TRIBUTE_BEGIN; x <= EQEmu::Constants::TRIBUTE_END; ++x)
 		{
 			TempItem = nullptr;
 			ItemInst* ins = GetInv().GetItem(x);
@@ -5533,7 +5533,7 @@ int16 NPC::GetFocusEffect(focusType type, uint16 spell_id) {
 		int16 focus_max_real = 0;
 
 		//item focus
-		for(int i = 0; i < EmuConstants::EQUIPMENT_SIZE; i++){
+		for (int i = 0; i < EQEmu::Constants::EQUIPMENT_SIZE; i++){
 			const Item_Struct *cur = database.GetItem(equipment[i]);
 
 			if(!cur)
@@ -6045,16 +6045,21 @@ int32 Mob::GetFocusIncoming(focusType type, int effect, Mob *caster, uint32 spel
 	return value;
 }
 
-int32 Mob::ApplySpellEffectiveness(Mob* caster, int16 spell_id, int32 value, bool IsBard) {
+int32 Mob::ApplySpellEffectiveness(int16 spell_id, int32 value, bool IsBard, uint16 caster_id) {
 
 	// 9-17-12: This is likely causing crashes, disabled till can resolve.
 	if (IsBard)
 		return value;
 
+	Mob* caster = this;
+
+	if (caster_id && caster_id != GetID())//Make sure we are checking the casters focus
+		caster = entity_list.GetMob(caster_id);
+
 	if (!caster)
 		return value;
 
-	int16 focus = GetFocusEffect(focusFcBaseEffects, spell_id);
+	int16 focus = caster->GetFocusEffect(focusFcBaseEffects, spell_id);
 
 	if (IsBard)
 		value += focus;

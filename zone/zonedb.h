@@ -126,7 +126,7 @@ struct PetInfo {
 	uint32	Mana;
 	float	size;
 	SpellBuff_Struct	Buffs[BUFF_COUNT];
-	uint32	Items[EmuConstants::EQUIPMENT_SIZE];
+	uint32	Items[EQEmu::Constants::EQUIPMENT_SIZE];
 	char	Name[64];
 };
 
@@ -479,6 +479,10 @@ public:
 	/* Alternate Currency   */
 	void LoadAltCurrencyValues(uint32 char_id, std::map<uint32, uint32> &currency);
 	void UpdateAltCurrencyValue(uint32 char_id, uint32 currency_id, uint32 value);
+
+	/* Saylinks   */
+	uint32 LoadSaylinkID(const char* saylink_text, bool auto_insert = true);
+	uint32 SaveSaylinkID(const char* saylink_text);
 
 	/*
 		* Misc stuff.
