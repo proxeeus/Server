@@ -93,7 +93,7 @@ Bot::Bot(NPCType npcTypeData, Client* botOwner) : NPC(&npcTypeData, nullptr, glm
 		timers[i] = 0;
 
 	strcpy(this->name, this->GetCleanName());
-	memset(&m_Light, 0, sizeof(LightProfile_Struct));
+	memset(&m_Light, 0, sizeof(EQEmu::LightSource::impl));
 	memset(&_botInspectMessage, 0, sizeof(InspectMessage_Struct));
 }
 
@@ -1597,6 +1597,25 @@ bool Bot::DeleteBot()
 	if (!bot_owner)
 		return false;
 
+	if (!botdb.DeleteHealRotation(GetBotID())) {
+		bot_owner->Message(13, "%s", BotDatabase::fail::DeleteHealRotation());
+		return false;
+	}
+
+	std::string query = StringFormat("DELETE FROM `bot_heal_rotation_members` WHERE `bot_id` = '%u'", GetBotID());
+	auto results = botdb.QueryDatabase(query);
+	if (!results.Success()) {
+		bot_owner->Message(13, "Failed to delete heal rotation member '%s'", GetCleanName());
+		return false;
+	}
+
+	query = StringFormat("DELETE FROM `bot_heal_rotation_targets` WHERE `target_name` LIKE '%s'", GetCleanName());
+	results = botdb.QueryDatabase(query);
+	if (!results.Success()) {
+		bot_owner->Message(13, "Failed to delete heal rotation target '%s'", GetCleanName());
+		return false;
+	}
+
 	if (!DeletePet()) {
 		bot_owner->Message(13, "Failed to delete pet for '%s'", GetCleanName());
 		return false;
@@ -2192,10 +2211,16 @@ void Bot::AI_Process() {
 			m_member_of_heal_rotation->CastingReady() &&
 			m_member_of_heal_rotation->CastingMember() == this &&
 			!m_member_of_heal_rotation->MemberIsCasting(this)
-		)
+		) {
 			InterruptSpell();
-		else if (botClass != BARD)
+		}
+		else if (AmICastingForHealRotation() && m_member_of_heal_rotation->CastingMember() == this) {
+			AdvanceHealRotation(false);
 			return;
+		}
+		else if (botClass != BARD) {
+			return;
+		}
 	}
 	else if (IsHealRotationMember()) {
 		m_member_of_heal_rotation->SetMemberIsCasting(this, false);
@@ -6209,6 +6234,7 @@ bool Bot::DoFinishedSpellSingleTarget(uint16 spell_id, Mob* spellTarget, uint16 
 					if((spelltypeequal || spelltypetargetequal) || spelltypeclassequal || slotequal) {
 						if(((spells[thespell].effectid[0] == 0) && (spells[thespell].base[0] < 0)) &&
 							(spellTarget->GetHP() < ((spells[thespell].base[0] * (-1)) + 100))) {
+							Log.Out(Logs::General, Logs::Spells, "Bot::DoFinishedSpellSingleTarget - GroupBuffing failure");
 							return false;
 						}
 
@@ -8359,11 +8385,13 @@ bool Bot::IsMyHealRotationSet()
 {
 	if (!IsHealRotationMember())
 		return false;
-	if (!m_member_of_heal_rotation->IsActive())
+	if (!m_member_of_heal_rotation->IsActive() && !m_member_of_heal_rotation->IsHOTActive())
 		return false;
 	if (!m_member_of_heal_rotation->CastingReady())
 		return false;
 	if (m_member_of_heal_rotation->CastingMember() != this)
+		return false;
+	if (m_member_of_heal_rotation->MemberIsCasting(this))
 		return false;
 	if (!m_member_of_heal_rotation->PokeCastingTarget())
 		return false;
@@ -8441,8 +8469,8 @@ std::string Bot::CreateSayLink(Client* c, const char* message, const char* name)
 	uint32 saylink_id = database.LoadSaylinkID(escaped_string);
 	safe_delete_array(escaped_string);
 
-	Client::TextLink linker;
-	linker.SetLinkType(linker.linkItemData);
+	EQEmu::SayLink::impl linker;
+	linker.SetLinkType(EQEmu::SayLink::LinkItemData);
 	linker.SetProxyItemID(SAYLINK_ITEM_ID);
 	linker.SetProxyAugment1ID(saylink_id);
 	linker.SetProxyText(name);

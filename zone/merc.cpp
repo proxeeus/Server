@@ -20,6 +20,14 @@
 
 extern volatile bool is_zone_loaded;
 
+#if EQDEBUG >= 12
+	#define MercAI_DEBUG_Spells	25
+#elif EQDEBUG >= 9
+	#define MercAI_DEBUG_Spells	10
+#else
+	#define MercAI_DEBUG_Spells	-1
+#endif
+
 Merc::Merc(const NPCType* d, float x, float y, float z, float heading)
 : NPC(d, nullptr, glm::vec4(x, y, z, heading), 0, false), endupkeep_timer(1000), rest_timer(1), confidence_timer(6000), check_target_timer(2000)
 {
@@ -1768,7 +1776,7 @@ bool Merc::AI_EngagedCastCheck() {
 	{
 		AIautocastspell_timer->Disable();       //prevent the timer from going off AGAIN while we are casting.
 
-		Log.Out(Logs::Detail, Logs::AI, "Engaged autocast check triggered (MERCS).");
+		Log.Out(Logs::Detail, Logs::AI, "Merc Engaged autocast check triggered");
 
 		int8 mercClass = GetClass();
 
@@ -1822,8 +1830,8 @@ bool Merc::AI_IdleCastCheck() {
 	bool failedToCast = false;
 
 	if (AIautocastspell_timer->Check(false)) {
-#if MobAI_DEBUG_Spells >= 25
-		std::cout << "Non-Engaged autocast check triggered: " << this->GetCleanName() << std::endl;
+#if MercAI_DEBUG_Spells >= 25
+		Log.Out(Logs::Detail, Logs::AI, "Merc Non-Engaged autocast check triggered: %s", this->GetCleanName());
 #endif
 		AIautocastspell_timer->Disable();       //prevent the timer from going off AGAIN while we are casting.
 
@@ -5042,9 +5050,9 @@ void Merc::UpdateEquipmentLight()
 		auto item = database.GetItem(equipment[index]);
 		if (item == nullptr) { continue; }
 
-		if (m_Light.IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
+		if (EQEmu::LightSource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
 			m_Light.Type.Equipment = item->Light;
-			m_Light.Level.Equipment = m_Light.TypeToLevel(m_Light.Type.Equipment);
+			m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
 		}
 	}
 
@@ -5056,14 +5064,14 @@ void Merc::UpdateEquipmentLight()
 		if (item->ItemClass != ItemClassCommon) { continue; }
 		if (item->Light < 9 || item->Light > 13) { continue; }
 
-		if (m_Light.TypeToLevel(item->Light))
+		if (EQEmu::LightSource::TypeToLevel(item->Light))
 			general_light_type = item->Light;
 	}
 
-	if (m_Light.IsLevelGreater(general_light_type, m_Light.Type.Equipment))
+	if (EQEmu::LightSource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
 		m_Light.Type.Equipment = general_light_type;
 
-	m_Light.Level.Equipment = m_Light.TypeToLevel(m_Light.Type.Equipment);
+	m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
 }
 
 void Merc::AddItem(uint8 slot, uint32 item_id) {
