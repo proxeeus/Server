@@ -339,6 +339,7 @@ bool NPC::AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 	//stop moving if were casting a spell and were not a bard...
 	if(!IsBardSong(AIspells[i].spellid)) {
 		SetCurrentSpeed(0);
+		moved = false;
 	}
 
 	return CastSpell(AIspells[i].spellid, tar->GetID(), 1, AIspells[i].manacost == -2 ? 0 : -1, mana_cost, oDontDoAgainBefore, -1, -1, 0, &(AIspells[i].resist_adjust));
@@ -701,6 +702,7 @@ void Client::AI_SpellCast()
 				if(!IsBardSong(spell_to_cast))
 				{
 					SetCurrentSpeed(0);
+					moved = false;
 				}
 				CastSpell(spell_to_cast, tar->GetID(), slot_to_use);
 				return;
@@ -715,6 +717,7 @@ void Client::AI_SpellCast()
 			if(!IsBardSong(spell_to_cast))
 			{
 				SetCurrentSpeed(0);
+				moved = false;
 			}
 			CastSpell(spell_to_cast, tar->GetID(), slot_to_use);
 			return;
@@ -771,6 +774,7 @@ void Client::AI_Process()
 					if(GetTarget())
 						SetHeading(CalculateHeadingToTarget(GetTarget()->GetX(), GetTarget()->GetY()));
 					SetCurrentSpeed(0);
+					moved = false;
 				}
 				//continue on to attack code, ensuring that we execute the engaged code
 				engaged = true;
@@ -843,6 +847,7 @@ void Client::AI_Process()
 					SendPosition();
 				}
 				SetCurrentSpeed(0);
+				moved = false;
 			}
 			if (GetTarget() && !IsStunned() && !IsMezzed() && !GetFeigned()) {
 				if (attack_timer.Check()) {
@@ -887,6 +892,7 @@ void Client::AI_Process()
 			{
 				SetHeading(CalculateHeadingToTarget(GetTarget()->GetX(), GetTarget()->GetY()));
 				SetCurrentSpeed(0);
+				moved = false;
 			}
 		}
 		AI_SpellCast();
@@ -1086,6 +1092,7 @@ void Mob::AI_Process() {
 					SendPosition();
 				}
 				SetCurrentSpeed(0);
+				moved = false;
 			}
 			if(IsMoving())
 			{
@@ -1095,6 +1102,7 @@ void Mob::AI_Process() {
 					SendPosition();
 				}
 				SetCurrentSpeed(0);
+				moved = false;
 			}
 
 			//casting checked above...
@@ -1318,6 +1326,7 @@ void Mob::AI_Process() {
 					else if(IsMoving()) {
 						SetHeading(CalculateHeadingToTarget(target->GetX(), target->GetY()));
 						SetCurrentSpeed(0);
+						moved = false;
 
 					}
 				}
@@ -1658,6 +1667,7 @@ void NPC::AI_DoMovement() {
 					FaceTarget(GetTarget());
 				}
 				SetCurrentSpeed(0);
+				moved = false;
 				SetAppearance(GetGuardPointAnim());
 			}
 		}
