@@ -24,7 +24,7 @@
 #include "../common/seperator.h"
 #include "../common/spdat.h"
 #include "../common/string_util.h"
-#include "../common/clientversions.h"
+#include "../common/client_version.h" // inv2 watch
 #include "../common/features.h"
 #include "../common/item.h"
 #include "../common/item_struct.h"
@@ -488,7 +488,7 @@ void NPC::CheckMinMaxLevel(Mob *them)
 		if(themlevel < (*cur)->min_level || themlevel > (*cur)->max_level)
 		{
 			material = Inventory::CalcMaterialFromSlot((*cur)->equip_slot);
-			if (material != MaterialInvalid)
+			if (material != EQEmu::legacy::MaterialInvalid)
 				SendWearChange(material);
 
 			cur = itemlist.erase(cur);
@@ -529,8 +529,8 @@ void NPC::QueryLoot(Client* to)
 			continue;
 		}
 
-		EQEmu::SayLink::impl linker;
-		linker.SetLinkType(EQEmu::SayLink::LinkItemData);
+		EQEmu::saylink::SayLinkEngine linker;
+		linker.SetLinkType(linker.SayLinkItemData);
 		linker.SetItemData(item);
 
 		auto item_link = linker.GenerateLink();
@@ -748,15 +748,15 @@ void NPC::UpdateEquipmentLight()
 	m_Light.Type.Equipment = 0;
 	m_Light.Level.Equipment = 0;
 
-	for (int index = SLOT_BEGIN; index < EQEmu::Constants::EQUIPMENT_SIZE; ++index) {
-		if (index == SlotAmmo) { continue; }
+	for (int index = SLOT_BEGIN; index < EQEmu::legacy::EQUIPMENT_SIZE; ++index) {
+		if (index == EQEmu::legacy::SlotAmmo) { continue; }
 
 		auto item = database.GetItem(equipment[index]);
 		if (item == nullptr) { continue; }
 
-		if (EQEmu::LightSource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
+		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
 			m_Light.Type.Equipment = item->Light;
-			m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
+			m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
 		}
 	}
 
@@ -768,14 +768,14 @@ void NPC::UpdateEquipmentLight()
 		if (item->ItemClass != ItemClassCommon) { continue; }
 		if (item->Light < 9 || item->Light > 13) { continue; }
 
-		if (EQEmu::LightSource::TypeToLevel(item->Light))
+		if (EQEmu::lightsource::TypeToLevel(item->Light))
 			general_light_type = item->Light;
 	}
 
-	if (EQEmu::LightSource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
+	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
 		m_Light.Type.Equipment = general_light_type;
 
-	m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
+	m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
 }
 
 void NPC::Depop(bool StartSpawnTimer) {
@@ -1372,7 +1372,7 @@ uint32 ZoneDatabase::NPCSpawnDB(uint8 command, const char* zone, uint32 zone_ver
 
 int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 {
-	if (material_slot >= MaterialCount)
+	if (material_slot >= EQEmu::legacy::MaterialCount)
 		return 0;
 
 	int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
@@ -1383,23 +1383,23 @@ int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 	{
 		switch(material_slot)
 		{
-		case MaterialHead:
+		case EQEmu::legacy::MaterialHead:
 			return helmtexture;
-		case MaterialChest:
+		case EQEmu::legacy::MaterialChest:
 			return texture;
-		case MaterialArms:
+		case EQEmu::legacy::MaterialArms:
 			return armtexture;
-		case MaterialWrist:
+		case EQEmu::legacy::MaterialWrist:
 			return bracertexture;
-		case MaterialHands:
+		case EQEmu::legacy::MaterialHands:
 			return handtexture;
-		case MaterialLegs:
+		case EQEmu::legacy::MaterialLegs:
 			return legtexture;
-		case MaterialFeet:
+		case EQEmu::legacy::MaterialFeet:
 			return feettexture;
-		case MaterialPrimary:
+		case EQEmu::legacy::MaterialPrimary:
 			return d_melee_texture1;
-		case MaterialSecondary:
+		case EQEmu::legacy::MaterialSecondary:
 			return d_melee_texture2;
 		default:
 			//they have nothing in the slot, and its not a special slot... they get nothing.

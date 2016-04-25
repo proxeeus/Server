@@ -31,11 +31,11 @@ struct WorldObjectsSent_Struct {
 // New for RoF2 - Size: 12
 struct InventorySlot_Struct
 {
-/*000*/	int16	Type;	// Worn and Normal inventory = 0, Bank = 1, Shared Bank = 2, Delete Item = -1
+/*000*/	int16	Type;		// Worn and Normal inventory = 0, Bank = 1, Shared Bank = 2, Delete Item = -1
 /*002*/	int16	Unknown02;
 /*004*/	int16	Slot;
-/*006*/	int16	Sub;
-/*008*/	int16	Aug;	// Guessing - Seen 0xffff
+/*006*/	int16	SubIndex;
+/*008*/	int16	AugIndex;	// Guessing - Seen 0xffff
 /*010*/	int16	Unknown01;	// Normally 0 - Seen 13262 when deleting an item, but didn't match item ID
 /*012*/
 };
@@ -45,8 +45,8 @@ struct InventorySlot_Struct
 struct TypelessInventorySlot_Struct
 {
 /*000*/	int16	Slot;
-/*002*/	int16	Sub;
-/*004*/	int16	Aug;
+/*002*/	int16	SubIndex;
+/*004*/	int16	AugIndex;
 /*006*/	int16	Unknown01;
 /*008*/
 };
@@ -1084,11 +1084,11 @@ union
 	/*00184*/ EquipStruct equipment[22];		// Total Slots
 };
 /*00624*/ uint32 equip2_count;			// Seen 9
-/*00628*/ EquipStruct equipment2[MaterialCount];	// Appears to be Visible slots, but all 0s
+/*00628*/ EquipStruct equipment2[EQEmu::legacy::MaterialCount];	// Appears to be Visible slots, but all 0s
 /*00808*/ uint32 tint_count;			// Seen 9
-/*00812*/ Color_Struct item_tint[MaterialCount];	// RR GG BB 00
+/*00812*/ Color_Struct item_tint[EQEmu::legacy::MaterialCount];	// RR GG BB 00
 /*00848*/ uint32 tint_count2;			// Seen 9
-/*00852*/ Color_Struct item_tint2[MaterialCount];	// RR GG BB 00
+/*00852*/ Color_Struct item_tint2[EQEmu::legacy::MaterialCount];	// RR GG BB 00
 /*00888*/ uint8   haircolor;			// Player hair color
 /*00889*/ uint8   beardcolor;			// Player beard color
 /*00890*/ uint32 unknown_rof5;			//

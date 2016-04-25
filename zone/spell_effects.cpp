@@ -135,7 +135,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 		if (spells[spell_id].EndurUpkeep > 0)
 			SetEndurUpkeep(true);
 
-		if(IsClient() && CastToClient()->GetClientVersionBit() & BIT_UFAndLater)
+		if (IsClient() && CastToClient()->ClientVersionBit() & EQEmu::versions::bit_UFAndLater)
 		{
 			EQApplicationPacket *outapp = MakeBuffsPacket(false);
 			CastToClient()->FastQueuePacket(&outapp);
@@ -616,7 +616,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Flesh To Bone");
 #endif
 				if(IsClient()){
-					ItemInst* transI = CastToClient()->GetInv().GetItem(SlotCursor);
+					ItemInst* transI = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotCursor);
 					if(transI && transI->IsType(ItemClassCommon) && transI->IsStackable()){
 						uint32 fcharges = transI->GetCharges();
 							//Does it sound like meat... maybe should check if it looks like meat too...
@@ -626,7 +626,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 								strstr(transI->GetItem()->Name, "Flesh") ||
 								strstr(transI->GetItem()->Name, "parts") ||
 								strstr(transI->GetItem()->Name, "Parts")){
-								CastToClient()->DeleteItemInInventory(SlotCursor, fcharges, true);
+								CastToClient()->DeleteItemInInventory(EQEmu::legacy::SlotCursor, fcharges, true);
 								CastToClient()->SummonItem(13073, fcharges);
 							}
 							else{
@@ -818,7 +818,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				{
 					CastToClient()->SetSenseExemption(true);
 
-					if(CastToClient()->GetClientVersionBit() & BIT_SoDAndLater)
+					if (CastToClient()->ClientVersionBit() & EQEmu::versions::bit_SoDAndLater)
 					{
 						bodyType bt = BT_Undead;
 
@@ -1157,7 +1157,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 						if (SummonedItem) {
 							c->PushItemOnCursor(*SummonedItem);
-							c->SendItemPacket(SlotCursor, SummonedItem, ItemPacketSummonItem);
+							c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketSummonItem);
 							safe_delete(SummonedItem);
 						}
 						SummonedItem = database.CreateItem(spell.base[i], charges);
@@ -1429,7 +1429,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					}
 				}
 
-				for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++)
+				for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++)
 					SendWearChange(x);
 
 				if (caster == this &&
@@ -1455,7 +1455,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						);
 						caster->SendAppearancePacket(AT_Size, static_cast<uint32>(caster->GetTarget()->GetSize()));
 
-						for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++)
+						for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++)
 							caster->SendWearChange(x);
 				}
 			}
@@ -1627,7 +1627,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #endif
 				// This is handled by the client prior to SoD.
 				//
-				if(IsClient() && (CastToClient()->GetClientVersionBit() & BIT_SoDAndLater))
+				if (IsClient() && (CastToClient()->ClientVersionBit() & EQEmu::versions::bit_SoDAndLater))
 					CastToClient()->LocateCorpse();
 
 				break;
@@ -2216,7 +2216,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Rampage");
 #endif
 				if(caster)
-					entity_list.AEAttack(caster, 30, SlotPrimary, 0, true); // on live wars dont get a duration ramp, its a one shot deal
+					entity_list.AEAttack(caster, 30, EQEmu::legacy::SlotPrimary, 0, true); // on live wars dont get a duration ramp, its a one shot deal
 
 				break;
 			}
@@ -3014,7 +3014,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 	if (SummonedItem) {
 		Client *c=CastToClient();
 		c->PushItemOnCursor(*SummonedItem);
-		c->SendItemPacket(SlotCursor, SummonedItem, ItemPacketSummonItem);
+		c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketSummonItem);
 		safe_delete(SummonedItem);
 	}
 
@@ -3374,7 +3374,7 @@ void Mob::BuffProcess()
 						Log.Out(Logs::Detail, Logs::Spells, "Buff %d in slot %d has %d tics remaining.", buffs[buffs_i].spellid, buffs_i, buffs[buffs_i].ticsremaining);
 					}
 				}
-				else if(IsClient() && !(CastToClient()->GetClientVersionBit() & BIT_SoFAndLater))
+				else if (IsClient() && !(CastToClient()->ClientVersionBit() & EQEmu::versions::bit_SoFAndLater))
 				{
 					buffs[buffs_i].UpdateClient = true;
 				}
@@ -3386,7 +3386,7 @@ void Mob::BuffProcess()
 				{
 					CastToClient()->SendBuffDurationPacket(buffs[buffs_i]);
 					// Hack to get UF to play nicer, RoF seems fine without it
-					if (CastToClient()->GetClientVersion() == ClientVersion::UF && buffs[buffs_i].numhits > 0)
+					if (CastToClient()->ClientVersion() == EQEmu::versions::ClientVersion::UF && buffs[buffs_i].numhits > 0)
 						CastToClient()->SendBuffNumHitPacket(buffs[buffs_i], buffs_i);
 					buffs[buffs_i].UpdateClient = false;
 				}
@@ -3649,7 +3649,7 @@ void Mob::DoBuffTic(const Buffs_Struct &buff, int slot, Mob *caster)
 		case SE_LocateCorpse: {
 			// This is handled by the client prior to SoD.
 
-			if (IsClient() && (CastToClient()->GetClientVersionBit() & BIT_SoDAndLater))
+			if (IsClient() && (CastToClient()->ClientVersionBit() & EQEmu::versions::bit_SoDAndLater))
 				CastToClient()->LocateCorpse();
 		}
 		case SE_TotalHP: {
@@ -3809,7 +3809,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 				else{
 					SendAppearancePacket(AT_Size, 6);
 				}
-				for (int x = EQEmu::Constants::MATERIAL_BEGIN; x <= EQEmu::Constants::MATERIAL_TINT_END; x++){
+				for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++){
 					SendWearChange(x);
 				}
 				break;
@@ -4113,7 +4113,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 	{
 		EQApplicationPacket *outapp = MakeBuffsPacket();
 
-		entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, BIT_SoDAndLater);
+		entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, EQEmu::versions::bit_SoDAndLater);
 		if(IsClient() && GetTarget() == this) {
 			CastToClient()->QueuePacket(outapp);
 		}
@@ -4123,11 +4123,11 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 
 	if (IsNPC()) {
 		EQApplicationPacket *outapp = MakeBuffsPacket();
-		entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, BIT_SoDAndLater, true);
+		entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, EQEmu::versions::bit_SoDAndLater, true);
 		safe_delete(outapp);
 	}
 
-	if(IsClient() && CastToClient()->GetClientVersionBit() & BIT_UFAndLater)
+	if (IsClient() && CastToClient()->ClientVersionBit() & EQEmu::versions::bit_UFAndLater)
 	{
 		EQApplicationPacket *outapp = MakeBuffsPacket(false);
 		CastToClient()->FastQueuePacket(&outapp);
@@ -5126,7 +5126,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 
 		const Item_Struct* TempItem = 0;
 
-		for (int x = EQEmu::Constants::EQUIPMENT_BEGIN; x <= EQEmu::Constants::EQUIPMENT_END; x++)
+		for (int x = EQEmu::legacy::EQUIPMENT_BEGIN; x <= EQEmu::legacy::EQUIPMENT_END; x++)
 		{
 			if (SympatheticProcList.size() > MAX_SYMPATHETIC_PROCS)
 				continue;
@@ -5146,7 +5146,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 				}
 			}
 
-			for (int y = AUG_BEGIN; y < EQEmu::Constants::ITEM_COMMON_SIZE; ++y)
+			for (int y = AUG_INDEX_BEGIN; y < EQEmu::legacy::ITEM_COMMON_SIZE; ++y)
 			{
 				if (SympatheticProcList.size() > MAX_SYMPATHETIC_PROCS)
 					continue;
@@ -5261,7 +5261,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 		int16 focus_max_real = 0;
 
 		//item focus
-		for (int x = EQEmu::Constants::EQUIPMENT_BEGIN; x <= EQEmu::Constants::EQUIPMENT_END; x++)
+		for (int x = EQEmu::legacy::EQUIPMENT_BEGIN; x <= EQEmu::legacy::EQUIPMENT_END; x++)
 		{
 			TempItem = nullptr;
 			ItemInst* ins = GetInv().GetItem(x);
@@ -5295,7 +5295,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 				}
 			}
 
-			for (int y = AUG_BEGIN; y < EQEmu::Constants::ITEM_COMMON_SIZE; ++y)
+			for (int y = AUG_INDEX_BEGIN; y < EQEmu::legacy::ITEM_COMMON_SIZE; ++y)
 			{
 				ItemInst *aug = nullptr;
 				aug = ins->GetAugment(y);
@@ -5333,7 +5333,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 		}
 
 		//Tribute Focus
-		for (int x = EQEmu::Constants::TRIBUTE_BEGIN; x <= EQEmu::Constants::TRIBUTE_END; ++x)
+		for (int x = EQEmu::legacy::TRIBUTE_BEGIN; x <= EQEmu::legacy::TRIBUTE_END; ++x)
 		{
 			TempItem = nullptr;
 			ItemInst* ins = GetInv().GetItem(x);
@@ -5533,7 +5533,7 @@ int16 NPC::GetFocusEffect(focusType type, uint16 spell_id) {
 		int16 focus_max_real = 0;
 
 		//item focus
-		for (int i = 0; i < EQEmu::Constants::EQUIPMENT_SIZE; i++){
+		for (int i = 0; i < EQEmu::legacy::EQUIPMENT_SIZE; i++){
 			const Item_Struct *cur = database.GetItem(equipment[i]);
 
 			if(!cur)
@@ -6574,7 +6574,7 @@ bool Mob::TrySpellProjectile(Mob* spell_target,  uint16 spell_id, float speed){
 		if (spells[spell_id].resisttype == RESIST_FIRE) {
 
 			if (IsClient()){
-				if (CastToClient()->GetClientVersionBit() <= 4) //Titanium needs alternate graphic.
+				if (CastToClient()->ClientVersionBit() <= 4) //Titanium needs alternate graphic.
 					ProjectileAnimation(spell_target,(RuleI(Spells, FRProjectileItem_Titanium)), false, speed);
 				else
 					ProjectileAnimation(spell_target,(RuleI(Spells, FRProjectileItem_SOF)), false, speed);

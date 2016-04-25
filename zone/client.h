@@ -33,7 +33,8 @@ struct Item_Struct;
 #include "../common/ptimer.h"
 #include "../common/emu_opcodes.h"
 #include "../common/eq_packet_structs.h"
-#include "../common/eq_constants.h"
+//#include "../common/eq_constants.h"
+#include "../common/emu_constants.h" // inv2 watch
 #include "../common/eq_stream_intf.h"
 #include "../common/eq_packet.h"
 #include "../common/linked_list.h"
@@ -43,7 +44,7 @@ struct Item_Struct;
 #include "../common/item.h"
 #include "../common/guilds.h"
 #include "../common/item_struct.h"
-#include "../common/clientversions.h"
+//#include "../common/clientversions.h"
 
 #include "common.h"
 #include "merc.h"
@@ -217,7 +218,7 @@ public:
 	//abstract virtual function implementations required by base abstract class
 	virtual bool Death(Mob* killerMob, int32 damage, uint16 spell_id, SkillUseTypes attack_skill);
 	virtual void Damage(Mob* from, int32 damage, uint16 spell_id, SkillUseTypes attack_skill, bool avoidable = true, int8 buffslot = -1, bool iBuffTic = false, int special = 0);
-	virtual bool Attack(Mob* other, int Hand = SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false, bool IsFromSpell = false,
+	virtual bool Attack(Mob* other, int Hand = EQEmu::legacy::SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false, bool IsFromSpell = false,
 			ExtraAttackOptions *opts = nullptr, int special = 0);
 	virtual bool HasRaid() { return (GetRaid() ? true : false); }
 	virtual bool HasGroup() { return (GetGroup() ? true : false); }
@@ -736,7 +737,7 @@ public:
 #endif
 	uint32 GetEquipment(uint8 material_slot) const; // returns item id
 	uint32 GetEquipmentColor(uint8 material_slot) const;
-	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = m_inv.FindBrightestLightType(); m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment); }
+	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = m_inv.FindBrightestLightType(); m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment); }
 
 	inline bool AutoSplitEnabled() { return m_pp.autosplit != 0; }
 
@@ -813,7 +814,7 @@ public:
 	void QSSwapItemAuditor(MoveItem_Struct* move_in, bool postaction_call = false);
 	void PutLootInInventory(int16 slot_id, const ItemInst &inst, ServerLootItem_Struct** bag_item_data = 0);
 	bool AutoPutLootInInventory(ItemInst& inst, bool try_worn = false, bool try_cursor = true, ServerLootItem_Struct** bag_item_data = 0);
-	bool SummonItem(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false, uint16 to_slot = SlotCursor, uint32 ornament_icon = 0, uint32 ornament_idfile = 0, uint32 ornament_hero_model = 0);
+	bool SummonItem(uint32 item_id, int16 charges = -1, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false, uint16 to_slot = EQEmu::legacy::SlotCursor, uint32 ornament_icon = 0, uint32 ornament_idfile = 0, uint32 ornament_hero_model = 0);
 	void SetStats(uint8 type,int16 set_val);
 	void IncStats(uint8 type,int16 increase_val);
 	void DropItem(int16 slot_id);
@@ -976,9 +977,9 @@ public:
 	inline int ActiveTasksInSet(int TaskSet) { return (taskstate ? taskstate->ActiveTasksInSet(TaskSet) :0); }
 	inline int CompletedTasksInSet(int TaskSet) { return (taskstate ? taskstate->CompletedTasksInSet(TaskSet) :0); }
 
-	inline const ClientVersion GetClientVersion() const { return m_ClientVersion; }
-	inline const uint32 GetClientVersionBit() const { return m_ClientVersionBit; }
-	inline void SetClientVersion(ClientVersion in) { m_ClientVersion = in; }
+	inline const EQEmu::versions::ClientVersion ClientVersion() const { return m_ClientVersion; }
+	inline const uint32 ClientVersionBit() const { return m_ClientVersionBit; }
+	inline void SetClientVersion(EQEmu::versions::ClientVersion client_version) { m_ClientVersion = client_version; }
 
 	/** Adventure Stuff **/
 	void SendAdventureError(const char *error);
@@ -1096,7 +1097,7 @@ public:
 	void HandleLFGuildResponse(ServerPacket *pack);
 	void SendLFGuildStatus();
 	void SendGuildLFGuildStatus();
-	inline bool XTargettingAvailable() const { return ((m_ClientVersionBit & BIT_UFAndLater) && RuleB(Character, EnableXTargetting)); }
+	inline bool XTargettingAvailable() const { return ((m_ClientVersionBit & EQEmu::versions::bit_UFAndLater) && RuleB(Character, EnableXTargetting)); }
 	inline uint8 GetMaxXTargets() const { return MaxXTargets; }
 	void SetMaxXTargets(uint8 NewMax);
 	bool IsXTarget(const Mob *m) const;
@@ -1489,7 +1490,7 @@ private:
 	Timer *GlobalChatLimiterTimer; //60 seconds
 	uint32 AttemptedMessages;
 
-	ClientVersion m_ClientVersion;
+	EQEmu::versions::ClientVersion m_ClientVersion;
 	uint32 m_ClientVersionBit;
 
 	int XPRate;

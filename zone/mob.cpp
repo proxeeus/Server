@@ -73,7 +73,7 @@ Mob::Mob(const char* in_name,
 		uint32		in_drakkin_heritage,
 		uint32		in_drakkin_tattoo,
 		uint32		in_drakkin_details,
-		uint32		in_armor_tint[MaterialCount],
+		uint32		in_armor_tint[EQEmu::legacy::MaterialCount],
 
 		uint8		in_aa_title,
 		uint8		in_see_invis, // see through invis/ivu
@@ -179,7 +179,7 @@ Mob::Mob(const char* in_name,
 		runspeed = 1.25f;
 
 	m_Light.Type.Innate = in_light;
-	m_Light.Level.Innate = EQEmu::LightSource::TypeToLevel(m_Light.Type.Innate);
+	m_Light.Level.Innate = EQEmu::lightsource::TypeToLevel(m_Light.Type.Innate);
 	m_Light.Level.Equipment = m_Light.Type.Equipment = 0;
 	m_Light.Level.Spell = m_Light.Type.Spell = 0;
 	m_Light.Type.Active = m_Light.Type.Innate;
@@ -280,7 +280,7 @@ Mob::Mob(const char* in_name,
 		RangedProcs[j].level_override = -1;
 	}
 
-	for (i = 0; i < MaterialCount; i++)
+	for (i = 0; i < EQEmu::legacy::MaterialCount; i++)
 	{
 		if (in_armor_tint)
 		{
@@ -1290,7 +1290,7 @@ void Mob::SendHPUpdate(bool skip_self)
 	CreateHPPacket(&hp_app);
 
 	// send to people who have us targeted
-	entity_list.QueueClientsByTarget(this, &hp_app, false, 0, false, true, BIT_AllClients);
+	entity_list.QueueClientsByTarget(this, &hp_app, false, 0, false, true, EQEmu::versions::bit_AllClients);
 	entity_list.QueueClientsByXTarget(this, &hp_app, false);
 	entity_list.QueueToGroupsForNPCHealthAA(this, &hp_app);
 
@@ -2238,11 +2238,11 @@ bool Mob::UpdateActiveLight()
 	m_Light.Type.Active = 0;
 	m_Light.Level.Active = 0;
 
-	if (EQEmu::LightSource::IsLevelGreater((m_Light.Type.Innate & 0x0F), m_Light.Type.Active)) { m_Light.Type.Active = m_Light.Type.Innate; }
+	if (EQEmu::lightsource::IsLevelGreater((m_Light.Type.Innate & 0x0F), m_Light.Type.Active)) { m_Light.Type.Active = m_Light.Type.Innate; }
 	if (m_Light.Level.Equipment > m_Light.Level.Active) { m_Light.Type.Active = m_Light.Type.Equipment; } // limiter in property handler
 	if (m_Light.Level.Spell > m_Light.Level.Active) { m_Light.Type.Active = m_Light.Type.Spell; } // limiter in property handler
 
-	m_Light.Level.Active = EQEmu::LightSource::TypeToLevel(m_Light.Type.Active);
+	m_Light.Level.Active = EQEmu::lightsource::TypeToLevel(m_Light.Type.Active);
 
 	return (m_Light.Level.Active != old_light_level);
 }
@@ -2385,8 +2385,8 @@ bool Mob::CanThisClassDualWield(void) const {
 		return(GetSkill(SkillDualWield) > 0);
 	}
 	else if(CastToClient()->HasSkill(SkillDualWield)) {
-		const ItemInst* pinst = CastToClient()->GetInv().GetItem(SlotPrimary);
-		const ItemInst* sinst = CastToClient()->GetInv().GetItem(SlotSecondary);
+		const ItemInst* pinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotPrimary);
+		const ItemInst* sinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotSecondary);
 
 		// 2HS, 2HB, or 2HP
 		if(pinst && pinst->IsWeapon()) {
@@ -2871,7 +2871,7 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 	if (item != 0)
 	{
 		// For primary and secondary we need the model, not the material
-		if (material_slot == MaterialPrimary || material_slot == MaterialSecondary)
+		if (material_slot == EQEmu::legacy::MaterialPrimary || material_slot == EQEmu::legacy::MaterialSecondary)
 		{
 			if (this->IsClient())
 			{
@@ -2915,7 +2915,7 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 int32 Mob::GetHerosForgeModel(uint8 material_slot) const
 {
 	uint32 HeroModel = 0;
-	if (material_slot >= 0 && material_slot < MaterialPrimary)
+	if (material_slot >= 0 && material_slot < EQEmu::legacy::MaterialPrimary)
 	{
 		uint32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
 		const Item_Struct *item;
@@ -5037,7 +5037,7 @@ uint16 Mob::GetSkillByItemType(int ItemType)
 		case ItemType2HBlunt:
 			return Skill2HBlunt;
 		case ItemType2HPiercing:
-			if (IsClient() && CastToClient()->GetClientVersion() < ClientVersion::RoF2)
+			if (IsClient() && CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::RoF2)
 				return Skill1HPiercing;
 			else
 				return Skill2HPiercing;

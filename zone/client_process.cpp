@@ -126,7 +126,7 @@ bool Client::Process() {
 				HandleRespawnFromHover(0);
 		}
 
-		if(IsTracking() && (GetClientVersion() >= ClientVersion::SoD) && TrackingTimer.Check())
+		if (IsTracking() && (ClientVersion() >= EQEmu::versions::ClientVersion::SoD) && TrackingTimer.Check())
 			DoTracking();
 
 		// SendHPUpdate calls hpupdate_timer.Start so it can delay this timer, so lets not reset with the check
@@ -296,7 +296,7 @@ bool Client::Process() {
 		}
 
 		if(AutoFireEnabled()){
-			ItemInst *ranged = GetInv().GetItem(SlotRange);
+			ItemInst *ranged = GetInv().GetItem(EQEmu::legacy::SlotRange);
 			if(ranged)
 			{
 				if(ranged->GetItem() && ranged->GetItem()->ItemType == ItemTypeBow){
@@ -391,10 +391,10 @@ bool Client::Process() {
 			}
 			else if (auto_attack_target->GetHP() > -10) // -10 so we can watch people bleed in PvP
 			{
-				ItemInst *wpn = GetInv().GetItem(SlotPrimary);
-				TryWeaponProc(wpn, auto_attack_target, SlotPrimary);
+				ItemInst *wpn = GetInv().GetItem(EQEmu::legacy::SlotPrimary);
+				TryWeaponProc(wpn, auto_attack_target, EQEmu::legacy::SlotPrimary);
 
-				DoAttackRounds(auto_attack_target, SlotPrimary);
+				DoAttackRounds(auto_attack_target, EQEmu::legacy::SlotPrimary);
 				if (CheckAATimer(aaTimerRampage))
 					entity_list.AEAttack(this, 30);
 			}
@@ -430,10 +430,10 @@ bool Client::Process() {
 			else if(auto_attack_target->GetHP() > -10) {
 				CheckIncreaseSkill(SkillDualWield, auto_attack_target, -10);
 				if (CheckDualWield()) {
-					ItemInst *wpn = GetInv().GetItem(SlotSecondary);
-					TryWeaponProc(wpn, auto_attack_target, SlotSecondary);
+					ItemInst *wpn = GetInv().GetItem(EQEmu::legacy::SlotSecondary);
+					TryWeaponProc(wpn, auto_attack_target, EQEmu::legacy::SlotSecondary);
 
-					DoAttackRounds(auto_attack_target, SlotSecondary);
+					DoAttackRounds(auto_attack_target, EQEmu::legacy::SlotSecondary);
 				}
 			}
 		}
@@ -742,7 +742,7 @@ void Client::BulkSendInventoryItems() {
 
 	// LINKDEAD TRADE ITEMS
 	// Move trade slot items back into normal inventory..need them there now for the proceeding validity checks
-	for(slot_id = EQEmu::Constants::TRADE_BEGIN; slot_id <= EQEmu::Constants::TRADE_END; slot_id++) {
+	for (slot_id = EQEmu::legacy::TRADE_BEGIN; slot_id <= EQEmu::legacy::TRADE_END; slot_id++) {
 		ItemInst* inst = m_inv.PopItem(slot_id);
 		if(inst) {
 			bool is_arrow = (inst->GetItem()->ItemType == ItemTypeArrow) ? true : false;
@@ -790,7 +790,7 @@ void Client::BulkSendInventoryItems() {
 	std::map<uint16, std::string>::iterator itr;
 
 	//Inventory items
-	for(slot_id = SLOT_BEGIN; slot_id < EQEmu::Constants::TYPE_POSSESSIONS_SIZE; slot_id++) {
+	for (slot_id = SLOT_BEGIN; slot_id < EQEmu::legacy::TYPE_POSSESSIONS_SIZE; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if(inst) {
 			std::string packet = inst->Serialize(slot_id);
@@ -800,17 +800,17 @@ void Client::BulkSendInventoryItems() {
 	}
 
 	// Power Source
-	if(GetClientVersion() >= ClientVersion::SoF) {
-		const ItemInst* inst = m_inv[SlotPowerSource];
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
+		const ItemInst* inst = m_inv[EQEmu::legacy::SlotPowerSource];
 		if(inst) {
-			std::string packet = inst->Serialize(SlotPowerSource);
+			std::string packet = inst->Serialize(EQEmu::legacy::SlotPowerSource);
 			ser_items[i++] = packet;
 			size += packet.length();
 		}
 	}
 
 	// Bank items
-	for(slot_id = EQEmu::Constants::BANK_BEGIN; slot_id <= EQEmu::Constants::BANK_END; slot_id++) {
+	for (slot_id = EQEmu::legacy::BANK_BEGIN; slot_id <= EQEmu::legacy::BANK_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if(inst) {
 			std::string packet = inst->Serialize(slot_id);
@@ -820,7 +820,7 @@ void Client::BulkSendInventoryItems() {
 	}
 
 	// Shared Bank items
-	for(slot_id = EQEmu::Constants::SHARED_BANK_BEGIN; slot_id <= EQEmu::Constants::SHARED_BANK_END; slot_id++) {
+	for (slot_id = EQEmu::legacy::SHARED_BANK_BEGIN; slot_id <= EQEmu::legacy::SHARED_BANK_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if(inst) {
 			std::string packet = inst->Serialize(slot_id);
@@ -851,14 +851,14 @@ void Client::BulkSendInventoryItems()
 	if(deletenorent){//client was offline for more than 30 minutes, delete no rent items
 		RemoveNoRent();
 	}
-	for (slot_id=EQEmu::Constants::POSSESSIONS_BEGIN; slot_id<=EQEmu::Constants::POSSESSIONS_END; slot_id++) {
+	for (slot_id=EQEmu::constants::POSSESSIONS_BEGIN; slot_id<=EQEmu::constants::POSSESSIONS_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if (inst){
 			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
 		}
 	}
 	// Bank items
-	for (slot_id=EQEmu::Constants::BANK_BEGIN; slot_id<=EQEmu::Constants::BANK_END; slot_id++) { // 2015...
+	for (slot_id=EQEmu::constants::BANK_BEGIN; slot_id<=EQEmu::constants::BANK_END; slot_id++) { // 2015...
 		const ItemInst* inst = m_inv[slot_id];
 		if (inst){
 			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
@@ -866,7 +866,7 @@ void Client::BulkSendInventoryItems()
 	}
 
 	// Shared Bank items
-	for (slot_id=EQEmu::Constants::SHARED_BANK_BEGIN; slot_id<=EQEmu::Constants::SHARED_BANK_END; slot_id++) {
+	for (slot_id=EQEmu::constants::SHARED_BANK_BEGIN; slot_id<=EQEmu::constants::SHARED_BANK_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if (inst){
 			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
@@ -876,7 +876,7 @@ void Client::BulkSendInventoryItems()
 	// LINKDEAD TRADE ITEMS
 	// If player went LD during a trade, they have items in the trade inventory
 	// slots. These items are now being put into their inventory (then queue up on cursor)
-	for (int16 trade_slot_id=EQEmu::Constants::TRADE_BEGIN; trade_slot_id<=EQEmu::Constants::TRADE_END; trade_slot_id++) {
+	for (int16 trade_slot_id=EQEmu::constants::TRADE_BEGIN; trade_slot_id<=EQEmu::constants::TRADE_END; trade_slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
 		if (inst) {
 			int16 free_slot_id = m_inv.FindFreeSlot(inst->IsType(ItemClassContainer), true, inst->GetItem()->Size);
@@ -890,7 +890,7 @@ void Client::BulkSendInventoryItems()
 void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {
 	const Item_Struct* handyitem = nullptr;
 	uint32 numItemSlots = 80; //The max number of items passed in the transaction.
-	if (m_ClientVersionBit & BIT_RoFAndLater) { // RoF+ can send 200 items
+	if (m_ClientVersionBit & EQEmu::versions::bit_RoFAndLater) { // RoF+ can send 200 items
 		numItemSlots = 200;
 	}
 	const Item_Struct *item;
@@ -1147,7 +1147,7 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 	switch(memspell->scribing)
 	{
 		case memSpellScribing:	{	// scribing spell to book
-			const ItemInst* inst = m_inv[SlotCursor];
+			const ItemInst* inst = m_inv[EQEmu::legacy::SlotCursor];
 
 			if(inst && inst->IsType(ItemClassCommon))
 			{
@@ -1161,7 +1161,7 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 				if(item && item->Scroll.Effect == (int32)(memspell->spell_id))
 				{
 					ScribeSpell(memspell->spell_id, memspell->slot);
-					DeleteItemInInventory(SlotCursor, 1, true);
+					DeleteItemInInventory(EQEmu::legacy::SlotCursor, 1, true);
 				}
 				else
 					Message(0,"Scribing spell: inst exists but item does not or spell ids do not match.");
@@ -1554,7 +1554,7 @@ void Client::OPGMTraining(const EQApplicationPacket *app)
 		}
 	}
 
-	if (GetClientVersion() < ClientVersion::RoF2 && GetClass() == BERSERKER) {
+	if (ClientVersion() < EQEmu::versions::ClientVersion::RoF2 && GetClass() == BERSERKER) {
 		gmtrain->skills[Skill1HPiercing] = gmtrain->skills[Skill2HPiercing];
 		gmtrain->skills[Skill2HPiercing] = 0;
 	}
@@ -1734,7 +1734,7 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 		}
 	}
 
-	if(GetClientVersion() >= ClientVersion::SoF) {
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
 		// The following packet decreases the skill points left in the Training Window and
 		// produces the 'You have increased your skill / learned the basics of' message.
 		//
@@ -2174,7 +2174,7 @@ void Client::ClearHover()
 	entity_list.QueueClients(this, outapp, false);
 	safe_delete(outapp);
 
-	if(IsClient() && CastToClient()->GetClientVersionBit() & BIT_UFAndLater)
+	if (IsClient() && CastToClient()->ClientVersionBit() & EQEmu::versions::bit_UFAndLater)
 	{
 		EQApplicationPacket *outapp = MakeBuffsPacket(false);
 		CastToClient()->FastQueuePacket(&outapp);

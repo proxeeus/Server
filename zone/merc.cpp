@@ -50,7 +50,7 @@ Merc::Merc(const NPCType* d, float x, float y, float z, float heading)
 	_baseFR = d->FR;
 	_basePR = d->PR;
 	_baseCorrup = d->Corrup;
-	_OwnerClientVersion = static_cast<unsigned int>(ClientVersion::Titanium);
+	_OwnerClientVersion = static_cast<unsigned int>(EQEmu::versions::ClientVersion::Titanium);
 	RestRegenHP = 0;
 	RestRegenMana = 0;
 	RestRegenEndurance = 0;
@@ -214,7 +214,7 @@ void Merc::CalcItemBonuses(StatBonuses* newbon) {
 
 	unsigned int i;
 	//should not include 21 (SLOT_AMMO)
-	for (i = 0; i < SlotAmmo; i++) {
+	for (i = 0; i < EQEmu::legacy::SlotAmmo; i++) {
 		if(equipment[i] == 0)
 			continue;
 		const Item_Struct * itm = database.GetItem(equipment[i]);
@@ -1018,7 +1018,7 @@ int32 Merc::CalcBaseEndurance()
 	int32 sta_end = 0;
 	int Stats = 0;
 
-	if(GetClientVersion() >= static_cast<unsigned int>(ClientVersion::SoD) && RuleB(Character, SoDClientUseSoDHPManaEnd)) {
+	if (GetClientVersion() >= static_cast<unsigned int>(EQEmu::versions::ClientVersion::SoD) && RuleB(Character, SoDClientUseSoDHPManaEnd)) {
 		int HeroicStats = 0;
 
 		Stats = ((GetSTR() + GetSTA() + GetDEX() + GetAGI()) / 4);
@@ -1559,24 +1559,24 @@ void Merc::AI_Process() {
 				//try main hand first
 				if(attack_timer.Check())
 				{
-					Attack(GetTarget(), SlotPrimary);
+					Attack(GetTarget(), EQEmu::legacy::SlotPrimary);
 
 					bool tripleSuccess = false;
 
 					if(GetOwner() && GetTarget() && CanThisClassDoubleAttack())
 					{
 						if(GetOwner()) {
-							Attack(GetTarget(), SlotPrimary, true);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, true);
 						}
 
 						if(GetOwner() && GetTarget() && GetSpecialAbility(SPECATK_TRIPLE)) {
 							tripleSuccess = true;
-							Attack(GetTarget(), SlotPrimary, true);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, true);
 						}
 
 						//quad attack, does this belong here??
 						if(GetOwner() && GetTarget() && GetSpecialAbility(SPECATK_QUAD)) {
-							Attack(GetTarget(), SlotPrimary, true);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, true);
 						}
 					}
 
@@ -1588,8 +1588,8 @@ void Merc::AI_Process() {
 						if(zone->random.Roll(flurrychance))
 						{
 							Message_StringID(MT_NPCFlurry, YOU_FLURRY);
-							Attack(GetTarget(), SlotPrimary, false);
-							Attack(GetTarget(), SlotPrimary, false);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, false);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, false);
 						}
 					}
 
@@ -1598,7 +1598,7 @@ void Merc::AI_Process() {
 					if (GetTarget() && ExtraAttackChanceBonus) {
 						if(zone->random.Roll(ExtraAttackChanceBonus))
 						{
-							Attack(GetTarget(), SlotPrimary, false);
+							Attack(GetTarget(), EQEmu::legacy::SlotPrimary, false);
 						}
 					}
 				}
@@ -1633,11 +1633,11 @@ void Merc::AI_Process() {
 						// Max 78% of DW
 						if (zone->random.Roll(DualWieldProbability))
 						{
-							Attack(GetTarget(), SlotSecondary);     // Single attack with offhand
+							Attack(GetTarget(), EQEmu::legacy::SlotSecondary);     // Single attack with offhand
 
 							if(CanThisClassDoubleAttack()) {
 								if(GetTarget() && GetTarget()->GetHP() > -10)
-									Attack(GetTarget(), SlotSecondary);     // Single attack with offhand
+									Attack(GetTarget(), EQEmu::legacy::SlotSecondary);     // Single attack with offhand
 							}
 						}
 					}
@@ -2552,7 +2552,7 @@ int16 Merc::GetFocusEffect(focusType type, uint16 spell_id) {
 		int16 focus_max_real = 0;
 
 		//item focus
-		for (int x = 0; x < EQEmu::Constants::EQUIPMENT_SIZE; ++x)
+		for (int x = 0; x < EQEmu::legacy::EQUIPMENT_SIZE; ++x)
 		{
 			TempItem = nullptr;
 			if (equipment[x] == 0)
@@ -5025,12 +5025,12 @@ void Merc::ScaleStats(int scalepercent, bool setmax) {
 void Merc::UpdateMercAppearance() {
 	// Copied from Bot Code:
 	uint32 itemID = NO_ITEM;
-	uint8 materialFromSlot = MaterialInvalid;
-	for (int i = EQEmu::Constants::EQUIPMENT_BEGIN; i <= EQEmu::Constants::EQUIPMENT_END; ++i) {
+	uint8 materialFromSlot = EQEmu::legacy::MaterialInvalid;
+	for (int i = EQEmu::legacy::EQUIPMENT_BEGIN; i <= EQEmu::legacy::EQUIPMENT_END; ++i) {
 		itemID = equipment[i];
 		if(itemID != NO_ITEM) {
 			materialFromSlot = Inventory::CalcMaterialFromSlot(i);
-			if(materialFromSlot != MaterialInvalid)
+			if (materialFromSlot != EQEmu::legacy::MaterialInvalid)
 				this->SendWearChange(materialFromSlot);
 		}
 	}
@@ -5044,15 +5044,15 @@ void Merc::UpdateEquipmentLight()
 	m_Light.Type.Equipment = 0;
 	m_Light.Level.Equipment = 0;
 
-	for (int index = SLOT_BEGIN; index < EQEmu::Constants::EQUIPMENT_SIZE; ++index) {
-		if (index == SlotAmmo) { continue; }
+	for (int index = SLOT_BEGIN; index < EQEmu::legacy::EQUIPMENT_SIZE; ++index) {
+		if (index == EQEmu::legacy::SlotAmmo) { continue; }
 
 		auto item = database.GetItem(equipment[index]);
 		if (item == nullptr) { continue; }
 
-		if (EQEmu::LightSource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
+		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
 			m_Light.Type.Equipment = item->Light;
-			m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
+			m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
 		}
 	}
 
@@ -5064,14 +5064,14 @@ void Merc::UpdateEquipmentLight()
 		if (item->ItemClass != ItemClassCommon) { continue; }
 		if (item->Light < 9 || item->Light > 13) { continue; }
 
-		if (EQEmu::LightSource::TypeToLevel(item->Light))
+		if (EQEmu::lightsource::TypeToLevel(item->Light))
 			general_light_type = item->Light;
 	}
 
-	if (EQEmu::LightSource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
+	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
 		m_Light.Type.Equipment = general_light_type;
 
-	m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment);
+	m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
 }
 
 void Merc::AddItem(uint8 slot, uint32 item_id) {
@@ -5127,109 +5127,109 @@ void Client::SendMercResponsePackets(uint32 ResponseType)
 		SendMercMerchantResponsePacket(6);
 		break;
 	case 7: //You must dismiss your suspended mercenary before purchasing a new one!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(7);
 		else
 			//You have the maximum number of mercenaries.  You must dismiss one before purchasing a new one!
 			SendMercMerchantResponsePacket(6);
 		break;
 	case 8: //You can not purchase a mercenary because your group is full!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(8);
 		else
 			SendMercMerchantResponsePacket(7);
 		break;
 	case 9: //You can not purchase a mercenary because you are in combat!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//Mercenary failed to spawn!
 			SendMercMerchantResponsePacket(3);
 		else
 			SendMercMerchantResponsePacket(8);
 		break;
 	case 10: //You have recently dismissed a mercenary and must wait a few more seconds before you can purchase a new one!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//Mercenary failed to spawn!
 			SendMercMerchantResponsePacket(3);
 		else
 			SendMercMerchantResponsePacket(9);
 		break;
 	case 11: //An error occurred created your mercenary!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(9);
 		else
 			SendMercMerchantResponsePacket(10);
 		break;
 	case 12: //Upkeep Charge Message
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(10);
 		else
 			SendMercMerchantResponsePacket(11);
 		break;
 	case 13: // ???
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(11);
 		else
 			SendMercMerchantResponsePacket(12);
 		break;
 	case 14: //You ran out of funds to pay for your mercenary!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(12);
 		else
 			SendMercMerchantResponsePacket(13);
 		break;
 	case 15: // ???
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(13);
 		else
 			SendMercMerchantResponsePacket(14);
 		break;
 	case 16: //Your mercenary is about to be suspended due to insufficient funds!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(14);
 		else
 			SendMercMerchantResponsePacket(15);
 		break;
 	case 17: //There is no mercenary liaison nearby!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(15);
 		else
 			SendMercMerchantResponsePacket(16);
 		break;
 	case 18: //You are too far from the liaison!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(16);
 		else
 			SendMercMerchantResponsePacket(17);
 		break;
 	case 19: //You do not meet the requirements for that mercenary!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			SendMercMerchantResponsePacket(17);
 		else
 			SendMercMerchantResponsePacket(18);
 		break;
 	case 20: //You are unable to interact with the liaison!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//You are too far from the liaison!
 			SendMercMerchantResponsePacket(16);
 		else
 			SendMercMerchantResponsePacket(19);
 		break;
 	case 21: //You do not have a high enough membership level to purchase this mercenary!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//You do not meet the requirements for that mercenary!
 			SendMercMerchantResponsePacket(17);
 		else
 			SendMercMerchantResponsePacket(20);
 		break;
 	case 22: //Your purchase has failed because this mercenary requires a Gold membership!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//You do not meet the requirements for that mercenary!
 			SendMercMerchantResponsePacket(17);
 		else
 			SendMercMerchantResponsePacket(21);
 		break;
 	case 23: //Your purchase has failed because this mercenary requires at least a Silver membership!
-		if (GetClientVersion() < ClientVersion::RoF)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			//You do not meet the requirements for that mercenary!
 			SendMercMerchantResponsePacket(17);
 		else
@@ -5380,7 +5380,7 @@ bool Client::CheckCanSpawnMerc(uint32 template_id) {
 	}
 
 	// Check client version
-	if(static_cast<unsigned int>(GetClientVersion()) < mercTemplate->ClientVersion)
+	if(static_cast<unsigned int>(ClientVersion()) < mercTemplate->ClientVersion)
 	{
 		SendMercResponsePackets(3);
 		return false;
@@ -6036,7 +6036,7 @@ void Client::SetMerc(Merc* newmerc) {
 		//Client* oldowner = entity_list.GetClientByID(newmerc->GetOwnerID());
 		newmerc->SetOwnerID(this->GetID());
 		newmerc->SetMercCharacterID(this->CharacterID());
-		newmerc->SetClientVersion((uint8)this->GetClientVersion());
+		newmerc->SetClientVersion((uint8)this->ClientVersion());
 		GetMercInfo().mercid = newmerc->GetMercID();
 		GetMercInfo().MercTemplateID = newmerc->GetMercTemplateID();
 		GetMercInfo().myTemplate = zone->GetMercTemplate(GetMercInfo().MercTemplateID);
@@ -6060,7 +6060,7 @@ void Client::UpdateMercLevel() {
 
 void Client::SendMercMerchantResponsePacket(int32 response_type) {
 	// This response packet brings up the Mercenary Manager window
-	if(GetClientVersion() >= ClientVersion::SoD)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
 	{
 		EQApplicationPacket *outapp = new EQApplicationPacket(OP_MercenaryHire, sizeof(MercenaryMerchantResponse_Struct));
 		MercenaryMerchantResponse_Struct* mmr = (MercenaryMerchantResponse_Struct*)outapp->pBuffer;

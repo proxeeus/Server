@@ -510,7 +510,7 @@ void Client::CompleteConnect()
 
 	if (IsInAGuild()){
 		uint8 rank = GuildRank();
-		if (GetClientVersion() >= ClientVersion::RoF)
+		if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 		{
 			switch (rank) {
 			case 0: { rank = 5; break; }	// GUILD_MEMBER	0
@@ -831,7 +831,7 @@ void Client::CompleteConnect()
 	if (zone->GetZoneID() == RuleI(World, GuildBankZoneID) && GuildBanks)
 		GuildBanks->SendGuildBank(this);
 
-	if (GetClientVersion() >= ClientVersion::SoD)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
 		entity_list.SendFindableNPCList(this);
 
 	if (IsInAGuild()) {
@@ -846,7 +846,7 @@ void Client::CompleteConnect()
 	worldserver.SendPacket(pack);
 	delete pack;
 
-	if (IsClient() && CastToClient()->GetClientVersionBit() & BIT_UFAndLater) {
+	if (IsClient() && CastToClient()->ClientVersionBit() & EQEmu::versions::bit_UFAndLater) {
 		EQApplicationPacket *outapp = MakeBuffsPacket(false);
 		CastToClient()->FastQueuePacket(&outapp);
 	}
@@ -1044,7 +1044,7 @@ void Client::Handle_Connect_OP_ReqClientSpawn(const EQApplicationPacket *app)
 	outapp = new EQApplicationPacket(OP_SendExpZonein, 0);
 	FastQueuePacket(&outapp);
 
-	if (GetClientVersion() >= ClientVersion::RoF)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 	{
 		outapp = new EQApplicationPacket(OP_ClientReady, 0);
 		FastQueuePacket(&outapp);
@@ -1103,7 +1103,7 @@ void Client::Handle_Connect_OP_SendExpZonein(const EQApplicationPacket *app)
 	safe_delete(outapp);
 
 	// SoF+ Gets Zone-In packets after sending OP_WorldObjectsSent
-	if (GetClientVersion() < ClientVersion::SoF)
+	if (ClientVersion() < EQEmu::versions::ClientVersion::SoF)
 	{
 		SendZoneInPackets();
 	}
@@ -1199,8 +1199,8 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 
 	conn_state = ReceivedZoneEntry;
 
-	SetClientVersion(Connection()->GetClientVersion());
-	m_ClientVersionBit = ClientBitFromVersion(Connection()->GetClientVersion());
+	SetClientVersion(Connection()->ClientVersion());
+	m_ClientVersionBit = EQEmu::versions::ConvertClientVersionToClientVersionBit(Connection()->ClientVersion());
 
 	bool siv = m_inv.SetInventoryVersion(m_ClientVersion);
 	Log.Out(Logs::General, Logs::None, "%s inventory version to %s(%i)", (siv ? "Succeeded in setting" : "Failed to set"), ClientVersionName(m_ClientVersion), m_ClientVersion);
@@ -1313,7 +1313,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	}
 
 	/* Set item material tint */
-	for (int i = EQEmu::Constants::MATERIAL_BEGIN; i <= EQEmu::Constants::MATERIAL_END; i++)
+	for (int i = EQEmu::legacy::MATERIAL_BEGIN; i <= EQEmu::legacy::MATERIAL_END; i++)
 	{
 		if (m_pp.item_tint[i].RGB.UseTint == 1 || m_pp.item_tint[i].RGB.UseTint == 255)
 		{
@@ -1387,7 +1387,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 		m_pp.guild_id = GuildID();
 		uint8 rank = guild_mgr.GetDisplayedRank(GuildID(), GuildRank(), CharacterID());
 		// FIXME: RoF guild rank
-		if (GetClientVersion() >= ClientVersion::RoF) {
+		if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF) {
 			switch (rank) {
 			case 0:
 				rank = 5;
@@ -1441,7 +1441,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	if (m_pp.ldon_points_available < 0 || m_pp.ldon_points_available > 2000000000){ m_pp.ldon_points_available = 0; }
 
 	if(RuleB(World, UseClientBasedExpansionSettings)) {
-		m_pp.expansions = ExpansionFromClientVersion(GetClientVersion());
+		m_pp.expansions = EQEmu::versions::ConvertClientVersionToExpansion(ClientVersion());
 	}
 	else {
 		m_pp.expansions = RuleI(World, ExpansionSettings);
@@ -1689,20 +1689,20 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 			if (iter == m_inv.cursor_cbegin())
 				continue;
 			const ItemInst *inst = *iter;
-			SendItemPacket(SlotCursor, inst, ItemPacketSummonItem);
+			SendItemPacket(EQEmu::legacy::SlotCursor, inst, ItemPacketSummonItem);
 		}
 	}
 
 	/* Task Packets */
 	LoadClientTaskState();
 
-	if (GetClientVersion() >= ClientVersion::RoF) {
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF) {
 		outapp = new EQApplicationPacket(OP_ReqNewZone, 0);
 		Handle_Connect_OP_ReqNewZone(outapp);
 		safe_delete(outapp);
 	}
 
-	if (m_ClientVersionBit & BIT_UFAndLater) {
+	if (m_ClientVersionBit & EQEmu::versions::bit_UFAndLater) {
 		outapp = new EQApplicationPacket(OP_XTargetResponse, 8);
 		outapp->WriteUInt32(GetMaxXTargets());
 		outapp->WriteUInt32(0);
@@ -2027,7 +2027,7 @@ void Client::Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app)
 	ItemInst *inst = database.CreateItem(item, charges);
 	if (!AutoPutLootInInventory(*inst, true, true))
 	{
-		PutLootInInventory(SlotCursor, *inst);
+		PutLootInInventory(EQEmu::legacy::SlotCursor, *inst);
 	}
 	Save(1);
 }
@@ -2550,7 +2550,7 @@ void Client::Handle_OP_AltCurrencyPurchase(const EQApplicationPacket *app)
 		ItemInst *inst = database.CreateItem(item, charges);
 		if (!AutoPutLootInInventory(*inst, true, true))
 		{
-			PutLootInInventory(SlotCursor, *inst);
+			PutLootInInventory(EQEmu::legacy::SlotCursor, *inst);
 		}
 
 		Save(1);
@@ -2600,7 +2600,7 @@ void Client::Handle_OP_AltCurrencyReclaim(const EQApplicationPacket *app)
 			SetAlternateCurrencyValue(reclaim->currency_id, 0);
 		}
 		else {
-			SummonItem(item_id, reclaim->count, 0, 0, 0, 0, 0, 0, false, SlotCursor);
+			SummonItem(item_id, reclaim->count, 0, 0, 0, 0, 0, 0, false, EQEmu::legacy::SlotCursor);
 			AddAlternateCurrencyValue(reclaim->currency_id, -((int32)reclaim->count));
 		}
 		/* QS: PlayerLogAlternateCurrencyTransactions :: Cursor to Item Storage */
@@ -2811,8 +2811,8 @@ void Client::Handle_OP_ApplyPoison(const EQApplicationPacket *app)
 	}
 	uint32 ApplyPoisonSuccessResult = 0;
 	ApplyPoison_Struct* ApplyPoisonData = (ApplyPoison_Struct*)app->pBuffer;
-	const ItemInst* PrimaryWeapon = GetInv().GetItem(SlotPrimary);
-	const ItemInst* SecondaryWeapon = GetInv().GetItem(SlotSecondary);
+	const ItemInst* PrimaryWeapon = GetInv().GetItem(EQEmu::legacy::SlotPrimary);
+	const ItemInst* SecondaryWeapon = GetInv().GetItem(EQEmu::legacy::SlotSecondary);
 	const ItemInst* PoisonItemInstance = GetInv()[ApplyPoisonData->inventorySlot];
 
 	bool IsPoison = PoisonItemInstance && (PoisonItemInstance->GetItem()->ItemType == ItemTypePoison);
@@ -2926,7 +2926,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 
 	AugmentItem_Struct* in_augment = (AugmentItem_Struct*)app->pBuffer;
 	bool deleteItems = false;
-	if (GetClientVersion() >= ClientVersion::RoF)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 	{
 		ItemInst *itemOneToPush = nullptr, *itemTwoToPush = nullptr;
 
@@ -2994,7 +2994,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 		{
 			case 0: // Adding an augment
 			case 2: // Swapping augment
-				new_aug = user_inv.GetItem(SlotCursor);
+				new_aug = user_inv.GetItem(EQEmu::legacy::SlotCursor);
 
 				if (!new_aug) // Shouldn't get the OP code without the augment on the user's cursor, but maybe it's h4x.
 				{
@@ -3052,7 +3052,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 						if (itemOneToPush)
 						{
 							DeleteItemInInventory(item_slot, 0, true);
-							DeleteItemInInventory(SlotCursor, new_aug->IsStackable() ? 1 : 0, true);
+							DeleteItemInInventory(EQEmu::legacy::SlotCursor, new_aug->IsStackable() ? 1 : 0, true);
 
 							if (solvent)
 							{
@@ -3063,7 +3063,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 							if (itemTwoToPush)
 							{
 								// This is a swap. Return the old aug to the player's cursor.
-								if (!PutItemInInventory(SlotCursor, *itemTwoToPush, true))
+								if (!PutItemInInventory(EQEmu::legacy::SlotCursor, *itemTwoToPush, true))
 								{
 									Log.Out(Logs::General, Logs::Error, "Problem returning old augment to player's cursor after augmentation swap.");
 									Message(15, "Error: Failed to retrieve old augment after augmentation swap!");
@@ -3076,7 +3076,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 
 								CalcBonuses();
 
-								if (mat != MaterialInvalid)
+								if (mat != EQEmu::legacy::MaterialInvalid)
 								{
 									SendWearChange(mat); // Visible item augged while equipped. Send WC in case ornamentation changed.
 								}
@@ -3141,13 +3141,13 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 
 					CalcBonuses();
 					
-					if (mat != MaterialInvalid)
+					if (mat != EQEmu::legacy::MaterialInvalid)
 					{
 						SendWearChange(mat); // Visible item augged while equipped. Send WC in case ornamentation changed.
 					}
 
 					// Drop the removed augment on the player's cursor
-					if (!PutItemInInventory(SlotCursor, *itemTwoToPush, true))
+					if (!PutItemInInventory(EQEmu::legacy::SlotCursor, *itemTwoToPush, true))
 					{
 						Log.Out(Logs::General, Logs::Error, "Problem returning augment to player's cursor after safe removal.");
 						Message(15, "Error: Failed to return augment after removal from item!");
@@ -3196,7 +3196,7 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 
 				CalcBonuses();
 
-				if (mat != MaterialInvalid)
+				if (mat != EQEmu::legacy::MaterialInvalid)
 				{
 					SendWearChange(mat);
 				}
@@ -4072,7 +4072,7 @@ void Client::Handle_OP_CastSpell(const EQApplicationPacket *app)
 		}
 		else
 		{
-			Message(0, "Error: castspell->inventoryslot >= %i (0x%04x)", SlotCursor, castspell->inventoryslot);
+			Message(0, "Error: castspell->inventoryslot >= %i (0x%04x)", EQEmu::legacy::SlotCursor, castspell->inventoryslot);
 			InterruptSpell(castspell->spell_id);
 		}
 	}
@@ -4252,7 +4252,7 @@ void Client::Handle_OP_ClickObjectAction(const EQApplicationPacket *app)
 		QueuePacket(&end_trade2);
 
 		// RoF sends a 0 sized packet for closing objects
-		if (GetTradeskillObject() && GetClientVersion() >= ClientVersion::RoF)
+		if (GetTradeskillObject() && ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 			GetTradeskillObject()->CastToObject()->Close();
 		
 		return;
@@ -4991,7 +4991,7 @@ void Client::Handle_OP_CrashDump(const EQApplicationPacket *app)
 
 void Client::Handle_OP_CreateObject(const EQApplicationPacket *app)
 {
-	DropItem(SlotCursor);
+	DropItem(EQEmu::legacy::SlotCursor);
 	return;
 }
 
@@ -5141,7 +5141,7 @@ void Client::Handle_OP_DeleteItem(const EQApplicationPacket *app)
 		int16 AlcoholTolerance = GetSkill(SkillAlcoholTolerance);
 		int16 IntoxicationIncrease;
 
-		if (GetClientVersion() < ClientVersion::SoD)
+		if (ClientVersion() < EQEmu::versions::ClientVersion::SoD)
 			IntoxicationIncrease = (200 - AlcoholTolerance) * 30 / 200 + 10;
 		else
 			IntoxicationIncrease = (270 - AlcoholTolerance) * 0.111111108 + 10;
@@ -5453,7 +5453,7 @@ void Client::Handle_OP_EndLootRequest(const EQApplicationPacket *app)
 	Entity* entity = entity_list.GetID(*((uint16*)app->pBuffer));
 	if (entity == 0) {
 		Message(13, "Error: OP_EndLootRequest: Corpse not found (ent = 0)");
-		if (GetClientVersion() >= ClientVersion::SoD)
+		if (ClientVersion() >= EQEmu::versions::ClientVersion::SoD)
 			Corpse::SendEndLootErrorPacket(this);
 		else
 			Corpse::SendLootReqErrorPacket(this);
@@ -6905,7 +6905,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 			return;
 		}
 
-		ItemInst *CursorItemInst = GetInv().GetItem(SlotCursor);
+		ItemInst *CursorItemInst = GetInv().GetItem(EQEmu::legacy::SlotCursor);
 
 		bool Allowed = true;
 
@@ -6953,7 +6953,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 		{
 			GuildBankDepositAck(false, sentAction);
 
-			DeleteItemInInventory(SlotCursor, 0, false);
+			DeleteItemInInventory(EQEmu::legacy::SlotCursor, 0, false);
 		}
 
 		break;
@@ -6974,7 +6974,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 
 	case GuildBankWithdraw:
 	{
-		if (GetInv()[SlotCursor])
+		if (GetInv()[EQEmu::legacy::SlotCursor])
 		{
 			Message_StringID(13, GUILD_BANK_EMPTY_HANDS);
 
@@ -7020,7 +7020,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 		{
 			PushItemOnCursor(*inst);
 
-			SendItemPacket(SlotCursor, inst, ItemPacketSummonItem);
+			SendItemPacket(EQEmu::legacy::SlotCursor, inst, ItemPacketSummonItem);
 
 			GuildBanks->DeleteItem(GuildID(), gbwis->Area, gbwis->SlotID, gbwis->Quantity);
 		}
@@ -7333,11 +7333,11 @@ void Client::Handle_OP_GuildInvite(const EQApplicationPacket *app)
 					gc->guildeqid = GuildID();
 
 				// Convert Membership Level between RoF and previous clients.
-				if (client->GetClientVersion() < ClientVersion::RoF && GetClientVersion() >= ClientVersion::RoF)
+				if (client->ClientVersion() < EQEmu::versions::ClientVersion::RoF && ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 				{
 					gc->officer = 0;
 				}
-				if (client->GetClientVersion() >= ClientVersion::RoF && GetClientVersion() < ClientVersion::RoF)
+				if (client->ClientVersion() >= EQEmu::versions::ClientVersion::RoF && ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 				{
 					gc->officer = 8;
 				}
@@ -7378,7 +7378,7 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 
 	uint32 guildrank = gj->response;
 
-	if (GetClientVersion() >= ClientVersion::RoF)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 	{
 		if (gj->response > 9)
 		{
@@ -7413,11 +7413,11 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 		{
 			Client* client = inviter->CastToClient();
 			// Convert Membership Level between RoF and previous clients.
-			if (client->GetClientVersion() < ClientVersion::RoF && GetClientVersion() >= ClientVersion::RoF)
+			if (client->ClientVersion() < EQEmu::versions::ClientVersion::RoF && ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 			{
 				guildrank = 0;
 			}
-			if (client->GetClientVersion() >= ClientVersion::RoF && GetClientVersion() < ClientVersion::RoF)
+			if (client->ClientVersion() >= EQEmu::versions::ClientVersion::RoF && ClientVersion() < EQEmu::versions::ClientVersion::RoF)
 			{
 				guildrank = 8;
 			}
@@ -7454,7 +7454,7 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 
 			guildrank = gj->response;
 
-			if (GetClientVersion() >= ClientVersion::RoF)
+			if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 			{
 				if (gj->response == 8)
 				{
@@ -7994,7 +7994,7 @@ void Client::Handle_OP_InspectAnswer(const EQApplicationPacket *app)
 	const Item_Struct* item = nullptr;
 
 	int ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-	for (int16 L = EQEmu::Constants::EQUIPMENT_BEGIN; L <= SlotWaist; L++) {
+	for (int16 L = EQEmu::legacy::EQUIPMENT_BEGIN; L <= EQEmu::legacy::SlotWaist; L++) {
 		const ItemInst* inst = GetInv().GetItem(L);
 		item = inst ? inst->GetItem() : nullptr;
 
@@ -8014,7 +8014,7 @@ void Client::Handle_OP_InspectAnswer(const EQApplicationPacket *app)
 		else { insr->itemicons[L] = 0xFFFFFFFF; }
 	}
 
-	const ItemInst* inst = GetInv().GetItem(SlotAmmo);
+	const ItemInst* inst = GetInv().GetItem(EQEmu::legacy::SlotAmmo);
 	item = inst ? inst->GetItem() : nullptr;
 
 	if (item) {
@@ -8060,7 +8060,7 @@ void Client::Handle_OP_InspectRequest(const EQApplicationPacket *app)
 	Mob* tmp = entity_list.GetMob(ins->TargetID);
 
 	if (tmp != 0 && tmp->IsClient()) {
-		if (tmp->CastToClient()->GetClientVersion() < ClientVersion::SoF) { tmp->CastToClient()->QueuePacket(app); } // Send request to target
+		if (tmp->CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoF) { tmp->CastToClient()->QueuePacket(app); } // Send request to target
 		// Inspecting an SoF or later client will make the server handle the request
 		else { ProcessInspectRequest(tmp->CastToClient(), this); }
 	}
@@ -8474,7 +8474,7 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 		ItemInst* clickaug = 0;
 		Item_Struct* augitem = 0;
 
-		for (r = 0; r < EQEmu::Constants::ITEM_COMMON_SIZE; r++) {
+		for (r = 0; r < EQEmu::legacy::ITEM_COMMON_SIZE; r++) {
 			const ItemInst* aug_i = inst->GetAugment(r);
 			if (!aug_i)
 				continue;
@@ -8563,7 +8563,7 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 			}
 			else
 			{
-				if (GetClientVersion() >= ClientVersion::SoD && !inst->IsEquipable(GetBaseRace(), GetClass()))
+				if (ClientVersion() >= EQEmu::versions::ClientVersion::SoD && !inst->IsEquipable(GetBaseRace(), GetClass()))
 				{
 					if (item->ItemType != ItemTypeFood && item->ItemType != ItemTypeDrink && item->ItemType != ItemTypeAlcohol)
 					{
@@ -9391,14 +9391,14 @@ void Client::Handle_OP_MercenaryDataRequest(const EQApplicationPacket *app)
 			return;
 		}
 
-		mercTypeCount = tar->GetNumMercTypes(static_cast<unsigned int>(GetClientVersion()));
-		mercCount = tar->GetNumMercs(static_cast<unsigned int>(GetClientVersion()));
+		mercTypeCount = tar->GetNumMercTypes(static_cast<unsigned int>(ClientVersion()));
+		mercCount = tar->GetNumMercs(static_cast<unsigned int>(ClientVersion()));
 
 		if (mercCount > MAX_MERC)
 			return;
 
-		std::list<MercType> mercTypeList = tar->GetMercTypesList(static_cast<unsigned int>(GetClientVersion()));
-		std::list<MercData> mercDataList = tar->GetMercsList(static_cast<unsigned int>(GetClientVersion()));
+		std::list<MercType> mercTypeList = tar->GetMercTypesList(static_cast<unsigned int>(ClientVersion()));
+		std::list<MercData> mercDataList = tar->GetMercsList(static_cast<unsigned int>(ClientVersion()));
 
 		int i = 0;
 		int StanceCount = 0;
@@ -9675,7 +9675,7 @@ void Client::Handle_OP_MoveItem(const EQApplicationPacket *app)
 	MoveItem_Struct* mi = (MoveItem_Struct*)app->pBuffer;
 	if (spellend_timer.Enabled() && casting_spell_id && !IsBardSong(casting_spell_id))
 	{
-		if (mi->from_slot != mi->to_slot && (mi->from_slot <= EQEmu::Constants::GENERAL_END || mi->from_slot > 39) && IsValidSlot(mi->from_slot) && IsValidSlot(mi->to_slot))
+		if (mi->from_slot != mi->to_slot && (mi->from_slot <= EQEmu::legacy::GENERAL_END || mi->from_slot > 39) && IsValidSlot(mi->from_slot) && IsValidSlot(mi->to_slot))
 		{
 			char *detect = nullptr;
 			const ItemInst *itm_from = GetInv().GetItem(mi->from_slot);
@@ -9696,8 +9696,8 @@ void Client::Handle_OP_MoveItem(const EQApplicationPacket *app)
 	// Illegal bagslot usage checks. Currently, user only receives a message if this check is triggered.
 	bool mi_hack = false;
 
-	if (mi->from_slot >= EQEmu::Constants::GENERAL_BAGS_BEGIN && mi->from_slot <= EQEmu::Constants::CURSOR_BAG_END) {
-		if (mi->from_slot >= EQEmu::Constants::CURSOR_BAG_BEGIN) { mi_hack = true; }
+	if (mi->from_slot >= EQEmu::legacy::GENERAL_BAGS_BEGIN && mi->from_slot <= EQEmu::legacy::CURSOR_BAG_END) {
+		if (mi->from_slot >= EQEmu::legacy::CURSOR_BAG_BEGIN) { mi_hack = true; }
 		else {
 			int16 from_parent = m_inv.CalcSlotId(mi->from_slot);
 			if (!m_inv[from_parent]) { mi_hack = true; }
@@ -9706,8 +9706,8 @@ void Client::Handle_OP_MoveItem(const EQApplicationPacket *app)
 		}
 	}
 
-	if (mi->to_slot >= EQEmu::Constants::GENERAL_BAGS_BEGIN && mi->to_slot <= EQEmu::Constants::CURSOR_BAG_END) {
-		if (mi->to_slot >= EQEmu::Constants::CURSOR_BAG_BEGIN) { mi_hack = true; }
+	if (mi->to_slot >= EQEmu::legacy::GENERAL_BAGS_BEGIN && mi->to_slot <= EQEmu::legacy::CURSOR_BAG_END) {
+		if (mi->to_slot >= EQEmu::legacy::CURSOR_BAG_BEGIN) { mi_hack = true; }
 		else {
 			int16 to_parent = m_inv.CalcSlotId(mi->to_slot);
 			if (!m_inv[to_parent]) { mi_hack = true; }
@@ -11320,7 +11320,7 @@ void Client::Handle_OP_ReadBook(const EQApplicationPacket *app)
 	}
 	BookRequest_Struct* book = (BookRequest_Struct*)app->pBuffer;
 	ReadBook(book);
-	if (GetClientVersion() >= ClientVersion::SoF)
+	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF)
 	{
 		EQApplicationPacket EndOfBook(OP_FinishWindow, 0);
 		QueuePacket(&EndOfBook);
@@ -12023,7 +12023,7 @@ void Client::Handle_OP_Shielding(const EQApplicationPacket *app)
 	Shielding_Struct* shield = (Shielding_Struct*)app->pBuffer;
 	shield_target = entity_list.GetMob(shield->target_id);
 	bool ack = false;
-	ItemInst* inst = GetInv().GetItem(SlotSecondary);
+	ItemInst* inst = GetInv().GetItem(EQEmu::legacy::SlotSecondary);
 	if (!shield_target)
 		return;
 	if (inst)
@@ -12240,8 +12240,8 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 	// shouldn't we be reimbursing if these two fail?
 
 	//make sure we are not completely full...
-	if (freeslotid == SlotCursor) {
-		if (m_inv.GetItem(SlotCursor) != nullptr) {
+	if (freeslotid == EQEmu::legacy::SlotCursor) {
+		if (m_inv.GetItem(EQEmu::legacy::SlotCursor) != nullptr) {
 			Message(13, "You do not have room for any more items.");
 			safe_delete(outapp);
 			safe_delete(inst);
@@ -12669,7 +12669,7 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		{
 			if (!HasSkill(SkillHide) && GetSkill(SkillHide) == 0)
 			{
-				if (GetClientVersion() < ClientVersion::SoF)
+				if (ClientVersion() < EQEmu::versions::ClientVersion::SoF)
 				{
 					char *hack_str = nullptr;
 					MakeAnyLenString(&hack_str, "Player sent OP_SpawnAppearance with AT_Invis: %i", sa->parameter);
@@ -13519,7 +13519,7 @@ void Client::Handle_OP_Trader(const EQApplicationPacket *app)
 			this->Trader_StartTrader();
 
 			// This refreshes the Trader window to display the End Trader button
-			if (GetClientVersion() >= ClientVersion::RoF)
+			if (ClientVersion() >= EQEmu::versions::ClientVersion::RoF)
 			{
 				EQApplicationPacket* outapp = new EQApplicationPacket(OP_Trader, sizeof(TraderStatus_Struct));
 				TraderStatus_Struct* tss = (TraderStatus_Struct*)outapp->pBuffer;

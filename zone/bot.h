@@ -77,9 +77,9 @@ static const std::string bot_stance_name[BOT_STANCE_COUNT] = {
 
 static const char* GetBotStanceName(int stance_id) { return bot_stance_name[VALIDBOTSTANCE(stance_id)].c_str(); }
 
-#define VALIDBOTEQUIPSLOT(x) ((x >= EQEmu::Constants::EQUIPMENT_BEGIN && x <= EQEmu::Constants::EQUIPMENT_END) ? (x) : ((x == SlotPowerSource) ? (22) : (23)))
+#define VALIDBOTEQUIPSLOT(x) ((x >= EQEmu::legacy::EQUIPMENT_BEGIN && x <= EQEmu::legacy::EQUIPMENT_END) ? (x) : ((x == EQEmu::legacy::SlotPowerSource) ? (22) : (23)))
 
-static std::string bot_equip_slot_name[EQEmu::Constants::EQUIPMENT_SIZE + 2] =
+static std::string bot_equip_slot_name[EQEmu::legacy::EQUIPMENT_SIZE + 2] =
 {
 	"Charm",			// MainCharm
 	"Left Ear",			// MainEar1
@@ -207,7 +207,7 @@ public:
 	//abstract virtual function implementations requird by base abstract class
 	virtual bool Death(Mob* killerMob, int32 damage, uint16 spell_id, SkillUseTypes attack_skill);
 	virtual void Damage(Mob* from, int32 damage, uint16 spell_id, SkillUseTypes attack_skill, bool avoidable = true, int8 buffslot = -1, bool iBuffTic = false, int special = 0);
-	virtual bool Attack(Mob* other, int Hand = SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false, bool IsFromSpell = false,
+	virtual bool Attack(Mob* other, int Hand = EQEmu::legacy::SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false, bool IsFromSpell = false,
 		ExtraAttackOptions *opts = nullptr, int special = 0);
 	virtual bool HasRaid() { return (GetRaid() ? true : false); }
 	virtual bool HasGroup() { return (GetGroup() ? true : false); }
@@ -386,7 +386,7 @@ public:
 	void BotTradeAddItem(uint32 id, const ItemInst* inst, int16 charges, uint32 equipableSlots, uint16 lootSlot, std::string* errorMessage, bool addToDb = true);
 	void EquipBot(std::string* errorMessage);
 	bool CheckLoreConflict(const Item_Struct* item);
-	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = m_inv.FindBrightestLightType(); m_Light.Level.Equipment = EQEmu::LightSource::TypeToLevel(m_Light.Type.Equipment); }
+	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = m_inv.FindBrightestLightType(); m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment); }
 
 	// Static Class Methods	
 	//static void DestroyBotRaidObjects(Client* client);	// Can be removed after bot raids are dumped

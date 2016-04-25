@@ -108,7 +108,7 @@ public:
 		uint32		in_drakkin_heritage,
 		uint32		in_drakkin_tattoo,
 		uint32		in_drakkin_details,
-		uint32		in_armor_tint[MaterialCount],
+		uint32		in_armor_tint[EQEmu::legacy::MaterialCount],
 		uint8		in_aa_title,
 		uint8		in_see_invis, // see through invis
 		uint8		in_see_invis_undead, // see through invis vs. undead
@@ -148,7 +148,7 @@ public:
 	virtual void ThrowingAttack(Mob* other) { }
 	uint16 GetThrownDamage(int16 wDmg, int32& TotalDmg, int& minDmg);
 	// 13 = Primary (default), 14 = secondary
-	virtual bool Attack(Mob* other, int Hand = SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false,
+	virtual bool Attack(Mob* other, int Hand = EQEmu::legacy::SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false,
 		bool IsFromSpell = false, ExtraAttackOptions *opts = nullptr, int special = 0) = 0;
 	int MonkSpecialAttack(Mob* other, uint8 skill_used);
 	virtual void TryBackstab(Mob *other,int ReuseTime = 10);
@@ -364,7 +364,7 @@ public:
 	virtual inline uint16 GetBaseRace() const { return base_race; }
 	virtual inline uint8 GetBaseGender() const { return base_gender; }
 	virtual inline uint16 GetDeity() const { return deity; }
-	virtual inline EQEmu::Deity::TypeBits GetDeityBit() { return EQEmu::Deity::ConvertDeityToDeityBit((EQEmu::Deity::Types)deity); }
+	virtual EQEmu::deity::DeityTypeBit GetDeityBit() { return EQEmu::deity::ConvertDeityTypeToDeityTypeBit((EQEmu::deity::DeityType)deity); }
 	inline uint16 GetRace() const { return race; }
 	inline uint8 GetGender() const { return gender; }
 	inline uint8 GetTexture() const { return texture; }
@@ -379,7 +379,7 @@ public:
 	inline uint8 GetDrakkinHeritage() const { return drakkin_heritage; }
 	inline uint8 GetDrakkinTattoo() const { return drakkin_tattoo; }
 	inline uint8 GetDrakkinDetails() const { return drakkin_details; }
-	inline uint32 GetArmorTint(uint8 i) const { return armor_tint[(i < MaterialCount) ? i : 0]; }
+	inline uint32 GetArmorTint(uint8 i) const { return armor_tint[(i < EQEmu::legacy::MaterialCount) ? i : 0]; }
 	inline uint8 GetClass() const { return class_; }
 	inline uint8 GetLevel() const { return level; }
 	inline uint8 GetOrigLevel() const { return orig_level; }
@@ -566,7 +566,7 @@ public:
 		bool lookForAftArc = true);
 
 	//Procs
-	void TriggerDefensiveProcs(Mob *on, uint16 hand = SlotPrimary, bool FromSkillProc=false, int damage = 0);
+	void TriggerDefensiveProcs(Mob *on, uint16 hand = EQEmu::legacy::SlotPrimary, bool FromSkillProc = false, int damage = 0);
 	bool AddRangedProc(uint16 spell_id, uint16 iChance = 3, uint16 base_spell_id = SPELL_UNKNOWN);
 	bool RemoveRangedProc(uint16 spell_id, bool bAll = false);
 	bool HasRangedProcs() const;
@@ -708,12 +708,12 @@ public:
 	inline uint8 GetSpellLightType() { return m_Light.Type.Spell; }
 
 	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = 0; m_Light.Level.Equipment = 0; }
-	inline void SetSpellLightType(uint8 light_type) { m_Light.Type.Spell = (light_type & 0x0F); m_Light.Level.Spell = EQEmu::LightSource::TypeToLevel(m_Light.Type.Spell); }
+	inline void SetSpellLightType(uint8 light_type) { m_Light.Type.Spell = (light_type & 0x0F); m_Light.Level.Spell = EQEmu::lightsource::TypeToLevel(m_Light.Type.Spell); }
 
 	inline uint8 GetActiveLightType() { return m_Light.Type.Active; }
 	bool UpdateActiveLight(); // returns true if change, false if no change
 
-	EQEmu::LightSource::impl* GetLightProfile() { return &m_Light; }
+	EQEmu::lightsource::LightSourceProfile* GetLightProfile() { return &m_Light; }
 
 	Mob* GetPet();
 	void SetPet(Mob* newpet);
@@ -1146,13 +1146,13 @@ protected:
 	void TrySkillProc(Mob *on, uint16 skill, uint16 ReuseTime, bool Success = false, uint16 hand = 0, bool IsDefensive = false); // hand = SlotCharm?
 	bool PassLimitToSkill(uint16 spell_id, uint16 skill);
 	bool PassLimitClass(uint32 Classes_, uint16 Class_);
-	void TryDefensiveProc(Mob *on, uint16 hand = SlotPrimary);
-	void TryWeaponProc(const ItemInst* inst, const Item_Struct* weapon, Mob *on, uint16 hand = SlotPrimary);
-	void TrySpellProc(const ItemInst* inst, const Item_Struct* weapon, Mob *on, uint16 hand = SlotPrimary);
-	void TryWeaponProc(const ItemInst* weapon, Mob *on, uint16 hand = SlotPrimary);
+	void TryDefensiveProc(Mob *on, uint16 hand = EQEmu::legacy::SlotPrimary);
+	void TryWeaponProc(const ItemInst* inst, const Item_Struct* weapon, Mob *on, uint16 hand = EQEmu::legacy::SlotPrimary);
+	void TrySpellProc(const ItemInst* inst, const Item_Struct* weapon, Mob *on, uint16 hand = EQEmu::legacy::SlotPrimary);
+	void TryWeaponProc(const ItemInst* weapon, Mob *on, uint16 hand = EQEmu::legacy::SlotPrimary);
 	void ExecWeaponProc(const ItemInst* weapon, uint16 spell_id, Mob *on, int level_override = -1);
-	virtual float GetProcChances(float ProcBonus, uint16 hand = SlotPrimary);
-	virtual float GetDefensiveProcChances(float &ProcBonus, float &ProcChance, uint16 hand = SlotPrimary, Mob *on = nullptr);
+	virtual float GetProcChances(float ProcBonus, uint16 hand = EQEmu::legacy::SlotPrimary);
+	virtual float GetDefensiveProcChances(float &ProcBonus, float &ProcChance, uint16 hand = EQEmu::legacy::SlotPrimary, Mob *on = nullptr);
 	virtual float GetSpecialProcChances(uint16 hand);
 	virtual float GetAssassinateProcChances(uint16 ReuseTime);
 	virtual float GetSkillProcChances(uint16 ReuseTime, uint16 hand = 0); // hand = MainCharm?
@@ -1185,7 +1185,7 @@ protected:
 
 	glm::vec4 m_Delta;
 
-	EQEmu::LightSource::impl m_Light;
+	EQEmu::lightsource::LightSourceProfile m_Light;
 
 	float fixedZ;
 	EmuAppearance _appearance;
@@ -1243,7 +1243,7 @@ protected:
 	uint32 drakkin_heritage;
 	uint32 drakkin_tattoo;
 	uint32 drakkin_details;
-	uint32 armor_tint[MaterialCount];
+	uint32 armor_tint[EQEmu::legacy::MaterialCount];
 
 	uint8 aa_title;
 

@@ -418,7 +418,7 @@ void Mob::WakeTheDead(uint16 spell_id, Mob *target, uint32 duration)
 
 	//gear stuff, need to make sure there's
 	//no situation where this stuff can be duped
-	for (int x = EQEmu::Constants::EQUIPMENT_BEGIN; x <= EQEmu::Constants::EQUIPMENT_END; x++) // (< 21) added MainAmmo
+	for (int x = EQEmu::legacy::EQUIPMENT_BEGIN; x <= EQEmu::legacy::EQUIPMENT_END; x++) // (< 21) added MainAmmo
 	{
 		uint32 sitem = 0;
 		sitem = CorpseToUse->GetWornItem(x);
@@ -471,7 +471,7 @@ void Client::ResetAA() {
 
 	database.DeleteCharacterLeadershipAAs(CharacterID());
 	// undefined for these clients
-	if (GetClientVersionBit() & BIT_TitaniumAndEarlier)
+	if (ClientVersionBit() & EQEmu::versions::bit_TitaniumAndEarlier)
 		Kick();
 }
 
@@ -1411,7 +1411,7 @@ bool Mob::CanUseAlternateAdvancementRank(AA::Rank *rank) {
 	//the one titanium hack i will allow
 	//just to make sure we dont crash the client with newer aas
 	//we'll exclude any expendable ones
-	if(IsClient() && CastToClient()->GetClientVersionBit() & BIT_TitaniumAndEarlier) {
+	if(IsClient() && CastToClient()->ClientVersionBit() & EQEmu::versions::bit_TitaniumAndEarlier) {
 		if(ability->charges > 0) {
 			return false;
 		}
