@@ -1466,8 +1466,8 @@ void Mob::AI_Process() {
 					}
 					else
 					{
-						moved = false;
 						SetCurrentSpeed(0);
+						moved = false;
 					}
 				}
 			}
