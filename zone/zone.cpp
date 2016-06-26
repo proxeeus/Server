@@ -104,10 +104,11 @@ bool Zone::Bootup(uint32 iZoneID, uint32 iInstanceID, bool iStaticZone) {
 	zone->watermap = WaterMap::LoadWaterMapfile(zone->map_name);
 	zone->pathing = PathManager::LoadPathFile(zone->map_name);
 
-	char tmp[10];
-	if (database.GetVariable("loglevel",tmp, 9)) {
+	std::string tmp;
+	if (database.GetVariable("loglevel", tmp)) {
 		int log_levels[4];
-		if (atoi(tmp)>9){ //Server is using the new code
+		int tmp_i = atoi(tmp.c_str());
+		if (tmp_i>9){ //Server is using the new code
 			for(int i=0;i<4;i++){
 				if (((int)tmp[i]>=48) && ((int)tmp[i]<=57))
 					log_levels[i]=(int)tmp[i]-48; //get the value to convert it to an int from the ascii value
@@ -124,19 +125,19 @@ bool Zone::Bootup(uint32 iZoneID, uint32 iInstanceID, bool iStaticZone) {
 			Log.Out(Logs::General, Logs::Status, "Loot logging level: %i", zone->lootvar);
 		}
 		else {
-			zone->loglevelvar = uint8(atoi(tmp)); //continue supporting only command logging (for now)
+			zone->loglevelvar = uint8(tmp_i); //continue supporting only command logging (for now)
 			zone->merchantvar = 0;
 			zone->tradevar = 0;
 			zone->lootvar = 0;
 		}
-	}	
+	}
 
 	is_zone_loaded = true;
 
 	worldserver.SetZoneData(iZoneID, iInstanceID);
 	if(iInstanceID != 0)
 	{
-		ServerPacket *pack = new ServerPacket(ServerOP_AdventureZoneData, sizeof(uint16));
+		auto pack = new ServerPacket(ServerOP_AdventureZoneData, sizeof(uint16));
 		*((uint16*)pack->pBuffer) = iInstanceID; 
 		worldserver.SendPacket(pack);
 		delete pack;
@@ -214,12 +215,12 @@ bool Zone::LoadZoneObjects() {
             d.incline = atoi(row[13]); // unknown20 = optional model incline value
             d.client_version_mask = 0xFFFFFFFF; //We should load the mask from the zone.
 
-            Doors* door = new Doors(&d);
-            entity_list.AddDoor(door);
-        }
+	    auto door = new Doors(&d);
+	    entity_list.AddDoor(door);
+	}
 
-        Object_Struct data = {0};
-        uint32 id = 0;
+	Object_Struct data = {0};
+	uint32 id = 0;
         uint32 icon = 0;
         uint32 type = 0;
         uint32 itemid = 0;
@@ -265,16 +266,16 @@ bool Zone::LoadZoneObjects() {
         }
 
         // Load child objects if container
-        if (inst && inst->IsType(ItemClassContainer)) {
+		if (inst && inst->IsType(EQEmu::item::ItemClassBag)) {
             database.LoadWorldContainer(id, inst);
         }
 
-        Object* object = new Object(id, type, icon, data, inst);
-        entity_list.AddObject(object, false);
-        if(type == OT_DROPPEDITEM && itemid != 0)
-            entity_list.RemoveObject(object->GetID());
+	auto object = new Object(id, type, icon, data, inst);
+	entity_list.AddObject(object, false);
+	if (type == OT_DROPPEDITEM && itemid != 0)
+		entity_list.RemoveObject(object->GetID());
 
-        safe_delete(inst);
+	safe_delete(inst);
     }
 
 	return true;
@@ -300,7 +301,12 @@ bool Zone::LoadGroundSpawns() {
 			if(inst){
 				name = groundspawn.spawn[gsindex].name;
 				for(ix=0;ix<gsnumber;ix++){
-					Object* object = new Object(inst,name,groundspawn.spawn[gsindex].max_x,groundspawn.spawn[gsindex].min_x,groundspawn.spawn[gsindex].max_y,groundspawn.spawn[gsindex].min_y,groundspawn.spawn[gsindex].max_z,groundspawn.spawn[gsindex].heading,groundspawn.spawn[gsindex].respawntimer);//new object with id of 10000+
+					auto object = new Object(
+					    inst, name, groundspawn.spawn[gsindex].max_x,
+					    groundspawn.spawn[gsindex].min_x, groundspawn.spawn[gsindex].max_y,
+					    groundspawn.spawn[gsindex].min_y, groundspawn.spawn[gsindex].max_z,
+					    groundspawn.spawn[gsindex].heading,
+					    groundspawn.spawn[gsindex].respawntimer); // new object with id of 10000+
 					entity_list.AddObject(object, false);
 				}
 				safe_delete(inst);
@@ -509,7 +515,7 @@ void Zone::GetMerchantDataForZoneLoad() {
 			npcid = ml.id;
 		}
 
-		std::list<MerchantList>::iterator iter = cur->second.begin();
+		auto iter = cur->second.begin();
 		bool found = false;
 		while (iter != cur->second.end()) {
 			if ((*iter).item == ml.id) {
@@ -671,13 +677,13 @@ void Zone::Shutdown(bool quite)
 	entity_list.StopMobAI();
 
 	std::map<uint32,NPCType *>::iterator itr;
-	while(zone->npctable.size()) {
+	while(!zone->npctable.empty()) {
 		itr=zone->npctable.begin();
 		delete itr->second;
 		zone->npctable.erase(itr);
 	}
 
-	while(zone->merctable.size()) {
+	while(!zone->merctable.empty()) {
 		itr=zone->merctable.begin();
 		delete itr->second;
 		zone->merctable.erase(itr);
@@ -686,7 +692,7 @@ void Zone::Shutdown(bool quite)
 	zone->adventure_entry_list_flavor.clear();
 
 	std::map<uint32,LDoNTrapTemplate*>::iterator itr4;
-	while(zone->ldon_trap_list.size())
+	while(!zone->ldon_trap_list.empty())
 	{
 		itr4 = zone->ldon_trap_list.begin();
 		delete itr4->second;
@@ -721,7 +727,7 @@ void Zone::LoadZoneDoors(const char* zone, int16 version)
 		return;
 	}
 
-	Door *dlist = new Door[count];
+	auto dlist = new Door[count];
 
 	if(!database.LoadDoors(count, dlist, zone, version)) {
 		Log.Out(Logs::General, Logs::Error, "... Failed to load doors.");
@@ -732,7 +738,7 @@ void Zone::LoadZoneDoors(const char* zone, int16 version)
 	int r;
 	Door *d = dlist;
 	for(r = 0; r < count; r++, d++) {
-		Doors* newdoor = new Doors(d);
+		auto newdoor = new Doors(d);
 		entity_list.AddDoor(newdoor);
 		Log.Out(Logs::Detail, Logs::Doors, "Door Add to Entity List, index: %u db id: %u, door_id %u", r, dlist[r].db_id, dlist[r].door_id);
 	}
@@ -1075,7 +1081,7 @@ bool Zone::SaveZoneCFG() {
 }
 
 void Zone::AddAuth(ServerZoneIncomingClient_Struct* szic) {
-	ZoneClientAuth_Struct* zca = new ZoneClientAuth_Struct;
+	auto zca = new ZoneClientAuth_Struct;
 	memset(zca, 0, sizeof(ZoneClientAuth_Struct));
 	zca->ip = szic->ip;
 	zca->wid = szic->wid;
@@ -1414,7 +1420,7 @@ bool Zone::Depop(bool StartSpawnTimer) {
 	entity_list.Depop(StartSpawnTimer);
 
 	/* Refresh npctable (cache), getting current info from database. */
-	while(npctable.size()) { 
+	while(!npctable.empty()) {
 		itr = npctable.begin();
 		delete itr->second;
 		npctable.erase(itr);
@@ -1494,7 +1500,7 @@ void Zone::Repop(uint32 delay) {
 void Zone::GetTimeSync()
 {
 	if (worldserver.Connected() && !zone_has_current_time) {
-		ServerPacket* pack = new ServerPacket(ServerOP_GetWorldTime, 0);
+		auto pack = new ServerPacket(ServerOP_GetWorldTime, 0);
 		worldserver.SendPacket(pack);
 		safe_delete(pack);
 	}
@@ -1503,7 +1509,7 @@ void Zone::GetTimeSync()
 void Zone::SetDate(uint16 year, uint8 month, uint8 day, uint8 hour, uint8 minute)
 {
 	if (worldserver.Connected()) {
-		ServerPacket* pack = new ServerPacket(ServerOP_SetWorldTime, sizeof(eqTimeOfDay));
+		auto pack = new ServerPacket(ServerOP_SetWorldTime, sizeof(eqTimeOfDay));
 		eqTimeOfDay* eqtod = (eqTimeOfDay*)pack->pBuffer;
 		eqtod->start_eqtime.minute=minute;
 		eqtod->start_eqtime.hour=hour;
@@ -1520,7 +1526,7 @@ void Zone::SetDate(uint16 year, uint8 month, uint8 day, uint8 hour, uint8 minute
 void Zone::SetTime(uint8 hour, uint8 minute, bool update_world /*= true*/)
 {
 	if (worldserver.Connected()) {
-		ServerPacket* pack = new ServerPacket(ServerOP_SetWorldTime, sizeof(eqTimeOfDay));
+		auto pack = new ServerPacket(ServerOP_SetWorldTime, sizeof(eqTimeOfDay));
 		eqTimeOfDay* eq_time_of_day = (eqTimeOfDay*)pack->pBuffer;
 
 		zone_time.GetCurrentEQTimeOfDay(time(0), &eq_time_of_day->start_eqtime);
@@ -1543,7 +1549,7 @@ void Zone::SetTime(uint8 hour, uint8 minute, bool update_world /*= true*/)
 			Log.Out(Logs::General, Logs::Zone_Server, "Setting zone localized time...");
 
 			zone->zone_time.SetCurrentEQTimeOfDay(eq_time_of_day->start_eqtime, eq_time_of_day->start_realtime);
-			EQApplicationPacket* outapp = new EQApplicationPacket(OP_TimeOfDay, sizeof(TimeOfDay_Struct));
+			auto outapp = new EQApplicationPacket(OP_TimeOfDay, sizeof(TimeOfDay_Struct));
 			TimeOfDay_Struct* time_of_day = (TimeOfDay_Struct*)outapp->pBuffer;
 			zone->zone_time.GetCurrentEQTimeOfDay(time(0), time_of_day);
 			entity_list.QueueClients(0, outapp, false);
@@ -1651,39 +1657,39 @@ ZonePoint* Zone::GetClosestZonePointWithoutZone(float x, float y, float z, Clien
 
 bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint*>* zone_point_list, const char* zonename, uint32 version)
 {
-
 	zone_point_list->Clear();
 	zone->numzonepoints = 0;
 	std::string query = StringFormat("SELECT x, y, z, target_x, target_y, "
-                                    "target_z, target_zone_id, heading, target_heading, "
-                                    "number, target_instance, client_version_mask "
-                                    "FROM zone_points WHERE zone='%s' AND (version=%i OR version=-1) "
-                                    "ORDER BY number", zonename, version);
+					 "target_z, target_zone_id, heading, target_heading, "
+					 "number, target_instance, client_version_mask "
+					 "FROM zone_points WHERE zone='%s' AND (version=%i OR version=-1) "
+					 "ORDER BY number",
+					 zonename, version);
 	auto results = QueryDatabase(query);
 	if (!results.Success()) {
 		return false;
 	}
 
-    for (auto row = results.begin(); row != results.end(); ++row) {
-        ZonePoint* zp = new ZonePoint;
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		auto zp = new ZonePoint;
 
-        zp->x = atof(row[0]);
-        zp->y = atof(row[1]);
-        zp->z = atof(row[2]);
-        zp->target_x = atof(row[3]);
-        zp->target_y = atof(row[4]);
-        zp->target_z = atof(row[5]);
-        zp->target_zone_id = atoi(row[6]);
-        zp->heading = atof(row[7]);
-        zp->target_heading = atof(row[8]);
-        zp->number = atoi(row[9]);
-        zp->target_zone_instance = atoi(row[10]);
-        zp->client_version_mask = (uint32)strtoul(row[11], nullptr, 0);
+		zp->x = atof(row[0]);
+		zp->y = atof(row[1]);
+		zp->z = atof(row[2]);
+		zp->target_x = atof(row[3]);
+		zp->target_y = atof(row[4]);
+		zp->target_z = atof(row[5]);
+		zp->target_zone_id = atoi(row[6]);
+		zp->heading = atof(row[7]);
+		zp->target_heading = atof(row[8]);
+		zp->number = atoi(row[9]);
+		zp->target_zone_instance = atoi(row[10]);
+		zp->client_version_mask = (uint32)strtoul(row[11], nullptr, 0);
 
-        zone_point_list->Insert(zp);
+		zone_point_list->Insert(zp);
 
-        zone->numzonepoints++;
-    }
+		zone->numzonepoints++;
+	}
 
 	return true;
 }
@@ -1837,7 +1843,7 @@ bool ZoneDatabase::GetDecayTimes(npcDecayTimes_Struct* npcCorpseDecayTimes) {
 
 void Zone::weatherSend()
 {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Weather, 8);
+	auto outapp = new EQApplicationPacket(OP_Weather, 8);
 	if(zone_weather>0)
 		outapp->pBuffer[0] = zone_weather-1;
 	if(zone_weather>0)
@@ -2000,13 +2006,13 @@ void Zone::LoadLDoNTraps()
     }
 
     for (auto row = results.begin();row != results.end(); ++row) {
-        LDoNTrapTemplate *lt = new LDoNTrapTemplate;
-        lt->id = atoi(row[0]);
-        lt->type = (LDoNChestTypes)atoi(row[1]);
-        lt->spell_id = atoi(row[2]);
-        lt->skill = atoi(row[3]);
-        lt->locked = atoi(row[4]);
-        ldon_trap_list[lt->id] = lt;
+	    auto lt = new LDoNTrapTemplate;
+	    lt->id = atoi(row[0]);
+	    lt->type = (LDoNChestTypes)atoi(row[1]);
+	    lt->spell_id = atoi(row[2]);
+	    lt->skill = atoi(row[3]);
+	    lt->locked = atoi(row[4]);
+	    ldon_trap_list[lt->id] = lt;
     }
 
 }
@@ -2165,7 +2171,7 @@ void Zone::DoAdventureCountIncrease()
 	if(sr->count < sr->total)
 	{
 		sr->count++;
-		ServerPacket *pack = new ServerPacket(ServerOP_AdventureCountUpdate, sizeof(uint16));
+		auto pack = new ServerPacket(ServerOP_AdventureCountUpdate, sizeof(uint16));
 		*((uint16*)pack->pBuffer) = instanceid;
 		worldserver.SendPacket(pack);
 		delete pack;
@@ -2178,7 +2184,7 @@ void Zone::DoAdventureAssassinationCountIncrease()
 	if(sr->assa_count < RuleI(Adventure, NumberKillsForBossSpawn))
 	{
 		sr->assa_count++;
-		ServerPacket *pack = new ServerPacket(ServerOP_AdventureAssaCountUpdate, sizeof(uint16));
+		auto pack = new ServerPacket(ServerOP_AdventureAssaCountUpdate, sizeof(uint16));
 		*((uint16*)pack->pBuffer) = instanceid;
 		worldserver.SendPacket(pack);
 		delete pack;
@@ -2228,12 +2234,12 @@ void Zone::LoadNPCEmotes(LinkedList<NPC_Emote_Struct*>* NPCEmoteList)
 
     for (auto row = results.begin(); row != results.end(); ++row)
     {
-        NPC_Emote_Struct* nes = new NPC_Emote_Struct;
-        nes->emoteid = atoi(row[0]);
-        nes->event_ = atoi(row[1]);
-        nes->type = atoi(row[2]);
-        strn0cpy(nes->text, row[3], sizeof(nes->text));
-        NPCEmoteList->Insert(nes);
+	    auto nes = new NPC_Emote_Struct;
+	    nes->emoteid = atoi(row[0]);
+	    nes->event_ = atoi(row[1]);
+	    nes->type = atoi(row[2]);
+	    strn0cpy(nes->text, row[3], sizeof(nes->text));
+	    NPCEmoteList->Insert(nes);
     }
 
 }

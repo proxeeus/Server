@@ -266,7 +266,7 @@ void Trade::LogTrade()
 						sprintf(item_num, "%i", inst->GetItem()->ID);
 						strcat(logtext, item_num);
 
-						if (inst->IsType(ItemClassContainer)) {
+						if (inst->IsClassBag()) {
 							for (uint8 j = SUB_INDEX_BEGIN; j < EQEmu::legacy::ITEM_CONTAINER_SIZE; j++) {
 								inst = trader->GetInv().GetItem(i, j);
 								if (inst) {
@@ -309,9 +309,9 @@ void Trade::DumpTrade()
 		if (inst) {
 			Log.Out(Logs::Detail, Logs::Trading, "Item %i (Charges=%i, Slot=%i, IsBag=%s)",
 				inst->GetItem()->ID, inst->GetCharges(),
-				i, ((inst->IsType(ItemClassContainer)) ? "True" : "False"));
+				i, ((inst->IsClassBag()) ? "True" : "False"));
 
-			if (inst->IsType(ItemClassContainer)) {
+			if (inst->IsClassBag()) {
 				for (uint8 j = SUB_INDEX_BEGIN; j < EQEmu::legacy::ITEM_CONTAINER_SIZE; j++) {
 					inst = trader->GetInv().GetItem(i, j);
 					if (inst) {
@@ -335,7 +335,7 @@ void Client::ResetTrade() {
 	for (int16 trade_slot = EQEmu::legacy::TRADE_BEGIN; trade_slot <= EQEmu::legacy::TRADE_END; ++trade_slot) {
 		const ItemInst* inst = m_inv[trade_slot];
 
-		if (inst && inst->IsType(ItemClassContainer)) {
+		if (inst && inst->IsClassBag()) {
 			int16 free_slot = m_inv.FindFreeSlotForTradeItem(inst);
 
 			if (free_slot != INVALID_INDEX) {
@@ -490,7 +490,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 			for (int16 trade_slot = EQEmu::legacy::TRADE_BEGIN; trade_slot <= EQEmu::legacy::TRADE_END; ++trade_slot) {
 				const ItemInst* inst = m_inv[trade_slot];
 
-				if (inst && inst->IsType(ItemClassContainer)) {
+				if (inst && inst->IsClassBag()) {
 					Log.Out(Logs::Detail, Logs::Trading, "Giving container %s (%d) in slot %d to %s", inst->GetItem()->Name, inst->GetItem()->ID, trade_slot, other->GetName());
 
 					// TODO: need to check bag items/augments for no drop..everything for attuned...
@@ -501,7 +501,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 							if (other->PutItemInInventory(free_slot, *inst, true)) {
 								Log.Out(Logs::Detail, Logs::Trading, "Container %s (%d) successfully transferred, deleting from trade slot.", inst->GetItem()->Name, inst->GetItem()->ID);
 								if (qs_log) {
-									QSTradeItems_Struct* detail = new QSTradeItems_Struct;
+									auto detail = new QSTradeItems_Struct;
 
 									detail->from_id = this->character_id;
 									detail->from_slot = trade_slot;
@@ -612,7 +612,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 							Log.Out(Logs::Detail, Logs::Trading, "Partial stack %s (%d) successfully transferred, deleting %i charges from trade slot.",
 								inst->GetItem()->Name, inst->GetItem()->ID, (old_charges - inst->GetCharges()));
 							if (qs_log) {
-								QSTradeItems_Struct* detail = new QSTradeItems_Struct;
+								auto detail = new QSTradeItems_Struct;
 
 								detail->from_id = this->character_id;
 								detail->from_slot = trade_slot;
@@ -680,7 +680,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 						}
 
 						if (qs_log) {
-							QSTradeItems_Struct* detail = new QSTradeItems_Struct;
+							auto detail = new QSTradeItems_Struct;
 
 							detail->from_id = this->character_id;
 							detail->from_slot = trade_slot;
@@ -720,7 +720,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 							if (other->PutItemInInventory(free_slot, *inst, true)) {
 								Log.Out(Logs::Detail, Logs::Trading, "Item %s (%d) successfully transferred, deleting from trade slot.", inst->GetItem()->Name, inst->GetItem()->ID);
 								if (qs_log) {
-									QSTradeItems_Struct* detail = new QSTradeItems_Struct;
+									auto detail = new QSTradeItems_Struct;
 
 									detail->from_id = this->character_id;
 									detail->from_slot = trade_slot;
@@ -824,7 +824,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 				const ItemInst* trade_inst = m_inv[trade_slot];
 
 				if(trade_inst) {
-					QSHandinItems_Struct* detail = new QSHandinItems_Struct;
+					auto detail = new QSHandinItems_Struct;
 
 					strcpy(detail->action_type, "HANDIN");
 
@@ -840,7 +840,7 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 					event_details->push_back(detail);
 					qs_audit->char_count += detail->charges;
 
-					if(trade_inst->IsType(ItemClassContainer)) {
+					if (trade_inst->IsClassBag()) {
 						for (uint8 sub_slot = SUB_INDEX_BEGIN; sub_slot < trade_inst->GetItem()->BagSlots; ++sub_slot) {
 							const ItemInst* trade_baginst = trade_inst->GetItem(sub_slot);
 
@@ -885,16 +885,16 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 				continue;
 			}
 
-			const Item_Struct* item = inst->GetItem();
+			const EQEmu::ItemBase* item = inst->GetItem();
 			if(item && quest_npc == false) {
 				// if it was not a NO DROP or Attuned item (or if a GM is trading), let the NPC have it
 				if(GetGM() || (item->NoDrop != 0 && inst->IsAttuned() == false)) {
 					// pets need to look inside bags and try to equip items found there
-					if(item->ItemClass == ItemClassContainer && item->BagSlots > 0) {
+					if (item->IsClassBag() && item->BagSlots > 0) {
 						for (int16 bslot = SUB_INDEX_BEGIN; bslot < item->BagSlots; bslot++) {
 							const ItemInst* baginst = inst->GetItem(bslot);
 							if (baginst) {
-								const Item_Struct* bagitem = baginst->GetItem();
+								const EQEmu::ItemBase* bagitem = baginst->GetItem();
 								if (bagitem && (GetGM() || (bagitem->NoDrop != 0 && baginst->IsAttuned() == false))) {
 									tradingWith->CastToNPC()->AddLootDrop(bagitem, &tradingWith->CastToNPC()->itemlist,
 										baginst->GetCharges(), 1, 127, true, true);
@@ -990,7 +990,7 @@ bool Client::CheckTradeLoreConflict(Client* other)
 }
 
 void Client::Trader_ShowItems(){
-	EQApplicationPacket* outapp= new EQApplicationPacket(OP_Trader, sizeof(Trader_Struct));
+	auto outapp = new EQApplicationPacket(OP_Trader, sizeof(Trader_Struct));
 
 	Trader_Struct* outints = (Trader_Struct*)outapp->pBuffer;
 	Trader_Struct* TraderItems = database.LoadTraderItem(this->CharacterID());
@@ -1011,7 +1011,7 @@ void Client::SendTraderPacket(Client* Trader, uint32 Unknown72)
 	if(!Trader)
 		return;
 
-	EQApplicationPacket* outapp= new EQApplicationPacket(OP_BecomeTrader, sizeof(BecomeTrader_Struct));
+	auto outapp = new EQApplicationPacket(OP_BecomeTrader, sizeof(BecomeTrader_Struct));
 
 	BecomeTrader_Struct* bts = (BecomeTrader_Struct*)outapp->pBuffer;
 
@@ -1031,7 +1031,7 @@ void Client::SendTraderPacket(Client* Trader, uint32 Unknown72)
 
 void Client::Trader_CustomerBrowsing(Client *Customer) {
 
-	EQApplicationPacket* outapp= new EQApplicationPacket(OP_Trader, sizeof(Trader_ShowItems_Struct));
+	auto outapp = new EQApplicationPacket(OP_Trader, sizeof(Trader_ShowItems_Struct));
 
 	Trader_ShowItems_Struct* sis = (Trader_ShowItems_Struct*)outapp->pBuffer;
 
@@ -1047,7 +1047,7 @@ void Client::Trader_StartTrader() {
 
 	Trader=true;
 
-	EQApplicationPacket* outapp= new EQApplicationPacket(OP_Trader, sizeof(Trader_ShowItems_Struct));
+	auto outapp = new EQApplicationPacket(OP_Trader, sizeof(Trader_ShowItems_Struct));
 
 	Trader_ShowItems_Struct* sis = (Trader_ShowItems_Struct*)outapp->pBuffer;
 
@@ -1087,7 +1087,7 @@ void Client::Trader_EndTrader() {
 		GetItems_Struct* gis=GetTraderItems();
 
 		if(Customer && gis) {
-			EQApplicationPacket* outapp = new EQApplicationPacket(OP_TraderDelItem,sizeof(TraderDelItem_Struct));
+			auto outapp = new EQApplicationPacket(OP_TraderDelItem, sizeof(TraderDelItem_Struct));
 			TraderDelItem_Struct* tdis = (TraderDelItem_Struct*)outapp->pBuffer;
 
 			tdis->Unknown000 = 0;
@@ -1121,7 +1121,7 @@ void Client::Trader_EndTrader() {
 
 	// Notify other clients we are no longer in trader mode.
 	//
-	EQApplicationPacket* outapp= new EQApplicationPacket(OP_BecomeTrader, sizeof(BecomeTrader_Struct));
+	auto outapp = new EQApplicationPacket(OP_BecomeTrader, sizeof(BecomeTrader_Struct));
 
 	BecomeTrader_Struct* bts = (BecomeTrader_Struct*)outapp->pBuffer;
 
@@ -1158,7 +1158,7 @@ void Client::SendTraderItem(uint32 ItemID, uint16 Quantity) {
 	std::string Packet;
 	int16 FreeSlotID=0;
 
-	const Item_Struct* item = database.GetItem(ItemID);
+	const EQEmu::ItemBase* item = database.GetItem(ItemID);
 
 	if(!item){
 		Log.Out(Logs::Detail, Logs::Trading, "Bogus item deleted in Client::SendTraderItem!\n");
@@ -1169,7 +1169,7 @@ void Client::SendTraderItem(uint32 ItemID, uint16 Quantity) {
 
 	if (inst)
 	{
-		bool is_arrow = (inst->GetItem()->ItemType == ItemTypeArrow) ? true : false;
+		bool is_arrow = (inst->GetItem()->ItemType == EQEmu::item::ItemTypeArrow) ? true : false;
 		FreeSlotID = m_inv.FindFreeSlot(false, true, inst->GetItem()->Size, is_arrow);
 
 		PutItemInInventory(FreeSlotID, *inst);
@@ -1192,7 +1192,7 @@ void Client::SendSingleTraderItem(uint32 CharID, int SerialNumber) {
 }
 
 void Client::BulkSendTraderInventory(uint32 char_id) {
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 
 	TraderCharges_Struct* TraderItems = database.LoadTraderItemWithCharges(char_id);
 
@@ -1280,7 +1280,7 @@ GetItems_Struct* Client::GetTraderItems(){
 	const ItemInst* item = nullptr;
 	uint16 SlotID = 0;
 
-	GetItems_Struct* gis= new GetItems_Struct;
+	auto gis = new GetItems_Struct;
 
 	memset(gis,0,sizeof(GetItems_Struct));
 
@@ -1346,7 +1346,7 @@ void Client::NukeTraderItem(uint16 Slot,int16 Charges,uint16 Quantity,Client* Cu
 	}
 	else
 	{
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_TraderDelItem,sizeof(TraderDelItem_Struct));
+		auto outapp = new EQApplicationPacket(OP_TraderDelItem, sizeof(TraderDelItem_Struct));
 		TraderDelItem_Struct* tdis = (TraderDelItem_Struct*)outapp->pBuffer;
 
 		tdis->Unknown000 = 0;
@@ -1399,7 +1399,7 @@ void Client::NukeTraderItem(uint16 Slot,int16 Charges,uint16 Quantity,Client* Cu
 void Client::TraderUpdate(uint16 SlotID,uint32 TraderID){
 	// This method is no longer used.
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_TraderItemUpdate,sizeof(TraderItemUpdate_Struct));
+	auto outapp = new EQApplicationPacket(OP_TraderItemUpdate, sizeof(TraderItemUpdate_Struct));
 	TraderItemUpdate_Struct* tus=(TraderItemUpdate_Struct*)outapp->pBuffer;
 	tus->Charges = 0xFFFF;
 	tus->FromSlot = SlotID;
@@ -1524,7 +1524,7 @@ void Client::TradeRequestFailed(const EQApplicationPacket* app) {
 
 	TraderBuy_Struct* tbs = (TraderBuy_Struct*)app->pBuffer;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_TraderBuy, sizeof(TraderBuy_Struct));
+	auto outapp = new EQApplicationPacket(OP_TraderBuy, sizeof(TraderBuy_Struct));
 
 	TraderBuy_Struct* outtbs = (TraderBuy_Struct*)outapp->pBuffer;
 
@@ -1558,7 +1558,7 @@ void Client::BuyTraderItem(TraderBuy_Struct* tbs, Client* Trader, const EQApplic
 		return;
 	}
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Trader, sizeof(TraderBuy_Struct));
+	auto outapp = new EQApplicationPacket(OP_Trader, sizeof(TraderBuy_Struct));
 
 	TraderBuy_Struct* outtbs = (TraderBuy_Struct*)outapp->pBuffer;
 
@@ -1927,98 +1927,95 @@ void Client::SendBazaarResults(uint32 TraderID, uint32 Class_, uint32 Race, uint
 					RuleI(Bazaar, MaxSearchResults));
 
     if(results.RowCount() == 0) {
-		EQApplicationPacket* outapp2 = new EQApplicationPacket(OP_BazaarSearch, sizeof(BazaarReturnDone_Struct));
-		BazaarReturnDone_Struct* brds = (BazaarReturnDone_Struct*)outapp2->pBuffer;
-		brds->TraderID = ID;
-		brds->Type = BazaarSearchDone;
-		brds->Unknown008 = 0xFFFFFFFF;
-		brds->Unknown012 = 0xFFFFFFFF;
-		brds->Unknown016 = 0xFFFFFFFF;
-		this->QueuePacket(outapp2);
-		safe_delete(outapp2);
-		return;
+	    auto outapp2 = new EQApplicationPacket(OP_BazaarSearch, sizeof(BazaarReturnDone_Struct));
+	    BazaarReturnDone_Struct *brds = (BazaarReturnDone_Struct *)outapp2->pBuffer;
+	    brds->TraderID = ID;
+	    brds->Type = BazaarSearchDone;
+	    brds->Unknown008 = 0xFFFFFFFF;
+	    brds->Unknown012 = 0xFFFFFFFF;
+	    brds->Unknown016 = 0xFFFFFFFF;
+	    this->QueuePacket(outapp2);
+	    safe_delete(outapp2);
+	    return;
 	}
 
     Size = results.RowCount() * sizeof(BazaarSearchResults_Struct);
-    uchar *buffer = new uchar[Size];
-	uchar *bufptr = buffer;
-	memset(buffer, 0, Size);
+    auto buffer = new uchar[Size];
+    uchar *bufptr = buffer;
+    memset(buffer, 0, Size);
 
-	int Action = BazaarSearchResults;
-	uint32 Cost = 0;
-	int32 SerialNumber = 0;
-	char temp_buffer[64] = {0};
-	int Count = 0;
-	uint32 StatValue=0;
+    int Action = BazaarSearchResults;
+    uint32 Cost = 0;
+    int32 SerialNumber = 0;
+    char temp_buffer[64] = {0};
+    int Count = 0;
+    uint32 StatValue = 0;
 
-	for (auto row = results.begin(); row != results.end(); ++row) {
-        VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Action);
-		Count = atoi(row[0]);
-		VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Count);
-		SerialNumber = atoi(row[3]);
-		VARSTRUCT_ENCODE_TYPE(int32, bufptr, SerialNumber);
-		Client* Trader2=entity_list.GetClientByCharID(atoi(row[1]));
-		if(Trader2){
-			ID = Trader2->GetID();
-			VARSTRUCT_ENCODE_TYPE(uint32, bufptr, ID);
-		}
-		else{
-			Log.Out(Logs::Detail, Logs::Trading, "Unable to find trader: %i\n",atoi(row[1]));
-			VARSTRUCT_ENCODE_TYPE(uint32, bufptr, 0);
-		}
-		Cost = atoi(row[5]);
-		VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Cost);
-		StatValue = atoi(row[8]);
-		VARSTRUCT_ENCODE_TYPE(uint32, bufptr, StatValue);
-		bool Stackable = atoi(row[10]);
-		if(Stackable) {
-			int Charges = atoi(row[9]);
-			sprintf(temp_buffer, "%s(%i)", row[7], Charges);
-		}
-		else
-			sprintf(temp_buffer,"%s(%i)",row[7], Count);
+    for (auto row = results.begin(); row != results.end(); ++row) {
+	    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Action);
+	    Count = atoi(row[0]);
+	    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Count);
+	    SerialNumber = atoi(row[3]);
+	    VARSTRUCT_ENCODE_TYPE(int32, bufptr, SerialNumber);
+	    Client *Trader2 = entity_list.GetClientByCharID(atoi(row[1]));
+	    if (Trader2) {
+		    ID = Trader2->GetID();
+		    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, ID);
+	    } else {
+		    Log.Out(Logs::Detail, Logs::Trading, "Unable to find trader: %i\n", atoi(row[1]));
+		    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, 0);
+	    }
+	    Cost = atoi(row[5]);
+	    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, Cost);
+	    StatValue = atoi(row[8]);
+	    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, StatValue);
+	    bool Stackable = atoi(row[10]);
+	    if (Stackable) {
+		    int Charges = atoi(row[9]);
+		    sprintf(temp_buffer, "%s(%i)", row[7], Charges);
+	    } else
+		    sprintf(temp_buffer, "%s(%i)", row[7], Count);
 
-		memcpy(bufptr,&temp_buffer, strlen(temp_buffer));
+	    memcpy(bufptr, &temp_buffer, strlen(temp_buffer));
 
-		bufptr += 64;
+	    bufptr += 64;
 
-		// Extra fields for SoD+
-		//
-		if(Trader2)
-			sprintf(temp_buffer, "%s", Trader2->GetName());
-		else
-			sprintf(temp_buffer, "Unknown");
+	    // Extra fields for SoD+
+	    //
+	    if (Trader2)
+		    sprintf(temp_buffer, "%s", Trader2->GetName());
+	    else
+		    sprintf(temp_buffer, "Unknown");
 
-		memcpy(bufptr,&temp_buffer, strlen(temp_buffer));
+	    memcpy(bufptr, &temp_buffer, strlen(temp_buffer));
 
-		bufptr += 64;
+	    bufptr += 64;
 
-		VARSTRUCT_ENCODE_TYPE(uint32, bufptr, atoi(row[1]));	// ItemID
+	    VARSTRUCT_ENCODE_TYPE(uint32, bufptr, atoi(row[1])); // ItemID
     }
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_BazaarSearch, Size);
+    auto outapp = new EQApplicationPacket(OP_BazaarSearch, Size);
 
-	memcpy(outapp->pBuffer, buffer, Size);
+    memcpy(outapp->pBuffer, buffer, Size);
 
-	this->QueuePacket(outapp);
+    this->QueuePacket(outapp);
 
+    safe_delete(outapp);
+    safe_delete_array(buffer);
 
-	safe_delete(outapp);
-	safe_delete_array(buffer);
+    auto outapp2 = new EQApplicationPacket(OP_BazaarSearch, sizeof(BazaarReturnDone_Struct));
+    BazaarReturnDone_Struct *brds = (BazaarReturnDone_Struct *)outapp2->pBuffer;
 
-	EQApplicationPacket* outapp2 = new EQApplicationPacket(OP_BazaarSearch, sizeof(BazaarReturnDone_Struct));
-	BazaarReturnDone_Struct* brds = (BazaarReturnDone_Struct*)outapp2->pBuffer;
+    brds->TraderID = ID;
+    brds->Type = BazaarSearchDone;
 
-	brds->TraderID = ID;
-	brds->Type = BazaarSearchDone;
+    brds->Unknown008 = 0xFFFFFFFF;
+    brds->Unknown012 = 0xFFFFFFFF;
+    brds->Unknown016 = 0xFFFFFFFF;
 
-	brds->Unknown008 = 0xFFFFFFFF;
-	brds->Unknown012 = 0xFFFFFFFF;
-	brds->Unknown016 = 0xFFFFFFFF;
+    this->QueuePacket(outapp2);
 
-	this->QueuePacket(outapp2);
-
-	safe_delete(outapp2);
+    safe_delete(outapp2);
 }
 
 static void UpdateTraderCustomerItemsAdded(uint32 CustomerID, TraderCharges_Struct* gis, uint32 ItemID) {
@@ -2030,7 +2027,7 @@ static void UpdateTraderCustomerItemsAdded(uint32 CustomerID, TraderCharges_Stru
 
 	if(!Customer) return;
 
-	const Item_Struct *item = database.GetItem(ItemID);
+	const EQEmu::ItemBase *item = database.GetItem(ItemID);
 
 	if(!item) return;
 
@@ -2074,13 +2071,13 @@ static void UpdateTraderCustomerPriceChanged(uint32 CustomerID, TraderCharges_St
 
 	if(!Customer) return;
 
-	const Item_Struct *item = database.GetItem(ItemID);
+	const EQEmu::ItemBase *item = database.GetItem(ItemID);
 
 	if(!item) return;
 
 	if(NewPrice == 0) {
 		// If the new price is 0, remove the item(s) from the window.
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_TraderDelItem,sizeof(TraderDelItem_Struct));
+		auto outapp = new EQApplicationPacket(OP_TraderDelItem, sizeof(TraderDelItem_Struct));
 		TraderDelItem_Struct* tdis = (TraderDelItem_Struct*)outapp->pBuffer;
 
 		tdis->Unknown000 = 0;
@@ -2233,7 +2230,7 @@ void Client::HandleTraderPriceUpdate(const EQApplicationPacket *app) {
 		}
 
 
-		const Item_Struct *item = 0;
+		const EQEmu::ItemBase *item = 0;
 
 		if(IDOfItemToAdd)
 			item = database.GetItem(IDOfItemToAdd);
@@ -2354,7 +2351,7 @@ void Client::SendBuyerResults(char* searchString, uint32 searchID) {
 	//
 	Log.Out(Logs::Detail, Logs::None, "[CLIENT] Client::SendBuyerResults %s\n", searchString);
 
-	char* escSearchString = new char[strlen(searchString) * 2 + 1];
+	auto escSearchString = new char[strlen(searchString) * 2 + 1];
 	database.DoEscapeString(escSearchString, searchString, strlen(searchString));
 
 	std::string query = StringFormat("SELECT * FROM buyer WHERE itemname LIKE '%%%s%%' ORDER BY charid LIMIT %i",
@@ -2395,14 +2392,16 @@ void Client::SendBuyerResults(char* searchString, uint32 searchID) {
 		// to allow item compensation, e.g. a buyer could offer to buy a Blade Of Carnage for 10000pp plus
 		// other items in exchange. Item compensation is not currently supported in EQEmu.
 		//
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, 940);
+		auto outapp = new EQApplicationPacket(OP_Barter, 940);
 
 		char *buf = (char *)outapp->pBuffer;
 
-		const Item_Struct* item = database.GetItem(itemID);
+		const EQEmu::ItemBase* item = database.GetItem(itemID);
 
-		if(!item)
+		if(!item) {
+			safe_delete(outapp);
             continue;
+		}
 
         // Save having to scan the client list when dealing with multiple buylines for the same Character.
 		if(charID != lastCharID) {
@@ -2410,8 +2409,10 @@ void Client::SendBuyerResults(char* searchString, uint32 searchID) {
 			lastCharID = charID;
 		}
 
-		if(!buyer)
+		if(!buyer) {
+			safe_delete(outapp);
             continue;
+		}
 
         VARSTRUCT_ENCODE_TYPE(uint32, buf, Barter_BuyerSearchResults);	// Command
 		VARSTRUCT_ENCODE_TYPE(uint32, buf, searchID);			// Match up results with the request
@@ -2461,7 +2462,7 @@ void Client::ShowBuyLines(const EQApplicationPacket *app) {
 	if(strlen(WelcomeMessagePointer) > 0)
 		Message(10, "%s greets you, '%s'.", Buyer->GetName(), WelcomeMessagePointer);
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, sizeof(BuyerBrowsing_Struct));
+	auto outapp = new EQApplicationPacket(OP_Barter, sizeof(BuyerBrowsing_Struct));
 
 	BuyerBrowsing_Struct* bb = (BuyerBrowsing_Struct*)outapp->pBuffer;
 
@@ -2487,14 +2488,16 @@ void Client::ShowBuyLines(const EQApplicationPacket *app) {
 		uint32 Quantity = atoi(row[4]);
 		uint32 Price = atoi(row[5]);
 
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, 936);
+		auto outapp = new EQApplicationPacket(OP_Barter, 936);
 
 		char *Buf = (char *)outapp->pBuffer;
 
-		const Item_Struct* item = database.GetItem(ItemID);
+		const EQEmu::ItemBase* item = database.GetItem(ItemID);
 
-		if(!item)
+		if(!item) {
+			safe_delete(outapp);
             continue;
+		}
 
         VARSTRUCT_ENCODE_TYPE(uint32, Buf, Barter_BuyerInspectWindow);
 		VARSTRUCT_ENCODE_TYPE(uint32, Buf, BuySlot);
@@ -2533,7 +2536,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 	/*uint32	BuyerID2	=*/ VARSTRUCT_SKIP_TYPE(uint32, Buf);	//unused
 	/*uint32	Unknown3	=*/ VARSTRUCT_SKIP_TYPE(uint32, Buf);	//unused
 
-	const Item_Struct *item = database.GetItem(ItemID);
+	const EQEmu::ItemBase *item = database.GetItem(ItemID);
 
 	if(!item || !Quantity || !Price || !QtyBuyerWants) return;
 
@@ -2617,7 +2620,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 
 			// Remove the item from inventory, clientside
 			//
-			EQApplicationPacket* outapp2 = new EQApplicationPacket(OP_MoveItem,sizeof(MoveItem_Struct));
+			auto outapp2 = new EQApplicationPacket(OP_MoveItem, sizeof(MoveItem_Struct));
 
 			MoveItem_Struct* mis	= (MoveItem_Struct*)outapp2->pBuffer;
 			mis->from_slot		= SellerSlot;
@@ -2671,7 +2674,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 				safe_delete(ItemToTransfer);
 
 				// and tell the client to do the same.
-				EQApplicationPacket* outapp2 = new EQApplicationPacket(OP_MoveItem,sizeof(MoveItem_Struct));
+				auto outapp2 = new EQApplicationPacket(OP_MoveItem, sizeof(MoveItem_Struct));
 
 				MoveItem_Struct* mis	= (MoveItem_Struct*)outapp2->pBuffer;
 				mis->from_slot		= SellerSlot;
@@ -2703,7 +2706,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 
 				safe_delete(ItemToTransfer);
 
-				EQApplicationPacket* outapp2 = new EQApplicationPacket(OP_DeleteItem,sizeof(MoveItem_Struct));
+				auto outapp2 = new EQApplicationPacket(OP_DeleteItem, sizeof(MoveItem_Struct));
 
 				MoveItem_Struct* mis	= (MoveItem_Struct*)outapp2->pBuffer;
 				mis->from_slot			= SellerSlot;
@@ -2737,7 +2740,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 	//
 	uint32 PacketLength = 1016;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, PacketLength);
+	auto outapp = new EQApplicationPacket(OP_Barter, PacketLength);
 
 	Buf = (char *)outapp->pBuffer;
 
@@ -2792,7 +2795,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 
 	// Next we update the Seller's Barter Window to reflect the reduced quantity the Buyer is now looking to buy.
 	//
-	EQApplicationPacket* outapp3 = new EQApplicationPacket(OP_Barter, 936);
+	auto outapp3 = new EQApplicationPacket(OP_Barter, 936);
 
 	Buf = (char *)outapp3->pBuffer;
 
@@ -2826,7 +2829,7 @@ void Client::SellToBuyer(const EQApplicationPacket *app) {
 	// The next packet updates the /buyer window with the reduced quantity, and toggles the buy line off if the
 	// quantity they wanted to buy has been met.
 	//
-	EQApplicationPacket* outapp4 = new EQApplicationPacket(OP_Barter, 936);
+	auto outapp4 = new EQApplicationPacket(OP_Barter, 936);
 
 	Buf = (char*)outapp4->pBuffer;
 
@@ -2861,7 +2864,7 @@ void Client::SendBuyerPacket(Client* Buyer) {
 
 	// This is the Buyer Appearance packet. This method is called for each Buyer when a Client connects to the zone.
 	//
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, 13 + strlen(GetName()));
+	auto outapp = new EQApplicationPacket(OP_Barter, 13 + strlen(GetName()));
 
 	char* Buf = (char*)outapp->pBuffer;
 
@@ -2876,7 +2879,7 @@ void Client::SendBuyerPacket(Client* Buyer) {
 
 void Client::ToggleBuyerMode(bool TurnOn) {
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, 13 + strlen(GetName()));
+	auto outapp = new EQApplicationPacket(OP_Barter, 13 + strlen(GetName()));
 
 	char* Buf = (char*)outapp->pBuffer;
 
@@ -2924,7 +2927,7 @@ void Client::UpdateBuyLine(const EQApplicationPacket *app) {
 	/*uint32 UnknownZ		=*/ VARSTRUCT_SKIP_TYPE(uint32, Buf);	//unused
 	uint32 ItemCount	= VARSTRUCT_DECODE_TYPE(uint32, Buf);
 
-	const Item_Struct *item = database.GetItem(ItemID);
+	const EQEmu::ItemBase *item = database.GetItem(ItemID);
 
 	if(!item) return;
 
@@ -2957,7 +2960,7 @@ void Client::UpdateBuyLine(const EQApplicationPacket *app) {
 		else
 			database.RemoveBuyLine(CharacterID(), BuySlot);
 
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, 936);
+		auto outapp = new EQApplicationPacket(OP_Barter, 936);
 
 		Buf = (char*)outapp->pBuffer;
 
@@ -2984,11 +2987,11 @@ void Client::BuyerItemSearch(const EQApplicationPacket *app) {
 
 	BuyerItemSearch_Struct* bis = (BuyerItemSearch_Struct*)app->pBuffer;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Barter, sizeof(BuyerItemSearchResults_Struct));
+	auto outapp = new EQApplicationPacket(OP_Barter, sizeof(BuyerItemSearchResults_Struct));
 
 	BuyerItemSearchResults_Struct* bisr = (BuyerItemSearchResults_Struct*)outapp->pBuffer;
 
-	const Item_Struct* item = 0;
+	const EQEmu::ItemBase* item = 0;
 
 	int Count=0;
 

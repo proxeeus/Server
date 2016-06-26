@@ -3,7 +3,7 @@
 #include "eq_stream_factory.h"
 
 #ifdef _WINDOWS
-	#include <winsock.h>
+	#include <winsock2.h>
 	#include <process.h>
 	#include <io.h>
 	#include <stdio.h>
@@ -120,7 +120,7 @@ std::shared_ptr<EQStream> EQStreamFactory::Pop()
 {
 	std::shared_ptr<EQStream> s = nullptr;
 	MNewStreams.lock();
-	if (NewStreams.size()) {
+	if (!NewStreams.empty()) {
 		s = NewStreams.front();
 		NewStreams.pop();
 		s->PutInUse();
@@ -235,7 +235,7 @@ void EQStreamFactory::CheckTimeout()
 				//give it a little time for everybody to finish with it
 			} else {
 				//everybody is done, we can delete it now
-				std::map<std::pair<uint32, uint16>, std::shared_ptr<EQStream>>::iterator temp = stream_itr;
+				auto temp = stream_itr;
 				++stream_itr;
 				temp->second = nullptr;
 				Streams.erase(temp);

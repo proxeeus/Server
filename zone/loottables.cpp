@@ -119,7 +119,7 @@ void ZoneDatabase::AddLootDropToNPC(NPC* npc,uint32 lootdrop_id, ItemList* iteml
 			int charges = lds->Entries[i].multiplier;
 			for(int j = 0; j < charges; ++j) {
 				if(zone->random.Real(0.0, 100.0) <= lds->Entries[i].chance) {
-					const Item_Struct* dbitem = GetItem(lds->Entries[i].item_id);
+					const EQEmu::ItemBase* dbitem = GetItem(lds->Entries[i].item_id);
 					npc->AddLootDrop(dbitem, itemlist, lds->Entries[i].item_charges, lds->Entries[i].minlevel,
 									lds->Entries[i].maxlevel, lds->Entries[i].equip_item > 0 ? true : false, false);
 				}
@@ -140,7 +140,7 @@ void ZoneDatabase::AddLootDropToNPC(NPC* npc,uint32 lootdrop_id, ItemList* iteml
 	float roll_t_min = 0.0f;
 	bool active_item_list = false;
 	for(uint32 i = 0; i < lds->NumEntries; ++i) {
-		const Item_Struct* db_item = GetItem(lds->Entries[i].item_id);
+		const EQEmu::ItemBase* db_item = GetItem(lds->Entries[i].item_id);
 		if(db_item) {
 			roll_t += lds->Entries[i].chance;
 			active_item_list = true;
@@ -157,7 +157,7 @@ void ZoneDatabase::AddLootDropToNPC(NPC* npc,uint32 lootdrop_id, ItemList* iteml
 	for(int i = 0; i < mindrop; ++i) {
 		float roll = (float)zone->random.Real(0.0, roll_t_min);
 		for(uint32 j = 0; j < lds->NumEntries; ++j) {
-			const Item_Struct* db_item = GetItem(lds->Entries[j].item_id);
+			const EQEmu::ItemBase* db_item = GetItem(lds->Entries[j].item_id);
 			if(db_item) {
 				if(roll < lds->Entries[j].chance) {
 					npc->AddLootDrop(db_item, itemlist, lds->Entries[j].item_charges, lds->Entries[j].minlevel,
@@ -187,7 +187,7 @@ void ZoneDatabase::AddLootDropToNPC(NPC* npc,uint32 lootdrop_id, ItemList* iteml
 	for(int i = mindrop; i < droplimit; ++i) {
 		float roll = (float)zone->random.Real(0.0, roll_t);
 		for(uint32 j = 0; j < lds->NumEntries; ++j) {
-			const Item_Struct* db_item = GetItem(lds->Entries[j].item_id);
+			const EQEmu::ItemBase* db_item = GetItem(lds->Entries[j].item_id);
 			if(db_item) {
 				if(roll < lds->Entries[j].chance) {
 					npc->AddLootDrop(db_item, itemlist, lds->Entries[j].item_charges, lds->Entries[j].minlevel,
@@ -221,7 +221,7 @@ void ZoneDatabase::AddLootDropToNPC(NPC* npc,uint32 lootdrop_id, ItemList* iteml
 }
 
 //if itemlist is null, just send wear changes
-void NPC::AddLootDrop(const Item_Struct *item2, ItemList* itemlist, int16 charges, uint8 minlevel, uint8 maxlevel, bool equipit, bool wearchange) {
+void NPC::AddLootDrop(const EQEmu::ItemBase *item2, ItemList* itemlist, int16 charges, uint8 minlevel, uint8 maxlevel, bool equipit, bool wearchange) {
 	if(item2 == nullptr)
 		return;
 
@@ -229,7 +229,7 @@ void NPC::AddLootDrop(const Item_Struct *item2, ItemList* itemlist, int16 charge
 	if(!itemlist && !wearchange)
 		return;
 
-	ServerLootItem_Struct* item = new ServerLootItem_Struct;
+	auto item = new ServerLootItem_Struct;
 #if EQDEBUG>=11
 		Log.Out(Logs::General, Logs::None, "Adding drop to npc: %s, Item: %i", GetName(), item2->ID);
 #endif
@@ -258,7 +258,7 @@ void NPC::AddLootDrop(const Item_Struct *item2, ItemList* itemlist, int16 charge
 	if (equipit) {
 		uint8 eslot = 0xFF;
 		char newid[20];
-		const Item_Struct* compitem = nullptr;
+		const EQEmu::ItemBase* compitem = nullptr;
 		bool found = false; // track if we found an empty slot we fit into
 		int32 foundslot = -1; // for multi-slot items
 
@@ -331,44 +331,43 @@ void NPC::AddLootDrop(const Item_Struct *item2, ItemList* itemlist, int16 charge
 			if (item2->Proc.Effect != 0)
 				CastToMob()->AddProcToWeapon(item2->Proc.Effect, true);
 
-			eslot = EQEmu::legacy::MaterialPrimary;
+			eslot = EQEmu::textures::TexturePrimary;
 			if (item2->Damage > 0)
 				SendAddPlayerState(PlayerState::PrimaryWeaponEquipped);
-			if (item2->ItemType == ItemType2HBlunt || item2->ItemType == ItemType2HSlash || item2->ItemType == ItemType2HPiercing)
+			if (item2->IsType2HWeapon())
 				SetTwoHanderEquipped(true);
 		}
 		else if (foundslot == EQEmu::legacy::SlotSecondary
 			&& (GetOwner() != nullptr || (CanThisClassDualWield() && zone->random.Roll(NPC_DW_CHANCE)) || (item2->Damage==0)) &&
-			(item2->ItemType == ItemType1HSlash || item2->ItemType == ItemType1HBlunt || item2->ItemType == ItemTypeShield ||
-			item2->ItemType == ItemType1HPiercing))
+			(item2->IsType1HWeapon() || item2->ItemType == EQEmu::item::ItemTypeShield))
 		{
 			if (item2->Proc.Effect!=0)
 				CastToMob()->AddProcToWeapon(item2->Proc.Effect, true);
 
-			eslot = EQEmu::legacy::MaterialSecondary;
+			eslot = EQEmu::textures::TextureSecondary;
 			if (item2->Damage > 0)
 				SendAddPlayerState(PlayerState::SecondaryWeaponEquipped);
 		}
 		else if (foundslot == EQEmu::legacy::SlotHead) {
-			eslot = EQEmu::legacy::MaterialHead;
+			eslot = EQEmu::textures::TextureHead;
 		}
 		else if (foundslot == EQEmu::legacy::SlotChest) {
-			eslot = EQEmu::legacy::MaterialChest;
+			eslot = EQEmu::textures::TextureChest;
 		}
 		else if (foundslot == EQEmu::legacy::SlotArms) {
-			eslot = EQEmu::legacy::MaterialArms;
+			eslot = EQEmu::textures::TextureArms;
 		}
 		else if (foundslot == EQEmu::legacy::SlotWrist1 || foundslot == EQEmu::legacy::SlotWrist2) {
-			eslot = EQEmu::legacy::MaterialWrist;
+			eslot = EQEmu::textures::TextureWrist;
 		}
 		else if (foundslot == EQEmu::legacy::SlotHands) {
-			eslot = EQEmu::legacy::MaterialHands;
+			eslot = EQEmu::textures::TextureHands;
 		}
 		else if (foundslot == EQEmu::legacy::SlotLegs) {
-			eslot = EQEmu::legacy::MaterialLegs;
+			eslot = EQEmu::textures::TextureLegs;
 		}
 		else if (foundslot == EQEmu::legacy::SlotFeet) {
-			eslot = EQEmu::legacy::MaterialFeet;
+			eslot = EQEmu::textures::TextureFeet;
 		}
 
 		/*
@@ -416,17 +415,17 @@ void NPC::AddLootDrop(const Item_Struct *item2, ItemList* itemlist, int16 charge
 		SendAppearancePacket(AT_Light, GetActiveLightType());
 }
 
-void NPC::AddItem(const Item_Struct* item, uint16 charges, bool equipitem) {
+void NPC::AddItem(const EQEmu::ItemBase* item, uint16 charges, bool equipitem) {
 	//slot isnt needed, its determined from the item.
-	AddLootDrop(item, &itemlist, charges, 1, 127, equipitem, equipitem);
+	AddLootDrop(item, &itemlist, charges, 1, 255, equipitem, equipitem);
 }
 
 void NPC::AddItem(uint32 itemid, uint16 charges, bool equipitem) {
 	//slot isnt needed, its determined from the item.
-	const Item_Struct * i = database.GetItem(itemid);
+	const EQEmu::ItemBase * i = database.GetItem(itemid);
 	if(i == nullptr)
 		return;
-	AddLootDrop(i, &itemlist, charges, 1, 127, equipitem, equipitem);
+	AddLootDrop(i, &itemlist, charges, 1, 255, equipitem, equipitem);
 }
 
 void NPC::AddLootTable() {

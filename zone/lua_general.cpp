@@ -46,7 +46,7 @@ void unregister_event(std::string package_name, std::string name, int evt);
 void load_encounter(std::string name) {
 	if(lua_encounters_loaded.count(name) > 0)
 		return;
-	Encounter *enc = new Encounter(name.c_str());
+	auto enc = new Encounter(name.c_str());
 	entity_list.AddEncounter(enc);
 	lua_encounters[name] = enc;
 	lua_encounters_loaded[name] = true;
@@ -56,7 +56,7 @@ void load_encounter(std::string name) {
 void load_encounter_with_data(std::string name, std::string info_str) {
 	if(lua_encounters_loaded.count(name) > 0)
 		return;
-	Encounter *enc = new Encounter(name.c_str());
+	auto enc = new Encounter(name.c_str());
 	entity_list.AddEncounter(enc);
 	lua_encounters[name] = enc;
 	lua_encounters_loaded[name] = true;
@@ -1216,8 +1216,8 @@ void lua_add_spawn_point(luabind::adl::object table) {
 
 		lua_remove_spawn_point(spawn2_id);
 
-		Spawn2 *t = new Spawn2(spawn2_id, spawngroup_id, x, y, z, heading, respawn, variance, timeleft, grid, condition_id,
-			condition_min_value, enabled, static_cast<EmuAppearance>(animation));
+		auto t = new Spawn2(spawn2_id, spawngroup_id, x, y, z, heading, respawn, variance, timeleft, grid,
+				    condition_id, condition_min_value, enabled, static_cast<EmuAppearance>(animation));
 		zone->spawn2_list.Insert(t);
 	}
 }
@@ -1344,7 +1344,7 @@ void lua_create_npc(luabind::adl::object table, float x, float y, float z, float
 		return;
 	}
 
-	NPCType* npc_type = new NPCType;
+	auto npc_type = new NPCType;
 	memset(npc_type, 0, sizeof(NPCType));
 
 
@@ -1400,15 +1400,15 @@ void lua_create_npc(luabind::adl::object table, float x, float y, float z, float
 	LuaCreateNPCParse(drakkin_heritage, uint32, 0);
 	LuaCreateNPCParse(drakkin_tattoo, uint32, 0);
 	LuaCreateNPCParse(drakkin_details, uint32, 0);
-	LuaCreateNPCParse(armor_tint[0], uint32, 0);
-	LuaCreateNPCParse(armor_tint[1], uint32, 0);
-	LuaCreateNPCParse(armor_tint[2], uint32, 0);
-	LuaCreateNPCParse(armor_tint[3], uint32, 0);
-	LuaCreateNPCParse(armor_tint[4], uint32, 0);
-	LuaCreateNPCParse(armor_tint[5], uint32, 0);
-	LuaCreateNPCParse(armor_tint[6], uint32, 0);
-	LuaCreateNPCParse(armor_tint[7], uint32, 0);
-	LuaCreateNPCParse(armor_tint[8], uint32, 0);
+	LuaCreateNPCParse(armor_tint.Head.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Chest.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Arms.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Wrist.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Hands.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Legs.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Feet.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Primary.Color, uint32, 0);
+	LuaCreateNPCParse(armor_tint.Secondary.Color, uint32, 0);
 	LuaCreateNPCParse(min_dmg, uint32, 2);
 	LuaCreateNPCParse(max_dmg, uint32, 4);
 	LuaCreateNPCParse(attack_count, int16, 0);
@@ -1809,19 +1809,19 @@ luabind::scope lua_register_material() {
 	return luabind::class_<Materials>("Material")
 		.enum_("constants")
 		[
-			luabind::value("Head", static_cast<int>(EQEmu::legacy::MaterialHead)),
-			luabind::value("Chest", static_cast<int>(EQEmu::legacy::MaterialChest)),
-			luabind::value("Arms", static_cast<int>(EQEmu::legacy::MaterialArms)),
-			luabind::value("Bracer", static_cast<int>(EQEmu::legacy::MaterialWrist)), // deprecated
-			luabind::value("Wrist", static_cast<int>(EQEmu::legacy::MaterialWrist)),
-			luabind::value("Hands", static_cast<int>(EQEmu::legacy::MaterialHands)),
-			luabind::value("Legs", static_cast<int>(EQEmu::legacy::MaterialLegs)),
-			luabind::value("Feet", static_cast<int>(EQEmu::legacy::MaterialFeet)),
-			luabind::value("Primary", static_cast<int>(EQEmu::legacy::MaterialPrimary)),
-			luabind::value("Secondary", static_cast<int>(EQEmu::legacy::MaterialSecondary)),
-			luabind::value("Max", static_cast<int>(EQEmu::legacy::MaterialCount)), // deprecated
-			luabind::value("Count", static_cast<int>(EQEmu::legacy::MaterialCount)),
-			luabind::value("Invalid", static_cast<int>(EQEmu::legacy::MaterialInvalid))
+			luabind::value("Head", static_cast<int>(EQEmu::textures::TextureHead)),
+			luabind::value("Chest", static_cast<int>(EQEmu::textures::TextureChest)),
+			luabind::value("Arms", static_cast<int>(EQEmu::textures::TextureArms)),
+			luabind::value("Bracer", static_cast<int>(EQEmu::textures::TextureWrist)), // deprecated
+			luabind::value("Wrist", static_cast<int>(EQEmu::textures::TextureWrist)),
+			luabind::value("Hands", static_cast<int>(EQEmu::textures::TextureHands)),
+			luabind::value("Legs", static_cast<int>(EQEmu::textures::TextureLegs)),
+			luabind::value("Feet", static_cast<int>(EQEmu::textures::TextureFeet)),
+			luabind::value("Primary", static_cast<int>(EQEmu::textures::TexturePrimary)),
+			luabind::value("Secondary", static_cast<int>(EQEmu::textures::TextureSecondary)),
+			luabind::value("Max", static_cast<int>(EQEmu::textures::TextureCount)), // deprecated
+			luabind::value("Count", static_cast<int>(EQEmu::textures::TextureCount)),
+			luabind::value("Invalid", static_cast<int>(EQEmu::textures::TextureInvalid))
 		];
 }
 

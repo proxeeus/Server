@@ -27,14 +27,17 @@ class Object;
 class Raid;
 class Seperator;
 class ServerPacket;
-struct Item_Struct;
+
+namespace EQEmu
+{
+	struct ItemBase;
+}
 
 #include "../common/timer.h"
 #include "../common/ptimer.h"
 #include "../common/emu_opcodes.h"
 #include "../common/eq_packet_structs.h"
-//#include "../common/eq_constants.h"
-#include "../common/emu_constants.h" // inv2 watch
+#include "../common/emu_constants.h"
 #include "../common/eq_stream_intf.h"
 #include "../common/eq_packet.h"
 #include "../common/linked_list.h"
@@ -43,8 +46,7 @@ struct Item_Struct;
 #include "../common/seperator.h"
 #include "../common/item.h"
 #include "../common/guilds.h"
-#include "../common/item_struct.h"
-//#include "../common/clientversions.h"
+#include "../common/item_base.h"
 
 #include "common.h"
 #include "merc.h"
@@ -216,8 +218,8 @@ public:
 	~Client();
 
 	//abstract virtual function implementations required by base abstract class
-	virtual bool Death(Mob* killerMob, int32 damage, uint16 spell_id, SkillUseTypes attack_skill);
-	virtual void Damage(Mob* from, int32 damage, uint16 spell_id, SkillUseTypes attack_skill, bool avoidable = true, int8 buffslot = -1, bool iBuffTic = false, int special = 0);
+	virtual bool Death(Mob* killerMob, int32 damage, uint16 spell_id, EQEmu::skills::SkillType attack_skill);
+	virtual void Damage(Mob* from, int32 damage, uint16 spell_id, EQEmu::skills::SkillType attack_skill, bool avoidable = true, int8 buffslot = -1, bool iBuffTic = false, int special = 0);
 	virtual bool Attack(Mob* other, int Hand = EQEmu::legacy::SlotPrimary, bool FromRiposte = false, bool IsStrikethrough = false, bool IsFromSpell = false,
 			ExtraAttackOptions *opts = nullptr, int special = 0);
 	virtual bool HasRaid() { return (GetRaid() ? true : false); }
@@ -251,7 +253,7 @@ public:
 	void SendBuyerPacket(Client* Buyer);
 	GetItems_Struct* GetTraderItems();
 	void SendBazaarWelcome();
-	void DyeArmor(DyeStruct* dye);
+	void DyeArmor(EQEmu::TintProfile* dye);
 	uint8 SlotConvert(uint8 slot,bool bracer=false);
 	void Message_StringID(uint32 type, uint32 string_id, uint32 distance = 0);
 	void Message_StringID(uint32 type, uint32 string_id, const char* message,const char* message2=0,const char* message3=0,const char* message4=0,const char* message5=0,const char* message6=0,const char* message7=0,const char* message8=0,const char* message9=0, uint32 distance = 0);
@@ -290,7 +292,7 @@ public:
 
 	void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
 	virtual bool Process();
-	void LogMerchant(Client* player, Mob* merchant, uint32 quantity, uint32 price, const Item_Struct* item, bool buying);
+	void LogMerchant(Client* player, Mob* merchant, uint32 quantity, uint32 price, const EQEmu::ItemBase* item, bool buying);
 	void SendPacketQueue(bool Block = true);
 	void QueuePacket(const EQApplicationPacket* app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL, eqFilterType filter=FilterNone);
 	void FastQueuePacket(EQApplicationPacket** app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL);
@@ -302,7 +304,7 @@ public:
 	void VoiceMacroReceived(uint32 Type, char *Target, uint32 MacroNumber);
 	void SendSound();
 	void LearnRecipe(uint32 recipeID);
-	bool CanIncreaseTradeskill(SkillUseTypes tradeskill);
+	bool CanIncreaseTradeskill(EQEmu::skills::SkillType tradeskill);
 
 	EQApplicationPacket* ReturnItemPacket(int16 slot_id, const ItemInst* inst, ItemPacketType packet_type);
 
@@ -398,7 +400,7 @@ public:
 
 	inline uint8 GetLanguageSkill(uint16 n) const { return m_pp.languages[n]; }
 
-	void SendPickPocketResponse(Mob *from, uint32 amt, int type, const Item_Struct* item = nullptr);
+	void SendPickPocketResponse(Mob *from, uint32 amt, int type, const EQEmu::ItemBase* item = nullptr);
 
 	inline const char* GetLastName() const { return lastname; }
 
@@ -414,7 +416,7 @@ public:
 	virtual void CalcBonuses();
 	//these are all precalculated now
 	inline virtual int32 GetAC() const { return AC; }
-	inline virtual int32 GetATK() const { return ATK + itembonuses.ATK + spellbonuses.ATK + ((GetSTR() + GetSkill(SkillOffense)) * 9 / 10); }
+	inline virtual int32 GetATK() const { return ATK + itembonuses.ATK + spellbonuses.ATK + ((GetSTR() + GetSkill(EQEmu::skills::SkillOffense)) * 9 / 10); }
 	inline virtual int32 GetATKBonus() const { return itembonuses.ATK + spellbonuses.ATK; }
 	inline virtual int GetHaste() const { return Haste; }
 	int GetRawACNoShield(int &shield_ac) const;
@@ -594,7 +596,7 @@ public:
 	void AssignToInstance(uint16 instance_id);
 	void RemoveFromInstance(uint16 instance_id);
 	void WhoAll();
-	bool CheckLoreConflict(const Item_Struct* item);
+	bool CheckLoreConflict(const EQEmu::ItemBase* item);
 	void ChangeLastName(const char* in_lastname);
 	void GetGroupAAs(GroupLeadershipAA_Struct *into) const;
 	void GetRaidAAs(RaidLeadershipAA_Struct *into) const;
@@ -678,31 +680,31 @@ public:
 	uint16 GetSkillPoints() { return m_pp.points;}
 	void SetSkillPoints(int inp) { m_pp.points = inp;}
 
-	void IncreaseSkill(int skill_id, int value = 1) { if (skill_id <= HIGHEST_SKILL) { m_pp.skills[skill_id] += value; } }
+	void IncreaseSkill(int skill_id, int value = 1) { if (skill_id <= EQEmu::skills::HIGHEST_SKILL) { m_pp.skills[skill_id] += value; } }
 	void IncreaseLanguageSkill(int skill_id, int value = 1);
-	virtual uint16 GetSkill(SkillUseTypes skill_id) const {if (skill_id <= HIGHEST_SKILL) {return(itembonuses.skillmod[skill_id] > 0 ? (itembonuses.skillmodmax[skill_id] > 0 ? std::min(m_pp.skills[skill_id] + itembonuses.skillmodmax[skill_id], m_pp.skills[skill_id] * (100 + itembonuses.skillmod[skill_id]) / 100) : m_pp.skills[skill_id] * (100 + itembonuses.skillmod[skill_id]) / 100) : m_pp.skills[skill_id]);} return 0;}
-	uint32 GetRawSkill(SkillUseTypes skill_id) const { if (skill_id <= HIGHEST_SKILL) { return(m_pp.skills[skill_id]); } return 0; }
-	bool HasSkill(SkillUseTypes skill_id) const;
-	bool CanHaveSkill(SkillUseTypes skill_id) const;
-	void SetSkill(SkillUseTypes skill_num, uint16 value);
-	void AddSkill(SkillUseTypes skillid, uint16 value);
+	virtual uint16 GetSkill(EQEmu::skills::SkillType skill_id) const { if (skill_id <= EQEmu::skills::HIGHEST_SKILL) { return(itembonuses.skillmod[skill_id] > 0 ? (itembonuses.skillmodmax[skill_id] > 0 ? std::min(m_pp.skills[skill_id] + itembonuses.skillmodmax[skill_id], m_pp.skills[skill_id] * (100 + itembonuses.skillmod[skill_id]) / 100) : m_pp.skills[skill_id] * (100 + itembonuses.skillmod[skill_id]) / 100) : m_pp.skills[skill_id]); } return 0; }
+	uint32 GetRawSkill(EQEmu::skills::SkillType skill_id) const { if (skill_id <= EQEmu::skills::HIGHEST_SKILL) { return(m_pp.skills[skill_id]); } return 0; }
+	bool HasSkill(EQEmu::skills::SkillType skill_id) const;
+	bool CanHaveSkill(EQEmu::skills::SkillType skill_id) const;
+	void SetSkill(EQEmu::skills::SkillType skill_num, uint16 value);
+	void AddSkill(EQEmu::skills::SkillType skillid, uint16 value);
 	void CheckSpecializeIncrease(uint16 spell_id);
 	void CheckSongSkillIncrease(uint16 spell_id);
-	bool CheckIncreaseSkill(SkillUseTypes skillid, Mob *against_who, int chancemodi = 0);
+	bool CheckIncreaseSkill(EQEmu::skills::SkillType skillid, Mob *against_who, int chancemodi = 0);
 	void CheckLanguageSkillIncrease(uint8 langid, uint8 TeacherSkill);
 	void SetLanguageSkill(int langid, int value);
 	void SetHoTT(uint32 mobid);
 	void ShowSkillsWindow();
 	void SendStatsWindow(Client* client, bool use_window);
 
-	uint16 MaxSkill(SkillUseTypes skillid, uint16 class_, uint16 level) const;
-	inline uint16 MaxSkill(SkillUseTypes skillid) const { return MaxSkill(skillid, GetClass(), GetLevel()); }
-	uint8 SkillTrainLevel(SkillUseTypes skillid, uint16 class_);
+	uint16 MaxSkill(EQEmu::skills::SkillType skillid, uint16 class_, uint16 level) const;
+	inline uint16 MaxSkill(EQEmu::skills::SkillType skillid) const { return MaxSkill(skillid, GetClass(), GetLevel()); }
+	uint8 SkillTrainLevel(EQEmu::skills::SkillType skillid, uint16 class_);
 
-	void TradeskillSearchResults(const std::string query, unsigned long objtype, unsigned long someid);
+	void TradeskillSearchResults(const std::string &query, unsigned long objtype, unsigned long someid);
 	void SendTradeskillDetails(uint32 recipe_id);
 	bool TradeskillExecute(DBTradeskillRecipe_Struct *spec);
-	void CheckIncreaseTradeskill(int16 bonusstat, int16 stat_modifier, float skillup_modifier, uint16 success_modifier, SkillUseTypes tradeskill);
+	void CheckIncreaseTradeskill(int16 bonusstat, int16 stat_modifier, float skillup_modifier, uint16 success_modifier, EQEmu::skills::SkillType tradeskill);
 
 	void GMKill();
 	inline bool IsMedding() const {return medding;}
@@ -737,7 +739,7 @@ public:
 #endif
 	uint32 GetEquipment(uint8 material_slot) const; // returns item id
 	uint32 GetEquipmentColor(uint8 material_slot) const;
-	virtual void UpdateEquipmentLight() { m_Light.Type.Equipment = m_inv.FindBrightestLightType(); m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment); }
+	virtual void UpdateEquipmentLight() { m_Light.Type[EQEmu::lightsource::LightEquipment] = m_inv.FindBrightestLightType(); m_Light.Level[EQEmu::lightsource::LightEquipment] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightEquipment]); }
 
 	inline bool AutoSplitEnabled() { return m_pp.autosplit != 0; }
 
@@ -800,7 +802,7 @@ public:
 	uint32 NukeItem(uint32 itemnum, uint8 where_to_check =
 			(invWhereWorn | invWherePersonal | invWhereBank | invWhereSharedBank | invWhereTrading | invWhereCursor));
 	void SetTint(int16 slot_id, uint32 color);
-	void SetTint(int16 slot_id, Color_Struct& color);
+	void SetTint(int16 slot_id, EQEmu::Tint_Struct& color);
 	void SetMaterial(int16 slot_id, uint32 item_id);
 	void Undye();
 	int32 GetItemIDAt(int16 slot_id);
@@ -819,7 +821,7 @@ public:
 	void IncStats(uint8 type,int16 increase_val);
 	void DropItem(int16 slot_id);
 
-	int GetItemLinkHash(const ItemInst* inst); // move to Item_Struct..or make use of the pre-calculated database field
+	int GetItemLinkHash(const ItemInst* inst); // move to ItemBase..or make use of the pre-calculated database field
 
 	void SendItemLink(const ItemInst* inst, bool sendtoall=false);
 	void SendLootItemInPacket(const ItemInst* inst, int16 slot_id);
@@ -924,7 +926,7 @@ public:
 	int GetNextAvailableSpellBookSlot(int starting_slot = 0);
 	inline uint32 GetSpellByBookSlot(int book_slot) { return m_pp.spell_book[book_slot]; }
 	inline bool HasSpellScribed(int spellid) { return (FindSpellBookSlotBySpellID(spellid) != -1 ? true : false); }
-	uint16 GetMaxSkillAfterSpecializationRules(SkillUseTypes skillid, uint16 maxSkill);
+	uint16 GetMaxSkillAfterSpecializationRules(EQEmu::skills::SkillType skillid, uint16 maxSkill);
 	void SendPopupToClient(const char *Title, const char *Text, uint32 PopupID = 0, uint32 Buttons = 0, uint32 Duration = 0);
 	void SendWindow(uint32 PopupID, uint32 NegativeID, uint32 Buttons, const char *ButtonName0, const char *ButtonName1, uint32 Duration, int title_type, Client* target, const char *Title, const char *Text, ...);
 	bool PendingTranslocate;
@@ -1172,13 +1174,14 @@ public:
 	int32 GetActCHA() { return( std::min(GetMaxCHA(), GetCHA()) ); }
 	void LoadAccountFlags();
 	void SetAccountFlag(std::string flag, std::string val);
-	std::string GetAccountFlag(std::string flag); float GetDamageMultiplier(SkillUseTypes);
-	void Consume(const Item_Struct *item, uint8 type, int16 slot, bool auto_consume);
+	std::string GetAccountFlag(std::string flag);
+	float GetDamageMultiplier(EQEmu::skills::SkillType how_long_has_this_been_missing);
+	void Consume(const EQEmu::ItemBase *item, uint8 type, int16 slot, bool auto_consume);
 	void PlayMP3(const char* fname);
 	void ExpeditionSay(const char *str, int ExpID);
-	int mod_client_damage(int damage, SkillUseTypes skillinuse, int hand, const ItemInst* weapon, Mob* other);
+	int mod_client_damage(int damage, EQEmu::skills::SkillType skillinuse, int hand, const ItemInst* weapon, Mob* other);
 	bool mod_client_message(char* message, uint8 chan_num);
-	bool mod_can_increase_skill(SkillUseTypes skillid, Mob* against_who);
+	bool mod_can_increase_skill(EQEmu::skills::SkillType skillid, Mob* against_who);
 	int16 mod_increase_skill_chance(int16 chance, Mob* against_who);
 	int mod_bindwound_percent(int max_percent, Mob* bindmob);
 	int mod_bindwound_hp(int bindhps, Mob* bindmob);
@@ -1195,9 +1198,9 @@ public:
 	int32 mod_client_xp(int32 in_exp, NPC *npc);
 	uint32 mod_client_xp_for_level(uint32 xp, uint16 check_level);
 	int mod_client_haste_cap(int cap);
-	int mod_consume(Item_Struct *item, ItemUseTypes type, int change);
-	int mod_food_value(const Item_Struct *item, int change);
-	int mod_drink_value(const Item_Struct *item, int change);
+	int mod_consume(EQEmu::ItemBase *item, EQEmu::item::ItemType type, int change);
+	int mod_food_value(const EQEmu::ItemBase *item, int change);
+	int mod_drink_value(const EQEmu::ItemBase *item, int change);
 
 	void SetEngagedRaidTarget(bool value) { EngagedRaidTarget = value; }
 	bool GetEngagedRaidTarget() const { return EngagedRaidTarget; }

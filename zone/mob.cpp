@@ -73,7 +73,7 @@ Mob::Mob(const char* in_name,
 		uint32		in_drakkin_heritage,
 		uint32		in_drakkin_tattoo,
 		uint32		in_drakkin_details,
-		uint32		in_armor_tint[EQEmu::legacy::MaterialCount],
+		EQEmu::TintProfile	in_armor_tint,
 
 		uint8		in_aa_title,
 		uint8		in_see_invis, // see through invis/ivu
@@ -178,12 +178,10 @@ Mob::Mob(const char* in_name,
 	if (runspeed < 0 || runspeed > 20)
 		runspeed = 1.25f;
 
-	m_Light.Type.Innate = in_light;
-	m_Light.Level.Innate = EQEmu::lightsource::TypeToLevel(m_Light.Type.Innate);
-	m_Light.Level.Equipment = m_Light.Type.Equipment = 0;
-	m_Light.Level.Spell = m_Light.Type.Spell = 0;
-	m_Light.Type.Active = m_Light.Type.Innate;
-	m_Light.Level.Active = m_Light.Level.Innate;
+	m_Light.Type[EQEmu::lightsource::LightInnate] = in_light;
+	m_Light.Level[EQEmu::lightsource::LightInnate] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightInnate]);
+	m_Light.Type[EQEmu::lightsource::LightActive] = m_Light.Type[EQEmu::lightsource::LightInnate];
+	m_Light.Level[EQEmu::lightsource::LightActive] = m_Light.Level[EQEmu::lightsource::LightInnate];
 
 	texture		= in_texture;
 	helmtexture	= in_helmtexture;
@@ -280,16 +278,9 @@ Mob::Mob(const char* in_name,
 		RangedProcs[j].level_override = -1;
 	}
 
-	for (i = 0; i < EQEmu::legacy::MaterialCount; i++)
+	for (i = 0; i < EQEmu::textures::TextureCount; i++)
 	{
-		if (in_armor_tint)
-		{
-			armor_tint[i] = in_armor_tint[i];
-		}
-		else
-		{
-			armor_tint[i] = 0;
-		}
+		armor_tint.Slot[i].Color = in_armor_tint.Slot[i].Color;
 	}
 
 	m_Delta = glm::vec4();
@@ -429,7 +420,7 @@ Mob::Mob(const char* in_name,
 
 	m_AllowBeneficial = false;
 	m_DisableMelee = false;
-	for (int i = 0; i < HIGHEST_SKILL+2; i++) { SkillDmgTaken_Mod[i] = 0; }
+	for (int i = 0; i < EQEmu::skills::HIGHEST_SKILL + 2; i++) { SkillDmgTaken_Mod[i] = 0; }
 	for (int i = 0; i < HIGHEST_RESIST+2; i++) { Vulnerability_Mod[i] = 0; }
 
 	emoteid = 0;
@@ -1100,7 +1091,7 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	ns->spawn.findable	= findable?1:0;
 
 	UpdateActiveLight();
-	ns->spawn.light		= m_Light.Type.Active;
+	ns->spawn.light		= m_Light.Type[EQEmu::lightsource::LightActive];
 
 	ns->spawn.showhelm = (helmtexture && helmtexture != 0xFF) ? 1 : 0;
 
@@ -1167,10 +1158,10 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		// Only Player Races Wear Armor
 		if (Mob::IsPlayerRace(race) || i > 6)
 		{
-			ns->spawn.equipment[i].Material = GetEquipmentMaterial(i);
-			ns->spawn.equipment[i].EliteMaterial = IsEliteMaterialItem(i);
-			ns->spawn.equipment[i].HeroForgeModel = GetHerosForgeModel(i);
-			ns->spawn.colors[i].Color = GetEquipmentColor(i);
+			ns->spawn.equipment.Slot[i].Material = GetEquipmentMaterial(i);
+			ns->spawn.equipment.Slot[i].EliteMaterial = IsEliteMaterialItem(i);
+			ns->spawn.equipment.Slot[i].HeroForgeModel = GetHerosForgeModel(i);
+			ns->spawn.equipment_tint.Slot[i].Color = GetEquipmentColor(i);
 		}
 	}
 
@@ -1375,7 +1366,7 @@ void Mob::SendHPUpdate(bool skip_self)
 
 		this->CastToClient()->SendHPUpdateMarquee();
 
-		EQApplicationPacket* hp_app2 = new EQApplicationPacket(OP_HPUpdate,sizeof(SpawnHPUpdate_Struct));
+		auto hp_app2 = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
 		SpawnHPUpdate_Struct* ds = (SpawnHPUpdate_Struct*)hp_app2->pBuffer;
 		ds->cur_hp = CastToClient()->GetHP() - itembonuses.HP;
 		ds->spawn_id = GetID();
@@ -1390,7 +1381,7 @@ void Mob::SendHPUpdate(bool skip_self)
 // this one just warps the mob to the current location
 void Mob::SendPosition()
 {
-	EQApplicationPacket* app = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+	auto app = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 	PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)app->pBuffer;
 	MakeSpawnUpdateNoDelta(spu);
 	move_tic_count = 0;
@@ -1400,7 +1391,7 @@ void Mob::SendPosition()
 
 // this one is for mobs on the move, with deltas - this makes them walk
 void Mob::SendPosUpdate(uint8 iSendToSelf) {
-	EQApplicationPacket* app = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+	auto app = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 	PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)app->pBuffer;
 	MakeSpawnUpdate(spu);
 
@@ -1509,7 +1500,7 @@ void Mob::ShowStats(Client* client)
 }
 
 void Mob::DoAnim(const int animnum, int type, bool ackreq, eqFilterType filter) {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Animation, sizeof(Animation_Struct));
+	auto outapp = new EQApplicationPacket(OP_Animation, sizeof(Animation_Struct));
 	Animation_Struct* anim = (Animation_Struct*)outapp->pBuffer;
 	anim->spawnid = GetID();
 	if(type == 0){
@@ -1745,7 +1736,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		}
 	}
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Illusion, sizeof(Illusion_Struct));
+	auto outapp = new EQApplicationPacket(OP_Illusion, sizeof(Illusion_Struct));
 	Illusion_Struct* is = (Illusion_Struct*) outapp->pBuffer;
 	is->spawnid = GetID();
 	strcpy(is->charname, GetCleanName());
@@ -2013,7 +2004,7 @@ uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 void Mob::SendAppearancePacket(uint32 type, uint32 value, bool WholeZone, bool iIgnoreSelf, Client *specific_target) {
 	if (!GetID())
 		return;
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+	auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
 	SpawnAppearance_Struct* appearance = (SpawnAppearance_Struct*)outapp->pBuffer;
 	appearance->spawn_id = this->GetID();
 	appearance->type = type;
@@ -2028,7 +2019,7 @@ void Mob::SendAppearancePacket(uint32 type, uint32 value, bool WholeZone, bool i
 }
 
 void Mob::SendLevelAppearance(){
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
+	auto outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
 	LevelAppearance_Struct* la = (LevelAppearance_Struct*)outapp->pBuffer;
 	la->parm1 = 0x4D;
 	la->parm2 = la->parm1 + 1;
@@ -2049,7 +2040,7 @@ void Mob::SendLevelAppearance(){
 
 void Mob::SendStunAppearance()
 {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
+	auto outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
 	LevelAppearance_Struct* la = (LevelAppearance_Struct*)outapp->pBuffer;
 	la->parm1 = 58;
 	la->parm2 = 60;
@@ -2063,7 +2054,7 @@ void Mob::SendStunAppearance()
 }
 
 void Mob::SendAppearanceEffect(uint32 parm1, uint32 parm2, uint32 parm3, uint32 parm4, uint32 parm5, Client *specific_target){
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
+	auto outapp = new EQApplicationPacket(OP_LevelAppearance, sizeof(LevelAppearance_Struct));
 	LevelAppearance_Struct* la = (LevelAppearance_Struct*)outapp->pBuffer;
 	la->spawn_id = GetID();
 	la->parm1 = parm1;
@@ -2093,7 +2084,7 @@ void Mob::SendAppearanceEffect(uint32 parm1, uint32 parm2, uint32 parm3, uint32 
 }
 
 void Mob::SendTargetable(bool on, Client *specific_target) {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Untargetable, sizeof(Untargetable_Struct));
+	auto outapp = new EQApplicationPacket(OP_Untargetable, sizeof(Untargetable_Struct));
 	Untargetable_Struct *ut = (Untargetable_Struct*)outapp->pBuffer;
 	ut->id = GetID();
 	ut->targetable_flag = on == true ? 1 : 0;
@@ -2112,7 +2103,7 @@ void Mob::CameraEffect(uint32 duration, uint32 intensity, Client *c, bool global
 
 	if(global == true)
 	{
-		ServerPacket* pack = new ServerPacket(ServerOP_CameraShake, sizeof(ServerCameraShake_Struct));
+		auto pack = new ServerPacket(ServerOP_CameraShake, sizeof(ServerCameraShake_Struct));
 		ServerCameraShake_Struct* scss = (ServerCameraShake_Struct*) pack->pBuffer;
 		scss->duration = duration;
 		scss->intensity = intensity;
@@ -2121,7 +2112,7 @@ void Mob::CameraEffect(uint32 duration, uint32 intensity, Client *c, bool global
 		return;
 	}
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_CameraEffect, sizeof(Camera_Struct));
+	auto outapp = new EQApplicationPacket(OP_CameraEffect, sizeof(Camera_Struct));
 	Camera_Struct* cs = (Camera_Struct*) outapp->pBuffer;
 	cs->duration = duration;	// Duration in milliseconds
 	cs->intensity = ((intensity * 6710886) + 1023410176);	// Intensity ranges from 1023410176 to 1090519040, so simplify it from 0 to 10.
@@ -2136,7 +2127,7 @@ void Mob::CameraEffect(uint32 duration, uint32 intensity, Client *c, bool global
 
 void Mob::SendSpellEffect(uint32 effectid, uint32 duration, uint32 finish_delay, bool zone_wide, uint32 unk020, bool perm_effect, Client *c) {
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpellEffect, sizeof(SpellEffect_Struct));
+	auto outapp = new EQApplicationPacket(OP_SpellEffect, sizeof(SpellEffect_Struct));
 	SpellEffect_Struct* se = (SpellEffect_Struct*) outapp->pBuffer;
 	se->EffectID = effectid;	// ID of the Particle Effect
 	se->EntityID = GetID();
@@ -2188,7 +2179,7 @@ void Mob::TempName(const char *newname)
 	entity_list.MakeNameUnique(temp_name);
 
 	// Send the new name to all clients
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_MobRename, sizeof(MobRename_Struct));
+	auto outapp = new EQApplicationPacket(OP_MobRename, sizeof(MobRename_Struct));
 	MobRename_Struct* mr = (MobRename_Struct*) outapp->pBuffer;
 	strn0cpy(mr->old_name, old_name, 64);
 	strn0cpy(mr->old_name_again, old_name, 64);
@@ -2233,18 +2224,18 @@ void Mob::SetAppearance(EmuAppearance app, bool iIgnoreSelf) {
 
 bool Mob::UpdateActiveLight()
 {
-	uint8 old_light_level = m_Light.Level.Active;
+	uint8 old_light_level = m_Light.Level[EQEmu::lightsource::LightActive];
 
-	m_Light.Type.Active = 0;
-	m_Light.Level.Active = 0;
+	m_Light.Type[EQEmu::lightsource::LightActive] = 0;
+	m_Light.Level[EQEmu::lightsource::LightActive] = 0;
 
-	if (EQEmu::lightsource::IsLevelGreater((m_Light.Type.Innate & 0x0F), m_Light.Type.Active)) { m_Light.Type.Active = m_Light.Type.Innate; }
-	if (m_Light.Level.Equipment > m_Light.Level.Active) { m_Light.Type.Active = m_Light.Type.Equipment; } // limiter in property handler
-	if (m_Light.Level.Spell > m_Light.Level.Active) { m_Light.Type.Active = m_Light.Type.Spell; } // limiter in property handler
+	if (EQEmu::lightsource::IsLevelGreater((m_Light.Type[EQEmu::lightsource::LightInnate] & 0x0F), m_Light.Type[EQEmu::lightsource::LightActive])) { m_Light.Type[EQEmu::lightsource::LightActive] = m_Light.Type[EQEmu::lightsource::LightInnate]; }
+	if (m_Light.Level[EQEmu::lightsource::LightEquipment] > m_Light.Level[EQEmu::lightsource::LightActive]) { m_Light.Type[EQEmu::lightsource::LightActive] = m_Light.Type[EQEmu::lightsource::LightEquipment]; } // limiter in property handler
+	if (m_Light.Level[EQEmu::lightsource::LightSpell] > m_Light.Level[EQEmu::lightsource::LightActive]) { m_Light.Type[EQEmu::lightsource::LightActive] = m_Light.Type[EQEmu::lightsource::LightSpell]; } // limiter in property handler
 
-	m_Light.Level.Active = EQEmu::lightsource::TypeToLevel(m_Light.Type.Active);
+	m_Light.Level[EQEmu::lightsource::LightActive] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightActive]);
 
-	return (m_Light.Level.Active != old_light_level);
+	return (m_Light.Level[EQEmu::lightsource::LightActive] != old_light_level);
 }
 
 void Mob::ChangeSize(float in_size = 0, bool bNoRestriction) {
@@ -2377,22 +2368,22 @@ void Mob::SetZone(uint32 zone_id, uint32 instance_id)
 }
 
 void Mob::Kill() {
-	Death(this, 0, SPELL_UNKNOWN, SkillHandtoHand);
+	Death(this, 0, SPELL_UNKNOWN, EQEmu::skills::SkillHandtoHand);
 }
 
 bool Mob::CanThisClassDualWield(void) const {
 	if(!IsClient()) {
-		return(GetSkill(SkillDualWield) > 0);
+		return(GetSkill(EQEmu::skills::SkillDualWield) > 0);
 	}
-	else if(CastToClient()->HasSkill(SkillDualWield)) {
+	else if (CastToClient()->HasSkill(EQEmu::skills::SkillDualWield)) {
 		const ItemInst* pinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotPrimary);
 		const ItemInst* sinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotSecondary);
 
 		// 2HS, 2HB, or 2HP
 		if(pinst && pinst->IsWeapon()) {
-			const Item_Struct* item = pinst->GetItem();
+			const EQEmu::ItemBase* item = pinst->GetItem();
 
-			if((item->ItemType == ItemType2HBlunt) || (item->ItemType == ItemType2HSlash) || (item->ItemType == ItemType2HPiercing))
+			if (item->IsType2HWeapon())
 				return false;
 		}
 
@@ -2414,12 +2405,12 @@ bool Mob::CanThisClassDualWield(void) const {
 bool Mob::CanThisClassDoubleAttack(void) const
 {
 	if(!IsClient()) {
-		return(GetSkill(SkillDoubleAttack) > 0);
+		return(GetSkill(EQEmu::skills::SkillDoubleAttack) > 0);
 	} else {
 		if(aabonuses.GiveDoubleAttack || itembonuses.GiveDoubleAttack || spellbonuses.GiveDoubleAttack) {
 			return true;
 		}
-		return(CastToClient()->HasSkill(SkillDoubleAttack));
+		return(CastToClient()->HasSkill(EQEmu::skills::SkillDoubleAttack));
 	}
 }
 
@@ -2428,7 +2419,7 @@ bool Mob::CanThisClassTripleAttack() const
 	if (!IsClient())
 		return false; // When they added the real triple attack skill, mobs lost the ability to triple
 	else
-		return CastToClient()->HasSkill(SkillTripleAttack);
+		return CastToClient()->HasSkill(EQEmu::skills::SkillTripleAttack);
 }
 
 bool Mob::IsWarriorClass(void) const
@@ -2467,36 +2458,36 @@ bool Mob::IsWarriorClass(void) const
 bool Mob::CanThisClassParry(void) const
 {
 	if(!IsClient()) {
-		return(GetSkill(SkillParry) > 0);
+		return(GetSkill(EQEmu::skills::SkillParry) > 0);
 	} else {
-		return(CastToClient()->HasSkill(SkillParry));
+		return(CastToClient()->HasSkill(EQEmu::skills::SkillParry));
 	}
 }
 
 bool Mob::CanThisClassDodge(void) const
 {
 	if(!IsClient()) {
-		return(GetSkill(SkillDodge) > 0);
+		return(GetSkill(EQEmu::skills::SkillDodge) > 0);
 	} else {
-		return(CastToClient()->HasSkill(SkillDodge));
+		return(CastToClient()->HasSkill(EQEmu::skills::SkillDodge));
 	}
 }
 
 bool Mob::CanThisClassRiposte(void) const
 {
 	if(!IsClient()) {
-		return(GetSkill(SkillRiposte) > 0);
+		return(GetSkill(EQEmu::skills::SkillRiposte) > 0);
 	} else {
-		return(CastToClient()->HasSkill(SkillRiposte));
+		return(CastToClient()->HasSkill(EQEmu::skills::SkillRiposte));
 	}
 }
 
 bool Mob::CanThisClassBlock(void) const
 {
 	if(!IsClient()) {
-		return(GetSkill(SkillBlock) > 0);
+		return(GetSkill(EQEmu::skills::SkillBlock) > 0);
 	} else {
-		return(CastToClient()->HasSkill(SkillBlock));
+		return(CastToClient()->HasSkill(EQEmu::skills::SkillBlock));
 	}
 }
 /*
@@ -2762,7 +2753,7 @@ void Mob::SendArmorAppearance(Client *one_client)
 	{
 		if (!IsClient())
 		{
-			const Item_Struct *item;
+			const EQEmu::ItemBase *item;
 			for (int i = 0; i < 7; ++i)
 			{
 				item = database.GetItem(GetEquipment(i));
@@ -2777,7 +2768,7 @@ void Mob::SendArmorAppearance(Client *one_client)
 
 void Mob::SendWearChange(uint8 material_slot, Client *one_client)
 {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
+	auto outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
 	WearChange_Struct* wc = (WearChange_Struct*)outapp->pBuffer;
 
 	wc->spawn_id = GetID();
@@ -2801,7 +2792,7 @@ void Mob::SendWearChange(uint8 material_slot, Client *one_client)
 
 void Mob::SendTextureWC(uint8 slot, uint16 texture, uint32 hero_forge_model, uint32 elite_material, uint32 unknown06, uint32 unknown18)
 {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
+	auto outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
 	WearChange_Struct* wc = (WearChange_Struct*)outapp->pBuffer;
 
 	wc->spawn_id = this->GetID();
@@ -2829,9 +2820,9 @@ void Mob::SetSlotTint(uint8 material_slot, uint8 red_tint, uint8 green_tint, uin
 	color |= (green_tint & 0xFF) << 8;
 	color |= (blue_tint & 0xFF);
 	color |= (color) ? (0xFF << 24) : 0;
-	armor_tint[material_slot] = color;
+	armor_tint.Slot[material_slot].Color = color;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
+	auto outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
 	WearChange_Struct* wc = (WearChange_Struct*)outapp->pBuffer;
 
 	wc->spawn_id = this->GetID();
@@ -2846,9 +2837,9 @@ void Mob::SetSlotTint(uint8 material_slot, uint8 red_tint, uint8 green_tint, uin
 
 void Mob::WearChange(uint8 material_slot, uint16 texture, uint32 color, uint32 hero_forge_model)
 {
-	armor_tint[material_slot] = color;
+	armor_tint.Slot[material_slot].Color = color;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
+	auto outapp = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
 	WearChange_Struct* wc = (WearChange_Struct*)outapp->pBuffer;
 
 	wc->spawn_id = this->GetID();
@@ -2865,13 +2856,13 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 {
 	uint32 equipmaterial = 0;
 	int32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 	item = database.GetItem(GetEquipment(material_slot));
 
 	if (item != 0)
 	{
 		// For primary and secondary we need the model, not the material
-		if (material_slot == EQEmu::legacy::MaterialPrimary || material_slot == EQEmu::legacy::MaterialSecondary)
+		if (material_slot == EQEmu::textures::TexturePrimary || material_slot == EQEmu::textures::TextureSecondary)
 		{
 			if (this->IsClient())
 			{
@@ -2915,10 +2906,10 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 int32 Mob::GetHerosForgeModel(uint8 material_slot) const
 {
 	uint32 HeroModel = 0;
-	if (material_slot >= 0 && material_slot < EQEmu::legacy::MaterialPrimary)
+	if (material_slot >= 0 && material_slot < EQEmu::textures::TexturePrimary)
 	{
 		uint32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-		const Item_Struct *item;
+		const EQEmu::ItemBase *item;
 		item = database.GetItem(GetEquipment(material_slot));
 		int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
 
@@ -2972,11 +2963,11 @@ int32 Mob::GetHerosForgeModel(uint8 material_slot) const
 
 uint32 Mob::GetEquipmentColor(uint8 material_slot) const
 {
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 
-	if (armor_tint[material_slot])
+	if (armor_tint.Slot[material_slot].Color)
 	{
-		return armor_tint[material_slot];
+		return armor_tint.Slot[material_slot].Color;
 	}
 
 	item = database.GetItem(GetEquipment(material_slot));
@@ -2988,7 +2979,7 @@ uint32 Mob::GetEquipmentColor(uint8 material_slot) const
 
 uint32 Mob::IsEliteMaterialItem(uint8 material_slot) const
 {
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 
 	item = database.GetItem(GetEquipment(material_slot));
 	if(item != 0)
@@ -3419,19 +3410,19 @@ void Mob::TriggerDefensiveProcs(Mob *on, uint16 hand, bool FromSkillProc, int da
 		uint16 skillinuse = 0;
 		switch (damage) {
 			case (-1):
-				skillinuse = SkillBlock;
+				skillinuse = EQEmu::skills::SkillBlock;
 			break;
 
 			case (-2):
-				skillinuse = SkillParry;
+				skillinuse = EQEmu::skills::SkillParry;
 			break;
 
 			case (-3):
-				skillinuse = SkillRiposte;
+				skillinuse = EQEmu::skills::SkillRiposte;
 			break;
 
 			case (-4):
-				skillinuse = SkillDodge;
+				skillinuse = EQEmu::skills::SkillDodge;
 			break;
 		}
 
@@ -3455,7 +3446,7 @@ void Mob::SetEntityVariable(const char *id, const char *m_var)
 
 const char* Mob::GetEntityVariable(const char *id)
 {
-	std::map<std::string, std::string>::iterator iter = m_EntityVariables.find(id);
+	auto iter = m_EntityVariables.find(id);
 	if(iter != m_EntityVariables.end())
 	{
 		return iter->second.c_str();
@@ -3465,7 +3456,7 @@ const char* Mob::GetEntityVariable(const char *id)
 
 bool Mob::EntityVariableExists(const char *id)
 {
-	std::map<std::string, std::string>::iterator iter = m_EntityVariables.find(id);
+	auto iter = m_EntityVariables.find(id);
 	if(iter != m_EntityVariables.end())
 	{
 		return true;
@@ -3792,15 +3783,18 @@ int32 Mob::GetVulnerability(Mob* caster, uint32 spell_id, uint32 ticsremaining)
 	return value;
 }
 
-int16 Mob::GetSkillDmgTaken(const SkillUseTypes skill_used)
+int16 Mob::GetSkillDmgTaken(const EQEmu::skills::SkillType skill_used, ExtraAttackOptions *opts)
 {
 	int skilldmg_mod = 0;
 
 	// All skill dmg mod + Skill specific
-	skilldmg_mod += itembonuses.SkillDmgTaken[HIGHEST_SKILL+1] + spellbonuses.SkillDmgTaken[HIGHEST_SKILL+1] +
+	skilldmg_mod += itembonuses.SkillDmgTaken[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.SkillDmgTaken[EQEmu::skills::HIGHEST_SKILL + 1] +
 					itembonuses.SkillDmgTaken[skill_used] + spellbonuses.SkillDmgTaken[skill_used];
 
-	skilldmg_mod += SkillDmgTaken_Mod[skill_used] + SkillDmgTaken_Mod[HIGHEST_SKILL+1];
+	skilldmg_mod += SkillDmgTaken_Mod[skill_used] + SkillDmgTaken_Mod[EQEmu::skills::HIGHEST_SKILL + 1];
+
+	if (opts)
+		skilldmg_mod += opts->skilldmgtaken_bonus_flat;
 
 	if(skilldmg_mod < -100)
 		skilldmg_mod = -100;
@@ -3901,7 +3895,7 @@ int32 Mob::GetItemStat(uint32 itemid, const char *identifier)
 	if (!inst)
 		return 0;
 
-	const Item_Struct* item = inst->GetItem();
+	const EQEmu::ItemBase* item = inst->GetItem();
 	if (!item)
 		return 0;
 
@@ -4258,7 +4252,7 @@ std::string Mob::GetGlobal(const char *varname) {
 	if(qglobals)
 		QGlobalCache::Combine(globalMap, qglobals->GetBucket(), qgNpcid, qgCharid, zone->GetZoneID());
 
-	std::list<QGlobal>::iterator iter = globalMap.begin();
+	auto iter = globalMap.begin();
 	while(iter != globalMap.end()) {
 		if ((*iter).name.compare(varname) == 0)
 			return (*iter).value;
@@ -4344,7 +4338,7 @@ void Mob::DelGlobal(const char *varname) {
 
 	if(zone)
 	{
-		ServerPacket* pack = new ServerPacket(ServerOP_QGlobalDelete, sizeof(ServerQGlobalDelete_Struct));
+		auto pack = new ServerPacket(ServerOP_QGlobalDelete, sizeof(ServerQGlobalDelete_Struct));
 		ServerQGlobalDelete_Struct *qgu = (ServerQGlobalDelete_Struct*)pack->pBuffer;
 
 		qgu->npc_id = qgNpcid;
@@ -4383,7 +4377,7 @@ void Mob::InsertQuestGlobal(int charid, int npcid, int zoneid, const char *varna
 	if(zone)
 	{
 		//first delete our global
-		ServerPacket* pack = new ServerPacket(ServerOP_QGlobalDelete, sizeof(ServerQGlobalDelete_Struct));
+		auto pack = new ServerPacket(ServerOP_QGlobalDelete, sizeof(ServerQGlobalDelete_Struct));
 		ServerQGlobalDelete_Struct *qgd = (ServerQGlobalDelete_Struct*)pack->pBuffer;
 		qgd->npc_id = npcid;
 		qgd->char_id = charid;
@@ -4496,7 +4490,7 @@ void Mob::DoKnockback(Mob *caster, uint32 pushback, uint32 pushup)
 	{
 		CastToClient()->SetKnockBackExemption(true);
 
-		EQApplicationPacket* outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+		auto outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 		PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)outapp_push->pBuffer;
 
 		double look_heading = caster->CalculateHeadingToTarget(GetX(), GetY());
@@ -4611,7 +4605,7 @@ int16 Mob::GetCritDmgMob(uint16 skill)
 	int critDmg_mod = 0;
 
 	// All skill dmg mod + Skill specific
-	critDmg_mod += itembonuses.CritDmgMob[HIGHEST_SKILL+1] + spellbonuses.CritDmgMob[HIGHEST_SKILL+1] + aabonuses.CritDmgMob[HIGHEST_SKILL+1] +
+	critDmg_mod += itembonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] +
 					itembonuses.CritDmgMob[skill] + spellbonuses.CritDmgMob[skill] + aabonuses.CritDmgMob[skill];
 
 	if(critDmg_mod < -100)
@@ -4656,7 +4650,7 @@ int16 Mob::GetCriticalChanceBonus(uint16 skill)
 	int critical_chance = 0;
 
 	// All skills + Skill specific
-	critical_chance +=	itembonuses.CriticalHitChance[HIGHEST_SKILL+1] + spellbonuses.CriticalHitChance[HIGHEST_SKILL+1] + aabonuses.CriticalHitChance[HIGHEST_SKILL+1] +
+	critical_chance += itembonuses.CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] +
 						itembonuses.CriticalHitChance[skill] + spellbonuses.CriticalHitChance[skill] + aabonuses.CriticalHitChance[skill];
 
 	if(critical_chance < -100)
@@ -4670,10 +4664,10 @@ int16 Mob::GetMeleeDamageMod_SE(uint16 skill)
 	int dmg_mod = 0;
 
 	// All skill dmg mod + Skill specific
-	dmg_mod += itembonuses.DamageModifier[HIGHEST_SKILL+1] + spellbonuses.DamageModifier[HIGHEST_SKILL+1] + aabonuses.DamageModifier[HIGHEST_SKILL+1] +
+	dmg_mod += itembonuses.DamageModifier[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.DamageModifier[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.DamageModifier[EQEmu::skills::HIGHEST_SKILL + 1] +
 				itembonuses.DamageModifier[skill] + spellbonuses.DamageModifier[skill] + aabonuses.DamageModifier[skill];
 
-	dmg_mod += itembonuses.DamageModifier2[HIGHEST_SKILL+1] + spellbonuses.DamageModifier2[HIGHEST_SKILL+1] + aabonuses.DamageModifier2[HIGHEST_SKILL+1] +
+	dmg_mod += itembonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] +
 				itembonuses.DamageModifier2[skill] + spellbonuses.DamageModifier2[skill] + aabonuses.DamageModifier2[skill];
 
 	if (HasShieldEquiped() && !IsOffHandAtk())
@@ -4690,7 +4684,7 @@ int16 Mob::GetMeleeMinDamageMod_SE(uint16 skill)
 	int dmg_mod = 0;
 
 	dmg_mod = itembonuses.MinDamageModifier[skill] + spellbonuses.MinDamageModifier[skill] +
-				itembonuses.MinDamageModifier[HIGHEST_SKILL+1] + spellbonuses.MinDamageModifier[HIGHEST_SKILL+1];
+		itembonuses.MinDamageModifier[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.MinDamageModifier[EQEmu::skills::HIGHEST_SKILL + 1];
 
 	if(dmg_mod < -100)
 		dmg_mod = -100;
@@ -4722,10 +4716,10 @@ int16 Mob::GetSkillDmgAmt(uint16 skill)
 	int skill_dmg = 0;
 
 	// All skill dmg(only spells do this) + Skill specific
-	skill_dmg += spellbonuses.SkillDamageAmount[HIGHEST_SKILL+1] + itembonuses.SkillDamageAmount[HIGHEST_SKILL+1] + aabonuses.SkillDamageAmount[HIGHEST_SKILL+1]
+	skill_dmg += spellbonuses.SkillDamageAmount[EQEmu::skills::HIGHEST_SKILL + 1] + itembonuses.SkillDamageAmount[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.SkillDamageAmount[EQEmu::skills::HIGHEST_SKILL + 1]
 				+ itembonuses.SkillDamageAmount[skill] + spellbonuses.SkillDamageAmount[skill] + aabonuses.SkillDamageAmount[skill];
 
-	skill_dmg += spellbonuses.SkillDamageAmount2[HIGHEST_SKILL+1] + itembonuses.SkillDamageAmount2[HIGHEST_SKILL+1]
+	skill_dmg += spellbonuses.SkillDamageAmount2[EQEmu::skills::HIGHEST_SKILL + 1] + itembonuses.SkillDamageAmount2[EQEmu::skills::HIGHEST_SKILL + 1]
 				+ itembonuses.SkillDamageAmount2[skill] + spellbonuses.SkillDamageAmount2[skill];
 
 	return skill_dmg;
@@ -4745,7 +4739,7 @@ void Mob::MeleeLifeTap(int32 damage) {
 		if (lifetap_amt > 0)
 			HealDamage(lifetap_amt); //Heal self for modified damage amount.
 		else
-			Damage(this, -lifetap_amt,0, SkillEvocation,false); //Dmg self for modified damage amount.
+			Damage(this, -lifetap_amt, 0, EQEmu::skills::SkillEvocation, false); //Dmg self for modified damage amount.
 	}
 }
 
@@ -4885,7 +4879,7 @@ void Mob::RemoveNimbusEffect(int effectid)
 	else if (effectid == nimbus_effect3)
 		nimbus_effect3 = 0;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_RemoveNimbusEffect, sizeof(RemoveNimbusEffect_Struct));
+	auto outapp = new EQApplicationPacket(OP_RemoveNimbusEffect, sizeof(RemoveNimbusEffect_Struct));
 	RemoveNimbusEffect_Struct* rne = (RemoveNimbusEffect_Struct*)outapp->pBuffer;
 	rne->spawnid = GetID();
 	rne->nimbus_effect = effectid;
@@ -4909,7 +4903,7 @@ void Mob::SetBodyType(bodyType new_body, bool overwrite_orig) {
 	bodytype = new_body;
 
 	if(needs_spawn_packet) {
-		EQApplicationPacket* app = new EQApplicationPacket;
+		auto app = new EQApplicationPacket;
 		CreateDespawnPacket(app, true);
 		entity_list.QueueClients(this, app);
 		CreateSpawnPacket(app, this);
@@ -4919,21 +4913,21 @@ void Mob::SetBodyType(bodyType new_body, bool overwrite_orig) {
 }
 
 
-void Mob::ModSkillDmgTaken(SkillUseTypes skill_num, int value)
+void Mob::ModSkillDmgTaken(EQEmu::skills::SkillType skill_num, int value)
 {
 	if (skill_num == ALL_SKILLS)
-		SkillDmgTaken_Mod[HIGHEST_SKILL+1] = value;
+		SkillDmgTaken_Mod[EQEmu::skills::HIGHEST_SKILL + 1] = value;
 
-	else if (skill_num >= 0 && skill_num <= HIGHEST_SKILL)
+	else if (skill_num >= 0 && skill_num <= EQEmu::skills::HIGHEST_SKILL)
 		SkillDmgTaken_Mod[skill_num] = value;
 }
 
-int16 Mob::GetModSkillDmgTaken(const SkillUseTypes skill_num)
+int16 Mob::GetModSkillDmgTaken(const EQEmu::skills::SkillType skill_num)
 {
 	if (skill_num == ALL_SKILLS)
-		return SkillDmgTaken_Mod[HIGHEST_SKILL+1];
+		return SkillDmgTaken_Mod[EQEmu::skills::HIGHEST_SKILL + 1];
 
-	else if (skill_num >= 0 && skill_num <= HIGHEST_SKILL)
+	else if (skill_num >= 0 && skill_num <= EQEmu::skills::HIGHEST_SKILL)
 		return SkillDmgTaken_Mod[skill_num];
 
 	return 0;
@@ -5024,62 +5018,58 @@ void Mob::SlowMitigation(Mob* caster)
 
 uint16 Mob::GetSkillByItemType(int ItemType)
 {
-	switch (ItemType)
-	{
-		case ItemType1HSlash:
-			return Skill1HSlashing;
-		case ItemType2HSlash:
-			return Skill2HSlashing;
-		case ItemType1HPiercing:
-			return Skill1HPiercing;
-		case ItemType1HBlunt:
-			return Skill1HBlunt;
-		case ItemType2HBlunt:
-			return Skill2HBlunt;
-		case ItemType2HPiercing:
-			if (IsClient() && CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::RoF2)
-				return Skill1HPiercing;
-			else
-				return Skill2HPiercing;
-		case ItemTypeBow:
-			return SkillArchery;
-		case ItemTypeLargeThrowing:
-		case ItemTypeSmallThrowing:
-			return SkillThrowing;
-		case ItemTypeMartial:
-			return SkillHandtoHand;
-		default:
-			return SkillHandtoHand;
+	switch (ItemType) {
+	case EQEmu::item::ItemType1HSlash:
+		return EQEmu::skills::Skill1HSlashing;
+	case EQEmu::item::ItemType2HSlash:
+		return EQEmu::skills::Skill2HSlashing;
+	case EQEmu::item::ItemType1HPiercing:
+		return EQEmu::skills::Skill1HPiercing;
+	case EQEmu::item::ItemType1HBlunt:
+		return EQEmu::skills::Skill1HBlunt;
+	case EQEmu::item::ItemType2HBlunt:
+		return EQEmu::skills::Skill2HBlunt;
+	case EQEmu::item::ItemType2HPiercing:
+		if (IsClient() && CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::RoF2)
+			return EQEmu::skills::Skill1HPiercing;
+		else
+			return EQEmu::skills::Skill2HPiercing;
+	case EQEmu::item::ItemTypeBow:
+		return EQEmu::skills::SkillArchery;
+	case EQEmu::item::ItemTypeLargeThrowing:
+	case EQEmu::item::ItemTypeSmallThrowing:
+		return EQEmu::skills::SkillThrowing;
+	case EQEmu::item::ItemTypeMartial:
+		return EQEmu::skills::SkillHandtoHand;
+	default:
+		return EQEmu::skills::SkillHandtoHand;
 	}
-	return SkillHandtoHand;
  }
 
-uint8 Mob::GetItemTypeBySkill(SkillUseTypes skill)
+uint8 Mob::GetItemTypeBySkill(EQEmu::skills::SkillType skill)
 {
-	switch (skill)
-	{
-		case SkillThrowing:
-			return ItemTypeSmallThrowing;
-		case SkillArchery:
-			return ItemTypeArrow;
-		case Skill1HSlashing:
-			return ItemType1HSlash;
-		case Skill2HSlashing:
-			return ItemType2HSlash;
-		case Skill1HPiercing:
-			return ItemType1HPiercing;
-		case Skill2HPiercing: // watch for undesired client behavior
-			return ItemType2HPiercing;
-		case Skill1HBlunt:
-			return ItemType1HBlunt;
-		case Skill2HBlunt:
-			return ItemType2HBlunt;
-		case SkillHandtoHand:
-			return ItemTypeMartial;
-		default:
-			return ItemTypeMartial;
+	switch (skill) {
+	case EQEmu::skills::SkillThrowing:
+		return EQEmu::item::ItemTypeSmallThrowing;
+	case EQEmu::skills::SkillArchery:
+		return EQEmu::item::ItemTypeArrow;
+	case EQEmu::skills::Skill1HSlashing:
+		return EQEmu::item::ItemType1HSlash;
+	case EQEmu::skills::Skill2HSlashing:
+		return EQEmu::item::ItemType2HSlash;
+	case EQEmu::skills::Skill1HPiercing:
+		return EQEmu::item::ItemType1HPiercing;
+	case EQEmu::skills::Skill2HPiercing: // watch for undesired client behavior
+		return EQEmu::item::ItemType2HPiercing;
+	case EQEmu::skills::Skill1HBlunt:
+		return EQEmu::item::ItemType1HBlunt;
+	case EQEmu::skills::Skill2HBlunt:
+		return EQEmu::item::ItemType2HBlunt;
+	case EQEmu::skills::SkillHandtoHand:
+		return EQEmu::item::ItemTypeMartial;
+	default:
+		return EQEmu::item::ItemTypeMartial;
 	}
-	return ItemTypeMartial;
  }
 
 
@@ -5636,7 +5626,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 
 bool Mob::CanClassEquipItem(uint32 item_id)
 {
-	const Item_Struct* itm = nullptr;
+	const EQEmu::ItemBase* itm = nullptr;
 	itm = database.GetItem(item_id);
 
 	if (!itm)

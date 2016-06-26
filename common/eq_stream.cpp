@@ -288,10 +288,8 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 		}
 		break;
 		case OP_KeepAlive: {
-#ifndef COLLECTOR
 			NonSequencedPush(new EQProtocolPacket(p->opcode,p->pBuffer,p->size));
 			Log.Out(Logs::Detail, Logs::Netcode, _L "Received and queued reply to keep alive" __L);
-#endif
 		}
 		break;
 		case OP_Ack: {
@@ -300,14 +298,12 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 				Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_Ack that was of malformed size" __L);
 				break;
 			}
-#ifndef COLLECTOR
 			uint16 seq=ntohs(*(uint16 *)(p->pBuffer));
 			AckPackets(seq);
 
 			if(GetExecutablePlatform() == ExePlatformWorld || GetExecutablePlatform() == ExePlatformZone) {
 				retransmittimer = Timer::GetCurrentTime();
 			}
-#endif
 		}
 		break;
 		case OP_SessionRequest: {
@@ -316,7 +312,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 				Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_SessionRequest that was of malformed size" __L);
 				break;
 			}
-#ifndef COLLECTOR
 			if (GetState()==ESTABLISHED) {
 				Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_SessionRequest in ESTABLISHED state (%d) streamactive (%i) attempt (%i)" __L, GetState(),streamactive,sessionAttempts);
 
@@ -329,7 +324,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 					break;
 				}
 			}
-#endif
 			sessionAttempts++;
 			// we set established below, so statistics will not be reset for session attempts/stream active.
 			init(GetState()!=ESTABLISHED);
@@ -339,10 +333,8 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 			SetMaxLen(ntohl(Request->MaxLength));
 			Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_SessionRequest: session %lu, maxlen %d" __L, (unsigned long)Session, MaxLen);
 			SetState(ESTABLISHED);
-#ifndef COLLECTOR
 			Key=0x11223344;
 			SendSessionResponse();
-#endif
 		}
 		break;
 		case OP_SessionResponse: {
@@ -408,7 +400,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 				Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_OutOfOrderAck that was of malformed size" __L);
 				break;
 			}
-#ifndef COLLECTOR
 			uint16 seq=ntohs(*(uint16 *)(p->pBuffer));
 			MOutboundQueue.lock();
 
@@ -449,7 +440,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 			}
 
 			MOutboundQueue.unlock();
-#endif
 		}
 		break;
 		case OP_SessionStatRequest: {
@@ -458,7 +448,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 				Log.Out(Logs::Detail, Logs::Netcode, _L "Received OP_SessionStatRequest that was of malformed size" __L);
 				break;
 			}
-#ifndef COLLECTOR
 			ClientSessionStats *ClientStats=(ClientSessionStats *)p->pBuffer;
 			Log.Out(Logs::Detail, Logs::Netcode, _L "Received Stats: %lu packets received, %lu packets sent, Deltas: local %lu, (%lu <- %lu -> %lu) remote %lu" __L,
 				(unsigned long)ntohl(ClientStats->packets_received), (unsigned long)ntohl(ClientStats->packets_sent), (unsigned long)ntohl(ClientStats->last_local_delta),
@@ -493,7 +482,6 @@ void EQStream::ProcessPacket(EQProtocolPacket *p)
 			ServerStats->packets_received = htonll(GetPacketsReceived());
 
 			NonSequencedPush(new EQProtocolPacket(OP_SessionStatResponse, p->pBuffer, p->size));
-#endif
 		}
 		break;
 		case OP_SessionStatResponse: {
@@ -573,12 +561,12 @@ void EQStream::SendPacket(uint16 opcode, EQApplicationPacket *p)
 	if (p->size>(MaxLen-8)) { // proto-op(2), seq(2), app-op(2) ... data ... crc(2)
 		Log.Out(Logs::Detail, Logs::Netcode, _L "Making oversized packet, len %d" __L, p->Size());
 
-		unsigned char *tmpbuff=new unsigned char[p->size+3];
+		auto tmpbuff = new unsigned char[p->size + 3];
 		length=p->serialize(opcode, tmpbuff);
 		if (length != p->Size())
 			Log.Out(Logs::Detail, Logs::Netcode, _L "Packet adjustment, len %d to %d" __L, p->Size(), length);
 
-		EQProtocolPacket *out=new EQProtocolPacket(OP_Fragment,nullptr,MaxLen-4);
+		auto out = new EQProtocolPacket(OP_Fragment, nullptr, MaxLen - 4);
 		*(uint32 *)(out->pBuffer+2)=htonl(length);
 		used=MaxLen-10;
 		memcpy(out->pBuffer+6,tmpbuff,used);
@@ -599,10 +587,10 @@ void EQStream::SendPacket(uint16 opcode, EQApplicationPacket *p)
 		delete[] tmpbuff;
 	} else {
 
-		unsigned char *tmpbuff=new unsigned char[p->Size()+3];
+		auto tmpbuff = new unsigned char[p->Size() + 3];
 		length=p->serialize(opcode, tmpbuff+2) + 2;
 
-		EQProtocolPacket *out=new EQProtocolPacket(OP_Packet,tmpbuff,length);
+		auto out = new EQProtocolPacket(OP_Packet, tmpbuff, length);
 
 		delete[] tmpbuff;
 		SequencedPush(out);
@@ -612,9 +600,6 @@ void EQStream::SendPacket(uint16 opcode, EQApplicationPacket *p)
 
 void EQStream::SequencedPush(EQProtocolPacket *p)
 {
-#ifdef COLLECTOR
-	delete p;
-#else
 	MOutboundQueue.lock();
 	if (uint16(SequencedBase + SequencedQueue.size()) != NextOutSeq) {
 		Log.Out(Logs::Detail, Logs::Netcode, _L "Pre-Push Invalid Sequenced queue: BS %d + SQ %d != NOS %d" __L,
@@ -633,19 +618,14 @@ void EQStream::SequencedPush(EQProtocolPacket *p)
 	}
 
 	MOutboundQueue.unlock();
-#endif
 }
 
 void EQStream::NonSequencedPush(EQProtocolPacket *p)
 {
-#ifdef COLLECTOR
-	delete p;
-#else
 	MOutboundQueue.lock();
 	Log.Out(Logs::Detail, Logs::Netcode, _L "Pushing non-sequenced packet of length %d" __L, p->size);
 	NonSequencedQueue.push(p);
 	MOutboundQueue.unlock();
-#endif
 }
 
 void EQStream::SendAck(uint16 seq)
@@ -902,7 +882,7 @@ sockaddr_in address;
 
 void EQStream::SendSessionResponse()
 {
-EQProtocolPacket *out=new EQProtocolPacket(OP_SessionResponse,nullptr,sizeof(SessionResponse));
+	auto out = new EQProtocolPacket(OP_SessionResponse, nullptr, sizeof(SessionResponse));
 	SessionResponse *Response=(SessionResponse *)out->pBuffer;
 	Response->Session=htonl(Session);
 	Response->MaxLength=htonl(MaxLen);
@@ -924,7 +904,7 @@ EQProtocolPacket *out=new EQProtocolPacket(OP_SessionResponse,nullptr,sizeof(Ses
 
 void EQStream::SendSessionRequest()
 {
-EQProtocolPacket *out=new EQProtocolPacket(OP_SessionRequest,nullptr,sizeof(SessionRequest));
+	auto out = new EQProtocolPacket(OP_SessionRequest, nullptr, sizeof(SessionRequest));
 	SessionRequest *Request=(SessionRequest *)out->pBuffer;
 	memset(Request,0,sizeof(SessionRequest));
 	Request->Session=htonl(time(nullptr));
@@ -940,7 +920,7 @@ void EQStream::_SendDisconnect()
 	if(GetState() == CLOSED)
 		return;
 
-	EQProtocolPacket *out=new EQProtocolPacket(OP_SessionDisconnect,nullptr,sizeof(uint32));
+	auto out = new EQProtocolPacket(OP_SessionDisconnect, nullptr, sizeof(uint32));
 	*(uint32 *)out->pBuffer=htonl(Session);
 	NonSequencedPush(out);
 
@@ -959,8 +939,8 @@ EQApplicationPacket *EQStream::PopPacket()
 EQRawApplicationPacket *p=nullptr;
 
 	MInboundQueue.lock();
-	if (InboundQueue.size()) {
-		std::vector<EQRawApplicationPacket *>::iterator itr=InboundQueue.begin();
+	if (!InboundQueue.empty()) {
+		auto itr = InboundQueue.begin();
 		p=*itr;
 		InboundQueue.erase(itr);
 	}
@@ -984,8 +964,8 @@ EQRawApplicationPacket *EQStream::PopRawPacket()
 EQRawApplicationPacket *p=nullptr;
 
 	MInboundQueue.lock();
-	if (InboundQueue.size()) {
-		std::vector<EQRawApplicationPacket *>::iterator itr=InboundQueue.begin();
+	if (!InboundQueue.empty()) {
+		auto itr = InboundQueue.begin();
 		p=*itr;
 		InboundQueue.erase(itr);
 	}
@@ -1011,8 +991,8 @@ EQRawApplicationPacket *EQStream::PeekPacket()
 EQRawApplicationPacket *p=nullptr;
 
 	MInboundQueue.lock();
-	if (InboundQueue.size()) {
-		std::vector<EQRawApplicationPacket *>::iterator itr=InboundQueue.begin();
+	if (!InboundQueue.empty()) {
+		auto itr = InboundQueue.begin();
 		p=*itr;
 	}
 	MInboundQueue.unlock();

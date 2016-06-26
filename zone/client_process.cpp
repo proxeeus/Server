@@ -26,8 +26,8 @@
 #include <zlib.h>
 
 #ifdef _WINDOWS
+	#include <winsock2.h>
 	#include <windows.h>
-	#include <winsock.h>
 	#define snprintf	_snprintf
 	#define strncasecmp	_strnicmp
 	#define strcasecmp	_stricmp
@@ -299,7 +299,7 @@ bool Client::Process() {
 			ItemInst *ranged = GetInv().GetItem(EQEmu::legacy::SlotRange);
 			if(ranged)
 			{
-				if(ranged->GetItem() && ranged->GetItem()->ItemType == ItemTypeBow){
+				if (ranged->GetItem() && ranged->GetItem()->ItemType == EQEmu::item::ItemTypeBow){
 					if(ranged_timer.Check(false)){
 						if(GetTarget() && (GetTarget()->IsNPC() || GetTarget()->IsClient())){
 							if(GetTarget()->InFrontMob(this, GetTarget()->GetX(), GetTarget()->GetY())){
@@ -319,7 +319,7 @@ bool Client::Process() {
 							ranged_timer.Start();
 					}
 				}
-				else if(ranged->GetItem() && (ranged->GetItem()->ItemType == ItemTypeLargeThrowing || ranged->GetItem()->ItemType == ItemTypeSmallThrowing)){
+				else if (ranged->GetItem() && (ranged->GetItem()->ItemType == EQEmu::item::ItemTypeLargeThrowing || ranged->GetItem()->ItemType == EQEmu::item::ItemTypeSmallThrowing)){
 					if(ranged_timer.Check(false)){
 						if(GetTarget() && (GetTarget()->IsNPC() || GetTarget()->IsClient())){
 							if(GetTarget()->InFrontMob(this, GetTarget()->GetX(), GetTarget()->GetY())){
@@ -428,7 +428,7 @@ bool Client::Process() {
 				//you can't see your target
 			}
 			else if(auto_attack_target->GetHP() > -10) {
-				CheckIncreaseSkill(SkillDualWield, auto_attack_target, -10);
+				CheckIncreaseSkill(EQEmu::skills::SkillDualWield, auto_attack_target, -10);
 				if (CheckDualWield()) {
 					ItemInst *wpn = GetInv().GetItem(EQEmu::legacy::SlotSecondary);
 					TryWeaponProc(wpn, auto_attack_target, EQEmu::legacy::SlotSecondary);
@@ -726,27 +726,22 @@ void Client::OnDisconnect(bool hard_disconnect) {
 	/* Remove ourself from all proximities */
 	ClearAllProximities();
 
-	EQApplicationPacket *outapp = new EQApplicationPacket(OP_LogoutReply);
+	auto outapp = new EQApplicationPacket(OP_LogoutReply);
 	FastQueuePacket(&outapp);
 
 	Disconnect();
 }
 
 // Sends the client complete inventory used in character login
-
-// DO WE STILL NEED THE 'ITEMCOMBINED' CONDITIONAL CODE?
-
-//#ifdef ITEMCOMBINED
-void Client::BulkSendInventoryItems() {
-	int16 slot_id = 0;
-
+void Client::BulkSendInventoryItems()
+{
 	// LINKDEAD TRADE ITEMS
 	// Move trade slot items back into normal inventory..need them there now for the proceeding validity checks
-	for (slot_id = EQEmu::legacy::TRADE_BEGIN; slot_id <= EQEmu::legacy::TRADE_END; slot_id++) {
+	for (int16 slot_id = EQEmu::legacy::TRADE_BEGIN; slot_id <= EQEmu::legacy::TRADE_END; slot_id++) {
 		ItemInst* inst = m_inv.PopItem(slot_id);
 		if(inst) {
-			bool is_arrow = (inst->GetItem()->ItemType == ItemTypeArrow) ? true : false;
-			int16 free_slot_id = m_inv.FindFreeSlot(inst->IsType(ItemClassContainer), true, inst->GetItem()->Size, is_arrow);
+			bool is_arrow = (inst->GetItem()->ItemType == EQEmu::item::ItemTypeArrow) ? true : false;
+			int16 free_slot_id = m_inv.FindFreeSlot(inst->IsClassBag(), true, inst->GetItem()->Size, is_arrow);
 			Log.Out(Logs::Detail, Logs::Inventory, "Incomplete Trade Transaction: Moving %s from slot %i to %i", inst->GetItem()->Name, slot_id, free_slot_id);
 			PutItemInInventory(free_slot_id, *inst, false);
 			database.SaveInventory(character_id, nullptr, slot_id);
@@ -764,136 +759,78 @@ void Client::BulkSendInventoryItems() {
 	RemoveDuplicateLore(false);
 	MoveSlotNotAllowed(false);
 
-	// The previous three method calls took care of moving/removing expired/illegal item placements
+	EQEmu::OutBuffer ob;
+	EQEmu::OutBuffer::pos_type last_pos = ob.tellp();
 
-	//TODO: this function is just retarded... it re-allocates the buffer for every
-	//new item. It should be changed to loop through once, gather the
-	//lengths, and item packet pointers into an array (fixed length), and
-	//then loop again to build the packet.
-	//EQApplicationPacket *packets[50];
-	//unsigned long buflen = 0;
-	//unsigned long pos = 0;
-	//memset(packets, 0, sizeof(packets));
-	//foreach item in the invendor sections
-	//	packets[pos++] = ReturnItemPacket(...)
-	//	buflen += temp->size
-	//...
-	//allocat the buffer
-	//for r from 0 to pos
-	//	put pos[r]->pBuffer into the buffer
-	//for r from 0 to pos
-	//	safe_delete(pos[r]);
-
-	uint32 size = 0;
-	uint16 i = 0;
-	std::map<uint16, std::string> ser_items;
-	std::map<uint16, std::string>::iterator itr;
-
-	//Inventory items
-	for (slot_id = SLOT_BEGIN; slot_id < EQEmu::legacy::TYPE_POSSESSIONS_SIZE; slot_id++) {
+	// Possessions items
+	for (int16 slot_id = SLOT_BEGIN; slot_id < EQEmu::legacy::TYPE_POSSESSIONS_SIZE; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
-		if(inst) {
-			std::string packet = inst->Serialize(slot_id);
-			ser_items[i++] = packet;
-			size += packet.length();
-		}
+		if (!inst)
+			continue;
+
+		inst->Serialize(ob, slot_id);
+
+		if (ob.tellp() == last_pos)
+			Log.Out(Logs::General, Logs::Inventory, "Serialization failed on item slot %d during BulkSendInventoryItems.  Item skipped.", slot_id);
+		
+		last_pos = ob.tellp();
 	}
 
-	// Power Source
+	// PowerSource item
 	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
 		const ItemInst* inst = m_inv[EQEmu::legacy::SlotPowerSource];
-		if(inst) {
-			std::string packet = inst->Serialize(EQEmu::legacy::SlotPowerSource);
-			ser_items[i++] = packet;
-			size += packet.length();
+		if (inst) {
+			inst->Serialize(ob, EQEmu::legacy::SlotPowerSource);
+
+			if (ob.tellp() == last_pos)
+				Log.Out(Logs::General, Logs::Inventory, "Serialization failed on item slot %d during BulkSendInventoryItems.  Item skipped.", EQEmu::legacy::SlotPowerSource);
+
+			last_pos = ob.tellp();
 		}
 	}
 
 	// Bank items
-	for (slot_id = EQEmu::legacy::BANK_BEGIN; slot_id <= EQEmu::legacy::BANK_END; slot_id++) {
+	for (int16 slot_id = EQEmu::legacy::BANK_BEGIN; slot_id <= EQEmu::legacy::BANK_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
-		if(inst) {
-			std::string packet = inst->Serialize(slot_id);
-			ser_items[i++] = packet;
-			size += packet.length();
-		}
+		if (!inst)
+			continue;
+
+		inst->Serialize(ob, slot_id);
+
+		if (ob.tellp() == last_pos)
+			Log.Out(Logs::General, Logs::Inventory, "Serialization failed on item slot %d during BulkSendInventoryItems.  Item skipped.", slot_id);
+
+		last_pos = ob.tellp();
 	}
 
-	// Shared Bank items
-	for (slot_id = EQEmu::legacy::SHARED_BANK_BEGIN; slot_id <= EQEmu::legacy::SHARED_BANK_END; slot_id++) {
+	// SharedBank items
+	for (int16 slot_id = EQEmu::legacy::SHARED_BANK_BEGIN; slot_id <= EQEmu::legacy::SHARED_BANK_END; slot_id++) {
 		const ItemInst* inst = m_inv[slot_id];
-		if(inst) {
-			std::string packet = inst->Serialize(slot_id);
-			ser_items[i++] = packet;
-			size += packet.length();
-		}
+		if (!inst)
+			continue;
+
+		inst->Serialize(ob, slot_id);
+
+		if (ob.tellp() == last_pos)
+			Log.Out(Logs::General, Logs::Inventory, "Serialization failed on item slot %d during BulkSendInventoryItems.  Item skipped.", slot_id);
+
+		last_pos = ob.tellp();
 	}
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_CharInventory, size);
-	uchar* ptr = outapp->pBuffer;
-	for(itr = ser_items.begin(); itr != ser_items.end(); ++itr){
-		int length = itr->second.length();
-		if(length > 5) {
-			memcpy(ptr, itr->second.c_str(), length);
-			ptr += length;
-		}
-	}
+	auto outapp = new EQApplicationPacket(OP_CharInventory);
+	outapp->size = ob.size();
+	outapp->pBuffer = ob.detach();
 	QueuePacket(outapp);
 	safe_delete(outapp);
 }
-/*#else
-void Client::BulkSendInventoryItems()
-{
-	// Search all inventory buckets for items
-	bool deletenorent=database.NoRentExpired(GetName());
-	// Worn items and Inventory items
-	int16 slot_id = 0;
-	if(deletenorent){//client was offline for more than 30 minutes, delete no rent items
-		RemoveNoRent();
-	}
-	for (slot_id=EQEmu::constants::POSSESSIONS_BEGIN; slot_id<=EQEmu::constants::POSSESSIONS_END; slot_id++) {
-		const ItemInst* inst = m_inv[slot_id];
-		if (inst){
-			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
-		}
-	}
-	// Bank items
-	for (slot_id=EQEmu::constants::BANK_BEGIN; slot_id<=EQEmu::constants::BANK_END; slot_id++) { // 2015...
-		const ItemInst* inst = m_inv[slot_id];
-		if (inst){
-			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
-		}
-	}
-
-	// Shared Bank items
-	for (slot_id=EQEmu::constants::SHARED_BANK_BEGIN; slot_id<=EQEmu::constants::SHARED_BANK_END; slot_id++) {
-		const ItemInst* inst = m_inv[slot_id];
-		if (inst){
-			SendItemPacket(slot_id, inst, ItemPacketCharInventory);
-		}
-	}
-
-	// LINKDEAD TRADE ITEMS
-	// If player went LD during a trade, they have items in the trade inventory
-	// slots. These items are now being put into their inventory (then queue up on cursor)
-	for (int16 trade_slot_id=EQEmu::constants::TRADE_BEGIN; trade_slot_id<=EQEmu::constants::TRADE_END; trade_slot_id++) {
-		const ItemInst* inst = m_inv[slot_id];
-		if (inst) {
-			int16 free_slot_id = m_inv.FindFreeSlot(inst->IsType(ItemClassContainer), true, inst->GetItem()->Size);
-			DeleteItemInInventory(trade_slot_id, 0, false);
-			PutItemInInventory(free_slot_id, *inst, true);
-		}
-	}
-}
-#endif*/
 
 void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {
-	const Item_Struct* handyitem = nullptr;
+	const EQEmu::ItemBase* handyitem = nullptr;
 	uint32 numItemSlots = 80; //The max number of items passed in the transaction.
 	if (m_ClientVersionBit & EQEmu::versions::bit_RoFAndLater) { // RoF+ can send 200 items
 		numItemSlots = 200;
 	}
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 	std::list<MerchantList> merlist = zone->merchanttable[merchant_id];
 	std::list<MerchantList>::const_iterator itr;
 	Mob* merch = entity_list.GetMobByNpcTypeID(npcid);
@@ -932,7 +869,7 @@ void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {
 			else
 				handychance--;
 			int charges = 1;
-			if (item->ItemClass == ItemClassCommon)
+			if (item->IsClassCommon())
 				charges = item->MaxCharges;
 			ItemInst* inst = database.CreateItem(item, charges);
 			if (inst) {
@@ -1149,9 +1086,9 @@ void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 		case memSpellScribing:	{	// scribing spell to book
 			const ItemInst* inst = m_inv[EQEmu::legacy::SlotCursor];
 
-			if(inst && inst->IsType(ItemClassCommon))
+			if (inst && inst->IsClassCommon())
 			{
-				const Item_Struct* item = inst->GetItem();
+				const EQEmu::ItemBase* item = inst->GetItem();
 
 				if (RuleB(Character, RestrictSpellScribing) && !item->IsEquipable(GetRace(), GetClass())) {
 					Message_StringID(13, CANNOT_USE_ITEM);
@@ -1194,7 +1131,7 @@ void Client::BreakInvis()
 {
 	if (invisible)
 	{
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+		auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
 		SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
 		sa_out->spawn_id = GetID();
 		sa_out->type = 0x03;
@@ -1507,7 +1444,7 @@ void Client::OPMoveCoin(const EQApplicationPacket* app)
 			trade->sp, trade->cp
 		);
 
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_TradeCoins,sizeof(TradeCoin_Struct));
+		auto outapp = new EQApplicationPacket(OP_TradeCoins, sizeof(TradeCoin_Struct));
 		TradeCoin_Struct* tcs = (TradeCoin_Struct*)outapp->pBuffer;
 		tcs->trader = trader->GetID();
 		tcs->slot = mc->cointype2;
@@ -1544,19 +1481,19 @@ void Client::OPGMTraining(const EQApplicationPacket *app)
 	// if this for-loop acts up again (crashes linux), try enabling the before and after #pragmas
 //#pragma GCC push_options
 //#pragma GCC optimize ("O0")
-	for (int sk = Skill1HBlunt; sk <= HIGHEST_SKILL; ++sk) {
-		if(sk == SkillTinkering && GetRace() != GNOME) {
+	for (int sk = EQEmu::skills::Skill1HBlunt; sk <= EQEmu::skills::HIGHEST_SKILL; ++sk) {
+		if (sk == EQEmu::skills::SkillTinkering && GetRace() != GNOME) {
 			gmtrain->skills[sk] = 0; //Non gnomes can't tinker!
 		} else {
-			gmtrain->skills[sk] = GetMaxSkillAfterSpecializationRules((SkillUseTypes)sk, MaxSkill((SkillUseTypes)sk, GetClass(), RuleI(Character, MaxLevel)));
+			gmtrain->skills[sk] = GetMaxSkillAfterSpecializationRules((EQEmu::skills::SkillType)sk, MaxSkill((EQEmu::skills::SkillType)sk, GetClass(), RuleI(Character, MaxLevel)));
 			//this is the highest level that the trainer can train you to, this is enforced clientside so we can't just
 			//Set it to 1 with CanHaveSkill or you wont be able to train past 1.
 		}
 	}
 
 	if (ClientVersion() < EQEmu::versions::ClientVersion::RoF2 && GetClass() == BERSERKER) {
-		gmtrain->skills[Skill1HPiercing] = gmtrain->skills[Skill2HPiercing];
-		gmtrain->skills[Skill2HPiercing] = 0;
+		gmtrain->skills[EQEmu::skills::Skill1HPiercing] = gmtrain->skills[EQEmu::skills::Skill2HPiercing];
+		gmtrain->skills[EQEmu::skills::Skill2HPiercing] = 0;
 	}
 //#pragma GCC pop_options
 
@@ -1576,7 +1513,7 @@ void Client::OPGMTraining(const EQApplicationPacket *app)
 
 void Client::OPGMEndTraining(const EQApplicationPacket *app)
 {
-	EQApplicationPacket *outapp = new EQApplicationPacket(OP_GMEndTrainingResponse, 0);
+	auto outapp = new EQApplicationPacket(OP_GMEndTrainingResponse, 0);
 	GMTrainEnd_Struct *p = (GMTrainEnd_Struct *)app->pBuffer;
 
 	FastQueuePacket(&outapp);
@@ -1641,14 +1578,14 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 	else if (gmskill->skillbank == 0x00)
 	{
 		// normal skills go here
-		if (gmskill->skill_id > HIGHEST_SKILL)
+		if (gmskill->skill_id > EQEmu::skills::HIGHEST_SKILL)
 		{
 			std::cout << "Wrong Training Skill (abilities)" << std::endl;
 			DumpPacket(app);
 			return;
 		}
 
-		SkillUseTypes skill = (SkillUseTypes) gmskill->skill_id;
+		EQEmu::skills::SkillType skill = (EQEmu::skills::SkillType)gmskill->skill_id;
 
 		if(!CanHaveSkill(skill)) {
 			Log.Out(Logs::Detail, Logs::Skills, "Tried to train skill %d, which is not allowed.", skill);
@@ -1673,27 +1610,27 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 			SetSkill(skill, t_level);
 		} else {
 			switch(skill) {
-			case SkillBrewing:
-			case SkillMakePoison:
-			case SkillTinkering:
-			case SkillResearch:
-			case SkillAlchemy:
-			case SkillBaking:
-			case SkillTailoring:
-			case SkillBlacksmithing:
-			case SkillFletching:
-			case SkillJewelryMaking:
-			case SkillPottery:
+			case EQEmu::skills::SkillBrewing:
+			case EQEmu::skills::SkillMakePoison:
+			case EQEmu::skills::SkillTinkering:
+			case EQEmu::skills::SkillResearch:
+			case EQEmu::skills::SkillAlchemy:
+			case EQEmu::skills::SkillBaking:
+			case EQEmu::skills::SkillTailoring:
+			case EQEmu::skills::SkillBlacksmithing:
+			case EQEmu::skills::SkillFletching:
+			case EQEmu::skills::SkillJewelryMaking:
+			case EQEmu::skills::SkillPottery:
 				if(skilllevel >= RuleI(Skills, MaxTrainTradeskills)) {
 					Message_StringID(13, MORE_SKILLED_THAN_I, pTrainer->GetCleanName());
 					return;
 				}
 				break;
-			case SkillSpecializeAbjure:
-			case SkillSpecializeAlteration:
-			case SkillSpecializeConjuration:
-			case SkillSpecializeDivination:
-			case SkillSpecializeEvocation:
+			case EQEmu::skills::SkillSpecializeAbjure:
+			case EQEmu::skills::SkillSpecializeAlteration:
+			case EQEmu::skills::SkillSpecializeConjuration:
+			case EQEmu::skills::SkillSpecializeDivination:
+			case EQEmu::skills::SkillSpecializeEvocation:
 				if(skilllevel >= RuleI(Skills, MaxTrainSpecializations)) {
 					Message_StringID(13, MORE_SKILLED_THAN_I, pTrainer->GetCleanName());
 					return;
@@ -1710,7 +1647,7 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 				return;
 			}
 
-			if(gmskill->skill_id >= SkillSpecializeAbjure && gmskill->skill_id <= SkillSpecializeEvocation)
+			if (gmskill->skill_id >= EQEmu::skills::SkillSpecializeAbjure && gmskill->skill_id <= EQEmu::skills::SkillSpecializeEvocation)
 			{
 				int MaxSpecSkill = GetMaxSkillAfterSpecializationRules(skill, MaxSkillValue);
 				if (skilllevel >= MaxSpecSkill)
@@ -1738,7 +1675,7 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 		// The following packet decreases the skill points left in the Training Window and
 		// produces the 'You have increased your skill / learned the basics of' message.
 		//
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_GMTrainSkillConfirm, sizeof(GMTrainSkillConfirm_Struct));
+		auto outapp = new EQApplicationPacket(OP_GMTrainSkillConfirm, sizeof(GMTrainSkillConfirm_Struct));
 
 		GMTrainSkillConfirm_Struct *gmtsc = (GMTrainSkillConfirm_Struct *)outapp->pBuffer;
 		gmtsc->SkillID = gmskill->skill_id;
@@ -1748,7 +1685,7 @@ void Client::OPGMTrainSkill(const EQApplicationPacket *app)
 			gmtsc->SkillID += 100;
 		}
 		else
-			gmtsc->NewSkill = (GetRawSkill((SkillUseTypes)gmtsc->SkillID) == 1);
+			gmtsc->NewSkill = (GetRawSkill((EQEmu::skills::SkillType)gmtsc->SkillID) == 1);
 
 		gmtsc->Cost = Cost;
 
@@ -1796,7 +1733,7 @@ void Client::OPGMSummon(const EQApplicationPacket *app)
 			}
 			else if (tmp < '0' || tmp > '9') // dont send to world if it's not a player's name
 			{
-				ServerPacket* pack = new ServerPacket(ServerOP_ZonePlayer, sizeof(ServerZonePlayer_Struct));
+				auto pack = new ServerPacket(ServerOP_ZonePlayer, sizeof(ServerZonePlayer_Struct));
 				ServerZonePlayer_Struct* szp = (ServerZonePlayer_Struct*) pack->pBuffer;
 				strcpy(szp->adminname, this->GetName());
 				szp->adminrank = this->Admin();
@@ -1838,7 +1775,7 @@ void Client::DoStaminaUpdate() {
 	if(!stamina_timer.Check())
 		return;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Stamina, sizeof(Stamina_Struct));
+	auto outapp = new EQApplicationPacket(OP_Stamina, sizeof(Stamina_Struct));
 	Stamina_Struct* sta = (Stamina_Struct*)outapp->pBuffer;
 
 	if(zone->GetZoneID() != 151) {
@@ -2064,7 +2001,8 @@ void Client::HandleRespawnFromHover(uint32 Option)
 				m_Position.z = corpse->GetZ();
 			}
 
-			EQApplicationPacket* outapp = new EQApplicationPacket(OP_ZonePlayerToBind, sizeof(ZonePlayerToBind_Struct) + 10);
+			auto outapp =
+			    new EQApplicationPacket(OP_ZonePlayerToBind, sizeof(ZonePlayerToBind_Struct) + 10);
 			ZonePlayerToBind_Struct* gmg = (ZonePlayerToBind_Struct*) outapp->pBuffer;
 
 			gmg->bind_zone_id = zone->GetZoneID();
@@ -2096,7 +2034,8 @@ void Client::HandleRespawnFromHover(uint32 Option)
 		{
 			PendingRezzSpellID = 0;
 
-			EQApplicationPacket* outapp = new EQApplicationPacket(OP_ZonePlayerToBind, sizeof(ZonePlayerToBind_Struct) + chosen->name.length() + 1);
+			auto outapp = new EQApplicationPacket(OP_ZonePlayerToBind, sizeof(ZonePlayerToBind_Struct) +
+										       chosen->name.length() + 1);
 			ZonePlayerToBind_Struct* gmg = (ZonePlayerToBind_Struct*) outapp->pBuffer;
 
 			gmg->bind_zone_id = zone->GetZoneID();
@@ -2163,7 +2102,7 @@ void Client::ClearHover()
 	// Our Entity ID is currently zero, set in Client::Death
 	SetID(entity_list.GetFreeID());
 
-	EQApplicationPacket *outapp = new EQApplicationPacket(OP_ZoneEntry, sizeof(ServerZoneEntry_Struct));
+	auto outapp = new EQApplicationPacket(OP_ZoneEntry, sizeof(ServerZoneEntry_Struct));
 	ServerZoneEntry_Struct* sze = (ServerZoneEntry_Struct*)outapp->pBuffer;
 
 	FillSpawnStruct(&sze->player,CastToMob());
@@ -2215,7 +2154,7 @@ void Client::HandleLFGuildResponse(ServerPacket *pack)
 				--i;
 			}
 
-			EQApplicationPacket *outapp = new EQApplicationPacket(OP_LFGuild, PacketSize);
+			auto outapp = new EQApplicationPacket(OP_LFGuild, PacketSize);
 			outapp->WriteUInt32(3);
 			outapp->WriteUInt32(0xeb63);	// Don't know the significance of this value.
 			outapp->WriteUInt32(NumberOfMatches);
@@ -2243,7 +2182,7 @@ void Client::HandleLFGuildResponse(ServerPacket *pack)
 		}
 		case QSG_LFGuild_RequestPlayerInfo:
 		{
-			EQApplicationPacket *outapp = new EQApplicationPacket(OP_LFGuild, sizeof(LFGuild_PlayerToggle_Struct));
+			auto outapp = new EQApplicationPacket(OP_LFGuild, sizeof(LFGuild_PlayerToggle_Struct));
 			LFGuild_PlayerToggle_Struct *pts = (LFGuild_PlayerToggle_Struct *)outapp->pBuffer;
 
 			pts->Command = 0;
@@ -2273,7 +2212,7 @@ void Client::HandleLFGuildResponse(ServerPacket *pack)
 				--i;
 			}
 
-			EQApplicationPacket *outapp = new EQApplicationPacket(OP_LFGuild, PacketSize);
+			auto outapp = new EQApplicationPacket(OP_LFGuild, PacketSize);
 			outapp->WriteUInt32(4);
 			outapp->WriteUInt32(0xeb63);
 			outapp->WriteUInt32(NumberOfMatches);
@@ -2307,7 +2246,7 @@ void Client::HandleLFGuildResponse(ServerPacket *pack)
 			TimeZone = pack->ReadUInt32();
 			TimePosted = pack->ReadUInt32();
 
-			EQApplicationPacket *outapp = new EQApplicationPacket(OP_LFGuild, sizeof(LFGuild_GuildToggle_Struct));
+			auto outapp = new EQApplicationPacket(OP_LFGuild, sizeof(LFGuild_GuildToggle_Struct));
 
 			LFGuild_GuildToggle_Struct *gts = (LFGuild_GuildToggle_Struct *)outapp->pBuffer;
 			gts->Command = 1;
@@ -2334,7 +2273,7 @@ void Client::HandleLFGuildResponse(ServerPacket *pack)
 
 void Client::SendLFGuildStatus()
 {
-	ServerPacket* pack = new ServerPacket(ServerOP_QueryServGeneric, strlen(GetName()) + 17);
+	auto pack = new ServerPacket(ServerOP_QueryServGeneric, strlen(GetName()) + 17);
 
 	pack->WriteUInt32(zone->GetZoneID());
 	pack->WriteUInt32(zone->GetInstanceID());
@@ -2349,7 +2288,8 @@ void Client::SendLFGuildStatus()
 
 void Client::SendGuildLFGuildStatus()
 {
-	ServerPacket* pack = new ServerPacket(ServerOP_QueryServGeneric, strlen(GetName()) + +strlen(guild_mgr.GetGuildName(GuildID())) + 18);
+	auto pack = new ServerPacket(ServerOP_QueryServGeneric,
+				     strlen(GetName()) + +strlen(guild_mgr.GetGuildName(GuildID())) + 18);
 
 	pack->WriteUInt32(zone->GetZoneID());
 	pack->WriteUInt32(zone->GetInstanceID());

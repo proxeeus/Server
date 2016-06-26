@@ -1,7 +1,28 @@
-#ifndef SOF_STRUCTS_H_
-#define SOF_STRUCTS_H_
+/*	EQEMu: Everquest Server Emulator
+	
+	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.net)
 
-namespace SoF {
+	This program is free software; you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation; version 2 of the License.
+
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY except by those people which sell it, which
+	are required to give you total support for your newly bought product;
+	without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+	A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+
+	You should have received a copy of the GNU General Public License
+	along with this program; if not, write to the Free Software
+	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+*/
+
+#ifndef COMMON_SOF_STRUCTS_H
+#define COMMON_SOF_STRUCTS_H
+
+
+namespace SoF
+{
 	namespace structs {
 
 
@@ -101,7 +122,7 @@ struct AdventureInfo {
 ** Merth: Gave struct a name so gcc 2.96 would compile
 **
 */
-struct Color_Struct
+struct Tint_Struct
 {
 	union {
 		struct {
@@ -109,18 +130,61 @@ struct Color_Struct
 			uint8 Green;
 			uint8 Red;
 			uint8 UseTint;	// if there's a tint this is FF
-		} RGB;
+		};
 		uint32 Color;
 	};
 };
 
-struct CharSelectEquip
+struct TintProfile
+{
+	union {
+		struct {
+			Tint_Struct Head;
+			Tint_Struct Chest;
+			Tint_Struct Arms;
+			Tint_Struct Wrist;
+			Tint_Struct Hands;
+			Tint_Struct Legs;
+			Tint_Struct Feet;
+			Tint_Struct Primary;
+			Tint_Struct Secondary;
+		};
+		Tint_Struct Slot[EQEmu::textures::TextureCount];
+	};
+};
+
+/*
+* Visible equiptment.
+* Size: 12 Octets
+*/
+struct Texture_Struct
 {
 	uint32 Material;
 	uint32 Unknown1;
 	uint32 EliteMaterial;
-	Color_Struct Color;
 };
+
+struct TextureProfile
+{
+	union {
+		struct {
+			Texture_Struct Head;
+			Texture_Struct Chest;
+			Texture_Struct Arms;
+			Texture_Struct Wrist;
+			Texture_Struct Hands;
+			Texture_Struct Legs;
+			Texture_Struct Feet;
+			Texture_Struct Primary;
+			Texture_Struct Secondary;
+		};
+		Texture_Struct Slot[EQEmu::textures::TextureCount];
+	};
+
+	TextureProfile();
+};
+
+struct CharSelectEquip : Texture_Struct, Tint_Struct {};
 
 struct CharacterSelectEntry_Struct
 {
@@ -131,7 +195,7 @@ struct CharacterSelectEntry_Struct
 /*0000*/	uint8 Beard;				//
 /*0001*/	uint8 HairColor;			//
 /*0000*/	uint8 Face;					//
-/*0000*/	CharSelectEquip	Equip[9];
+/*0000*/	CharSelectEquip	Equip[EQEmu::textures::TextureCount];
 /*0000*/	uint32 PrimaryIDFile;		//
 /*0000*/	uint32 SecondaryIDFile;		//
 /*0000*/	uint8 Unknown15;			// 0xff
@@ -163,19 +227,6 @@ struct CharacterSelect_Struct
 };
 
 /*
-* Visible equiptment.
-* Size: 12 Octets
-*/
-struct EquipStruct
-{
-/*00*/ uint32 Material;
-/*04*/ uint32 Unknown1;
-/*08*/ uint32 EliteMaterial;
-/*12*/
-};
-
-
-/*
 ** Generic Spawn Struct
 ** Length: 897 Octets
 ** Used in:
@@ -201,22 +252,7 @@ struct Spawn_Struct {
 /*0018*/ uint8  unknown0018[4];		//
 /*0022*/ uint8  gender;				// Gender (0=male, 1=female, 2=monster)
 /*0023*/ uint8  unknown0023[4];		//
-/*0027*/ union
-	 {
-		struct
-		{
-		/*0027*/ EquipStruct equip_helmet; // Equiptment: Helmet visual
-		/*0039*/ EquipStruct equip_chest; // Equiptment: Chest visual
-		/*0051*/ EquipStruct equip_arms; // Equiptment: Arms visual
-		/*0063*/ EquipStruct equip_bracers; // Equiptment: Wrist visual
-		/*0075*/ EquipStruct equip_hands; // Equiptment: Hands visual
-		/*0087*/ EquipStruct equip_legs; // Equiptment: Legs visual
-		/*0099*/ EquipStruct equip_feet; // Equiptment: Boots visual
-		/*0111*/ EquipStruct equip_primary; // Equiptment: Main visual
-		/*0123*/ EquipStruct equip_secondary; // Equiptment: Off visual
-		} equip;
-		/*0027*/ EquipStruct equipment[9];
-	 };
+/*0027*/ TextureProfile equipment;
 
 /*0135*/ uint8	StandState;	// Seems to be required to be set to 0x64 for normal animation.
 /*0136*/ uint8  unknown0136;
@@ -293,22 +329,7 @@ union
 /*0775*/ char	name[64];			// Player's Name
 /*0839*/ uint32 petOwnerId;			// If this is a pet, the spawn id of owner
 /*0843*/ uint8  pvp;				// 0 = normal name color, 2 = PVP name color
-/*0844*/ union
-	 {
-		struct
-		{
-		/*0844*/ Color_Struct color_helmet;    // Color of helmet item
-		/*0848*/ Color_Struct color_chest;     // Color of chest item
-		/*0852*/ Color_Struct color_arms;      // Color of arms item
-		/*0856*/ Color_Struct color_bracers;   // Color of bracers item
-		/*0860*/ Color_Struct color_hands;     // Color of hands item
-		/*0864*/ Color_Struct color_legs;      // Color of legs item
-		/*0868*/ Color_Struct color_feet;      // Color of feet item
-		/*0872*/ Color_Struct color_primary;   // Color of primary item
-		/*0876*/ Color_Struct color_secondary; // Color of secondary item
-		} equipment_colors;
-		/*0844*/ Color_Struct colors[9]; // Array elements correspond to struct equipment_colors above
-	 };
+/*0844*/ TintProfile equipment_tint;
 /*0880*/ uint8  anon;				// 0=normal, 1=anon, 2=roleplay
 /*0881*/ uint8	face;
 /*0882*/ uint8  drakkin_details;		// Face Details (Spikes) on Drakkin 0 - 7
@@ -684,7 +705,7 @@ struct BandolierItem_Struct
 struct Bandolier_Struct
 {
 	char Name[32];
-	BandolierItem_Struct Items[consts::BANDOLIER_ITEM_COUNT];
+	BandolierItem_Struct Items[profile::BandolierItemCount];
 };
 
 //len = 72
@@ -698,7 +719,7 @@ struct PotionBeltItem_Struct
 //len = 288
 struct PotionBelt_Struct
 {
-	PotionBeltItem_Struct Items[consts::POTION_BELT_ITEM_COUNT];
+	PotionBeltItem_Struct Items[profile::PotionBeltSize];
 };
 
 static const uint32 MAX_GROUP_LEADERSHIP_AA_ARRAY = 16;
@@ -861,24 +882,9 @@ struct PlayerProfile_Struct //23576 Octets
 /*00216*/ uint8   hairstyle;			// Player hair style
 /*00217*/ uint8   beard;				// Player beard type
 /*00218*/ uint8 unknown00178[10];		//[10]14 on Live?
-/*00228*/ union
-	 {
-		struct
-		{
-		/*00228*/ EquipStruct equip_helmet; // Equiptment: Helmet visual
-		/*00240*/ EquipStruct equip_chest; // Equiptment: Chest visual
-		/*00252*/ EquipStruct equip_arms; // Equiptment: Arms visual
-		/*00264*/ EquipStruct equip_bracers; // Equiptment: Wrist visual
-		/*00276*/ EquipStruct equip_hands; // Equiptment: Hands visual
-		/*00288*/ EquipStruct equip_legs; // Equiptment: Legs visual
-		/*00300*/ EquipStruct equip_feet; // Equiptment: Boots visual
-		/*00312*/ EquipStruct equip_primary; // Equiptment: Main visual
-		/*00324*/ EquipStruct equip_secondary; // Equiptment: Off visual
-		} equip;
-		/*00228*/ EquipStruct equipment[9]; //Live Shows [108] for this part
-	 };
+/*00228*/ TextureProfile equipment;
 /*00336*/ uint8 unknown00224[156];		// Live Shows [160]
-/*00496*/ Color_Struct item_tint[9];	// RR GG BB 00
+/*00496*/ TintProfile item_tint;		// RR GG BB 00
 /*00544*/ AA_Array  aa_array[MAX_PP_AA_ARRAY];	// [3600] AAs 12 bytes each
 /*04132*/ uint32  points;				// Unspent Practice points - RELOCATED???
 /*04136*/ uint32  mana;					// Current mana
@@ -917,7 +923,7 @@ struct PlayerProfile_Struct //23576 Octets
 /*08288*/ uint32  aapoints_spent;		// Number of spent AA points
 /*08292*/ uint32  aapoints;				// Unspent AA points
 /*08296*/ uint8 unknown06160[4];
-/*08300*/ Bandolier_Struct bandoliers[consts::BANDOLIERS_SIZE]; // [6400] bandolier contents
+/*08300*/ Bandolier_Struct bandoliers[profile::BandoliersSize]; // [6400] bandolier contents
 /*14700*/ PotionBelt_Struct  potionbelt;	// [360] potion belt 72 extra octets by adding 1 more belt slot
 /*15060*/ uint8 unknown12852[8];
 /*15068*/ uint32 available_slots;
@@ -1134,7 +1140,7 @@ struct WearChange_Struct{
 /*002*/ uint32 material;
 /*006*/ uint32 unknown06;
 /*010*/ uint32 elite_material;	// 1 for Drakkin Elite Material
-/*014*/ Color_Struct color;
+/*014*/ Tint_Struct color;
 /*018*/ uint8 wear_slot_id;
 /*019*/
 };
@@ -2933,27 +2939,6 @@ struct PetitionBug_Struct{
 	char	text[1028];
 };
 
-struct DyeStruct
-{
-	union
-	{
-		struct
-		{
-			struct Color_Struct head;
-			struct Color_Struct chest;
-			struct Color_Struct arms;
-			struct Color_Struct wrists;
-			struct Color_Struct hands;
-			struct Color_Struct legs;
-			struct Color_Struct feet;
-			struct Color_Struct primary;	// you can't actually dye this
-			struct Color_Struct secondary;	// or this
-		}
-		dyes;
-		struct Color_Struct dye[9];
-	};
-};
-
 struct ApproveZone_Struct {
 	char	name[64];
 	uint32	zoneid;
@@ -4039,7 +4024,6 @@ struct ItemQuaternaryBodyStruct
 	int32 HealAmt;
 	int32 SpellDmg;
 	uint32 evolve_string; // Some String, but being evolution related is just a guess
-	uint32 subitem_count;
 };
 
 struct AugmentInfo_Struct
@@ -4134,7 +4118,8 @@ struct AltCurrencySellItem_Struct {
 /*010*/ uint32 cost;
 };
 
-	};	//end namespace structs
-};	//end namespace SoF
+	}; /*structs*/
 
-#endif /*SOF_STRUCTS_H_*/
+}; /*SoF*/
+
+#endif /*COMMON_SOF_STRUCTS_H*/

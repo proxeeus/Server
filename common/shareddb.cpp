@@ -36,6 +36,7 @@
 #include "rulesys.h"
 #include "shareddb.h"
 #include "string_util.h"
+#include "eqemu_config.h"
 
 SharedDatabase::SharedDatabase()
 : Database()
@@ -191,11 +192,11 @@ bool SharedDatabase::SaveInventory(uint32 char_id, const ItemInst* inst, int16 s
 bool SharedDatabase::UpdateInventorySlot(uint32 char_id, const ItemInst* inst, int16 slot_id) {
 	// need to check 'inst' argument for valid pointer
 
-	uint32 augslot[EQEmu::legacy::ITEM_COMMON_SIZE] = { NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM };
-	if (inst->IsType(ItemClassCommon)) {
+	uint32 augslot[EQEmu::legacy::ITEM_COMMON_SIZE] = { 0, 0, 0, 0, 0, 0 };
+	if (inst->IsClassCommon()) {
 		for (int i = AUG_INDEX_BEGIN; i < EQEmu::legacy::ITEM_COMMON_SIZE; i++) {
 			ItemInst *auginst = inst->GetItem(i);
-			augslot[i] = (auginst && auginst->GetItem()) ? auginst->GetItem()->ID : NO_ITEM;
+			augslot[i] = (auginst && auginst->GetItem()) ? auginst->GetItem()->ID : 0;
 		}
 	}
 
@@ -220,7 +221,7 @@ bool SharedDatabase::UpdateInventorySlot(uint32 char_id, const ItemInst* inst, i
 	auto results = QueryDatabase(query);
 
     // Save bag contents, if slot supports bag contents
-	if (inst->IsType(ItemClassContainer) && Inventory::SupportsContainers(slot_id))
+	if (inst->IsClassBag() && Inventory::SupportsContainers(slot_id))
 		// Limiting to bag slot count will get rid of 'hidden' duplicated items and 'Invalid Slot ID'
 		// messages through attrition (and the modded code in SaveInventory)
 		for (uint8 idx = SUB_INDEX_BEGIN; idx < inst->GetItem()->BagSlots && idx < EQEmu::legacy::ITEM_CONTAINER_SIZE; idx++) {
@@ -238,11 +239,11 @@ bool SharedDatabase::UpdateInventorySlot(uint32 char_id, const ItemInst* inst, i
 bool SharedDatabase::UpdateSharedBankSlot(uint32 char_id, const ItemInst* inst, int16 slot_id) {
 	// need to check 'inst' argument for valid pointer
 
-	uint32 augslot[EQEmu::legacy::ITEM_COMMON_SIZE] = { NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM, NO_ITEM };
-	if (inst->IsType(ItemClassCommon)) {
+	uint32 augslot[EQEmu::legacy::ITEM_COMMON_SIZE] = { 0, 0, 0, 0, 0, 0 };
+	if (inst->IsClassCommon()) {
 		for (int i = AUG_INDEX_BEGIN; i < EQEmu::legacy::ITEM_COMMON_SIZE; i++) {
 			ItemInst *auginst = inst->GetItem(i);
-			augslot[i] = (auginst && auginst->GetItem()) ? auginst->GetItem()->ID : NO_ITEM;
+			augslot[i] = (auginst && auginst->GetItem()) ? auginst->GetItem()->ID : 0;
 		}
 	}
 
@@ -266,7 +267,7 @@ bool SharedDatabase::UpdateSharedBankSlot(uint32 char_id, const ItemInst* inst, 
     auto results = QueryDatabase(query);
 
     // Save bag contents, if slot supports bag contents
-	if (inst->IsType(ItemClassContainer) && Inventory::SupportsContainers(slot_id)) {
+	if (inst->IsClassBag() && Inventory::SupportsContainers(slot_id)) {
 		// Limiting to bag slot count will get rid of 'hidden' duplicated items and 'Invalid Slot ID'
 		// messages through attrition (and the modded code in SaveInventory)
 		for (uint8 idx = SUB_INDEX_BEGIN; idx < inst->GetItem()->BagSlots && idx < EQEmu::legacy::ITEM_CONTAINER_SIZE; idx++) {
@@ -363,7 +364,7 @@ bool SharedDatabase::SetSharedPlatinum(uint32 account_id, int32 amount_to_add) {
 
 bool SharedDatabase::SetStartingItems(PlayerProfile_Struct* pp, Inventory* inv, uint32 si_race, uint32 si_class, uint32 si_deity, uint32 si_current_zone, char* si_name, int admin_level) {
 
-	const Item_Struct* myitem;
+	const EQEmu::ItemBase* myitem;
 
     std::string query = StringFormat("SELECT itemid, item_charges, slot FROM starting_items "
                                     "WHERE (race = %i or race = 0) AND (class = %i or class = 0) AND "
@@ -407,13 +408,13 @@ bool SharedDatabase::GetSharedBank(uint32 id, Inventory *inv, bool is_charid)
 				     "sb.augslot1, sb.augslot2, sb.augslot3, "
 				     "sb.augslot4, sb.augslot5, sb.augslot6, sb.custom_data "
 				     "FROM sharedbank sb INNER JOIN character_data ch "
-				     "ON ch.account_id=sb.acctid WHERE ch.id = %i",
+				     "ON ch.account_id=sb.acctid WHERE ch.id = %i ORDER BY sb.slotid",
 				     id);
 	else
 		query = StringFormat("SELECT slotid, itemid, charges, "
 				     "augslot1, augslot2, augslot3, "
 				     "augslot4, augslot5, augslot6, custom_data "
-				     "FROM sharedbank WHERE acctid=%i",
+				     "FROM sharedbank WHERE acctid=%i ORDER BY slotid",
 				     id);
 	auto results = QueryDatabase(query);
 	if (!results.Success()) {
@@ -435,7 +436,7 @@ bool SharedDatabase::GetSharedBank(uint32 id, Inventory *inv, bool is_charid)
 		aug[4] = (uint32)atoi(row[7]);
 		aug[5] = (uint32)atoi(row[8]);
 
-		const Item_Struct *item = GetItem(item_id);
+		const EQEmu::ItemBase *item = GetItem(item_id);
 
 		if (!item) {
 			Log.Out(Logs::General, Logs::Error,
@@ -447,7 +448,7 @@ bool SharedDatabase::GetSharedBank(uint32 id, Inventory *inv, bool is_charid)
 		int16 put_slot_id = INVALID_INDEX;
 
 		ItemInst *inst = CreateBaseItem(item, charges);
-		if (inst && item->ItemClass == ItemClassCommon) {
+		if (inst && item->IsClassCommon()) {
 			for (int i = AUG_INDEX_BEGIN; i < EQEmu::legacy::ITEM_COMMON_SIZE; i++) {
 				if (aug[i])
 					inst->PutAugment(this, i, aug[i]);
@@ -537,7 +538,7 @@ bool SharedDatabase::GetInventory(uint32 char_id, Inventory *inv)
 		uint32 ornament_idfile = (uint32)atoul(row[13]);
 		uint32 ornament_hero_model = (uint32)atoul(row[14]);
 
-		const Item_Struct *item = GetItem(item_id);
+		const EQEmu::ItemBase *item = GetItem(item_id);
 
 		if (!item) {
 			Log.Out(Logs::General, Logs::Error,
@@ -607,7 +608,7 @@ bool SharedDatabase::GetInventory(uint32 char_id, Inventory *inv)
 				inst->SetRecastTimestamp(0);
 		}
 
-		if (item->ItemClass == ItemClassCommon) {
+		if (item->IsClassCommon()) {
 			for (int i = AUG_INDEX_BEGIN; i < EQEmu::legacy::ITEM_COMMON_SIZE; i++) {
 				if (aug[i])
 					inst->PutAugment(this, i, aug[i]);
@@ -678,7 +679,7 @@ bool SharedDatabase::GetInventory(uint32 account_id, char *name, Inventory *inv)
 		uint32 ornament_idfile = (uint32)atoul(row[13]);
 		uint32 ornament_hero_model = (uint32)atoul(row[14]);
 
-		const Item_Struct *item = GetItem(item_id);
+		const EQEmu::ItemBase *item = GetItem(item_id);
 		int16 put_slot_id = INVALID_INDEX;
 		if (!item)
 			continue;
@@ -725,7 +726,7 @@ bool SharedDatabase::GetInventory(uint32 account_id, char *name, Inventory *inv)
 
 		inst->SetCharges(charges);
 
-		if (item->ItemClass == ItemClassCommon) {
+		if (item->IsClassCommon()) {
 			for (int i = AUG_INDEX_BEGIN; i < EQEmu::legacy::ITEM_COMMON_SIZE; i++) {
 				if (aug[i])
 					inst->PutAugment(this, i, aug[i]);
@@ -810,11 +811,12 @@ bool SharedDatabase::LoadItems(const std::string &prefix) {
 	items_mmf.reset(nullptr);
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("items");
 		mutex.Lock();
-		std::string file_name = std::string("shared/") + prefix + std::string("items");
+		std::string file_name = Config->SharedMemDir + prefix + std::string("items");
 		items_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name));
-		items_hash = std::unique_ptr<EQEmu::FixedMemoryHashSet<Item_Struct>>(new EQEmu::FixedMemoryHashSet<Item_Struct>(reinterpret_cast<uint8*>(items_mmf->Get()), items_mmf->Size()));
+		items_hash = std::unique_ptr<EQEmu::FixedMemoryHashSet<EQEmu::ItemBase>>(new EQEmu::FixedMemoryHashSet<EQEmu::ItemBase>(reinterpret_cast<uint8*>(items_mmf->Get()), items_mmf->Size()));
 		mutex.Unlock();
 	} catch(std::exception& ex) {
 		Log.Out(Logs::General, Logs::Error, "Error Loading Items: %s", ex.what());
@@ -826,35 +828,35 @@ bool SharedDatabase::LoadItems(const std::string &prefix) {
 
 void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_item_id)
 {
-	EQEmu::FixedMemoryHashSet<Item_Struct> hash(reinterpret_cast<uint8 *>(data), size, items, max_item_id);
+	EQEmu::FixedMemoryHashSet<EQEmu::ItemBase> hash(reinterpret_cast<uint8 *>(data), size, items, max_item_id);
 
-	char ndbuffer[4];
+	std::string ndbuffer;
 	bool disableNoRent = false;
-	if (GetVariable("disablenorent", ndbuffer, 4)) {
+	if (GetVariable("disablenorent", ndbuffer)) {
 		if (ndbuffer[0] == '1' && ndbuffer[1] == '\0') {
 			disableNoRent = true;
 		}
 	}
 	bool disableNoDrop = false;
-	if (GetVariable("disablenodrop", ndbuffer, 4)) {
+	if (GetVariable("disablenodrop", ndbuffer)) {
 		if (ndbuffer[0] == '1' && ndbuffer[1] == '\0') {
 			disableNoDrop = true;
 		}
 	}
 	bool disableLoreGroup = false;
-	if (GetVariable("disablelore", ndbuffer, 4)) {
+	if (GetVariable("disablelore", ndbuffer)) {
 		if (ndbuffer[0] == '1' && ndbuffer[1] == '\0') {
 			disableLoreGroup = true;
 		}
 	}
 	bool disableNoTransfer = false;
-	if (GetVariable("disablenotransfer", ndbuffer, 4)) {
+	if (GetVariable("disablenotransfer", ndbuffer)) {
 		if (ndbuffer[0] == '1' && ndbuffer[1] == '\0') {
 			disableNoTransfer = true;
 		}
 	}
 
-	Item_Struct item;
+	EQEmu::ItemBase item;
 
 	const std::string query = "SELECT source,"
 #define F(x) "`"#x"`,"
@@ -867,7 +869,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 	}
 
 	for (auto row = results.begin(); row != results.end(); ++row) {
-		memset(&item, 0, sizeof(Item_Struct));
+		memset(&item, 0, sizeof(EQEmu::ItemBase));
 
 		item.ItemClass = (uint8)atoi(row[ItemField::itemclass]);
 		strcpy(item.Name, row[ItemField::name]);
@@ -1084,7 +1086,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 	}
 }
 
-const Item_Struct* SharedDatabase::GetItem(uint32 id) {
+const EQEmu::ItemBase* SharedDatabase::GetItem(uint32 id) {
 	if (id == 0)
 	{
 		return nullptr;
@@ -1103,7 +1105,7 @@ const Item_Struct* SharedDatabase::GetItem(uint32 id) {
 	return nullptr;
 }
 
-const Item_Struct* SharedDatabase::IterateItems(uint32* id) {
+const EQEmu::ItemBase* SharedDatabase::IterateItems(uint32* id) {
 	if(!items_hash || !id) {
 		return nullptr;
 	}
@@ -1233,9 +1235,10 @@ bool SharedDatabase::LoadNPCFactionLists(const std::string &prefix) {
 	faction_hash.reset(nullptr);
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("faction");
 		mutex.Lock();
-		std::string file_name = std::string("shared/") + prefix + std::string("faction");
+		std::string file_name = Config->SharedMemDir + prefix + std::string("faction");
 		faction_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name));
 		faction_hash = std::unique_ptr<EQEmu::FixedMemoryHashSet<NPCFactionList>>(new EQEmu::FixedMemoryHashSet<NPCFactionList>(reinterpret_cast<uint8*>(faction_mmf->Get()), faction_mmf->Size()));
 		mutex.Unlock();
@@ -1250,7 +1253,7 @@ bool SharedDatabase::LoadNPCFactionLists(const std::string &prefix) {
 // Create appropriate ItemInst class
 ItemInst* SharedDatabase::CreateItem(uint32 item_id, int16 charges, uint32 aug1, uint32 aug2, uint32 aug3, uint32 aug4, uint32 aug5, uint32 aug6, uint8 attuned)
 {
-	const Item_Struct* item = nullptr;
+	const EQEmu::ItemBase* item = nullptr;
 	ItemInst* inst = nullptr;
 
 	item = GetItem(item_id);
@@ -1277,7 +1280,7 @@ ItemInst* SharedDatabase::CreateItem(uint32 item_id, int16 charges, uint32 aug1,
 
 
 // Create appropriate ItemInst class
-ItemInst* SharedDatabase::CreateItem(const Item_Struct* item, int16 charges, uint32 aug1, uint32 aug2, uint32 aug3, uint32 aug4, uint32 aug5, uint32 aug6, uint8 attuned)
+ItemInst* SharedDatabase::CreateItem(const EQEmu::ItemBase* item, int16 charges, uint32 aug1, uint32 aug2, uint32 aug3, uint32 aug4, uint32 aug5, uint32 aug6, uint8 attuned)
 {
 	ItemInst* inst = nullptr;
 	if (item) {
@@ -1301,7 +1304,7 @@ ItemInst* SharedDatabase::CreateItem(const Item_Struct* item, int16 charges, uin
 	return inst;
 }
 
-ItemInst* SharedDatabase::CreateBaseItem(const Item_Struct* item, int16 charges) {
+ItemInst* SharedDatabase::CreateBaseItem(const EQEmu::ItemBase* item, int16 charges) {
 	ItemInst* inst = nullptr;
 	if (item) {
 		// if maxcharges is -1 that means it is an unlimited use item.
@@ -1365,7 +1368,7 @@ bool SharedDatabase::GetCommandSettings(std::map<std::string, std::pair<uint8, s
 			continue;
 
 		std::vector<std::string> aliases = SplitString(row[2], '|');
-		for (std::vector<std::string>::iterator iter = aliases.begin(); iter != aliases.end(); ++iter) {
+		for (auto iter = aliases.begin(); iter != aliases.end(); ++iter) {
 			if (iter->empty())
 				continue;
 			command_settings[row[0]].second.push_back(*iter);
@@ -1379,14 +1382,15 @@ bool SharedDatabase::LoadSkillCaps(const std::string &prefix) {
 	skill_caps_mmf.reset(nullptr);
 
 	uint32 class_count = PLAYER_CLASS_COUNT;
-	uint32 skill_count = HIGHEST_SKILL + 1;
+	uint32 skill_count = EQEmu::skills::HIGHEST_SKILL + 1;
 	uint32 level_count = HARD_LEVEL_CAP + 1;
 	uint32 size = (class_count * skill_count * level_count * sizeof(uint16));
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("skill_caps");
 		mutex.Lock();
-		std::string file_name = std::string("shared/") + prefix + std::string("skill_caps");
+		std::string file_name = Config->SharedMemDir + prefix + std::string("skill_caps");
 		skill_caps_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name));
 		mutex.Unlock();
 	} catch(std::exception &ex) {
@@ -1399,7 +1403,7 @@ bool SharedDatabase::LoadSkillCaps(const std::string &prefix) {
 
 void SharedDatabase::LoadSkillCaps(void *data) {
 	uint32 class_count = PLAYER_CLASS_COUNT;
-	uint32 skill_count = HIGHEST_SKILL + 1;
+	uint32 skill_count = EQEmu::skills::HIGHEST_SKILL + 1;
 	uint32 level_count = HARD_LEVEL_CAP + 1;
 	uint16 *skill_caps_table = reinterpret_cast<uint16*>(data);
 
@@ -1424,7 +1428,7 @@ void SharedDatabase::LoadSkillCaps(void *data) {
     }
 }
 
-uint16 SharedDatabase::GetSkillCap(uint8 Class_, SkillUseTypes Skill, uint8 Level) {
+uint16 SharedDatabase::GetSkillCap(uint8 Class_, EQEmu::skills::SkillType Skill, uint8 Level) {
 	if(!skill_caps_mmf) {
 		return 0;
 	}
@@ -1438,7 +1442,7 @@ uint16 SharedDatabase::GetSkillCap(uint8 Class_, SkillUseTypes Skill, uint8 Leve
 	}
 
 	uint32 class_count = PLAYER_CLASS_COUNT;
-	uint32 skill_count = HIGHEST_SKILL + 1;
+	uint32 skill_count = EQEmu::skills::HIGHEST_SKILL + 1;
 	uint32 level_count = HARD_LEVEL_CAP + 1;
 	if(Class_ > class_count || static_cast<uint32>(Skill) > skill_count || Level > level_count) {
 		return 0;
@@ -1453,7 +1457,7 @@ uint16 SharedDatabase::GetSkillCap(uint8 Class_, SkillUseTypes Skill, uint8 Leve
 	return skill_caps_table[index];
 }
 
-uint8 SharedDatabase::GetTrainLevel(uint8 Class_, SkillUseTypes Skill, uint8 Level) {
+uint8 SharedDatabase::GetTrainLevel(uint8 Class_, EQEmu::skills::SkillType Skill, uint8 Level) {
 	if(!skill_caps_mmf) {
 		return 0;
 	}
@@ -1467,7 +1471,7 @@ uint8 SharedDatabase::GetTrainLevel(uint8 Class_, SkillUseTypes Skill, uint8 Lev
 	}
 
 	uint32 class_count = PLAYER_CLASS_COUNT;
-	uint32 skill_count = HIGHEST_SKILL + 1;
+	uint32 skill_count = EQEmu::skills::HIGHEST_SKILL + 1;
 	uint32 level_count = HARD_LEVEL_CAP + 1;
 	if(Class_ > class_count || static_cast<uint32>(Skill) > skill_count || Level > level_count) {
 		return 0;
@@ -1539,10 +1543,11 @@ bool SharedDatabase::LoadSpells(const std::string &prefix, int32 *records, const
 	spells_mmf.reset(nullptr);
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("spells");
 		mutex.Lock();
 	
-		std::string file_name = std::string("shared/") + prefix + std::string("spells");
+		std::string file_name = Config->SharedMemDir + prefix + std::string("spells");
 		spells_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name));
 		*records = *reinterpret_cast<uint32*>(spells_mmf->Get());
 		*sp = reinterpret_cast<const SPDat_Spell_Struct*>((char*)spells_mmf->Get() + 4);
@@ -1637,10 +1642,10 @@ void SharedDatabase::LoadSpells(void *data, int max_spells) {
 
 		int tmp_skill = atoi(row[100]);;
 
-		if(tmp_skill < 0 || tmp_skill > HIGHEST_SKILL)
-            sp[tempid].skill = SkillBegging; /* not much better we can do. */ // can probably be changed to client-based 'SkillNone' once activated
+		if (tmp_skill < 0 || tmp_skill > EQEmu::skills::HIGHEST_SKILL)
+			sp[tempid].skill = EQEmu::skills::SkillBegging; /* not much better we can do. */ // can probably be changed to client-based 'SkillNone' once activated
         else
-			sp[tempid].skill = (SkillUseTypes) tmp_skill;
+			sp[tempid].skill = (EQEmu::skills::SkillType) tmp_skill;
 
 		sp[tempid].zonetype=atoi(row[101]);
 		sp[tempid].EnvironmentType=atoi(row[102]);
@@ -1742,10 +1747,11 @@ bool SharedDatabase::LoadBaseData(const std::string &prefix) {
 	base_data_mmf.reset(nullptr);
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("base_data");
 		mutex.Lock();
 
-		std::string file_name = std::string("shared/") + prefix + std::string("base_data");
+		std::string file_name = Config->SharedMemDir + prefix + std::string("base_data");
 		base_data_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name));
 		mutex.Unlock();
 	} catch(std::exception& ex) {
@@ -1981,14 +1987,15 @@ bool SharedDatabase::LoadLoot(const std::string &prefix) {
 	loot_drop_mmf.reset(nullptr);
 
 	try {
+		auto Config = EQEmuConfig::get();
 		EQEmu::IPCMutex mutex("loot");
 		mutex.Lock();
-		std::string file_name_lt = std::string("shared/") + prefix + std::string("loot_table");
+		std::string file_name_lt = Config->SharedMemDir + prefix + std::string("loot_table");
 		loot_table_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name_lt));
 		loot_table_hash = std::unique_ptr<EQEmu::FixedMemoryVariableHashSet<LootTable_Struct>>(new EQEmu::FixedMemoryVariableHashSet<LootTable_Struct>(
 			reinterpret_cast<uint8*>(loot_table_mmf->Get()),
 			loot_table_mmf->Size()));
-		std::string file_name_ld = std::string("shared/") + prefix + std::string("loot_drop");
+		std::string file_name_ld = Config->SharedMemDir + prefix + std::string("loot_drop");
 		loot_drop_mmf = std::unique_ptr<EQEmu::MemoryMappedFile>(new EQEmu::MemoryMappedFile(file_name_ld));
 		loot_drop_hash = std::unique_ptr<EQEmu::FixedMemoryVariableHashSet<LootDrop_Struct>>(new EQEmu::FixedMemoryVariableHashSet<LootDrop_Struct>(
 			reinterpret_cast<uint8*>(loot_drop_mmf->Get()),

@@ -152,14 +152,14 @@ void Client::CalcItemBonuses(StatBonuses* newbon) {
 		AddItemBonuses(inst, newbon, false, false, 0, (i == EQEmu::legacy::SlotAmmo));
 
 		//These are given special flags due to how often they are checked for various spell effects.
-		const Item_Struct *item = inst->GetItem();
-		if (i == EQEmu::legacy::SlotSecondary && (item && item->ItemType == ItemTypeShield))
+		const EQEmu::ItemBase *item = inst->GetItem();
+		if (i == EQEmu::legacy::SlotSecondary && (item && item->ItemType == EQEmu::item::ItemTypeShield))
 			SetShieldEquiped(true);
-		else if (i == EQEmu::legacy::SlotPrimary && (item && item->ItemType == ItemType2HBlunt)) {
+		else if (i == EQEmu::legacy::SlotPrimary && (item && item->ItemType == EQEmu::item::ItemType2HBlunt)) {
 			SetTwoHandBluntEquiped(true);
 			SetTwoHanderEquipped(true);
 		}
-		else if (i == EQEmu::legacy::SlotPrimary && (item && (item->ItemType == ItemType2HSlash || item->ItemType == ItemType2HPiercing)))
+		else if (i == EQEmu::legacy::SlotPrimary && (item && (item->ItemType == EQEmu::item::ItemType2HSlash || item->ItemType == EQEmu::item::ItemType2HPiercing)))
 			SetTwoHanderEquipped(true);
 	}
 
@@ -180,7 +180,7 @@ void Client::CalcItemBonuses(StatBonuses* newbon) {
 	}
 
 	//Optional ability to have worn effects calculate as an addititive bonus instead of highest value
-	if (RuleI(Spells, AdditiveBonusWornType) && RuleI(Spells, AdditiveBonusWornType) != ET_WornEffect){
+	if (RuleI(Spells, AdditiveBonusWornType) && RuleI(Spells, AdditiveBonusWornType) != EQEmu::item::ItemEffectWorn){
 		for (i = EQEmu::legacy::SlotCharm; i < EQEmu::legacy::SlotAmmo; i++) {
 			const ItemInst* inst = m_inv[i];
 			if(inst == 0)
@@ -210,7 +210,7 @@ void Client::ProcessItemCaps()
 
 void Client::AddItemBonuses(const ItemInst *inst, StatBonuses *newbon, bool isAug, bool isTribute, int rec_override, bool ammo_slot_item)
 {
-	if (!inst || !inst->IsType(ItemClassCommon)) {
+	if (!inst || !inst->IsClassCommon()) {
 		return;
 	}
 
@@ -218,10 +218,10 @@ void Client::AddItemBonuses(const ItemInst *inst, StatBonuses *newbon, bool isAu
 		return;
 	}
 
-	const Item_Struct *item = inst->GetItem();
+	const EQEmu::ItemBase *item = inst->GetItem();
 
 	if (!isTribute && !inst->IsEquipable(GetBaseRace(), GetClass())) {
-		if (item->ItemType != ItemTypeFood && item->ItemType != ItemTypeDrink)
+		if (item->ItemType != EQEmu::item::ItemTypeFood && item->ItemType != EQEmu::item::ItemTypeDrink)
 			return;
 	}
 
@@ -430,11 +430,11 @@ void Client::AddItemBonuses(const ItemInst *inst, StatBonuses *newbon, bool isAu
 			else
 				newbon->DSMitigation += item->DSMitigation;
 		}
-		if (item->Worn.Effect > 0 && item->Worn.Type == ET_WornEffect) { // latent effects
+		if (item->Worn.Effect > 0 && item->Worn.Type == EQEmu::item::ItemEffectWorn) { // latent effects
 			ApplySpellsBonuses(item->Worn.Effect, item->Worn.Level, newbon, 0, item->Worn.Type);
 		}
 
-		if (item->Focus.Effect > 0 && (item->Focus.Type == ET_Focus)) { // focus effects
+		if (item->Focus.Effect > 0 && (item->Focus.Type == EQEmu::item::ItemEffectFocus)) { // focus effects
 			ApplySpellsBonuses(item->Focus.Effect, item->Focus.Level, newbon, 0);
 		}
 
@@ -507,7 +507,7 @@ void Client::AddItemBonuses(const ItemInst *inst, StatBonuses *newbon, bool isAu
 			}
 		}
 
-		if (item->ExtraDmgSkill != 0 && item->ExtraDmgSkill <= HIGHEST_SKILL) {
+		if (item->ExtraDmgSkill != 0 && item->ExtraDmgSkill <= EQEmu::skills::HIGHEST_SKILL) {
 			if ((newbon->SkillDamageAmount[item->ExtraDmgSkill] + item->ExtraDmgAmt) >
 				RuleI(Character, ItemExtraDmgCap))
 				newbon->SkillDamageAmount[item->ExtraDmgSkill] = RuleI(Character, ItemExtraDmgCap);
@@ -517,7 +517,7 @@ void Client::AddItemBonuses(const ItemInst *inst, StatBonuses *newbon, bool isAu
 	}
 
 	// Process when ammo_slot_item = true or false
-	if (item->SkillModValue != 0 && item->SkillModType <= HIGHEST_SKILL) {
+	if (item->SkillModValue != 0 && item->SkillModType <= EQEmu::skills::HIGHEST_SKILL) {
 		if ((item->SkillModValue > 0 && newbon->skillmod[item->SkillModType] < item->SkillModValue) ||
 			(item->SkillModValue < 0 && newbon->skillmod[item->SkillModType] > item->SkillModValue)) {
 
@@ -544,13 +544,13 @@ void Client::AdditiveWornBonuses(const ItemInst *inst, StatBonuses* newbon, bool
 	which will also stack with regular (worntype 2) effects. [Ie set rule = 3 and item worntype = 3]
 	*/
 
-	if(!inst || !inst->IsType(ItemClassCommon))
+	if (!inst || !inst->IsClassCommon())
 		return;
 
 	if(inst->GetAugmentType()==0 && isAug == true)
 		return;
 
-	const Item_Struct *item = inst->GetItem();
+	const EQEmu::ItemBase *item = inst->GetItem();
 
 	if(!inst->IsEquipable(GetBaseRace(),GetClass()))
 		return;
@@ -581,11 +581,11 @@ void Client::CalcEdibleBonuses(StatBonuses* newbon) {
 		if (food && drink)
 			break;
 		const ItemInst* inst = GetInv().GetItem(i);
-		if (inst && inst->GetItem() && inst->IsType(ItemClassCommon)) {
-			const Item_Struct *item=inst->GetItem();
-			if (item->ItemType == ItemTypeFood && !food)
+		if (inst && inst->GetItem() && inst->IsClassCommon()) {
+			const EQEmu::ItemBase *item = inst->GetItem();
+			if (item->ItemType == EQEmu::item::ItemTypeFood && !food)
 				food = true;
-			else if (item->ItemType == ItemTypeDrink && !drink)
+			else if (item->ItemType == EQEmu::item::ItemTypeDrink && !drink)
 				drink = true;
 			else
 				continue;
@@ -597,11 +597,11 @@ void Client::CalcEdibleBonuses(StatBonuses* newbon) {
 		if (food && drink)
 			break;
 		const ItemInst* inst = GetInv().GetItem(i);
-		if (inst && inst->GetItem() && inst->IsType(ItemClassCommon)) {
-			const Item_Struct *item=inst->GetItem();
-			if (item->ItemType == ItemTypeFood && !food)
+		if (inst && inst->GetItem() && inst->IsClassCommon()) {
+			const EQEmu::ItemBase *item = inst->GetItem();
+			if (item->ItemType == EQEmu::item::ItemTypeFood && !food)
 				food = true;
-			else if (item->ItemType == ItemTypeDrink && !drink)
+			else if (item->ItemType == EQEmu::item::ItemTypeDrink && !drink)
 				drink = true;
 			else
 				continue;
@@ -672,10 +672,10 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 		// Note: AA effects that use accuracy are skill limited, while spell effect is not.
 		case SE_Accuracy:
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
-			if ((base2 == ALL_SKILLS) && (newbon->Accuracy[HIGHEST_SKILL + 1] < base1))
-				newbon->Accuracy[HIGHEST_SKILL + 1] = base1;
+			if ((base2 == ALL_SKILLS) && (newbon->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] < base1))
+				newbon->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] = base1;
 			else if (newbon->Accuracy[base2] < base1)
 				newbon->Accuracy[base2] += base1;
 			break;
@@ -911,19 +911,19 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 			break;
 		case SE_AddSingingMod:
 			switch (base2) {
-			case ItemTypeWindInstrument:
+			case EQEmu::item::ItemTypeWindInstrument:
 				newbon->windMod += base1;
 				break;
-			case ItemTypeStringedInstrument:
+			case EQEmu::item::ItemTypeStringedInstrument:
 				newbon->stringedMod += base1;
 				break;
-			case ItemTypeBrassInstrument:
+			case EQEmu::item::ItemTypeBrassInstrument:
 				newbon->brassMod += base1;
 				break;
-			case ItemTypePercussionInstrument:
+			case EQEmu::item::ItemTypePercussionInstrument:
 				newbon->percussionMod += base1;
 				break;
-			case ItemTypeSinging:
+			case EQEmu::item::ItemTypeSinging:
 				newbon->singingMod += base1;
 				break;
 			}
@@ -1015,10 +1015,10 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_HitChance: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			if (base2 == ALL_SKILLS)
-				newbon->HitChanceEffect[HIGHEST_SKILL + 1] += base1;
+				newbon->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->HitChanceEffect[base2] += base1;
 		}
@@ -1069,21 +1069,21 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_CriticalHitChance: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			if (base2 == ALL_SKILLS)
-				newbon->CriticalHitChance[HIGHEST_SKILL + 1] += base1;
+				newbon->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->CriticalHitChance[base2] += base1;
 		} break;
 
 		case SE_CriticalDamageMob: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			// base1 = effect value, base2 = skill restrictions(-1 for all)
 			if (base2 == ALL_SKILLS)
-				newbon->CritDmgMob[HIGHEST_SKILL + 1] += base1;
+				newbon->CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->CritDmgMob[base2] += base1;
 			break;
@@ -1109,10 +1109,10 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_SkillDamageAmount: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			if (base2 == ALL_SKILLS)
-				newbon->SkillDamageAmount[HIGHEST_SKILL + 1] += base1;
+				newbon->SkillDamageAmount[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->SkillDamageAmount[base2] += base1;
 			break;
@@ -1128,10 +1128,10 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_DamageModifier: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			if (base2 == ALL_SKILLS)
-				newbon->DamageModifier[HIGHEST_SKILL + 1] += base1;
+				newbon->DamageModifier[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->DamageModifier[base2] += base1;
 			break;
@@ -1139,10 +1139,10 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_DamageModifier2: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 			if (base2 == ALL_SKILLS)
-				newbon->DamageModifier2[HIGHEST_SKILL + 1] += base1;
+				newbon->DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] += base1;
 			else
 				newbon->DamageModifier2[base2] += base1;
 			break;
@@ -1178,7 +1178,7 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 		// Physically raises skill cap ie if 55/55 it will raise to 55/60
 		case SE_RaiseSkillCap: {
 
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 
 			if (newbon->RaiseSkillCap[base2] < base1) 
@@ -1350,9 +1350,9 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_LimitToSkill: {
 			// Bad data or unsupported new skill
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
-			if (base1 <= HIGHEST_SKILL)
+			if (base1 <= EQEmu::skills::HIGHEST_SKILL)
 				newbon->LimitToSkill[base1] = true;
 			break;
 		}
@@ -1416,7 +1416,7 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_ReduceTradeskillFail:{
 
-			if (base2 > HIGHEST_SKILL)
+			if (base2 > EQEmu::skills::HIGHEST_SKILL)
 				break;
 
 			newbon->ReduceTradeskillFail[base2] += base1;
@@ -1938,26 +1938,26 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_CriticalHitChance:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				if (AdditiveWornBonus) {
 					if(base2 == ALL_SKILLS)
-						new_bonus->CriticalHitChance[HIGHEST_SKILL+1] += effect_value;
+						new_bonus->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 					else
 						new_bonus->CriticalHitChance[base2] += effect_value;
 				}
 
 				else if(effect_value < 0) {
 
-					if(base2 == ALL_SKILLS && new_bonus->CriticalHitChance[HIGHEST_SKILL+1] > effect_value)
-						new_bonus->CriticalHitChance[HIGHEST_SKILL+1] = effect_value;
+					if (base2 == ALL_SKILLS && new_bonus->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] > effect_value)
+						new_bonus->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 					else if(base2 != ALL_SKILLS && new_bonus->CriticalHitChance[base2] > effect_value)
 						new_bonus->CriticalHitChance[base2] = effect_value;
 				}
 
 
-				else if(base2 == ALL_SKILLS && new_bonus->CriticalHitChance[HIGHEST_SKILL+1] < effect_value)
-						new_bonus->CriticalHitChance[HIGHEST_SKILL+1] = effect_value;
+				else if (base2 == ALL_SKILLS && new_bonus->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] < effect_value)
+					new_bonus->CriticalHitChance[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 				else if(base2 != ALL_SKILLS && new_bonus->CriticalHitChance[base2] < effect_value)
 						new_bonus->CriticalHitChance[base2] = effect_value;
 
@@ -2144,24 +2144,24 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_HitChance:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 
 				if (AdditiveWornBonus){
 					if(base2 == ALL_SKILLS)
-						new_bonus->HitChanceEffect[HIGHEST_SKILL+1] += effect_value;
+						new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 					else
 						new_bonus->HitChanceEffect[base2] += effect_value;
 				}
 
 				else if(base2 == ALL_SKILLS){
 
-					if ((effect_value < 0) && (new_bonus->HitChanceEffect[HIGHEST_SKILL+1] > effect_value))
-						new_bonus->HitChanceEffect[HIGHEST_SKILL+1] = effect_value;
+					if ((effect_value < 0) && (new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] > effect_value))
+						new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 
-					else if (!new_bonus->HitChanceEffect[HIGHEST_SKILL+1] ||
-							((new_bonus->HitChanceEffect[HIGHEST_SKILL+1] > 0) && (new_bonus->HitChanceEffect[HIGHEST_SKILL+1] < effect_value)))
-							new_bonus->HitChanceEffect[HIGHEST_SKILL+1] = effect_value;
+					else if (!new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] ||
+						((new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] > 0) && (new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] < effect_value)))
+						new_bonus->HitChanceEffect[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 				}
 
 				else {
@@ -2181,9 +2181,9 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_DamageModifier:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
-				int skill = base2 == ALL_SKILLS ? HIGHEST_SKILL + 1 : base2;
+				int skill = base2 == ALL_SKILLS ? EQEmu::skills::HIGHEST_SKILL + 1 : base2;
 				if (effect_value < 0 && new_bonus->DamageModifier[skill] > effect_value)
 					new_bonus->DamageModifier[skill] = effect_value;
 				else if (effect_value > 0 && new_bonus->DamageModifier[skill] < effect_value)
@@ -2194,9 +2194,9 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_DamageModifier2:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
-				int skill = base2 == ALL_SKILLS ? HIGHEST_SKILL + 1 : base2;
+				int skill = base2 == ALL_SKILLS ? EQEmu::skills::HIGHEST_SKILL + 1 : base2;
 				if (effect_value < 0 && new_bonus->DamageModifier2[skill] > effect_value)
 					new_bonus->DamageModifier2[skill] = effect_value;
 				else if (effect_value > 0 && new_bonus->DamageModifier2[skill] < effect_value)
@@ -2207,9 +2207,9 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_MinDamageModifier:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
-				int skill = base2 == ALL_SKILLS ? HIGHEST_SKILL + 1 : base2;
+				int skill = base2 == ALL_SKILLS ? EQEmu::skills::HIGHEST_SKILL + 1 : base2;
 				if (effect_value < 0 && new_bonus->MinDamageModifier[skill] > effect_value)
 					new_bonus->MinDamageModifier[skill] = effect_value;
 				else if (effect_value > 0 && new_bonus->MinDamageModifier[skill] < effect_value)
@@ -2284,14 +2284,14 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_Accuracy:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
-				if ((effect_value < 0) && (new_bonus->Accuracy[HIGHEST_SKILL+1] > effect_value))
-						new_bonus->Accuracy[HIGHEST_SKILL+1] = effect_value;
+				if ((effect_value < 0) && (new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] > effect_value))
+					new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 
-				else if (!new_bonus->Accuracy[HIGHEST_SKILL+1] ||
-						((new_bonus->Accuracy[HIGHEST_SKILL+1] > 0) && (new_bonus->Accuracy[HIGHEST_SKILL+1] < effect_value)))
-							new_bonus->Accuracy[HIGHEST_SKILL+1] = effect_value;
+				else if (!new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] ||
+					((new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] > 0) && (new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] < effect_value)))
+					new_bonus->Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 				break;
 			}
 
@@ -2310,19 +2310,19 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_SkillDamageTaken:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				//When using npc_spells_effects if MAX value set, use stackable quest based modifier.
 				if (IsAISpellEffect && max){
 					if(base2 == ALL_SKILLS)
-						SkillDmgTaken_Mod[HIGHEST_SKILL+1] = effect_value;
+						SkillDmgTaken_Mod[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 					else
 						SkillDmgTaken_Mod[base2] = effect_value;
 				}
 				else {
 
 					if(base2 == ALL_SKILLS)
-						new_bonus->SkillDmgTaken[HIGHEST_SKILL+1] += effect_value;
+						new_bonus->SkillDmgTaken[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 					else
 						new_bonus->SkillDmgTaken[base2] += effect_value;
 
@@ -2431,10 +2431,10 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_CriticalDamageMob:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				if(base2 == ALL_SKILLS)
-					new_bonus->CritDmgMob[HIGHEST_SKILL+1] += effect_value;
+					new_bonus->CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 				else
 					new_bonus->CritDmgMob[base2] += effect_value;
 				break;
@@ -2450,10 +2450,10 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_SkillDamageAmount:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				if(base2 == ALL_SKILLS)
-					new_bonus->SkillDamageAmount[HIGHEST_SKILL+1] += effect_value;
+					new_bonus->SkillDamageAmount[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 				else
 					new_bonus->SkillDamageAmount[base2] += effect_value;
 				break;
@@ -2558,10 +2558,10 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			case SE_SkillDamageAmount2:
 			{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				if(base2 == ALL_SKILLS)
-					new_bonus->SkillDamageAmount2[HIGHEST_SKILL+1] += effect_value;
+					new_bonus->SkillDamageAmount2[EQEmu::skills::HIGHEST_SKILL + 1] += effect_value;
 				else
 					new_bonus->SkillDamageAmount2[base2] += effect_value;
 				break;
@@ -2753,23 +2753,24 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 				break;
 
 			case SE_AddSingingMod:
-				switch (base2)
-				{
-					case ItemTypeWindInstrument:
-						new_bonus->windMod += effect_value;
-						break;
-					case ItemTypeStringedInstrument:
-						new_bonus->stringedMod += effect_value;
-						break;
-					case ItemTypeBrassInstrument:
-						new_bonus->brassMod += effect_value;
-						break;
-					case ItemTypePercussionInstrument:
-						new_bonus->percussionMod += effect_value;
-						break;
-					case ItemTypeSinging:
-						new_bonus->singingMod += effect_value;
-						break;
+				switch (base2) {
+				case EQEmu::item::ItemTypeWindInstrument:
+					new_bonus->windMod += effect_value;
+					break;
+				case EQEmu::item::ItemTypeStringedInstrument:
+					new_bonus->stringedMod += effect_value;
+					break;
+				case EQEmu::item::ItemTypeBrassInstrument:
+					new_bonus->brassMod += effect_value;
+					break;
+				case EQEmu::item::ItemTypePercussionInstrument:
+					new_bonus->percussionMod += effect_value;
+					break;
+				case EQEmu::item::ItemTypeSinging:
+					new_bonus->singingMod += effect_value;
+					break;
+				default:
+					break;
 				}
 				break;
 
@@ -3095,9 +3096,9 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 
 			case SE_LimitToSkill:{
 				// Bad data or unsupported new skill
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
-				if (effect_value <= HIGHEST_SKILL){
+				if (effect_value <= EQEmu::skills::HIGHEST_SKILL){
 					new_bonus->LimitToSkill[effect_value] = true;
 				}
 				break;
@@ -3154,7 +3155,7 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 
 			case SE_ReduceTradeskillFail:{
 
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 
 				new_bonus->ReduceTradeskillFail[base2] += effect_value;
@@ -3167,7 +3168,7 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 				break;
 
 			case SE_RaiseSkillCap: {
-				if (base2 > HIGHEST_SKILL)
+				if (base2 > EQEmu::skills::HIGHEST_SKILL)
 					break;
 				
 				if (new_bonus->RaiseSkillCap[base2] < effect_value) 
@@ -3202,7 +3203,7 @@ void NPC::CalcItemBonuses(StatBonuses *newbon)
 	if(newbon){
 
 		for (int i = 0; i < EQEmu::legacy::EQUIPMENT_SIZE; i++){
-			const Item_Struct *cur = database.GetItem(equipment[i]);
+			const EQEmu::ItemBase *cur = database.GetItem(equipment[i]);
 			if(cur){
 				//basic stats
 				newbon->AC += cur->AC;
@@ -3257,12 +3258,12 @@ void NPC::CalcItemBonuses(StatBonuses *newbon)
 				if(cur->CombatEffects > 0) {
 					newbon->ProcChance += cur->CombatEffects;
 				}
-				if (cur->Worn.Effect>0 && (cur->Worn.Type == ET_WornEffect)) { // latent effects
+				if (cur->Worn.Effect>0 && (cur->Worn.Type == EQEmu::item::ItemEffectWorn)) { // latent effects
 					ApplySpellsBonuses(cur->Worn.Effect, cur->Worn.Level, newbon, 0, cur->Worn.Type);
 				}
 
 				if (RuleB(Spells, NPC_UseFocusFromItems)){
-					if (cur->Focus.Effect>0 && (cur->Focus.Type == ET_Focus)){  // focus effects
+					if (cur->Focus.Effect>0 && (cur->Focus.Type == EQEmu::item::ItemEffectFocus)){  // focus effects
 						ApplySpellsBonuses(cur->Focus.Effect, cur->Focus.Level, newbon);
 					}
 				}
@@ -3865,7 +3866,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_CriticalHitChance:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.CriticalHitChance[e] = effect_value;
 						aabonuses.CriticalHitChance[e] = effect_value;
@@ -3983,7 +3984,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_HitChance:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.HitChanceEffect[e] = effect_value;
 						aabonuses.HitChanceEffect[e] = effect_value;
@@ -3994,7 +3995,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_DamageModifier:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.DamageModifier[e] = effect_value;
 						aabonuses.DamageModifier[e] = effect_value;
@@ -4005,7 +4006,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_DamageModifier2:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.DamageModifier2[e] = effect_value;
 						aabonuses.DamageModifier2[e] = effect_value;
@@ -4016,7 +4017,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_MinDamageModifier:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.MinDamageModifier[e] = effect_value;
 						aabonuses.MinDamageModifier[e] = effect_value;
@@ -4057,10 +4058,10 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_Accuracy:
 				{
-					spellbonuses.Accuracy[HIGHEST_SKILL+1] = effect_value;
-					itembonuses.Accuracy[HIGHEST_SKILL+1] = effect_value;
+					spellbonuses.Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
+					itembonuses.Accuracy[EQEmu::skills::HIGHEST_SKILL + 1] = effect_value;
 
-						for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 						{
 							aabonuses.Accuracy[e] = effect_value;
 						}
@@ -4087,7 +4088,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_SkillDamageTaken:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.SkillDmgTaken[e] = effect_value;
 						aabonuses.SkillDmgTaken[e] = effect_value;
@@ -4192,7 +4193,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_CriticalDamageMob:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.CritDmgMob[e] = effect_value;
 						aabonuses.CritDmgMob[e] = effect_value;
@@ -4203,7 +4204,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_SkillDamageAmount:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.SkillDamageAmount[e] = effect_value;
 						aabonuses.SkillDamageAmount[e] = effect_value;
@@ -4254,7 +4255,7 @@ void Mob::NegateSpellsBonuses(uint16 spell_id)
 
 				case SE_SkillDamageAmount2:
 				{
-					for(int e = 0; e < HIGHEST_SKILL+1; e++)
+					for (int e = 0; e < EQEmu::skills::HIGHEST_SKILL + 1; e++)
 					{
 						spellbonuses.SkillDamageAmount2[e] = effect_value;
 						aabonuses.SkillDamageAmount2[e] = effect_value;

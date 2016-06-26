@@ -56,7 +56,7 @@ int main(int argc, char *argv[]) {
 		Log.Out(Logs::Detail, Logs::Launcher, "Loading server configuration failed.");
 		return 1;
 	}
-	const EQEmuConfig *Config = EQEmuConfig::get();
+	auto Config = EQEmuConfig::get();
 
 	/*
 	* Setup nice signal handlers

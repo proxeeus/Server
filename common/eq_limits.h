@@ -1,4 +1,4 @@
-/*	EQEMu:  Everquest Server Emulator
+/*	EQEMu: Everquest Server Emulator
 	
 	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.net)
 
@@ -10,7 +10,7 @@
 	but WITHOUT ANY WARRANTY except by those people which sell it, which
 	are required to give you total support for your newly bought product;
 	without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-	A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
+	A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 	
 	You should have received a copy of the GNU General Public License
 	along with this program; if not, write to the Free Software
@@ -20,46 +20,75 @@
 #ifndef COMMON_EQ_LIMITS_H
 #define COMMON_EQ_LIMITS_H
 
+#include "emu_legacy.h"
 #include "types.h"
 #include "eq_constants.h"
-#include "inventory_version.h" // inv2 watch
-#include "../common/patches/titanium_constants.h"
-#include "../common/patches/sof_constants.h"
-#include "../common/patches/sod_constants.h"
-#include "../common/patches/uf_constants.h"
-#include "../common/patches/rof_constants.h"
-#include "../common/patches/rof2_constants.h"
-
-
-// *** DO NOT CHANGE without a full understanding of the consequences..the server is set up to use these settings explicitly!! ***
-// *** You will cause compilation failures and corrupt your database if partial or incorrect attempts to change them are made!! ***
-
-// Hard-coded values usually indicate that further research is needed and the values given are from the old (known) system
+#include "emu_versions.h"
+#include "../common/patches/titanium_limits.h"
+#include "../common/patches/sof_limits.h"
+#include "../common/patches/sod_limits.h"
+#include "../common/patches/uf_limits.h"
+#include "../common/patches/rof_limits.h"
+#include "../common/patches/rof2_limits.h"
 
 
 namespace EQEmu
 {
-	namespace limits {
-		// database
-		extern size_t CharacterCreationLimit(versions::ClientVersion client_version);
+	namespace constants {
+		class LookupEntry {
+		public:
+			size_t CharacterCreationLimit;
+		};
 
-		// inventory
-		extern uint16 InventoryTypeSize(versions::InventoryVersion inventory_version, int16 inv_type);
-		extern uint64 PossessionsBitmask(versions::InventoryVersion inventory_version);
-		extern uint64 EquipmentBitmask(versions::InventoryVersion inventory_version);
-		extern uint64 GeneralBitmask(versions::InventoryVersion inventory_version);
-		extern uint64 CursorBitmask(versions::InventoryVersion inventory_version);
+		const LookupEntry* Lookup(versions::ClientVersion client_version);
 
-		extern bool AllowEmptyBagInBag(versions::InventoryVersion inventory_version);
-		extern bool AllowClickCastFromBag(versions::InventoryVersion inventory_version);
+	} /*constants*/
+	
+	namespace inventory {
+		class LookupEntry {
+		public:
+			size_t InventoryTypeSize[legacy::TypeCount];
 
-		// items
-		extern uint16 ItemCommonSize(versions::InventoryVersion inventory_version);
-		extern uint16 ItemContainerSize(versions::InventoryVersion inventory_version);
+			uint64 PossessionsBitmask;
+			size_t ItemBagSize;
+			size_t ItemAugSize;
 
-		// player profile
-		extern bool CoinHasWeight(versions::InventoryVersion inventory_version);
-	}
-}
+			bool AllowEmptyBagInBag;
+			bool AllowClickCastFromBag;
+			bool ConcatenateInvTypeLimbo;
+			bool AllowOverLevelEquipment;
+		};
 
-#endif /* COMMON_EQ_LIMITS_H */
+		const LookupEntry* Lookup(versions::InventoryVersion inventory_version);
+
+	} /*inventory*/
+	
+	namespace behavior {
+		class LookupEntry {
+		public:
+			bool CoinHasWeight;
+		};
+
+		const LookupEntry* Lookup(versions::InventoryVersion inventory_version);
+
+	} /*behavior*/
+
+} /*EQEmu*/
+
+namespace ClientUnknown
+{
+	enum : int { Invalid = -1, Null, Safety };
+
+	enum : bool { False = false, True = true };
+
+} /*ClientUnknown*/
+
+namespace Client62
+{
+	enum : int { Invalid = -1, Null, Safety };
+
+	enum : bool { False = false, True = true };
+
+} /*Client62*/
+
+#endif /*COMMON_EQ_LIMITS_H*/

@@ -258,7 +258,7 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, uint16 slot,
 		int bitmask = 1;
 		bitmask = bitmask << (CastToClient()->GetClass() - 1);
 		if( itm && itm->GetItem()->Classes != 65535 ) {
-			if ((itm->GetItem()->Click.Type == ET_EquipClick) && !(itm->GetItem()->Classes & bitmask)) {
+			if ((itm->GetItem()->Click.Type == EQEmu::item::ItemEffectEquipClick) && !(itm->GetItem()->Classes & bitmask)) {
 				if (CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoF) {
 					// They are casting a spell from an item that requires equipping but shouldn't let them equip it
 					Log.Out(Logs::General, Logs::Error, "HACKER: %s (account: %s) attempted to click an equip-only effect on item %s (id: %d) which they shouldn't be able to equip!",
@@ -270,7 +270,7 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, uint16 slot,
 				}
 				return(false);
 			}
-			if ((itm->GetItem()->Click.Type == ET_ClickEffect2) && !(itm->GetItem()->Classes & bitmask)) {
+			if ((itm->GetItem()->Click.Type == EQEmu::item::ItemEffectClick2) && !(itm->GetItem()->Classes & bitmask)) {
 				if (CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoF) {
 					// They are casting a spell from an item that they don't meet the race/class requirements to cast
 					Log.Out(Logs::General, Logs::Error, "HACKER: %s (account: %s) attempted to click a race/class restricted effect on item %s (id: %d) which they shouldn't be able to click!",
@@ -291,7 +291,7 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, uint16 slot,
 				return(false);
 			}
 		}
-		if (itm && (itm->GetItem()->Click.Type == ET_EquipClick) && !(item_slot <= EQEmu::legacy::SlotAmmo || item_slot == EQEmu::legacy::SlotPowerSource)){
+		if (itm && (itm->GetItem()->Click.Type == EQEmu::item::ItemEffectEquipClick) && !(item_slot <= EQEmu::legacy::SlotAmmo || item_slot == EQEmu::legacy::SlotPowerSource)){
 			if (CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::SoF) {
 				// They are attempting to cast a must equip clicky without having it equipped
 				Log.Out(Logs::General, Logs::Error, "HACKER: %s (account: %s) attempted to click an equip-only effect on item %s (id: %d) without equiping it!", CastToClient()->GetCleanName(), CastToClient()->AccountName(), itm->GetItem()->Name, itm->GetItem()->ID);
@@ -556,16 +556,16 @@ bool Mob::DoCastingChecks()
 
 uint16 Mob::GetSpecializeSkillValue(uint16 spell_id) const {
 	switch(spells[spell_id].skill) {
-	case SkillAbjuration:
-		return(GetSkill(SkillSpecializeAbjure));
-	case SkillAlteration:
-		return(GetSkill(SkillSpecializeAlteration));
-	case SkillConjuration:
-		return(GetSkill(SkillSpecializeConjuration));
-	case SkillDivination:
-		return(GetSkill(SkillSpecializeDivination));
-	case SkillEvocation:
-		return(GetSkill(SkillSpecializeEvocation));
+	case EQEmu::skills::SkillAbjuration:
+		return(GetSkill(EQEmu::skills::SkillSpecializeAbjure));
+	case EQEmu::skills::SkillAlteration:
+		return(GetSkill(EQEmu::skills::SkillSpecializeAlteration));
+	case EQEmu::skills::SkillConjuration:
+		return(GetSkill(EQEmu::skills::SkillSpecializeConjuration));
+	case EQEmu::skills::SkillDivination:
+		return(GetSkill(EQEmu::skills::SkillSpecializeDivination));
+	case EQEmu::skills::SkillEvocation:
+		return(GetSkill(EQEmu::skills::SkillSpecializeEvocation));
 	default:
 		//wtf...
 		break;
@@ -584,20 +584,20 @@ void Client::CheckSpecializeIncrease(uint16 spell_id) {
 	*/
 
 	switch(spells[spell_id].skill) {
-	case SkillAbjuration:
-		CheckIncreaseSkill(SkillSpecializeAbjure, nullptr);
+	case EQEmu::skills::SkillAbjuration:
+		CheckIncreaseSkill(EQEmu::skills::SkillSpecializeAbjure, nullptr);
 		break;
-	case SkillAlteration:
-		CheckIncreaseSkill(SkillSpecializeAlteration, nullptr);
+	case EQEmu::skills::SkillAlteration:
+		CheckIncreaseSkill(EQEmu::skills::SkillSpecializeAlteration, nullptr);
 		break;
-	case SkillConjuration:
-		CheckIncreaseSkill(SkillSpecializeConjuration, nullptr);
+	case EQEmu::skills::SkillConjuration:
+		CheckIncreaseSkill(EQEmu::skills::SkillSpecializeConjuration, nullptr);
 		break;
-	case SkillDivination:
-		CheckIncreaseSkill(SkillSpecializeDivination, nullptr);
+	case EQEmu::skills::SkillDivination:
+		CheckIncreaseSkill(EQEmu::skills::SkillSpecializeDivination, nullptr);
 		break;
-	case SkillEvocation:
-		CheckIncreaseSkill(SkillSpecializeEvocation, nullptr);
+	case EQEmu::skills::SkillEvocation:
+		CheckIncreaseSkill(EQEmu::skills::SkillSpecializeEvocation, nullptr);
 		break;
 	default:
 		//wtf...
@@ -617,48 +617,48 @@ void Client::CheckSongSkillIncrease(uint16 spell_id){
 
 	switch(spells[spell_id].skill)
 	{
-	case SkillSinging:
-		CheckIncreaseSkill(SkillSinging, nullptr, -15);
+	case EQEmu::skills::SkillSinging:
+		CheckIncreaseSkill(EQEmu::skills::SkillSinging, nullptr, -15);
 		break;
-	case SkillPercussionInstruments:
+	case EQEmu::skills::SkillPercussionInstruments:
 		if(this->itembonuses.percussionMod > 0) {
-			if(GetRawSkill(SkillPercussionInstruments) > 0)	// no skill increases if not trained in the instrument
-				CheckIncreaseSkill(SkillPercussionInstruments, nullptr, -15);
+			if (GetRawSkill(EQEmu::skills::SkillPercussionInstruments) > 0)	// no skill increases if not trained in the instrument
+				CheckIncreaseSkill(EQEmu::skills::SkillPercussionInstruments, nullptr, -15);
 			else
 				Message_StringID(13,NO_INSTRUMENT_SKILL);	// tell the client that they need instrument training
 		}
 		else
-			CheckIncreaseSkill(SkillSinging, nullptr, -15);
+			CheckIncreaseSkill(EQEmu::skills::SkillSinging, nullptr, -15);
 		break;
-	case SkillStringedInstruments:
+	case EQEmu::skills::SkillStringedInstruments:
 		if(this->itembonuses.stringedMod > 0) {
-			if(GetRawSkill(SkillStringedInstruments) > 0)
-				CheckIncreaseSkill(SkillStringedInstruments, nullptr, -15);
+			if (GetRawSkill(EQEmu::skills::SkillStringedInstruments) > 0)
+				CheckIncreaseSkill(EQEmu::skills::SkillStringedInstruments, nullptr, -15);
 			else
 				Message_StringID(13,NO_INSTRUMENT_SKILL);
 		}
 		else
-			CheckIncreaseSkill(SkillSinging, nullptr, -15);
+			CheckIncreaseSkill(EQEmu::skills::SkillSinging, nullptr, -15);
 		break;
-	case SkillWindInstruments:
+	case EQEmu::skills::SkillWindInstruments:
 		if(this->itembonuses.windMod > 0) {
-			if(GetRawSkill(SkillWindInstruments) > 0)
-				CheckIncreaseSkill(SkillWindInstruments, nullptr, -15);
+			if (GetRawSkill(EQEmu::skills::SkillWindInstruments) > 0)
+				CheckIncreaseSkill(EQEmu::skills::SkillWindInstruments, nullptr, -15);
 			else
 				Message_StringID(13,NO_INSTRUMENT_SKILL);
 		}
 		else
-			CheckIncreaseSkill(SkillSinging, nullptr, -15);
+			CheckIncreaseSkill(EQEmu::skills::SkillSinging, nullptr, -15);
 		break;
-	case SkillBrassInstruments:
+	case EQEmu::skills::SkillBrassInstruments:
 		if(this->itembonuses.brassMod > 0) {
-			if(GetRawSkill(SkillBrassInstruments) > 0)
-				CheckIncreaseSkill(SkillBrassInstruments, nullptr, -15);
+			if (GetRawSkill(EQEmu::skills::SkillBrassInstruments) > 0)
+				CheckIncreaseSkill(EQEmu::skills::SkillBrassInstruments, nullptr, -15);
 			else
 				Message_StringID(13,NO_INSTRUMENT_SKILL);
 		}
 		else
-			CheckIncreaseSkill(SkillSinging, nullptr, -15);
+			CheckIncreaseSkill(EQEmu::skills::SkillSinging, nullptr, -15);
 		break;
 	default:
 		break;
@@ -991,7 +991,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 					channelbonuses += spellbonuses.ChannelChanceSpells + itembonuses.ChannelChanceSpells + aabonuses.ChannelChanceSpells;
 
 				// max 93% chance at 252 skill
-				channelchance = 30 + GetSkill(SkillChanneling) / 400.0f * 100;
+				channelchance = 30 + GetSkill(EQEmu::skills::SkillChanneling) / 400.0f * 100;
 				channelchance -= attacked_count * 2;
 				channelchance += channelchance * channelbonuses / 100.0f;
 			}
@@ -1005,7 +1005,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 					channelbonuses += spellbonuses.ChannelChanceSpells + itembonuses.ChannelChanceSpells + aabonuses.ChannelChanceSpells;
 
 				// max 93% chance at 252 skill
-				channelchance = 30 + GetSkill(SkillChanneling) / 400.0f * 100;
+				channelchance = 30 + GetSkill(EQEmu::skills::SkillChanneling) / 400.0f * 100;
 				channelchance -= attacked_count * 2;
 				channelchance += channelchance * channelbonuses / 100.0f;
 			}
@@ -1037,7 +1037,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 				}
 			}
 
-			Log.Out(Logs::Detail, Logs::Spells, "Checking Interruption: spell x: %f  spell y: %f  cur x: %f  cur y: %f channelchance %f channeling skill %d\n", GetSpellX(), GetSpellY(), GetX(), GetY(), channelchance, GetSkill(SkillChanneling));
+			Log.Out(Logs::Detail, Logs::Spells, "Checking Interruption: spell x: %f  spell y: %f  cur x: %f  cur y: %f channelchance %f channeling skill %d\n", GetSpellX(), GetSpellY(), GetX(), GetY(), channelchance, GetSkill(EQEmu::skills::SkillChanneling));
 
 			if(!spells[spell_id].uninterruptable && zone->random.Real(0, 100) > channelchance) {
 				Log.Out(Logs::Detail, Logs::Spells, "Casting of %d canceled: interrupted.", spell_id);
@@ -1136,7 +1136,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 							missingreags=true;
 						}
 
-						const Item_Struct *item = database.GetItem(component);
+						const EQEmu::ItemBase *item = database.GetItem(component);
 						if(item) {
 							c->Message_StringID(13, MISSING_SPELL_COMP_ITEM, item->Name);
 							Log.Out(Logs::Detail, Logs::Spells, "Spell %d: Canceled. Missing required reagent %s (%d)", spell_id, item->Name, component);
@@ -1198,7 +1198,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 	{
 		bool fromaug = false;
 		const ItemInst* inst = CastToClient()->GetInv()[inventory_slot];
-		Item_Struct* augitem = 0;
+		EQEmu::ItemBase* augitem = 0;
 		uint32 recastdelay = 0;
 		uint32 recasttype = 0;
 
@@ -1211,7 +1211,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 
 				if (!aug_i)
 					continue;
-				const Item_Struct* aug = aug_i->GetItem();
+				const EQEmu::ItemBase* aug = aug_i->GetItem();
 				if (!aug)
 					continue;
 
@@ -1245,9 +1245,9 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 			}
 		}
 
-		if (inst && inst->IsType(ItemClassCommon) && (inst->GetItem()->Click.Effect == spell_id) && inst->GetCharges() || fromaug)
+		if (inst && inst->IsClassCommon() && (inst->GetItem()->Click.Effect == spell_id) && inst->GetCharges() || fromaug)
 		{
-			//const Item_Struct* item = inst->GetItem();
+			//const ItemBase* item = inst->GetItem();
 			int16 charges = inst->GetItem()->MaxCharges;
 
 			if(fromaug) { charges = -1; } //Don't destroy the parent item
@@ -1330,7 +1330,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, uint16 slot,
 				c->CheckIncreaseSkill(spells[spell_id].skill, nullptr);
 
 				// increased chance of gaining channel skill if you regained concentration
-				c->CheckIncreaseSkill(SkillChanneling, nullptr, regain_conc ? 5 : 0);
+				c->CheckIncreaseSkill(EQEmu::skills::SkillChanneling, nullptr, regain_conc ? 5 : 0);
 
 				c->CheckSpecializeIncrease(spell_id);
 			}
@@ -1986,7 +1986,7 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, uint16 slot, uint16 
 	if(IsAEDurationSpell(spell_id)) {
 		// the spells are AE target, but we aim them on a beacon
 		Mob *beacon_loc = spell_target ? spell_target : this;
-		Beacon *beacon = new Beacon(beacon_loc, spells[spell_id].AEDuration);
+		auto beacon = new Beacon(beacon_loc, spells[spell_id].AEDuration);
 		entity_list.AddBeacon(beacon);
 		Log.Out(Logs::Detail, Logs::Spells, "Spell %d: AE duration beacon created, entity id %d", spell_id, beacon->GetName());
 		spell_target = nullptr;
@@ -2335,7 +2335,7 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, uint16 slot, uint16 
 			database.UpdateItemRecastTimestamps(
 			    CastToClient()->CharacterID(), recast_type,
 			    CastToClient()->GetPTimers().Get(pTimerItemStart + recast_type)->GetReadyTimestamp());
-			EQApplicationPacket *outapp = new EQApplicationPacket(OP_ItemRecastDelay, sizeof(ItemRecastDelay_Struct));
+			auto outapp = new EQApplicationPacket(OP_ItemRecastDelay, sizeof(ItemRecastDelay_Struct));
 			ItemRecastDelay_Struct *ird = (ItemRecastDelay_Struct *)outapp->pBuffer;
 			ird->recast_delay = itm->GetItem()->RecastDelay;
 			ird->recast_type = recast_type;
@@ -2530,7 +2530,7 @@ void Mob::BardPulse(uint16 spell_id, Mob *caster) {
 		//be a lot of traffic for no reason...
 //this may be the wrong packet...
 		if(IsClient()) {
-			EQApplicationPacket *packet = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
+			auto packet = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
 
 			Action_Struct* action = (Action_Struct*) packet->pBuffer;
 			action->source = caster->GetID();
@@ -2558,7 +2558,8 @@ void Mob::BardPulse(uint16 spell_id, Mob *caster) {
 						CastToClient()->SetKnockBackExemption(true);
 
 						action->buff_unknown = 0;
-						EQApplicationPacket* outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+						auto outapp_push = new EQApplicationPacket(
+						    OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 						PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)outapp_push->pBuffer;
 
 						double look_heading = caster->CalculateHeadingToTarget(GetX(), GetY());
@@ -2602,7 +2603,7 @@ void Mob::BardPulse(uint16 spell_id, Mob *caster) {
 				CastToClient()->QueuePacket(packet);
 			}
 
-			EQApplicationPacket *message_packet = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
+			auto message_packet = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
 			CombatDamage_Struct *cd = (CombatDamage_Struct *)message_packet->pBuffer;
 			cd->target = action->target;
 			cd->source = action->source;
@@ -2980,18 +2981,6 @@ int Mob::CheckStackConflict(uint16 spellid1, int caster_level1, uint16 spellid2,
 		if(effect1 == SE_CompleteHeal){ //SE_CompleteHeal never stacks or overwrites ever, always block.
 			Log.Out(Logs::Detail, Logs::Spells, "Blocking spell because complete heal never stacks or overwries");
 			return (-1);
-		}
-
-		/*
-		If the effects are the same and
-		sp1 = beneficial & sp2 = detrimental or
-		sp1 = detrimental & sp2 = beneficial
-		Then this effect should be ignored for stacking purposes.
-		*/
-		if(sp_det_mismatch)
-		{
-			Log.Out(Logs::Detail, Logs::Spells, "The effects are the same but the spell types are not, passing the effect");
-			continue;
 		}
 
 		/*
@@ -3833,7 +3822,8 @@ bool Mob::SpellOnTarget(uint16 spell_id, Mob *spelltar, bool reflect, bool use_r
 				spelltar->CastToClient()->SetKnockBackExemption(true);
 
 				action->buff_unknown = 0;
-				EQApplicationPacket* outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+				auto outapp_push =
+				    new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 				PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)outapp_push->pBuffer;
 
 				double look_heading = CalculateHeadingToTarget(spelltar->GetX(), spelltar->GetY());
@@ -3923,7 +3913,7 @@ void Corpse::CastRezz(uint16 spellid, Mob* Caster)
 	}
 	*/
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_RezzRequest, sizeof(Resurrect_Struct));
+	auto outapp = new EQApplicationPacket(OP_RezzRequest, sizeof(Resurrect_Struct));
 	Resurrect_Struct* rezz = (Resurrect_Struct*) outapp->pBuffer;
 	// Why are we truncating these names to 30 characters ?
 	memcpy(rezz->your_name,this->corpse_name,30);
@@ -4695,7 +4685,7 @@ float Mob::GetAOERange(uint16 spell_id) {
 
 void Mob::Spin() {
 	if(IsClient()) {
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
+		auto outapp = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
 		outapp->pBuffer[0] = 0x0B;
 		outapp->pBuffer[1] = 0x0A;
 		outapp->pBuffer[2] = 0x0B;
@@ -4742,7 +4732,7 @@ void Mob::SendSpellBarEnable(uint16 spell_id)
 	if(!IsClient())
 		return;
 
-	EQApplicationPacket *outapp = new EQApplicationPacket(OP_ManaChange, sizeof(ManaChange_Struct));
+	auto outapp = new EQApplicationPacket(OP_ManaChange, sizeof(ManaChange_Struct));
 	ManaChange_Struct* manachange = (ManaChange_Struct*)outapp->pBuffer;
 	manachange->new_mana = GetMana();
 	manachange->spell_id = spell_id;
@@ -4786,7 +4776,7 @@ void Client::Stun(int duration)
 {
 	Mob::Stun(duration);
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
+	auto outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
 	Stun_Struct* stunon = (Stun_Struct*) outapp->pBuffer;
 	stunon->duration = duration;
 	outapp->priority = 5;
@@ -4797,7 +4787,7 @@ void Client::Stun(int duration)
 void Client::UnStun() {
 	Mob::UnStun();
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
+	auto outapp = new EQApplicationPacket(OP_Stun, sizeof(Stun_Struct));
 	Stun_Struct* stunon = (Stun_Struct*) outapp->pBuffer;
 	stunon->duration = 0;
 	outapp->priority = 5;
@@ -4973,7 +4963,7 @@ void Client::UnscribeSpell(int slot, bool update_client)
 	database.DeleteCharacterSpell(this->CharacterID(), m_pp.spell_book[slot], slot);
 	if(update_client)
 	{
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_DeleteSpell, sizeof(DeleteSpell_Struct));
+		auto outapp = new EQApplicationPacket(OP_DeleteSpell, sizeof(DeleteSpell_Struct));
 		DeleteSpell_Struct* del = (DeleteSpell_Struct*)outapp->pBuffer;
 		del->spell_slot = slot;
 		del->success = 1;
@@ -5411,6 +5401,7 @@ void Client::SendBuffNumHitPacket(Buffs_Struct &buff, int slot)
 	bi->entity_id = GetID();
 	bi->count = 1;
 	bi->all_buffs = 0;
+	bi->tic_timer = tic_timer.GetRemainingTime();
 
 	bi->entries[0].buff_slot = slot;
 	bi->entries[0].spell_id = buff.spellid;
@@ -5428,7 +5419,7 @@ void Mob::SendPetBuffsToClient()
 
 	int PetBuffCount = 0;
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_PetBuffWindow,sizeof(PetBuff_Struct));
+	auto outapp = new EQApplicationPacket(OP_PetBuffWindow, sizeof(PetBuff_Struct));
 	PetBuff_Struct* pbs=(PetBuff_Struct*)outapp->pBuffer;
 	memset(outapp->pBuffer,0,outapp->size);
 	pbs->petid=GetID();
@@ -5491,6 +5482,7 @@ EQApplicationPacket *Mob::MakeBuffsPacket(bool for_target)
 	buff->entity_id = GetID();
 	buff->count = count;
 	buff->all_buffs = 1;
+	buff->tic_timer = tic_timer.GetRemainingTime();
 	// there are more types, the client doesn't seem to really care though. The others are also currently hard to fill in here ...
 	// (see comment in common/eq_packet_structs.h)
 	if (for_target)

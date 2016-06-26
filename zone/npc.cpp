@@ -24,12 +24,13 @@
 #include "../common/seperator.h"
 #include "../common/spdat.h"
 #include "../common/string_util.h"
-#include "../common/client_version.h" // inv2 watch
+#include "../common/emu_versions.h"
 #include "../common/features.h"
 #include "../common/item.h"
-#include "../common/item_struct.h"
+#include "../common/item_base.h"
 #include "../common/linked_list.h"
 #include "../common/servertalk.h"
+#include "../common/say_link.h"
 
 #include "client.h"
 #include "entity.h"
@@ -93,7 +94,7 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 		d->drakkin_heritage,
 		d->drakkin_tattoo,
 		d->drakkin_details,
-		(uint32*)d->armor_tint,
+		d->armor_tint,
 		0,
 		d->see_invis,			// pass see_invis/see_ivu flags to mob constructor
 		d->see_invis_undead,
@@ -276,20 +277,20 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 
 	//give NPCs skill values...
 	int r;
-	for(r = 0; r <= HIGHEST_SKILL; r++) {
-		skills[r] = database.GetSkillCap(GetClass(),(SkillUseTypes)r,moblevel);
+	for (r = 0; r <= EQEmu::skills::HIGHEST_SKILL; r++) {
+		skills[r] = database.GetSkillCap(GetClass(), (EQEmu::skills::SkillType)r, moblevel);
 	}
 	// some overrides -- really we need to be able to set skills for mobs in the DB
 	// There are some known low level SHM/BST pets that do not follow this, which supports
 	// the theory of needing to be able to set skills for each mob separately
 	if (moblevel > 50) {
-		skills[SkillDoubleAttack] = 250;
-		skills[SkillDualWield] = 250;
+		skills[EQEmu::skills::SkillDoubleAttack] = 250;
+		skills[EQEmu::skills::SkillDualWield] = 250;
 	} else if (moblevel > 3) {
-		skills[SkillDoubleAttack] = moblevel * 5;
-		skills[SkillDualWield] = skills[SkillDoubleAttack];
+		skills[EQEmu::skills::SkillDoubleAttack] = moblevel * 5;
+		skills[EQEmu::skills::SkillDualWield] = skills[EQEmu::skills::SkillDoubleAttack];
 	} else {
-		skills[SkillDoubleAttack] = moblevel * 5;
+		skills[EQEmu::skills::SkillDoubleAttack] = moblevel * 5;
 	}
 
 	if(d->trap_template > 0)
@@ -303,7 +304,7 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 			trap_list = trap_ent_iter->second;
 			if(trap_list.size() > 0)
 			{
-				std::list<LDoNTrapTemplate*>::iterator trap_list_iter = trap_list.begin();
+				auto trap_list_iter = trap_list.begin();
 				std::advance(trap_list_iter, zone->random.Int(0, trap_list.size() - 1));
 				LDoNTrapTemplate* tt = (*trap_list_iter);
 				if(tt)
@@ -479,7 +480,7 @@ void NPC::CheckMinMaxLevel(Mob *them)
 	uint16 themlevel = them->GetLevel();
 	uint8 material;
 
-	std::list<ServerLootItem_Struct*>::iterator cur = itemlist.begin();
+	auto cur = itemlist.begin();
 	while(cur != itemlist.end())
 	{
 		if(!(*cur))
@@ -488,7 +489,7 @@ void NPC::CheckMinMaxLevel(Mob *them)
 		if(themlevel < (*cur)->min_level || themlevel > (*cur)->max_level)
 		{
 			material = Inventory::CalcMaterialFromSlot((*cur)->equip_slot);
-			if (material != EQEmu::legacy::MaterialInvalid)
+			if (material != EQEmu::textures::TextureInvalid)
 				SendWearChange(material);
 
 			cur = itemlist.erase(cur);
@@ -522,15 +523,15 @@ void NPC::QueryLoot(Client* to)
 	to->Message(0, "Coin: %ip %ig %is %ic", platinum, gold, silver, copper);
 
 	int x = 0;
-	for(ItemList::iterator cur = itemlist.begin(); cur != itemlist.end(); ++cur, ++x) {
-		const Item_Struct* item = database.GetItem((*cur)->item_id);
+	for (auto cur = itemlist.begin(); cur != itemlist.end(); ++cur, ++x) {
+		const EQEmu::ItemBase* item = database.GetItem((*cur)->item_id);
 		if (item == nullptr) {
 			Log.Out(Logs::General, Logs::Error, "Database error, invalid item");
 			continue;
 		}
 
-		EQEmu::saylink::SayLinkEngine linker;
-		linker.SetLinkType(linker.SayLinkItemData);
+		EQEmu::SayLinkEngine linker;
+		linker.SetLinkType(EQEmu::saylink::SayLinkItemData);
 		linker.SetItemData(item);
 
 		auto item_link = linker.GenerateLink();
@@ -745,8 +746,8 @@ uint32 NPC::CountLoot() {
 
 void NPC::UpdateEquipmentLight()
 {
-	m_Light.Type.Equipment = 0;
-	m_Light.Level.Equipment = 0;
+	m_Light.Type[EQEmu::lightsource::LightEquipment] = 0;
+	m_Light.Level[EQEmu::lightsource::LightEquipment] = 0;
 
 	for (int index = SLOT_BEGIN; index < EQEmu::legacy::EQUIPMENT_SIZE; ++index) {
 		if (index == EQEmu::legacy::SlotAmmo) { continue; }
@@ -754,9 +755,9 @@ void NPC::UpdateEquipmentLight()
 		auto item = database.GetItem(equipment[index]);
 		if (item == nullptr) { continue; }
 
-		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type.Equipment)) {
-			m_Light.Type.Equipment = item->Light;
-			m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
+		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type[EQEmu::lightsource::LightEquipment])) {
+			m_Light.Type[EQEmu::lightsource::LightEquipment] = item->Light;
+			m_Light.Level[EQEmu::lightsource::LightEquipment] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightEquipment]);
 		}
 	}
 
@@ -765,17 +766,17 @@ void NPC::UpdateEquipmentLight()
 		auto item = database.GetItem((*iter)->item_id);
 		if (item == nullptr) { continue; }
 
-		if (item->ItemClass != ItemClassCommon) { continue; }
+		if (!item->IsClassCommon()) { continue; }
 		if (item->Light < 9 || item->Light > 13) { continue; }
 
 		if (EQEmu::lightsource::TypeToLevel(item->Light))
 			general_light_type = item->Light;
 	}
 
-	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
-		m_Light.Type.Equipment = general_light_type;
+	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type[EQEmu::lightsource::LightEquipment]))
+		m_Light.Type[EQEmu::lightsource::LightEquipment] = general_light_type;
 
-	m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
+	m_Light.Level[EQEmu::lightsource::LightEquipment] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightEquipment]);
 }
 
 void NPC::Depop(bool StartSpawnTimer) {
@@ -848,7 +849,7 @@ bool NPC::SpawnZoneController(){
 	if (!RuleB(Zone, UseZoneController))
 		return false;
 
-	NPCType* npc_type = new NPCType;
+	auto npc_type = new NPCType;
 	memset(npc_type, 0, sizeof(NPCType));
 
 	strncpy(npc_type->name, "zone_controller", 60);
@@ -883,7 +884,7 @@ bool NPC::SpawnZoneController(){
 	point.y = 1000;
 	point.z = 500;
 
-	NPC* npc = new NPC(npc_type, nullptr, point, FlyMode3);
+	auto npc = new NPC(npc_type, nullptr, point, FlyMode3);
 	npc->GiveNPCTypeData(npc_type);
 
 	entity_list.AddNPC(npc);
@@ -1016,7 +1017,7 @@ NPC* NPC::SpawnNPC(const char* spawncommand, const glm::vec4& position, Client* 
 		}
 
 		//Time to create the NPC!!
-		NPCType* npc_type = new NPCType;
+		auto npc_type = new NPCType;
 		memset(npc_type, 0, sizeof(NPCType));
 
 		strncpy(npc_type->name, sep.arg[0], 60);
@@ -1050,7 +1051,7 @@ NPC* NPC::SpawnNPC(const char* spawncommand, const glm::vec4& position, Client* 
 		npc_type->prim_melee_type = 28;
 		npc_type->sec_melee_type = 28;
 
-		NPC* npc = new NPC(npc_type, nullptr, position, FlyMode3);
+		auto npc = new NPC(npc_type, nullptr, position, FlyMode3);
 		npc->GiveNPCTypeData(npc_type);
 
 		entity_list.AddNPC(npc);
@@ -1372,7 +1373,7 @@ uint32 ZoneDatabase::NPCSpawnDB(uint8 command, const char* zone, uint32 zone_ver
 
 int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 {
-	if (material_slot >= EQEmu::legacy::MaterialCount)
+	if (material_slot >= EQEmu::textures::TextureCount)
 		return 0;
 
 	int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
@@ -1383,23 +1384,23 @@ int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 	{
 		switch(material_slot)
 		{
-		case EQEmu::legacy::MaterialHead:
+		case EQEmu::textures::TextureHead:
 			return helmtexture;
-		case EQEmu::legacy::MaterialChest:
+		case EQEmu::textures::TextureChest:
 			return texture;
-		case EQEmu::legacy::MaterialArms:
+		case EQEmu::textures::TextureArms:
 			return armtexture;
-		case EQEmu::legacy::MaterialWrist:
+		case EQEmu::textures::TextureWrist:
 			return bracertexture;
-		case EQEmu::legacy::MaterialHands:
+		case EQEmu::textures::TextureHands:
 			return handtexture;
-		case EQEmu::legacy::MaterialLegs:
+		case EQEmu::textures::TextureLegs:
 			return legtexture;
-		case EQEmu::legacy::MaterialFeet:
+		case EQEmu::textures::TextureFeet:
 			return feettexture;
-		case EQEmu::legacy::MaterialPrimary:
+		case EQEmu::textures::TexturePrimary:
 			return d_melee_texture1;
-		case EQEmu::legacy::MaterialSecondary:
+		case EQEmu::textures::TextureSecondary:
 			return d_melee_texture2;
 		default:
 			//they have nothing in the slot, and its not a special slot... they get nothing.
@@ -1427,7 +1428,7 @@ uint32 NPC::GetMaxDamage(uint8 tlevel)
 
 void NPC::PickPocket(Client* thief)
 {
-	thief->CheckIncreaseSkill(SkillPickPockets, nullptr, 5);
+	thief->CheckIncreaseSkill(EQEmu::skills::SkillPickPockets, nullptr, 5);
 
 	//make sure were allowed to target them:
 	int over_level = GetLevel();
@@ -1446,23 +1447,23 @@ void NPC::PickPocket(Client* thief)
 		return;
 	}
 
-	int steal_skill = thief->GetSkill(SkillPickPockets);
+	int steal_skill = thief->GetSkill(EQEmu::skills::SkillPickPockets);
 	int steal_chance = steal_skill * 100 / (5 * over_level + 5);
 
-	//Determine wheter to steal money or an item.
-	int money[6] = { 0, ((steal_skill >= 125) ? (GetPlatinum()) : (0)), ((steal_skill >= 60) ? (GetGold()) : (0)), GetSilver(), GetCopper(), 0 };
+	// Determine whether to steal money or an item.
+	uint32 money[6] = { 0, ((steal_skill >= 125) ? (GetPlatinum()) : (0)), ((steal_skill >= 60) ? (GetGold()) : (0)), GetSilver(), GetCopper(), 0 };
 	bool has_coin = ((money[PickPocketPlatinum] | money[PickPocketGold] | money[PickPocketSilver] | money[PickPocketCopper]) != 0);
 	bool steal_item = (steal_skill >= steal_chance && (zone->random.Roll(50) || !has_coin));
 
 	// still needs to have FindFreeSlot vs PutItemInInventory issue worked out
 	while (steal_item) {
-		std::vector<std::pair<const Item_Struct*, uint16>> loot_selection; // <const Item_Struct*, charges>
+		std::vector<std::pair<const EQEmu::ItemBase*, uint16>> loot_selection; // <const ItemBase*, charges>
 		for (auto item_iter : itemlist) {
 			if (!item_iter || !item_iter->item_id)
 				continue;
 
 			auto item_test = database.GetItem(item_iter->item_id);
-			if (item_test->Magic || !item_test->NoDrop || item_test->ItemType == ItemClassContainer || thief->CheckLoreConflict(item_test))
+			if (item_test->Magic || !item_test->NoDrop || item_test->IsClassBag() || thief->CheckLoreConflict(item_test))
 				continue;
 
 			loot_selection.push_back(std::make_pair(item_test, ((item_test->Stackable) ? (1) : (item_iter->charges))));
@@ -1473,7 +1474,7 @@ void NPC::PickPocket(Client* thief)
 		}
 
 		int random = zone->random.Int(0, (loot_selection.size() - 1));
-		uint16 slot_id = thief->GetInv().FindFreeSlot(false, true, (loot_selection[random].first->Size), (loot_selection[random].first->ItemType == ItemTypeArrow));
+		uint16 slot_id = thief->GetInv().FindFreeSlot(false, true, (loot_selection[random].first->Size), (loot_selection[random].first->ItemType == EQEmu::item::ItemTypeArrow));
 		if (slot_id == INVALID_INDEX) {
 			steal_item = false;
 			break;
@@ -1539,7 +1540,7 @@ void NPC::PickPocket(Client* thief)
 				return;
 			}
 
-			thief->AddMoneyToPP(money[3], money[2], money[1], money[0], false);
+			thief->AddMoneyToPP(money[PickPocketCopper], money[PickPocketSilver], money[PickPocketGold], money[PickPocketPlatinum], false);
 			thief->SendPickPocketResponse(this, coin_amount, coin_type);
 			return;
 		}
@@ -2469,7 +2470,7 @@ void NPC::DoQuestPause(Mob *other) {
 void NPC::ChangeLastName(const char* in_lastname)
 {
 
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_GMLastName, sizeof(GMLastName_Struct));
+	auto outapp = new EQApplicationPacket(OP_GMLastName, sizeof(GMLastName_Struct));
 	GMLastName_Struct* gmn = (GMLastName_Struct*)outapp->pBuffer;
 	strcpy(gmn->name, GetName());
 	strcpy(gmn->gmname, GetName());

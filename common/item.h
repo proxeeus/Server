@@ -1,5 +1,6 @@
 /*	EQEMu: Everquest Server Emulator
-	Copyright (C) 2001-2003 EQEMu Development Team (http://eqemulator.net)
+
+	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemulator.net)
 
 	This program is free software; you can redistribute it and/or modify
 	it under the terms of the GNU General Public License as published by
@@ -13,23 +14,26 @@
 
 	You should have received a copy of the GNU General Public License
 	along with this program; if not, write to the Free Software
-	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  04111-1307  USA
 */
 
 // @merth notes:
 // These classes could be optimized with database reads/writes by storing
 // a status flag indicating how object needs to interact with database
 
-#ifndef __ITEM_H
-#define __ITEM_H
+#ifndef COMMON_ITEM_H
+#define COMMON_ITEM_H
+
 
 class ItemParse;			// Parses item packets
 class EvolveInfo;			// Stores information about an evolving item family
 
 #include "../common/eq_constants.h"
-#include "../common/item_struct.h"
+#include "../common/item_base.h"
 #include "../common/timer.h"
 #include "../common/bodytypes.h"
+#include "../common/deity.h"
+#include "../common/memory_buffer.h"
 
 #include <list>
 #include <map>
@@ -72,6 +76,7 @@ enum {
 	invWhereCursor		= 0x20
 };
 
+class ItemInst;
 
 // ########################################
 // Class: Queue
@@ -170,7 +175,7 @@ public:
 	ItemInst* PopItem(int16 slot_id);
 
 	// Check whether there is space for the specified number of the specified item.
-	bool HasSpaceForItem(const Item_Struct *ItemToTry, int16 Quantity);
+	bool HasSpaceForItem(const EQEmu::ItemBase *ItemToTry, int16 Quantity);
 
 	// Check whether item exists in inventory
 	// where argument specifies OR'd list of invWhere constants to look
@@ -195,7 +200,7 @@ public:
 	static int16 CalcSlotFromMaterial(uint8 material);
 	static uint8 CalcMaterialFromSlot(int16 equipslot);
 
-	static bool CanItemFitInContainer(const Item_Struct *ItemToTry, const Item_Struct *Container);
+	static bool CanItemFitInContainer(const EQEmu::ItemBase *ItemToTry, const EQEmu::ItemBase *Container);
 
 	//  Test for valid inventory casting slot
 	bool SupportsClickCasting(int16 slot_id);
@@ -272,7 +277,7 @@ public:
 	/////////////////////////
 
 	// Constructors/Destructor
-	ItemInst(const Item_Struct* item = nullptr, int16 charges = 0);
+	ItemInst(const EQEmu::ItemBase* item = nullptr, int16 charges = 0);
 
 	ItemInst(SharedDatabase *db, uint32 item_id, int16 charges = 0);
 
@@ -283,7 +288,15 @@ public:
 	~ItemInst();
 
 	// Query item type
-	bool IsType(ItemClassTypes item_class) const;
+	bool IsType(EQEmu::item::ItemClass item_class) const;
+
+	bool IsClassCommon();
+	bool IsClassBag();
+	bool IsClassBook();
+
+	bool IsClassCommon() const { return const_cast<ItemInst*>(this)->IsClassCommon(); }
+	bool IsClassBag() const { return const_cast<ItemInst*>(this)->IsClassBag(); }
+	bool IsClassBook() const { return const_cast<ItemInst*>(this)->IsClassBook(); }
 
 	// Can item be stacked?
 	bool IsStackable() const;
@@ -302,7 +315,7 @@ public:
 	bool IsAugmentSlotAvailable(int32 augtype, uint8 slot) const;
 	inline int32 GetAugmentType() const { return ((m_item) ? m_item->AugType : NO_ITEM); }
 
-	inline bool IsExpendable() const { return ((m_item) ? ((m_item->Click.Type == ET_Expendable ) || (m_item->ItemType == ItemTypePotion)) : false); }
+	inline bool IsExpendable() const { return ((m_item) ? ((m_item->Click.Type == EQEmu::item::ItemEffectExpendable) || (m_item->ItemType == EQEmu::item::ItemTypePotion)) : false); }
 
 	//
 	// Contents
@@ -333,7 +346,7 @@ public:
 	bool IsAugmented();
 	ItemInst* GetOrnamentationAug(int32 ornamentationAugtype) const;
 	bool UpdateOrnamentationInfo();
-	static bool CanTransform(const Item_Struct *ItemToTry, const Item_Struct *Container, bool AllowAll = false);
+	static bool CanTransform(const EQEmu::ItemBase *ItemToTry, const EQEmu::ItemBase *Container, bool AllowAll = false);
 	
 	// Has attack/delay?
 	bool IsWeapon() const;
@@ -342,8 +355,8 @@ public:
 	// Accessors
 	const uint32 GetID() const { return ((m_item) ? m_item->ID : NO_ITEM); }
 	const uint32 GetItemScriptID() const { return ((m_item) ? m_item->ScriptFileID : NO_ITEM); }
-	const Item_Struct* GetItem() const;
-	const Item_Struct* GetUnscaledItem() const;
+	const EQEmu::ItemBase* GetItem() const;
+	const EQEmu::ItemBase* GetUnscaledItem() const;
 
 	int16 GetCharges() const				{ return m_charges; }
 	void SetCharges(int16 charges)			{ m_charges = charges; }
@@ -411,7 +424,9 @@ public:
 	int8 GetMaxEvolveLvl() const;
 	uint32 GetKillsNeeded(uint8 currentlevel);
 
-	std::string Serialize(int16 slot_id) const { InternalSerializedItem_Struct s; s.slot_id=slot_id; s.inst=(const void *)this; std::string ser; ser.assign((char *)&s,sizeof(InternalSerializedItem_Struct)); return ser; }
+	std::string Serialize(int16 slot_id) const { EQEmu::InternalSerializedItem_Struct s; s.slot_id = slot_id; s.inst = (const void*)this; std::string ser; ser.assign((char*)&s, sizeof(EQEmu::InternalSerializedItem_Struct)); return ser; }
+	void Serialize(EQEmu::OutBuffer& ob, int16 slot_id) const { EQEmu::InternalSerializedItem_Struct isi; isi.slot_id = slot_id; isi.inst = (const void*)this; ob.write((const char*)&isi, sizeof(isi)); }
+	
 	inline int32 GetSerialNumber() const { return m_SerialNumber; }
 	inline void SetSerialNumber(int32 id) { m_SerialNumber = id; }
 
@@ -485,7 +500,7 @@ protected:
 	void _PutItem(uint8 index, ItemInst* inst) { m_contents[index] = inst; }
 
 	ItemInstTypes		m_use_type;	// Usage type for item
-	const Item_Struct*	m_item;		// Ptr to item data
+	const EQEmu::ItemBase*	m_item;		// Ptr to item data
 	int16				m_charges;	// # of charges for chargeable items
 	uint32				m_price;	// Bazaar /trader price
 	uint32				m_color;
@@ -497,7 +512,7 @@ protected:
 	uint32				m_exp;
 	int8				m_evolveLvl;
 	bool				m_activated;
-	Item_Struct*		m_scaledItem;
+	EQEmu::ItemBase*		m_scaledItem;
 	EvolveInfo*			m_evolveInfo;
 	bool				m_scaling;
 	uint32				m_ornamenticon;
@@ -526,4 +541,4 @@ public:
 	~EvolveInfo();
 };
 
-#endif // #define __ITEM_H
+#endif /*COMMON_ITEM_H*/

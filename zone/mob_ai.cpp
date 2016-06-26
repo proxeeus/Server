@@ -517,7 +517,7 @@ void NPC::AI_Start(uint32 iMoveDelay) {
 	if (!pAIControlled)
 		return;
 
-	if (AIspells.size() == 0) {
+	if (AIspells.empty()) {
 		AIautocastspell_timer = std::unique_ptr<Timer>(new Timer(1000));
 		AIautocastspell_timer->Disable();
 	} else {
@@ -562,7 +562,7 @@ void Client::AI_Stop() {
 	Mob::AI_Stop();
 	this->Message_StringID(13,PLAYER_REGAIN);
 
-	EQApplicationPacket *app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
+	auto app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
 	Charm_Struct *ps = (Charm_Struct*)app->pBuffer;
 	ps->owner_id = 0;
 	ps->pet_id = this->GetID();
@@ -680,7 +680,7 @@ void Client::AI_SpellCast()
 		spell_to_cast = valid_spells[0];
 		slot_to_use = slots[0];
 	}
-	else if(valid_spells.size() == 0)
+	else if(valid_spells.empty())
 	{
 		return;
 	}
@@ -1579,8 +1579,9 @@ void NPC::AI_DoMovement() {
 						if (m_CurrentWayPoint.w >= 0.0) {
 							SetHeading(m_CurrentWayPoint.w);
 						}
-						SendPosition();
 					}
+
+					SendPosition();
 
 					//kick off event_waypoint arrive
 					char temp[16];
@@ -2396,7 +2397,7 @@ bool NPC::AI_AddNPCSpells(uint32 iDBSpellsID) {
 	AISpellVar.idle_no_sp_recast_max = (_idle_no_sp_recast_max) ? _idle_no_sp_recast_max : RuleI(Spells, AI_IdleNoSpellMaxRecast);
 	AISpellVar.idle_beneficial_chance = (_idle_beneficial_chance) ? _idle_beneficial_chance : RuleI(Spells, AI_IdleBeneficialChance);
 
-	if (AIspells.size() == 0)
+	if (AIspells.empty())
 		AIautocastspell_timer->Disable();
 	else
 		AIautocastspell_timer->Trigger();
@@ -2536,7 +2537,7 @@ void NPC::AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint16 iType,
 
 void NPC::RemoveSpellFromNPCList(int16 spell_id)
 {
-	std::vector<AISpells_Struct>::iterator iter = AIspells.begin();
+	auto iter = AIspells.begin();
 	while(iter != AIspells.end())
 	{
 		if((*iter).spellid == spell_id)
@@ -2553,7 +2554,7 @@ void NPC::AISpellsList(Client *c)
 	if (!c)
 		return;
 
-	for (std::vector<AISpells_Struct>::iterator it = AIspells.begin(); it != AIspells.end(); ++it)
+	for (auto it = AIspells.begin(); it != AIspells.end(); ++it)
 		c->Message(0, "%s (%d): Type %d, Priority %d",
 				spells[it->spellid].name, it->spellid, it->type, it->priority);
 

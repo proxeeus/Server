@@ -34,6 +34,7 @@ Child of the Mob class.
 #include "../common/eqemu_logsys.h"
 #include "../common/rulesys.h"
 #include "../common/string_util.h"
+#include "../common/say_link.h"
 
 #include "client.h"
 #include "corpse.h"
@@ -58,13 +59,13 @@ extern WorldServer worldserver;
 extern npcDecayTimes_Struct npcCorpseDecayTimes[100];
 
 void Corpse::SendEndLootErrorPacket(Client* client) {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_LootComplete, 0);
+	auto outapp = new EQApplicationPacket(OP_LootComplete, 0);
 	client->QueuePacket(outapp);
 	safe_delete(outapp);
 }
 
 void Corpse::SendLootReqErrorPacket(Client* client, uint8 response) {
-	EQApplicationPacket* outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));
+	auto outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));
 	moneyOnCorpseStruct* d = (moneyOnCorpseStruct*) outapp->pBuffer;
 	d->response		= response;
 	d->unknown1		= 0x5a;
@@ -75,7 +76,8 @@ void Corpse::SendLootReqErrorPacket(Client* client, uint8 response) {
 
 Corpse* Corpse::LoadCharacterCorpseEntity(uint32 in_dbid, uint32 in_charid, std::string in_charname, const glm::vec4& position, std::string time_of_death, bool rezzed, bool was_at_graveyard) {
 	uint32 item_count = database.GetCharacterCorpseItemCount(in_dbid);
-	char *buffer = new char[sizeof(PlayerCorpse_Struct) + (item_count * sizeof(player_lootitem::ServerLootItem_Struct))];
+	auto buffer =
+	    new char[sizeof(PlayerCorpse_Struct) + (item_count * sizeof(player_lootitem::ServerLootItem_Struct))];
 	PlayerCorpse_Struct *pcs = (PlayerCorpse_Struct*)buffer;
 	database.LoadCharacterCorpseData(in_dbid, pcs);
 
@@ -89,41 +91,40 @@ Corpse* Corpse::LoadCharacterCorpseEntity(uint32 in_dbid, uint32 in_charid, std:
 	}
 
 	/* Create Corpse Entity */
-	Corpse* pc = new Corpse(
-		in_dbid,			   // uint32 in_dbid
-		in_charid,			   // uint32 in_charid
-		in_charname.c_str(),   // char* in_charname
-		&itemlist,			   // ItemList* in_itemlist
-		pcs->copper,		   // uint32 in_copper
-		pcs->silver,		   // uint32 in_silver
-		pcs->gold,			   // uint32 in_gold
-		pcs->plat,			   // uint32 in_plat
-		position,
-		pcs->size,			   // float in_size
-		pcs->gender,		   // uint8 in_gender
-		pcs->race,			   // uint16 in_race
-		pcs->class_,		   // uint8 in_class
-		pcs->deity,			   // uint8 in_deity
-		pcs->level,			   // uint8 in_level
-		pcs->texture,		   // uint8 in_texture
-		pcs->helmtexture,	   // uint8 in_helmtexture
-		pcs->exp,			   // uint32 in_rezexp
-		was_at_graveyard	   // bool wasAtGraveyard
-	);
+	auto pc = new Corpse(in_dbid,		  // uint32 in_dbid
+			     in_charid,		  // uint32 in_charid
+			     in_charname.c_str(), // char* in_charname
+			     &itemlist,		  // ItemList* in_itemlist
+			     pcs->copper,	 // uint32 in_copper
+			     pcs->silver,	 // uint32 in_silver
+			     pcs->gold,		  // uint32 in_gold
+			     pcs->plat,		  // uint32 in_plat
+			     position,
+			     pcs->size,	// float in_size
+			     pcs->gender,      // uint8 in_gender
+			     pcs->race,	// uint16 in_race
+			     pcs->class_,      // uint8 in_class
+			     pcs->deity,       // uint8 in_deity
+			     pcs->level,       // uint8 in_level
+			     pcs->texture,     // uint8 in_texture
+			     pcs->helmtexture, // uint8 in_helmtexture
+			     pcs->exp,	 // uint32 in_rezexp
+			     was_at_graveyard  // bool wasAtGraveyard
+			     );
 
 	if (pcs->locked)
 		pc->Lock();
 
 	/* Load Item Tints */
-	pc->item_tint[0].Color = pcs->item_tint[0].Color;
-	pc->item_tint[1].Color = pcs->item_tint[1].Color;
-	pc->item_tint[2].Color = pcs->item_tint[2].Color;
-	pc->item_tint[3].Color = pcs->item_tint[3].Color;
-	pc->item_tint[4].Color = pcs->item_tint[4].Color;
-	pc->item_tint[5].Color = pcs->item_tint[5].Color;
-	pc->item_tint[6].Color = pcs->item_tint[6].Color;
-	pc->item_tint[7].Color = pcs->item_tint[7].Color;
-	pc->item_tint[8].Color = pcs->item_tint[8].Color;
+	pc->item_tint.Head.Color = pcs->item_tint.Head.Color;
+	pc->item_tint.Chest.Color = pcs->item_tint.Chest.Color;
+	pc->item_tint.Arms.Color = pcs->item_tint.Arms.Color;
+	pc->item_tint.Wrist.Color = pcs->item_tint.Wrist.Color;
+	pc->item_tint.Hands.Color = pcs->item_tint.Hands.Color;
+	pc->item_tint.Legs.Color = pcs->item_tint.Legs.Color;
+	pc->item_tint.Feet.Color = pcs->item_tint.Feet.Color;
+	pc->item_tint.Primary.Color = pcs->item_tint.Primary.Color;
+	pc->item_tint.Secondary.Color = pcs->item_tint.Secondary.Color;
 
 	/* Load Physical Appearance */
 	pc->haircolor = pcs->haircolor;
@@ -139,10 +140,8 @@ Corpse* Corpse::LoadCharacterCorpseEntity(uint32 in_dbid, uint32 in_charid, std:
 	pc->IsRezzed(rezzed);
 	pc->become_npc = false;
 
-	pc->m_Light.Level.Innate = pc->m_Light.Type.Innate = 0;
 	pc->UpdateEquipmentLight(); // itemlist populated above..need to determine actual values
-	pc->m_Light.Level.Spell = pc->m_Light.Type.Spell = 0;
-
+	
 	safe_delete_array(pcs);
 
 	return pc;
@@ -154,7 +153,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	in_npc->GetDeity(),in_npc->GetLevel(),in_npc->GetNPCTypeID(),in_npc->GetSize(),0,
 	in_npc->GetPosition(), in_npc->GetInnateLightType(), in_npc->GetTexture(),in_npc->GetHelmTexture(),
 	0,0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,0,0,0,0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+	0,0,0,0,0,0,0,0,0,0,EQEmu::TintProfile(),0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
 	corpse_decay_timer(in_decaytime),
 	corpse_rez_timer(0),
 	corpse_delay_timer(RuleI(NPC, CorpseUnlockTimer)),
@@ -162,8 +161,6 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	loot_cooldown_timer(10)
 {
 	corpse_graveyard_timer.Disable();
-
-	memset(item_tint, 0, sizeof(item_tint));
 
 	is_corpse_changed = false;
 	is_player_corpse = false;
@@ -245,7 +242,7 @@ Corpse::Corpse(Client* client, int32 in_rezexp) : Mob (
 	client->GetPP().drakkin_heritage, // uint32		in_drakkin_heritage,
 	client->GetPP().drakkin_tattoo,	  // uint32		in_drakkin_tattoo,
 	client->GetPP().drakkin_details,  // uint32		in_drakkin_details,
-	0,								  // uint32		in_armor_tint[_MaterialCount],
+	EQEmu::TintProfile(),			  // uint32		in_armor_tint[_MaterialCount],
 	0xff,							  // uint8		in_aa_title,
 	0,								  // uint8		in_see_invis, // see through invis
 	0,								  // uint8		in_see_invis_undead, // see through invis vs. undead
@@ -277,8 +274,6 @@ Corpse::Corpse(Client* client, int32 in_rezexp) : Mob (
 	if(!zone->HasGraveyard()) {
 		corpse_graveyard_timer.Disable();
 	}
-
-	memset(item_tint, 0, sizeof(item_tint));
 
 	for (i = 0; i < MAX_LOOTERS; i++){
 		allowed_looters[i] = 0;
@@ -322,7 +317,7 @@ Corpse::Corpse(Client* client, int32 in_rezexp) : Mob (
 		}
 
 		// get their tints
-		memcpy(item_tint, &client->GetPP().item_tint, sizeof(item_tint));
+		memcpy(&item_tint.Slot, &client->GetPP().item_tint, sizeof(item_tint));
 
 		// TODO soulbound items need not be added to corpse, but they need
 		// to go into the regular slots on the player, out of bags
@@ -409,7 +404,7 @@ void Corpse::MoveItemToCorpse(Client *client, ItemInst *inst, int16 equipSlot, s
 	removedList.push_back(equipSlot);
 
 	while (true) {
-		if (!inst->IsType(ItemClassContainer)) { break; }
+		if (!inst->IsClassBag()) { break; }
 		if (equipSlot < EQEmu::legacy::GENERAL_BEGIN || equipSlot > EQEmu::legacy::SlotCursor) { break; }
 
 		for (auto sub_index = SUB_INDEX_BEGIN; sub_index < EQEmu::legacy::ITEM_CONTAINER_SIZE; ++sub_index) {
@@ -475,7 +470,7 @@ in_helmtexture,
 0,
 0,
 0,
-0,
+EQEmu::TintProfile(),
 0xff,
 0,
 0,
@@ -503,8 +498,6 @@ in_helmtexture,
 	if (!zone->HasGraveyard() || wasAtGraveyard)
 		corpse_graveyard_timer.Disable();
 
-	memset(item_tint, 0, sizeof(item_tint));
-
 	is_corpse_changed = false;
 	is_player_corpse = true;
 	is_locked = false;
@@ -531,7 +524,6 @@ in_helmtexture,
 	SetPlayerKillItemID(0);
 
 	UpdateEquipmentLight();
-	m_Light.Level.Spell = m_Light.Type.Spell = 0;
 	UpdateActiveLight();
 }
 
@@ -593,7 +585,7 @@ bool Corpse::Save() {
 	dbpc->helmtexture = this->helmtexture;
 	dbpc->exp = rez_experience;
 
-	memcpy(dbpc->item_tint, item_tint, sizeof(dbpc->item_tint));
+	memcpy(&dbpc->item_tint.Slot, &item_tint.Slot, sizeof(dbpc->item_tint));
 	dbpc->haircolor = haircolor;
 	dbpc->beardcolor = beardcolor;
 	dbpc->eyecolor2 = eyecolor1;
@@ -661,7 +653,7 @@ void Corpse::AddItem(uint32 itemnum, uint16 charges, int16 slot, uint32 aug1, ui
 
 	is_corpse_changed = true;
 
-	ServerLootItem_Struct* item = new ServerLootItem_Struct;
+	auto item = new ServerLootItem_Struct;
 
 	memset(item, 0, sizeof(ServerLootItem_Struct));
 	item->item_id = itemnum;
@@ -748,7 +740,7 @@ void Corpse::RemoveItem(ServerLootItem_Struct* item_data)
 		itemlist.erase(iter);
 
 		uint8 material = Inventory::CalcMaterialFromSlot(sitem->equip_slot); // autos to unsigned char
-		if (material != EQEmu::legacy::MaterialInvalid)
+		if (material != EQEmu::textures::TextureInvalid)
 			SendWearChange(material);
 
 		UpdateEquipmentLight();
@@ -801,7 +793,7 @@ bool Corpse::Process() {
 			database.SendCharacterCorpseToGraveyard(corpse_db_id, zone->graveyard_zoneid(),
 				(zone->GetZoneID() == zone->graveyard_zoneid()) ? zone->GetInstanceID() : 0, zone->GetGraveyardPoint());
 			corpse_graveyard_timer.Disable();
-			ServerPacket* pack = new ServerPacket(ServerOP_SpawnPlayerCorpse, sizeof(SpawnPlayerCorpse_Struct));
+			auto pack = new ServerPacket(ServerOP_SpawnPlayerCorpse, sizeof(SpawnPlayerCorpse_Struct));
 			SpawnPlayerCorpse_Struct* spc = (SpawnPlayerCorpse_Struct*)pack->pBuffer;
 			spc->player_corpse_id = corpse_db_id;
 			spc->zone_id = zone->graveyard_zoneid();
@@ -883,7 +875,6 @@ void Corpse::AllowPlayerLoot(Mob *them, uint8 slot) {
 
 void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* app) {
 	// Added 12/08. Started compressing loot struct on live.
-	char tmp[10];
 	if(player_corpse_depop) {
 		SendLootReqErrorPacket(client, 0);
 		return;
@@ -914,8 +905,9 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 
 	uint8 Loot_Request_Type = 1;
 	bool loot_coin = false;
-	if(database.GetVariable("LootCoin", tmp, 9))
-		loot_coin = (atoi(tmp) == 1);
+	std::string tmp;
+	if(database.GetVariable("LootCoin", tmp))
+		loot_coin = tmp[0] == 1 && tmp[1] == '\0';
 
 	if (this->being_looted_by != 0xFFFFFFFF && this->being_looted_by != client->GetID()) {
 		SendLootReqErrorPacket(client, 0);
@@ -945,7 +937,7 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 
 	if(Loot_Request_Type >= 2 || (Loot_Request_Type == 1 && client->Admin() >= 100 && client->GetGM())) {
 		this->being_looted_by = client->GetID();
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));
+		auto outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));
 		moneyOnCorpseStruct* d = (moneyOnCorpseStruct*) outapp->pBuffer;
 
 		d->response		= 1;
@@ -980,7 +972,7 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 		safe_delete(outapp);
 		if(Loot_Request_Type == 5) {
 			int pkitem = GetPlayerKillItem();
-			const Item_Struct* item = database.GetItem(pkitem);
+			const EQEmu::ItemBase* item = database.GetItem(pkitem);
 			ItemInst* inst = database.CreateItem(item, item->MaxCharges);
 			if(inst) {
 				if (item->RecastDelay)
@@ -995,12 +987,12 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 		}
 
 		int i = 0;
-		const Item_Struct* item = 0;
+		const EQEmu::ItemBase* item = 0;
 		ItemList::iterator cur,end;
 		cur = itemlist.begin();
 		end = itemlist.end();
 
-		int corpselootlimit = EQEmu::limits::InventoryTypeSize(EQEmu::versions::ConvertClientVersionToInventoryVersion(client->ClientVersion()), EQEmu::legacy::TypeCorpse);
+		int corpselootlimit = EQEmu::inventory::Lookup(EQEmu::versions::ConvertClientVersionToInventoryVersion(client->ClientVersion()))->InventoryTypeSize[EQEmu::legacy::TypeCorpse];
 
 		for(; cur != end; ++cur) {
 			ServerLootItem_Struct* item_data = *cur;
@@ -1110,7 +1102,7 @@ void Corpse::LootItem(Client* client, const EQApplicationPacket* app) {
 		being_looted_by = 0xFFFFFFFF;
 		return;
 	}
-	const Item_Struct* item = 0;
+	const EQEmu::ItemBase* item = 0;
 	ItemInst *inst = 0;
 	ServerLootItem_Struct* item_data = nullptr, *bag_item_data[10];
 
@@ -1209,7 +1201,7 @@ void Corpse::LootItem(Client* client, const EQApplicationPacket* app) {
 		}
 
 		/* Remove Bag Contents */
-		if (item->ItemClass == ItemClassContainer && (GetPlayerKillItem() != -1 || GetPlayerKillItem() != 1)) {
+		if (item->IsClassBag() && (GetPlayerKillItem() != -1 || GetPlayerKillItem() != 1)) {
 			for (int i = SUB_INDEX_BEGIN; i < EQEmu::legacy::ITEM_CONTAINER_SIZE; i++) {
 				if (bag_item_data[i]) {
 					/* Delete needs to be before RemoveItem because its deletes the pointer for item_data/bag_item_data */
@@ -1225,8 +1217,8 @@ void Corpse::LootItem(Client* client, const EQApplicationPacket* app) {
 		}
 
 	/* Send message with item link to groups and such */
-	EQEmu::saylink::SayLinkEngine linker;
-	linker.SetLinkType(linker.SayLinkItemInst);
+	EQEmu::SayLinkEngine linker;
+	linker.SetLinkType(EQEmu::saylink::SayLinkItemInst);
 	linker.SetItemInst(inst);
 
 	auto item_link = linker.GenerateLink();
@@ -1263,7 +1255,7 @@ void Corpse::LootItem(Client* client, const EQApplicationPacket* app) {
 }
 
 void Corpse::EndLoot(Client* client, const EQApplicationPacket* app) {
-	EQApplicationPacket* outapp = new EQApplicationPacket;
+	auto outapp = new EQApplicationPacket;
 	outapp->SetOpcode(OP_LootComplete);
 	outapp->size = 0;
 	client->QueuePacket(outapp);
@@ -1283,7 +1275,7 @@ void Corpse::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) {
 	ns->spawn.NPC = 2;
 
 	UpdateActiveLight();
-	ns->spawn.light = m_Light.Type.Active;
+	ns->spawn.light = m_Light.Type[EQEmu::lightsource::LightActive];
 }
 
 void Corpse::QueryLoot(Client* to) {
@@ -1294,7 +1286,7 @@ void Corpse::QueryLoot(Client* to) {
 	cur = itemlist.begin();
 	end = itemlist.end();
 
-	int corpselootlimit = EQEmu::limits::InventoryTypeSize(EQEmu::versions::ConvertClientVersionToInventoryVersion(to->ClientVersion()), EQEmu::legacy::TypeCorpse);
+	int corpselootlimit = EQEmu::inventory::Lookup(EQEmu::versions::ConvertClientVersionToInventoryVersion(to->ClientVersion()))->InventoryTypeSize[EQEmu::legacy::TypeCorpse];
 
 	for(; cur != end; ++cur) {
 		ServerLootItem_Struct* sitem = *cur;
@@ -1305,7 +1297,7 @@ void Corpse::QueryLoot(Client* to) {
 			else
 				x < corpselootlimit ? sitem->lootslot = x : sitem->lootslot = 0xFFFF;
 
-			const Item_Struct* item = database.GetItem(sitem->item_id);
+			const EQEmu::ItemBase* item = database.GetItem(sitem->item_id);
 
 			if (item)
 				to->Message((sitem->lootslot == 0xFFFF), "LootSlot: %i (EquipSlot: %i) Item: %s (%d), Count: %i", static_cast<int16>(sitem->lootslot), sitem->equip_slot, item->Name, item->ID, sitem->charges);
@@ -1319,7 +1311,7 @@ void Corpse::QueryLoot(Client* to) {
 		}
 		else {
 			sitem->lootslot=y;
-			const Item_Struct* item = database.GetItem(sitem->item_id);
+			const EQEmu::ItemBase* item = database.GetItem(sitem->item_id);
 
 			if (item)
 				to->Message(0, "LootSlot: %i Item: %s (%d), Count: %i", sitem->lootslot, item->Name, item->ID, sitem->charges);
@@ -1393,7 +1385,7 @@ void Corpse::CompleteResurrection(){
 }
 
 void Corpse::Spawn() {
-	EQApplicationPacket* app = new EQApplicationPacket;
+	auto app = new EQApplicationPacket;
 	this->CreateSpawnPacket(app, this);
 	entity_list.QueueClients(this, app);
 	safe_delete(app);
@@ -1402,7 +1394,7 @@ void Corpse::Spawn() {
 uint32 Corpse::GetEquipment(uint8 material_slot) const {
 	int16 invslot;
 
-	if (material_slot > EQEmu::legacy::MATERIAL_END) {
+	if (material_slot > EQEmu::textures::LastTexture) {
 		return NO_ITEM;
 	}
 
@@ -1414,17 +1406,15 @@ uint32 Corpse::GetEquipment(uint8 material_slot) const {
 }
 
 uint32 Corpse::GetEquipmentColor(uint8 material_slot) const {
-	const Item_Struct *item;
+	const EQEmu::ItemBase *item;
 
-	if (material_slot > EQEmu::legacy::MATERIAL_END) {
+	if (material_slot > EQEmu::textures::LastTexture) {
 		return 0;
 	}
 
 	item = database.GetItem(GetEquipment(material_slot));
 	if(item != NO_ITEM) {
-		return item_tint[material_slot].RGB.UseTint ?
-			item_tint[material_slot].Color :
-			item->Color;
+		return (item_tint.Slot[material_slot].UseTint ? item_tint.Slot[material_slot].Color : item->Color);
 	}
 
 	return 0;
@@ -1432,8 +1422,8 @@ uint32 Corpse::GetEquipmentColor(uint8 material_slot) const {
 
 void Corpse::UpdateEquipmentLight()
 {
-	m_Light.Type.Equipment = 0;
-	m_Light.Level.Equipment = 0;
+	m_Light.Type[EQEmu::lightsource::LightEquipment] = 0;
+	m_Light.Level[EQEmu::lightsource::LightEquipment] = 0;
 
 	for (auto iter = itemlist.begin(); iter != itemlist.end(); ++iter) {
 		if (((*iter)->equip_slot < EQEmu::legacy::EQUIPMENT_BEGIN || (*iter)->equip_slot > EQEmu::legacy::EQUIPMENT_END) && (*iter)->equip_slot != EQEmu::legacy::SlotPowerSource) { continue; }
@@ -1442,8 +1432,8 @@ void Corpse::UpdateEquipmentLight()
 		auto item = database.GetItem((*iter)->item_id);
 		if (item == nullptr) { continue; }
 		
-		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type.Equipment))
-			m_Light.Type.Equipment = item->Light;
+		if (EQEmu::lightsource::IsLevelGreater(item->Light, m_Light.Type[EQEmu::lightsource::LightEquipment]))
+			m_Light.Type[EQEmu::lightsource::LightEquipment] = item->Light;
 	}
 	
 	uint8 general_light_type = 0;
@@ -1453,17 +1443,17 @@ void Corpse::UpdateEquipmentLight()
 		auto item = database.GetItem((*iter)->item_id);
 		if (item == nullptr) { continue; }
 		
-		if (item->ItemClass != ItemClassCommon) { continue; }
+		if (!item->IsClassCommon()) { continue; }
 		if (item->Light < 9 || item->Light > 13) { continue; }
 
 		if (EQEmu::lightsource::TypeToLevel(item->Light))
 			general_light_type = item->Light;
 	}
 
-	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type.Equipment))
-		m_Light.Type.Equipment = general_light_type;
+	if (EQEmu::lightsource::IsLevelGreater(general_light_type, m_Light.Type[EQEmu::lightsource::LightEquipment]))
+		m_Light.Type[EQEmu::lightsource::LightEquipment] = general_light_type;
 
-	m_Light.Level.Equipment = EQEmu::lightsource::TypeToLevel(m_Light.Type.Equipment);
+	m_Light.Level[EQEmu::lightsource::LightEquipment] = EQEmu::lightsource::TypeToLevel(m_Light.Type[EQEmu::lightsource::LightEquipment]);
 }
 
 void Corpse::AddLooter(Mob* who) {

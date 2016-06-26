@@ -1,5 +1,43 @@
 EQEMu Changelog (Started on Sept 24, 2003 15:50)
 -------------------------------------------------------
+== 06/13/2016 ==
+Noudess: Changes personal faction earned min/max to -2000/2000 from -3000/1200
+
+== 06/06/2016 ==
+Uleat: Reworked EQEmuDictionary to use class LookupEntry
+
+== 06/01/2016 ==
+Uleat: Implemented EQEmu::TintProfile
+Uleat: Implemented EQEmu::TextureProfile
+
+== 05/31/2016 ==
+Uleat: Converted enumeration MaterialSlots to EQEmu::textures::TextureSlot
+
+== 05/28/2016 ==
+Uleat: Merged client_version and inventory_version into emu_versions files
+
+== 05/27/2016 ==
+Uleat: Renamed EQEmu::Item_Struct to EQEmu::ItemBase (and appropriate files) to coincide with new inventory naming conventions
+
+== 05/25/2016 ==
+Uleat: Renamed and moved enumeration SkillUseTypes to EQEmu::skill::SkillType - added class EQEmu::SkillProfile, though not implemented at this time
+Uleat: Some more work on eq_dictionary
+
+== 05/21/2016 ==
+Uleat: Moved struct Item_Struct into namespace EQEmu along with associated enumerations - enumerations into namespace EQEmu::item (run shared_memory)
+Uleat: Fixed a few possible crash points in linux builds associated with augments/ornamentations
+
+== 05/18/2016 ==
+Uleat: Changed client 'constants' files to 'limits'
+
+== 05/10/2016 ==
+Uleat: Converted client translators' 'SerializeItem()' to recursive, single buffer methodology. Titanium SerializeItem() now adds a null term between parent items instead of the invoking function
+Uleat: Converted server 'BulkSendInventoryItems()' to use single buffer methodology
+Uleat: Added 'ItemInst::Serialize()' overload to make use of the above single buffer methodology
+
+== 05/08/2016 ==
+Uleat: Re-coded Titanium client translator 'SerializeItem()' to use coded property assignments over file enumerated ones
+
 == 04/22/2016 ==
 Uleat: Reworked ClientVersion into namespace EQEmu; Added InventoryVersion
 Uleat: Delinked current inventory slot enumeration and constants from EQEmu::constants and global definition (inv2 pre-work)

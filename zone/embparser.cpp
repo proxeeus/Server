@@ -882,7 +882,7 @@ void PerlembParser::GetQuestPackageName(bool &isPlayerQuest, bool &isGlobalPlaye
 	}
 	else if(isItemQuest) {
 		// need a valid ItemInst pointer check here..unsure how to cancel this process
-		const Item_Struct* item = iteminst->GetItem();
+		const EQEmu::ItemBase* item = iteminst->GetItem();
 		package_name = "qst_item_";
 		package_name += itoa(item->ID);
 	}
@@ -972,7 +972,7 @@ void PerlembParser::ExportQGlobals(bool isPlayerQuest, bool isGlobalPlayerQuest,
 				QGlobalCache::Combine(globalMap, zone_c->GetBucket(), npcmob->GetNPCTypeID(), char_id, zone->GetZoneID());
 			}
 
-			std::list<QGlobal>::iterator iter = globalMap.begin();
+			auto iter = globalMap.begin();
 			while(iter != globalMap.end())
 			{
 				globhash[(*iter).name] = (*iter).value;
@@ -1020,7 +1020,7 @@ void PerlembParser::ExportQGlobals(bool isPlayerQuest, bool isGlobalPlayerQuest,
 			QGlobalCache::Combine(globalMap, zone_c->GetBucket(), 0, char_id, zone->GetZoneID());
 		}
 
-		std::list<QGlobal>::iterator iter = globalMap.begin();
+		auto iter = globalMap.begin();
 		while(iter != globalMap.end())
 		{
 			globhash[(*iter).name] = (*iter).value;

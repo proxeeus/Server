@@ -54,6 +54,7 @@
 #include "../common/rulesys.h"
 #include "../common/serverinfo.h"
 #include "../common/string_util.h"
+#include "../common/say_link.h"
 #include "../common/eqemu_logsys.h"
 
 
@@ -335,11 +336,11 @@ public:
 				while (spells[spell_id].typedescnum == 27) {
 					if (!spells[spell_id].goodEffect)
 						break;
-					if (spells[spell_id].skill != SkillOffense && spells[spell_id].skill != SkillDefense)
+					if (spells[spell_id].skill != EQEmu::skills::SkillOffense && spells[spell_id].skill != EQEmu::skills::SkillDefense)
 						break;
 
 					entry_prototype = new STStanceEntry();
-					if (spells[spell_id].skill == SkillOffense)
+					if (spells[spell_id].skill == EQEmu::skills::SkillOffense)
 						entry_prototype->SafeCastToStance()->stance_type = BCEnum::StT_Aggressive;
 					else
 						entry_prototype->SafeCastToStance()->stance_type = BCEnum::StT_Defensive;
@@ -2388,7 +2389,7 @@ namespace ActionableBots
 		sbl.remove_if([bot_owner](Bot* l) { return (!l->IsBotArcher()); });
 	}
 	
-	static void Filter_ByHighestSkill(Client* bot_owner, std::list<Bot*>& sbl, SkillUseTypes skill_type, float& skill_value) {
+	static void Filter_ByHighestSkill(Client* bot_owner, std::list<Bot*>& sbl, EQEmu::skills::SkillType skill_type, float& skill_value) {
 		sbl.remove_if([bot_owner](Bot* l) { return (!MyBots::IsMyBot(bot_owner, l)); });
 		skill_value = 0.0f;
 
@@ -2425,7 +2426,7 @@ namespace ActionableBots
 		sbl.remove_if([bot_owner](const Bot* l) { return (l->GetClass() == ROGUE && l->GetLevel() < 5); });
 		sbl.remove_if([bot_owner](const Bot* l) { return (l->GetClass() == BARD && l->GetLevel() < 40); });
 
-		ActionableBots::Filter_ByHighestSkill(bot_owner, sbl, SkillPickLock, pick_lock_value);
+		ActionableBots::Filter_ByHighestSkill(bot_owner, sbl, EQEmu::skills::SkillPickLock, pick_lock_value);
 	}
 };
 
@@ -3906,7 +3907,7 @@ void bot_command_taunt(Client *c, const Seperator *sep)
 	
 	int taunting_count = 0;
 	for (auto bot_iter : sbl) {
-		if (!bot_iter->GetSkill(SkillTaunt))
+		if (!bot_iter->GetSkill(EQEmu::skills::SkillTaunt))
 			continue;
 		
 		if (toggle_taunt)
@@ -4357,7 +4358,7 @@ void bot_subcommand_bot_dye_armor(Client *c, const Seperator *sep)
 	// TODO: Trouble-shoot model update issue
 	
 	const std::string msg_matslot = StringFormat("mat_slot: %c(All), %i(Head), %i(Chest), %i(Arms), %i(Wrists), %i(Hands), %i(Legs), %i(Feet)",
-		'*', EQEmu::legacy::MaterialHead, EQEmu::legacy::MaterialChest, EQEmu::legacy::MaterialArms, EQEmu::legacy::MaterialWrist, EQEmu::legacy::MaterialHands, EQEmu::legacy::MaterialLegs, EQEmu::legacy::MaterialFeet);
+		'*', EQEmu::textures::TextureHead, EQEmu::textures::TextureChest, EQEmu::textures::TextureArms, EQEmu::textures::TextureWrist, EQEmu::textures::TextureHands, EQEmu::textures::TextureLegs, EQEmu::textures::TextureFeet);
 	
 	if (helper_command_alias_fail(c, "bot_subcommand_bot_dye_armor", sep->arg[0], "botdyearmor"))
 		return;
@@ -4368,7 +4369,7 @@ void bot_subcommand_bot_dye_armor(Client *c, const Seperator *sep)
 	}
 	const int ab_mask = ActionableBots::ABM_NoFilter;
 
-	uint8 material_slot = EQEmu::legacy::MaterialInvalid;
+	uint8 material_slot = EQEmu::textures::TextureInvalid;
 	int16 slot_id = INVALID_INDEX;
 
 	bool dye_all = (sep->arg[1][0] == '*');
@@ -4376,7 +4377,7 @@ void bot_subcommand_bot_dye_armor(Client *c, const Seperator *sep)
 		material_slot = atoi(sep->arg[1]);
 		slot_id = Inventory::CalcSlotFromMaterial(material_slot);
 
-		if (!sep->IsNumber(1) || slot_id == INVALID_INDEX || material_slot > EQEmu::legacy::MaterialFeet) {
+		if (!sep->IsNumber(1) || slot_id == INVALID_INDEX || material_slot > EQEmu::textures::TextureFeet) {
 			c->Message(m_fail, "Valid [mat_slot]s for this command are:");
 			c->Message(m_fail, msg_matslot.c_str());
 			return;
@@ -7062,12 +7063,12 @@ void bot_subcommand_inventory_list(Client *c, const Seperator *sep)
 	}
 
 	const ItemInst* inst = nullptr;
-	const Item_Struct* item = nullptr;
+	const EQEmu::ItemBase* item = nullptr;
 	bool is2Hweapon = false;
 
 	std::string item_link;
-	EQEmu::saylink::SayLinkEngine linker;
-	linker.SetLinkType(linker.SayLinkItemInst);
+	EQEmu::SayLinkEngine linker;
+	linker.SetLinkType(EQEmu::saylink::SayLinkItemInst);
 
 	uint32 inventory_count = 0;
 	for (int i = EQEmu::legacy::EQUIPMENT_BEGIN; i <= (EQEmu::legacy::EQUIPMENT_END + 1); ++i) {
@@ -7081,7 +7082,7 @@ void bot_subcommand_inventory_list(Client *c, const Seperator *sep)
 		}
 		
 		item = inst->GetItem();
-		if ((i == EQEmu::legacy::SlotPrimary) && ((item->ItemType == ItemType2HSlash) || (item->ItemType == ItemType2HBlunt) || (item->ItemType == ItemType2HPiercing))) {
+		if ((i == EQEmu::legacy::SlotPrimary) && item->IsType2HWeapon()) {
 			is2Hweapon = true;
 		}
 
@@ -7131,7 +7132,7 @@ void bot_subcommand_inventory_remove(Client *c, const Seperator *sep)
 		return;
 	}
 
-	const Item_Struct* itm = nullptr;
+	const EQEmu::ItemBase* itm = nullptr;
 	const ItemInst* itminst = my_bot->GetBotItem(slotId);
 	if (itminst)
 		itm = itminst->GetItem();
@@ -7234,7 +7235,7 @@ void bot_subcommand_inventory_window(Client *c, const Seperator *sep)
 	//linker.SetLinkType(linker.linkItemInst);
 
 	for (int i = EQEmu::legacy::EQUIPMENT_BEGIN; i <= (EQEmu::legacy::EQUIPMENT_END + 1); ++i) {
-		const Item_Struct* item = nullptr;
+		const EQEmu::ItemBase* item = nullptr;
 		const ItemInst* inst = my_bot->CastToBot()->GetBotItem(i == 22 ? EQEmu::legacy::SlotPowerSource : i);
 		if (inst)
 			item = inst->GetItem();

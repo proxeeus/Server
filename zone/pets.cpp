@@ -264,7 +264,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	}
 
 	//we copy the npc_type data because we need to edit it a bit
-	NPCType *npc_type = new NPCType;
+	auto npc_type = new NPCType;
 	memcpy(npc_type, base, sizeof(NPCType));
 
 	// If pet power is set to -1 in the DB, use stat scaling
@@ -383,6 +383,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 									"ORDER BY RAND() LIMIT 1", zone->GetShortName());
 		auto results = database.QueryDatabase(query);
 		if (!results.Success()) {
+			safe_delete(npc_type);
 			return;
 		}
 
@@ -411,7 +412,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	}
 
 	//this takes ownership of the npc_type data
-	Pet *npc = new Pet(npc_type, this, (PetType)record.petcontrol, spell_id, record.petpower);
+	auto npc = new Pet(npc_type, this, (PetType)record.petcontrol, spell_id, record.petpower);
 
 	// Now that we have an actual object to interact with, load
 	// the base items for the pet. These are always loaded
@@ -419,7 +420,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	// like the special back items some focused pets may receive.
 	uint32 petinv[EQEmu::legacy::EQUIPMENT_SIZE];
 	memset(petinv, 0, sizeof(petinv));
-	const Item_Struct *item = 0;
+	const EQEmu::ItemBase *item = 0;
 
 	if (database.GetBasePetItems(record.equipmentset, petinv)) {
 		for (int i = 0; i < EQEmu::legacy::EQUIPMENT_SIZE; i++)
@@ -664,11 +665,11 @@ void NPC::SetPetState(SpellBuff_Struct *pet_buffs, uint32 *items) {
 		if(items[i] == 0)
 			continue;
 
-		const Item_Struct* item2 = database.GetItem(items[i]);
+		const EQEmu::ItemBase* item2 = database.GetItem(items[i]);
 		if (item2 && item2->NoDrop != 0) {
 			//dont bother saving item charges for now, NPCs never use them
 			//and nobody should be able to get them off the corpse..?
-			AddLootDrop(item2, &itemlist, 0, 1, 127, true, true);
+			AddLootDrop(item2, &itemlist, 0, 1, 255, true, true);
 		}
 	}
 }

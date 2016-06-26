@@ -617,7 +617,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #endif
 				if(IsClient()){
 					ItemInst* transI = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotCursor);
-					if(transI && transI->IsType(ItemClassCommon) && transI->IsStackable()){
+					if (transI && transI->IsClassCommon() && transI->IsStackable()){
 						uint32 fcharges = transI->GetCharges();
 							//Does it sound like meat... maybe should check if it looks like meat too...
 							if(strstr(transI->GetItem()->Name, "meat") ||
@@ -765,7 +765,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				SetPetType(petCharmed);
 
 				if(caster->IsClient()){
-					EQApplicationPacket *app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
+					auto app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
 					Charm_Struct *ps = (Charm_Struct*)app->pBuffer;
 					ps->owner_id = caster->GetID();
 					ps->pet_id = this->GetID();
@@ -892,9 +892,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				{
 					if(CastToClient()->GetGM() || RuleB(Character, BindAnywhere))
 					{
-						EQApplicationPacket *action_packet = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
+						auto action_packet =
+						    new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
 						Action_Struct* action = (Action_Struct*) action_packet->pBuffer;
-						EQApplicationPacket *message_packet = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
+						auto message_packet =
+						    new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
 						CombatDamage_Struct *cd = (CombatDamage_Struct *)message_packet->pBuffer;
 
 						action->target = GetID();
@@ -941,9 +943,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							}
 							else
 							{
-								EQApplicationPacket *action_packet = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
+								auto action_packet = new EQApplicationPacket(
+								    OP_Action, sizeof(Action_Struct));
 								Action_Struct* action = (Action_Struct*) action_packet->pBuffer;
-								EQApplicationPacket *message_packet = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
+								auto message_packet = new EQApplicationPacket(
+								    OP_Damage, sizeof(CombatDamage_Struct));
 								CombatDamage_Struct *cd = (CombatDamage_Struct *)message_packet->pBuffer;
 
 								action->target = GetID();
@@ -977,9 +981,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						}
 						else
 						{
-							EQApplicationPacket *action_packet = new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
+							auto action_packet =
+							    new EQApplicationPacket(OP_Action, sizeof(Action_Struct));
 							Action_Struct* action = (Action_Struct*) action_packet->pBuffer;
-							EQApplicationPacket *message_packet = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
+							auto message_packet = new EQApplicationPacket(
+							    OP_Damage, sizeof(CombatDamage_Struct));
 							CombatDamage_Struct *cd = (CombatDamage_Struct *)message_packet->pBuffer;
 
 							action->target = GetID();
@@ -1132,7 +1138,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 			case SE_SummonItem:
 			{
-				const Item_Struct *item = database.GetItem(spell.base[i]);
+				const EQEmu::ItemBase *item = database.GetItem(spell.base[i]);
 #ifdef SPELL_EFFECT_SPAM
 				const char *itemname = item ? item->Name : "*Unknown Item*";
 				snprintf(effect_desc, _EDLEN, "Summon Item: %s (id %d)", itemname, spell.base[i]);
@@ -1157,7 +1163,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 						if (SummonedItem) {
 							c->PushItemOnCursor(*SummonedItem);
-							c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketSummonItem);
+							c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketLimbo);
 							safe_delete(SummonedItem);
 						}
 						SummonedItem = database.CreateItem(spell.base[i], charges);
@@ -1168,14 +1174,14 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			}
 			case SE_SummonItemIntoBag:
 			{
-				const Item_Struct *item = database.GetItem(spell.base[i]);
+				const EQEmu::ItemBase *item = database.GetItem(spell.base[i]);
 #ifdef SPELL_EFFECT_SPAM
 				const char *itemname = item ? item->Name : "*Unknown Item*";
 				snprintf(effect_desc, _EDLEN, "Summon Item In Bag: %s (id %d)", itemname, spell.base[i]);
 #endif
 				uint8 slot;
 
-				if (!SummonedItem || !SummonedItem->IsType(ItemClassContainer)) {
+				if (!SummonedItem || !SummonedItem->IsClassBag()) {
 					if (caster)
 						caster->Message(13, "SE_SummonItemIntoBag but no bag has been summoned!");
 				} else if ((slot = SummonedItem->FirstOpenSlot()) == 0xff) {
@@ -1429,7 +1435,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					}
 				}
 
-				for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++)
+				for (int x = EQEmu::textures::TextureBegin; x <= EQEmu::textures::LastTintableTexture; x++)
 					SendWearChange(x);
 
 				if (caster == this &&
@@ -1455,7 +1461,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						);
 						caster->SendAppearancePacket(AT_Size, static_cast<uint32>(caster->GetTarget()->GetSize()));
 
-						for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++)
+						for (int x = EQEmu::textures::TextureBegin; x <= EQEmu::textures::LastTintableTexture; x++)
 							caster->SendWearChange(x);
 				}
 			}
@@ -2064,7 +2070,8 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				double new_x = spells[spell_id].pushback * sin(double(look_heading * 3.141592 / 180.0));
 				double new_y = spells[spell_id].pushback * cos(double(look_heading * 3.141592 / 180.0));
 
-				EQApplicationPacket* outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+				auto outapp_push =
+				    new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 				PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)outapp_push->pBuffer;
 
 				spu->spawn_id	= GetID();
@@ -2264,18 +2271,15 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 				focus = caster->GetFocusEffect(focusFcBaseEffects, spell_id);
 
-				switch(spells[spell_id].skill)
-				{
-					case SkillThrowing:
-						caster->DoThrowingAttackDmg(this, nullptr, nullptr, spells[spell_id].base[i],spells[spell_id].base2[i], focus,  ReuseTime);
+				switch(spells[spell_id].skill) {
+				case EQEmu::skills::SkillThrowing:
+					caster->DoThrowingAttackDmg(this, nullptr, nullptr, spells[spell_id].base[i],spells[spell_id].base2[i], focus,  ReuseTime);
 					break;
-
-					case SkillArchery:
-						caster->DoArcheryAttackDmg(this, nullptr, nullptr, spells[spell_id].base[i],spells[spell_id].base2[i],focus,  ReuseTime);
+				case EQEmu::skills::SkillArchery:
+					caster->DoArcheryAttackDmg(this, nullptr, nullptr, spells[spell_id].base[i],spells[spell_id].base2[i],focus,  ReuseTime);
 					break;
-
-					default:
-						caster->DoMeleeSkillAttackDmg(this, spells[spell_id].base[i], spells[spell_id].skill, spells[spell_id].base2[i], focus, false, ReuseTime);
+				default:
+					caster->DoMeleeSkillAttackDmg(this, spells[spell_id].base[i], spells[spell_id].skill, spells[spell_id].base2[i], focus, false, ReuseTime);
 					break;
 				}
 				break;
@@ -3014,7 +3018,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 	if (SummonedItem) {
 		Client *c=CastToClient();
 		c->PushItemOnCursor(*SummonedItem);
-		c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketSummonItem);
+		c->SendItemPacket(EQEmu::legacy::SlotCursor, SummonedItem, ItemPacketLimbo);
 		safe_delete(SummonedItem);
 	}
 
@@ -3039,7 +3043,7 @@ int Mob::CalcSpellEffectValue(uint16 spell_id, int effect_id, int caster_level, 
 	effect_value = CalcSpellEffectValue_formula(formula, base, max, caster_level, spell_id, ticsremaining);
 
 	// this doesn't actually need to be a song to get mods, just the right skill
-	if (EQEmu::IsBardInstrumentSkill(spells[spell_id].skill) &&
+	if (EQEmu::skills::IsBardInstrumentSkill(spells[spell_id].skill) &&
 	    spells[spell_id].effectid[effect_id] != SE_AttackSpeed &&
 	    spells[spell_id].effectid[effect_id] != SE_AttackSpeed2 &&
 	    spells[spell_id].effectid[effect_id] != SE_AttackSpeed3 &&
@@ -3606,13 +3610,13 @@ void Mob::DoBuffTic(const Buffs_Struct &buff, int slot, Mob *caster)
 				if (!IsBardSong(buff.spellid)) {
 					double break_chance = 2.0;
 					if (caster) {
-						break_chance -= (2 * (((double)caster->GetSkill(SkillDivination) +
+						break_chance -= (2 * (((double)caster->GetSkill(EQEmu::skills::SkillDivination) +
 								       ((double)caster->GetLevel() * 3.0)) /
 								      650.0));
 					} else {
 						break_chance -=
 						    (2 *
-						     (((double)GetSkill(SkillDivination) + ((double)GetLevel() * 3.0)) /
+							(((double)GetSkill(EQEmu::skills::SkillDivination) + ((double)GetLevel() * 3.0)) /
 						      650.0));
 					}
 
@@ -3809,7 +3813,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 				else{
 					SendAppearancePacket(AT_Size, 6);
 				}
-				for (int x = EQEmu::legacy::MATERIAL_BEGIN; x <= EQEmu::legacy::MATERIAL_TINT_END; x++){
+				for (int x = EQEmu::textures::TextureBegin; x <= EQEmu::textures::LastTintableTexture; x++){
 					SendWearChange(x);
 				}
 				break;
@@ -3922,7 +3926,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 				}
 				if(tempmob && tempmob->IsClient())
 				{
-					EQApplicationPacket *app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
+					auto app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
 					Charm_Struct *ps = (Charm_Struct*)app->pBuffer;
 					ps->owner_id = tempmob->GetID();
 					ps->pet_id = this->GetID();
@@ -5124,7 +5128,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 	//item focus
 	if (itembonuses.FocusEffects[type]){
 
-		const Item_Struct* TempItem = 0;
+		const EQEmu::ItemBase* TempItem = 0;
 
 		for (int x = EQEmu::legacy::EQUIPMENT_BEGIN; x <= EQEmu::legacy::EQUIPMENT_END; x++)
 		{
@@ -5155,7 +5159,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 				aug = ins->GetAugment(y);
 				if(aug)
 				{
-					const Item_Struct* TempItemAug = aug->GetItem();
+					const EQEmu::ItemBase* TempItemAug = aug->GetItem();
 					if (TempItemAug && TempItemAug->Focus.Effect > 0 && IsValidSpell(TempItemAug->Focus.Effect)) {
 						proc_spellid = CalcFocusEffect(type, TempItemAug->Focus.Effect, spell_id);
 						if (IsValidSpell(proc_spellid)){
@@ -5253,8 +5257,8 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 	//Check if item focus effect exists for the client.
 	if (itembonuses.FocusEffects[type]){
 
-		const Item_Struct* TempItem = 0;
-		const Item_Struct* UsedItem = 0;
+		const EQEmu::ItemBase* TempItem = 0;
+		const EQEmu::ItemBase* UsedItem = 0;
 		uint16 UsedFocusID = 0;
 		int16 Total = 0;
 		int16 focus_max = 0;
@@ -5301,7 +5305,7 @@ int16 Client::GetFocusEffect(focusType type, uint16 spell_id)
 				aug = ins->GetAugment(y);
 				if(aug)
 				{
-					const Item_Struct* TempItemAug = aug->GetItem();
+					const EQEmu::ItemBase* TempItemAug = aug->GetItem();
 					if (TempItemAug && TempItemAug->Focus.Effect > 0 && TempItemAug->Focus.Effect != SPELL_UNKNOWN) {
 						if(rand_effectiveness) {
 							focus_max = CalcFocusEffect(type, TempItemAug->Focus.Effect, spell_id, true);
@@ -5525,8 +5529,8 @@ int16 NPC::GetFocusEffect(focusType type, uint16 spell_id) {
 
 	if (RuleB(Spells, NPC_UseFocusFromItems) && itembonuses.FocusEffects[type]){
 
-		const Item_Struct* TempItem = 0;
-		const Item_Struct* UsedItem = 0;
+		const EQEmu::ItemBase* TempItem = 0;
+		const EQEmu::ItemBase* UsedItem = 0;
 		uint16 UsedFocusID = 0;
 		int16 Total = 0;
 		int16 focus_max = 0;
@@ -5534,7 +5538,7 @@ int16 NPC::GetFocusEffect(focusType type, uint16 spell_id) {
 
 		//item focus
 		for (int i = 0; i < EQEmu::legacy::EQUIPMENT_SIZE; i++){
-			const Item_Struct *cur = database.GetItem(equipment[i]);
+			const EQEmu::ItemBase *cur = database.GetItem(equipment[i]);
 
 			if(!cur)
 				continue;
@@ -6557,7 +6561,7 @@ bool Mob::TrySpellProjectile(Mob* spell_target,  uint16 spell_id, float speed){
 		ProjectileAtk[slot].origin_x = GetX();
 		ProjectileAtk[slot].origin_y = GetY();
 		ProjectileAtk[slot].origin_z = GetZ();
-		ProjectileAtk[slot].skill = SkillConjuration;
+		ProjectileAtk[slot].skill = EQEmu::skills::SkillConjuration;
 		ProjectileAtk[slot].speed_mod = speed_mod;
 
 		SetProjectileAttack(true);
@@ -6612,7 +6616,7 @@ void Mob::ResourceTap(int32 damage, uint16 spellid)
 				if (damage > 0)
 					HealDamage(damage);
 				else
-					Damage(this, -damage, 0, SkillEvocation, false);
+					Damage(this, -damage, 0, EQEmu::skills::SkillEvocation, false);
 			}
 
 			if (spells[spellid].base2[i] == 1) // Mana Tap
@@ -6782,7 +6786,7 @@ void Client::BreakSneakWhenCastOn(Mob* caster, bool IsResisted)
 		//TODO: The skill buttons should reset when this occurs. Not sure how to force that yet. - Kayen
 		hidden = false;
 		improved_hidden = false;
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+		auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
 		SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
 		sa_out->spawn_id = GetID();
 		sa_out->type = 0x03;
