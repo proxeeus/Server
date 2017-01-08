@@ -26,8 +26,8 @@
 #include "../common/string_util.h"
 #include "../common/emu_versions.h"
 #include "../common/features.h"
-#include "../common/item.h"
-#include "../common/item_base.h"
+#include "../common/item_instance.h"
+#include "../common/item_data.h"
 #include "../common/linked_list.h"
 #include "../common/servertalk.h"
 #include "../common/say_link.h"
@@ -233,6 +233,7 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	npc_spells_id = 0;
 	HasAISpell = false;
 	HasAISpellEffects = false;
+	innate_proc_spell_id = 0;
 
 	if(GetClass() == MERCERNARY_MASTER && RuleB(Mercs, AllowMercs))
 	{
@@ -488,8 +489,8 @@ void NPC::CheckMinMaxLevel(Mob *them)
 
 		if(themlevel < (*cur)->min_level || themlevel > (*cur)->max_level)
 		{
-			material = Inventory::CalcMaterialFromSlot((*cur)->equip_slot);
-			if (material != EQEmu::textures::TextureInvalid)
+			material = EQEmu::InventoryProfile::CalcMaterialFromSlot((*cur)->equip_slot);
+			if (material != EQEmu::textures::materialInvalid)
 				SendWearChange(material);
 
 			cur = itemlist.erase(cur);
@@ -524,19 +525,22 @@ void NPC::QueryLoot(Client* to)
 
 	int x = 0;
 	for (auto cur = itemlist.begin(); cur != itemlist.end(); ++cur, ++x) {
-		const EQEmu::ItemBase* item = database.GetItem((*cur)->item_id);
-		if (item == nullptr) {
-			Log.Out(Logs::General, Logs::Error, "Database error, invalid item");
+		if (!(*cur)) {
+			Log.Out(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
+			continue;
+		}
+		if (!(*cur)->item_id || !database.GetItem((*cur)->item_id)) {
+			Log.Out(Logs::General, Logs::Error, "NPC::QueryLoot() - Database error, invalid item");
 			continue;
 		}
 
 		EQEmu::SayLinkEngine linker;
-		linker.SetLinkType(EQEmu::saylink::SayLinkItemData);
-		linker.SetItemData(item);
+		linker.SetLinkType(EQEmu::saylink::SayLinkLootItem);
+		linker.SetLootData(*cur);
 
 		auto item_link = linker.GenerateLink();
 
-		to->Message(0, "%s, ID: %u, Level: (min: %u, max: %u)", item_link.c_str(), item->ID, (*cur)->min_level, (*cur)->max_level);
+		to->Message(0, "%s, ID: %u, Level: (min: %u, max: %u)", item_link.c_str(), (*cur)->item_id, (*cur)->min_level, (*cur)->max_level);
 	}
 
 	to->Message(0, "%i items on %s.", x, GetName());
@@ -749,8 +753,8 @@ void NPC::UpdateEquipmentLight()
 	m_Light.Type[EQEmu::lightsource::LightEquipment] = 0;
 	m_Light.Level[EQEmu::lightsource::LightEquipment] = 0;
 
-	for (int index = SLOT_BEGIN; index < EQEmu::legacy::EQUIPMENT_SIZE; ++index) {
-		if (index == EQEmu::legacy::SlotAmmo) { continue; }
+	for (int index = EQEmu::inventory::slotBegin; index < EQEmu::legacy::EQUIPMENT_SIZE; ++index) {
+		if (index == EQEmu::inventory::slotAmmo) { continue; }
 
 		auto item = database.GetItem(equipment[index]);
 		if (item == nullptr) { continue; }
@@ -870,6 +874,10 @@ bool NPC::SpawnZoneController(){
 	npc_type->d_melee_texture2 = 0;
 	npc_type->merchanttype = 0;
 	npc_type->bodytype = 11;
+
+	if (RuleB(Zone, EnableZoneControllerGlobals)) {
+		npc_type->qglobal = true;
+	}
 
 	npc_type->prim_melee_type = 28;
 	npc_type->sec_melee_type = 28;
@@ -1205,12 +1213,13 @@ uint32 ZoneDatabase::AddNewNPCSpawnGroupCommand(const char *zone, uint32 zone_ve
 uint32 ZoneDatabase::UpdateNPCTypeAppearance(Client *client, NPC *spawn)
 {
 	std::string query =
-	    StringFormat("UPDATE npc_types SET name = \"%s\", level = %i, race = %i, class = %i, "
-			 "hp = %i, gender = %i, texture = %i, helmtexture = %i, size = %i, "
-			 "loottable_id = %i, merchant_id = %i, face = %i, WHERE id = %i",
+	    StringFormat("UPDATE npc_types SET name = '%s', level = '%i', race = '%i', class = '%i', "
+			 "hp = '%i', gender = '%i', texture = '%i', helmtexture = '%i', size = '%i', "
+			 "loottable_id = '%i', merchant_id = '%i', face = '%i' "
+			 "WHERE id = '%i'",
 			 spawn->GetName(), spawn->GetLevel(), spawn->GetRace(), spawn->GetClass(), spawn->GetMaxHP(),
 			 spawn->GetGender(), spawn->GetTexture(), spawn->GetHelmTexture(), spawn->GetSize(),
-			 spawn->GetLoottableID(), spawn->MerchantType, spawn->GetNPCTypeID());
+			 spawn->GetLoottableID(), spawn->MerchantType, spawn->GetLuclinFace(), spawn->GetNPCTypeID());
 	auto results = QueryDatabase(query);
 	return results.Success() == true ? 1 : 0;
 }
@@ -1373,10 +1382,10 @@ uint32 ZoneDatabase::NPCSpawnDB(uint8 command, const char* zone, uint32 zone_ver
 
 int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 {
-	if (material_slot >= EQEmu::textures::TextureCount)
+	if (material_slot >= EQEmu::textures::materialCount)
 		return 0;
 
-	int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
+	int16 invslot = EQEmu::InventoryProfile::CalcSlotFromMaterial(material_slot);
 	if (invslot == INVALID_INDEX)
 		return 0;
 
@@ -1384,23 +1393,23 @@ int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 	{
 		switch(material_slot)
 		{
-		case EQEmu::textures::TextureHead:
+		case EQEmu::textures::armorHead:
 			return helmtexture;
-		case EQEmu::textures::TextureChest:
+		case EQEmu::textures::armorChest:
 			return texture;
-		case EQEmu::textures::TextureArms:
+		case EQEmu::textures::armorArms:
 			return armtexture;
-		case EQEmu::textures::TextureWrist:
+		case EQEmu::textures::armorWrist:
 			return bracertexture;
-		case EQEmu::textures::TextureHands:
+		case EQEmu::textures::armorHands:
 			return handtexture;
-		case EQEmu::textures::TextureLegs:
+		case EQEmu::textures::armorLegs:
 			return legtexture;
-		case EQEmu::textures::TextureFeet:
+		case EQEmu::textures::armorFeet:
 			return feettexture;
-		case EQEmu::textures::TexturePrimary:
+		case EQEmu::textures::weaponPrimary:
 			return d_melee_texture1;
-		case EQEmu::textures::TextureSecondary:
+		case EQEmu::textures::weaponSecondary:
 			return d_melee_texture2;
 		default:
 			//they have nothing in the slot, and its not a special slot... they get nothing.
@@ -1457,7 +1466,7 @@ void NPC::PickPocket(Client* thief)
 
 	// still needs to have FindFreeSlot vs PutItemInInventory issue worked out
 	while (steal_item) {
-		std::vector<std::pair<const EQEmu::ItemBase*, uint16>> loot_selection; // <const ItemBase*, charges>
+		std::vector<std::pair<const EQEmu::ItemData*, uint16>> loot_selection; // <const ItemData*, charges>
 		for (auto item_iter : itemlist) {
 			if (!item_iter || !item_iter->item_id)
 				continue;
@@ -2011,44 +2020,90 @@ void NPC::LevelScale() {
 
 	float scaling = (((random_level / (float)level) - 1) * (scalerate / 100.0f));
 
-	// Compensate for scale rates at low levels so they don't add too much
-	uint8 scale_adjust = 1;
-	if(level > 0 && level <= 5)
-		scale_adjust = 10;
-	if(level > 5 && level <= 10)
-		scale_adjust = 5;
-	if(level > 10 && level <= 15)
-		scale_adjust = 3;
-	if(level > 15 && level <= 25)
-		scale_adjust = 2;
+	if (RuleB(NPC, NewLevelScaling)) {
+		if (scalerate == 0 || maxlevel <= 25) {
+			// pre-pop seems to scale by 20 HP increments while newer by 100
+			// We also don't want 100 increments on newer noobie zones, check level
+			if (zone->GetZoneID() < 200 || level < 48) {
+				max_hp += (random_level - level) * 20;
+				base_hp += (random_level - level) * 20;
+			} else {
+				max_hp += (random_level - level) * 100;
+				base_hp += (random_level - level) * 100;
+			}
 
-	base_hp += (int)(base_hp * scaling);
-	max_hp += (int)(max_hp * scaling);
-	cur_hp = max_hp;
-	STR += (int)(STR * scaling / scale_adjust);
-	STA += (int)(STA * scaling / scale_adjust);
-	AGI += (int)(AGI * scaling / scale_adjust);
-	DEX += (int)(DEX * scaling / scale_adjust);
-	INT += (int)(INT * scaling / scale_adjust);
-	WIS += (int)(WIS * scaling / scale_adjust);
-	CHA += (int)(CHA * scaling / scale_adjust);
-	if (MR)
-		MR += (int)(MR * scaling / scale_adjust);
-	if (CR)
-		CR += (int)(CR * scaling / scale_adjust);
-	if (DR)
-		DR += (int)(DR * scaling / scale_adjust);
-	if (FR)
-		FR += (int)(FR * scaling / scale_adjust);
-	if (PR)
-		PR += (int)(PR * scaling / scale_adjust);
+			cur_hp = max_hp;
+			max_dmg += (random_level - level) * 2;
+		} else {
+			uint8 scale_adjust = 1;
 
-	if (max_dmg)
-	{
-		max_dmg += (int)(max_dmg * scaling / scale_adjust);
-		min_dmg += (int)(min_dmg * scaling / scale_adjust);
+			base_hp += (int)(base_hp * scaling);
+			max_hp += (int)(max_hp * scaling);
+			cur_hp = max_hp;
+
+			if (max_dmg) {
+				max_dmg += (int)(max_dmg * scaling / scale_adjust);
+				min_dmg += (int)(min_dmg * scaling / scale_adjust);
+			}
+
+			STR += (int)(STR * scaling / scale_adjust);
+			STA += (int)(STA * scaling / scale_adjust);
+			AGI += (int)(AGI * scaling / scale_adjust);
+			DEX += (int)(DEX * scaling / scale_adjust);
+			INT += (int)(INT * scaling / scale_adjust);
+			WIS += (int)(WIS * scaling / scale_adjust);
+			CHA += (int)(CHA * scaling / scale_adjust);
+			if (MR)
+				MR += (int)(MR * scaling / scale_adjust);
+			if (CR)
+				CR += (int)(CR * scaling / scale_adjust);
+			if (DR)
+				DR += (int)(DR * scaling / scale_adjust);
+			if (FR)
+				FR += (int)(FR * scaling / scale_adjust);
+			if (PR)
+				PR += (int)(PR * scaling / scale_adjust);
+		}
+	} else {
+		// Compensate for scale rates at low levels so they don't add too much
+		uint8 scale_adjust = 1;
+		if(level > 0 && level <= 5)
+			scale_adjust = 10;
+		if(level > 5 && level <= 10)
+			scale_adjust = 5;
+		if(level > 10 && level <= 15)
+			scale_adjust = 3;
+		if(level > 15 && level <= 25)
+			scale_adjust = 2;
+
+		base_hp += (int)(base_hp * scaling);
+		max_hp += (int)(max_hp * scaling);
+		cur_hp = max_hp;
+		STR += (int)(STR * scaling / scale_adjust);
+		STA += (int)(STA * scaling / scale_adjust);
+		AGI += (int)(AGI * scaling / scale_adjust);
+		DEX += (int)(DEX * scaling / scale_adjust);
+		INT += (int)(INT * scaling / scale_adjust);
+		WIS += (int)(WIS * scaling / scale_adjust);
+		CHA += (int)(CHA * scaling / scale_adjust);
+		if (MR)
+			MR += (int)(MR * scaling / scale_adjust);
+		if (CR)
+			CR += (int)(CR * scaling / scale_adjust);
+		if (DR)
+			DR += (int)(DR * scaling / scale_adjust);
+		if (FR)
+			FR += (int)(FR * scaling / scale_adjust);
+		if (PR)
+			PR += (int)(PR * scaling / scale_adjust);
+
+		if (max_dmg)
+		{
+			max_dmg += (int)(max_dmg * scaling / scale_adjust);
+			min_dmg += (int)(min_dmg * scaling / scale_adjust);
+		}
+
 	}
-
 	level = random_level;
 
 	return;

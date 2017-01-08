@@ -17,13 +17,6 @@
 #define _NPCPET(x) (x && x->IsNPC() && x->CastToMob()->GetOwner() && x->CastToMob()->GetOwner()->IsNPC())
 #define _BECOMENPCPET(x) (x && x->CastToMob()->GetOwner() && x->CastToMob()->GetOwner()->IsClient() && x->CastToMob()->GetOwner()->CastToClient()->IsBecomeNPC())
 
-#define USE_ITEM_SPELL_SLOT 10
-#define POTION_BELT_SPELL_SLOT 11
-#define TARGET_RING_SPELL_SLOT 12
-#define DISCIPLINE_SPELL_SLOT 10
-#define ABILITY_SPELL_SLOT 9
-#define ALTERNATE_ABILITY_SPELL_SLOT 0xFF
-
 //LOS Parameters:
 #define HEAD_POSITION 0.9f	//ratio of GetSize() where NPCs see from
 #define SEE_POSITION 0.5f	//ratio of GetSize() where NPCs try to see for LOS
@@ -187,6 +180,16 @@ enum class PlayerState : uint32 {
 	Stunned = 32,
 	PrimaryWeaponEquipped = 64,
 	SecondaryWeaponEquipped = 128
+};
+
+enum class LootResponse : uint8 {
+	SomeoneElse = 0,
+	Normal = 1,
+	NotAtThisTime = 2,
+	Normal2 = 3, // acts exactly the same as Normal, maybe group vs ungroup? No idea
+	Hostiles = 4,
+	TooFar = 5,
+	LootAll = 6 // SoD+
 };
 
 //this is our internal representation of the BUFF struct, can put whatever we want in it
@@ -454,8 +457,7 @@ struct StatBonuses {
 	int32	ItemATKCap;							// Raise item attack cap
 	int32	FinishingBlow[2];					// Chance to do a finishing blow for specified damage amount.
 	uint32	FinishingBlowLvl[2];				// Sets max level an NPC can be affected by FB. (base1 = lv, base2= ???)
-	int32	ShieldEquipHateMod;					// Hate mod when shield equiped.
-	int32	ShieldEquipDmgMod[2];				// Damage mod when shield equiped. 0 = damage modifier 1 = Unknown
+	int32	ShieldEquipDmgMod;					// Increases weapon's base damage by base1 % when shield is equipped (indirectly increasing hate)
 	bool	TriggerOnValueAmount;				// Triggers off various different conditions, bool to check if client has effect.
 	int8	StunBashChance;						// chance to stun with bash.
 	int8	IncreaseChanceMemwipe;				// increases chance to memory wipe
@@ -565,7 +567,11 @@ struct MercData {
 	uint32	NPCID;
 };
 
-class ItemInst;
+namespace EQEmu
+{
+	class ItemInstance;
+}
+
 class Mob;
 // All data associated with a single trade
 class Trade
@@ -603,7 +609,7 @@ public:
 
 private:
 	// Send item data for trade item to other person involved in trade
-	void SendItemData(const ItemInst* inst, int16 dest_slot_id);
+	void SendItemData(const EQEmu::ItemInstance* inst, int16 dest_slot_id);
 
 	uint32 with_id;
 	Mob* owner;

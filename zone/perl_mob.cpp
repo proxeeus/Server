@@ -3982,12 +3982,12 @@ XS(XS_Mob_CastSpell)
 {
 	dXSARGS;
 	if (items < 3 || items > 7)
-		Perl_croak(aTHX_ "Usage: Mob::CastSpell(THIS, spell_id, target_id, slot= 10, casttime= -1, mana_cost= -1, resist_adjust = 0)");
+		Perl_croak(aTHX_ "Usage: Mob::CastSpell(THIS, spell_id, target_id, slot= 22, casttime= -1, mana_cost= -1, resist_adjust = 0)");
 	{
 		Mob *		THIS;
 		uint16		spell_id = (uint16)SvUV(ST(1));
 		uint16		target_id = (uint16)SvUV(ST(2));
-		uint16		slot;
+		EQEmu::CastingSlot slot;
 		int32		casttime;
 		int32		mana_cost;
 		int16		resist_adjust;
@@ -4002,9 +4002,9 @@ XS(XS_Mob_CastSpell)
 			Perl_croak(aTHX_ "THIS is nullptr, avoiding crash.");
 
 		if (items < 4)
-			slot = 10;
+			slot = EQEmu::CastingSlot::Item;
 		else {
-			slot = (uint16)SvUV(ST(3));
+			slot = static_cast<EQEmu::CastingSlot>(SvUV(ST(3)));
 		}
 
 		if (items < 5)
@@ -4085,7 +4085,7 @@ XS(XS_Mob_SpellFinished)
             resist_diff = spells[spell_id].ResistDiff;
         }
 
-		THIS->SpellFinished(spell_id, spell_target, 10, mana_cost, -1, resist_diff);
+		THIS->SpellFinished(spell_id, spell_target, EQEmu::CastingSlot::Item, mana_cost, -1, resist_diff);
 	}
 	XSRETURN_EMPTY;
 }
@@ -8092,8 +8092,8 @@ XS(XS_Mob_DoArcheryAttackDmg)
 	{
 		Mob *		THIS;
 		Mob*		target;
-		ItemInst*	RangeWeapon = nullptr;
-		ItemInst*	Ammo = nullptr;
+		EQEmu::ItemInstance*	RangeWeapon = nullptr;
+		EQEmu::ItemInstance*	Ammo = nullptr;
 		uint16		weapon_damage = (uint16)SvIV(ST(4));
 		int16		chance_mod = (int16)SvIV(ST(5));
 		int16		focus = (int16)SvIV(ST(6));
@@ -8130,8 +8130,8 @@ XS(XS_Mob_DoThrowingAttackDmg)
 	{
 		Mob *		THIS;
 		Mob*		target;
-		ItemInst*	RangeWeapon = nullptr;
-		EQEmu::ItemBase* item = nullptr;
+		EQEmu::ItemInstance*	RangeWeapon = nullptr;
+		EQEmu::ItemData* item = nullptr;
 		uint16		weapon_damage = (uint16)SvIV(ST(4));
 		int16		chance_mod = (int16)SvIV(ST(5));
 		int16		focus = (int16)SvIV(ST(6));

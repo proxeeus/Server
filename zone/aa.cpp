@@ -423,7 +423,7 @@ void Mob::WakeTheDead(uint16 spell_id, Mob *target, uint32 duration)
 		uint32 sitem = 0;
 		sitem = CorpseToUse->GetWornItem(x);
 		if(sitem){
-			const EQEmu::ItemBase * itm = database.GetItem(sitem);
+			const EQEmu::ItemData * itm = database.GetItem(sitem);
 			npca->AddLootDrop(itm, &npca->itemlist, 1, 1, 255, true, true);
 		}
 	}
@@ -867,7 +867,7 @@ void Client::SendAlternateAdvancementRank(int aa_id, int level) {
 	aai->max_level = ability->GetMaxLevel(this);
 	aai->prev_id = rank->prev_id;
 
-	if(rank->next && !CanUseAlternateAdvancementRank(rank->next) || ability->charges > 0) {
+	if((rank->next && !CanUseAlternateAdvancementRank(rank->next)) || ability->charges > 0) {
 		aai->next_id = -1;
 	} else {
 		aai->next_id = rank->next_id;
@@ -1179,14 +1179,21 @@ void Client::ActivateAlternateAdvancementAbility(int rank_id, int target_id) {
 		cooldown = 0;
 	}
 
+	if (!IsCastWhileInvis(rank->spell))
+		CommonBreakInvisible();
+
+	if (spells[rank->spell].sneak && (!hidden || (hidden && (Timer::GetCurrentTime() - tmHidden) < 4000))) {
+		Message_StringID(MT_SpellFailure, SNEAK_RESTRICT);
+		return;
+	}
 	// Bards can cast instant cast AAs while they are casting another song
 	if(spells[rank->spell].cast_time == 0 && GetClass() == BARD && IsBardSong(casting_spell_id)) {
-		if(!SpellFinished(rank->spell, entity_list.GetMob(target_id), ALTERNATE_ABILITY_SPELL_SLOT, spells[rank->spell].mana, -1, spells[rank->spell].ResistDiff, false)) {
+		if(!SpellFinished(rank->spell, entity_list.GetMob(target_id), EQEmu::CastingSlot::AltAbility, spells[rank->spell].mana, -1, spells[rank->spell].ResistDiff, false)) {
 			return;
 		}
 		ExpendAlternateAdvancementCharge(ability->id);
 	} else {
-		if(!CastSpell(rank->spell, target_id, ALTERNATE_ABILITY_SPELL_SLOT, -1, -1, 0, -1, rank->spell_type + pTimerAAStart, cooldown, nullptr, rank->id)) {
+		if(!CastSpell(rank->spell, target_id, EQEmu::CastingSlot::AltAbility, -1, -1, 0, -1, rank->spell_type + pTimerAAStart, cooldown, nullptr, rank->id)) {
 			return;
 		}
 	}
@@ -1237,6 +1244,10 @@ void Mob::ExpendAlternateAdvancementCharge(uint32 aa_id) {
 						if(r) {
 							CastToClient()->GetEPP().expended_aa += r->cost;
 						}
+					}
+					if (IsClient()) {
+						auto c = CastToClient();
+						c->RemoveExpendedAA(ability->first_rank_id);
 					}
 					aa_ranks.erase(iter.first);
 				}

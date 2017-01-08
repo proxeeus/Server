@@ -144,7 +144,7 @@ struct TintProfile {
 			Tint_Struct Primary;
 			Tint_Struct Secondary;
 		};
-		Tint_Struct Slot[EQEmu::textures::TextureCount];
+		Tint_Struct Slot[EQEmu::textures::materialCount];
 	};
 };
 
@@ -167,7 +167,7 @@ struct TextureProfile
 			Texture_Struct Primary;
 			Texture_Struct Secondary;
 		};
-		Texture_Struct Slot[EQEmu::textures::TextureCount];
+		Texture_Struct Slot[EQEmu::textures::materialCount];
 	};
 
 	TextureProfile();
@@ -390,7 +390,7 @@ struct MemorizeSpell_Struct {
 uint32 slot;     // Spot in the spell book/memorized slot
 uint32 spell_id; // Spell id (200 or c8 is minor healing, etc)
 uint32 scribing; // 1 if memorizing a spell, set to 0 if scribing to book, 2 if un-memming
-uint32 unknown12;
+uint32 reduction; // lowers reuse
 };
 
 /*
@@ -420,13 +420,13 @@ struct DeleteSpell_Struct
 /*005*/uint8	unknowndss006[3];
 /*008*/
 };
-
 struct ManaChange_Struct
 {
-	uint32	new_mana;                  // New Mana AMount
-	uint32	stamina;
-	uint32	spell_id;
-	uint32	unknown12;
+/*00*/	uint32	new_mana;		// New Mana AMount
+/*04*/	uint32	stamina;
+/*08*/	uint32	spell_id;
+/*12*/	uint8	keepcasting;	// won't stop the cast. Change mana while casting?
+/*13*/	uint8	padding[3];		// client doesn't read it, garbage data seems like
 };
 
 struct SwapSpell_Struct
@@ -473,26 +473,19 @@ struct SpawnAppearance_Struct
 // this is used inside profile
 struct SpellBuff_Struct
 {
-/*000*/	uint8	slotid;		//badly named... seems to be 2 for a real buff, 0 otherwise
+/*000*/	uint8	effect_type;	// 0 = no buff, 2 = buff, 4 = inverse affects of buff
 /*001*/ uint8	level;
 /*002*/	uint8	bard_modifier;
-/*003*/	uint8	effect;			//not real
+/*003*/	uint8	unknown003;		// MQ2 used to call this "damage shield" -- don't see client referencing it, so maybe server side DS type tracking?
 /*004*/	uint32	spellid;
 /*008*/ int32	duration;
-/*012*/	uint32	counters;
-/*016*/	uint32	player_id;	//'global' ID of the caster, for wearoff messages
+/*012*/	uint32	counters;		// single book keeping value (counters, rune/vie)
+/*016*/	uint32	player_id;		// caster ID, pretty sure just zone ID
 };
 
-struct SpellBuffFade_Struct {
+struct SpellBuffPacket_Struct {
 /*000*/	uint32 entityid;
-/*004*/	uint8 slot;
-/*005*/	uint8 level;
-/*006*/	uint8 effect;
-/*007*/	uint8 unknown7;
-/*008*/	uint32 spellid;
-/*012*/	int32 duration;
-/*016*/	uint32 unknown016;
-/*020*/	uint32 unknown020;	//prolly global player ID
+/*004*/	SpellBuff_Struct buff;
 /*024*/	uint32 slotid;
 /*028*/	uint32 bufffade;
 /*032*/
@@ -1427,7 +1420,7 @@ struct LootingItem_Struct {
 /*002*/	uint32	looter;
 /*004*/	uint16	slot_id;
 /*006*/	uint8	unknown3[2];
-/*008*/	uint32	auto_loot;
+/*008*/	int32	auto_loot;
 };
 
 struct GuildManageStatus_Struct{
@@ -1664,8 +1657,7 @@ struct Merchant_Sell_Struct {
 /*004*/	uint32	playerid;		// Player's entity id
 /*008*/	uint32	itemslot;
 		uint32	unknown12;
-/*016*/	uint8	quantity;		// Already sold
-/*017*/ uint8	Unknown016[3];
+/*016*/	uint32	quantity;
 /*020*/ uint32	price;
 };
 struct Merchant_Purchase_Struct {
@@ -3234,6 +3226,11 @@ struct MobHealth_Struct {
 struct AnnoyingZoneUnknown_Struct {
 	uint32	entity_id;
 	uint32	value;		//always 4
+};
+
+struct LoadSpellSet_Struct {
+	uint32 spell[MAX_PP_MEMSPELL];
+	uint32 unknown;
 };
 
 struct ApplyPoison_Struct {

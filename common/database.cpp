@@ -627,9 +627,9 @@ bool Database::SaveCharacterCreate(uint32 character_id, uint32 account_id, Playe
 	/* Save Bind Points */
 	query = StringFormat("REPLACE INTO `character_bind` (id, zone_id, instance_id, x, y, z, heading, slot)"
 		" VALUES (%u, %u, %u, %f, %f, %f, %f, %i), "
-		"(%u, %u, %u, %f, %f, %f, %f, %i), ",
-		"(%u, %u, %u, %f, %f, %f, %f, %i), ",
-		"(%u, %u, %u, %f, %f, %f, %f, %i), ",
+		"(%u, %u, %u, %f, %f, %f, %f, %i), "
+		"(%u, %u, %u, %f, %f, %f, %f, %i), "
+		"(%u, %u, %u, %f, %f, %f, %f, %i), "
 		"(%u, %u, %u, %f, %f, %f, %f, %i)",
 		character_id, pp->binds[0].zoneId, 0, pp->binds[0].x, pp->binds[0].y, pp->binds[0].z, pp->binds[0].heading, 0,
 		character_id, pp->binds[1].zoneId, 0, pp->binds[1].x, pp->binds[1].y, pp->binds[1].z, pp->binds[1].heading, 1,
@@ -637,6 +637,13 @@ bool Database::SaveCharacterCreate(uint32 character_id, uint32 account_id, Playe
 		character_id, pp->binds[3].zoneId, 0, pp->binds[3].x, pp->binds[3].y, pp->binds[3].z, pp->binds[3].heading, 3,
 		character_id, pp->binds[4].zoneId, 0, pp->binds[4].x, pp->binds[4].y, pp->binds[4].z, pp->binds[4].heading, 4
 	); results = QueryDatabase(query);
+
+        /* HoTT Ability */
+        if(RuleB(Character, GrantHoTTOnCreate))
+        {
+                query = StringFormat("INSERT INTO `character_leadership_abilities` (id, slot, rank) VALUES (%u, %i, %i)", character_id, 14, 1);
+                results = QueryDatabase(query);
+        }
 
 	/* Save Skills */
 	int firstquery = 0;
@@ -672,7 +679,7 @@ bool Database::SaveCharacterCreate(uint32 character_id, uint32 account_id, Playe
 }
 
 /* This only for new Character creation storing */
-bool Database::StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, Inventory* inv) {
+bool Database::StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, EQEmu::InventoryProfile* inv) {
 	uint32 charid = 0; 
 	char zone[50]; 
 	float x, y, z; 
@@ -701,7 +708,7 @@ bool Database::StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, Inven
 	/* Insert starting inventory... */
 	std::string invquery;
 	for (int16 i = EQEmu::legacy::EQUIPMENT_BEGIN; i <= EQEmu::legacy::BANK_BAGS_END;) {
-		const ItemInst* newinv = inv->GetItem(i);
+		const EQEmu::ItemInstance* newinv = inv->GetItem(i);
 		if (newinv) {
 			invquery = StringFormat("INSERT INTO `inventory` (charid, slotid, itemid, charges, color) VALUES (%u, %i, %u, %i, %u)",
 				charid, i, newinv->GetItem()->ID, newinv->GetCharges(), newinv->GetColor()); 
@@ -709,7 +716,7 @@ bool Database::StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, Inven
 			auto results = QueryDatabase(invquery); 
 		}
 
-		if (i == EQEmu::legacy::SlotCursor) {
+		if (i == EQEmu::inventory::slotCursor) {
 			i = EQEmu::legacy::GENERAL_BAGS_BEGIN; 
 			continue;
 		}
@@ -2135,4 +2142,28 @@ bool Database::SaveTime(int8 minute, int8 hour, int8 day, int8 month, int16 year
 
 	return results.Success();
 
+}
+
+int Database::GetIPExemption(std::string account_ip) {
+	std::string query = StringFormat("SELECT `exemption_amount` FROM `ip_exemptions` WHERE `exemption_ip` = '%s'", account_ip.c_str());
+	auto results = QueryDatabase(query);
+	
+	if (results.Success() && results.RowCount() > 0) {
+		auto row = results.begin();
+		return atoi(row[0]);
+	}
+	
+	return RuleI(World, MaxClientsPerIP);
+}
+
+int Database::GetInstanceID(uint32 char_id, uint32 zone_id) {
+	std::string query = StringFormat("SELECT instance_list.id FROM instance_list INNER JOIN instance_list_player ON instance_list.id = instance_list_player.id WHERE instance_list.zone = '%i' AND instance_list_player.charid = '%i'", zone_id, char_id);
+	auto results = QueryDatabase(query);
+
+	if (results.Success() && results.RowCount() > 0) {
+		auto row = results.begin();
+		return atoi(row[0]);;
+	}
+
+	return 0;
 }

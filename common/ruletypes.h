@@ -55,6 +55,7 @@ RULE_REAL(Character, AAExpMultiplier, 0.5)
 RULE_REAL(Character, GroupExpMultiplier, 0.5)
 RULE_REAL(Character, RaidExpMultiplier, 0.2)
 RULE_BOOL(Character, UseXPConScaling, true)
+RULE_INT(Character, ShowExpValues, 0) //0 - normal, 1 - Show raw experience values, 2 - Show raw experience values AND percent.
 RULE_INT(Character, LightBlueModifier, 40)
 RULE_INT(Character, BlueModifier, 90)
 RULE_INT(Character, WhiteModifier, 100)
@@ -142,6 +143,11 @@ RULE_INT(Character, InvSnapshotMinRetryM, 30) // Time (in minutes) to re-attempt
 RULE_INT(Character, InvSnapshotHistoryD, 30) // Time (in days) to keep snapshot entries
 RULE_BOOL(Character, RestrictSpellScribing, false) // Restricts spell scribing to allowable races/classes of spell scroll, if true
 RULE_BOOL(Character, UseStackablePickPocketing, true) // Allows stackable pickpocketed items to stack instead of only being allowed in empty inventory slots
+RULE_BOOL(Character, EnableAvoidanceCap, false)
+RULE_INT(Character, AvoidanceCap, 750) // 750 Is a pretty good value, seen people dodge all attacks beyond 1,000 Avoidance
+RULE_BOOL(Character, AllowMQTarget, false) // Disables putting players in the 'hackers' list for targeting beyond the clip plane or attempting to target something untargetable
+RULE_BOOL(Character, UseOldBindWound, false) // Uses the original bind wound behavior
+RULE_BOOL(Character, GrantHoTTOnCreate, false) // Grant Health of Target's Target leadership AA on character creation
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Mercs)
@@ -203,6 +209,7 @@ RULE_INT(World, ExemptMaxClientsStatus, -1) // Exempt accounts from the MaxClien
 RULE_INT(World, AddMaxClientsPerIP, -1) // Maximum number of clients allowed to connect per IP address if account status is < ExemptMaxClientsStatus. Default value: -1 (feature disabled)
 RULE_INT(World, AddMaxClientsStatus, -1) // Accounts with status >= this rule will be allowed to use the amount of accounts defined in the AddMaxClientsPerIP. Default value: -1 (feature disabled)
 RULE_BOOL(World, MaxClientsSetByStatus, false) // If True, IP Limiting will be set to the status on the account as long as the status is > MaxClientsPerIP
+RULE_BOOL(World, EnableIPExemptions, false) // If True, ip_exemptions table is used, if there is no entry for the IP it will default to RuleI(World, MaxClientsPerIP)
 RULE_BOOL(World, ClearTempMerchantlist, true) // Clears temp merchant items when world boots.
 RULE_BOOL(World, DeleteStaleCorpeBackups, true) // Deletes stale corpse backups older than 2 weeks.
 RULE_INT(World, AccountSessionLimit, -1) //Max number of characters allowed on at once from a single account (-1 is disabled)
@@ -250,6 +257,7 @@ RULE_INT(Zone, WeatherTimer, 600) // Weather timer when no duration is available
 RULE_BOOL(Zone, EnableLoggedOffReplenishments, true)
 RULE_INT(Zone, MinOfflineTimeToReplenishments, 21600) // 21600 seconds is 6 Hours
 RULE_BOOL(Zone, UseZoneController, true) // Enables the ability to use persistent quest based zone controllers (zone_controller.pl/lua)
+RULE_BOOL(Zone, EnableZoneControllerGlobals, false) // Enables the ability to use quest globals with the zone controller NPC
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Map)
@@ -325,11 +333,11 @@ RULE_INT(Spells, SacrificeMinLevel, 46)	//first level Sacrifice will work on
 RULE_INT(Spells, SacrificeMaxLevel, 69)	//last level Sacrifice will work on
 RULE_INT(Spells, SacrificeItemID, 9963)	//Item ID of the item Sacrifice will return (defaults to an EE)
 RULE_BOOL(Spells, EnableSpellGlobals, false)	// If Enabled, spells check the spell_globals table and compare character data from the quest globals before allowing that spell to scribe with scribespells
-RULE_INT(Spells, MaxBuffSlotsNPC, 25)
-RULE_INT(Spells, MaxSongSlotsNPC, 10)
-RULE_INT(Spells, MaxDiscSlotsNPC, 1)
-RULE_INT(Spells, MaxTotalSlotsNPC, 36)
-RULE_INT(Spells, MaxTotalSlotsPET, 25)	// do not set this higher than 25 until the player profile is removed from the blob
+RULE_INT(Spells, MaxBuffSlotsNPC, 60)	// default to Tit's limit
+RULE_INT(Spells, MaxSongSlotsNPC, 0)	// NPCs don't have songs ...
+RULE_INT(Spells, MaxDiscSlotsNPC, 0)	// NPCs don't have discs ...
+RULE_INT(Spells, MaxTotalSlotsNPC, 60)	// default to Tit's limit
+RULE_INT(Spells, MaxTotalSlotsPET, 30)	// default to Tit's limit
 RULE_BOOL (Spells, EnableBlockedBuffs, true)
 RULE_INT(Spells, ReflectType, 1) //0 = disabled, 1 = single target player spells only, 2 = all player spells, 3 = all single target spells, 4 = all spells
 RULE_INT(Spells, VirusSpreadDistance, 30) // The distance a viral spell will jump to its next victim
@@ -379,6 +387,8 @@ RULE_BOOL(Spells, UseAdditiveFocusFromWornSlot, false) // Allows an additive foc
 RULE_BOOL(Spells, AlwaysSendTargetsBuffs, false) // ignore LAA level if true
 RULE_BOOL(Spells, FlatItemExtraSpellAmt, false) // allow SpellDmg stat to affect all spells, regardless of cast time/cooldown/etc
 RULE_BOOL(Spells, IgnoreSpellDmgLvlRestriction, false) // ignore the 5 level spread on applying SpellDmg
+RULE_BOOL(Spells, AllowItemTGB, false) // TGB doesn't work with items on live, custom servers want it though
+RULE_BOOL(Spells, NPCInnateProcOverride, true) //  NPC innate procs override the target type to single target.
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)
@@ -481,6 +491,7 @@ RULE_BOOL(Combat, UseLiveCombatRounds, true) // turn this false if you don't wan
 RULE_INT(Combat, NPCAssistCap, 5) // Maxiumium number of NPCs that will assist another NPC at once
 RULE_INT(Combat, NPCAssistCapTimer, 6000) // Time in milliseconds a NPC will take to clear assist aggro cap space
 RULE_BOOL(Combat, UseRevampHandToHand, false) // use h2h revamped dmg/delays I believe this was implemented during SoF
+RULE_BOOL(Combat, ClassicMasterWu, false) // classic master wu uses a random special, modern doesn't
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -502,6 +513,8 @@ RULE_BOOL(NPC, LiveLikeEnrage, false) // If set to true then only player control
 RULE_BOOL(NPC, EnableMeritBasedFaction, false) // If set to true, faction will given in the same way as experience (solo/group/raid)
 RULE_INT(NPC, NPCToNPCAggroTimerMin, 500)
 RULE_INT(NPC, NPCToNPCAggroTimerMax, 6000)
+RULE_BOOL(NPC, UseClassAsLastName, true) // Uses class archetype as LastName for npcs with none
+RULE_BOOL(NPC, NewLevelScaling, true) // Better level scaling, use old if new formulas would break your server
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Aggro)
@@ -517,6 +530,7 @@ RULE_REAL(Aggro, TunnelVisionAggroMod, 0.75) //people not currently the top hate
 RULE_INT(Aggro, MaxScalingProcAggro, 400) // Set to -1 for no limit. Maxmimum amount of aggro that HP scaling SPA effect in a proc will add.
 RULE_INT(Aggro, IntAggroThreshold, 75) // Int <= this will aggro regardless of level difference.
 RULE_BOOL(Aggro, AllowTickPulling, false) // tick pulling is an exploit in an NPC's call for help fixed sometime in 2006 on live
+RULE_BOOL(Aggro, UseLevelAggro, true) // Level 18+ and Undead will aggro regardless of level difference. (this will disabled Rule:IntAggroThreshold if set to true)
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(TaskSystem)
@@ -542,12 +556,13 @@ RULE_REAL(Bots, ManaRegen, 2.0) // Adjust mana regen for bots, 1 is fast and hig
 RULE_BOOL(Bots, PreferNoManaCommandSpells, true) // Give sorting priority to newer no-mana spells (i.e., 'Bind Affinity')
 RULE_BOOL(Bots, QuestableSpawnLimit, false) // Optional quest method to manage bot spawn limits using the quest_globals name bot_spawn_limit, see: /bazaar/Aediles_Thrall.pl
 RULE_BOOL(Bots, QuestableSpells, false) // Anita Thrall's (Anita_Thrall.pl) Bot Spell Scriber quests.
-RULE_INT(Bots, SpawnLimit, 71) // Number of bots a character can have spawned at one time, You + 71 bots is a 12 group raid
+RULE_INT(Bots, SpawnLimit, 71) // Number of bots a character can have spawned at one time, You + 71 bots is a 12 group pseudo-raid (bots are not raidable at this time)
 RULE_BOOL(Bots, BotGroupXP, false) // Determines whether client gets xp for bots outside their group.
 RULE_BOOL(Bots, BotBardUseOutOfCombatSongs, true) // Determines whether bard bots use additional out of combat songs (optional script)
 RULE_BOOL(Bots, BotLevelsWithOwner, false) // Auto-updates spawned bots as owner levels/de-levels (false is original behavior)
 RULE_BOOL(Bots, BotCharacterLevelEnabled, false) // Enables required level to spawn bots
 RULE_INT(Bots, BotCharacterLevel, 0) // 0 as default (if level > this value you can spawn bots if BotCharacterLevelEnabled is true)
+RULE_INT(Bots, CasterStopMeleeLevel, 13) // Level at which caster bots stop melee attacks
 RULE_CATEGORY_END()
 #endif
 
@@ -665,6 +680,7 @@ RULE_CATEGORY_END()
 
 RULE_CATEGORY(Client)
 RULE_BOOL(Client, UseLiveFactionMessage, false) // Allows players to see faction adjustments like Live
+RULE_BOOL(Client, UseLiveBlockedMessage, false) // Allows players to see faction adjustments like Live
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

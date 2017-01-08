@@ -420,7 +420,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	// like the special back items some focused pets may receive.
 	uint32 petinv[EQEmu::legacy::EQUIPMENT_SIZE];
 	memset(petinv, 0, sizeof(petinv));
-	const EQEmu::ItemBase *item = 0;
+	const EQEmu::ItemData *item = 0;
 
 	if (database.GetBasePetItems(record.equipmentset, petinv)) {
 		for (int i = 0; i < EQEmu::legacy::EQUIPMENT_SIZE; i++)
@@ -579,10 +579,10 @@ void NPC::GetPetState(SpellBuff_Struct *pet_buffs, uint32 *items, char *name) {
 	for (int i=0; i < GetPetMaxTotalSlots(); i++) {
 		if (buffs[i].spellid != SPELL_UNKNOWN) {
 			pet_buffs[i].spellid = buffs[i].spellid;
-			pet_buffs[i].slotid = i+1;
+			pet_buffs[i].effect_type = i+1;
 			pet_buffs[i].duration = buffs[i].ticsremaining;
 			pet_buffs[i].level = buffs[i].casterlevel;
-			pet_buffs[i].effect = 10;
+			pet_buffs[i].bard_modifier = 10;
 			pet_buffs[i].counters = buffs[i].counters;
 			pet_buffs[i].bard_modifier = buffs[i].instrument_mod;
 		}
@@ -590,7 +590,7 @@ void NPC::GetPetState(SpellBuff_Struct *pet_buffs, uint32 *items, char *name) {
 			pet_buffs[i].spellid = SPELL_UNKNOWN;
 			pet_buffs[i].duration = 0;
 			pet_buffs[i].level = 0;
-			pet_buffs[i].effect = 0;
+			pet_buffs[i].bard_modifier = 10;
 			pet_buffs[i].counters = 0;
 		}
 	}
@@ -623,10 +623,10 @@ void NPC::SetPetState(SpellBuff_Struct *pet_buffs, uint32 *items) {
 		else {
 			buffs[i].spellid = SPELL_UNKNOWN;
 			pet_buffs[i].spellid = 0xFFFFFFFF;
-			pet_buffs[i].slotid = 0;
+			pet_buffs[i].effect_type = 0;
 			pet_buffs[i].level = 0;
 			pet_buffs[i].duration = 0;
-			pet_buffs[i].effect = 0;
+			pet_buffs[i].bard_modifier = 0;
 		}
 	}
 	for (int j1=0; j1 < GetPetMaxTotalSlots(); j1++) {
@@ -648,10 +648,10 @@ void NPC::SetPetState(SpellBuff_Struct *pet_buffs, uint32 *items) {
 					case SE_Illusion:
 						buffs[j1].spellid = SPELL_UNKNOWN;
 						pet_buffs[j1].spellid = SPELLBOOK_UNKNOWN;
-						pet_buffs[j1].slotid = 0;
+						pet_buffs[j1].effect_type = 0;
 						pet_buffs[j1].level = 0;
 						pet_buffs[j1].duration = 0;
-						pet_buffs[j1].effect = 0;
+						pet_buffs[j1].bard_modifier = 0;
 						x1 = EFFECT_COUNT;
 						break;
 					// We can't send appearance packets yet, put down at CompleteConnect
@@ -665,7 +665,7 @@ void NPC::SetPetState(SpellBuff_Struct *pet_buffs, uint32 *items) {
 		if(items[i] == 0)
 			continue;
 
-		const EQEmu::ItemBase* item2 = database.GetItem(items[i]);
+		const EQEmu::ItemData* item2 = database.GetItem(items[i]);
 		if (item2 && item2->NoDrop != 0) {
 			//dont bother saving item charges for now, NPCs never use them
 			//and nobody should be able to get them off the corpse..?
@@ -738,3 +738,10 @@ bool ZoneDatabase::GetBasePetItems(int32 equipmentset, uint32 *items) {
 	return true;
 }
 
+bool Pet::CheckSpellLevelRestriction(uint16 spell_id)
+{
+	auto owner = GetOwner();
+	if (owner)
+		return owner->CheckSpellLevelRestriction(spell_id);
+	return true;
+}

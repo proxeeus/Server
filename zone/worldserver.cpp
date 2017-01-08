@@ -543,7 +543,18 @@ void WorldServer::Process() {
 				else {
 					SendEmoteMessage(szp->adminname, 0, 0, "Summoning %s to %s %1.1f, %1.1f, %1.1f", szp->name, szp->zone, szp->x_pos, szp->y_pos, szp->z_pos);
 				}
-				client->MovePC(database.GetZoneID(szp->zone), szp->instance_id, szp->x_pos, szp->y_pos, szp->z_pos, client->GetHeading(), szp->ignorerestrictions, GMSummon);
+				if (!szp->instance_id) {
+					client->MovePC(database.GetZoneID(szp->zone), szp->instance_id, szp->x_pos, szp->y_pos, szp->z_pos, client->GetHeading(), szp->ignorerestrictions, GMSummon);
+				} else {
+					if (database.GetInstanceID(client->CharacterID(), database.GetZoneID(szp->zone)) == 0) {
+						client->AssignToInstance(szp->instance_id);
+						client->MovePC(database.GetZoneID(szp->zone), szp->instance_id, szp->x_pos, szp->y_pos, szp->z_pos, client->GetHeading(), szp->ignorerestrictions, GMSummon);
+					} else {
+						client->RemoveFromInstance(database.GetInstanceID(client->CharacterID(), database.GetZoneID(szp->zone)));
+						client->AssignToInstance(szp->instance_id);
+						client->MovePC(database.GetZoneID(szp->zone), szp->instance_id, szp->x_pos, szp->y_pos, szp->z_pos, client->GetHeading(), szp->ignorerestrictions, GMSummon);
+					}
+				}
 			}
 			break;
 		}
@@ -711,10 +722,12 @@ void WorldServer::Process() {
 					Log.Out(Logs::Detail, Logs::Spells, "OP_RezzComplete received in zone %s for corpse %s",
 								zone->GetShortName(), srs->rez.corpse_name);
 
-					Log.Out(Logs::Detail, Logs::Spells, "Found corpse. Marking corpse as rezzed.");
+					Log.Out(Logs::Detail, Logs::Spells, "Found corpse. Marking corpse as rezzed if needed.");
 					// I don't know why Rezzed is not set to true in CompleteRezz().
-					corpse->IsRezzed(true);
-					corpse->CompleteResurrection();
+					if (!IsEffectInSpell(srs->rez.spellid, SE_SummonToCorpse)) {
+						corpse->IsRezzed(true);
+						corpse->CompleteResurrection();
+					}
 				}
 			}
 
@@ -765,7 +778,7 @@ void WorldServer::Process() {
 				zone->SetZoneHasCurrentTime(true);
 
 			}
-			if (zone->is_zone_time_localized){
+			if (zone && zone->is_zone_time_localized){
 				Log.Out(Logs::General, Logs::Zone_Server, "Received request to sync time from world, but our time is localized currently");
 			}
 			break;
@@ -1837,6 +1850,19 @@ void WorldServer::Process() {
 				client->Message(CZCS->Type, CZCS->Message);
 			}
 			break;
+		}
+		case ServerOP_WWMarquee:
+		{
+			WWMarquee_Struct* WWMS = (WWMarquee_Struct*) pack->pBuffer;
+			std::list<Client*> client_list;
+			entity_list.GetClientList(client_list);
+			auto iter = client_list.begin();
+			std::string Message = WWMS->Message;
+			while (iter != client_list.end()) {
+				Client* client = (*iter);
+				client->SendMarqueeMessage(WWMS->Type, WWMS->Priority, WWMS->FadeIn, WWMS->FadeOut, WWMS->Duration, Message);
+				iter++;
+			}
 		}
 		case ServerOP_ReloadWorld:
 		{

@@ -340,7 +340,7 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 	}
 	uint32 i = 0;
 	uint32 membercount = 0;
-	if (GetGroup())
+	if(GetGroup())
 	{
 		for (i = 0; i < MAX_GROUP_MEMBERS; i++) {
 			if (GetGroup()->members[i] != nullptr) {
@@ -349,25 +349,56 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 		}
 	}
 
-	if ((set_exp + set_aaxp) >(m_pp.exp + m_pp.expAA)) {
-		if (isrezzexp)
-			this->Message_StringID(MT_Experience, REZ_REGAIN);
-		else{
-			if (membercount > 1)
-				this->Message_StringID(MT_Experience, GAIN_GROUPXP);
-			else if (IsRaidGrouped())
-				Message_StringID(MT_Experience, GAIN_RAIDEXP);
-			else
-				this->Message_StringID(MT_Experience, GAIN_XP);
+	if ((set_exp + set_aaxp) > (m_pp.exp+m_pp.expAA)) {
+
+		uint32 exp_gained = set_exp - m_pp.exp;
+		uint32 aaxp_gained = set_aaxp - m_pp.expAA;
+		float exp_percent = (float)((float)exp_gained / (float)(GetEXPForLevel(GetLevel() + 1) - GetEXPForLevel(GetLevel())))*(float)100; //EXP needed for level
+		float aaxp_percent = (float)((float)aaxp_gained / (float)(RuleI(AA, ExpPerPoint)))*(float)100; //AAEXP needed for level
+		std::string exp_amount_message = "";
+		if (RuleI(Character, ShowExpValues) >= 1) {
+			if (exp_gained > 0 && aaxp_gained > 0) exp_amount_message = StringFormat("%u, %u AA", exp_gained, aaxp_gained);
+			else if (exp_gained > 0) exp_amount_message = StringFormat("%u", exp_gained);
+			else exp_amount_message = StringFormat("%u AA", aaxp_gained);
+		}
+
+		std::string exp_percent_message = "";
+		if (RuleI(Character, ShowExpValues) >= 2) {
+			if (exp_gained > 0 && aaxp_gained > 0) exp_percent_message = StringFormat("(%.3f%%, %.3f%%AA)", exp_percent, aaxp_percent);
+			else if (exp_gained > 0) exp_percent_message = StringFormat("(%.3f%%)", exp_percent);
+			else exp_percent_message = StringFormat("(%.3f%%AA)", aaxp_percent);
+		}
+
+		if (isrezzexp) {
+			if (RuleI(Character, ShowExpValues) > 0) Message(MT_Experience, "You regain %s experience from resurrection. %s", exp_amount_message.c_str(), exp_percent_message.c_str());
+			else Message_StringID(MT_Experience, REZ_REGAIN);
+		} else {
+			if (membercount > 1) {
+				if (RuleI(Character, ShowExpValues) > 0) Message(MT_Experience, "You have gained %s party experience! %s", exp_amount_message.c_str(), exp_percent_message.c_str());
+				else Message_StringID(MT_Experience, GAIN_GROUPXP);
+			}
+			else if (IsRaidGrouped()) {
+				if (RuleI(Character, ShowExpValues) > 0) Message(MT_Experience, "You have gained %s raid experience! %s", exp_amount_message.c_str(), exp_percent_message.c_str());
+				else Message_StringID(MT_Experience, GAIN_RAIDEXP);
+			} 
+			else {
+				if (RuleI(Character, ShowExpValues) > 0) Message(MT_Experience, "You have gained %s experience! %s", exp_amount_message.c_str(), exp_percent_message.c_str());
+				else Message_StringID(MT_Experience, GAIN_XP);				
+			}
 		}
 	}
-	else if ((set_exp + set_aaxp) < (m_pp.exp + m_pp.expAA)){ //only loss message if you lose exp, no message if you gained/lost nothing.
-		Message(15, "You have lost experience.");
+	else if((set_exp + set_aaxp) < (m_pp.exp+m_pp.expAA)){ //only loss message if you lose exp, no message if you gained/lost nothing.
+		uint32 exp_lost = m_pp.exp - set_exp;
+		float exp_percent = (float)((float)exp_lost / (float)(GetEXPForLevel(GetLevel() + 1) - GetEXPForLevel(GetLevel())))*(float)100;
+
+		if (RuleI(Character, ShowExpValues) == 1 && exp_lost > 0) Message(15, "You have lost %i experience.", exp_lost);
+		else if (RuleI(Character, ShowExpValues) == 2 && exp_lost > 0) Message(15, "You have lost %i experience. (%.3f%%)", exp_lost, exp_percent);
+		else Message(15, "You have lost experience.");		
 	}
 
 	//check_level represents the level we should be when we have
 	//this ammount of exp (once these loops complete)
-	uint16 check_level = GetLevel() + 1;
+	uint16 check_level = GetLevel()+1;
 	//see if we gained any levels
 	bool level_increase = true;
 	int8 level_count = 0;
@@ -380,18 +411,18 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 		}
 		level_count++;
 
-		if (GetMercID())
+		if(GetMercID())
 			UpdateMercLevel();
 	}
 	//see if we lost any levels
-	while (set_exp < GetEXPForLevel(check_level - 1)) {
+	while (set_exp < GetEXPForLevel(check_level-1)) {
 		check_level--;
 		if (check_level < 2) {	//hard level minimum
 			check_level = 2;
 			break;
 		}
 		level_increase = false;
-		if (GetMercID())
+		if(GetMercID())
 			UpdateMercLevel();
 	}
 	check_level--;
@@ -400,15 +431,15 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 	//see if we gained any AAs
 	if (set_aaxp >= max_AAXP) {
 		/*
-		Note: AA exp is stored differently than normal exp.
-		Exp points are only stored in m_pp.expAA until you
-		gain a full AA point, once you gain it, a point is
-		added to m_pp.aapoints and the ammount needed to gain
-		that point is subtracted from m_pp.expAA
+			Note: AA exp is stored differently than normal exp.
+			Exp points are only stored in m_pp.expAA until you
+			gain a full AA point, once you gain it, a point is
+			added to m_pp.aapoints and the ammount needed to gain
+			that point is subtracted from m_pp.expAA
 
-		then, once they spend an AA point, it is subtracted from
-		m_pp.aapoints. In theory it then goes into m_pp.aapoints_spent,
-		but im not sure if we have that in the right spot.
+			then, once they spend an AA point, it is subtracted from
+			m_pp.aapoints. In theory it then goes into m_pp.aapoints_spent,
+			but im not sure if we have that in the right spot.
 		*/
 		//record how many points we have
 		uint32 last_unspentAA = m_pp.aapoints;
@@ -428,9 +459,9 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 		/*uint32 gained = m_pp.aapoints - last_unspentAA;*/	//unused
 
 		//Message(15, "You have gained %d skill points!!", m_pp.aapoints - last_unspentAA);
-		char val1[20] = { 0 };
-		Message_StringID(MT_Experience, GAIN_ABILITY_POINT, ConvertArray(m_pp.aapoints, val1), m_pp.aapoints == 1 ? "" : "(s)");	//You have gained an ability point! You now have %1 ability point%2.
-
+		char val1[20]={0};
+		Message_StringID(MT_Experience, GAIN_ABILITY_POINT,ConvertArray(m_pp.aapoints, val1),m_pp.aapoints == 1 ? "" : "(s)");	//You have gained an ability point! You now have %1 ability point%2.
+		
 		/* QS: PlayerLogAARate */
 		if (RuleB(QueryServ, PlayerLogAARate)){
 			int add_points = (m_pp.aapoints - last_unspentAA);
@@ -443,26 +474,26 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 
 	uint8 maxlevel = RuleI(Character, MaxExpLevel) + 1;
 
-	if (maxlevel <= 1)
+	if(maxlevel <= 1)
 		maxlevel = RuleI(Character, MaxLevel) + 1;
 
-	if (check_level > maxlevel) {
+	if(check_level > maxlevel) {
 		check_level = maxlevel;
 
-		if (RuleB(Character, KeepLevelOverMax)) {
-			set_exp = GetEXPForLevel(GetLevel() + 1);
+		if(RuleB(Character, KeepLevelOverMax)) {
+			set_exp = GetEXPForLevel(GetLevel()+1);
 		}
 		else {
 			set_exp = GetEXPForLevel(maxlevel);
 		}
 	}
 
-	if (RuleB(Character, PerCharacterQglobalMaxLevel)){
+	if(RuleB(Character, PerCharacterQglobalMaxLevel)){
 		uint32 MaxLevel = GetCharMaxLevelFromQGlobal();
-		if (MaxLevel){
-			if (GetLevel() >= MaxLevel){
+		if(MaxLevel){
+			if(GetLevel() >= MaxLevel){
 				uint32 expneeded = GetEXPForLevel(MaxLevel);
-				if (set_exp > expneeded) {
+				if(set_exp > expneeded) {
 					set_exp = expneeded;
 				}
 			}
@@ -470,7 +501,7 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 	}
 
 	if ((GetLevel() != check_level) && !(check_level >= maxlevel)) {
-		char val1[20] = { 0 };
+		char val1[20]={0};
 		if (level_increase)
 		{
 			if (level_count == 1)
@@ -494,16 +525,16 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 		SetLevel(check_level);
 
 #ifdef BOTS
-		if (RuleB(Bots, BotLevelsWithOwner))
+		if(RuleB(Bots, BotLevelsWithOwner))
 			// hack way of doing this..but, least invasive... (same criteria as gain level for sendlvlapp)
-			Bot::LevelBotWithClient(this, GetLevel(), (myoldlevel == check_level - 1));
+			Bot::LevelBotWithClient(this, GetLevel(), (myoldlevel==check_level-1));
 #endif
 	}
 
 	//If were at max level then stop gaining experience if we make it to the cap
-	if (GetLevel() == maxlevel - 1){
+	if(GetLevel() == maxlevel - 1){
 		uint32 expneeded = GetEXPForLevel(maxlevel);
-		if (set_exp > expneeded) {
+		if(set_exp > expneeded) {
 			set_exp = expneeded;
 		}
 	}
@@ -514,31 +545,29 @@ void Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool isrezzexp) {
 
 	if (GetLevel() < 51) {
 		m_epp.perAA = 0;	// turn off aa exp if they drop below 51
-	}
-	else
+	} else
 		SendAlternateAdvancementStats();	//otherwise, send them an AA update
 
 	//send the expdata in any case so the xp bar isnt stuck after leveling
-	uint32 tmpxp1 = GetEXPForLevel(GetLevel() + 1);
+	uint32 tmpxp1 = GetEXPForLevel(GetLevel()+1);
 	uint32 tmpxp2 = GetEXPForLevel(GetLevel());
 	// Quag: crash bug fix... Divide by zero when tmpxp1 and 2 equalled each other, most likely the error case from GetEXPForLevel() (invalid class, etc)
 	if (tmpxp1 != tmpxp2 && tmpxp1 != 0xFFFFFFFF && tmpxp2 != 0xFFFFFFFF) {
 		auto outapp = new EQApplicationPacket(OP_ExpUpdate, sizeof(ExpUpdate_Struct));
 		ExpUpdate_Struct* eu = (ExpUpdate_Struct*)outapp->pBuffer;
-		float tmpxp = (float)((float)set_exp - tmpxp2) / ((float)tmpxp1 - tmpxp2);
+		float tmpxp = (float) ( (float) set_exp-tmpxp2 ) / ( (float) tmpxp1-tmpxp2 );
 		eu->exp = (uint32)(330.0f * tmpxp);
 		FastQueuePacket(&outapp);
 	}
 
-	if (admin >= 100 && GetGM()) {
-		char val1[20] = { 0 };
-		char val2[20] = { 0 };
-		char val3[20] = { 0 };
-		Message_StringID(MT_Experience, GM_GAINXP, ConvertArray(set_aaxp, val1), ConvertArray(set_exp, val2), ConvertArray(GetEXPForLevel(GetLevel() + 1), val3));	//[GM] You have gained %1 AXP and %2 EXP (%3).
+	if (admin>=100 && GetGM()) {
+		char val1[20]={0};
+		char val2[20]={0};
+		char val3[20]={0};
+		Message_StringID(MT_Experience, GM_GAINXP,ConvertArray(set_aaxp,val1),ConvertArray(set_exp,val2),ConvertArray(GetEXPForLevel(GetLevel()+1),val3));	//[GM] You have gained %1 AXP and %2 EXP (%3).
 		//Message(15, "[GM] You now have %d / %d EXP and %d / %d AA exp.", set_exp, GetEXPForLevel(GetLevel()+1), set_aaxp, max_AAXP);
 	}
 }
-
 
 void Client::SetLevel(uint8 set_level, bool command)
 {
@@ -707,10 +736,33 @@ uint32 Client::GetEXPForLevel(uint16 check_level)
 	return finalxp;
 }
 
-void Client::AddLevelBasedExp(uint8 exp_percentage, uint8 max_level) { 
-	if (exp_percentage > 100) { exp_percentage = 100; } 
-	if (!max_level || GetLevel() < max_level) { max_level = GetLevel(); } 
-	uint32 newexp = GetEXP() + ((GetEXPForLevel(max_level + 1) - GetEXPForLevel(max_level)) * exp_percentage / 100); 
+void Client::AddLevelBasedExp(uint8 exp_percentage, uint8 max_level) 
+{ 
+	uint32	award;
+	uint32	xp_for_level;
+
+	if (exp_percentage > 100) 
+	{ 
+		exp_percentage = 100; 
+	} 
+
+	if (!max_level || GetLevel() < max_level)
+	{ 
+		max_level = GetLevel(); 
+	} 
+
+	xp_for_level = GetEXPForLevel(max_level + 1) - GetEXPForLevel(max_level);
+	award = xp_for_level * exp_percentage / 100; 
+
+	if(RuleB(Zone, LevelBasedEXPMods))
+	{
+		if(zone->level_exp_mod[GetLevel()].ExpMod)
+		{
+			award *= zone->level_exp_mod[GetLevel()].ExpMod;
+		}
+	}
+
+	uint32 newexp = GetEXP() + award;
 	SetEXP(newexp, GetAAXP());
 }
 

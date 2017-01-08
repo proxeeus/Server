@@ -37,9 +37,13 @@
 //atoi is not uint32 or uint32 safe!!!!
 #define atoul(str) strtoul(str, nullptr, 10)
 
-class Inventory;
 class MySQLRequestResult;
 class Client;
+
+namespace EQEmu
+{
+	class InventoryProfile;
+}
 
 struct EventLogDetails_Struct {
 	uint32	id;
@@ -109,7 +113,7 @@ public:
 	bool	SaveCharacterCreate(uint32 character_id, uint32 account_id, PlayerProfile_Struct* pp);
 	bool	SetHackerFlag(const char* accountname, const char* charactername, const char* hacked);
 	bool	SetMQDetectionFlag(const char* accountname, const char* charactername, const char* hacked, const char* zone);
-	bool	StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, Inventory* inv);
+	bool	StoreCharacter(uint32 account_id, PlayerProfile_Struct* pp, EQEmu::InventoryProfile* inv);
 	bool	UpdateName(const char* oldname, const char* newname);
 
 	/* General Information Queries */
@@ -186,6 +190,10 @@ public:
 
 	void	GetAccountFromID(uint32 id, char* oAccountName, int16* oStatus);
 	void	SetAgreementFlag(uint32 acctid);
+	
+	int		GetIPExemption(std::string account_ip);
+
+	int		GetInstanceID(uint32 char_id, uint32 zone_id);
 
 
 	/* Groups */

@@ -759,28 +759,28 @@ bool Lua_Mob::CastSpell(int spell_id, int target_id) {
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, slot);
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot));
 }
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, slot, cast_time);
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot), cast_time);
 }
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time, int mana_cost) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, slot, cast_time, mana_cost);
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot), cast_time, mana_cost);
 }
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time, int mana_cost, int item_slot) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, slot, cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot));
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot), cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot));
 }
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time, int mana_cost, int item_slot, int timer,
 	int timer_duration) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, slot, cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot),
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot), cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot),
 		static_cast<uint32>(timer), static_cast<uint32>(timer_duration));
 }
 
@@ -789,7 +789,7 @@ bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time, in
 	Lua_Safe_Call_Bool();
 	int16 res = resist_adjust;
 
-	return self->CastSpell(spell_id, target_id, slot, cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot),
+	return self->CastSpell(spell_id, target_id, static_cast<EQEmu::CastingSlot>(slot), cast_time, mana_cost, nullptr, static_cast<uint32>(item_slot),
 		static_cast<uint32>(timer), static_cast<uint32>(timer_duration), &res);
 }
 
@@ -800,27 +800,27 @@ bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target) {
 
 bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target, int slot) {
 	Lua_Safe_Call_Bool();
-	return self->SpellFinished(spell_id, target, slot);
+	return self->SpellFinished(spell_id, target, static_cast<EQEmu::CastingSlot>(slot));
 }
 
 bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target, int slot, int mana_used) {
 	Lua_Safe_Call_Bool();
-	return self->SpellFinished(spell_id, target, slot, mana_used);
+	return self->SpellFinished(spell_id, target, static_cast<EQEmu::CastingSlot>(slot), mana_used);
 }
 
 bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target, int slot, int mana_used, uint32 inventory_slot) {
 	Lua_Safe_Call_Bool();
-	return self->SpellFinished(spell_id, target, slot, mana_used, inventory_slot);
+	return self->SpellFinished(spell_id, target, static_cast<EQEmu::CastingSlot>(slot), mana_used, inventory_slot);
 }
 
 bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target, int slot, int mana_used, uint32 inventory_slot, int resist_adjust) {
 	Lua_Safe_Call_Bool();
-	return self->SpellFinished(spell_id, target, slot, mana_used, inventory_slot, resist_adjust);
+	return self->SpellFinished(spell_id, target, static_cast<EQEmu::CastingSlot>(slot), mana_used, inventory_slot, resist_adjust);
 }
 
 bool Lua_Mob::SpellFinished(int spell_id, Lua_Mob target, int slot, int mana_used, uint32 inventory_slot, int resist_adjust, bool proc) {
 	Lua_Safe_Call_Bool();
-	return self->SpellFinished(spell_id, target, slot, mana_used, inventory_slot, resist_adjust, proc);
+	return self->SpellFinished(spell_id, target, static_cast<EQEmu::CastingSlot>(slot), mana_used, inventory_slot, resist_adjust, proc);
 }
 
 void Lua_Mob::SpellEffect(Lua_Mob caster, int spell_id, double partial) {
@@ -1806,6 +1806,11 @@ void Lua_Mob::ProcessSpecialAbilities(std::string str) {
 	self->ProcessSpecialAbilities(str);
 }
 
+uint32 Lua_Mob::GetAppearance() {
+	Lua_Safe_Call_Int();
+	return self->GetAppearance();
+}
+
 void Lua_Mob::SetAppearance(int app) {
 	Lua_Safe_Call_Void();
 	self->SetAppearance(static_cast<EmuAppearance>(app));
@@ -2291,6 +2296,7 @@ luabind::scope lua_register_mob() {
 		.def("SetSpecialAbilityParam", (void(Lua_Mob::*)(int,int,int))&Lua_Mob::SetSpecialAbilityParam)
 		.def("ClearSpecialAbilities", (void(Lua_Mob::*)(void))&Lua_Mob::ClearSpecialAbilities)
 		.def("ProcessSpecialAbilities", (void(Lua_Mob::*)(std::string))&Lua_Mob::ProcessSpecialAbilities)
+		.def("GetAppearance", (uint32(Lua_Mob::*)(void))&Lua_Mob::GetAppearance)
 		.def("SetAppearance", (void(Lua_Mob::*)(int))&Lua_Mob::SetAppearance)
 		.def("SetAppearance", (void(Lua_Mob::*)(int,bool))&Lua_Mob::SetAppearance)
 		.def("SetDestructibleObject", (void(Lua_Mob::*)(bool))&Lua_Mob::SetDestructibleObject)

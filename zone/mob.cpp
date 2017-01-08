@@ -108,7 +108,8 @@ Mob::Mob(const char* in_name,
 		m_TargetLocation(glm::vec3()),
 		m_TargetV(glm::vec3()),
 		flee_timer(FLEE_CHECK_TIMER),
-		m_Position(position)
+		m_Position(position),
+		tmHidden(-1)
 {
 	targeted = 0;
 	tar_ndx=0;
@@ -278,7 +279,7 @@ Mob::Mob(const char* in_name,
 		RangedProcs[j].level_override = -1;
 	}
 
-	for (i = 0; i < EQEmu::textures::TextureCount; i++)
+	for (i = EQEmu::textures::textureBegin; i < EQEmu::textures::materialCount; i++)
 	{
 		armor_tint.Slot[i].Color = in_armor_tint.Slot[i].Color;
 	}
@@ -289,6 +290,9 @@ Mob::Mob(const char* in_name,
 	logging_enabled = false;
 	isgrouped = false;
 	israidgrouped = false;
+	
+	IsHorse = false;
+
 	entity_id_being_looted = 0;
 	_appearance = eaStanding;
 	pRunAnimSpeed = 0;
@@ -362,6 +366,7 @@ Mob::Mob(const char* in_name,
 	patrol=0;
 	follow=0;
 	follow_dist = 100;	// Default Distance for Follow
+	no_target_hotkey = false;
 	flee_mode = false;
 	currently_fleeing = false;
 	flee_timer.Start();
@@ -425,6 +430,7 @@ Mob::Mob(const char* in_name,
 
 	emoteid = 0;
 	endur_upkeep = false;
+	degenerating_effects = false;
 	PrimaryAggro = false;
 	AssistAggro = false;
 	npc_assist_cap = 0;
@@ -909,7 +915,7 @@ void Mob::CreateSpawnPacket(EQApplicationPacket* app, Mob* ForWho) {
 	NewSpawn_Struct* ns = (NewSpawn_Struct*)app->pBuffer;
 	FillSpawnStruct(ns, ForWho);
 
-	if(strlen(ns->spawn.lastName) == 0)
+	if(RuleB(NPC, UseClassAsLastName) && strlen(ns->spawn.lastName) == 0)
 	{
 		switch(ns->spawn.class_)
 		{
@@ -990,7 +996,7 @@ void Mob::CreateSpawnPacket(EQApplicationPacket* app, NewSpawn_Struct* ns) {
 	strcpy(ns2->spawn.name, ns->spawn.name);
 
 	// Set default Last Names for certain Classes if not defined
-	if (strlen(ns->spawn.lastName) == 0)
+	if (RuleB(NPC, UseClassAsLastName) && strlen(ns->spawn.lastName) == 0)
 	{
 		switch (ns->spawn.class_)
 		{
@@ -1159,8 +1165,8 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		if (Mob::IsPlayerRace(race) || i > 6)
 		{
 			ns->spawn.equipment.Slot[i].Material = GetEquipmentMaterial(i);
-			ns->spawn.equipment.Slot[i].EliteMaterial = IsEliteMaterialItem(i);
-			ns->spawn.equipment.Slot[i].HeroForgeModel = GetHerosForgeModel(i);
+			ns->spawn.equipment.Slot[i].EliteModel = IsEliteMaterialItem(i);
+			ns->spawn.equipment.Slot[i].HerosForgeModel = GetHerosForgeModel(i);
 			ns->spawn.equipment_tint.Slot[i].Color = GetEquipmentColor(i);
 		}
 	}
@@ -2362,7 +2368,6 @@ void Mob::SetZone(uint32 zone_id, uint32 instance_id)
 	{
 		CastToClient()->GetPP().zone_id = zone_id;
 		CastToClient()->GetPP().zoneInstance = instance_id;
-		CastToClient()->Save();
 	}
 	Save();
 }
@@ -2376,12 +2381,12 @@ bool Mob::CanThisClassDualWield(void) const {
 		return(GetSkill(EQEmu::skills::SkillDualWield) > 0);
 	}
 	else if (CastToClient()->HasSkill(EQEmu::skills::SkillDualWield)) {
-		const ItemInst* pinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotPrimary);
-		const ItemInst* sinst = CastToClient()->GetInv().GetItem(EQEmu::legacy::SlotSecondary);
+		const EQEmu::ItemInstance* pinst = CastToClient()->GetInv().GetItem(EQEmu::inventory::slotPrimary);
+		const EQEmu::ItemInstance* sinst = CastToClient()->GetInv().GetItem(EQEmu::inventory::slotSecondary);
 
 		// 2HS, 2HB, or 2HP
 		if(pinst && pinst->IsWeapon()) {
-			const EQEmu::ItemBase* item = pinst->GetItem();
+			const EQEmu::ItemData* item = pinst->GetItem();
 
 			if (item->IsType2HWeapon())
 				return false;
@@ -2587,14 +2592,12 @@ bool Mob::PlotPositionAroundTarget(Mob* target, float &x_dest, float &y_dest, fl
 bool Mob::HateSummon() {
 	// check if mob has ability to summon
 	// 97% is the offical % that summoning starts on live, not 94
-	// if the mob can summon and is charmed, it can only summon mobs it has LoS to
-	Mob* mob_owner = nullptr;
-	if(GetOwnerID())
-		mob_owner = entity_list.GetMob(GetOwnerID());
+	if (IsCharmed())
+		return false;
 
 	int summon_level = GetSpecialAbility(SPECATK_SUMMON);
 	if(summon_level == 1 || summon_level == 2) {
-		if(!GetTarget() || (mob_owner && mob_owner->IsClient() && !CheckLosFN(GetTarget()))) {
+		if(!GetTarget()) {
 			return false;
 		}
 	} else {
@@ -2732,7 +2735,7 @@ uint32 NPC::GetEquipment(uint8 material_slot) const
 {
 	if(material_slot > 8)
 		return 0;
-	int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
+	int16 invslot = EQEmu::InventoryProfile::CalcSlotFromMaterial(material_slot);
 	if (invslot == INVALID_INDEX)
 		return 0;
 	return equipment[invslot];
@@ -2753,7 +2756,7 @@ void Mob::SendArmorAppearance(Client *one_client)
 	{
 		if (!IsClient())
 		{
-			const EQEmu::ItemBase *item;
+			const EQEmu::ItemData *item;
 			for (int i = 0; i < 7; ++i)
 			{
 				item = database.GetItem(GetEquipment(i));
@@ -2856,22 +2859,22 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 {
 	uint32 equipmaterial = 0;
 	int32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-	const EQEmu::ItemBase *item;
+	const EQEmu::ItemData *item;
 	item = database.GetItem(GetEquipment(material_slot));
 
 	if (item != 0)
 	{
 		// For primary and secondary we need the model, not the material
-		if (material_slot == EQEmu::textures::TexturePrimary || material_slot == EQEmu::textures::TextureSecondary)
+		if (material_slot == EQEmu::textures::weaponPrimary || material_slot == EQEmu::textures::weaponSecondary)
 		{
 			if (this->IsClient())
 			{
-				int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
+				int16 invslot = EQEmu::InventoryProfile::CalcSlotFromMaterial(material_slot);
 				if (invslot == INVALID_INDEX)
 				{
 					return 0;
 				}
-				const ItemInst* inst = CastToClient()->m_inv[invslot];
+				const EQEmu::ItemInstance* inst = CastToClient()->m_inv[invslot];
 				if (inst)
 				{
 					if (inst->GetOrnamentationAug(ornamentationAugtype))
@@ -2906,18 +2909,18 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 int32 Mob::GetHerosForgeModel(uint8 material_slot) const
 {
 	uint32 HeroModel = 0;
-	if (material_slot >= 0 && material_slot < EQEmu::textures::TexturePrimary)
+	if (material_slot >= 0 && material_slot < EQEmu::textures::weaponPrimary)
 	{
 		uint32 ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-		const EQEmu::ItemBase *item;
+		const EQEmu::ItemData *item;
 		item = database.GetItem(GetEquipment(material_slot));
-		int16 invslot = Inventory::CalcSlotFromMaterial(material_slot);
+		int16 invslot = EQEmu::InventoryProfile::CalcSlotFromMaterial(material_slot);
 
 		if (item != 0 && invslot != INVALID_INDEX)
 		{
 			if (IsClient())
 			{
-				const ItemInst* inst = CastToClient()->m_inv[invslot];
+				const EQEmu::ItemInstance* inst = CastToClient()->m_inv[invslot];
 				if (inst)
 				{
 					if (inst->GetOrnamentationAug(ornamentationAugtype))
@@ -2963,7 +2966,7 @@ int32 Mob::GetHerosForgeModel(uint8 material_slot) const
 
 uint32 Mob::GetEquipmentColor(uint8 material_slot) const
 {
-	const EQEmu::ItemBase *item;
+	const EQEmu::ItemData *item;
 
 	if (armor_tint.Slot[material_slot].Color)
 	{
@@ -2979,7 +2982,7 @@ uint32 Mob::GetEquipmentColor(uint8 material_slot) const
 
 uint32 Mob::IsEliteMaterialItem(uint8 material_slot) const
 {
-	const EQEmu::ItemBase *item;
+	const EQEmu::ItemData *item;
 
 	item = database.GetItem(GetEquipment(material_slot));
 	if(item != 0)
@@ -3191,7 +3194,7 @@ int32 Mob::GetActSpellCasttime(uint16 spell_id, int32 casttime) {
 	return casttime;
 }
 
-void Mob::ExecWeaponProc(const ItemInst *inst, uint16 spell_id, Mob *on, int level_override) {
+void Mob::ExecWeaponProc(const EQEmu::ItemInstance *inst, uint16 spell_id, Mob *on, int level_override) {
 	// Changed proc targets to look up based on the spells goodEffect flag.
 	// This should work for the majority of weapons.
 	if(spell_id == SPELL_UNKNOWN || on->GetSpecialAbility(NO_HARM_FROM_CLIENT)) {
@@ -3212,9 +3215,9 @@ void Mob::ExecWeaponProc(const ItemInst *inst, uint16 spell_id, Mob *on, int lev
 
 	if(inst && IsClient()) {
 		//const cast is dirty but it would require redoing a ton of interfaces at this point
-		//It should be safe as we don't have any truly const ItemInst floating around anywhere.
+		//It should be safe as we don't have any truly const EQEmu::ItemInstance floating around anywhere.
 		//So we'll live with it for now
-		int i = parse->EventItem(EVENT_WEAPON_PROC, CastToClient(), const_cast<ItemInst*>(inst), on, "", spell_id);
+		int i = parse->EventItem(EVENT_WEAPON_PROC, CastToClient(), const_cast<EQEmu::ItemInstance*>(inst), on, "", spell_id);
 		if(i != 0) {
 			return;
 		}
@@ -3229,13 +3232,13 @@ void Mob::ExecWeaponProc(const ItemInst *inst, uint16 spell_id, Mob *on, int lev
 	if(twinproc_chance && zone->random.Roll(twinproc_chance))
 		twinproc = true;
 
-	if (IsBeneficialSpell(spell_id)) {
-		SpellFinished(spell_id, this, 10, 0, -1, spells[spell_id].ResistDiff, true, level_override);
+	if (IsBeneficialSpell(spell_id) && (!IsNPC() || (IsNPC() && CastToNPC()->GetInnateProcSpellID() != spell_id))) { // NPC innate procs don't take this path ever
+		SpellFinished(spell_id, this, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff, true, level_override);
 		if(twinproc)
 			SpellOnTarget(spell_id, this, false, false, 0, true, level_override);
 	}
 	else if(!(on->IsClient() && on->CastToClient()->dead)) { //dont proc on dead clients
-		SpellFinished(spell_id, on, 10, 0, -1, spells[spell_id].ResistDiff, true, level_override);
+		SpellFinished(spell_id, on, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff, true, level_override);
 		if(twinproc)
 			SpellOnTarget(spell_id, on, false, false, 0, true, level_override);
 	}
@@ -3523,10 +3526,9 @@ void Mob::TryTriggerOnCast(uint32 spell_id, bool aa_trigger)
 	}
 }
 
-
 void Mob::TriggerOnCast(uint32 focus_spell, uint32 spell_id, bool aa_trigger)
 {
-	if(!IsValidSpell(focus_spell) || !IsValidSpell(spell_id))
+	if (!IsValidSpell(focus_spell) || !IsValidSpell(spell_id))
 		return;
 
 	uint32 trigger_spell_id = 0;
@@ -3537,15 +3539,17 @@ void Mob::TriggerOnCast(uint32 focus_spell, uint32 spell_id, bool aa_trigger)
 		if (rank)
 			trigger_spell_id = CastToClient()->CalcAAFocus(focusTriggerOnCast, *rank, spell_id);
 
-		if(IsValidSpell(trigger_spell_id) && GetTarget())
-			SpellFinished(trigger_spell_id, GetTarget(), 10, 0, -1, spells[trigger_spell_id].ResistDiff);
+		if (IsValidSpell(trigger_spell_id) && GetTarget())
+			SpellFinished(trigger_spell_id, GetTarget(), EQEmu::CastingSlot::Item, 0, -1,
+				      spells[trigger_spell_id].ResistDiff);
 	}
 
-	else{
+	else {
 		trigger_spell_id = CalcFocusEffect(focusTriggerOnCast, focus_spell, spell_id);
 
-		if(IsValidSpell(trigger_spell_id) && GetTarget()){
-			SpellFinished(trigger_spell_id, GetTarget(),10, 0, -1, spells[trigger_spell_id].ResistDiff);
+		if (IsValidSpell(trigger_spell_id) && GetTarget()) {
+			SpellFinished(trigger_spell_id, GetTarget(), EQEmu::CastingSlot::Item, 0, -1,
+				      spells[trigger_spell_id].ResistDiff);
 			CheckNumHitsRemaining(NumHit::MatchingSpells, -1, focus_spell);
 		}
 	}
@@ -3575,7 +3579,7 @@ bool Mob::TrySpellTrigger(Mob *target, uint32 spell_id, int effect)
 				{
 					// If we trigger an effect then its over.
 					if (IsValidSpell(spells[spell_id].base2[i])){
-						SpellFinished(spells[spell_id].base2[i], target, 10, 0, -1, spells[spells[spell_id].base2[i]].ResistDiff);
+						SpellFinished(spells[spell_id].base2[i], target, EQEmu::CastingSlot::Item, 0, -1, spells[spells[spell_id].base2[i]].ResistDiff);
 						return true;
 					}
 				}
@@ -3594,7 +3598,7 @@ bool Mob::TrySpellTrigger(Mob *target, uint32 spell_id, int effect)
 		if(zone->random.Int(0, 100) <= spells[spell_id].base[effect])
 		{
 			if (IsValidSpell(spells[spell_id].base2[effect])){
-				SpellFinished(spells[spell_id].base2[effect], target, 10, 0, -1, spells[spells[spell_id].base2[effect]].ResistDiff);
+				SpellFinished(spells[spell_id].base2[effect], target, EQEmu::CastingSlot::Item, 0, -1, spells[spells[spell_id].base2[effect]].ResistDiff);
 				return true; //Only trigger once of these per spell effect.
 			}
 		}
@@ -3671,7 +3675,7 @@ void Mob::TryTriggerOnValueAmount(bool IsHP, bool IsMana, bool IsEndur, bool IsP
 						}
 
 						if (use_spell){
-							SpellFinished(spells[spell_id].base[i], this, 10, 0, -1, spells[spell_id].ResistDiff);
+							SpellFinished(spells[spell_id].base[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff);
 
 							if(!TryFadeEffect(e))
 								BuffFadeBySlot(e);
@@ -3699,7 +3703,7 @@ void Mob::TryTwincast(Mob *caster, Mob *target, uint32 spell_id)
 			if(zone->random.Roll(focus))
 			{
 				Message(MT_Spells,"You twincast %s!",spells[spell_id].name);
-				SpellFinished(spell_id, target, 10, 0, -1, spells[spell_id].ResistDiff);
+				SpellFinished(spell_id, target, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff);
 			}
 		}
 	}
@@ -3717,7 +3721,7 @@ void Mob::TryTwincast(Mob *caster, Mob *target, uint32 spell_id)
 				{
 					if(zone->random.Roll(focus))
 					{
-						SpellFinished(spell_id, target, 10, 0, -1, spells[spell_id].ResistDiff);
+						SpellFinished(spell_id, target, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff);
 					}
 				}
 			}
@@ -3836,10 +3840,10 @@ bool Mob::TryFadeEffect(int slot)
 					if(IsValidSpell(spell_id))
 					{
 						if (IsBeneficialSpell(spell_id)) {
-							SpellFinished(spell_id, this, 10, 0, -1, spells[spell_id].ResistDiff);
+							SpellFinished(spell_id, this, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff);
 						}
 						else if(!(IsClient() && CastToClient()->dead)) {
-							SpellFinished(spell_id, this, 10, 0, -1, spells[spell_id].ResistDiff);
+							SpellFinished(spell_id, this, EQEmu::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff);
 						}
 						return true;
 					}
@@ -3873,7 +3877,7 @@ void Mob::TrySympatheticProc(Mob *target, uint32 spell_id)
 			SpellFinished(focus_trigger, target);
 
 		else
-			SpellFinished(focus_trigger, this, 10, 0, -1, spells[focus_trigger].ResistDiff);
+			SpellFinished(focus_trigger, this, EQEmu::CastingSlot::Item, 0, -1, spells[focus_trigger].ResistDiff);
 	}
 	// For detrimental spells, if the triggered spell is beneficial, then it will land on the caster
 	// if the triggered spell is also detrimental, then it will land on the target
@@ -3883,7 +3887,7 @@ void Mob::TrySympatheticProc(Mob *target, uint32 spell_id)
 			SpellFinished(focus_trigger, this);
 
 		else
-			SpellFinished(focus_trigger, target, 10, 0, -1, spells[focus_trigger].ResistDiff);
+			SpellFinished(focus_trigger, target, EQEmu::CastingSlot::Item, 0, -1, spells[focus_trigger].ResistDiff);
 	}
 
 	CheckNumHitsRemaining(NumHit::MatchingSpells, -1, focus_spell);
@@ -3891,11 +3895,11 @@ void Mob::TrySympatheticProc(Mob *target, uint32 spell_id)
 
 int32 Mob::GetItemStat(uint32 itemid, const char *identifier)
 {
-	const ItemInst* inst = database.CreateItem(itemid);
+	const EQEmu::ItemInstance* inst = database.CreateItem(itemid);
 	if (!inst)
 		return 0;
 
-	const EQEmu::ItemBase* item = inst->GetItem();
+	const EQEmu::ItemData* item = inst->GetItem();
 	if (!item)
 		return 0;
 
@@ -4534,7 +4538,7 @@ void Mob::TrySpellOnKill(uint8 level, uint16 spell_id)
 					if (IsValidSpell(spells[spell_id].base2[i]) && spells[spell_id].max[i] <= level)
 					{
 						if(zone->random.Roll(spells[spell_id].base[i]))
-							SpellFinished(spells[spell_id].base2[i], this, 10, 0, -1, spells[spells[spell_id].base2[i]].ResistDiff);
+							SpellFinished(spells[spell_id].base2[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[spells[spell_id].base2[i]].ResistDiff);
 					}
 				}
 			}
@@ -4549,17 +4553,17 @@ void Mob::TrySpellOnKill(uint8 level, uint16 spell_id)
 
 		if(aabonuses.SpellOnKill[i] && IsValidSpell(aabonuses.SpellOnKill[i]) && (level >= aabonuses.SpellOnKill[i + 2])) {
 			if(zone->random.Roll(static_cast<int>(aabonuses.SpellOnKill[i + 1])))
-				SpellFinished(aabonuses.SpellOnKill[i], this, 10, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
+				SpellFinished(aabonuses.SpellOnKill[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
 		}
 
 		if(itembonuses.SpellOnKill[i] && IsValidSpell(itembonuses.SpellOnKill[i]) && (level >= itembonuses.SpellOnKill[i + 2])){
 			if(zone->random.Roll(static_cast<int>(itembonuses.SpellOnKill[i + 1])))
-				SpellFinished(itembonuses.SpellOnKill[i], this, 10, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
+				SpellFinished(itembonuses.SpellOnKill[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
 		}
 
 		if(spellbonuses.SpellOnKill[i] && IsValidSpell(spellbonuses.SpellOnKill[i]) && (level >= spellbonuses.SpellOnKill[i + 2])) {
 			if(zone->random.Roll(static_cast<int>(spellbonuses.SpellOnKill[i + 1])))
-				SpellFinished(spellbonuses.SpellOnKill[i], this, 10, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
+				SpellFinished(spellbonuses.SpellOnKill[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[aabonuses.SpellOnKill[i]].ResistDiff);
 		}
 
 	}
@@ -4576,19 +4580,19 @@ bool Mob::TrySpellOnDeath()
 	for(int i = 0; i < MAX_SPELL_TRIGGER*2; i+=2) {
 		if(IsClient() && aabonuses.SpellOnDeath[i] && IsValidSpell(aabonuses.SpellOnDeath[i])) {
 			if(zone->random.Roll(static_cast<int>(aabonuses.SpellOnDeath[i + 1]))) {
-				SpellFinished(aabonuses.SpellOnDeath[i], this, 10, 0, -1, spells[aabonuses.SpellOnDeath[i]].ResistDiff);
+				SpellFinished(aabonuses.SpellOnDeath[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[aabonuses.SpellOnDeath[i]].ResistDiff);
 			}
 		}
 
 		if(itembonuses.SpellOnDeath[i] && IsValidSpell(itembonuses.SpellOnDeath[i])) {
 			if(zone->random.Roll(static_cast<int>(itembonuses.SpellOnDeath[i + 1]))) {
-				SpellFinished(itembonuses.SpellOnDeath[i], this, 10, 0, -1, spells[itembonuses.SpellOnDeath[i]].ResistDiff);
+				SpellFinished(itembonuses.SpellOnDeath[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[itembonuses.SpellOnDeath[i]].ResistDiff);
 			}
 		}
 
 		if(spellbonuses.SpellOnDeath[i] && IsValidSpell(spellbonuses.SpellOnDeath[i])) {
 			if(zone->random.Roll(static_cast<int>(spellbonuses.SpellOnDeath[i + 1]))) {
-				SpellFinished(spellbonuses.SpellOnDeath[i], this, 10, 0, -1, spells[spellbonuses.SpellOnDeath[i]].ResistDiff);
+				SpellFinished(spellbonuses.SpellOnDeath[i], this, EQEmu::CastingSlot::Item, 0, -1, spells[spellbonuses.SpellOnDeath[i]].ResistDiff);
 				}
 			}
 		}
@@ -4669,9 +4673,6 @@ int16 Mob::GetMeleeDamageMod_SE(uint16 skill)
 
 	dmg_mod += itembonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.DamageModifier2[EQEmu::skills::HIGHEST_SKILL + 1] +
 				itembonuses.DamageModifier2[skill] + spellbonuses.DamageModifier2[skill] + aabonuses.DamageModifier2[skill];
-
-	if (HasShieldEquiped() && !IsOffHandAtk())
-		dmg_mod += itembonuses.ShieldEquipDmgMod[0] + spellbonuses.ShieldEquipDmgMod[0] + aabonuses.ShieldEquipDmgMod[0];
 
 	if(dmg_mod < -100)
 		dmg_mod = -100;
@@ -5626,7 +5627,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 
 bool Mob::CanClassEquipItem(uint32 item_id)
 {
-	const EQEmu::ItemBase* itm = nullptr;
+	const EQEmu::ItemData* itm = nullptr;
 	itm = database.GetItem(item_id);
 
 	if (!itm)
@@ -5695,9 +5696,9 @@ int32 Mob::GetMeleeMitigation() {
 }
 
 /* this is the mob being attacked.
- * Pass in the weapon's ItemInst
+ * Pass in the weapon's EQEmu::ItemInstance
  */
-int Mob::ResistElementalWeaponDmg(const ItemInst *item)
+int Mob::ResistElementalWeaponDmg(const EQEmu::ItemInstance *item)
 {
 	if (!item)
 		return 0;
@@ -5847,9 +5848,9 @@ int Mob::ResistElementalWeaponDmg(const ItemInst *item)
 }
 
 /* this is the mob being attacked.
- * Pass in the weapon's ItemInst
+ * Pass in the weapon's EQEmu::ItemInstance
  */
-int Mob::CheckBaneDamage(const ItemInst *item)
+int Mob::CheckBaneDamage(const EQEmu::ItemInstance *item)
 {
 	if (!item)
 		return 0;
@@ -5858,6 +5859,27 @@ int Mob::CheckBaneDamage(const ItemInst *item)
 	damage += item->GetItemBaneDamageRace(GetRace(), true);
 
 	return damage;
+}
+
+void Mob::CancelSneakHide()
+{
+	if (hidden || improved_hidden) {
+		hidden = false;
+		improved_hidden = false;
+		auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+		SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
+		sa_out->spawn_id = GetID();
+		sa_out->type = 0x03;
+		sa_out->parameter = 0;
+		entity_list.QueueClients(this, outapp, true);
+		safe_delete(outapp);
+	}
+}
+
+void Mob::CommonBreakInvisible()
+{
+	BreakInvisibleSpells();
+	CancelSneakHide();
 }
 
 #ifdef BOTS

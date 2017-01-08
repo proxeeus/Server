@@ -718,13 +718,20 @@ void ClientTaskState::EnableTask(int characterID, int taskCount, int *tasks) {
 	if(tasksEnabled.empty() )
         return;
 
-	std::stringstream queryStream("REPLACE INTO character_enabledtasks (charid, taskid) VALUES ");
+	std::stringstream queryStream;
+	queryStream << "REPLACE INTO character_enabledtasks (charid, taskid) VALUES ";
 	for(unsigned int i=0; i<tasksEnabled.size(); i++)
-		queryStream << ( i ? ", " : "" ) <<  StringFormat("(%i, %i)", characterID, tasksEnabled[i]);
+		queryStream << (i ? ", " : "") <<  StringFormat("(%i, %i)", characterID, tasksEnabled[i]);
 
     std::string query = queryStream.str();
-	Log.Out(Logs::General, Logs::Tasks, "[UPDATE] Executing query %s", query.c_str());
-    database.QueryDatabase(query);
+
+	if (tasksEnabled.size()) {
+		Log.Out(Logs::General, Logs::Tasks, "[UPDATE] Executing query %s", query.c_str());
+		database.QueryDatabase(query);
+	}
+	else {
+		Log.Out(Logs::General, Logs::Tasks, "[UPDATE] EnableTask called for characterID: %u .. but, no tasks exist", characterID);
+	}
 }
 
 void ClientTaskState::DisableTask(int charID, int taskCount, int *taskList) {
@@ -762,15 +769,23 @@ void ClientTaskState::DisableTask(int charID, int taskCount, int *taskList) {
 	if(tasksDisabled.empty())
         return;
 
-	std::stringstream queryStream(StringFormat("DELETE FROM character_enabledtasks WHERE charid = %i AND (", charID));
+	std::stringstream queryStream;
+	queryStream << StringFormat("DELETE FROM character_enabledtasks WHERE charid = %i AND (", charID);
 
 	for(unsigned int i=0; i<tasksDisabled.size(); i++)
-        queryStream << i ? StringFormat("taskid = %i ", tasksDisabled[i]): StringFormat("OR taskid = %i ", tasksDisabled[i]);
+        queryStream << (i ? StringFormat("taskid = %i ", tasksDisabled[i]) : StringFormat("OR taskid = %i ", tasksDisabled[i]));
 
 	queryStream << ")";
+
 	std::string query = queryStream.str();
-	Log.Out(Logs::General, Logs::Tasks, "[UPDATE] Executing query %s", query.c_str());
-    database.QueryDatabase(query);
+
+	if (tasksDisabled.size()) {
+		Log.Out(Logs::General, Logs::Tasks, "[UPDATE] Executing query %s", query.c_str());
+		database.QueryDatabase(query);
+	}
+	else {
+		Log.Out(Logs::General, Logs::Tasks, "[UPDATE] DisableTask called for characterID: %u .. but, no tasks exist", charID);
+	}
 }
 
 bool ClientTaskState::IsTaskEnabled(int TaskID) {
@@ -1693,7 +1708,7 @@ void ClientTaskState::UpdateTasksOnExplore(Client *c, int ExploreID) {
 	return;
 }
 
-bool ClientTaskState::UpdateTasksOnDeliver(Client *c, std::list<ItemInst*>& Items, int Cash, int NPCTypeID) {
+bool ClientTaskState::UpdateTasksOnDeliver(Client *c, std::list<EQEmu::ItemInstance*>& Items, int Cash, int NPCTypeID) {
 
 	bool Ret = false;
 
@@ -1885,7 +1900,7 @@ void ClientTaskState::RewardTask(Client *c, TaskInformation *Task) {
 
 	if(!Task || !c) return;
 
-	const EQEmu::ItemBase* Item;
+	const EQEmu::ItemData* Item;
 	std::vector<int> RewardList;
 
 	switch(Task->RewardMethod) {
@@ -2776,7 +2791,7 @@ void TaskManager::SendActiveTaskDescription(Client *c, int TaskID, int SequenceN
 		}
 
 		if(ItemID) {
-			const EQEmu::ItemBase* reward_item = database.GetItem(ItemID);
+			const EQEmu::ItemData* reward_item = database.GetItem(ItemID);
 
 			EQEmu::SayLinkEngine linker;
 			linker.SetLinkType(EQEmu::saylink::SayLinkItemData);

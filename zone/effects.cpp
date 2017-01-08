@@ -481,7 +481,7 @@ int32 Client::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 bool Client::TrainDiscipline(uint32 itemid) {
 
 	//get the item info
-	const EQEmu::ItemBase *item = database.GetItem(itemid);
+	const EQEmu::ItemData *item = database.GetItem(itemid);
 	if(item == nullptr) {
 		Message(13, "Unable to find the tome you turned in!");
 		Log.Out(Logs::General, Logs::Error, "Unable to find turned in tome id %lu\n", (unsigned long)itemid);
@@ -630,17 +630,6 @@ bool Client::UseDiscipline(uint32 spell_id, uint32 target) {
 	if(r == MAX_PP_DISCIPLINES)
 		return(false);	//not found.
 
-	//Check the disc timer
-	pTimerType DiscTimer = pTimerDisciplineReuseStart + spells[spell_id].EndurTimerIndex;
-	if(!p_timers.Expired(&database, DiscTimer)) {
-		/*char val1[20]={0};*/	//unused
-		/*char val2[20]={0};*/	//unused
-		uint32 remain = p_timers.GetRemainingTime(DiscTimer);
-		//Message_StringID(0, DISCIPLINE_CANUSEIN, ConvertArray((remain)/60,val1), ConvertArray(remain%60,val2));
-		Message(0, "You can use this discipline in %d minutes %d seconds.", ((remain)/60), (remain%60));
-		return(false);
-	}
-
 	//make sure we can use it..
 	if(!IsValidSpell(spell_id)) {
 		Message(13, "This tome contains invalid knowledge.");
@@ -667,6 +656,23 @@ bool Client::UseDiscipline(uint32 spell_id, uint32 target) {
 		return(false);
 	}
 
+	// sneak attack discs require you to be hidden for 4 seconds before use
+	if (spell.sneak && (!hidden || (hidden && (Timer::GetCurrentTime() - tmHidden) < 4000))) {
+		Message_StringID(MT_SpellFailure, SNEAK_RESTRICT);
+		return false;
+	}
+
+	//Check the disc timer
+	pTimerType DiscTimer = pTimerDisciplineReuseStart + spell.EndurTimerIndex;
+	if(!p_timers.Expired(&database, DiscTimer)) {
+		/*char val1[20]={0};*/	//unused
+		/*char val2[20]={0};*/	//unused
+		uint32 remain = p_timers.GetRemainingTime(DiscTimer);
+		//Message_StringID(0, DISCIPLINE_CANUSEIN, ConvertArray((remain)/60,val1), ConvertArray(remain%60,val2));
+		Message(0, "You can use this discipline in %d minutes %d seconds.", ((remain)/60), (remain%60));
+		return(false);
+	}
+
 	if(spell.recast_time > 0)
 	{
 		uint32 reduced_recast = spell.recast_time / 1000;
@@ -684,9 +690,9 @@ bool Client::UseDiscipline(uint32 spell_id, uint32 target) {
 		}
 
 		if (reduced_recast > 0)
-			CastSpell(spell_id, target, DISCIPLINE_SPELL_SLOT, -1, -1, 0, -1, (uint32)DiscTimer, reduced_recast);
+			CastSpell(spell_id, target, EQEmu::CastingSlot::Discipline, -1, -1, 0, -1, (uint32)DiscTimer, reduced_recast);
 		else{
-			CastSpell(spell_id, target, DISCIPLINE_SPELL_SLOT);
+			CastSpell(spell_id, target, EQEmu::CastingSlot::Discipline);
 			return true;
 		}
 
@@ -694,7 +700,7 @@ bool Client::UseDiscipline(uint32 spell_id, uint32 target) {
 	}
 	else
 	{
-		CastSpell(spell_id, target, DISCIPLINE_SPELL_SLOT);
+		CastSpell(spell_id, target, EQEmu::CastingSlot::Discipline);
 	}
 	return(true);
 }
@@ -771,6 +777,11 @@ void EntityList::AESpell(Mob *caster, Mob *center, uint16 spell_id, bool affect_
 		if (spells[spell_id].targettype == ST_AreaClientOnly && !curmob->IsClient())
 			continue;
 		if (spells[spell_id].targettype == ST_AreaNPCOnly && !curmob->IsNPC())
+			continue;
+		// check PC/NPC only flag 1 = PCs, 2 = NPCs
+		if (spells[spell_id].pcnpc_only_flag == 1 && !curmob->IsClient() && !curmob->IsMerc())
+			continue;
+		if (spells[spell_id].pcnpc_only_flag == 2 && (curmob->IsClient() || curmob->IsMerc()))
 			continue;
 
 		if (spells[spell_id].targettype == ST_Ring) {

@@ -100,9 +100,6 @@ bool Zone::Bootup(uint32 iZoneID, uint32 iInstanceID, bool iStaticZone) {
 		worldserver.SetZoneData(0);
 		return false;
 	}
-	zone->zonemap = Map::LoadMapFile(zone->map_name);
-	zone->watermap = WaterMap::LoadWaterMapfile(zone->map_name);
-	zone->pathing = PathManager::LoadPathFile(zone->map_name);
 
 	std::string tmp;
 	if (database.GetVariable("loglevel", tmp)) {
@@ -157,126 +154,129 @@ bool Zone::Bootup(uint32 iZoneID, uint32 iInstanceID, bool iStaticZone) {
 }
 
 //this really loads the objects into entity_list
-bool Zone::LoadZoneObjects() {
-
-	std::string query = StringFormat("SELECT id, zoneid, xpos, ypos, zpos, heading, "
-                                    "itemid, charges, objectname, type, icon, unknown08, "
-                                    "unknown10, unknown20, unknown24, unknown76 fROM object "
-                                    "WHERE zoneid = %i AND (version = %u OR version = -1)",
-                                    zoneid, instanceversion);
-    auto results = database.QueryDatabase(query);
-    if (!results.Success()) {
-		Log.Out(Logs::General, Logs::Error, "Error Loading Objects from DB: %s",results.ErrorMessage().c_str());
+bool Zone::LoadZoneObjects()
+{
+	std::string query =
+	    StringFormat("SELECT id, zoneid, xpos, ypos, zpos, heading, itemid, charges, objectname, type, icon, "
+			 "unknown08, unknown10, unknown20, unknown24, unknown76, size, tilt_x, tilt_y, display_name "
+			 "FROM object WHERE zoneid = %i AND (version = %u OR version = -1)",
+			 zoneid, instanceversion);
+	auto results = database.QueryDatabase(query);
+	if (!results.Success()) {
+		Log.Out(Logs::General, Logs::Error, "Error Loading Objects from DB: %s",
+			results.ErrorMessage().c_str());
 		return false;
-    }
-
-    Log.Out(Logs::General, Logs::Status, "Loading Objects from DB...");
-    for (auto row = results.begin(); row != results.end(); ++row) {
-        if (atoi(row[9]) == 0)
-        {
-            // Type == 0 - Static Object
-            const char* shortname = database.GetZoneName(atoi(row[1]), false); // zoneid -> zone_shortname
-
-            if (!shortname)
-                continue;
-
-            Door d;
-            memset(&d, 0, sizeof(d));
-
-            strn0cpy(d.zone_name, shortname, sizeof(d.zone_name));
-            d.db_id = 1000000000 + atoi(row[0]); // Out of range of normal use for doors.id
-            d.door_id = -1; // Client doesn't care if these are all the same door_id
-            d.pos_x = atof(row[2]); // xpos
-            d.pos_y = atof(row[3]); // ypos
-            d.pos_z = atof(row[4]); // zpos
-            d.heading = atof(row[5]); // heading
-
-            strn0cpy(d.door_name, row[8], sizeof(d.door_name)); // objectname
-            // Strip trailing "_ACTORDEF" if present. Client won't accept it for doors.
-            int len = strlen(d.door_name);
-            if ((len > 9) && (memcmp(&d.door_name[len - 9], "_ACTORDEF", 10) == 0))
-                d.door_name[len - 9] = '\0';
-
-            memcpy(d.dest_zone, "NONE", 5);
-
-            if ((d.size = atoi(row[11])) == 0) // unknown08 = optional size percentage
-                d.size = 100;
-
-            switch (d.opentype = atoi(row[12])) // unknown10 = optional request_nonsolid (0 or 1 or experimental number)
-            {
-                case 0:
-                    d.opentype = 31;
-                    break;
-                case 1:
-                    d.opentype = 9;
-                    break;
-            }
-
-            d.incline = atoi(row[13]); // unknown20 = optional model incline value
-            d.client_version_mask = 0xFFFFFFFF; //We should load the mask from the zone.
-
-	    auto door = new Doors(&d);
-	    entity_list.AddDoor(door);
 	}
 
-	Object_Struct data = {0};
-	uint32 id = 0;
-        uint32 icon = 0;
-        uint32 type = 0;
-        uint32 itemid = 0;
-        uint32 idx = 0;
-        int16 charges = 0;
+	Log.Out(Logs::General, Logs::Status, "Loading Objects from DB...");
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		if (atoi(row[9]) == 0) {
+			// Type == 0 - Static Object
+			const char *shortname = database.GetZoneName(atoi(row[1]), false); // zoneid -> zone_shortname
 
-        id	= (uint32)atoi(row[0]);
-        data.zone_id = atoi(row[1]);
-        data.x = atof(row[2]);
-        data.y = atof(row[3]);
-        data.z = atof(row[4]);
-        data.heading = atof(row[5]);
+			if (!shortname)
+				continue;
+
+			Door d;
+			memset(&d, 0, sizeof(d));
+
+			strn0cpy(d.zone_name, shortname, sizeof(d.zone_name));
+			d.db_id = 1000000000 + atoi(row[0]); // Out of range of normal use for doors.id
+			d.door_id = -1;			     // Client doesn't care if these are all the same door_id
+			d.pos_x = atof(row[2]);		     // xpos
+			d.pos_y = atof(row[3]);		     // ypos
+			d.pos_z = atof(row[4]);		     // zpos
+			d.heading = atof(row[5]);	    // heading
+
+			strn0cpy(d.door_name, row[8], sizeof(d.door_name)); // objectname
+			// Strip trailing "_ACTORDEF" if present. Client won't accept it for doors.
+			int len = strlen(d.door_name);
+			if ((len > 9) && (memcmp(&d.door_name[len - 9], "_ACTORDEF", 10) == 0))
+				d.door_name[len - 9] = '\0';
+
+			memcpy(d.dest_zone, "NONE", 5);
+
+			if ((d.size = atoi(row[11])) == 0) // unknown08 = optional size percentage
+				d.size = 100;
+
+			switch (d.opentype = atoi(row[12])) // unknown10 = optional request_nonsolid (0 or 1 or experimental number)
+			{
+			case 0:
+				d.opentype = 31;
+				break;
+			case 1:
+				d.opentype = 9;
+				break;
+			}
+
+			d.incline = atoi(row[13]);	  // unknown20 = optional model incline value
+			d.client_version_mask = 0xFFFFFFFF; // We should load the mask from the zone.
+
+			auto door = new Doors(&d);
+			entity_list.AddDoor(door);
+		}
+
+		Object_Struct data = {0};
+		uint32 id = 0;
+		uint32 icon = 0;
+		uint32 type = 0;
+		uint32 itemid = 0;
+		uint32 idx = 0;
+		int16 charges = 0;
+
+		id = (uint32)atoi(row[0]);
+		data.zone_id = atoi(row[1]);
+		data.x = atof(row[2]);
+		data.y = atof(row[3]);
+		data.z = atof(row[4]);
+		data.heading = atof(row[5]);
 		itemid = (uint32)atoi(row[6]);
-		charges	= (int16)atoi(row[7]);
-        strcpy(data.object_name, row[8]);
-        type = (uint8)atoi(row[9]);
-        icon = (uint32)atoi(row[10]);
+		charges = (int16)atoi(row[7]);
+		strcpy(data.object_name, row[8]);
+		type = (uint8)atoi(row[9]);
+		icon = (uint32)atoi(row[10]);
 		data.object_type = type;
 		data.linked_list_addr[0] = 0;
-        data.linked_list_addr[1] = 0;
-        data.size	= (uint32)atoi(row[11]);
-		data.solidtype	= (uint32)atoi(row[12]);
-        data.unknown020	= (uint32)atoi(row[13]);
-        data.unknown024	= (uint32)atoi(row[14]);
-        data.unknown076	= (uint32)atoi(row[15]);
-        data.unknown084	= 0;
+		data.linked_list_addr[1] = 0;
 
-        ItemInst* inst = nullptr;
-        //FatherNitwit: this dosent seem to work...
-        //tradeskill containers do not have an itemid of 0... at least what I am seeing
-        if (itemid == 0) {
-            // Generic tradeskill container
-            inst = new ItemInst(ItemInstWorldContainer);
-        }
-        else {
-            // Groundspawn object
-            inst = database.CreateItem(itemid);
-        }
+		data.solidtype = (uint32)atoi(row[12]);
+		data.unknown020 = (uint32)atoi(row[13]);
+		data.unknown024 = (uint32)atoi(row[14]);
+		data.unknown076 = (uint32)atoi(row[15]);
+		data.size = atof(row[16]);
+		data.tilt_x = atof(row[17]);
+		data.tilt_y = atof(row[18]);
+		data.unknown084 = 0;
 
-        //Father Nitwit's fix... not perfect...
-        if(inst == nullptr && type != OT_DROPPEDITEM) {
-            inst = new ItemInst(ItemInstWorldContainer);
-        }
+		EQEmu::ItemInstance *inst = nullptr;
+		// FatherNitwit: this dosent seem to work...
+		// tradeskill containers do not have an itemid of 0... at least what I am seeing
+		if (itemid == 0) {
+			// Generic tradeskill container
+			inst = new EQEmu::ItemInstance(ItemInstWorldContainer);
+		} else {
+			// Groundspawn object
+			inst = database.CreateItem(itemid);
+		}
 
-        // Load child objects if container
+		// Father Nitwit's fix... not perfect...
+		if (inst == nullptr && type != OT_DROPPEDITEM) {
+			inst = new EQEmu::ItemInstance(ItemInstWorldContainer);
+		}
+
+		// Load child objects if container
 		if (inst && inst->IsType(EQEmu::item::ItemClassBag)) {
-            database.LoadWorldContainer(id, inst);
-        }
+			database.LoadWorldContainer(id, inst);
+		}
 
-	auto object = new Object(id, type, icon, data, inst);
-	entity_list.AddObject(object, false);
-	if (type == OT_DROPPEDITEM && itemid != 0)
-		entity_list.RemoveObject(object->GetID());
+		auto object = new Object(id, type, icon, data, inst);
+		object->SetDisplayName(row[19]);
+		entity_list.AddObject(object, false);
+		if (type == OT_DROPPEDITEM && itemid != 0)
+			entity_list.RemoveObject(object->GetID());
 
-	safe_delete(inst);
-    }
+		safe_delete(inst);
+	}
 
 	return true;
 }
@@ -294,7 +294,7 @@ bool Zone::LoadGroundSpawns() {
 	uint32 gsnumber=0;
 	for(gsindex=0;gsindex<50;gsindex++){
 		if(groundspawn.spawn[gsindex].item>0 && groundspawn.spawn[gsindex].item<SAYLINK_ITEM_ID){
-			ItemInst* inst = nullptr;
+			EQEmu::ItemInstance* inst = nullptr;
 			inst = database.CreateItem(groundspawn.spawn[gsindex].item);
 			gsnumber=groundspawn.spawn[gsindex].max_allowed;
 			ix=0;
@@ -874,6 +874,23 @@ Zone::~Zone() {
 //Modified for timezones.
 bool Zone::Init(bool iStaticZone) {
 	SetStaticZone(iStaticZone);
+	
+	//load the zone config file.
+	if (!LoadZoneCFG(zone->GetShortName(), zone->GetInstanceVersion(), true)) // try loading the zone name...
+		LoadZoneCFG(zone->GetFileName(), zone->GetInstanceVersion()); // if that fails, try the file name, then load defaults
+
+	if(RuleManager::Instance()->GetActiveRulesetID() != default_ruleset)
+	{
+		std::string r_name = RuleManager::Instance()->GetRulesetName(&database, default_ruleset);
+		if(r_name.size() > 0)
+		{
+			RuleManager::Instance()->LoadRules(&database, r_name.c_str());
+		}
+	}
+	
+	zone->zonemap = Map::LoadMapFile(zone->map_name);
+	zone->watermap = WaterMap::LoadWaterMapfile(zone->map_name);
+	zone->pathing = PathManager::LoadPathFile(zone->map_name);
 
 	Log.Out(Logs::General, Logs::Status, "Loading spawn conditions...");
 	if(!spawn_conditions.LoadSpawnConditions(short_name, instanceid)) {
@@ -965,19 +982,6 @@ bool Zone::Init(bool iStaticZone) {
 
 	petition_list.ClearPetitions();
 	petition_list.ReadDatabase();
-
-	//load the zone config file.
-	if (!LoadZoneCFG(zone->GetShortName(), zone->GetInstanceVersion(), true)) // try loading the zone name...
-		LoadZoneCFG(zone->GetFileName(), zone->GetInstanceVersion()); // if that fails, try the file name, then load defaults
-
-	if(RuleManager::Instance()->GetActiveRulesetID() != default_ruleset)
-	{
-		std::string r_name = RuleManager::Instance()->GetRulesetName(&database, default_ruleset);
-		if(r_name.size() > 0)
-		{
-			RuleManager::Instance()->LoadRules(&database, r_name.c_str());
-		}
-	}
 
 	Log.Out(Logs::General, Logs::Status, "Loading timezone data...");
 	zone->zone_time.setEQTimeZone(database.GetZoneTZ(zoneid, GetInstanceVersion()));
@@ -1163,7 +1167,7 @@ bool Zone::Process() {
 	if(spawn2_timer.Check()) {
 		LinkedListIterator<Spawn2*> iterator(spawn2_list);
 
-		Inventory::CleanDirty();
+		EQEmu::InventoryProfile::CleanDirty();
 
 		iterator.Reset();
 		while (iterator.MoreElements()) {
@@ -1594,7 +1598,9 @@ ZonePoint* Zone::GetClosestZonePoint(const glm::vec3& location, uint32 to, Clien
 		iterator.Advance();
 	}
 
-	if(closest_dist > 400.0f && closest_dist < max_distance2)
+	// if we have a water map and it says we're in a zoneline, lets assume it's just a really big zone line
+	// this shouldn't open up any exploits since those situations are detected later on
+	if ((zone->HasWaterMap() && !zone->watermap->InZoneLine(glm::vec3(client->GetPosition()))) || (!zone->HasWaterMap() && closest_dist > 400.0f && closest_dist < max_distance2))
 	{
 		if(client)
 			client->CheatDetected(MQZoneUnknownDest, location.x, location.y, location.z); // Someone is trying to use /zone

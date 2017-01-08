@@ -30,7 +30,7 @@
 #include "../eq_packet_structs.h"
 #include "../misc_functions.h"
 #include "../string_util.h"
-#include "../item.h"
+#include "../item_instance.h"
 #include "titanium_structs.h"
 
 #include <sstream>
@@ -42,7 +42,7 @@ namespace Titanium
 	static OpcodeManager *opcodes = nullptr;
 	static Strategy struct_strategy;
 
-	void SerializeItem(EQEmu::OutBuffer& ob, const ItemInst *inst, int16 slot_id_in, uint8 depth);
+	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id_in, uint8 depth);
 
 	// server to client inventory location converters
 	static inline int16 ServerToTitaniumSlot(uint32 serverSlot);
@@ -57,6 +57,12 @@ namespace Titanium
 
 	// client to server text link converter
 	static inline void TitaniumToServerTextLink(std::string& serverTextLink, const std::string& titaniumTextLink);
+
+	static inline CastingSlot ServerToTitaniumCastingSlot(EQEmu::CastingSlot slot);
+	static inline EQEmu::CastingSlot TitaniumToServerCastingSlot(CastingSlot slot, uint32 itemlocation);
+
+	static inline int ServerToTitaniumBuffSlot(int index);
+	static inline int TitaniumToServerBuffSlot(int index);
 
 	void Register(EQStreamIdentifier &into)
 	{
@@ -254,6 +260,25 @@ namespace Titanium
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_Buff)
+	{
+		ENCODE_LENGTH_EXACT(SpellBuffPacket_Struct);
+		SETUP_DIRECT_ENCODE(SpellBuffPacket_Struct, structs::SpellBuffPacket_Struct);
+
+		OUT(entityid);
+		OUT(buff.effect_type);
+		OUT(buff.level);
+		OUT(buff.bard_modifier);
+		OUT(buff.spellid);
+		OUT(buff.duration);
+		OUT(buff.counters);
+		OUT(buff.player_id);
+		eq->slotid = ServerToTitaniumBuffSlot(emu->slotid);
+		OUT(bufffade);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_ChannelMessage)
 	{
 		EQApplicationPacket *in = *p;
@@ -307,7 +332,7 @@ namespace Titanium
 		EQEmu::OutBuffer::pos_type last_pos = ob.tellp();
 
 		for (int r = 0; r < itemcount; r++, eq++) {
-			SerializeItem(ob, (const ItemInst*)eq->inst, eq->slot_id, 0);
+			SerializeItem(ob, (const EQEmu::ItemInstance*)eq->inst, eq->slot_id, 0);
 			if (ob.tellp() == last_pos)
 				Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d during OP_CharInventory.  Item skipped.", eq->slot_id);
 			
@@ -573,6 +598,46 @@ namespace Titanium
 		dest->FastQueuePacket(&in, ack_req);
 	}
 
+	ENCODE(OP_GroundSpawn)
+	{
+		// We are not encoding the spawn_id field here, but it doesn't appear to matter.
+		//
+		EQApplicationPacket *in = *p;
+		*p = nullptr;
+
+		//store away the emu struct
+		unsigned char *__emu_buffer = in->pBuffer;
+		Object_Struct *emu = (Object_Struct *)__emu_buffer;
+
+		in->size = strlen(emu->object_name) + sizeof(structs::Object_Struct) - 1;
+		in->pBuffer = new unsigned char[in->size];
+
+		structs::Object_Struct *eq = (structs::Object_Struct *) in->pBuffer;
+
+		eq->drop_id = emu->drop_id;
+		eq->heading = emu->heading;
+		eq->linked_list_addr[0] = 0;
+		eq->linked_list_addr[1] = 0;
+		strcpy(eq->object_name, emu->object_name);
+		eq->object_type = emu->object_type;
+		eq->spawn_id = 0;
+		eq->unknown008[0] = 0;
+		eq->unknown008[1] = 0;
+		eq->unknown020 = 0;
+		eq->unknown024 = 0;
+		eq->unknown076 = 0;
+		eq->unknown084 = 0xffffffff;
+		eq->z = emu->z;
+		eq->x = emu->x;
+		eq->y = emu->y;
+		eq->zone_id = emu->zone_id;
+		eq->zone_instance = emu->zone_instance;
+
+
+		delete[] __emu_buffer;
+		dest->FastQueuePacket(&in, ack_req);
+	}
+
 	ENCODE(OP_GuildMemberList)
 	{
 		//consume the packet
@@ -753,7 +818,7 @@ namespace Titanium
 
 		ob.write((const char*)__emu_buffer, 4);
 
-		SerializeItem(ob, (const ItemInst*)int_struct->inst, int_struct->slot_id, 0);
+		SerializeItem(ob, (const EQEmu::ItemInstance*)int_struct->inst, int_struct->slot_id, 0);
 		if (ob.tellp() == last_pos) {
 			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d.", int_struct->slot_id);
 			delete in;
@@ -814,6 +879,22 @@ namespace Titanium
 		FINISH_ENCODE();
 	}
 
+	ENCODE(OP_MemorizeSpell)
+	{
+		ENCODE_LENGTH_EXACT(MemorizeSpell_Struct);
+		SETUP_DIRECT_ENCODE(MemorizeSpell_Struct, structs::MemorizeSpell_Struct);
+
+		// Since HT/LoH are translated up, we need to translate down only for memSpellSpellbar case
+		if (emu->scribing == 3)
+			eq->slot = static_cast<uint32>(ServerToTitaniumCastingSlot(static_cast<EQEmu::CastingSlot>(emu->slot)));
+		else
+			OUT(slot);
+		OUT(spell_id);
+		OUT(scribing);
+
+		FINISH_ENCODE();
+	}
+
 	ENCODE(OP_MoveItem)
 	{
 		ENCODE_LENGTH_EXACT(MoveItem_Struct);
@@ -853,9 +934,9 @@ namespace Titanium
 		OUT(petid);
 		OUT(buffcount);
 
-		int EQBuffSlot = 0;
+		int EQBuffSlot = 0; // do we really want to shuffle them around like this?
 
-		for (uint32 EmuBuffSlot = 0; EmuBuffSlot < BUFF_COUNT; ++EmuBuffSlot)
+		for (uint32 EmuBuffSlot = 0; EmuBuffSlot < PET_BUFF_COUNT; ++EmuBuffSlot)
 		{
 			if (emu->spellid[EmuBuffSlot])
 			{
@@ -903,7 +984,7 @@ namespace Titanium
 		OUT(hairstyle);
 		OUT(beard);
 		//	OUT(unknown00178[10]);
-		for (r = EQEmu::textures::TextureBegin; r < EQEmu::textures::TextureCount; r++) {
+		for (r = EQEmu::textures::textureBegin; r < EQEmu::textures::materialCount; r++) {
 			OUT(item_material.Slot[r].Material);
 			OUT(item_tint.Slot[r].Color);
 		}
@@ -945,10 +1026,10 @@ namespace Titanium
 		OUT(thirst_level);
 		OUT(hunger_level);
 		for (r = 0; r < structs::BUFF_COUNT; r++) {
-			OUT(buffs[r].slotid);
+			OUT(buffs[r].effect_type);
 			OUT(buffs[r].level);
 			OUT(buffs[r].bard_modifier);
-			OUT(buffs[r].effect);
+			OUT(buffs[r].unknown003);
 			OUT(buffs[r].spellid);
 			OUT(buffs[r].duration);
 			OUT(buffs[r].counters);
@@ -1223,14 +1304,14 @@ namespace Titanium
 			if (eq->Race[char_index] > 473)
 				eq->Race[char_index] = 1;
 
-			for (int index = 0; index < EQEmu::textures::TextureCount; ++index) {
+			for (int index = 0; index < EQEmu::textures::materialCount; ++index) {
 				eq->CS_Colors[char_index].Slot[index].Color = emu_cse->Equip[index].Color;
 			}
 
 			eq->BeardColor[char_index] = emu_cse->BeardColor;
 			eq->HairStyle[char_index] = emu_cse->HairStyle;
 
-			for (int index = 0; index < EQEmu::textures::TextureCount; ++index) {
+			for (int index = 0; index < EQEmu::textures::materialCount; ++index) {
 				eq->Equip[char_index].Slot[index].Material = emu_cse->Equip[index].Material;
 			}
 
@@ -1260,14 +1341,14 @@ namespace Titanium
 		for (; char_index < 10; ++char_index) {
 			eq->Race[char_index] = 0;
 
-			for (int index = 0; index < EQEmu::textures::TextureCount; ++index) {
+			for (int index = 0; index < EQEmu::textures::materialCount; ++index) {
 				eq->CS_Colors[char_index].Slot[index].Color = 0;
 			}
 
 			eq->BeardColor[char_index] = 0;
 			eq->HairStyle[char_index] = 0;
 
-			for (int index = 0; index < EQEmu::textures::TextureCount; ++index) {
+			for (int index = 0; index < EQEmu::textures::materialCount; ++index) {
 				eq->Equip[char_index].Slot[index].Material = 0;
 			}
 
@@ -1599,7 +1680,7 @@ namespace Titanium
 			eq->petOwnerId = emu->petOwnerId;
 			eq->guildrank = emu->guildrank;
 			//		eq->unknown0194[3] = emu->unknown0194[3];
-			for (k = EQEmu::textures::TextureBegin; k < EQEmu::textures::TextureCount; k++) {
+			for (k = EQEmu::textures::textureBegin; k < EQEmu::textures::materialCount; k++) {
 				eq->equipment.Slot[k].Material = emu->equipment.Slot[k].Material;
 				eq->equipment_tint.Slot[k].Color = emu->equipment_tint.Slot[k].Color;
 			}
@@ -1688,12 +1769,31 @@ namespace Titanium
 		FINISH_DIRECT_DECODE();
 	}
 
+	DECODE(OP_Buff)
+	{
+		DECODE_LENGTH_EXACT(structs::SpellBuffPacket_Struct);
+		SETUP_DIRECT_DECODE(SpellBuffPacket_Struct, structs::SpellBuffPacket_Struct);
+
+		IN(entityid);
+		IN(buff.effect_type);
+		IN(buff.level);
+		IN(buff.bard_modifier);
+		IN(buff.spellid);
+		IN(buff.duration);
+		IN(buff.counters);
+		IN(buff.player_id);
+		emu->slotid = TitaniumToServerBuffSlot(eq->slotid);
+		IN(bufffade);
+
+		FINISH_DIRECT_DECODE();
+	}
+
 	DECODE(OP_CastSpell)
 	{
 		DECODE_LENGTH_EXACT(structs::CastSpell_Struct);
 		SETUP_DIRECT_DECODE(CastSpell_Struct, structs::CastSpell_Struct);
 
-		IN(slot);
+		emu->slot = static_cast<uint32>(TitaniumToServerCastingSlot(static_cast<CastingSlot>(eq->slot), eq->inventoryslot));
 		IN(spell_id);
 		emu->inventoryslot = TitaniumToServerSlot(eq->inventoryslot);
 		IN(target_id);
@@ -1877,6 +1977,21 @@ namespace Titanium
 		SETUP_DIRECT_DECODE(LFGuild_PlayerToggle_Struct, structs::LFGuild_PlayerToggle_Struct);
 		memcpy(emu, eq, sizeof(structs::LFGuild_PlayerToggle_Struct));
 		memset(emu->Unknown612, 0, sizeof(emu->Unknown612));
+
+		FINISH_DIRECT_DECODE();
+	}
+
+	DECODE(OP_LoadSpellSet)
+	{
+		DECODE_LENGTH_EXACT(structs::LoadSpellSet_Struct);
+		SETUP_DIRECT_DECODE(LoadSpellSet_Struct, structs::LoadSpellSet_Struct);
+
+		for (int i = 0; i < structs::MAX_PP_MEMSPELL; ++i)
+			IN(spell[i]);
+		for (int i = structs::MAX_PP_MEMSPELL; i < MAX_PP_MEMSPELL; ++i)
+			emu->spell[i] = 0xFFFFFFFF;
+
+		IN(unknown);
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -2104,10 +2219,10 @@ namespace Titanium
 	}
 
 // file scope helper methods
-	void SerializeItem(EQEmu::OutBuffer& ob, const ItemInst *inst, int16 slot_id_in, uint8 depth)
+	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id_in, uint8 depth)
 	{
 		const char* protection = "\\\\\\\\\\";
-		const EQEmu::ItemBase* item = inst->GetUnscaledItem();
+		const EQEmu::ItemData* item = inst->GetUnscaledItem();
 
 		ob << StringFormat("%.*s%s", (depth ? (depth - 1) : 0), protection, (depth ? "\"" : "")); // For leading quotes (and protection) if a subitem;
 		
@@ -2325,10 +2440,10 @@ namespace Titanium
 		ob << StringFormat("%.*s\"", depth, protection); // Quotes (and protection, if needed) around static data
 
 		// Sub data
-		for (int index = SUB_INDEX_BEGIN; index < invbag::ItemBagSize; ++index) {
+		for (int index = EQEmu::inventory::containerBegin; index < invbag::ItemBagSize; ++index) {
 			ob << '|';
 
-			ItemInst* sub = inst->GetItem(index);
+			EQEmu::ItemInstance* sub = inst->GetItem(index);
 			if (!sub)
 				continue;
 			
@@ -2449,4 +2564,101 @@ namespace Titanium
 		}
 	}
 
+	static inline CastingSlot ServerToTitaniumCastingSlot(EQEmu::CastingSlot slot)
+	{
+		switch (slot) {
+		case EQEmu::CastingSlot::Gem1:
+			return CastingSlot::Gem1;
+		case EQEmu::CastingSlot::Gem2:
+			return CastingSlot::Gem2;
+		case EQEmu::CastingSlot::Gem3:
+			return CastingSlot::Gem3;
+		case EQEmu::CastingSlot::Gem4:
+			return CastingSlot::Gem4;
+		case EQEmu::CastingSlot::Gem5:
+			return CastingSlot::Gem5;
+		case EQEmu::CastingSlot::Gem6:
+			return CastingSlot::Gem6;
+		case EQEmu::CastingSlot::Gem7:
+			return CastingSlot::Gem7;
+		case EQEmu::CastingSlot::Gem8:
+			return CastingSlot::Gem8;
+		case EQEmu::CastingSlot::Gem9:
+			return CastingSlot::Gem9;
+		case EQEmu::CastingSlot::Item:
+			return CastingSlot::Item;
+		case EQEmu::CastingSlot::PotionBelt:
+			return CastingSlot::PotionBelt;
+		case EQEmu::CastingSlot::Discipline:
+			return CastingSlot::Discipline;
+		case EQEmu::CastingSlot::AltAbility:
+			return CastingSlot::AltAbility;
+		default: // we shouldn't have any issues with other slots ... just return something
+			return CastingSlot::Discipline;
+		}
+	}
+
+	static inline EQEmu::CastingSlot TitaniumToServerCastingSlot(CastingSlot slot, uint32 itemlocation)
+	{
+		switch (slot) {
+		case CastingSlot::Gem1:
+			return EQEmu::CastingSlot::Gem1;
+		case CastingSlot::Gem2:
+			return EQEmu::CastingSlot::Gem2;
+		case CastingSlot::Gem3:
+			return EQEmu::CastingSlot::Gem3;
+		case CastingSlot::Gem4:
+			return EQEmu::CastingSlot::Gem4;
+		case CastingSlot::Gem5:
+			return EQEmu::CastingSlot::Gem5;
+		case CastingSlot::Gem6:
+			return EQEmu::CastingSlot::Gem6;
+		case CastingSlot::Gem7:
+			return EQEmu::CastingSlot::Gem7;
+		case CastingSlot::Gem8:
+			return EQEmu::CastingSlot::Gem8;
+		case CastingSlot::Gem9:
+			return EQEmu::CastingSlot::Gem9;
+		case CastingSlot::Ability:
+			return EQEmu::CastingSlot::Ability;
+		// Tit uses 10 for item and discipline casting, but items have a valid location
+		case CastingSlot::Item:
+			if (itemlocation == INVALID_INDEX)
+				return EQEmu::CastingSlot::Discipline;
+			else
+				return EQEmu::CastingSlot::Item;
+		case CastingSlot::PotionBelt:
+			return EQEmu::CastingSlot::PotionBelt;
+		case CastingSlot::AltAbility:
+			return EQEmu::CastingSlot::AltAbility;
+		default: // we shouldn't have any issues with other slots ... just return something
+			return EQEmu::CastingSlot::Discipline;
+		}
+	}
+
+	static inline int ServerToTitaniumBuffSlot(int index)
+	{
+		// we're a disc
+		if (index >= EQEmu::constants::LongBuffs + EQEmu::constants::ShortBuffs)
+			return index - EQEmu::constants::LongBuffs - EQEmu::constants::ShortBuffs +
+			       constants::LongBuffs + constants::ShortBuffs;
+		// we're a song
+		if (index >= EQEmu::constants::LongBuffs)
+			return index - EQEmu::constants::LongBuffs + constants::LongBuffs;
+		// we're a normal buff
+		return index; // as long as we guard against bad slots server side, we should be fine
+	}
+
+	static inline int TitaniumToServerBuffSlot(int index)
+	{
+		// we're a disc
+		if (index >= constants::LongBuffs + constants::ShortBuffs)
+			return index - constants::LongBuffs - constants::ShortBuffs + EQEmu::constants::LongBuffs +
+			       EQEmu::constants::ShortBuffs;
+		// we're a song
+		if (index >= constants::LongBuffs)
+			return index - constants::LongBuffs + EQEmu::constants::LongBuffs;
+		// we're a normal buff
+		return index; // as long as we guard against bad slots server side, we should be fine
+	}
 } /*Titanium*/

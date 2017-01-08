@@ -342,7 +342,7 @@ bool NPC::AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 		moved = false;
 	}
 
-	return CastSpell(AIspells[i].spellid, tar->GetID(), 1, AIspells[i].manacost == -2 ? 0 : -1, mana_cost, oDontDoAgainBefore, -1, -1, 0, &(AIspells[i].resist_adjust));
+	return CastSpell(AIspells[i].spellid, tar->GetID(), EQEmu::CastingSlot::Gem2, AIspells[i].manacost == -2 ? 0 : -1, mana_cost, oDontDoAgainBefore, -1, -1, 0, &(AIspells[i].resist_adjust));
 }
 
 bool EntityList::AICheckCloseBeneficialSpells(NPC* caster, uint8 iChance, float iRange, uint16 iSpellTypes) {
@@ -674,11 +674,11 @@ void Client::AI_SpellCast()
 	}
 
 	uint32 spell_to_cast = 0xFFFFFFFF;
-	uint32 slot_to_use = 10;
+	EQEmu::CastingSlot slot_to_use = EQEmu::CastingSlot::Item;
 	if(valid_spells.size() == 1)
 	{
 		spell_to_cast = valid_spells[0];
-		slot_to_use = slots[0];
+		slot_to_use = static_cast<EQEmu::CastingSlot>(slots[0]);
 	}
 	else if(valid_spells.empty())
 	{
@@ -688,7 +688,7 @@ void Client::AI_SpellCast()
 	{
 		uint32 idx = zone->random.Int(0, (valid_spells.size()-1));
 		spell_to_cast = valid_spells[idx];
-		slot_to_use = slots[idx];
+		slot_to_use = static_cast<EQEmu::CastingSlot>(slots[idx]);
 	}
 
 	if(IsMezSpell(spell_to_cast) || IsFearSpell(spell_to_cast))
@@ -852,7 +852,7 @@ void Client::AI_Process()
 			if (GetTarget() && !IsStunned() && !IsMezzed() && !GetFeigned()) {
 				if (attack_timer.Check()) {
 					// Should charmed clients not be procing?
-					DoAttackRounds(GetTarget(), EQEmu::legacy::SlotPrimary);
+					DoAttackRounds(GetTarget(), EQEmu::inventory::slotPrimary);
 				}
 			}
 
@@ -860,7 +860,7 @@ void Client::AI_Process()
 				if (attack_dw_timer.Check()) {
 					if (CheckDualWield()) {
 						// Should charmed clients not be procing?
-						DoAttackRounds(GetTarget(), EQEmu::legacy::SlotSecondary);
+						DoAttackRounds(GetTarget(), EQEmu::inventory::slotSecondary);
 					}
 				}
 			}
@@ -1114,7 +1114,7 @@ void Mob::AI_Process() {
 				//try main hand first
 				if(attack_timer.Check()) {
 					DoMainHandAttackRounds(target);
-					TriggerDefensiveProcs(target, EQEmu::legacy::SlotPrimary, false);
+					TriggerDefensiveProcs(target, EQEmu::inventory::slotPrimary, false);
 
 					bool specialed = false; // NPCs can only do one of these a round
 					if (GetSpecialAbility(SPECATK_FLURRY)) {
@@ -1560,7 +1560,7 @@ void NPC::AI_DoMovement() {
 		}
 
 
-		int16 gridno = CastToNPC()->GetGrid();
+		int32 gridno = CastToNPC()->GetGrid();
 
 		if (gridno > 0 || cur_wp==-2) {
 			if (movetimercompleted==true) { // time to pause at wp is over
@@ -1572,13 +1572,12 @@ void NPC::AI_DoMovement() {
 				if (m_CurrentWayPoint.x == GetX() && m_CurrentWayPoint.y == GetY())
 				{	// are we there yet? then stop
 					Log.Out(Logs::Detail, Logs::AI, "We have reached waypoint %d (%.3f,%.3f,%.3f) on grid %d", cur_wp, GetX(), GetY(), GetZ(), GetGrid());
-					if (cur_wp_pause != 0) {
-						SetWaypointPause();
-						SetAppearance(eaStanding, false);
-						SetMoving(false);
-						if (m_CurrentWayPoint.w >= 0.0) {
-							SetHeading(m_CurrentWayPoint.w);
-						}
+					
+					SetWaypointPause();
+					SetAppearance(eaStanding, false);
+					SetMoving(false);
+					if (m_CurrentWayPoint.w >= 0.0) {
+						SetHeading(m_CurrentWayPoint.w);
 					}
 
 					SendPosition();
@@ -1963,7 +1962,7 @@ bool Mob::Flurry(ExtraAttackOptions *opts)
 		int num_attacks = GetSpecialAbilityParam(SPECATK_FLURRY, 1);
 		num_attacks = num_attacks > 0 ? num_attacks : RuleI(Combat, MaxFlurryHits);
 		for (int i = 0; i < num_attacks; i++)
-			Attack(target, EQEmu::legacy::SlotPrimary, false, false, false, opts);
+			Attack(target, EQEmu::inventory::slotPrimary, false, false, false, opts);
 	}
 	return true;
 }
@@ -2373,8 +2372,12 @@ bool NPC::AI_AddNPCSpells(uint32 iDBSpellsID) {
 		return a.priority > b.priority;
 	});
 
-	if (IsValidSpell(attack_proc_spell))
+	if (IsValidSpell(attack_proc_spell)) {
 		AddProcToWeapon(attack_proc_spell, true, proc_chance);
+
+		if(RuleB(Spells, NPCInnateProcOverride))
+			innate_proc_spell_id = attack_proc_spell;
+	}
 
 	if (IsValidSpell(range_proc_spell))
 		AddRangedProc(range_proc_spell, (rproc_chance + 100));

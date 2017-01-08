@@ -29,7 +29,7 @@
 #include "../eq_packet_structs.h"
 #include "../misc_functions.h"
 #include "../string_util.h"
-#include "../item.h"
+#include "../item_instance.h"
 #include "sod_structs.h"
 #include "../rulesys.h"
 
@@ -43,7 +43,7 @@ namespace SoD
 	static OpcodeManager *opcodes = nullptr;
 	static Strategy struct_strategy;
 
-	void SerializeItem(EQEmu::OutBuffer& ob, const ItemInst *inst, int16 slot_id, uint8 depth);
+	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id, uint8 depth);
 
 	// server to client inventory location converters
 	static inline uint32 ServerToSoDSlot(uint32 ServerSlot);
@@ -58,6 +58,12 @@ namespace SoD
 
 	// client to server text link converter
 	static inline void SoDToServerTextLink(std::string& serverTextLink, const std::string& sodTextLink);
+
+	static inline CastingSlot ServerToSoDCastingSlot(EQEmu::CastingSlot slot);
+	static inline EQEmu::CastingSlot SoDToServerCastingSlot(CastingSlot slot);
+
+	static inline int ServerToSoDBuffSlot(int index);
+	static inline int SoDToServerBuffSlot(int index);
 
 	void Register(EQStreamIdentifier &into)
 	{
@@ -301,17 +307,18 @@ namespace SoD
 
 	ENCODE(OP_Buff)
 	{
-		ENCODE_LENGTH_EXACT(SpellBuffFade_Struct);
-		SETUP_DIRECT_ENCODE(SpellBuffFade_Struct, structs::SpellBuffFade_Struct);
+		ENCODE_LENGTH_EXACT(SpellBuffPacket_Struct);
+		SETUP_DIRECT_ENCODE(SpellBuffPacket_Struct, structs::SpellBuffPacket_Struct);
 
 		OUT(entityid);
-		OUT(slot);
-		OUT(level);
-		OUT(effect);
-		//eq->unknown7 = 10;
-		OUT(spellid);
-		OUT(duration);
-		OUT(slotid);
+		OUT(buff.effect_type);
+		OUT(buff.level);
+		OUT(buff.bard_modifier);
+		OUT(buff.spellid);
+		OUT(buff.duration);
+		OUT(buff.counters);
+		OUT(buff.player_id);
+		eq->slotid = ServerToSoDBuffSlot(emu->slotid);
 		OUT(bufffade);
 
 		FINISH_ENCODE();
@@ -392,7 +399,7 @@ namespace SoD
 		ob.write((const char*)&item_count, sizeof(uint32));
 
 		for (int index = 0; index < item_count; ++index, ++eq) {
-			SerializeItem(ob, (const ItemInst*)eq->inst, eq->slot_id, 0);
+			SerializeItem(ob, (const EQEmu::ItemInstance*)eq->inst, eq->slot_id, 0);
 			if (ob.tellp() == last_pos)
 				Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d during OP_CharInventory.  Item skipped.", eq->slot_id);
 
@@ -1056,7 +1063,7 @@ namespace SoD
 
 		ob.write((const char*)__emu_buffer, 4);
 
-		SerializeItem(ob, (const ItemInst*)int_struct->inst, int_struct->slot_id, 0);
+		SerializeItem(ob, (const EQEmu::ItemInstance*)int_struct->inst, int_struct->slot_id, 0);
 		if (ob.tellp() == last_pos) {
 			Log.Out(Logs::General, Logs::Netcode, "[STRUCTS] Serialization failed on item slot %d.", int_struct->slot_id);
 			delete in;
@@ -1135,7 +1142,8 @@ namespace SoD
 		OUT(new_mana);
 		OUT(stamina);
 		OUT(spell_id);
-		eq->unknown16 = -1; // Self Interrupt/Success = -1, Fizzle = 1, Other Interrupt = 2?
+		OUT(keepcasting);
+		eq->slot = -1; // this is spell gem slot. It's -1 in normal operation
 
 		FINISH_ENCODE();
 	}
@@ -1498,7 +1506,7 @@ namespace SoD
 		VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->petid);
 		VARSTRUCT_ENCODE_TYPE(uint16, Buffer, emu->buffcount);
 
-		for (unsigned int i = 0; i < BUFF_COUNT; ++i)
+		for (unsigned int i = 0; i < PET_BUFF_COUNT; ++i)
 		{
 			if (emu->spellid[i])
 			{
@@ -1509,7 +1517,7 @@ namespace SoD
 			}
 		}
 
-		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->buffcount);
+		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, emu->buffcount); // I think this is actually some sort of type
 
 		delete[] __emu_buffer;
 		dest->FastQueuePacket(&in, ack_req);
@@ -1553,7 +1561,7 @@ namespace SoD
 		OUT(hairstyle);
 		OUT(beard);
 		//	OUT(unknown00178[10]);
-		for (r = EQEmu::textures::TextureBegin; r < EQEmu::textures::TextureCount; r++) {
+		for (r = EQEmu::textures::textureBegin; r < EQEmu::textures::materialCount; r++) {
 			eq->equipment.Slot[r].Material = emu->item_material.Slot[r].Material;
 			eq->equipment.Slot[r].Unknown1 = 0;
 			eq->equipment.Slot[r].EliteMaterial = 0;
@@ -1602,10 +1610,10 @@ namespace SoD
 		OUT(thirst_level);
 		OUT(hunger_level);
 		for (r = 0; r < structs::BUFF_COUNT; r++) {
-			OUT(buffs[r].slotid);
+			OUT(buffs[r].effect_type);
 			OUT(buffs[r].level);
 			OUT(buffs[r].bard_modifier);
-			OUT(buffs[r].effect);
+			OUT(buffs[r].unknown003);
 			OUT(buffs[r].spellid);
 			OUT(buffs[r].duration);
 			OUT(buffs[r].counters);
@@ -1993,10 +2001,10 @@ namespace SoD
 			eq_cse->HairColor = emu_cse->HairColor;
 			eq_cse->Face = emu_cse->Face;
 
-			for (int equip_index = 0; equip_index < EQEmu::textures::TextureCount; equip_index++) {
+			for (int equip_index = EQEmu::textures::textureBegin; equip_index < EQEmu::textures::materialCount; equip_index++) {
 				eq_cse->Equip[equip_index].Material = emu_cse->Equip[equip_index].Material;
 				eq_cse->Equip[equip_index].Unknown1 = emu_cse->Equip[equip_index].Unknown1;
-				eq_cse->Equip[equip_index].EliteMaterial = emu_cse->Equip[equip_index].EliteMaterial;
+				eq_cse->Equip[equip_index].EliteMaterial = emu_cse->Equip[equip_index].EliteModel;
 				eq_cse->Equip[equip_index].Color = emu_cse->Equip[equip_index].Color;
 			}
 
@@ -2563,7 +2571,7 @@ namespace SoD
 			float SpawnSize = emu->size;
 			if (!((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522)))
 			{
-				PacketSize -= (sizeof(structs::Texture_Struct) * EQEmu::textures::TextureCount);
+				PacketSize -= (sizeof(structs::Texture_Struct) * EQEmu::textures::materialCount);
 
 				if (emu->size == 0)
 				{
@@ -2760,7 +2768,7 @@ namespace SoD
 
 			if ((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522))
 			{
-				for (k = EQEmu::textures::TextureBegin; k < EQEmu::textures::TextureCount; ++k)
+				for (k = EQEmu::textures::textureBegin; k < EQEmu::textures::materialCount; ++k)
 				{
 					{
 						VARSTRUCT_ENCODE_TYPE(uint32, Buffer, emu->equipment_tint.Slot[k].Color);
@@ -2787,13 +2795,13 @@ namespace SoD
 			{
 				structs::Texture_Struct *Equipment = (structs::Texture_Struct *)Buffer;
 
-				for (k = EQEmu::textures::TextureBegin; k < EQEmu::textures::TextureCount; k++) {
+				for (k = EQEmu::textures::textureBegin; k < EQEmu::textures::materialCount; k++) {
 					Equipment[k].Material = emu->equipment.Slot[k].Material;
 					Equipment[k].Unknown1 = emu->equipment.Slot[k].Unknown1;
-					Equipment[k].EliteMaterial = emu->equipment.Slot[k].EliteMaterial;
+					Equipment[k].EliteMaterial = emu->equipment.Slot[k].EliteModel;
 				}
 
-				Buffer += (sizeof(structs::Texture_Struct) * EQEmu::textures::TextureCount);
+				Buffer += (sizeof(structs::Texture_Struct) * EQEmu::textures::materialCount);
 			}
 			if (strlen(emu->title))
 			{
@@ -2907,16 +2915,17 @@ namespace SoD
 
 	DECODE(OP_Buff)
 	{
-		DECODE_LENGTH_EXACT(structs::SpellBuffFade_Struct);
-		SETUP_DIRECT_DECODE(SpellBuffFade_Struct, structs::SpellBuffFade_Struct);
+		DECODE_LENGTH_EXACT(structs::SpellBuffPacket_Struct);
+		SETUP_DIRECT_DECODE(SpellBuffPacket_Struct, structs::SpellBuffPacket_Struct);
 
 		IN(entityid);
-		IN(slot);
-		IN(level);
-		IN(effect);
-		IN(spellid);
-		IN(duration);
-		IN(slotid);
+		IN(buff.effect_type);
+		IN(buff.level);
+		IN(buff.bard_modifier);
+		IN(buff.spellid);
+		IN(buff.duration);
+		IN(buff.counters);
+		emu->slotid = SoDToServerBuffSlot(eq->slotid);
 		IN(bufffade);
 
 		FINISH_DIRECT_DECODE();
@@ -2946,6 +2955,7 @@ namespace SoD
 		DECODE_LENGTH_EXACT(structs::CastSpell_Struct);
 		SETUP_DIRECT_DECODE(CastSpell_Struct, structs::CastSpell_Struct);
 
+		emu->slot = static_cast<uint32>(SoDToServerCastingSlot(static_cast<CastingSlot>(eq->slot)));
 		IN(slot);
 		IN(spell_id);
 		emu->inventoryslot = SoDToServerSlot(eq->inventoryslot);
@@ -3239,8 +3249,10 @@ namespace SoD
 		DECODE_LENGTH_EXACT(structs::LoadSpellSet_Struct);
 		SETUP_DIRECT_DECODE(LoadSpellSet_Struct, structs::LoadSpellSet_Struct);
 
-		for (uint32 i = 0; i < MAX_PP_MEMSPELL; ++i)
+		for (int i = 0; i < structs::MAX_PP_MEMSPELL; ++i)
 			emu->spell[i] = eq->spell[i];
+		for (int i = structs::MAX_PP_MEMSPELL; i < MAX_PP_MEMSPELL; ++i)
+			emu->spell[i] = 0xFFFFFFFF;
 
 		FINISH_DIRECT_DECODE();
 	}
@@ -3544,9 +3556,9 @@ namespace SoD
 		return NextItemInstSerialNumber;
 	}
 
-	void SerializeItem(EQEmu::OutBuffer& ob, const ItemInst *inst, int16 slot_id_in, uint8 depth)
+	void SerializeItem(EQEmu::OutBuffer& ob, const EQEmu::ItemInstance *inst, int16 slot_id_in, uint8 depth)
 	{
-		const EQEmu::ItemBase *item = inst->GetUnscaledItem();
+		const EQEmu::ItemData *item = inst->GetUnscaledItem();
 		
 		SoD::structs::ItemSerializationHeader hdr;
 
@@ -3860,18 +3872,18 @@ namespace SoD
 
 		ob.write((const char*)&subitem_count, sizeof(uint32));
 
-		for (uint32 index = SUB_INDEX_BEGIN; index < EQEmu::legacy::ITEM_CONTAINER_SIZE; ++index) {
-			ItemInst* sub = inst->GetItem(index);
+		for (uint32 index = EQEmu::inventory::containerBegin; index < EQEmu::inventory::ContainerCount; ++index) {
+			EQEmu::ItemInstance* sub = inst->GetItem(index);
 			if (!sub)
 				continue;
 
 			int SubSlotNumber = INVALID_INDEX;
 			if (slot_id_in >= EQEmu::legacy::GENERAL_BEGIN && slot_id_in <= EQEmu::legacy::GENERAL_END)
-				SubSlotNumber = (((slot_id_in + 3) * EQEmu::legacy::ITEM_CONTAINER_SIZE) + index + 1);
+				SubSlotNumber = (((slot_id_in + 3) * EQEmu::inventory::ContainerCount) + index + 1);
 			else if (slot_id_in >= EQEmu::legacy::BANK_BEGIN && slot_id_in <= EQEmu::legacy::BANK_END)
-				SubSlotNumber = (((slot_id_in - EQEmu::legacy::BANK_BEGIN) * EQEmu::legacy::ITEM_CONTAINER_SIZE) + EQEmu::legacy::BANK_BAGS_BEGIN + index);
+				SubSlotNumber = (((slot_id_in - EQEmu::legacy::BANK_BEGIN) * EQEmu::inventory::ContainerCount) + EQEmu::legacy::BANK_BAGS_BEGIN + index);
 			else if (slot_id_in >= EQEmu::legacy::SHARED_BANK_BEGIN && slot_id_in <= EQEmu::legacy::SHARED_BANK_END)
-				SubSlotNumber = (((slot_id_in - EQEmu::legacy::SHARED_BANK_BEGIN) * EQEmu::legacy::ITEM_CONTAINER_SIZE) + EQEmu::legacy::SHARED_BANK_BAGS_BEGIN + index);
+				SubSlotNumber = (((slot_id_in - EQEmu::legacy::SHARED_BANK_BEGIN) * EQEmu::inventory::ContainerCount) + EQEmu::legacy::SHARED_BANK_BAGS_BEGIN + index);
 			else
 				SubSlotNumber = slot_id_in;
 
@@ -3889,7 +3901,7 @@ namespace SoD
 	{
 		uint32 SoDSlot = 0;
 
-		if (serverSlot >= EQEmu::legacy::SlotAmmo && serverSlot <= 53) // Cursor/Ammo/Power Source and Normal Inventory Slots
+		if (serverSlot >= EQEmu::inventory::slotAmmo && serverSlot <= 53) // Cursor/Ammo/Power Source and Normal Inventory Slots
 			SoDSlot = serverSlot + 1;
 		else if (serverSlot >= EQEmu::legacy::GENERAL_BAGS_BEGIN && serverSlot <= EQEmu::legacy::CURSOR_BAG_END)
 			SoDSlot = serverSlot + 11;
@@ -3897,7 +3909,7 @@ namespace SoD
 			SoDSlot = serverSlot + 1;
 		else if (serverSlot >= EQEmu::legacy::SHARED_BANK_BAGS_BEGIN && serverSlot <= EQEmu::legacy::SHARED_BANK_BAGS_END)
 			SoDSlot = serverSlot + 1;
-		else if (serverSlot == EQEmu::legacy::SlotPowerSource)
+		else if (serverSlot == EQEmu::inventory::slotPowerSource)
 			SoDSlot = invslot::PossessionsPowerSource;
 		else
 			SoDSlot = serverSlot;
@@ -3923,7 +3935,7 @@ namespace SoD
 		else if (sodSlot >= invbag::SharedBankBagsBegin && sodSlot <= invbag::SharedBankBagsEnd)
 			ServerSlot = sodSlot - 1;
 		else if (sodSlot == invslot::PossessionsPowerSource)
-			ServerSlot = EQEmu::legacy::SlotPowerSource;
+			ServerSlot = EQEmu::inventory::slotPowerSource;
 		else
 			ServerSlot = sodSlot;
 		return ServerSlot;
@@ -4011,4 +4023,98 @@ namespace SoD
 		}
 	}
 
+	static inline CastingSlot ServerToSoDCastingSlot(EQEmu::CastingSlot slot)
+	{
+		switch (slot) {
+		case EQEmu::CastingSlot::Gem1:
+			return CastingSlot::Gem1;
+		case EQEmu::CastingSlot::Gem2:
+			return CastingSlot::Gem2;
+		case EQEmu::CastingSlot::Gem3:
+			return CastingSlot::Gem3;
+		case EQEmu::CastingSlot::Gem4:
+			return CastingSlot::Gem4;
+		case EQEmu::CastingSlot::Gem5:
+			return CastingSlot::Gem5;
+		case EQEmu::CastingSlot::Gem6:
+			return CastingSlot::Gem6;
+		case EQEmu::CastingSlot::Gem7:
+			return CastingSlot::Gem7;
+		case EQEmu::CastingSlot::Gem8:
+			return CastingSlot::Gem8;
+		case EQEmu::CastingSlot::Gem9:
+			return CastingSlot::Gem9;
+		case EQEmu::CastingSlot::Gem10:
+			return CastingSlot::Gem10;
+		case EQEmu::CastingSlot::Item:
+		case EQEmu::CastingSlot::PotionBelt:
+			return CastingSlot::Item;
+		case EQEmu::CastingSlot::Discipline:
+			return CastingSlot::Discipline;
+		case EQEmu::CastingSlot::AltAbility:
+			return CastingSlot::AltAbility;
+		default: // we shouldn't have any issues with other slots ... just return something
+			return CastingSlot::Discipline;
+		}
+	}
+
+	static inline EQEmu::CastingSlot SoDToServerCastingSlot(CastingSlot slot)
+	{
+		switch (slot) {
+		case CastingSlot::Gem1:
+			return EQEmu::CastingSlot::Gem1;
+		case CastingSlot::Gem2:
+			return EQEmu::CastingSlot::Gem2;
+		case CastingSlot::Gem3:
+			return EQEmu::CastingSlot::Gem3;
+		case CastingSlot::Gem4:
+			return EQEmu::CastingSlot::Gem4;
+		case CastingSlot::Gem5:
+			return EQEmu::CastingSlot::Gem5;
+		case CastingSlot::Gem6:
+			return EQEmu::CastingSlot::Gem6;
+		case CastingSlot::Gem7:
+			return EQEmu::CastingSlot::Gem7;
+		case CastingSlot::Gem8:
+			return EQEmu::CastingSlot::Gem8;
+		case CastingSlot::Gem9:
+			return EQEmu::CastingSlot::Gem9;
+		case CastingSlot::Gem10:
+			return EQEmu::CastingSlot::Gem10;
+		case CastingSlot::Discipline:
+			return EQEmu::CastingSlot::Discipline;
+		case CastingSlot::Item:
+			return EQEmu::CastingSlot::Item;
+		case CastingSlot::AltAbility:
+			return EQEmu::CastingSlot::AltAbility;
+		default: // we shouldn't have any issues with other slots ... just return something
+			return EQEmu::CastingSlot::Discipline;
+		}
+	}
+
+	static inline int ServerToSoDBuffSlot(int index)
+	{
+		// we're a disc
+		if (index >= EQEmu::constants::LongBuffs + EQEmu::constants::ShortBuffs)
+			return index - EQEmu::constants::LongBuffs - EQEmu::constants::ShortBuffs +
+			       constants::LongBuffs + constants::ShortBuffs;
+		// we're a song
+		if (index >= EQEmu::constants::LongBuffs)
+			return index - EQEmu::constants::LongBuffs + constants::LongBuffs;
+		// we're a normal buff
+		return index; // as long as we guard against bad slots server side, we should be fine
+	}
+
+	static inline int SoDToServerBuffSlot(int index)
+	{
+		// we're a disc
+		if (index >= constants::LongBuffs + constants::ShortBuffs)
+			return index - constants::LongBuffs - constants::ShortBuffs + EQEmu::constants::LongBuffs +
+			       EQEmu::constants::ShortBuffs;
+		// we're a song
+		if (index >= constants::LongBuffs)
+			return index - constants::LongBuffs + EQEmu::constants::LongBuffs;
+		// we're a normal buff
+		return index; // as long as we guard against bad slots server side, we should be fine
+	}
 } /*SoD*/
