@@ -82,6 +82,66 @@ bool BotDatabase::LoadBotCommandSettings(std::map<std::string, std::pair<uint8, 
 	return true;
 }
 
+static uint8 spell_casting_chances[MaxSpellTypes][PLAYER_CLASS_COUNT][MaxStances][cntHSND];
+
+bool BotDatabase::LoadBotSpellCastingChances()
+{
+	memset(spell_casting_chances, 0, sizeof(spell_casting_chances));
+
+	query =
+		"SELECT"
+		" `spell_type_index`,"
+		" `class_id`,"
+		" `stance_index`,"
+		" `nHSND_value`,"
+		" `pH_value`,"
+		" `pS_value`,"
+		" `pHS_value`,"
+		" `pN_value`,"
+		" `pHN_value`,"
+		" `pSN_value`,"
+		" `pHSN_value`,"
+		" `pD_value`,"
+		" `pHD_value`,"
+		" `pSD_value`,"
+		" `pHSD_value`,"
+		" `pND_value`,"
+		" `pHND_value`,"
+		" `pSND_value`,"
+		" `pHSND_value`"
+		"FROM"
+		" `bot_spell_casting_chances`";
+
+	auto results = QueryDatabase(query);
+	if (!results.Success() || !results.RowCount())
+		return false;
+
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		uint8 spell_type_index = atoi(row[0]);
+		if (spell_type_index >= MaxSpellTypes)
+			continue;
+		uint8 class_index = atoi(row[1]);
+		if (class_index < WARRIOR || class_index > BERSERKER)
+			continue;
+		--class_index;
+		uint8 stance_index = atoi(row[2]);
+		if (stance_index >= MaxStances)
+			continue;
+
+		for (uint8 conditional_index = nHSND; conditional_index < cntHSND; ++conditional_index) {
+			uint8 value = atoi(row[3 + conditional_index]);
+			if (!value)
+				continue;
+			if (value > 100)
+				value = 100;
+
+			spell_casting_chances[spell_type_index][class_index][stance_index][conditional_index] = value;
+		}
+	}
+
+	return true;
+}
+
 
 /* Bot functions   */
 bool BotDatabase::QueryNameAvailablity(const std::string& bot_name, bool& available_flag)
@@ -334,7 +394,13 @@ bool BotDatabase::LoadBot(const uint32 bot_id, Bot*& loaded_bot)
 	loaded_bot = new Bot(bot_id, atoi(row[0]), atoi(row[1]), atof(row[14]), atoi(row[6]), tempNPCStruct);
 	if (loaded_bot) {
 		loaded_bot->SetShowHelm((atoi(row[43]) > 0 ? true : false));
-		loaded_bot->SetFollowDistance(atoi(row[44]));
+		uint32 bfd = atoi(row[44]);
+		if (bfd < 1)
+			bfd = 1;
+		if (bfd > BOT_FOLLOW_DISTANCE_DEFAULT_MAX)
+			bfd = BOT_FOLLOW_DISTANCE_DEFAULT_MAX;
+		loaded_bot->SetFollowDistance(bfd);
+		
 	}
 
 	return true;
@@ -471,7 +537,7 @@ bool BotDatabase::SaveNewBot(Bot* bot_inst, uint32& bot_id)
 		bot_inst->GetPR(),
 		bot_inst->GetDR(),
 		bot_inst->GetCorrup(),
-		BOT_DEFAULT_FOLLOW_DISTANCE
+		BOT_FOLLOW_DISTANCE_DEFAULT
 	);
 	auto results = QueryDatabase(query);
 	if (!results.Success())
@@ -617,7 +683,8 @@ bool BotDatabase::LoadBuffs(Bot* bot_inst)
 		" `caston_x`,"
 		" `caston_y`,"
 		" `caston_z`,"
-		" `extra_di_chance`"
+		" `extra_di_chance`,"
+		" `instrument_mod`"
 		" FROM `bot_buffs`"
 		" WHERE `bot_id` = '%u'",
 		bot_inst->GetBotID()
@@ -657,6 +724,7 @@ bool BotDatabase::LoadBuffs(Bot* bot_inst)
 		bot_buffs[buff_count].caston_y = atoi(row[14]);
 		bot_buffs[buff_count].caston_z = atoi(row[15]);
 		bot_buffs[buff_count].ExtraDIChance = atoi(row[16]);
+		bot_buffs[buff_count].instrument_mod = atoi(row[17]);
 		bot_buffs[buff_count].casterid = 0;
 		++buff_count;
 	}
@@ -2709,6 +2777,19 @@ bool BotDatabase::DeleteAllHealRotations(const uint32 owner_id)
 
 
 /* Bot miscellaneous functions   */
+uint8 BotDatabase::GetSpellCastingChance(uint8 spell_type_index, uint8 class_index, uint8 stance_index, uint8 conditional_index) // class_index is 0-based
+{
+	if (spell_type_index >= MaxSpellTypes)
+		return 0;
+	if (class_index >= PLAYER_CLASS_COUNT)
+		return 0;
+	if (stance_index >= MaxStances)
+		return 0;
+	if (conditional_index >= cntHSND)
+		return 0;
+
+	return spell_casting_chances[spell_type_index][class_index][stance_index][conditional_index];
+}
 
 
 /* fail::Bot functions   */

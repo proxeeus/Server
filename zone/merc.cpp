@@ -69,6 +69,9 @@ Merc::Merc(const NPCType* d, float x, float y, float z, float heading)
 	SetStance(MercStanceBalanced);
 	rest_timer.Disable();
 
+	if (GetClass() == ROGUE)
+		evade_timer.Start();
+
 	int r;
 	for (r = 0; r <= EQEmu::skills::HIGHEST_SKILL; r++) {
 		skills[r] = database.GetSkillCap(GetClass(), (EQEmu::skills::SkillType)r, GetLevel());
@@ -1459,7 +1462,7 @@ void Merc::AI_Process() {
 		// Let's check if we have a los with our target.
 		// If we don't, our hate_list is wiped.
 		// Else, it was causing the merc to aggro behind wall etc... causing massive trains.
-		if(!CheckLosFN(GetTarget()) || GetTarget()->IsMezzed() || !IsAttackAllowed(GetTarget())) {
+		if(GetTarget()->IsMezzed() || !IsAttackAllowed(GetTarget())) {
 			WipeHateList();
 
 			if(IsMoving()) {
@@ -1470,6 +1473,26 @@ void Merc::AI_Process() {
 					moved = false;
 					SetCurrentSpeed(0);
 				}
+			}
+
+			return;
+		}
+		else if (!CheckLosFN(GetTarget())) {
+			if (RuleB(Mercs, MercsUsePathing) && zone->pathing) {
+				bool WaypointChanged, NodeReached;
+
+				glm::vec3 Goal = UpdatePath(GetTarget()->GetX(), GetTarget()->GetY(), GetTarget()->GetZ(),
+					GetRunspeed(), WaypointChanged, NodeReached);
+
+				if (WaypointChanged)
+					tar_ndx = 20;
+
+				CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetRunspeed());
+			}
+			else {
+				Mob* follow = entity_list.GetMob(GetFollowID());
+				if (follow)
+					CalculateNewPosition2(follow->GetX(), follow->GetY(), follow->GetZ(), GetRunspeed());
 			}
 
 			return;
@@ -1508,32 +1531,60 @@ void Merc::AI_Process() {
 				}
 			}
 
-			if(AI_movement_timer->Check())
-			{
-				if(!IsMoving() && GetClass() == ROGUE && !BehindMob(GetTarget(), GetX(), GetY()))
-				{
-					// Move the rogue to behind the mob
-					float newX = 0;
-					float newY = 0;
-					float newZ = 0;
+			if(AI_movement_timer->Check()) {
+				if (!IsMoving()) {
+					if (GetClass() == ROGUE) {
+						if (HasTargetReflection() && !GetTarget()->IsFeared() && !GetTarget()->IsStunned()) {
+							// Hate redux actions
+							if (evade_timer.Check(false)) {
+								// Attempt to evade
+								int timer_duration = (HideReuseTime - GetSkillReuseTime(EQEmu::skills::SkillHide)) * 1000;
+								if (timer_duration < 0)
+									timer_duration = 0;
+								evade_timer.Start(timer_duration);
 
-					if(PlotPositionAroundTarget(GetTarget(), newX, newY, newZ))
-					{
-						CalculateNewPosition2(newX, newY, newZ, GetRunspeed());
-						return;
+								if (zone->random.Int(0, 260) < (int)GetSkill(EQEmu::skills::SkillHide))
+									RogueEvade(GetTarget());
+
+								return;
+							}
+							else if (GetTarget()->IsRooted()) {
+								// Move rogue back from rooted mob - out of combat range, if necessary
+								float melee_distance = GetMaxMeleeRangeToTarget(GetTarget());
+								float current_distance = DistanceSquared(static_cast<glm::vec3>(m_Position), static_cast<glm::vec3>(GetTarget()->GetPosition()));
+
+								if (current_distance <= melee_distance) {
+									float newX = 0;
+									float newY = 0;
+									float newZ = 0;
+									FaceTarget(GetTarget());
+									if (PlotPositionAroundTarget(this, newX, newY, newZ)) {
+										CalculateNewPosition2(newX, newY, newZ, GetRunspeed());
+										return;
+									}
+								}
+							}
+						}
+						else if (!BehindMob(GetTarget(), GetX(), GetY())) {
+							// Move the rogue to behind the mob
+							float newX = 0;
+							float newY = 0;
+							float newZ = 0;
+							if (PlotPositionAroundTarget(GetTarget(), newX, newY, newZ)) {
+								CalculateNewPosition2(newX, newY, newZ, GetRunspeed());
+								return;
+							}
+						}
 					}
-				}
-				else if(!IsMoving() && GetClass() != ROGUE && (DistanceSquaredNoZ(m_Position, GetTarget()->GetPosition()) < GetTarget()->GetSize()))
-				{
-					// If we are not a rogue trying to backstab, let's try to adjust our melee range so we don't appear to be bunched up
-					float newX = 0;
-					float newY = 0;
-					float newZ = 0;
-
-					if(PlotPositionAroundTarget(GetTarget(), newX, newY, newZ, false) && GetArchetype() != ARCHETYPE_CASTER)
-					{
-						CalculateNewPosition2(newX, newY, newZ, GetRunspeed());
-						return;
+					else if (GetClass() != ROGUE && (DistanceSquaredNoZ(m_Position, GetTarget()->GetPosition()) < GetTarget()->GetSize())) {
+						// If we are not a rogue trying to backstab, let's try to adjust our melee range so we don't appear to be bunched up
+						float newX = 0;
+						float newY = 0;
+						float newZ = 0;
+						if (PlotPositionAroundTarget(GetTarget(), newX, newY, newZ, false) && GetArchetype() != ARCHETYPE_CASTER) {
+							CalculateNewPosition2(newX, newY, newZ, GetRunspeed());
+							return;
+						}
 					}
 				}
 
@@ -1707,34 +1758,42 @@ void Merc::AI_Process() {
 			}
 		}
 
-		if(AI_movement_timer->Check())
-		{
-			if(GetFollowID())
-			{
+		if(AI_movement_timer->Check()) {
+			if(GetFollowID()) {
 				Mob* follow = entity_list.GetMob(GetFollowID());
 
-				if(follow)
-				{
+				if (follow) {
 					float dist = DistanceSquared(m_Position, follow->GetPosition());
 					int speed = GetRunspeed();
 
-					if(dist < GetFollowDistance() + 1000)
+					if (dist < GetFollowDistance() + 1000)
 						speed = GetWalkspeed();
 
 					SetRunAnimSpeed(0);
 
-					if(dist > GetFollowDistance()) {
-						CalculateNewPosition2(follow->GetX(), follow->GetY(), follow->GetZ(), speed);
-						if(rest_timer.Enabled())
+					if (dist > GetFollowDistance()) {
+						if (RuleB(Mercs, MercsUsePathing) && zone->pathing) {
+							bool WaypointChanged, NodeReached;
+
+							glm::vec3 Goal = UpdatePath(follow->GetX(), follow->GetY(), follow->GetZ(),
+								speed, WaypointChanged, NodeReached);
+
+							if (WaypointChanged)
+								tar_ndx = 20;
+
+							CalculateNewPosition2(Goal.x, Goal.y, Goal.z, speed);
+						}
+						else {
+							CalculateNewPosition2(follow->GetX(), follow->GetY(), follow->GetZ(), speed);
+						}
+
+						if (rest_timer.Enabled())
 							rest_timer.Disable();
-						return;
 					}
-					else
-					{
-						if(moved)
-						{
-						SetCurrentSpeed(0);
-						moved = false;
+					else {
+						if (moved) {
+							moved = false;
+							SetCurrentSpeed(0);
 						}
 					}
 				}
@@ -1985,7 +2044,7 @@ bool Merc::AIDoSpellCast(uint16 spellid, Mob* tar, int32 mana_cost, uint32* oDon
 	return result;
 }
 
-bool Merc::AICastSpell(int8 iChance, int32 iSpellTypes) {
+bool Merc::AICastSpell(int8 iChance, uint32 iSpellTypes) {
 
 	if(!AI_HasSpells())
 		return false;
@@ -2124,7 +2183,7 @@ bool Merc::AICastSpell(int8 iChance, int32 iSpellTypes) {
 								}
 
 								if(castedSpell) {
-									char* gmsg = 0;
+									char* gmsg = nullptr;
 
 									if(tar != this) {
 										//we don't need spam of bots healing themselves
@@ -2547,8 +2606,8 @@ int16 Merc::GetFocusEffect(focusType type, uint16 spell_id) {
 	//Check if item focus effect exists for the client.
 	if (itembonuses.FocusEffects[type]){
 
-		const EQEmu::ItemData* TempItem = 0;
-		const EQEmu::ItemData* UsedItem = 0;
+		const EQEmu::ItemData* TempItem = nullptr;
+		const EQEmu::ItemData* UsedItem = nullptr;
 		uint16 UsedFocusID = 0;
 		int16 Total = 0;
 		int16 focus_max = 0;
@@ -2746,7 +2805,7 @@ int32 Merc::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 	return casttime;
 }
 
-int8 Merc::GetChanceToCastBySpellType(int16 spellType) {
+int8 Merc::GetChanceToCastBySpellType(uint32 spellType) {
 	int mercStance = (int)GetStance();
 	int8 mercClass = GetClass();
 	int8 chance = 0;
@@ -2888,7 +2947,7 @@ bool Merc::CheckStance(int16 stance) {
 	return false;
 }
 
-std::list<MercSpell> Merc::GetMercSpellsBySpellType(Merc* caster, int spellType) {
+std::list<MercSpell> Merc::GetMercSpellsBySpellType(Merc* caster, uint32 spellType) {
 	std::list<MercSpell> result;
 
 	if(caster && caster->AI_HasSpells()) {
@@ -2918,7 +2977,7 @@ std::list<MercSpell> Merc::GetMercSpellsBySpellType(Merc* caster, int spellType)
 	return result;
 }
 
-MercSpell Merc::GetFirstMercSpellBySpellType(Merc* caster, int spellType) {
+MercSpell Merc::GetFirstMercSpellBySpellType(Merc* caster, uint32 spellType) {
 	MercSpell result;
 
 	result.spellid = 0;
@@ -4426,20 +4485,10 @@ void Merc::DoClassAttacks(Mob *target) {
 					if(zone->random.Int(0, 100) > 25) //tested on live, warrior mobs both kick and bash, kick about 75% of the time, casting doesn't seem to make a difference.
 					{
 						DoAnim(animKick);
-						int32 dmg = 0;
+						int32 dmg = GetBaseSkillDamage(EQEmu::skills::SkillKick);
 
-						if (GetWeaponDamage(target, (const EQEmu::ItemData*)nullptr) <= 0){
-							dmg = -5;
-						}
-						else{
-							if (target->CheckHitChance(this, EQEmu::skills::SkillKick, 0)) {
-								if(RuleB(Combat, UseIntervalAC))
-									dmg = GetKickDamage();
-								else
-									dmg = zone->random.Int(1, GetKickDamage());
-
-							}
-						}
+						if (GetWeaponDamage(target, (const EQEmu::ItemData*)nullptr) <= 0)
+							dmg = DMG_INVULNERABLE;
 
 						reuse = KickReuseTime * 1000;
 						DoSpecialAttackDamage(target, EQEmu::skills::SkillKick, dmg, 1, -1, reuse);
@@ -4448,19 +4497,10 @@ void Merc::DoClassAttacks(Mob *target) {
 					else
 					{
 						DoAnim(animTailRake);
-						int32 dmg = 0;
+						int32 dmg = GetBaseSkillDamage(EQEmu::skills::SkillBash);
 
-						if (GetWeaponDamage(target, (const EQEmu::ItemData*)nullptr) <= 0){
-							dmg = -5;
-						}
-						else{
-							if (target->CheckHitChance(this, EQEmu::skills::SkillBash, 0)) {
-								if(RuleB(Combat, UseIntervalAC))
-									dmg = GetBashDamage();
-								else
-									dmg = zone->random.Int(1, GetBashDamage());
-							}
-						}
+						if (GetWeaponDamage(target, (const EQEmu::ItemData*)nullptr) <= 0)
+							dmg = DMG_INVULNERABLE;
 
 						reuse = BashReuseTime * 1000;
 						DoSpecialAttackDamage(target, EQEmu::skills::SkillBash, dmg, 1, -1, reuse);
@@ -4474,7 +4514,7 @@ void Merc::DoClassAttacks(Mob *target) {
 	classattack_timer.Start(reuse / HasteModifier);
 }
 
-bool Merc::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool IsFromSpell, ExtraAttackOptions *opts, int special)
+bool Merc::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool IsFromSpell, ExtraAttackOptions *opts)
 {
 	if (!other) {
 		SetTarget(nullptr);
@@ -4485,7 +4525,7 @@ bool Merc::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, boo
 	return NPC::Attack(other, Hand, bRiposte, IsStrikethrough, IsFromSpell, opts);
 }
 
-void Merc::Damage(Mob* other, int32 damage, uint16 spell_id, EQEmu::skills::SkillType attack_skill, bool avoidable, int8 buffslot, bool iBuffTic, int special)
+void Merc::Damage(Mob* other, int32 damage, uint16 spell_id, EQEmu::skills::SkillType attack_skill, bool avoidable, int8 buffslot, bool iBuffTic, eSpecialAttacks special)
 {
 	if(IsDead() || IsCorpse())
 		return;
@@ -4516,7 +4556,7 @@ void Merc::SetTarget(Mob* mob) {
 }
 
 Mob* Merc::GetOwnerOrSelf() {
-	Mob* Result = 0;
+	Mob* Result = nullptr;
 
 	if(this->GetMercOwner())
 		Result = GetMercOwner();
@@ -4551,7 +4591,7 @@ bool Merc::Death(Mob* killerMob, int32 damage, uint16 spell, EQEmu::skills::Skil
 }
 
 Client* Merc::GetMercOwner() {
-	Client* mercOwner = 0;
+	Client* mercOwner = nullptr;
 
 	if(GetOwner())
 	{
@@ -4565,7 +4605,7 @@ Client* Merc::GetMercOwner() {
 }
 
 Mob* Merc::GetOwner() {
-	Mob* Result = 0;
+	Mob* Result = nullptr;
 
 	Result = entity_list.GetMob(GetOwnerID());
 
@@ -5487,7 +5527,7 @@ void Client::SuspendMercCommand() {
 			Merc* merc = Merc::LoadMerc(this, &zone->merc_templates[GetMercInfo().MercTemplateID], 0, true);
 			if(merc)
 			{
-				SpawnMerc(merc, true);
+				SpawnMerc(merc, false);
 				Log.Out(Logs::General, Logs::Mercenaries, "SuspendMercCommand Successful Unsuspend for %s.", GetName());
 			}
 			else
@@ -5500,6 +5540,15 @@ void Client::SuspendMercCommand() {
 		else
 		{
 			Merc* CurrentMerc = GetMerc();
+
+
+			if (!RuleB(Mercs, AllowMercSuspendInCombat))
+			{
+				if (!CheckCanSpawnMerc(GetMercInfo().MercTemplateID))
+				{
+					return;
+				}
+			}
 
 			if(CurrentMerc && GetMercID())
 			{

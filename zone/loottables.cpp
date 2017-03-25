@@ -80,10 +80,11 @@ void ZoneDatabase::AddLootTableToNPC(NPC* npc,uint32 loottable_id, ItemList* ite
 
 		*copper = cash;
 	}
+	uint32 global_loot_multiplier = RuleI(Zone, GlobalLootMultiplier);
 
 	// Do items
 	for (uint32 i=0; i<lts->NumEntries; i++) {
-		for (uint32 k = 1; k <= lts->Entries[i].multiplier; k++) {
+		for (uint32 k = 1; k <= (lts->Entries[i].multiplier * global_loot_multiplier); k++) {
 			uint8 droplimit = lts->Entries[i].droplimit;
 			uint8 mindrop = lts->Entries[i].mindrop;
 
@@ -254,6 +255,7 @@ void NPC::AddLootDrop(const EQEmu::ItemData *item2, ItemList* itemlist, int16 ch
 	item->attuned = 0;
 	item->min_level = minlevel;
 	item->max_level = maxlevel;
+	item->equip_slot = EQEmu::inventory::slotInvalid;
 
 	if (equipit) {
 		uint8 eslot = 0xFF;
@@ -332,8 +334,10 @@ void NPC::AddLootDrop(const EQEmu::ItemData *item2, ItemList* itemlist, int16 ch
 				CastToMob()->AddProcToWeapon(item2->Proc.Effect, true);
 
 			eslot = EQEmu::textures::weaponPrimary;
-			if (item2->Damage > 0)
+			if (item2->Damage > 0) {
 				SendAddPlayerState(PlayerState::PrimaryWeaponEquipped);
+				SetFacestab(true);
+			}
 			if (item2->IsType2HWeapon())
 				SetTwoHanderEquipped(true);
 		}
@@ -396,8 +400,8 @@ void NPC::AddLootDrop(const EQEmu::ItemData *item2, ItemList* itemlist, int16 ch
 		}
 		if (found) {
 			CalcBonuses(); // This is less than ideal for bulk adding of items
+			item->equip_slot = foundslot;
 		}
-		item->equip_slot = item2->Slots;
 	}
 
 	if(itemlist != nullptr)

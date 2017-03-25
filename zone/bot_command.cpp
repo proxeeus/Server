@@ -436,6 +436,8 @@ public:
 				case 10:
 					if (spells[spell_id].effectdescnum != 65)
 						break;
+					if (IsEffectInSpell(spell_id, SE_NegateIfCombat))
+						break;
 					entry_prototype = new STMovementSpeedEntry();
 					entry_prototype->SafeCastToMovementSpeed()->group = BCSpells::IsGroupType(target_type);
 					break;
@@ -4548,7 +4550,7 @@ void bot_subcommand_bot_follow_distance(Client *c, const Seperator *sep)
 	}
 	const int ab_mask = ActionableBots::ABM_NoFilter;
 
-	uint32 bfd = BOT_DEFAULT_FOLLOW_DISTANCE;
+	uint32 bfd = BOT_FOLLOW_DISTANCE_DEFAULT;
 	bool set_flag = false;
 	int ab_arg = 2;
 
@@ -4559,6 +4561,10 @@ void bot_subcommand_bot_follow_distance(Client *c, const Seperator *sep)
 		}
 
 		bfd = atoi(sep->arg[2]);
+		if (bfd < 1)
+			bfd = 1;
+		if (bfd > BOT_FOLLOW_DISTANCE_DEFAULT_MAX)
+			bfd = BOT_FOLLOW_DISTANCE_DEFAULT_MAX;
 		set_flag = true;
 		ab_arg = 3;
 	}
@@ -5115,7 +5121,6 @@ void bot_subcommand_bot_stance(Client *c, const Seperator *sep)
 
 		if (!current_flag) {
 			bot_iter->SetBotStance(bst);
-			bot_iter->CalcChanceToCast();
 			bot_iter->Save();
 		}
 
@@ -5146,6 +5151,7 @@ void bot_subcommand_bot_summon(Client *c, const Seperator *sep)
 		bot_iter->WipeHateList();
 		bot_iter->SetTarget(bot_iter->GetBotOwner());
 		bot_iter->Warp(glm::vec3(c->GetPosition()));
+		bot_iter->DoAnim(0);
 
 		if (!bot_iter->HasPet())
 			continue;
@@ -5394,6 +5400,7 @@ void bot_subcommand_bot_update(Client *c, const Seperator *sep)
 
 		bot_iter->SetPetChooser(false);
 		bot_iter->CalcBotStats((sbl.size() == 1));
+		bot_iter->SendAppearancePacket(AT_WhoLevel, bot_iter->GetLevel(), true, true);
 		++bot_count;
 	}
 

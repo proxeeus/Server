@@ -1022,6 +1022,12 @@ bool Client::HandlePacket(const EQApplicationPacket *app) {
 			eqs->Close();
 			return true;
 		}
+		case OP_WorldLogout:
+		{
+			eqs->Close();
+			cle->SetOnline(CLE_Status_Offline); //allows this player to log in again without an ip restriction.
+			return false;
+		}
 		case OP_ZoneChange:
 		{
 			// HoT sends this to world while zoning and wants it echoed back.
@@ -1552,12 +1558,14 @@ bool Client::OPCharCreate(char *name, CharCreate_Struct *cc)
 		database.GetSafePoints(pp.zone_id, 0, &pp.x, &pp.y, &pp.z);
 	}
 
-	/* Will either be the same as home or tutorial */
-	pp.binds[0].zoneId = pp.zone_id;
-	pp.binds[0].x = pp.x;
-	pp.binds[0].y = pp.y;
-	pp.binds[0].z = pp.z;
-	pp.binds[0].heading = pp.heading;
+	/*  Will either be the same as home or tutorial if enabled. */
+	if(RuleB(World, StartZoneSameAsBindOnCreation))	{
+		pp.binds[0].zoneId = pp.zone_id;
+		pp.binds[0].x = pp.x;
+		pp.binds[0].y = pp.y;
+		pp.binds[0].z = pp.z;
+		pp.binds[0].heading = pp.heading;
+	}
 
 	Log.Out(Logs::Detail, Logs::World_Server,"Current location: %s (%d)  %0.2f, %0.2f, %0.2f, %0.2f",
 		database.GetZoneName(pp.zone_id), pp.zone_id, pp.x, pp.y, pp.z, pp.heading);

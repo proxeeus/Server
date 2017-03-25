@@ -307,6 +307,7 @@ bool Database::DeleteCharacter(char *name) {
 	query = StringFormat("DELETE FROM `quest_globals` WHERE `charid` = '%d'", charid); QueryDatabase(query);
 	query = StringFormat("DELETE FROM `character_activities` WHERE `charid` = '%d'", charid); QueryDatabase(query);
 	query = StringFormat("DELETE FROM `character_enabledtasks` WHERE `charid` = '%d'", charid); QueryDatabase(query);
+	query = StringFormat("DELETE FROM `character_tasks` WHERE `charid` = '%d'", charid); QueryDatabase(query);
 	query = StringFormat("DELETE FROM `completed_tasks` WHERE `charid` = '%d'", charid); QueryDatabase(query);
 	query = StringFormat("DELETE FROM `friends` WHERE `charid` = '%d'", charid); QueryDatabase(query);
 	query = StringFormat("DELETE FROM `mail` WHERE `charid` = '%d'", charid); QueryDatabase(query);
@@ -2055,6 +2056,8 @@ uint32 Database::GetGuildIDByCharID(uint32 character_id)
 
 void Database::LoadLogSettings(EQEmuLogSys::LogSettings* log_settings)
 {
+	// log_settings previously initialized to '0' by EQEmuLogSys::LoadLogSettingsDefaults()
+	
 	std::string query = 
 		"SELECT "
 		"log_category_id, "
@@ -2072,6 +2075,9 @@ void Database::LoadLogSettings(EQEmuLogSys::LogSettings* log_settings)
 
 	for (auto row = results.begin(); row != results.end(); ++row) {
 		log_category = atoi(row[0]);
+		if (log_category <= Logs::None || log_category >= Logs::MaxCategoryID)
+			continue;
+
 		log_settings[log_category].log_to_console = atoi(row[2]);
 		log_settings[log_category].log_to_file = atoi(row[3]);
 		log_settings[log_category].log_to_gmsay = atoi(row[4]);

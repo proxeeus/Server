@@ -1404,15 +1404,15 @@ void EntityList::RemoveFromTargets(Mob *mob, bool RemoveFromXTargets)
 		if (!m)
 			continue;
 
-		m->RemoveFromHateList(mob);
-
 		if (RemoveFromXTargets) {
-			if (m->IsClient())
+			if (m->IsClient() && mob->CheckAggro(m))
 				m->CastToClient()->RemoveXTarget(mob, false);
 			// FadingMemories calls this function passing the client.
-			else if (mob->IsClient())
+			else if (mob->IsClient() && m->CheckAggro(mob))
 				mob->CastToClient()->RemoveXTarget(m, false);
 		}
+
+		m->RemoveFromHateList(mob);
 	}
 }
 
@@ -2224,12 +2224,23 @@ void EntityList::RemoveAllObjects()
 	}
 }
 
-void EntityList::RemoveAllTraps(){
+void EntityList::RemoveAllTraps()
+{
 	auto it = trap_list.begin();
 	while (it != trap_list.end()) {
 		safe_delete(it->second);
 		free_ids.push(it->first);
 		it = trap_list.erase(it);
+	}
+}
+
+void EntityList::RemoveAllEncounters()
+{
+	auto it = encounter_list.begin();
+	while (it != encounter_list.end()) {
+		safe_delete(it->second);
+		free_ids.push(it->first);
+		it = encounter_list.erase(it);
 	}
 }
 
@@ -2439,6 +2450,7 @@ void EntityList::UpdateWho(bool iSendFullUpdate)
 					memcpy(pack->pBuffer, tmp, pack->size);
 					pack->size = sizeof(ServerClientListKeepAlive_Struct) + (tmpNumUpdates * 4);
 					safe_delete_array(tmp);
+					sclka = (ServerClientListKeepAlive_Struct*) pack->pBuffer;
 				}
 				sclka->wid[sclka->numupdates] = it->second->GetWID();
 				sclka->numupdates++;
@@ -2557,6 +2569,8 @@ void EntityList::RemoveFromHateLists(Mob *mob, bool settoone)
 				it->second->RemoveFromHateList(mob);
 			else
 				it->second->SetHateAmountOnEnt(mob, 1);
+			if (mob->IsClient())
+				mob->CastToClient()->RemoveXTarget(it->second, false); // gotta do book keeping
 		}
 		++it;
 	}
@@ -2978,10 +2992,16 @@ void EntityList::Evade(Mob *who)
 //removes "targ" from all hate lists, including feigned, in the zone
 void EntityList::ClearAggro(Mob* targ)
 {
+	Client *c = nullptr;
+	if (targ->IsClient())
+		c = targ->CastToClient();
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
-		if (it->second->CheckAggro(targ))
+		if (it->second->CheckAggro(targ)) {
+			if (c)
+				c->RemoveXTarget(it->second, false);
 			it->second->RemoveFromHateList(targ);
+		}
 		it->second->RemoveFromFeignMemory(targ->CastToClient()); //just in case we feigned
 		++it;
 	}
