@@ -378,9 +378,6 @@ bool WorldDatabase::GetStartZone(PlayerProfile_Struct* in_pp, CharCreate_Struct*
 		in_pp->z = atof(row[2]);
 		in_pp->zone_id = atoi(row[3]);
 		in_pp->binds[0].zoneId = atoi(row[4]);
-		in_pp->binds[0].x = atof(row[6]);
-		in_pp->binds[0].y = atof(row[7]);
-		in_pp->binds[0].z = atof(row[8]);
 	}
 
 	if(in_pp->x == 0 && in_pp->y == 0 && in_pp->z == 0)
