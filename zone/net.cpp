@@ -369,7 +369,6 @@ int main(int argc, char** argv) {
 		Log.Out(Logs::General, Logs::Error, "Bot command loading FAILED");
 	else
 		Log.Out(Logs::General, Logs::Zone_Server, "%d bot commands loaded", botretval);
-
 	Log.Out(Logs::General, Logs::Zone_Server, "Loading bot spell casting chances");
 	if (!botdb.LoadBotSpellCastingChances())
 		Log.Out(Logs::General, Logs::Error, "Bot spell casting chances loading FAILED");
@@ -550,17 +549,10 @@ int main(int argc, char** argv) {
 #endif
 #endif
 		}	//end extra profiler block 
-		if (is_zone_loaded && numclients > 0) {
-			Sleep(ZoneTimerResolution);
-		}
-		else {
-			Sleep(1000);
-		}
-		
+		Sleep(ZoneTimerResolution);
 	}
 
 	entity_list.Clear();
-	entity_list.RemoveAllEncounters(); // gotta do it manually or rewrite lots of shit :P
 
 	parse->ClearInterfaces();
 
