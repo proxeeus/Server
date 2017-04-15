@@ -374,6 +374,7 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	InitializeBuffSlots();
 	CalcBonuses();
 	raid_target = d->raid_target;
+	ignore_despawn = d->ignore_despawn;
 }
 
 NPC::~NPC()
@@ -529,11 +530,11 @@ void NPC::QueryLoot(Client* to)
 	int x = 0;
 	for (auto cur = itemlist.begin(); cur != itemlist.end(); ++cur, ++x) {
 		if (!(*cur)) {
-			Log.Out(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
+			Log(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
 			continue;
 		}
 		if (!(*cur)->item_id || !database.GetItem((*cur)->item_id)) {
-			Log.Out(Logs::General, Logs::Error, "NPC::QueryLoot() - Database error, invalid item");
+			Log(Logs::General, Logs::Error, "NPC::QueryLoot() - Database error, invalid item");
 			continue;
 		}
 
@@ -1714,7 +1715,7 @@ void Mob::NPCSpecialAttacks(const char* parse, int permtag, bool reset, bool rem
 	{
 		if(database.SetSpecialAttkFlag(this->GetNPCTypeID(), orig_parse))
 		{
-			Log.Out(Logs::General, Logs::Normal, "NPCTypeID: %i flagged to '%s' for Special Attacks.\n",this->GetNPCTypeID(),orig_parse);
+			Log(Logs::General, Logs::Normal, "NPCTypeID: %i flagged to '%s' for Special Attacks.\n",this->GetNPCTypeID(),orig_parse);
 		}
 	}
 }

@@ -49,11 +49,11 @@ bool BotDatabase::Connect(const char* host, const char* user, const char* passwd
 	uint32 errnum = 0;
 	char errbuf[MYSQL_ERRMSG_SIZE];
 	if (!Open(host, user, passwd, database, port, &errnum, errbuf)) {
-		Log.Out(Logs::General, Logs::Error, "Failed to connect to bot database: Error: %s", errbuf);
+		Log(Logs::General, Logs::Error, "Failed to connect to bot database: Error: %s", errbuf);
 		return false;
 	}
 	else {
-		Log.Out(Logs::General, Logs::Status, "Using bot database '%s' at %s:%d", database, host, port);
+		Log(Logs::General, Logs::Status, "Using bot database '%s' at %s:%d", database, host, port);
 		return true;
 	}
 }
@@ -1143,7 +1143,7 @@ bool BotDatabase::LoadItems(const uint32 bot_id, EQEmu::InventoryProfile& invent
 			(uint32)atoul(row[14])
 		);
 		if (!item_inst) {
-			Log.Out(Logs::General, Logs::Error, "Warning: bot_id '%i' has an invalid item_id '%i' in inventory slot '%i'", bot_id, item_id, slot_id);
+			Log(Logs::General, Logs::Error, "Warning: bot_id '%i' has an invalid item_id '%i' in inventory slot '%i'", bot_id, item_id, slot_id);
 			continue;
 		}
 
@@ -1196,7 +1196,7 @@ bool BotDatabase::LoadItems(const uint32 bot_id, EQEmu::InventoryProfile& invent
 		item_inst->SetOrnamentHeroModel((uint32)atoul(row[8]));
 
 		if (inventory_inst.PutItem(slot_id, *item_inst) == INVALID_INDEX)
-			Log.Out(Logs::General, Logs::Error, "Warning: Invalid slot_id for item in inventory: bot_id = '%i', item_id = '%i', slot_id = '%i'", bot_id, item_id, slot_id);
+			Log(Logs::General, Logs::Error, "Warning: Invalid slot_id for item in inventory: bot_id = '%i', item_id = '%i', slot_id = '%i'", bot_id, item_id, slot_id);
 
 		safe_delete(item_inst);
 	}
@@ -2459,9 +2459,10 @@ bool BotDatabase::LoadBotGroupsListByOwnerID(const uint32 owner_id, std::list<st
 
 
 /* Bot owner group functions   */
-bool BotDatabase::LoadGroupedBotsByGroupID(const uint32 group_id, std::list<uint32>& group_list)
+// added owner ID to this function to fix groups with mulitple players grouped with bots.
+bool BotDatabase::LoadGroupedBotsByGroupID(const uint32 owner_id, const uint32 group_id, std::list<uint32>& group_list)
 {
-	if (!group_id)
+	if (!group_id || !owner_id)
 		return false;
 
 	query = StringFormat(
@@ -2471,18 +2472,10 @@ bool BotDatabase::LoadGroupedBotsByGroupID(const uint32 group_id, std::list<uint
 		" AND `charid` IN ("
 		"  SELECT `bot_id`"
 		"  FROM `bot_data`"
-		"  WHERE `owner_id` IN ("
-		"   SELECT `charid`"
-		"   FROM `group_id`"
-		"   WHERE `groupid` = '%u'"
-		"   AND `name` IN ("
-		"    SELECT `name`"
-		"    FROM `character_data`"
-		"   )"
-		"  )"
-		" )",
+		"  WHERE `owner_id` = '%u'"
+		"  )",
 		group_id,
-		group_id
+		owner_id
 	);
 
 	auto results = QueryDatabase(query);

@@ -99,7 +99,7 @@ bool NPC::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 				) {
 
 #if MobAI_DEBUG_Spells >= 21
-				Log.Out(Logs::Detail, Logs::AI, "Mob::AICastSpell: Casting: spellid=%u, tar=%s, dist2[%f]<=%f, mana_cost[%i]<=%i, cancast[%u]<=%u, type=%u",
+				Log(Logs::Detail, Logs::AI, "Mob::AICastSpell: Casting: spellid=%u, tar=%s, dist2[%f]<=%f, mana_cost[%i]<=%i, cancast[%u]<=%u, type=%u",
 					AIspells[i].spellid, tar->GetName(), dist2, (spells[AIspells[i].spellid].range * spells[AIspells[i].spellid].range), mana_cost, GetMana(), AIspells[i].time_cancast, Timer::GetCurrentTime(), AIspells[i].type);
 #endif
 
@@ -321,7 +321,7 @@ bool NPC::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 			}
 #if MobAI_DEBUG_Spells >= 21
 			else {
-				Log.Out(Logs::Detail, Logs::AI, "Mob::AICastSpell: NotCasting: spellid=%u, tar=%s, dist2[%f]<=%f, mana_cost[%i]<=%i, cancast[%u]<=%u, type=%u",
+				Log(Logs::Detail, Logs::AI, "Mob::AICastSpell: NotCasting: spellid=%u, tar=%s, dist2[%f]<=%f, mana_cost[%i]<=%i, cancast[%u]<=%u, type=%u",
 					AIspells[i].spellid, tar->GetName(), dist2, (spells[AIspells[i].spellid].range * spells[AIspells[i].spellid].range), mana_cost, GetMana(), AIspells[i].time_cancast, Timer::GetCurrentTime(), AIspells[i].type);
 			}
 #endif
@@ -332,7 +332,7 @@ bool NPC::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 
 bool NPC::AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgainBefore) {
 #if MobAI_DEBUG_Spells >= 1
-	Log.Out(Logs::Detail, Logs::AI, "Mob::AIDoSpellCast: spellid = %u, tar = %s, mana = %i, Name: '%s'", AIspells[i].spellid, tar->GetName(), mana_cost, spells[AIspells[i].spellid].name);
+	Log(Logs::Detail, Logs::AI, "Mob::AIDoSpellCast: spellid = %u, tar = %s, mana = %i, Name: '%s'", AIspells[i].spellid, tar->GetName(), mana_cost, spells[AIspells[i].spellid].name);
 #endif
 	casting_spell_AIindex = i;
 
@@ -352,7 +352,7 @@ bool EntityList::AICheckCloseBeneficialSpells(NPC* caster, uint8 iChance, float 
 		// according to Rogean, Live NPCs will just cast through walls/floors, no problem..
 		//
 		// This check was put in to address an idle-mob CPU issue
-		Log.Out(Logs::General, Logs::Error, "Error: detrimental spells requested from AICheckCloseBeneficialSpells!!");
+		Log(Logs::General, Logs::Error, "Error: detrimental spells requested from AICheckCloseBeneficialSpells!!");
 		return(false);
 	}
 
@@ -480,18 +480,18 @@ void Mob::AI_Start(uint32 iMoveDelay) {
 	AI_movement_timer = std::unique_ptr<Timer>(new Timer(AImovement_duration));
 	AI_target_check_timer = std::unique_ptr<Timer>(new Timer(AItarget_check_duration));
 	AI_feign_remember_timer = std::unique_ptr<Timer>(new Timer(AIfeignremember_delay));
-	AI_scan_area_timer = std::unique_ptr<Timer>(new Timer(RandomTimer(RuleI(NPC, NPCToNPCAggroTimerMin), RuleI(NPC, NPCToNPCAggroTimerMax))));
+
+	if(CastToNPC()->WillAggroNPCs())
+		AI_scan_area_timer = std::unique_ptr<Timer>(new Timer(RandomTimer(RuleI(NPC, NPCToNPCAggroTimerMin), RuleI(NPC, NPCToNPCAggroTimerMax))));
+	
 	AI_check_signal_timer = std::unique_ptr<Timer>(new Timer(AI_check_signal_timer_delay));
 
-#ifdef REVERSE_AGGRO
-	if(IsNPC() && !CastToNPC()->WillAggroNPCs())
-		AI_scan_area_timer->Disable();
-#endif
 
 	if (GetAggroRange() == 0)
 		pAggroRange = 70;
 	if (GetAssistRange() == 0)
 		pAssistRange = 70;
+
 	hate_list.WipeHateList();
 
 	m_Delta = glm::vec4();
@@ -1303,7 +1303,7 @@ void Mob::AI_Process() {
 				else if (AI_movement_timer->Check())
 				{
 					if (!IsRooted()) {
-						Log.Out(Logs::Detail, Logs::AI, "Pursuing %s while engaged.", target->GetName());
+						Log(Logs::Detail, Logs::AI, "Pursuing %s while engaged.", target->GetName());
 						if (!RuleB(Pathing, Aggro) || !zone->pathing)
 							CalculateNewPosition2(target->GetX(), target->GetY(), target->GetZ(), GetRunspeed());
 						else
@@ -1335,7 +1335,7 @@ void Mob::AI_Process() {
 		if (m_PlayerState & static_cast<uint32>(PlayerState::Aggressive))
 			SendRemovePlayerState(PlayerState::Aggressive);
 
-		if(!zone->CanDoCombat() && AI_feign_remember_timer->Check()) {
+		if(zone->CanDoCombat() && AI_feign_remember_timer->Check()) {
 			// 6/14/06
 			// Improved Feign Death Memory
 			// check to see if any of our previous feigned targets have gotten up.
@@ -1360,18 +1360,13 @@ void Mob::AI_Process() {
 		{
 			//we processed a spell action, so do nothing else.
 		}
-		else if (!zone->CanDoCombat() && AI_scan_area_timer->Check())
+		else if (zone->CanDoCombat() && CastToNPC()->WillAggroNPCs() && AI_scan_area_timer->Check())
 		{
 			/*
-			* This is where NPCs look around to see if they want to attack anybody.
-			*
-			* if REVERSE_AGGRO is enabled, then this timer is disabled unless they
-			* have the npc_aggro flag on them, and aggro against clients is checked
-			* by the clients.
-			*
+			* NPC to NPC aggro checking, npc needs npc_aggro flag
 			*/
 
-			Mob* temp_target = entity_list.AICheckCloseAggro(this, GetAggroRange(), GetAssistRange());
+			Mob* temp_target = entity_list.AICheckNPCtoNPCAggro(this, GetAggroRange(), GetAssistRange());
 			if (temp_target){
 				AddToHateList(temp_target);
 			}
@@ -1446,6 +1441,7 @@ void Mob::AI_Process() {
 					}
 				}
 			}
+			/* Entity has been assigned another entity to follow */
 			else if (GetFollowID())
 			{
 				Mob* follow = entity_list.GetMob(GetFollowID());
@@ -1489,6 +1485,7 @@ void Mob::AI_Process() {
 							minLastFightingDelayMoving = 0;
 							maxLastFightingDelayMoving = 0;
 						}
+						/* All normal NPC pathing */
 						CastToNPC()->AI_DoMovement();
 					}
 				}
@@ -1539,7 +1536,7 @@ void NPC::AI_DoMovement() {
 				roambox_movingto_y = zone->random.Real(roambox_min_y+1,roambox_max_y-1);
 		}
 
-		Log.Out(Logs::Detail, Logs::AI, "Roam Box: d=%.3f (%.3f->%.3f,%.3f->%.3f): Go To (%.3f,%.3f)",
+		Log(Logs::Detail, Logs::AI, "Roam Box: d=%.3f (%.3f->%.3f,%.3f->%.3f): Go To (%.3f,%.3f)",
 			roambox_distance, roambox_min_x, roambox_max_x, roambox_min_y, roambox_max_y, roambox_movingto_x, roambox_movingto_y);
 		if (!CalculateNewPosition2(roambox_movingto_x, roambox_movingto_y, GetZ(), walksp, true))
 		{
@@ -1569,7 +1566,7 @@ void NPC::AI_DoMovement() {
 				bool doMove = true;
 				if (m_CurrentWayPoint.x == GetX() && m_CurrentWayPoint.y == GetY())
 				{	// are we there yet? then stop
-					Log.Out(Logs::Detail, Logs::AI, "We have reached waypoint %d (%.3f,%.3f,%.3f) on grid %d", cur_wp, GetX(), GetY(), GetZ(), GetGrid());
+					Log(Logs::Detail, Logs::AI, "We have reached waypoint %d (%.3f,%.3f,%.3f) on grid %d", cur_wp, GetX(), GetY(), GetZ(), GetGrid());
 					
 					SetWaypointPause();
 					SetAppearance(eaStanding, false);
@@ -1620,7 +1617,7 @@ void NPC::AI_DoMovement() {
 			if (movetimercompleted==true)
 			{ // time to pause has ended
 				SetGrid( 0 - GetGrid()); // revert to AI control
-				Log.Out(Logs::Detail, Logs::Pathing, "Quest pathing is finished. Resuming on grid %d", GetGrid());
+				Log(Logs::Detail, Logs::Pathing, "Quest pathing is finished. Resuming on grid %d", GetGrid());
 
 				SetAppearance(eaStanding, false);
 
@@ -1655,7 +1652,7 @@ void NPC::AI_DoMovement() {
 		if (!CP2Moved)
 		{
 			if(moved) {
-				Log.Out(Logs::Detail, Logs::AI, "Reached guard point (%.3f,%.3f,%.3f)", m_GuardPoint.x, m_GuardPoint.y, m_GuardPoint.z);
+				Log(Logs::Detail, Logs::AI, "Reached guard point (%.3f,%.3f,%.3f)", m_GuardPoint.x, m_GuardPoint.y, m_GuardPoint.z);
 				ClearFeignMemory();
 				moved=false;
 				if (GetTarget() == nullptr || DistanceSquared(m_Position, GetTarget()->GetPosition()) >= 5*5 )
@@ -1702,11 +1699,11 @@ void NPC::AI_SetupNextWaypoint() {
 	else {
 		movetimercompleted = false;
 
-		Log.Out(Logs::Detail, Logs::Pathing, "We are departing waypoint %d.", cur_wp);
+		Log(Logs::Detail, Logs::Pathing, "We are departing waypoint %d.", cur_wp);
 
 		//if we were under quest control (with no grid), we are done now..
 		if (cur_wp == -2) {
-			Log.Out(Logs::Detail, Logs::Pathing, "Non-grid quest mob has reached its quest ordered waypoint. Leaving pathing mode.");
+			Log(Logs::Detail, Logs::Pathing, "Non-grid quest mob has reached its quest ordered waypoint. Leaving pathing mode.");
 			roamer = false;
 			cur_wp = 0;
 		}
@@ -1843,7 +1840,7 @@ bool NPC::AI_EngagedCastCheck() {
 	if (AIautocastspell_timer->Check(false)) {
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
 
-		Log.Out(Logs::Detail, Logs::AI, "Engaged autocast check triggered. Trying to cast healing spells then maybe offensive spells.");
+		Log(Logs::Detail, Logs::AI, "Engaged autocast check triggered. Trying to cast healing spells then maybe offensive spells.");
 
 		// try casting a heal or gate
 		if (!AICastSpell(this, AISpellVar.engaged_beneficial_self_chance, SpellType_Heal | SpellType_Escape | SpellType_InCombatBuff)) {
@@ -1866,7 +1863,7 @@ bool NPC::AI_PursueCastCheck() {
 	if (AIautocastspell_timer->Check(false)) {
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
 
-		Log.Out(Logs::Detail, Logs::AI, "Engaged (pursuing) autocast check triggered. Trying to cast offensive spells.");
+		Log(Logs::Detail, Logs::AI, "Engaged (pursuing) autocast check triggered. Trying to cast offensive spells.");
 		if(!AICastSpell(GetTarget(), AISpellVar.pursue_detrimental_chance, SpellType_Root | SpellType_Nuke | SpellType_Lifetap | SpellType_Snare | SpellType_DOT | SpellType_Dispel | SpellType_Mez | SpellType_Slow | SpellType_Debuff)) {
 			//no spell cast, try again soon.
 			AIautocastspell_timer->Start(RandomTimer(AISpellVar.pursue_no_sp_recast_min, AISpellVar.pursue_no_sp_recast_max), false);
@@ -1885,7 +1882,7 @@ bool NPC::AI_IdleCastCheck() {
 				//last duration it was set to... try to put up a more reasonable timer...
 				AIautocastspell_timer->Start(RandomTimer(AISpellVar.idle_no_sp_recast_min, AISpellVar.idle_no_sp_recast_max), false);
 
-				Log.Out(Logs::Moderate, Logs::Spells, "Triggering AI_IdleCastCheck :: Mob %s - Min : %u Max : %u", this->GetCleanName(), AISpellVar.idle_no_sp_recast_min, AISpellVar.idle_no_sp_recast_max);
+				Log(Logs::Moderate, Logs::Spells, "Triggering AI_IdleCastCheck :: Mob %s - Min : %u Max : %u", this->GetCleanName(), AISpellVar.idle_no_sp_recast_min, AISpellVar.idle_no_sp_recast_max);
 
 			}	//else, spell casting finishing will reset the timer.
 		}	//else, spell casting finishing will reset the timer.
@@ -2045,166 +2042,216 @@ void Mob::AreaRampage(ExtraAttackOptions *opts)
 }
 
 uint32 Mob::GetLevelCon(uint8 mylevel, uint8 iOtherLevel) {
-	int16 diff = iOtherLevel - mylevel;
-	uint32 conlevel=0;
 
-	if (diff == 0)
-		return CON_WHITE;
-	else if (diff >= 1 && diff <= 2)
-		return CON_YELLOW;
-	else if (diff >= 3)
-		return CON_RED;
+	uint32 conlevel = 0;
 
-	if (mylevel <= 8)
+	if (RuleB(Character, UseOldConSystem))
 	{
-		if (diff <= -4)
-			conlevel = CON_GREEN;
+		int16 diff = iOtherLevel - mylevel;
+
+		if (diff == 0)
+			return CON_WHITE;
+		else if (diff >= 1 && diff <= 2)
+			return CON_YELLOW;
+		else if (diff >= 3)
+			return CON_RED;
+
+		if (mylevel <= 8)
+		{
+			if (diff <= -4)
+				conlevel = CON_GRAY;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 9)
+		{
+			if (diff <= -6)
+				conlevel = CON_GRAY;
+			else if (diff <= -4)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 13)
+		{
+			if (diff <= -7)
+				conlevel = CON_GRAY;
+			else if (diff <= -5)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 15)
+		{
+			if (diff <= -7)
+				conlevel = CON_GRAY;
+			else if (diff <= -5)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 17)
+		{
+			if (diff <= -8)
+				conlevel = CON_GRAY;
+			else if (diff <= -6)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 21)
+		{
+			if (diff <= -9)
+				conlevel = CON_GRAY;
+			else if (diff <= -7)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 25)
+		{
+			if (diff <= -10)
+				conlevel = CON_GRAY;
+			else if (diff <= -8)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 29)
+		{
+			if (diff <= -11)
+				conlevel = CON_GRAY;
+			else if (diff <= -9)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 31)
+		{
+			if (diff <= -12)
+				conlevel = CON_GRAY;
+			else if (diff <= -9)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 33)
+		{
+			if (diff <= -13)
+				conlevel = CON_GRAY;
+			else if (diff <= -10)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 37)
+		{
+			if (diff <= -14)
+				conlevel = CON_GRAY;
+			else if (diff <= -11)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 41)
+		{
+			if (diff <= -16)
+				conlevel = CON_GRAY;
+			else if (diff <= -12)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 45)
+		{
+			if (diff <= -17)
+				conlevel = CON_GRAY;
+			else if (diff <= -13)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 49)
+		{
+			if (diff <= -18)
+				conlevel = CON_GRAY;
+			else if (diff <= -14)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 53)
+		{
+			if (diff <= -19)
+				conlevel = CON_GRAY;
+			else if (diff <= -15)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
+		else if (mylevel <= 55)
+		{
+			if (diff <= -20)
+				conlevel = CON_GRAY;
+			else if (diff <= -15)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
 		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 9)
-	{
-		if (diff <= -6)
-			conlevel = CON_GREEN;
-		else if (diff <= -4)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 13)
-	{
-		if (diff <= -7)
-			conlevel = CON_GREEN;
-		else if (diff <= -5)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 15)
-	{
-		if (diff <= -7)
-			conlevel = CON_GREEN;
-		else if (diff <= -5)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 17)
-	{
-		if (diff <= -8)
-			conlevel = CON_GREEN;
-		else if (diff <= -6)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 21)
-	{
-		if (diff <= -9)
-			conlevel = CON_GREEN;
-		else if (diff <= -7)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 25)
-	{
-		if (diff <= -10)
-			conlevel = CON_GREEN;
-		else if (diff <= -8)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 29)
-	{
-		if (diff <= -11)
-			conlevel = CON_GREEN;
-		else if (diff <= -9)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 31)
-	{
-		if (diff <= -12)
-			conlevel = CON_GREEN;
-		else if (diff <= -9)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 33)
-	{
-		if (diff <= -13)
-			conlevel = CON_GREEN;
-		else if (diff <= -10)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 37)
-	{
-		if (diff <= -14)
-			conlevel = CON_GREEN;
-		else if (diff <= -11)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 41)
-	{
-		if (diff <= -16)
-			conlevel = CON_GREEN;
-		else if (diff <= -12)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 45)
-	{
-		if (diff <= -17)
-			conlevel = CON_GREEN;
-		else if (diff <= -13)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 49)
-	{
-		if (diff <= -18)
-			conlevel = CON_GREEN;
-		else if (diff <= -14)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 53)
-	{
-		if (diff <= -19)
-			conlevel = CON_GREEN;
-		else if (diff <= -15)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
-	}
-	else if (mylevel <= 55)
-	{
-		if (diff <= -20)
-			conlevel = CON_GREEN;
-		else if (diff <= -15)
-			conlevel = CON_LIGHTBLUE;
-		else
-			conlevel = CON_BLUE;
+		{
+			if (diff <= -21)
+				conlevel = CON_GRAY;
+			else if (diff <= -16)
+				conlevel = CON_LIGHTBLUE;
+			else
+				conlevel = CON_BLUE;
+		}
 	}
 	else
 	{
-		if (diff <= -21)
-			conlevel = CON_GREEN;
-		else if (diff <= -16)
-			conlevel = CON_LIGHTBLUE;
+		int16 diff = iOtherLevel - mylevel;
+		uint32 conGrayLvl = mylevel - (int32)((mylevel + 5) / 3);
+		uint32 conGreenLvl = mylevel - (int32)((mylevel + 7) / 4);
+
+		if (diff == 0)
+			return CON_WHITE;
+		else if (diff >= 1 && diff <= 3)
+			return CON_YELLOW;
+		else if (diff >= 4)
+			return CON_RED;
+
+		if (mylevel <= 15)
+		{
+			if (diff <= -6)
+				conlevel = CON_GRAY;
+			else
+				conlevel = CON_BLUE;
+		}
 		else
-			conlevel = CON_BLUE;
+			if (mylevel <= 20)
+			{
+				if (iOtherLevel <= conGrayLvl)
+					conlevel = CON_GRAY;
+				else
+					if (iOtherLevel <= conGreenLvl)
+						conlevel = CON_GREEN;
+					else
+						conlevel = CON_BLUE;
+			}
+			else
+			{
+				if (iOtherLevel <= conGrayLvl)
+					conlevel = CON_GRAY;
+				else
+					if (iOtherLevel <= conGreenLvl)
+						conlevel = CON_GREEN;
+					else
+						if (diff <= -6)
+							conlevel = CON_LIGHTBLUE;
+						else
+							conlevel = CON_BLUE;
+			}
 	}
 	return conlevel;
 }
@@ -2278,7 +2325,7 @@ bool NPC::AI_AddNPCSpells(uint32 iDBSpellsID) {
 	else {
 		debug_msg.append(" (not found)");
 	}
-	Log.Out(Logs::Detail, Logs::AI, "%s", debug_msg.c_str());
+	Log(Logs::Detail, Logs::AI, "%s", debug_msg.c_str());
 #endif
 	uint16 attack_proc_spell = -1;
 	int8 proc_chance = 3;
@@ -2442,7 +2489,7 @@ bool NPC::AI_AddNPCSpellsEffects(uint32 iDBSpellsEffectsID) {
 	else {
 		debug_msg.append(" (not found)");
 	}
-	Log.Out(Logs::Detail, Logs::AI, "%s", debug_msg.c_str());
+	Log(Logs::Detail, Logs::AI, "%s", debug_msg.c_str());
 #endif
 
 	if (parentlist) {
