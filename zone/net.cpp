@@ -483,7 +483,6 @@ int main(int argc, char** argv) {
 				entity_list.AddClient(client);
 			}
 
-			/*
 			if (numclients < 1 && zoneupdate_timer.GetDuration() != IDLEZONEUPDATE)
 				zoneupdate_timer.SetTimer(IDLEZONEUPDATE);
 			else if (numclients > 0 && zoneupdate_timer.GetDuration() == IDLEZONEUPDATE)
@@ -491,10 +490,10 @@ int main(int argc, char** argv) {
 				zoneupdate_timer.SetTimer(ZONEUPDATE);
 				zoneupdate_timer.Trigger();
 			}
-			*/
+
 			//check for timeouts in other threads
 			timeout_manager.CheckTimeouts();
-			
+
 			if (worldserver.Connected()) {
 				worldwasconnected = true;
 			}
@@ -504,7 +503,7 @@ int main(int argc, char** argv) {
 				worldwasconnected = false;
 			}
 
-			if (is_zone_loaded /*&& zoneupdate_timer.Check()*/) {
+			if (is_zone_loaded && zoneupdate_timer.Check()) {
 				{
 					if (net.group_timer.Enabled() && net.group_timer.Check())
 						entity_list.GroupProcess();
@@ -545,8 +544,8 @@ int main(int argc, char** argv) {
 				database.ping();
 				// AsyncLoadVariables(dbasync, &database);
 				entity_list.UpdateWho();
-				//if (worldserver.TryReconnect() && (!worldserver.Connected()))
-				//	worldserver.AsyncConnect();
+				if (worldserver.TryReconnect() && (!worldserver.Connected()))
+					worldserver.AsyncConnect();
 			}
 
 #ifdef EQPROFILE
@@ -557,6 +556,7 @@ int main(int argc, char** argv) {
 #endif
 #endif
 		}	//end extra profiler block 
+		//Sleep(ZoneTimerResolution);
 		Sleep(1);
 	}
 
