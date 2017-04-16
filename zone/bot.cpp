@@ -24,6 +24,7 @@
 #include "quest_parser_collection.h"
 #include "../common/string_util.h"
 #include "../common/say_link.h"
+#include "../common/eqemu_logsys.h"
 
 extern volatile bool is_zone_loaded;
 
