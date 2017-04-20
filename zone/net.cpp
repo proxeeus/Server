@@ -548,7 +548,7 @@ int main(int argc, char** argv) {
 			process_timer.Start(32, true);
 		}
 
-		if (current_loaded) {
+		if (is_zone_loaded) {
 			Sleep(1);
 		}
 		else {
