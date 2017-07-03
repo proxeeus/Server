@@ -233,7 +233,7 @@ public:
 	inline bool SeeImprovedHide() const { return see_improved_hide; }
 	bool IsInvisible(Mob* other = 0) const;
 	void SetInvisible(uint8 state);
-	bool AttackAnimation(EQEmu::skills::SkillType &skillinuse, int Hand, const EQEmu::ItemInstance* weapon);
+	EQEmu::skills::SkillType AttackAnimation(int Hand, const EQEmu::ItemInstance* weapon, EQEmu::skills::SkillType skillinuse = EQEmu::skills::Skill1HBlunt);
 
 	//Song
 	bool UseBardSpellLogic(uint16 spell_id = 0xffff, int slot = -1);
@@ -446,6 +446,9 @@ public:
 	inline StatBonuses GetItemBonuses() const { return itembonuses; }
 	inline StatBonuses GetSpellBonuses() const { return spellbonuses; }
 	inline StatBonuses GetAABonuses() const { return aabonuses; }
+	inline StatBonuses* GetItemBonusesPtr() { return &itembonuses; }
+	inline StatBonuses* GetSpellBonusesPtr() { return &spellbonuses; }
+	inline StatBonuses* GetAABonusesPtr() { return &aabonuses; }
 	inline virtual int32 GetMaxSTR() const { return GetSTR(); }
 	inline virtual int32 GetMaxSTA() const { return GetSTA(); }
 	inline virtual int32 GetMaxDEX() const { return GetDEX(); }
@@ -489,6 +492,7 @@ public:
 	inline const float GetTarVZ() const { return m_TargetV.z; }
 	inline const float GetTarVector() const { return tar_vector; }
 	inline const uint8 GetTarNDX() const { return tar_ndx; }
+	inline const int8 GetFlyMode() const { return flymode; }
 	bool IsBoat() const;
 
 	//Group
@@ -533,7 +537,7 @@ public:
 	inline uint32 GetLevelCon(uint8 iOtherLevel) const {
 		return this ? GetLevelCon(GetLevel(), iOtherLevel) : CON_GRAY; }
 	virtual void AddToHateList(Mob* other, uint32 hate = 0, int32 damage = 0, bool iYellForHelp = true,
-		bool bFrenzy = false, bool iBuffTic = false, uint16 spell_id = SPELL_UNKNOWN);
+		bool bFrenzy = false, bool iBuffTic = false, uint16 spell_id = SPELL_UNKNOWN, bool pet_comand = false);
 	bool RemoveFromHateList(Mob* mob);
 	void SetHateAmountOnEnt(Mob* other, int32 hate = 0, int32 damage = 0) { hate_list.SetHateAmountOnEnt(other,hate,damage);}
 	void HalveAggro(Mob *other) { uint32 in_hate = GetHateAmount(other); SetHateAmountOnEnt(other, (in_hate > 1 ? in_hate / 2 : 1)); }
@@ -642,6 +646,10 @@ public:
 		const char *message6 = 0, const char *message7 = 0, const char *message8 = 0, const char *message9 = 0);
 	void Say_StringID(uint32 type, uint32 string_id, const char *message3 = 0, const char *message4 = 0, const char *message5 = 0,
 		const char *message6 = 0, const char *message7 = 0, const char *message8 = 0, const char *message9 = 0);
+	void SayTo_StringID(Client *to, uint32 string_id, const char *message3 = 0, const char *message4 = 0, const char *message5 = 0,
+		const char *message6 = 0, const char *message7 = 0, const char *message8 = 0, const char *message9 = 0);
+	void SayTo_StringID(Client *to, uint32 type, uint32 string_id, const char *message3 = 0, const char *message4 = 0, const char *message5 = 0,
+		const char *message6 = 0, const char *message7 = 0, const char *message8 = 0, const char *message9 = 0);
 	void Shout(const char *format, ...);
 	void Emote(const char *format, ...);
 	void QuestJournalledSay(Client *QuestInitiator, const char *str);
@@ -690,7 +698,7 @@ public:
 	void CastOnCure(uint32 spell_id);
 	void CastOnNumHitFade(uint32 spell_id);
 	void SlowMitigation(Mob* caster);
-	int16 GetCritDmgMob(uint16 skill);
+	int16 GetCritDmgMod(uint16 skill);
 	int16 GetMeleeDamageMod_SE(uint16 skill);
 	int16 GetMeleeMinDamageMod_SE(uint16 skill);
 	int16 GetCrippBlowChance();
@@ -869,10 +877,16 @@ public:
 	inline const eStandingPetOrder GetPetOrder() const { return pStandingPetOrder; }
 	inline void SetHeld(bool nState) { held = nState; }
 	inline const bool IsHeld() const { return held; }
+	inline void SetGHeld(bool nState) { gheld = nState; }
+	inline const bool IsGHeld() const { return gheld; }
 	inline void SetNoCast(bool nState) { nocast = nState; }
 	inline const bool IsNoCast() const { return nocast; }
 	inline void SetFocused(bool nState) { focused = nState; }
 	inline const bool IsFocused() const { return focused; }
+	inline void SetPetStop(bool nState) { pet_stop = nState; }
+	inline const bool IsPetStop() const { return pet_stop; }
+	inline void SetPetRegroup(bool nState) { pet_regroup = nState; }
+	inline const bool IsPetRegroup() const { return pet_regroup; }
 	inline const bool IsRoamer() const { return roamer; }
 	inline const int GetWanderType() const { return wandertype; }
 	inline const bool IsRooted() const { return rooted || permarooted; }
@@ -900,6 +914,7 @@ public:
 	float				GetGroundZ(float new_x, float new_y, float z_offset=0.0);
 	void				SendTo(float new_x, float new_y, float new_z);
 	void				SendToFixZ(float new_x, float new_y, float new_z);
+	void				FixZ();
 	void				NPCSpecialAttacks(const char* parse, int permtag, bool reset = true, bool remove = false);
 	inline uint32		DontHealMeBefore() const { return pDontHealMeBefore; }
 	inline uint32		DontBuffMeBefore() const { return pDontBuffMeBefore; }
@@ -1050,6 +1065,10 @@ public:
 	void AddAssistCap() { ++npc_assist_cap; }
 	void DelAssistCap() { --npc_assist_cap; }
 	void ResetAssistCap() { npc_assist_cap = 0; }
+	int GetWeaponDamage(Mob *against, const EQEmu::ItemData *weapon_item);
+	int GetWeaponDamage(Mob *against, const EQEmu::ItemInstance *weapon_item, uint32 *hate = nullptr);
+
+	float last_z;
 
 	// Bots HealRotation methods
 #ifdef BOTS
@@ -1179,8 +1198,11 @@ protected:
 
 	uint32 pLastChange;
 	bool held;
+	bool gheld;
 	bool nocast;
 	bool focused;
+	bool pet_stop;
+	bool pet_regroup;
 	bool spawned;
 	void CalcSpellBonuses(StatBonuses* newbon);
 	virtual void CalcBonuses();
@@ -1196,8 +1218,6 @@ protected:
 	virtual float GetDefensiveProcChances(float &ProcBonus, float &ProcChance, uint16 hand = EQEmu::inventory::slotPrimary, Mob *on = nullptr);
 	virtual float GetSkillProcChances(uint16 ReuseTime, uint16 hand = 0); // hand = MainCharm?
 	uint16 GetWeaponSpeedbyHand(uint16 hand);
-	int GetWeaponDamage(Mob *against, const EQEmu::ItemData *weapon_item);
-	int GetWeaponDamage(Mob *against, const EQEmu::ItemInstance *weapon_item, uint32 *hate = nullptr);
 #ifdef BOTS
 	virtual
 #endif
@@ -1357,6 +1377,8 @@ protected:
 
 	bool flee_mode;
 	Timer flee_timer;
+	Timer fix_z_timer;
+	Timer fix_z_timer_engaged;
 
 	bool pAIControlled;
 	bool roamer;

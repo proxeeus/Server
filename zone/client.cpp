@@ -697,12 +697,13 @@ bool Client::AddPacket(const EQApplicationPacket *pApp, bool bAckreq) {
 		//drop the packet because it will never get sent.
 		return(false);
 	}
-	auto c = new CLIENTPACKET;
+
+	auto c = std::unique_ptr<CLIENTPACKET>(new CLIENTPACKET);
 
 	c->ack_req = bAckreq;
 	c->app = pApp->Copy();
 
-	clientpackets.Append(c);
+	clientpackets.push_back(std::move(c));
 	return true;
 }
 
@@ -714,26 +715,23 @@ bool Client::AddPacket(EQApplicationPacket** pApp, bool bAckreq) {
 		//drop the packet because it will never get sent.
 		return(false);
 	}
-	auto c = new CLIENTPACKET;
+	auto c = std::unique_ptr<CLIENTPACKET>(new CLIENTPACKET);
 
 	c->ack_req = bAckreq;
 	c->app = *pApp;
 	*pApp = nullptr;
 
-	clientpackets.Append(c);
+	clientpackets.push_back(std::move(c));
 	return true;
 }
 
 bool Client::SendAllPackets() {
-	LinkedListIterator<CLIENTPACKET*> iterator(clientpackets);
-
 	CLIENTPACKET* cp = nullptr;
-	iterator.Reset();
-	while(iterator.MoreElements()) {
-		cp = iterator.GetData();
+	while (!clientpackets.empty()) {
+		cp = clientpackets.front().get();
 		if(eqs)
 			eqs->FastQueuePacket((EQApplicationPacket **)&cp->app, cp->ack_req);
-		iterator.RemoveCurrent();
+		clientpackets.pop_front();
 		Log(Logs::Moderate, Logs::Client_Server_Packet, "Transmitting a packet");
 	}
 	return true;
@@ -1251,6 +1249,37 @@ void Client::Message(uint32 type, const char* message, ...) {
 	sm->header[2] = 0x00;
 	sm->msg_type = type;
 	memcpy(sm->message, buffer, len+1);
+
+	FastQueuePacket(&app);
+
+	safe_delete_array(buffer);
+}
+
+void Client::FilteredMessage(Mob *sender, uint32 type, eqFilterType filter, const char* message, ...) {
+	if (!FilteredMessageCheck(sender, filter))
+		return;
+
+	va_list argptr;
+	auto buffer = new char[4096];
+	va_start(argptr, message);
+	vsnprintf(buffer, 4096, message, argptr);
+	va_end(argptr);
+
+	size_t len = strlen(buffer);
+
+	//client dosent like our packet all the time unless
+	//we make it really big, then it seems to not care that
+	//our header is malformed.
+	//len = 4096 - sizeof(SpecialMesg_Struct);
+
+	uint32 len_packet = sizeof(SpecialMesg_Struct) + len;
+	auto app = new EQApplicationPacket(OP_SpecialMesg, len_packet);
+	SpecialMesg_Struct* sm = (SpecialMesg_Struct*)app->pBuffer;
+	sm->header[0] = 0x00; // Header used for #emote style messages..
+	sm->header[1] = 0x00; // Play around with these to see other types
+	sm->header[2] = 0x00;
+	sm->msg_type = type;
+	memcpy(sm->message, buffer, len + 1);
 
 	FastQueuePacket(&app);
 
@@ -2339,7 +2368,9 @@ bool Client::CheckIncreaseSkill(EQEmu::skills::SkillType skillid, Mob *against_w
 		return false;
 	int skillval = GetRawSkill(skillid);
 	int maxskill = GetMaxSkillAfterSpecializationRules(skillid, MaxSkill(skillid));
-
+	char buffer[24] = { 0 };
+	snprintf(buffer, 23, "%d %d", skillid, skillval);
+	parse->EventPlayer(EVENT_USE_SKILL, this, buffer, 0);
 	if(against_who)
 	{
 		if(against_who->GetSpecialAbility(IMMUNE_AGGRO) || against_who->IsClient() ||
@@ -3931,6 +3962,46 @@ void Client::SendPopupToClient(const char *Title, const char *Text, uint32 Popup
 	safe_delete(outapp);
 }
 
+void Client::SendFullPopup(const char *Title, const char *Text, uint32 PopupID, uint32 NegativeID, uint32 Buttons, uint32 Duration, const char *ButtonName0, const char *ButtonName1, uint32 SoundControls) {
+	auto outapp = new EQApplicationPacket(OP_OnLevelMessage, sizeof(OnLevelMessage_Struct));
+	OnLevelMessage_Struct *olms = (OnLevelMessage_Struct *)outapp->pBuffer;
+
+	if((strlen(Text) > (sizeof(olms->Text)-1)) || (strlen(Title) > (sizeof(olms->Title) - 1)) ) {
+		safe_delete(outapp);
+		return;
+	}
+
+	if (ButtonName0 && ButtonName1 && ( (strlen(ButtonName0) > (sizeof(olms->ButtonName0) - 1)) || (strlen(ButtonName1) > (sizeof(olms->ButtonName1) - 1)) ) ) {
+		safe_delete(outapp);
+		return;
+	}
+
+	strcpy(olms->Title, Title);
+	strcpy(olms->Text, Text);
+
+	olms->Buttons = Buttons;
+	
+	if (ButtonName0 == NULL || ButtonName1 == NULL) {
+		sprintf(olms->ButtonName0, "%s", "Yes");
+		sprintf(olms->ButtonName1, "%s", "No");
+	} else {
+		strcpy(olms->ButtonName0, ButtonName0);
+		strcpy(olms->ButtonName1, ButtonName1);
+	}
+
+	if(Duration > 0)
+		olms->Duration = Duration * 1000;
+	else
+		olms->Duration = 0xffffffff;
+
+	olms->PopupID = PopupID;
+	olms->NegativeID = NegativeID;
+	olms->SoundControls = SoundControls;
+
+	QueuePacket(outapp);
+	safe_delete(outapp);
+}
+
 void Client::SendWindow(uint32 PopupID, uint32 NegativeID, uint32 Buttons, const char *ButtonName0, const char *ButtonName1, uint32 Duration, int title_type, Client* target, const char *Title, const char *Text, ...) {
 	va_list argptr;
 	char buffer[4096];
@@ -4171,7 +4242,7 @@ bool Client::GroupFollow(Client* inviter) {
 					RemoveAutoXTargets();
 				}
 
-				SetXTargetAutoMgr(GetXTargetAutoMgr());
+				SetXTargetAutoMgr(raid->GetXTargetAutoMgr());
 				if (!GetXTargetAutoMgr()->empty())
 					SetDirtyAutoHaters();
 
@@ -5715,6 +5786,20 @@ void Client::SuspendMinion()
 			Message_StringID(clientMessageTell, SUSPEND_MINION_UNSUSPEND, CurrentPet->GetCleanName());
 
 			memset(&m_suspendedminion, 0, sizeof(struct PetInfo));
+			// TODO: These pet command states need to be synced ...
+			// Will just fix them for now
+			if (m_ClientVersionBit & EQEmu::versions::bit_UFAndLater) {
+				SetPetCommandState(PET_BUTTON_SIT, 0);
+				SetPetCommandState(PET_BUTTON_STOP, 0);
+				SetPetCommandState(PET_BUTTON_REGROUP, 0);
+				SetPetCommandState(PET_BUTTON_FOLLOW, 1);
+				SetPetCommandState(PET_BUTTON_GUARD, 0);
+				SetPetCommandState(PET_BUTTON_TAUNT, 1);
+				SetPetCommandState(PET_BUTTON_HOLD, 0);
+				SetPetCommandState(PET_BUTTON_GHOLD, 0);
+				SetPetCommandState(PET_BUTTON_FOCUS, 0);
+				SetPetCommandState(PET_BUTTON_SPELLHOLD, 0);
+			}
 		}
 		else
 			return;
@@ -8489,7 +8574,7 @@ void Client::Consume(const EQEmu::ItemData *item, uint8 type, int16 slot, bool a
 
 	if (type == EQEmu::item::ItemTypeFood)
    {
-	   int hchange = item->CastTime * cons_mod;
+	   int hchange = item->CastTime_ * cons_mod;
 	   hchange = mod_food_value(item, hchange);
 
 	   if(hchange < 0) { return; }
@@ -8506,7 +8591,7 @@ void Client::Consume(const EQEmu::ItemData *item, uint8 type, int16 slot, bool a
    }
    else
    {
-	   int tchange = item->CastTime * cons_mod;
+	   int tchange = item->CastTime_ * cons_mod;
 	   tchange = mod_drink_value(item, tchange);
 
 	   if(tchange < 0) { return; }
@@ -8935,5 +9020,14 @@ void Client::ProcessAggroMeter()
 	} else {
 		safe_delete(app);
 	}
+}
+
+void Client::SetPetCommandState(int button, int state)
+{
+	auto app = new EQApplicationPacket(OP_PetCommandState, sizeof(PetCommandState_Struct));
+	auto pcs = (PetCommandState_Struct *)app->pBuffer;
+	pcs->button_id = button;
+	pcs->state = state;
+	FastQueuePacket(&app);
 }
 

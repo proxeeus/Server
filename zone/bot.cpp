@@ -22,6 +22,7 @@
 #include "object.h"
 #include "doors.h"
 #include "quest_parser_collection.h"
+#include "lua_parser.h"
 #include "../common/string_util.h"
 #include "../common/say_link.h"
 #include "../common/eqemu_logsys.h"
@@ -3853,11 +3854,11 @@ void Bot::Damage(Mob *from, int32 damage, uint16 spell_id, EQEmu::skills::SkillT
 }
 
 //void Bot::AddToHateList(Mob* other, uint32 hate = 0, int32 damage = 0, bool iYellForHelp = true, bool bFrenzy = false, bool iBuffTic = false)
-void Bot::AddToHateList(Mob* other, uint32 hate, int32 damage, bool iYellForHelp, bool bFrenzy, bool iBuffTic) {
-	Mob::AddToHateList(other, hate, damage, iYellForHelp, bFrenzy, iBuffTic);
+void Bot::AddToHateList(Mob* other, uint32 hate, int32 damage, bool iYellForHelp, bool bFrenzy, bool iBuffTic, bool pet_command) {
+	Mob::AddToHateList(other, hate, damage, iYellForHelp, bFrenzy, iBuffTic, pet_command);
 }
 
-bool Bot::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethrough, bool IsFromSpell, ExtraAttackOptions *opts) {
+bool Bot::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethrough, bool IsFromSpell, ExtraAttackOptions *opts) {	
 	if (!other) {
 		SetTarget(nullptr);
 		Log(Logs::General, Logs::Error, "A null Mob object was passed to Bot::Attack for evaluation!");
@@ -3920,7 +3921,7 @@ bool Bot::Attack(Mob* other, int Hand, bool FromRiposte, bool IsStrikethrough, b
 	// calculate attack_skill and skillinuse depending on hand and weapon
 	// also send Packet to near clients
 	DamageHitInfo my_hit;
-	AttackAnimation(my_hit.skill, Hand, weapon);
+	my_hit.skill = AttackAnimation(Hand, weapon);
 	Log(Logs::Detail, Logs::Combat, "Attacking with %s in slot %d using skill %d", weapon?weapon->GetItem()->Name:"Fist", Hand, my_hit.skill);
 
 	// Now figure out damage

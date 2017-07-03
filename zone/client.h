@@ -70,6 +70,7 @@ namespace EQEmu
 #include <set>
 #include <algorithm>
 #include <memory>
+#include <deque>
 
 
 #define CLIENT_TIMEOUT 90000
@@ -307,6 +308,7 @@ public:
 	void ChannelMessageSend(const char* from, const char* to, uint8 chan_num, uint8 language, const char* message, ...);
 	void ChannelMessageSend(const char* from, const char* to, uint8 chan_num, uint8 language, uint8 lang_skill, const char* message, ...);
 	void Message(uint32 type, const char* message, ...);
+	void FilteredMessage(Mob *sender, uint32 type, eqFilterType filter, const char* message, ...);
 	void QuestJournalledMessage(const char *npcname, const char* message);
 	void VoiceMacroReceived(uint32 Type, char *Target, uint32 MacroNumber);
 	void SendSound();
@@ -350,6 +352,8 @@ public:
 	inline PetInfo* GetPetInfo(uint16 pet) { return (pet==1)?&m_suspendedminion:&m_petinfo; }
 	inline InspectMessage_Struct& GetInspectMessage() { return m_inspect_message; }
 	inline const InspectMessage_Struct& GetInspectMessage() const { return m_inspect_message; }
+
+	void SetPetCommandState(int button, int state);
 
 	bool CheckAccess(int16 iDBLevel, int16 iDefaultLevel);
 
@@ -567,6 +571,7 @@ public:
 	void AddCrystals(uint32 Radiant, uint32 Ebon);
 	void SendCrystalCounts();
 
+	uint32 GetExperienceForKill(Mob *against);
 	void AddEXP(uint32 in_add_exp, uint8 conlevel = 0xFF, bool resexp = false);
 	uint32 CalcEXP(uint8 conlevel = 0xFF);
 	void SetEXP(uint32 set_exp, uint32 set_aaxp, bool resexp=false);
@@ -792,12 +797,12 @@ public:
 	void AddAAPoints(uint32 points) { m_pp.aapoints += points; SendAlternateAdvancementStats(); }
 	int GetAAPoints() { return m_pp.aapoints; }
 	int GetSpentAA() { return m_pp.aapoints_spent; }
+	uint32 GetRequiredAAExperience();
 
 	//old AA methods that we still use
 	void ResetAA();
 	void RefundAA();
 	void SendClearAA();
-	inline uint32 GetMaxAAXP(void) const { return max_AAXP; }
 	inline uint32 GetAAXP() const { return m_pp.expAA; }
 	inline uint32 GetAAPercent() const { return m_epp.perAA; }
 	int16 CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id);
@@ -942,6 +947,7 @@ public:
 	inline bool HasSpellScribed(int spellid) { return (FindSpellBookSlotBySpellID(spellid) != -1 ? true : false); }
 	uint16 GetMaxSkillAfterSpecializationRules(EQEmu::skills::SkillType skillid, uint16 maxSkill);
 	void SendPopupToClient(const char *Title, const char *Text, uint32 PopupID = 0, uint32 Buttons = 0, uint32 Duration = 0);
+	void SendFullPopup(const char *Title, const char *Text, uint32 PopupID = 0, uint32 NegativeID = 0, uint32 Buttons = 0, uint32 Duration = 0, const char *ButtonName0 = 0, const char *ButtonName1 = 0, uint32 SoundControls = 0);
 	void SendWindow(uint32 PopupID, uint32 NegativeID, uint32 Buttons, const char *ButtonName0, const char *ButtonName1, uint32 Duration, int title_type, Client* target, const char *Title, const char *Text, ...);
 	bool PendingTranslocate;
 	time_t TranslocateTime;
@@ -1257,6 +1263,8 @@ public:
 
 	void CheckRegionTypeChanges();
 
+	int32 CalcATK();
+
 protected:
 	friend class Mob;
 	void CalcItemBonuses(StatBonuses* newbon);
@@ -1316,7 +1324,6 @@ private:
 
 	void HandleTraderPriceUpdate(const EQApplicationPacket *app);
 
-	int32 CalcATK();
 	int32 CalcItemATKCap();
 	int32 CalcHaste();
 
@@ -1424,7 +1431,7 @@ private:
 	bool AddPacket(const EQApplicationPacket *, bool);
 	bool AddPacket(EQApplicationPacket**, bool);
 	bool SendAllPackets();
-	LinkedList<CLIENTPACKET *> clientpackets;
+	std::deque<std::unique_ptr<CLIENTPACKET>> clientpackets;
 
 	//Zoning related stuff
 	void SendZoneCancel(ZoneChange_Struct *zc);
@@ -1487,7 +1494,6 @@ private:
 
 	uint32 tribute_master_id;
 
-	uint32 max_AAXP;
 	bool npcflag;
 	uint8 npclevel;
 	bool feigned;

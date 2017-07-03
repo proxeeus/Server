@@ -112,12 +112,16 @@ Mob::Mob(const char* in_name,
 		m_Position(position),
 		tmHidden(-1),
 		mitigation_ac(0),
-		m_specialattacks(eSpecialAttacks::None)
+		m_specialattacks(eSpecialAttacks::None),
+		fix_z_timer(300),
+		fix_z_timer_engaged(100)
 {
 	targeted = 0;
 	tar_ndx=0;
 	tar_vector=0;
 	currently_fleeing = false;
+
+	last_z = 0;
 
 	AI_Init();
 	SetMoving(false);
@@ -344,8 +348,11 @@ Mob::Mob(const char* in_name,
 	typeofpet = petNone; // default to not a pet
 	petpower = 0;
 	held = false;
+	gheld = false;
 	nocast = false;
 	focused = false;
+	pet_stop = false;
+	pet_regroup = false;
 	_IsTempPet = false;
 	pet_owner_client = false;
 	pet_targetlock_id = 0;
@@ -3099,6 +3106,26 @@ void Mob::Say_StringID(uint32 type, uint32 string_id, const char *message3, cons
 	);
 }
 
+void Mob::SayTo_StringID(Client *to, uint32 string_id, const char *message3, const char *message4, const char *message5, const char *message6, const char *message7, const char *message8, const char *message9)
+{
+	if (!to)
+		return;
+
+	auto string_id_str = std::to_string(string_id);
+
+	to->Message_StringID(10, GENERIC_STRINGID_SAY, GetCleanName(), string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
+}
+
+void Mob::SayTo_StringID(Client *to, uint32 type, uint32 string_id, const char *message3, const char *message4, const char *message5, const char *message6, const char *message7, const char *message8, const char *message9)
+{
+	if (!to)
+		return;
+
+	auto string_id_str = std::to_string(string_id);
+
+	to->Message_StringID(type, GENERIC_STRINGID_SAY, GetCleanName(), string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
+}
+
 void Mob::Shout(const char *format, ...)
 {
 	char buf[1000];
@@ -3812,7 +3839,7 @@ int32 Mob::GetVulnerability(Mob* caster, uint32 spell_id, uint32 ticsremaining)
 
 			if((IsValidSpell(buffs[i].spellid) && IsEffectInSpell(buffs[i].spellid, SE_FcSpellVulnerability))){
 
-				int32 focus = caster->CalcFocusEffect(focusSpellVulnerability, buffs[i].spellid, spell_id);
+				int32 focus = caster->CalcFocusEffect(focusSpellVulnerability, buffs[i].spellid, spell_id, true);
 
 				if (!focus)
 					continue;
@@ -3829,6 +3856,8 @@ int32 Mob::GetVulnerability(Mob* caster, uint32 spell_id, uint32 ticsremaining)
 
 			}
 		}
+
+		tmp_focus = caster->CalcFocusEffect(focusSpellVulnerability, buffs[tmp_buffslot].spellid, spell_id);
 
 		if (tmp_focus < -99)
 			tmp_focus = -99;
@@ -4658,16 +4687,13 @@ bool Mob::TrySpellOnDeath()
 	//in death because the heal will not register before the script kills you.
 }
 
-int16 Mob::GetCritDmgMob(uint16 skill)
+int16 Mob::GetCritDmgMod(uint16 skill)
 {
 	int critDmg_mod = 0;
 
 	// All skill dmg mod + Skill specific
-	critDmg_mod += itembonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.CritDmgMob[EQEmu::skills::HIGHEST_SKILL + 1] +
-					itembonuses.CritDmgMob[skill] + spellbonuses.CritDmgMob[skill] + aabonuses.CritDmgMob[skill];
-
-	if(critDmg_mod < -100)
-		critDmg_mod = -100;
+	critDmg_mod += itembonuses.CritDmgMod[EQEmu::skills::HIGHEST_SKILL + 1] + spellbonuses.CritDmgMod[EQEmu::skills::HIGHEST_SKILL + 1] + aabonuses.CritDmgMod[EQEmu::skills::HIGHEST_SKILL + 1] +
+					itembonuses.CritDmgMod[skill] + spellbonuses.CritDmgMod[skill] + aabonuses.CritDmgMod[skill];
 
 	return critDmg_mod;
 }
