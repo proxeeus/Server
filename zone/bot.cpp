@@ -85,7 +85,7 @@ Bot::Bot(NPCType npcTypeData, Client* botOwner) : NPC(&npcTypeData, nullptr, glm
 	GenerateBaseStats();
 	// Calculate HitPoints Last As It Uses Base Stats
 	cur_hp = GenerateBaseHitPoints();
-	cur_mana = GenerateBaseManaPoints();
+	current_mana = GenerateBaseManaPoints();
 	cur_end = CalcBaseEndurance();
 	hp_regen = CalcHPRegen();
 	mana_regen = CalcManaRegen();
@@ -130,7 +130,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	_baseRace = npcTypeData.race;
 	_baseGender = npcTypeData.gender;
 	cur_hp = npcTypeData.cur_hp;
-	cur_mana = npcTypeData.Mana;
+	current_mana = npcTypeData.Mana;
 	RestRegenHP = 0;
 	RestRegenMana = 0;
 	RestRegenEndurance = 0;
@@ -207,8 +207,8 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 		SpellOnTarget(756, this); // Rezz effects
 	}
 
-	if(cur_mana > max_mana)
-		cur_mana = max_mana;
+	if(current_mana > max_mana)
+		current_mana = max_mana;
 
 	cur_end = max_end;
 }
@@ -2173,7 +2173,7 @@ void Bot::AI_Process() {
 				}
 
 				if(IsMoving())
-					SendPosUpdate();
+					SendPositionUpdate();
 				else
 					SendPosition();
 			}
@@ -2384,7 +2384,7 @@ void Bot::AI_Process() {
 
 				// TODO: Test RuleB(Bots, UpdatePositionWithTimer)
 				if(IsMoving())
-					SendPosUpdate();
+					SendPositionUpdate();
 				else
 					SendPosition();
 			}
@@ -2506,7 +2506,7 @@ void Bot::AI_Process() {
 				}
 
 				if(IsMoving())
-					SendPosUpdate();
+					SendPositionUpdate();
 				else
 					SendPosition();
 			}
@@ -2930,6 +2930,7 @@ void Bot::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho) {
 		ns->spawn.light = m_Light.Type[EQEmu::lightsource::LightActive];
 		ns->spawn.helm = helmtexture; //(GetShowHelm() ? helmtexture : 0); //0xFF;
 		ns->spawn.equip_chest2 = texture; //0xFF;
+		ns->spawn.show_name = true;
 		const EQEmu::ItemData* item = nullptr;
 		const EQEmu::ItemInstance* inst = nullptr;
 		uint32 spawnedbotid = 0;
@@ -5558,8 +5559,8 @@ int32 Bot::CalcMaxMana() {
 		}
 	}
 
-	if(cur_mana > max_mana)
-		cur_mana = max_mana;
+	if(current_mana > max_mana)
+		current_mana = max_mana;
 	else if(max_mana < 0)
 		max_mana = 0;
 

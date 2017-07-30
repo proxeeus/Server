@@ -45,6 +45,8 @@ class EQApplicationPacket;
 class Group;
 class NPC;
 class Raid;
+class Aura;
+struct AuraRecord;
 struct NewSpawn_Struct;
 struct PlayerPositionUpdateServer_Struct;
 
@@ -83,6 +85,23 @@ public:
 		int level;
 		Timer *timer;
 		int params[MAX_SPECIAL_ATTACK_PARAMS];
+	};
+
+	struct AuraInfo {
+		char name[64];
+		int spawn_id;
+		int icon;
+		Aura *aura;
+		AuraInfo() : spawn_id(0), icon(0), aura(nullptr)
+		{
+			memset(name, 0, 64);
+		}
+	};
+
+	struct AuraMgr {
+		int count; // active auras
+		AuraInfo auras[AURA_HARDCAP];
+		AuraMgr() : count(0) { }
 	};
 
 	Mob(const char*	in_name,
@@ -308,6 +327,7 @@ public:
 	void BuffProcess();
 	virtual void DoBuffTic(const Buffs_Struct &buff, int slot, Mob* caster = nullptr);
 	void BuffFadeBySpellID(uint16 spell_id);
+	void BuffFadeBySpellIDAndCaster(uint16 spell_id, uint16 caster_id);
 	void BuffFadeByEffect(int effectid, int skipslot = -1);
 	void BuffFadeAll();
 	void BuffFadeNonPersistDeath();
@@ -315,6 +335,7 @@ public:
 	void BuffFadeBySlot(int slot, bool iRecalcBonuses = true);
 	void BuffFadeDetrimentalByCaster(Mob *caster);
 	void BuffFadeBySitModifier();
+	bool IsAffectedByBuff(uint16 spell_id);
 	void BuffModifyDurationBySpellID(uint16 spell_id, int32 newDuration);
 	int AddBuff(Mob *caster, const uint16 spell_id, int duration = 0, int32 level_override = -1);
 	int CanBuffStack(uint16 spellid, uint8 caster_level, bool iFailIfOverwrite = false);
@@ -466,14 +487,14 @@ public:
 	inline int32 GetMaxHP() const { return max_hp; }
 	virtual int32 CalcMaxHP();
 	inline int32 GetMaxMana() const { return max_mana; }
-	inline int32 GetMana() const { return cur_mana; }
+	inline int32 GetMana() const { return current_mana; }
 	virtual int32 GetEndurance() const { return 0; }
 	virtual void SetEndurance(int32 newEnd) { return; }
 	int32 GetItemHPBonuses();
 	int32 GetSpellHPBonuses();
 	virtual const int32& SetMana(int32 amount);
 	inline float GetManaRatio() const { return max_mana == 0 ? 100 :
-		((static_cast<float>(cur_mana) / max_mana) * 100); }
+		((static_cast<float>(current_mana) / max_mana) * 100); }
 	virtual int32 CalcMaxMana();
 	uint32 GetNPCTypeID() const { return npctype_id; }
 	void SetNPCTypeID(uint32 npctypeid) { npctype_id = npctypeid; }
@@ -522,12 +543,13 @@ public:
 	virtual void GMMove(float x, float y, float z, float heading = 0.01, bool SendUpdate = true);
 	void SetDelta(const glm::vec4& delta);
 	void SetTargetDestSteps(uint8 target_steps) { tar_ndx = target_steps; }
-	void SendPosUpdate(uint8 iSendToSelf = 0);
+	void SendPositionUpdate(uint8 iSendToSelf = 0);
 	void MakeSpawnUpdateNoDelta(PlayerPositionUpdateServer_Struct* spu);
 	void MakeSpawnUpdate(PlayerPositionUpdateServer_Struct* spu);
 	void SendPosition();
 	void SetSpawned() { spawned = true; };
 	bool Spawned() { return spawned; };
+	virtual bool ShouldISpawnFor(Client *c) { return true; }
 	void SetFlyMode(uint8 flymode);
 	inline void Teleport(glm::vec3 NewPosition) { m_Position.x = NewPosition.x; m_Position.y = NewPosition.y;
 		m_Position.z = NewPosition.z; };
@@ -556,7 +578,7 @@ public:
 	void SetPrimaryAggro(bool value) { PrimaryAggro = value; if (value) AssistAggro = false; }
 	void SetAssistAggro(bool value) { AssistAggro = value; if (PrimaryAggro) AssistAggro = false; }
 	bool HateSummon();
-	void FaceTarget(Mob* MobToFace = 0);
+	void FaceTarget(Mob* mob_to_face = 0);
 	void SetHeading(float iHeading) { if(m_Position.w != iHeading) { pLastChange = Timer::GetCurrentTime();
 		m_Position.w = iHeading; } }
 	void WipeHateList();
@@ -583,7 +605,7 @@ public:
 	static void CreateSpawnPacket(EQApplicationPacket* app, NewSpawn_Struct* ns);
 	virtual void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
 	void CreateHPPacket(EQApplicationPacket* app);
-	void SendHPUpdate(bool skip_self = false);
+	void SendHPUpdate(bool skip_self = false, bool force_update_all = false);
 	virtual void ResetHPUpdateTimer() {}; // does nothing
 
 	//Util
@@ -603,6 +625,19 @@ public:
 	void ShowBuffList(Client* client);
 	bool PlotPositionAroundTarget(Mob* target, float &x_dest, float &y_dest, float &z_dest,
 		bool lookForAftArc = true);
+
+	// aura functions
+	void MakeAura(uint16 spell_id);
+	inline int GetAuraSlots() { return 1 + aabonuses.aura_slots + itembonuses.aura_slots + spellbonuses.aura_slots; }
+	inline int GetTrapSlots() { return 1 + aabonuses.trap_slots + itembonuses.trap_slots + spellbonuses.trap_slots; }
+	inline bool HasFreeAuraSlots() { return aura_mgr.count < GetAuraSlots(); }
+	inline bool HasFreeTrapSlots() { return trap_mgr.count < GetTrapSlots(); }
+	void AddAura(Aura *aura, AuraRecord &record);
+	void AddTrap(Aura *aura, AuraRecord &record);
+	bool CanSpawnAura(bool trap);
+	void RemoveAura(int spawn_id, bool skip_strip = false, bool expired = false);
+	void RemoveAllAuras();
+	inline AuraMgr &GetAuraMgr() { return aura_mgr; } // mainly used for zone db loading/saving
 
 	//Procs
 	void TriggerDefensiveProcs(Mob *on, uint16 hand = EQEmu::inventory::slotPrimary, bool FromSkillProc = false, int damage = 0);
@@ -998,7 +1033,7 @@ public:
 	Timer GetAttackTimer() { return attack_timer; }
 	Timer GetAttackDWTimer() { return attack_dw_timer; }
 	inline bool IsFindable() { return findable; }
-	inline uint8 GetManaPercent() { return (uint8)((float)cur_mana / (float)max_mana * 100.0f); }
+	inline uint8 GetManaPercent() { return (uint8)((float)current_mana / (float)max_mana * 100.0f); }
 	virtual uint8 GetEndurancePercent() { return 0; }
 
 	inline virtual bool IsBlockedBuff(int16 SpellID) { return false; }
@@ -1145,7 +1180,7 @@ protected:
 	int32 cur_hp;
 	int32 max_hp;
 	int32 base_hp;
-	int32 cur_mana;
+	int32 current_mana;
 	int32 max_mana;
 	int32 hp_regen;
 	int32 mana_regen;
@@ -1184,6 +1219,8 @@ protected:
 	uint8 orig_level;
 	uint32 npctype_id;
 	glm::vec4 m_Position;
+	/* Used to determine when an NPC has traversed so many units - to send a zone wide pos update */
+	glm::vec4 last_major_update_position; 
 	uint16 animation;
 	float base_size;
 	float size;
@@ -1373,7 +1410,6 @@ protected:
 	void ClearItemFactionBonuses();
 
 	void CalculateFearPosition();
-	uint32 move_tic_count;
 
 	bool flee_mode;
 	Timer flee_timer;
@@ -1389,7 +1425,8 @@ protected:
 	int wandertype;
 	int pausetype;
 
-	int8 last_hp;
+	int8 last_hp_percent;
+	int32 last_hp;
 
 	int cur_wp;
 	glm::vec4 m_CurrentWayPoint;
@@ -1462,6 +1499,9 @@ protected:
 	Timer aa_timers[aaTimerMax];
 
 	bool IsHorse;
+
+	AuraMgr aura_mgr;
+	AuraMgr trap_mgr;
 
 private:
 	void _StopSong(); //this is not what you think it is

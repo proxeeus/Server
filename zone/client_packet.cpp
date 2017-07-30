@@ -323,6 +323,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_RecipesSearch] = &Client::Handle_OP_RecipesSearch;
 	ConnectedOpcodes[OP_ReloadUI] = &Client::Handle_OP_ReloadUI;
 	ConnectedOpcodes[OP_RemoveBlockedBuffs] = &Client::Handle_OP_RemoveBlockedBuffs;
+	ConnectedOpcodes[OP_RemoveTrap] = &Client::Handle_OP_RemoveTrap;
 	ConnectedOpcodes[OP_Report] = &Client::Handle_OP_Report;
 	ConnectedOpcodes[OP_RequestDuel] = &Client::Handle_OP_RequestDuel;
 	ConnectedOpcodes[OP_RequestTitles] = &Client::Handle_OP_RequestTitles;
@@ -383,6 +384,7 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_TributeUpdate] = &Client::Handle_OP_TributeUpdate;
 	ConnectedOpcodes[OP_VetClaimRequest] = &Client::Handle_OP_VetClaimRequest;
 	ConnectedOpcodes[OP_VoiceMacroIn] = &Client::Handle_OP_VoiceMacroIn;
+	ConnectedOpcodes[OP_UpdateAura] = &Client::Handle_OP_UpdateAura;;
 	ConnectedOpcodes[OP_WearChange] = &Client::Handle_OP_WearChange;
 	ConnectedOpcodes[OP_WhoAllRequest] = &Client::Handle_OP_WhoAllRequest;
 	ConnectedOpcodes[OP_WorldUnknown001] = &Client::Handle_OP_Ignore;
@@ -583,8 +585,17 @@ void Client::CompleteConnect()
 
 			if (raid->IsLocked())
 				raid->SendRaidLockTo(this);
+
+			raid->SendHPManaEndPacketsTo(this);
 		}
 	}
+	else {
+		Group *group = nullptr;
+		group = this->GetGroup();
+		if (group)
+			group->SendHPManaEndPacketsTo(this);
+	}
+	
 
 	//bulk raid send in here eventually
 
@@ -872,6 +883,8 @@ void Client::CompleteConnect()
 		SetPetCommandState(PET_BUTTON_FOCUS, 0);
 		SetPetCommandState(PET_BUTTON_SPELLHOLD, 0);
 	}
+
+	database.LoadAuras(this); // this ends up spawning them so probably safer to load this later (here)
 
 	entity_list.RefreshClientXTargets(this);
 
@@ -1278,7 +1291,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 		lsaccountid = atoi(row[2]);
 		gmspeed = atoi(row[3]);
 		revoked = atoi(row[4]);
-		gmhideme = atoi(row[5]);
+		gm_hide_me = atoi(row[5]);
 		account_creation = atoul(row[6]);
 	}
 
@@ -1346,7 +1359,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	if (level) { level = m_pp.level; }
 
 	/* If GM, not trackable */
-	if (gmhideme) { trackable = false; }
+	if (gm_hide_me) { trackable = false; }
 	/* Set Con State for Reporting */
 	conn_state = PlayerProfileLoaded;
 
@@ -3872,7 +3885,7 @@ void Client::Handle_OP_BoardBoat(const EQApplicationPacket *app)
 	Mob* boat = entity_list.GetMob(boatname);
 	if (!boat || (boat->GetRace() != CONTROLLED_BOAT && boat->GetRace() != 502))
 		return;
-	BoatID = boat->GetID();	// set the client's BoatID to show that it's on this boat
+	controlling_boat_id = boat->GetID();	// set the client's BoatID to show that it's on this boat
 
 	return;
 }
@@ -4363,7 +4376,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 	if (dead)
 		return;
 
-	//currently accepting two sizes, one has an extra byte on the end
+	/* Invalid size check */
 	if (app->size != sizeof(PlayerPositionUpdateClient_Struct)
 		&& app->size != (sizeof(PlayerPositionUpdateClient_Struct) + 1)
 		) {
@@ -4372,30 +4385,30 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 	}
 	PlayerPositionUpdateClient_Struct* ppu = (PlayerPositionUpdateClient_Struct*)app->pBuffer;
 
+	/* Boat handling */
 	if (ppu->spawn_id != GetID()) {
-		// check if the id is for a boat the player is controlling
-		if (ppu->spawn_id == BoatID) {
-			Mob* boat = entity_list.GetMob(BoatID);
-			if (boat == 0) {	// if the boat ID is invalid, reset the id and abort
-				BoatID = 0;
+		/* If player is controlling boat */
+		if (ppu->spawn_id == controlling_boat_id) {
+			Mob* boat = entity_list.GetMob(controlling_boat_id);
+			if (boat == 0) {
+				controlling_boat_id = 0;
 				return;
 			}
 
-			// set the boat's position deltas
-			auto boatDelta = glm::vec4(ppu->delta_x, ppu->delta_y, ppu->delta_z, ppu->delta_heading);
-			boat->SetDelta(boatDelta);
-			// send an update to everyone nearby except the client controlling the boat
-			auto outapp =
-				new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
+			auto boat_delta = glm::vec4(ppu->delta_x, ppu->delta_y, ppu->delta_z, ppu->delta_heading);
+			boat->SetDelta(boat_delta);
+			
+			auto outapp = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 			PlayerPositionUpdateServer_Struct* ppus = (PlayerPositionUpdateServer_Struct*)outapp->pBuffer;
 			boat->MakeSpawnUpdate(ppus);
 			entity_list.QueueCloseClients(boat, outapp, true, 300, this, false);
 			safe_delete(outapp);
-			// update the boat's position on the server, without sending an update
+
+			/* Update the boat's position on the server, without sending an update */
 			boat->GMMove(ppu->x_pos, ppu->y_pos, ppu->z_pos, EQ19toFloat(ppu->heading), false);
 			return;
 		}
-		else return;	// if not a boat, do nothing
+		else return;
 	}
 
 	float dist = 0;
@@ -4406,51 +4419,34 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 	dist += tmp*tmp;
 	dist = sqrt(dist);
 
-	//the purpose of this first block may not be readily apparent
-	//basically it's so people don't do a moderate warp every 2.5 seconds
-	//letting it even out and basically getting the job done without triggering
-	if (dist == 0)
-	{
-		if (m_DistanceSinceLastPositionCheck > 0.0)
-		{
+	/* Hack checks */
+	if (dist == 0) {
+		if (m_DistanceSinceLastPositionCheck > 0.0) {
 			uint32 cur_time = Timer::GetCurrentTime();
-			if ((cur_time - m_TimeSinceLastPositionCheck) > 0)
-			{
+			if ((cur_time - m_TimeSinceLastPositionCheck) > 0) {
 				float speed = (m_DistanceSinceLastPositionCheck * 100) / (float)(cur_time - m_TimeSinceLastPositionCheck);
 				int runs = GetRunspeed();
-				if (speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-				{
-					if (!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor)))))
-					{
-						if (IsShadowStepExempted())
-						{
-							if (m_DistanceSinceLastPositionCheck > 800)
-							{
+				if (speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor))) {
+					if (!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor))))) {
+						if (IsShadowStepExempted()) {
+							if (m_DistanceSinceLastPositionCheck > 800) {
 								CheatDetected(MQWarpShadowStep, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 							}
 						}
-						else if (IsKnockBackExempted())
-						{
-							//still potential to trigger this if you're knocked back off a
-							//HUGE fall that takes > 2.5 seconds
-							if (speed > 30.0f)
-							{
+						else if (IsKnockBackExempted()) {
+							if (speed > 30.0f) {
 								CheatDetected(MQWarpKnockBack, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 							}
 						}
-						else if (!IsPortExempted())
-						{
-							if (!IsMQExemptedArea(zone->GetZoneID(), ppu->x_pos, ppu->y_pos, ppu->z_pos))
-							{
-								if (speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-								{
+						else if (!IsPortExempted()) {
+							if (!IsMQExemptedArea(zone->GetZoneID(), ppu->x_pos, ppu->y_pos, ppu->z_pos)) {
+								if (speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor))) {
 									m_TimeSinceLastPositionCheck = cur_time;
 									m_DistanceSinceLastPositionCheck = 0.0f;
 									CheatDetected(MQWarp, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 									//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
 								}
-								else
-								{
+								else {
 									CheatDetected(MQWarpLight, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 								}
 							}
@@ -4465,64 +4461,42 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 				m_CheatDetectMoved = false;
 			}
 		}
-		else
-		{
+		else {
 			m_TimeSinceLastPositionCheck = Timer::GetCurrentTime();
 			m_CheatDetectMoved = false;
 		}
 	}
-	else
-	{
+	else {
 		m_DistanceSinceLastPositionCheck += dist;
 		m_CheatDetectMoved = true;
-		if (m_TimeSinceLastPositionCheck == 0)
-		{
+		if (m_TimeSinceLastPositionCheck == 0) {
 			m_TimeSinceLastPositionCheck = Timer::GetCurrentTime();
 		}
-		else
-		{
+		else {
 			uint32 cur_time = Timer::GetCurrentTime();
-			if ((cur_time - m_TimeSinceLastPositionCheck) > 2500)
-			{
+			if ((cur_time - m_TimeSinceLastPositionCheck) > 2500) {
 				float speed = (m_DistanceSinceLastPositionCheck * 100) / (float)(cur_time - m_TimeSinceLastPositionCheck);
 				int runs = GetRunspeed();
-				if (speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-				{
-					if (!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor)))))
-					{
-						if (IsShadowStepExempted())
-						{
-							if (m_DistanceSinceLastPositionCheck > 800)
-							{
-								//if(!IsMQExemptedArea(zone->GetZoneID(), ppu->x_pos, ppu->y_pos, ppu->z_pos))
-								//{
+				if (speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor))) {
+					if (!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor))))) {
+						if (IsShadowStepExempted()) {
+							if (m_DistanceSinceLastPositionCheck > 800) {
 								CheatDetected(MQWarpShadowStep, ppu->x_pos, ppu->y_pos, ppu->z_pos);
-								//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
-								//}
 							}
 						}
-						else if (IsKnockBackExempted())
-						{
-							//still potential to trigger this if you're knocked back off a
-							//HUGE fall that takes > 2.5 seconds
-							if (speed > 30.0f)
-							{
+						else if (IsKnockBackExempted()) {
+							if (speed > 30.0f) {
 								CheatDetected(MQWarpKnockBack, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 							}
 						}
-						else if (!IsPortExempted())
-						{
-							if (!IsMQExemptedArea(zone->GetZoneID(), ppu->x_pos, ppu->y_pos, ppu->z_pos))
-							{
-								if (speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-								{
+						else if (!IsPortExempted()) {
+							if (!IsMQExemptedArea(zone->GetZoneID(), ppu->x_pos, ppu->y_pos, ppu->z_pos)) {
+								if (speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor))) {
 									m_TimeSinceLastPositionCheck = cur_time;
 									m_DistanceSinceLastPositionCheck = 0.0f;
 									CheatDetected(MQWarp, ppu->x_pos, ppu->y_pos, ppu->z_pos);
-									//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
 								}
-								else
-								{
+								else {
 									CheatDetected(MQWarpLight, ppu->x_pos, ppu->y_pos, ppu->z_pos);
 								}
 							}
@@ -4541,7 +4515,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 			DragCorpses();
 	}
 
-	//Check to see if PPU should trigger an update to the rewind position.
+	/* Check to see if PPU should trigger an update to the rewind position. */
 	float rewind_x_diff = 0;
 	float rewind_y_diff = 0;
 
@@ -4550,14 +4524,19 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 	rewind_y_diff = ppu->y_pos - m_RewindLocation.y;
 	rewind_y_diff *= rewind_y_diff;
 
-	//We only need to store updated values if the player has moved.
-	//If the player has moved more than units for x or y, then we'll store
-	//his pre-PPU x and y for /rewind, in case he gets stuck.
+	/* 
+		We only need to store updated values if the player has moved.
+		If the player has moved more than units for x or y, then we'll store
+		his pre-PPU x and y for /rewind, in case he gets stuck.
+	*/
+
 	if ((rewind_x_diff > 750) || (rewind_y_diff > 750))
 		m_RewindLocation = glm::vec3(m_Position);
 
-	//If the PPU was a large jump, such as a cross zone gate or Call of Hero,
-	//just update rewind coords to the new ppu coords. This will prevent exploitation.
+	/*
+		If the PPU was a large jump, such as a cross zone gate or Call of Hero,
+			just update rewind coordinates to the new ppu coordinates. This will prevent exploitation.
+	*/
 
 	if ((rewind_x_diff > 5000) || (rewind_y_diff > 5000))
 		m_RewindLocation = glm::vec3(ppu->x_pos, ppu->y_pos, ppu->z_pos);
@@ -4570,7 +4549,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 		m_Proximity = glm::vec3(ppu->x_pos, ppu->y_pos, ppu->z_pos);
 	}
 
-	// Update internal state
+	/* Update internal state */
 	m_Delta = glm::vec4(ppu->delta_x, ppu->delta_y, ppu->delta_z, ppu->delta_heading);
 
 	if (IsTracking() && ((m_Position.x != ppu->x_pos) || (m_Position.y != ppu->y_pos))) {
@@ -4578,7 +4557,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 			CheckIncreaseSkill(EQEmu::skills::SkillTracking, nullptr, -20);
 	}
 
-	// Break Hide if moving without sneaking and set rewind timer if moved
+	/* Break Hide if moving without sneaking and set rewind timer if moved */
 	if (ppu->y_pos != m_Position.y || ppu->x_pos != m_Position.x) {
 		if ((hidden || improved_hidden) && !sneaking) {
 			hidden = false;
@@ -4623,36 +4602,41 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 			client_scan_npc_aggro_timer.Start(3000);
 		}
 	}
+	
+	float new_heading = EQ19toFloat(ppu->heading);
+	int32 new_animation = ppu->animation;
 
-	// Outgoing client packet
-	float tmpheading = EQ19toFloat(ppu->heading);
-	/* The clients send an update at best every 1.3 seconds
-	* We want to avoid reflecting these updates to other clients as much as possible
-	* The client also sends an update every 280 ms while turning, if we prevent
-	* sending these by checking if the location is the same too aggressively, clients end up spinning
-	* so keep a count of how many packets are the same within a tolerance and stop when we get there */
+	/* Update internal server position from what the client has sent */
+	m_Position.x = ppu->x_pos;
+	m_Position.y = ppu->y_pos;
+	m_Position.z = ppu->z_pos;
+	
+	/* Visual Debugging */
+	if (RuleB(Character, OPClientUpdateVisualDebug)) {
+		Log(Logs::General, Logs::Debug, "ClientUpdate: ppu x: %f y: %f z: %f h: %u", ppu->x_pos, ppu->y_pos, ppu->z_pos, ppu->heading);
+		this->SendAppearanceEffect(78, 0, 0, 0, 0);
+		this->SendAppearanceEffect(41, 0, 0, 0, 0);
+	}
 
-	bool pos_same = FCMP(ppu->y_pos, m_Position.y) && FCMP(ppu->x_pos, m_Position.x) && FCMP(tmpheading, m_Position.w) && ppu->animation == animation;
-	if (!pos_same || (pos_same && position_update_same_count < 6))
-	{
-		if (pos_same)
-			position_update_same_count++;
-		else
-			position_update_same_count = 0;
+	/* Only feed real time updates when client is moving */
+	if (is_client_moving || new_heading != m_Position.w || new_animation != animation) {
 
-		m_Position.x = ppu->x_pos;
-		m_Position.y = ppu->y_pos;
-		m_Position.z = ppu->z_pos;
-		m_Position.w = tmpheading;
 		animation = ppu->animation;
+		m_Position.w = EQ19toFloat(ppu->heading);
 
+		/* Broadcast update to other clients */
 		auto outapp = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
-		PlayerPositionUpdateServer_Struct* ppu = (PlayerPositionUpdateServer_Struct*)outapp->pBuffer;
-		MakeSpawnUpdate(ppu);
-		if (gmhideme)
+		PlayerPositionUpdateServer_Struct* position_update = (PlayerPositionUpdateServer_Struct*)outapp->pBuffer;
+
+		MakeSpawnUpdate(position_update);
+
+		if (gm_hide_me) {
 			entity_list.QueueClientsStatus(this, outapp, true, Admin(), 250);
-		else
-			entity_list.QueueCloseClients(this, outapp, true, 300, nullptr, false);
+		}
+		else {
+			entity_list.QueueCloseClients(this, outapp, true, 300, nullptr, true);
+		}
+
 		safe_delete(outapp);
 	}
 
@@ -4664,27 +4648,6 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app)
 
 	return;
 }
-
-/*
-void Client::Handle_OP_CloseContainer(const EQApplicationPacket *app)
-{
-if (app->size != sizeof(CloseContainer_Struct)) {
-LogFile->write(EQEMuLog::Error, "Invalid size on CloseContainer_Struct: Expected %i, Got %i",
-sizeof(CloseContainer_Struct), app->size);
-return;
-}
-
-SetTradeskillObject(nullptr);
-
-ClickObjectAck_Struct* oos = (ClickObjectAck_Struct*)app->pBuffer;
-Entity* entity = entity_list.GetEntityObject(oos->drop_id);
-if (entity && entity->IsObject()) {
-Object* object = entity->CastToObject();
-object->Close();
-}
-return;
-}
-*/
 
 void Client::Handle_OP_CombatAbility(const EQApplicationPacket *app)
 {
@@ -8936,12 +8899,12 @@ void Client::Handle_OP_LeaveAdventure(const EQApplicationPacket *app)
 
 void Client::Handle_OP_LeaveBoat(const EQApplicationPacket *app)
 {
-	Mob* boat = entity_list.GetMob(this->BoatID);	// find the mob corresponding to the boat id
+	Mob* boat = entity_list.GetMob(this->controlling_boat_id);	// find the mob corresponding to the boat id
 	if (boat) {
 		if ((boat->GetTarget() == this) && boat->GetHateAmount(this) == 0)	// if the client somehow left while still controlling the boat (and the boat isn't attacking them)
 			boat->SetTarget(0);			// fix it to stop later problems
 	}
-	this->BoatID = 0;
+	this->controlling_boat_id = 0;
 	return;
 }
 
@@ -11833,6 +11796,28 @@ void Client::Handle_OP_RemoveBlockedBuffs(const EQApplicationPacket *app)
 	}
 }
 
+void Client::Handle_OP_RemoveTrap(const EQApplicationPacket *app)
+{
+	if (app->size != 4) {// just an int
+		Log(Logs::General, Logs::None, "Size mismatch in OP_RemoveTrap expected 4 got %i", app->size);
+		DumpPacket(app);
+		return;
+	}
+
+	auto id = app->ReadUInt32(0);
+	bool good = false;
+	for (int i = 0; i < trap_mgr.count; ++i) {
+		if (trap_mgr.auras[i].spawn_id == id) {
+			good = true;
+			break;
+		}
+	}
+	if (good)
+		RemoveAura(id);
+	else
+		Message_StringID(MT_SpellFailure, NOT_YOUR_TRAP); // pretty sure this was red
+}
+
 void Client::Handle_OP_Report(const EQApplicationPacket *app)
 {
 	if (!CanUseReport)
@@ -14349,6 +14334,24 @@ void Client::Handle_OP_VoiceMacroIn(const EQApplicationPacket *app)
 
 	VoiceMacroReceived(vmi->Type, vmi->Target, vmi->MacroNumber);
 
+}
+
+void Client::Handle_OP_UpdateAura(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(AuraDestory_Struct)) {
+		Log(Logs::General, Logs::None, "Size mismatch in OP_UpdateAura expected %i got %i",
+		    sizeof(AuraDestory_Struct), app->size);
+		return;
+	}
+
+	// client only sends this for removing
+	auto aura = (AuraDestory_Struct *)app->pBuffer;
+	if (aura->action != 1)
+		return; // could log I guess, but should only ever get this action
+
+	RemoveAura(aura->entity_id);
+	QueuePacket(app); // if we don't resend this, the client gets confused
+	return;
 }
 
 void Client::Handle_OP_WearChange(const EQApplicationPacket *app)

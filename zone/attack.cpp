@@ -137,9 +137,7 @@ EQEmu::skills::SkillType Mob::AttackAnimation(int Hand, const EQEmu::ItemInstanc
 	if (Hand == EQEmu::inventory::slotSecondary)	// DW anim
 		type = animDualWield;
 
-	if (attack_anim_timer.Check()) {
-		DoAnim(type, 0, false);
-	}
+	DoAnim(type, 0, false);
 
 	return skillinuse;
 }
@@ -3553,7 +3551,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 
 					Teleport(new_pos);
 					if (position_update_melee_push_timer.Check()) {
-						SendPosUpdate();
+						SendPositionUpdate();
 					}
 				}
 			}
