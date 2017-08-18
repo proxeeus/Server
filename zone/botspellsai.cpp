@@ -405,6 +405,10 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 							break;
 					}
 
+					// Don't buff Necros with Clarity-line of spells
+					if (botClass == ENCHANTER && IsManaRegenSpell(selectedBotSpell.SpellId) && tar->GetClass() == NECROMANCER)
+						break;
+
 					if(CheckSpellRecastTimers(this, itr->SpellIndex))
 					{
 
@@ -1969,18 +1973,43 @@ BotSpell Bot::GetBestBotSpellForMez(Bot* botCaster) {
 	result.SpellIndex = 0;
 	result.ManaCost = 0;
 
-	if(botCaster) {
-		std::list<BotSpell> botSpellList = GetBotSpellsForSpellEffect(botCaster, SE_Mez);
-
-		for(std::list<BotSpell>::iterator botSpellListItr = botSpellList.begin(); botSpellListItr != botSpellList.end(); ++botSpellListItr) {
-			// Assuming all the spells have been loaded into this list by level and in descending order
-			if(IsMezSpell(botSpellListItr->SpellId) && CheckSpellRecastTimers(botCaster, botSpellListItr->SpellIndex)) {
-				result.SpellId = botSpellListItr->SpellId;
-				result.SpellIndex = botSpellListItr->SpellIndex;
-				result.ManaCost = botSpellListItr->ManaCost;
-
-				break;
-			}
+	if (botCaster) {
+		// Determine correct Mez id based on caster level
+		if ((botCaster->GetLevel() >= 4) && (botCaster->GetLevel() <= 15))
+		{
+			result.SpellId = 2092; // Mesmerize
+			result.SpellIndex = 12;
+			result.ManaCost = 20;
+		}
+		else if ((botCaster->GetLevel() >= 16) && (botCaster->GetLevel() <= 33))
+		{
+			result.SpellId = 187; // Enthrall
+			result.SpellIndex = 12;
+			result.ManaCost = 50;
+		}
+		else if ((botCaster->GetLevel() >= 34) && (botCaster->GetLevel() <= 48))
+		{
+			result.SpellId = 188; // Entrance
+			result.SpellIndex = 12;
+			result.ManaCost = 85;
+		}
+		else if ((botCaster->GetLevel() >= 49) && (botCaster->GetLevel() <= 53))
+		{
+			result.SpellId = 190; // Dazzle
+			result.SpellIndex = 12;
+			result.ManaCost = 125;
+		}
+		else if ((botCaster->GetLevel() >= 54) && (botCaster->GetLevel() <= 58))
+		{
+			result.SpellId = 1691; // Glamour of Kintaz
+			result.SpellIndex = 12;
+			result.ManaCost = 350;
+		}
+		else if ((botCaster->GetLevel() >= 59) && (botCaster->GetLevel() <= 60))
+		{
+			result.SpellId = 1692; // Rapture
+			result.SpellIndex = 12;
+			result.ManaCost = 425;
 		}
 	}
 

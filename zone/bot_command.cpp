@@ -3372,7 +3372,7 @@ void bot_command_mesmerize(Client *c, const Seperator *sep)
 	{
 		// Determine correct Mez id based on caster level
 		if ((bot_mezzer->GetLevel() >= 4) && (bot_mezzer->GetLevel() <= 15))
-			mez_id = 2092; // Mesmerize
+			mez_id = 292; // Mesmerize
 		else if ((bot_mezzer->GetLevel() >= 16) && (bot_mezzer->GetLevel() <= 33))
 			mez_id = 187; // Enthrall
 		else if ((bot_mezzer->GetLevel() >= 34) && (bot_mezzer->GetLevel() <= 48))
