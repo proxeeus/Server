@@ -63,7 +63,6 @@
 #include "guild_mgr.h"
 #include "map.h"
 #include "doors.h"
-#include "pathing.h"
 #include "qglobals.h"
 #include "queryserv.h"
 #include "quest_parser_collection.h"
@@ -3353,47 +3352,44 @@ void bot_command_lull(Client *c, const Seperator *sep)
 
 void bot_command_mesmerize(Client *c, const Seperator *sep)
 {
+	bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Mesmerize];
+	if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Mesmerize) || helper_command_alias_fail(c, "bot_command_mesmerize", sep->arg[0], "mesmerize"))
+		return;
+	if (helper_is_help_or_usage(sep->arg[1])) {
+		c->Message(m_usage, "usage: <enemy_target> %s", sep->arg[0]);
+		helper_send_usage_required_bots(c, BCEnum::SpT_Mesmerize);
+		return;
+	}
+
 	ActionableTarget::Types actionable_targets;
+	Bot* my_bot = nullptr;
 	std::list<Bot*> sbl;
 	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
 
-	//Proxeeus
-	int mez_id = 0;
-	auto target_mob = ActionableTarget::VerifyEnemy(c, BCEnum::TT_Single);
-	if (!target_mob) {
-		c->Message(m_fail, "Your current target is not mezzable.");
-		return;
-	}
+	for (auto list_iter : *local_list) {
+		auto local_entry = list_iter;
+		if (helper_spell_check_fail(local_entry))
+			continue;
 
-	Bot* bot_mezzer = nullptr;
-	bot_mezzer = ActionableBots::Select_ByClass(c, BCEnum::TT_Single, sbl, ENCHANTER, target_mob);
+		auto target_mob = actionable_targets.Select(c, local_entry->target_type, ENEMY);
+		if (!target_mob)
+			continue;
+		
+		if (spells[local_entry->spell_id].max[EFFECTIDTOINDEX(1)] < target_mob->GetLevel())
+			continue;
 
-	if (bot_mezzer)
-	{
-		// Determine correct Mez id based on caster level
-		if ((bot_mezzer->GetLevel() >= 4) && (bot_mezzer->GetLevel() <= 15))
-			mez_id = 292; // Mesmerize
-		else if ((bot_mezzer->GetLevel() >= 16) && (bot_mezzer->GetLevel() <= 33))
-			mez_id = 187; // Enthrall
-		else if ((bot_mezzer->GetLevel() >= 34) && (bot_mezzer->GetLevel() <= 48))
-			mez_id = 188; // Entrance
-		else if ((bot_mezzer->GetLevel() >= 49) && (bot_mezzer->GetLevel() <= 53))
-			mez_id = 190; // Dazzle
-		else if ((bot_mezzer->GetLevel() >= 54) && (bot_mezzer->GetLevel() <= 58))
-			mez_id = 1691; // Glamour of Kintaz
-		else if ((bot_mezzer->GetLevel() >= 59) && (bot_mezzer->GetLevel() <= 60))
-			mez_id = 1692; // Rapture
+		my_bot = ActionableBots::Select_ByMinLevelAndClass(c, local_entry->target_type, sbl, local_entry->spell_level, local_entry->caster_class, target_mob);
+		if (!my_bot)
+			continue;
 
-		bot_mezzer->InterruptSpell();
 		uint32 dont_root_before = 0;
-		if (helper_cast_standard_spell(bot_mezzer, target_mob, mez_id, true, &dont_root_before))
+		if (helper_cast_standard_spell(my_bot, target_mob, local_entry->spell_id, true, &dont_root_before))
 			target_mob->SetDontRootMeBefore(dont_root_before);
 
-		return;
+		break;
 	}
 
-
-	helper_no_available_bots(c, bot_mezzer);
+	helper_no_available_bots(c, my_bot);
 }
 
 void bot_command_movement_speed(Client *c, const Seperator *sep)
