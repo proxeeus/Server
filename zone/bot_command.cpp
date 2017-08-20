@@ -1413,7 +1413,8 @@ int bot_command_init(void)
 		bot_command_add("summoncorpse", "Orders a bot to summon a corpse to its feet", 0, bot_command_summon_corpse) ||
 		bot_command_add("taunt", "Toggles taunt use by a bot", 0, bot_command_taunt) ||
 		bot_command_add("track", "Orders a capable bot to track enemies", 0, bot_command_track) ||
-		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing)
+		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing) ||
+		bot_command_add("deity", "Assigns a Deity to a bot. This can only be set once.", 0, bot_command_deity)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -4046,6 +4047,38 @@ void bot_command_water_breathing(Client *c, const Seperator *sep)
 	helper_no_available_bots(c, my_bot);
 }
 
+void bot_command_deity(Client *c, const Seperator *sep)
+{
+	if (helper_command_alias_fail(c, "bot_command_deity", sep->arg[0], "deity"))
+		return;
+	if (helper_is_help_or_usage(sep->arg[1])) {
+		c->Message(m_usage, "Deity IDs: Agnostic (140), Bertoxxulous (201), Brell Serilis (202), Cazic Thule (203), Erollisi Mar (204), Bristlebane (205), Innoruuk (206), Karana (207), Mithaniel Marr (208), Prexus (209), Quellious (210), Rallos Zek (211), Rodcet Nife (212), Solusek Ro (213), The Tribunal (214), Tunare (215), Veeshan (216).", sep->arg[0]);
+		return;
+	}
+
+	std::string query;
+	auto my_bot = ActionableBots::AsTarget_ByBot(c);
+	if (!my_bot) {
+		c->Message(m_fail, "You must <target> a bot that you own to use this command");
+		return;
+	}
+
+	query = StringFormat("UPDATE bot_data SET `deity` = '%u' WHERE `bot_id`='%u' AND `deity`=0", atoi(sep->arg[1]), my_bot->GetBotID());
+
+	auto results = botdb.QueryDatabase(query);
+
+	if (results.Success())
+	{
+		c->Message(m_usage, "Bot deity updated successfully.");
+		return;
+	}
+	else
+	{
+		c->Message(m_fail, "Bot deity update failed.");
+		return;
+	}
+	return;
+}
 
 /*
  * bot subcommands go below here
