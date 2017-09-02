@@ -1414,7 +1414,7 @@ int bot_command_init(void)
 		bot_command_add("summoncorpse", "Orders a bot to summon a corpse to its feet", 0, bot_command_summon_corpse) ||
 		bot_command_add("taunt", "Toggles taunt use by a bot", 0, bot_command_taunt) ||
 		bot_command_add("track", "Orders a capable bot to track enemies", 0, bot_command_track) ||
-	) {
+		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich)	) {
 		bot_command_deinit();
 		return -1;
 	}
