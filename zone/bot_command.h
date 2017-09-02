@@ -588,6 +588,7 @@ void bot_command_summon_corpse(Client *c, const Seperator *sep);
 void bot_command_taunt(Client *c, const Seperator *sep);
 void bot_command_track(Client *c, const Seperator *sep);
 void bot_command_water_breathing(Client *c, const Seperator *sep);
+void bot_command_deity(Client *c, const Seperator *sep);
 void bot_command_lich(Client *c, const Seperator *sep);
 
 // bot subcommands

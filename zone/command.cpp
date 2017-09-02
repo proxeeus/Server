@@ -353,6 +353,9 @@ int command_init(void)
 		command_add("setstartzone", "[zoneid] - Set target's starting zone. Set to zero to allow the player to use /setstartcity", 80, command_setstartzone) ||
 		command_add("setstat", "- Sets the stats to a specific value.", 255, command_setstat) ||
 		command_add("setxp", "[value] - Set your or your player target's experience", 100, command_setxp) ||
+		// Proxeeus
+		command_add("setroambox", "[minX] [maxX] [minY] [maxY] [dist] [delay] - Set target spawngroup roambox location data", 100, command_setroambox) ||
+		//
 		command_add("showbonusstats", "[item|spell|all] Shows bonus stats for target from items or spells. Shows both by default.", 50, command_showbonusstats) ||
 		command_add("showbuffs", "- List buffs active on your target or you if no target", 50, command_showbuffs) ||
 		command_add("shownumhits",  "Shows buffs numhits for yourself.",  0, command_shownumhits) ||
@@ -4324,6 +4327,39 @@ void command_spawnfix(Client *c, const Seperator *sep) {
     c->Message(0, "Updating coordinates successful.");
     targetMob->Depop(false);
 }
+
+// Proxeeus
+void command_setroambox(Client *c, const Seperator *sep)
+{
+	Mob *targetMob = c->GetTarget();
+	if (!targetMob || !targetMob->IsNPC()) {
+		c->Message(0, "Error: #setroambox: Need an NPC target.");
+		return;
+	}
+	int spawngroupId = c->GetTarget()->CastToNPC()->GetSp2();
+	uint32 minx = atoi(sep->arg[1]);
+	uint32 maxx = atoi(sep->arg[2]);
+	uint32 miny = atoi(sep->arg[3]);
+	uint32 maxy = atoi(sep->arg[4]);
+	uint32 dist = atoi(sep->arg[5]);
+	uint32 delay = atoi(sep->arg[6]);
+
+	std::string query = StringFormat("UPDATE spawngroup SET min_x = '%i', max_x = '%i', min_y = '%i', max_y='%i', dist='%i', delay='%i' WHERE id = '%i'",
+		minx, maxx, miny, maxy, dist, delay, spawngroupId);
+
+	//c->Message(0, "UPDATE spawngroup SET min_x = '%i', max_x = '%i', min_y = '%i', max_y='%i, dist='%i', delay='%i' WHERE id = '%i'",
+	//	minx,maxx, miny,maxy,dist,delay, spawngroupId);
+
+	auto results = database.QueryDatabase(query);
+	if (!results.Success()) {
+		c->Message(13, "Update failed! MySQL gave the following error:");
+		c->Message(13, results.ErrorMessage().c_str());
+		return;
+	}
+
+	c->Message(0, "Updating roambox coordinates successful.");
+}
+//
 
 void command_loc(Client *c, const Seperator *sep)
 {

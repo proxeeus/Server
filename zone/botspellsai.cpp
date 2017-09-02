@@ -405,6 +405,10 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 							break;
 					}
 
+					// Don't buff Necros with Clarity-line of spells
+					if (botClass == ENCHANTER && IsManaRegenSpell(selectedBotSpell.SpellId) && tar->GetClass() == NECROMANCER)
+						break;
+
 					if(CheckSpellRecastTimers(this, itr->SpellIndex))
 					{
 
@@ -1961,6 +1965,7 @@ BotSpell Bot::GetBestBotSpellForGroupCompleteHeal(Bot* botCaster) {
 
 	return result;
 }
+
 
 BotSpell Bot::GetBestBotSpellForMez(Bot* botCaster) {
 	BotSpell result;

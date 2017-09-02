@@ -8264,15 +8264,15 @@ void Client::SendFactionMessage(int32 tmpvalue, int32 faction_id, int32 faction_
 	if (tmpvalue == 0 || temp == 1 || temp == 2)
 		return;
 	else if (faction_value >= this_faction_max)
-		Message_StringID(15, FACTION_BEST, name);
+		Message_StringID(10, FACTION_BEST, name);
 	else if (faction_value <= this_faction_min)
-		Message_StringID(15, FACTION_WORST, name);
+		Message_StringID(10, FACTION_WORST, name);
 	else if (tmpvalue > 0 && faction_value < this_faction_max && !RuleB(Client, UseLiveFactionMessage))
-		Message_StringID(15, FACTION_BETTER, name);
+		Message_StringID(10, FACTION_BETTER, name);
 	else if (tmpvalue < 0 && faction_value > this_faction_min && !RuleB(Client, UseLiveFactionMessage))
-		Message_StringID(15, FACTION_WORSE, name);
+		Message_StringID(10, FACTION_WORSE, name);
 	else if (RuleB(Client, UseLiveFactionMessage))
-		Message(15, "Your faction standing with %s has been adjusted by %i.", name, tmpvalue); //New Live faction message (14261)
+		Message(10, "Your faction standing with %s has been adjusted by %i.", name, tmpvalue); //New Live faction message (14261)
 
 	return;
 }

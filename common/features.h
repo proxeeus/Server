@@ -38,7 +38,7 @@ Core Zone features
 
 //Uncomment this to cause a zone to basically idle
 //when there are no players in it, mobs stop wandering, etc..
-#define IDLE_WHEN_EMPTY
+//#define IDLE_WHEN_EMPTY
 
 #ifdef EMBPERL
 //Enable the new XS based perl parser
