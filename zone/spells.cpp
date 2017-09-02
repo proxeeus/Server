@@ -1427,10 +1427,8 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 	ZeroCastingVars();
 
 	// set the rapid recast timer for next time around
-	// Why do we have this? It mostly just causes issues when things are working correctly
-	// It also needs to be <users's ping to not cause issues
 	delaytimer = true;
-	spellend_timer.Start(10, true);
+	spellend_timer.Start(400,true);
 
 	Log(Logs::Detail, Logs::Spells, "Spell casting of %d is finished.", spell_id);
 

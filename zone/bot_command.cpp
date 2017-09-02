@@ -63,6 +63,7 @@
 #include "guild_mgr.h"
 #include "map.h"
 #include "doors.h"
+#include "pathing.h"
 #include "qglobals.h"
 #include "queryserv.h"
 #include "quest_parser_collection.h"
@@ -1413,9 +1414,6 @@ int bot_command_init(void)
 		bot_command_add("summoncorpse", "Orders a bot to summon a corpse to its feet", 0, bot_command_summon_corpse) ||
 		bot_command_add("taunt", "Toggles taunt use by a bot", 0, bot_command_taunt) ||
 		bot_command_add("track", "Orders a capable bot to track enemies", 0, bot_command_track) ||
-		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing) ||
-		bot_command_add("deity", "Assigns a Deity to a bot. This can only be set once.", 0, bot_command_deity) ||
-		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -4048,14 +4046,6 @@ void bot_command_water_breathing(Client *c, const Seperator *sep)
 	helper_no_available_bots(c, my_bot);
 }
 
-void bot_command_deity(Client *c, const Seperator *sep)
-{
-	if (helper_command_alias_fail(c, "bot_command_deity", sep->arg[0], "deity"))
-		return;
-	if (helper_is_help_or_usage(sep->arg[1])) {
-		c->Message(m_usage, "Deity IDs: Agnostic (140), Bertoxxulous (201), Brell Serilis (202), Cazic Thule (203), Erollisi Mar (204), Bristlebane (205), Innoruuk (206), Karana (207), Mithaniel Marr (208), Prexus (209), Quellious (210), Rallos Zek (211), Rodcet Nife (212), Solusek Ro (213), The Tribunal (214), Tunare (215), Veeshan (216).", sep->arg[0]);
-		return;
-	}
 
 	std::string query;
 	auto my_bot = ActionableBots::AsTarget_ByBot(c);
@@ -4080,44 +4070,6 @@ void bot_command_deity(Client *c, const Seperator *sep)
 	}
 	return;
 }
-
-void bot_command_lich(Client *c, const Seperator *sep)
-{
-	if (helper_command_alias_fail(c, "bot_command_lich", sep->arg[0], "lich"))
-		return;
-
-	auto my_bot = ActionableBots::AsTarget_ByBot(c);
-	if (!my_bot) {
-		c->Message(m_fail, "You must <target> a bot that you own to use this command");
-		return;
-	}
-
-	if (!my_bot->GetClass() == NECROMANCER) {
-		c->Message(m_fail, "Your currently targeted bot isn't a Necromancer.");
-		return;
-	}
-
-	int lich_id = 0;
-
-	if (my_bot->GetLevel() >= 8 && my_bot->GetLevel() <= 19)
-		lich_id = 644;
-	else if (my_bot->GetLevel() >= 20 && my_bot->GetLevel() <= 33)
-		lich_id = 642;
-	else if (my_bot->GetLevel() >= 34 && my_bot->GetLevel() <= 48)
-		lich_id = 643;
-	else if (my_bot->GetLevel() >= 49 && my_bot->GetLevel() <= 55)
-		lich_id = 644;
-	else if (my_bot->GetLevel() >= 56 && my_bot->GetLevel() <= 59)
-		lich_id = 1611;
-	else if (my_bot->GetLevel() >= 60)
-		lich_id = 1416;
-
-	bool cast_success = false;
-	cast_success = helper_cast_standard_spell(my_bot, my_bot, lich_id);
-
-	return;
-}
-
 /*
  * bot subcommands go below here
  */

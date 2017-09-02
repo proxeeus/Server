@@ -1904,12 +1904,7 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 {
 	Mob::FillSpawnStruct(ns, ForWho);
 	PetOnSpawn(ns);
-	//ns->spawn.is_npc = 1;
-	// Tricks the server in thinking that NPCs of race 72 are clients -> Maiden's Voyage collision fix.
-	if (ns->spawn.race == 72)
-		ns->spawn.is_npc = 0;
-	else
-		ns->spawn.is_npc = 1;
+	ns->spawn.is_npc = 1;
 	UpdateActiveLight();
 	ns->spawn.light = GetActiveLightType();
 	ns->spawn.show_name = NPCTypedata->show_name;

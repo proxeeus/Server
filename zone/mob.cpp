@@ -1132,13 +1132,7 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	ns->spawn.showhelm = (helmtexture && helmtexture != 0xFF) ? 1 : 0;
 
 	ns->spawn.invis		= (invisible || hidden) ? 1 : 0;	// TODO: load this before spawning players
-	//ns->spawn.NPC		= IsClient() ? 0 : 1;
-	
-	// Tricks the server in thinking that NPCs of race 72 are clients -> Maiden's Voyage collision fix.
-	if (race == 72)
-		ns->spawn.NPC = 0;
-	else
-		ns->spawn.NPC = 1;
+	ns->spawn.NPC		= IsClient() ? 0 : 1;
 	ns->spawn.IsMercenary = IsMerc() ? 1 : 0;
 	ns->spawn.targetable_with_hotkey = no_target_hotkey ? 0 : 1; // opposite logic!
 

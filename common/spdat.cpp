@@ -1262,12 +1262,3 @@ const char* GetSpellName(int16 spell_id)
     return spells[spell_id].name;
 }
 
-bool IsManaRegenSpell(uint16 spell_id)
-{
-	if (IsValidSpell(spell_id))
-	{
-		if(spell_id == 697 || spell_id == 174 || spell_id == 1693 || spell_id == 1408)
-			return true;
-	}
-	return false;
-}

@@ -262,9 +262,6 @@ void command_setskillall(Client *c, const Seperator *sep);
 void command_setstartzone(Client *c, const Seperator *sep);
 void command_setstat(Client *c, const Seperator *sep);
 void command_setxp(Client *c, const Seperator *sep);
-//Proxeeus
-void command_setroambox(Client *c, const Seperator *sep);
-//
 void command_showbonusstats(Client *c, const Seperator *sep);
 void command_showbuffs(Client *c, const Seperator *sep);
 void command_shownumhits(Client *c, const Seperator *sep);
