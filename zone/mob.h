@@ -950,7 +950,8 @@ public:
 	float				GetGroundZ(float new_x, float new_y, float z_offset=0.0);
 	void				SendTo(float new_x, float new_y, float new_z);
 	void				SendToFixZ(float new_x, float new_y, float new_z);
-	void				FixZ();
+	float				GetZOffset() const;
+	void FixZ(int32 z_find_offset = 5);
 	void				NPCSpecialAttacks(const char* parse, int permtag, bool reset = true, bool remove = false);
 	inline uint32		DontHealMeBefore() const { return pDontHealMeBefore; }
 	inline uint32		DontBuffMeBefore() const { return pDontBuffMeBefore; }
@@ -1222,7 +1223,7 @@ protected:
 	glm::vec4 m_Position;
 	/* Used to determine when an NPC has traversed so many units - to send a zone wide pos update */
 	glm::vec4 last_major_update_position; 
-	uint16 animation;
+	int animation; // this is really what MQ2 calls SpeedRun just packed like (int)(SpeedRun * 40.0f)
 	float base_size;
 	float size;
 	float runspeed;

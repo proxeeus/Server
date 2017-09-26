@@ -1410,6 +1410,10 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	drakkin_tattoo = m_pp.drakkin_tattoo;
 	drakkin_details = m_pp.drakkin_details;
 
+	// we know our class now, so we might have to fix our consume timer!
+	if (class_ == MONK)
+		consume_food_timer.SetTimer(CONSUMPTION_MNK_TIMER);
+
 	/* If GM not set in DB, and does not meet min status to be GM, reset */
 	if (m_pp.gm && admin < minStatusToBeGM)
 		m_pp.gm = 0;
@@ -2139,8 +2143,8 @@ void Client::Handle_OP_AdventureMerchantRequest(const EQApplicationPacket *app)
 			ss << item->ID << "|";
 			ss << item->LDoNPrice << "|";
 			ss << theme << "|";
-			ss << "0|";
-			ss << "1|";
+			ss << (item->Stackable ? 1 : 0) << "|";
+			ss << (item->LoreFlag ? 1 : 0) << "|";
 			ss << item->Races << "|";
 			ss << item->Classes;
 			count++;
@@ -8702,6 +8706,8 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 					}
 					else
 					{
+
+						/*
 						//This is food/drink - consume it
 						if (item->ItemType == EQEmu::item::ItemTypeFood && m_pp.hunger_level < 5000)
 						{
@@ -8723,19 +8729,21 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 							//CheckIncreaseSkill(ALCOHOL_TOLERANCE, nullptr, 25);
 						}
 
-						if (m_pp.hunger_level > 6000)
-							m_pp.hunger_level = 6000;
-						if (m_pp.thirst_level > 6000)
-							m_pp.thirst_level = 6000;
-
 						EQApplicationPacket *outapp2 = nullptr;
 						outapp2 = new EQApplicationPacket(OP_Stamina, sizeof(Stamina_Struct));
 						Stamina_Struct* sta = (Stamina_Struct*)outapp2->pBuffer;
+
+						if (m_pp.hunger_level > 6000)
+							sta->food = 6000;
+						if (m_pp.thirst_level > 6000)
+							sta->water = 6000;
+
 						sta->food = m_pp.hunger_level;
 						sta->water = m_pp.thirst_level;
 
 						QueuePacket(outapp2);
 						safe_delete(outapp2);
+						*/
 					}
 
 				}
