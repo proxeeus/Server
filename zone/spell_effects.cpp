@@ -60,6 +60,9 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 	const SPDat_Spell_Struct &spell = spells[spell_id];
 
+	if (spell.disallow_sit && IsBuffSpell(spell_id) && IsClient() && (CastToClient()->IsSitting() || CastToClient()->GetHorseId() != 0))
+		return false;
+
 	bool c_override = false;
 	if (caster && caster->IsClient() && GetCastedSpellInvSlot() > 0) {
 		const EQEmu::ItemInstance *inst = caster->CastToClient()->GetInv().GetItem(GetCastedSpellInvSlot());
@@ -134,6 +137,15 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 		buffs[buffslot].magic_rune = 0;
 		buffs[buffslot].numhits = 0;
 
+		if (spells[spell_id].numhits > 0) {
+
+			int numhit = spells[spell_id].numhits;
+
+			numhit += numhit * caster->GetFocusEffect(focusFcLimitUse, spell_id) / 100;
+			numhit += caster->GetFocusEffect(focusIncreaseNumHits, spell_id);
+			buffs[buffslot].numhits = numhit;
+		}
+
 		if (spells[spell_id].EndurUpkeep > 0)
 			SetEndurUpkeep(true);
 
@@ -181,14 +193,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 		}
 	}
 
-	if(spells[spell_id].numhits > 0 && buffslot >= 0){
-
-		int numhit = spells[spell_id].numhits;
-
-		numhit += numhit*caster->GetFocusEffect(focusFcLimitUse, spell_id)/100;
-		numhit += caster->GetFocusEffect(focusIncreaseNumHits, spell_id);
-		buffs[buffslot].numhits = numhit;
-	}
 
 	if (!IsPowerDistModSpell(spell_id))
 		SetSpellPowerDistanceMod(0);

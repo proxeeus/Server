@@ -3781,7 +3781,7 @@ void Mob::TryTriggerOnValueAmount(bool IsHP, bool IsMana, bool IsEndur, bool IsP
 							if ((base2 >= 500 && base2 <= 520) && GetHPRatio() < (base2 - 500)*5)
 								use_spell = true;
 
-							else if (base2 = 1004 && GetHPRatio() < 80)
+							else if (base2 == 1004 && GetHPRatio() < 80)
 								use_spell = true;
 						}
 
@@ -3789,12 +3789,12 @@ void Mob::TryTriggerOnValueAmount(bool IsHP, bool IsMana, bool IsEndur, bool IsP
 							if ( (base2 = 521 && GetManaRatio() < 20) || (base2 = 523 && GetManaRatio() < 40))
 								use_spell = true;
 
-							else if (base2 = 38311 && GetManaRatio() < 10)
+							else if (base2 == 38311 && GetManaRatio() < 10)
 								use_spell = true;
 						}
 
 						else if (IsEndur){
-							if (base2 = 522 && GetEndurancePercent() < 40){
+							if (base2 == 522 && GetEndurancePercent() < 40){
 								use_spell = true;
 							}
 						}
@@ -3955,10 +3955,17 @@ int16 Mob::GetHealRate(uint16 spell_id, Mob* caster) {
 
 bool Mob::TryFadeEffect(int slot)
 {
+	if (!buffs[slot].spellid)
+		return false;
+
 	if(IsValidSpell(buffs[slot].spellid))
 	{
 		for(int i = 0; i < EFFECT_COUNT; i++)
 		{
+
+			if (!spells[buffs[slot].spellid].effectid[i])
+				continue;
+
 			if (spells[buffs[slot].spellid].effectid[i] == SE_CastOnFadeEffectAlways ||
 				spells[buffs[slot].spellid].effectid[i] == SE_CastOnRuneFadeEffect)
 			{
@@ -4998,6 +5005,18 @@ void Mob::SpreadVirus(uint16 spell_id, uint16 casterID)
 			}
 		}
 	}
+}
+
+void Mob::AddNimbusEffect(int effectid)
+{
+	SetNimbusEffect(effectid);
+
+	auto outapp = new EQApplicationPacket(OP_AddNimbusEffect, sizeof(RemoveNimbusEffect_Struct));
+	auto ane = (RemoveNimbusEffect_Struct *)outapp->pBuffer;
+	ane->spawnid = GetID();
+	ane->nimbus_effect = effectid;
+	entity_list.QueueClients(this, outapp);
+	safe_delete(outapp);
 }
 
 void Mob::RemoveNimbusEffect(int effectid)

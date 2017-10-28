@@ -336,6 +336,7 @@ public:
 	void BuffFadeDetrimentalByCaster(Mob *caster);
 	void BuffFadeBySitModifier();
 	bool IsAffectedByBuff(uint16 spell_id);
+	bool IsAffectedByBuffByGlobalGroup(GlobalGroup group);
 	void BuffModifyDurationBySpellID(uint16 spell_id, int32 newDuration);
 	int AddBuff(Mob *caster, const uint16 spell_id, int duration = 0, int32 level_override = -1);
 	int CanBuffStack(uint16 spellid, uint8 caster_level, bool iFailIfOverwrite = false);
@@ -376,6 +377,7 @@ public:
 	inline virtual uint32 GetNimbusEffect1() const { return nimbus_effect1; }
 	inline virtual uint32 GetNimbusEffect2() const { return nimbus_effect2; }
 	inline virtual uint32 GetNimbusEffect3() const { return nimbus_effect3; }
+	void AddNimbusEffect(int effectid);
 	void RemoveNimbusEffect(int effectid);
 	inline const glm::vec3& GetTargetRingLocation() const { return m_TargetRing; }
 	inline float GetTargetRingX() const { return m_TargetRing.x; }
@@ -586,6 +588,7 @@ public:
 	void AddFeignMemory(Client* attacker);
 	void RemoveFromFeignMemory(Client* attacker);
 	void ClearFeignMemory();
+	bool IsOnFeignMemory(Client *attacker) const;
 	void PrintHateListToClient(Client *who) { hate_list.PrintHateListToClient(who); }
 	std::list<struct_HateList*>& GetHateList() { return hate_list.GetHateList(); }
 	bool CheckLosFN(Mob* other);

@@ -1414,6 +1414,8 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	if (class_ == MONK)
 		consume_food_timer.SetTimer(CONSUMPTION_MNK_TIMER);
 
+	InitInnates();
+
 	/* If GM not set in DB, and does not meet min status to be GM, reset */
 	if (m_pp.gm && admin < minStatusToBeGM)
 		m_pp.gm = 0;
@@ -11478,7 +11480,7 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket *app)
 
 			Client *client_moved = entity_list.GetClientByName(raid_command_packet->leader_name);
 
-			if (client_moved) {
+			if (client_moved && client_moved->GetRaid()) {
 				client_moved->GetRaid()->SendHPManaEndPacketsTo(client_moved);
 				client_moved->GetRaid()->SendHPManaEndPacketsFrom(client_moved);
 
@@ -12082,15 +12084,6 @@ void Client::Handle_OP_SenseHeading(const EQApplicationPacket *app)
 		return;
 
 	int chancemod = 0;
-
-	// The client seems to limit sense heading packets based on skill
-	// level.  So if we're really low, we don't hit this routine very often.
-	// I think it's the GUI deciding when to skill you up.
-	// So, I'm adding a mod here which is larger at lower levels so
-	// very low levels get a much better chance to skill up when the GUI
-	// eventually sends a message.
-	if (GetLevel() <= 8)
-		chancemod += (9 - level) * 10;
 
 	CheckIncreaseSkill(EQEmu::skills::SkillSenseHeading, nullptr, chancemod);
 
@@ -13054,6 +13047,8 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 				InterruptSpell();
 			SetFeigned(false);
 			BindWound(this, false, true);
+			tmSitting = Timer::GetCurrentTime();
+			BuffFadeBySitModifier();
 		}
 		else if (sa->parameter == ANIM_CROUCH) {
 			if (!UseBardSpellLogic())
