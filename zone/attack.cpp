@@ -81,7 +81,7 @@ EQEmu::skills::SkillType Mob::AttackAnimation(int Hand, const EQEmu::ItemInstanc
 			break;
 		case EQEmu::item::ItemType2HBlunt: // 2H Blunt
 			skillinuse = EQEmu::skills::Skill2HBlunt;
-			type = anim2HSlashing; //anim2HWeapon
+			type = anim2HWeapon; //anim2HWeapon
 			break;
 		case EQEmu::item::ItemType2HPiercing: // 2H Piercing
 			if (IsClient() && CastToClient()->ClientVersion() < EQEmu::versions::ClientVersion::RoF2)
