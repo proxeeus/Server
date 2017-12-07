@@ -537,7 +537,7 @@ int main(int argc, char** argv) {
 		bool previous_loaded = is_zone_loaded && numclients > 0;
 		EQ::EventLoop::Get().Process();
 
-		bool current_loaded = is_zone_loaded && numclients > 0;
+		bool current_loaded =  is_zone_loaded && numclients > 0;
 		if (previous_loaded && !current_loaded) {
 			process_timer.Stop();
 			process_timer.Start(1000, true);
@@ -547,12 +547,12 @@ int main(int argc, char** argv) {
 				zone->StartShutdownTimer(shutdown_timer);
 			}
 		}
-		else if (!previous_loaded && current_loaded) {
+		else if (!previous_loaded && current_loaded ) {
 			process_timer.Stop();
 			process_timer.Start(32, true);
 		}
 
-		if (current_loaded || zone_name == "butcher" || zone_name == "freporte" || zone_name == "firiona" || zone_name == "erudnext" || zone_name == "qeynos" || zone_name == "timorous" || zone_name =="erudsxing" || zone_name == "oot") {
+		if (current_loaded) {
 			Sleep(1);
 		}
 		else {

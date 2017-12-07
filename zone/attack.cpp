@@ -3400,6 +3400,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
 				entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->GetCleanName(), this->GetCleanName());
+				attacker->Say("Ahhh, I feel much better now...");
 			}
 		}	//end `if there is some damage being done and theres anattacker person involved`
 
