@@ -552,7 +552,7 @@ int main(int argc, char** argv) {
 			process_timer.Start(32, true);
 		}
 
-		if (current_loaded) {
+		if (current_loaded || zone_name == "butcher" || zone_name == "freporte" || zone_name == "firiona" || zone_name == "erudnext" || zone_name == "qeynos" || zone_name == "timorous" || zone_name =="erudsxing" || zone_name == "oot") {
 			Sleep(1);
 		}
 		else {
