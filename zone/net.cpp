@@ -531,32 +531,61 @@ int main(int argc, char** argv) {
 	};
 
 	EQ::Timer process_timer(loop_fn);
-	process_timer.Start(1000, true);
+	bool is_boat_zone = strstr(zone_name, "erudnext") != NULL || strstr(zone_name, "freporte") != NULL || strstr(zone_name, "qeynos") != NULL || strstr(zone_name, "oot") != NULL || strstr(zone_name, "timorous") != NULL || strstr(zone_name, "erudsxing") != NULL || strstr(zone_name, "firiona") != NULL || strstr(zone_name, "butcher") != NULL;
+	if (!is_boat_zone)
+		process_timer.Start(1000, true);
+	else
+		process_timer.Start(100, true);
 
 	while (RunLoops) {
-		bool previous_loaded = is_zone_loaded && numclients > 0;
-		EQ::EventLoop::Get().Process();
+		if (!is_boat_zone)
+		{
+			bool previous_loaded = is_zone_loaded && numclients > 0;
+			EQ::EventLoop::Get().Process();
 
-		bool current_loaded =  is_zone_loaded && numclients > 0;
-		if (previous_loaded && !current_loaded) {
-			process_timer.Stop();
-			process_timer.Start(1000, true);
+			bool current_loaded = is_zone_loaded && numclients > 0;
+			if (previous_loaded && !current_loaded) {
+				process_timer.Stop();
+				process_timer.Start(1000, true);
 
-			if (zone && zone->GetZoneID() && zone->GetInstanceVersion()) {
-				uint32 shutdown_timer = database.getZoneShutDownDelay(zone->GetZoneID(), zone->GetInstanceVersion());
-				zone->StartShutdownTimer(shutdown_timer);
+				if (zone && zone->GetZoneID() && zone->GetInstanceVersion()) {
+					uint32 shutdown_timer = database.getZoneShutDownDelay(zone->GetZoneID(), zone->GetInstanceVersion());
+					zone->StartShutdownTimer(shutdown_timer);
+				}
+			}
+			else if (!previous_loaded && current_loaded) {
+				process_timer.Stop();
+				process_timer.Start(32, true);
+			}
+
+			if (current_loaded) {
+				Sleep(1);
+			}
+			else {
+				Sleep(10);
 			}
 		}
-		else if (!previous_loaded && current_loaded ) {
-			process_timer.Stop();
-			process_timer.Start(32, true);
-		}
+		else
+		{
+			bool previous_loaded = is_zone_loaded;
+			EQ::EventLoop::Get().Process();
+			bool current_loaded = is_zone_loaded;
+			if (previous_loaded && !current_loaded)
+			{
+				process_timer.Stop();
+				process_timer.Start(100, true);
 
-		if (current_loaded) {
+				if (zone && zone->GetZoneID() && zone->GetInstanceVersion()) {
+					uint32 shutdown_timer = database.getZoneShutDownDelay(zone->GetZoneID(), zone->GetInstanceVersion());
+					zone->StartShutdownTimer(shutdown_timer);
+				}
+			}
+			else if (!previous_loaded && current_loaded)
+			{
+				process_timer.Stop();
+				process_timer.Start(10, true);
+			}
 			Sleep(1);
-		}
-		else {
-			Sleep(10);
 		}
 	}
 
