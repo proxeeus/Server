@@ -661,6 +661,7 @@ void EntityList::AddNPC(NPC *npc, bool SendSpawnPacket, bool dontqueue)
 			QueueClients(npc, app);
 			npc->SendArmorAppearance();
 			npc->SetAppearance(npc->GetGuardPointAnim(),false);
+			npc->SendIllusionPacket(npc->GetRace(), npc->GetGender(), npc->GetTexture(), npc->GetHelmTexture(), npc->GetHairColor(), npc->GetBeardColor(), npc->GetEyeColor1(), npc->GetEyeColor2(), npc->GetHairStyle(), npc->GetLuclinFace(), npc->GetBeard(), npc->aa_title, npc->GetDrakkinHeritage(), npc->GetDrakkinTattoo(), npc->GetDrakkinDetails(), npc->GetSize());
 			if (!npc->IsTargetable())
 				npc->SendTargetable(false);
 			safe_delete(app);
