@@ -1449,6 +1449,16 @@ void Lua_Mob::SetGender(int in) {
 	self->SendIllusionPacket(self->GetRace(), in);
 }
 
+void Lua_Mob::SendPlayerBotIllusion(int race, int gender, int face, float size) {
+	Lua_Safe_Call_Void();
+	self->SendIllusionPacket(race, gender, 0, 0, 0, 0, 0, 0, 0, face, 0, 0, 0, 0, 0, size);
+}
+
+void Lua_Mob::SetSpellsID(int id) {
+	Lua_Safe_Call_Void();
+	self->CastToNPC()->AI_AddNPCSpells(id);
+}
+
 void Lua_Mob::SendIllusionPacket(luabind::adl::object illusion) {
 	Lua_Safe_Call_Void();
 
@@ -2449,7 +2459,9 @@ luabind::scope lua_register_mob() {
 		.def("TryFinishingBlow", &Lua_Mob::TryFinishingBlow)
 		.def("GetBodyType", &Lua_Mob::GetBodyType)
 		.def("GetOrigBodyType", &Lua_Mob::GetOrigBodyType)
-		.def("CheckNumHitsRemaining", &Lua_Mob::CheckNumHitsRemaining);
+		.def("CheckNumHitsRemaining", &Lua_Mob::CheckNumHitsRemaining)
+		.def("SendPlayerBotIllusion", &Lua_Mob::SendPlayerBotIllusion)
+		.def("SetSpellsID", &Lua_Mob::SetSpellsID);
 }
 
 luabind::scope lua_register_special_abilities() {

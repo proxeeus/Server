@@ -399,6 +399,8 @@ public:
 	int GetBodyType();
 	int GetOrigBodyType();
 	void CheckNumHitsRemaining(int type, int32 buff_slot, uint16 spell_id);
+	void SendPlayerBotIllusion(int race, int gender, int face, float size);
+	void SetSpellsID(int id);
 };
 
 #endif
