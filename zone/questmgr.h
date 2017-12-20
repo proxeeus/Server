@@ -275,6 +275,8 @@ public:
 	int spawnbotcount();
 	bool botquest();
 	bool createBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender);
+	//Bot* createPlayerBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender);
+	//void addItemToPlayerBotInventory(uint32 botid, uint32 itemid, uint32 slot, uint32 charges);
 #endif
 
 	inline uint16 GetMana(uint32 spell_id) { return( spells[spell_id].mana); }

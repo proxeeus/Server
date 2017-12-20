@@ -23,6 +23,10 @@
 #include "encounter.h"
 #include "lua_encounter.h"
 
+#if BOTS	
+#include "bot.h"
+#endif
+
 struct Events { };
 struct Factions { };
 struct Slots { };
@@ -1503,6 +1507,25 @@ bool get_ruleb(int rule) {
 	return RuleManager::Instance()->GetBoolRule((RuleManager::BoolType)rule);
 }
 
+//int lua_create_bot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender, uint8 face) {
+//	Bot* NewBot = quest_manager.createPlayerBot(name, lastname, level, race, botclass, gender);
+//
+//	if (NewBot)
+//	{
+//		NewBot->SetLuclinFace(face);
+//		return NewBot->GetID();
+//	}
+//	else
+//		return 0;
+//	//zone->Repop();
+//	return 0;
+//}
+//
+//void lua_save_bot_item_by_slot(uint32 botid, uint32 itemid, uint32 slotid, uint32 charges) {
+//	quest_manager.addItemToPlayerBotInventory(botid, itemid, slotid, charges);
+//}
+
+
 luabind::scope lua_register_general() {
 	return luabind::namespace_("eq")
 	[
@@ -1701,6 +1724,9 @@ luabind::scope lua_register_general() {
 		luabind::def("create_npc", &lua_create_npc),
 		luabind::def("debug", (void(*)(std::string))&lua_debug),
 		luabind::def("debug", (void(*)(std::string, int))&lua_debug)
+//		luabind::def("create_bot", &lua_create_bot),
+//		luabind::def("save_bot_item_by_slot", &lua_save_bot_item_by_slot)
+
 	];
 }
 

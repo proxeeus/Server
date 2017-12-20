@@ -2082,6 +2082,7 @@ bool QuestManager::createBot(const char *name, const char *lastname, uint8 level
 		NPCType DefaultNPCTypeStruct = Bot::CreateDefaultNPCTypeStructForBot(name, lastname, level, race, botclass, gender);
 		Bot* NewBot = new Bot(DefaultNPCTypeStruct, initiator);
 
+
 		if(NewBot)
 		{
 			if(!NewBot->IsValidRaceClassCombo()) {
@@ -2109,6 +2110,128 @@ bool QuestManager::createBot(const char *name, const char *lastname, uint8 level
 	return false;
 }
 
+//Bot* QuestManager::createPlayerBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender)
+//{
+//	QuestManagerCurrentQuestVars();
+//	uint32 MaxBotCreate = RuleI(Bots, CreationLimit);
+//
+//	//if (initiator /*&& initiator->IsClient()*/)
+//
+//	//{
+//		//if (Bot::SpawnedBotCount(initiator->CharacterID()) >= MaxBotCreate)
+//		//{
+//		//	initiator->Say("You have the maximum number of bots allowed.");
+//		//	return nullptr;
+//		//}
+//
+//		std::string test_name = name;
+//		bool available_flag = false;
+//		if (!botdb.QueryNameAvailablity(test_name, available_flag)) {
+//			//initiator->Say( "%s for '%s'", BotDatabase::fail::QueryNameAvailablity(), (char*)name);
+//			return nullptr;
+//		}
+//		if (!available_flag) {
+//			//initiator->Say( "The name %s is already being used or is invalid. Please choose a different name.", (char*)name);
+//			return nullptr;
+//		}
+//		
+//		NPCType DefaultNPCTypeStruct = Bot::CreateDefaultNPCTypeStructForBot(name, lastname, level, race, botclass, gender);
+//		Bot* NewBot = new Bot(DefaultNPCTypeStruct, initiator); // initiator is null
+//
+//		
+//		if (NewBot)
+//		{
+//			if (!NewBot->IsValidRaceClassCombo()) {
+//				//initiator->Say( "That Race/Class combination cannot be created.");
+//				return nullptr;
+//			}
+//
+//			if (!NewBot->IsValidName()) {
+//				//initiator->Say( "%s has invalid characters. You can use only the A-Z, a-z and _ characters in a bot name.", NewBot->GetCleanName());
+//				return nullptr;
+//			}
+//
+//			// Now that all validation is complete, we can save our newly created bot
+//			if (!NewBot->Save())
+//			{
+//				//initiator->Say( "Unable to save %s as a bot.", NewBot->GetCleanName());
+//			}
+//			else
+//			{
+//				//initiator->Say( "%s saved as bot %u.", NewBot->GetCleanName(), NewBot->GetBotID());
+//				return NewBot;
+//			}
+//		}
+//	//}
+//	return nullptr;
+//}
+//
+//void QuestManager::addItemToPlayerBotInventory(uint32 botid, uint32 itemid, uint32 slot, uint32 charges) {
+//	if (!botid) return;
+//
+//	std::string query = StringFormat(
+//		"INSERT INTO `bot_inventories` ("
+//		"`bot_id`,"
+//		" `slot_id`,"
+//		" `item_id`,"
+//		" `inst_charges`,"
+//		" `inst_color`,"
+//		" `inst_no_drop`,"
+//		" `inst_custom_data`,"
+//		" `ornament_icon`,"
+//		" `ornament_id_file`,"
+//		" `ornament_hero_model`,"
+//		" `augment_1`,"
+//		" `augment_2`,"
+//		" `augment_3`,"
+//		" `augment_4`,"
+//		" `augment_5`,"
+//		" `augment_6`"
+//		")"
+//		" VALUES ("
+//		"'%lu',"			/* bot_id */
+//		" '%lu',"			/* slot_id */
+//		" '%lu',"			/* item_id */
+//		" '%lu',"			/* inst_charges */
+//		" '%lu',"			/* inst_color */
+//		" '%lu',"			/* inst_no_drop */
+//		" '%s',"			/* inst_custom_data */
+//		" '%lu',"			/* ornament_icon */
+//		" '%lu',"			/* ornament_id_file */
+//		" '%lu',"			/* ornament_hero_model */
+//		" '%lu',"			/* augment_1 */
+//		" '%lu',"			/* augment_2 */
+//		" '%lu',"			/* augment_3 */
+//		" '%lu',"			/* augment_4 */
+//		" '%lu',"			/* augment_5 */
+//		" '%lu'"			/* augment_6 */
+//		")",
+//		(unsigned long)botid,
+//		(unsigned long)slot,
+//		(unsigned long)itemid,
+//		(unsigned long)charges,
+//		(unsigned long)0,	// Hardcode 0 and see.
+//		(unsigned long)1,
+//		"",
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0,
+//		(unsigned long)0
+//	);
+//
+//	auto results = database.QueryDatabase(query);
+//	if (!results.Success()) {
+//		//DeleteItemBySlot(bot_inst->GetBotID(), slot_id); TODO: see later.
+//		return ;
+//	}
+//
+//	return ;
+//}
 #endif //BOTS
 
 void QuestManager::taskselector(int taskcount, int *tasks) {

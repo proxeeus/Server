@@ -1415,7 +1415,8 @@ int bot_command_init(void)
 		bot_command_add("track", "Orders a capable bot to track enemies", 0, bot_command_track) ||
 		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing) ||
 		bot_command_add("deity", "Assigns a Deity to a bot. This can only be set once.", 0, bot_command_deity) ||
-		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich)
+		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich) ||
+		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -5149,6 +5150,111 @@ void bot_subcommand_bot_spawn(Client *c, const Seperator *sep)
 	Bot::BotGroupSay(my_bot, "%s", bot_spawn_message[CLASSIDTOINDEX(my_bot->GetClass())]);
 }
 
+void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep)
+{
+	int rule_level = RuleI(Bots, BotCharacterLevel);
+	if (c->GetLevel() < rule_level) {
+		c->Message(m_fail, "You must be level %i to use bots", rule_level);
+		return;
+	}
+
+	if (c->GetFeigned()) {
+		c->Message(m_fail, "You can not spawn a bot while feigned");
+		return;
+	}
+
+	int spawned_bot_count = Bot::SpawnedBotCount(c->CharacterID());
+
+	int rule_limit = RuleI(Bots, SpawnLimit);
+	if (spawned_bot_count >= rule_limit && !c->GetGM()) {
+		c->Message(m_fail, "You can not have more than %i spawned bots", rule_limit);
+		return;
+	}
+
+	if (RuleB(Bots, QuestableSpawnLimit) && !c->GetGM()) {
+		int allowed_bot_count = 0;
+		if (!botdb.LoadQuestableSpawnCount(c->CharacterID(), allowed_bot_count)) {
+			c->Message(m_fail, "%s", BotDatabase::fail::LoadQuestableSpawnCount());
+			return;
+		}
+		if (!allowed_bot_count) {
+			c->Message(m_fail, "You are not currently allowed any spawned bots");
+			return;
+		}
+		if (spawned_bot_count >= allowed_bot_count) {
+			c->Message(m_fail, "You have reached your current limit of %i spawned bots", allowed_bot_count);
+			return;
+		}
+	}
+
+	std::string bot_name = sep->arg[1];
+
+	uint32 bot_id = 0;
+	if (!botdb.LoadBotID(c->CharacterID(), bot_name, bot_id)) {
+		c->Message(m_fail, "%s for '%s'", BotDatabase::fail::LoadBotID(), bot_name.c_str());
+		return;
+	}
+	if (!bot_id) {
+		c->Message(m_fail, "You don't own a bot named '%s'", bot_name.c_str());
+		return;
+	}
+
+	if (entity_list.GetMobByBotID(bot_id)) {
+		c->Message(m_fail, "'%s' is already spawned in zone", bot_name.c_str());
+		return;
+	}
+
+	// this probably needs work...
+	if (c->GetGroup()) {
+		std::list<Mob*> group_list;
+		c->GetGroup()->GetMemberList(group_list);
+		for (auto member_iter : group_list) {
+			if (!member_iter)
+				continue;
+			if (member_iter->qglobal) // what is this?? really should have had a message to describe failure... (can't spawn bots if you are assigned to a task/instance?)
+				return;
+			if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) && (member_iter->IsEngaged() || (member_iter->IsClient() && member_iter->CastToClient()->GetAggroCount()))) {
+				c->Message(m_fail, "You can't summon bots while you are engaged.");
+				return;
+			}
+		}
+	}
+	else if (c->GetAggroCount() > 0) {
+		c->Message(m_fail, "You can't spawn bots while you are engaged.");
+		return;
+	}
+
+	auto my_bot = Bot::LoadBot(bot_id);
+	if (!my_bot) {
+		c->Message(m_fail, "No valid bot '%s' (id: %i) exists", bot_name.c_str(), bot_id);
+		return;
+	}
+
+	my_bot->Spawn(c);
+
+	static const char* bot_spawn_message[16] = {
+		"A solid weapon is my ally!", // WARRIOR / 'generic'
+		"The pious shall never die!", // CLERIC
+		"I am the symbol of Light!", // PALADIN
+		"There are enemies near!", // RANGER
+		"Out of the shadows, I step!", // SHADOWKNIGHT
+		"Nature's fury shall be wrought!", // DRUID
+		"Your punishment will be my fist!", // MONK
+		"Music is the overture of battle! ", // BARD
+		"Daggers into the backs of my enemies!", // ROGUE
+		"More bones to grind!", // SHAMAN
+		"Death is only the beginning!", // NECROMANCER
+		"I am the harbinger of demise!", // WIZARD
+		"The elements are at my command!", // MAGICIAN
+		"No being can resist my charm!", // ENCHANTER
+		"Battles are won by hand and paw!", // BEASTLORD
+		"My bloodthirst shall not be quenched!" // BERSERKER
+	};
+
+	Bot::BotGroupSay(my_bot, "%s", bot_spawn_message[CLASSIDTOINDEX(my_bot->GetClass())]);
+}
+
+
 void bot_subcommand_bot_stance(Client *c, const Seperator *sep)
 {
 	if (helper_command_alias_fail(c, "bot_subcommand_bot_stance", sep->arg[0], "botstance"))
@@ -7829,6 +7935,118 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 	}
 
 	return false;
+}
+
+void bot_command_invite(Client *bot_owner, const Seperator* sep)
+{
+	if (!bot_owner->GetTarget())
+	{
+		bot_owner->Message(m_message, "You need a valid target to invite.");
+		return;
+	}
+
+	// Put all Player Bot IDs checks here, will probably need to end in #defines somewhere
+	if (bot_owner->GetTarget()->GetNPCTypeID() != 679 && bot_owner->GetTarget()->GetNPCTypeID() != 680 &&
+		bot_owner->GetTarget()->GetNPCTypeID() != 681 && bot_owner->GetTarget()->GetNPCTypeID() != 682 &&
+		bot_owner->GetTarget()->GetNPCTypeID() != 683 && bot_owner->GetTarget()->GetNPCTypeID() != 684 && 
+		bot_owner->GetTarget()->GetNPCTypeID() != 685 && bot_owner->GetTarget()->GetNPCTypeID() != 686 &&
+		bot_owner->GetTarget()->GetNPCTypeID() != 687 && bot_owner->GetTarget()->GetNPCTypeID() != 688 &&
+		bot_owner->GetTarget()->GetNPCTypeID() != 689 && bot_owner->GetTarget()->GetNPCTypeID() != 690 &&
+		bot_owner->GetTarget()->GetNPCTypeID() != 691 && bot_owner->GetTarget()->GetNPCTypeID() != 692  )
+	{
+		bot_owner->Message(m_message, "Target needs to be a Player Bot.");
+		return;
+	}
+
+	if (!sep->arg[0])
+	{
+		bot_owner->Message(m_message, "You need to provide a name for your player bot.");
+		return;
+	}
+	auto player_bot = bot_owner->GetTarget()->CastToNPC();
+
+	uint32 bot_id = helper_bot_create(bot_owner, sep->arg[1], player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
+	if (bot_id)
+	{
+		std::string query = StringFormat("update bot_data set face = %i where bot_id=%i", player_bot->GetLuclinFace(), bot_id);
+		auto results = database.QueryDatabase(query);
+
+		// Sample loop taken from NPC::QueryLoot
+		int x = 0;
+		for (auto cur = player_bot->itemlist.begin(); cur != player_bot->itemlist.end(); cur++, ++x)
+		{
+			if (!(*cur)) {
+				Log(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
+				continue;
+			}
+			if (!(*cur)->item_id || !database.GetItem((*cur)->item_id)) {
+				Log(Logs::General, Logs::Error, "NPC::QueryLoot() - Database error, invalid item");
+				continue;
+			}
+			std::string query = StringFormat(
+				"INSERT INTO `bot_inventories` ("
+				"`bot_id`,"
+				" `slot_id`,"
+				" `item_id`,"
+				" `inst_charges`,"
+				" `inst_color`,"
+				" `inst_no_drop`,"
+				" `inst_custom_data`,"
+				" `ornament_icon`,"
+				" `ornament_id_file`,"
+				" `ornament_hero_model`,"
+				" `augment_1`,"
+				" `augment_2`,"
+				" `augment_3`,"
+				" `augment_4`,"
+				" `augment_5`,"
+				" `augment_6`"
+				")"
+				" VALUES ("
+				"'%lu',"			/* bot_id */
+				" '%lu',"			/* slot_id */
+				" '%lu',"			/* item_id */
+				" '%lu',"			/* inst_charges */
+				" '%lu',"			/* inst_color */
+				" '%lu',"			/* inst_no_drop */
+				" '%s',"			/* inst_custom_data */
+				" '%lu',"			/* ornament_icon */
+				" '%lu',"			/* ornament_id_file */
+				" '%lu',"			/* ornament_hero_model */
+				" '%lu',"			/* augment_1 */
+				" '%lu',"			/* augment_2 */
+				" '%lu',"			/* augment_3 */
+				" '%lu',"			/* augment_4 */
+				" '%lu',"			/* augment_5 */
+				" '%lu'"			/* augment_6 */
+				")",
+				bot_id,
+				(*cur)->equip_slot,
+				(*cur)->item_id,
+				(*cur)->charges,
+				0,
+				(*cur)->attuned,
+				"",
+				0,
+				0,
+				0,
+				(*cur)->aug_1,
+				(*cur)->aug_2,
+				(*cur)->aug_3,
+				(*cur)->aug_4,
+				(*cur)->aug_5,
+				(*cur)->aug_6);
+
+			auto results = botdb.QueryDatabase(query);
+			if (!results.Success()) {
+				botdb.DeleteItemBySlot(bot_id, (*cur)->equip_slot);
+				return ;
+			}
+		}
+
+		player_bot->Depop();
+		bot_subcommand_playerbot_spawn(bot_owner, sep);
+	}
 }
 
 #endif // BOTS
