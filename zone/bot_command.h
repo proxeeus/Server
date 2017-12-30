@@ -591,6 +591,7 @@ void bot_command_water_breathing(Client *c, const Seperator *sep);
 void bot_command_deity(Client *c, const Seperator *sep);
 void bot_command_lich(Client *c, const Seperator *sep);
 void bot_command_invite(Client *c, const Seperator* sep);
+void bot_command_stats(Client *c, const Seperator* sep);
 
 // bot subcommands
 void bot_subcommand_bot_appearance(Client *c, const Seperator *sep);

@@ -1416,7 +1416,8 @@ int bot_command_init(void)
 		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing) ||
 		bot_command_add("deity", "Assigns a Deity to a bot. This can only be set once.", 0, bot_command_deity) ||
 		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich) ||
-		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite)
+		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
+		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -8046,7 +8047,23 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 
 		player_bot->Depop();
 		bot_subcommand_playerbot_spawn(bot_owner, sep);
+		entity_list.GetMobByBotID(bot_id)->CastToBot()->CalcBotStats(true);
 	}
+
+}
+
+void bot_command_stats(Client *bot_owner, const Seperator* sep)
+{
+	if (!bot_owner->GetTarget())
+	{
+		bot_owner->Message(m_message, "You need a valid target.");
+		return;
+	}
+
+	//bot_owner->Message(15, "%s has been updated.", bot_owner->GetTarget()->GetCleanName());
+	//bot_owner->Message(15, "Level: %i HP: %i AC: %i Mana: %i STR: %i STA: %i DEX: %i AGI: %i INT: %i WIS: %i CHA: %i", bot_owner->GetTarget()->GetLevel(), bot_owner->GetTarget()->GetMaxHP(), bot_owner->GetTarget()->GetAC(), bot_owner->GetTarget()->GetMaxMana(), bot_owner->GetTarget()->GetSTR(), bot_owner->GetTarget()->GetSTA(), bot_owner->GetTarget()->GetDEX(), bot_owner->GetTarget()->GetAGI(), bot_owner->GetTarget()->GetINT(), bot_owner->GetTarget()->GetWIS(), bot_owner->GetTarget()->GetCHA());
+	//bot_owner->Message(15, "Resists-- Magic: %i, Poison: %i, Fire: %i, Cold: %i, Disease: %i, Corruption: %i.", bot_owner->GetTarget()->GetMR(), bot_owner->GetTarget()->GetPR(), bot_owner->GetTarget()->GetFR(), bot_owner->GetTarget()->GetCR(), bot_owner->GetTarget()->GetDR(), bot_owner->GetTarget()->GetCorrup());
+	bot_owner->GetTarget()->CastToBot()->CalcBotStats(true);
 }
 
 #endif // BOTS
