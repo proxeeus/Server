@@ -5151,7 +5151,7 @@ void bot_subcommand_bot_spawn(Client *c, const Seperator *sep)
 	Bot::BotGroupSay(my_bot, "%s", bot_spawn_message[CLASSIDTOINDEX(my_bot->GetClass())]);
 }
 
-void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep)
+void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string clean_name)
 {
 	int rule_level = RuleI(Bots, BotCharacterLevel);
 	if (c->GetLevel() < rule_level) {
@@ -5188,7 +5188,7 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep)
 		}
 	}
 
-	std::string bot_name = sep->arg[1];
+	std::string bot_name = clean_name;
 
 	uint32 bot_id = 0;
 	if (!botdb.LoadBotID(c->CharacterID(), bot_name, bot_id)) {
@@ -7959,15 +7959,25 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 		return;
 	}
 
-	if (!sep->arg[0])
-	{
-		bot_owner->Message(m_message, "You need to provide a name for your player bot.");
-		return;
-	}
+	//if (!sep->arg[0])
+	//{
+	//	bot_owner->Message(m_message, "You need to provide a name for your player bot.");
+	//	return;
+	//}
 	auto player_bot = bot_owner->GetTarget()->CastToNPC();
 
-	uint32 bot_id = helper_bot_create(bot_owner, sep->arg[1], player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
-	if (bot_id)
+	//if (!sep->arg[1])
+	//	bot_id = helper_bot_create(bot_owner, player_bot->GetName(), player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
+	//else
+	//	bot_id = helper_bot_create(bot_owner, sep->arg[1], player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
+	char clean_name[64];
+	clean_name[0] = 0;
+	auto cleaned_name = CleanMobName(player_bot->GetName(), clean_name);
+	std::string bot_name(cleaned_name);
+
+	uint32 bot_id = helper_bot_create(bot_owner, bot_name, player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
+
+	if (bot_id != 0)
 	{
 		std::string query = StringFormat("update bot_data set face = %i where bot_id=%i", player_bot->GetLuclinFace(), bot_id);
 		auto results = database.QueryDatabase(query);
@@ -8046,7 +8056,7 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 		}
 
 		player_bot->Depop();
-		bot_subcommand_playerbot_spawn(bot_owner, sep);
+		bot_subcommand_playerbot_spawn(bot_owner, sep, bot_name);
 		entity_list.GetMobByBotID(bot_id)->CastToBot()->CalcBotStats(true);
 	}
 
