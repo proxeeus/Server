@@ -2716,9 +2716,9 @@ void Mob::AddToHateList(Mob* other, uint32 hate /*= 0*/, int32 damage /*= 0*/, b
 			// owner must get on list, but he's not actually gained any hate yet
 			if (!owner->GetSpecialAbility(IMMUNE_AGGRO))
 			{
-				hate_list.AddEntToHateList(owner, 0, 0, false, !iBuffTic);
 				if (owner->IsClient() && !CheckAggro(owner))
 					owner->CastToClient()->AddAutoXTarget(this);
+				hate_list.AddEntToHateList(owner, 0, 0, false, !iBuffTic);
 			}
 		}
 	}
@@ -5298,19 +5298,30 @@ void Client::DoAttackRounds(Mob *target, int hand, bool IsFromSpell)
 	// extra off hand non-sense, can only double with skill of 150 or above
 	// or you have any amount of GiveDoubleAttack
 	if (candouble && hand == EQEmu::inventory::slotSecondary)
-		candouble = GetSkill(EQEmu::skills::SkillDoubleAttack) > 149 || (aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack) > 0;
+		candouble =
+		    GetSkill(EQEmu::skills::SkillDoubleAttack) > 149 ||
+		    (aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack) > 0;
 
 	if (candouble) {
 		CheckIncreaseSkill(EQEmu::skills::SkillDoubleAttack, target, -10);
 		if (CheckDoubleAttack()) {
 			Attack(target, hand, false, false, IsFromSpell);
+
+			// Modern AA description: Increases your chance of ... performing one additional hit with a 2-handed weapon when double attacking by 2%.
+			if (hand == EQEmu::inventory::slotPrimary) {
+				auto extraattackchance = aabonuses.ExtraAttackChance + spellbonuses.ExtraAttackChance +
+							 itembonuses.ExtraAttackChance;
+				if (extraattackchance && HasTwoHanderEquipped() && zone->random.Roll(extraattackchance))
+					Attack(target, hand, false, false, IsFromSpell);
+			}
+
 			// you can only triple from the main hand
 			if (hand == EQEmu::inventory::slotPrimary && CanThisClassTripleAttack()) {
 				CheckIncreaseSkill(EQEmu::skills::SkillTripleAttack, target, -10);
 				if (CheckTripleAttack()) {
 					Attack(target, hand, false, false, IsFromSpell);
 					auto flurrychance = aabonuses.FlurryChance + spellbonuses.FlurryChance +
-						itembonuses.FlurryChance;
+							    itembonuses.FlurryChance;
 					if (flurrychance && zone->random.Roll(flurrychance)) {
 						Attack(target, hand, false, false, IsFromSpell);
 						if (zone->random.Roll(flurrychance))
@@ -5320,12 +5331,6 @@ void Client::DoAttackRounds(Mob *target, int hand, bool IsFromSpell)
 				}
 			}
 		}
-	}
-
-	if (hand == EQEmu::inventory::slotPrimary) {
-		auto extraattackchance = aabonuses.ExtraAttackChance + spellbonuses.ExtraAttackChance + itembonuses.ExtraAttackChance;
-		if (extraattackchance && HasTwoHanderEquipped() && zone->random.Roll(extraattackchance))
-			Attack(target, hand, false, false, IsFromSpell);
 	}
 }
 
