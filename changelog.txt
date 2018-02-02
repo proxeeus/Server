@@ -1,5 +1,25 @@
 EQEMu Changelog (Started on Sept 24, 2003 15:50)
 -------------------------------------------------------
+== 01/31/2018 ==
+Uleat: Re-work of Bot::AI_Process(). Overall behavior is much improved.
+	- Removed a 'ton' of unneeded packet updates
+	- Added a 'leash' to the distance a bot can travel
+	- Added a 'main assist' feature to target control (set using group roles)
+	- Added combat 'jitter' movement to complement the existing rogue movement
+	- Attack can now be aborted if target contains no leash owner nor bot hate and leash owner turns off auto-attack
+	- Please report any issues with the bot AI code
+	
+Added a work-around for heal rotations crashing the server - under certain conditions.
+
+== 01/28/2018 ==
+Mackal: Spell AI tweaks
+
+AI spells are treated as "innate" spells (devs use this term, and I think this is what they mean by it)
+These spells are spammed by the NPC, lots of encounters on live work like this and this will greatly reduce
+the need to do quest scripting on these types of encounters.
+
+You can safely run update npc_spells_entries set priority = priority + 1 where priority >= 0; if you want to disable this new behavior
+
 == 10/08/2017 ==
 Mackal: Rework regens
 

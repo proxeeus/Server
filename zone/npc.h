@@ -61,6 +61,8 @@ struct AISpells_Struct {
 	int32	recast_delay;
 	int16	priority;
 	int16	resist_adjust;
+	int8	min_hp; // >0 won't cast if HP is below
+	int8	max_hp; // >0 won't cast if HP is above
 };
 
 struct AISpellsEffects_Struct {
@@ -378,7 +380,7 @@ public:
 	void NPCSlotTexture(uint8 slot, uint16 texture);	// Sets new material values for slots
 
 	uint32 GetAdventureTemplate() const { return adventure_template_id; }
-	void AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType, int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust);
+	void AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType, int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust, int8 min_hp, int8 max_hp);
 	void AddSpellEffectToNPCList(uint16 iSpellEffectID, int32 base, int32 limit, int32 max);
 	void RemoveSpellFromNPCList(int16 spell_id);
 	Timer *GetRefaceTimer() const { return reface_timer; }
@@ -403,8 +405,6 @@ public:
 
 	uint32	GetSpawnKillCount();
 	int	GetScore();
-	void	SetMerchantProbability(uint8 amt) { probability = amt; }
-	uint8	GetMerchantProbability() { return probability; }
 	void	mod_prespawn(Spawn2 *sp);
 	int	mod_npc_damage(int damage, EQEmu::skills::SkillType skillinuse, int hand, const EQEmu::ItemData* weapon, Mob* other);
 	void	mod_npc_killed_merit(Mob* c);
@@ -459,7 +459,7 @@ protected:
 	uint32*	pDontCastBefore_casting_spell;
 	std::vector<AISpells_Struct> AIspells;
 	bool HasAISpell;
-	virtual bool AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes);
+	virtual bool AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes, bool bInnates = false);
 	virtual bool AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgainBefore = 0);
 	AISpellsVar_Struct AISpellVar;
 	int16 GetFocusEffect(focusType type, uint16 spell_id);
@@ -537,7 +537,6 @@ protected:
 	std::list<MercData> mercDataList;
 
 	bool raid_target;
-	uint8	probability;
 	bool ignore_despawn; //NPCs with this set to 1 will ignore the despawn value in spawngroup
 
 private:
