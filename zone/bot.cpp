@@ -186,7 +186,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	if (!botdb.LoadTimers(this) && bot_owner)
 		bot_owner->Message(13, "%s for '%s'", BotDatabase::fail::LoadTimers(), GetCleanName());
 
-	LoadAAs();
+	//LoadAAs();
 
 	if (!botdb.LoadBuffs(this) && bot_owner)
 		bot_owner->Message(13, "&s for '%s'", BotDatabase::fail::LoadBuffs(), GetCleanName());
