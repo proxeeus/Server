@@ -3841,12 +3841,8 @@ void bot_command_size(Client *c, const Seperator *sep)
 
 void bot_command_summon_corpse(Client *c, const Seperator *sep)
 {
-	// Same methodology as old command..but, does not appear to work... (note: didn't work there, either...)
+	// Hardcoding Summon Corpse
 
-	// temp
-	c->Message(m_fail, "This command is currently unavailable...");
-	return;
-	
 	bcst_list* local_list = &bot_command_spells[BCEnum::SpT_SummonCorpse];
 	if (helper_spell_list_fail(c, local_list, BCEnum::SpT_SummonCorpse) || helper_command_alias_fail(c, "bot_command_summon_corpse", sep->arg[0], "summoncorpse"))
 		return;
@@ -3861,26 +3857,23 @@ void bot_command_summon_corpse(Client *c, const Seperator *sep)
 	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
 
 	bool cast_success = false;
-	for (auto list_iter : *local_list) {
-		auto local_entry = list_iter;
-		if (helper_spell_check_fail(local_entry))
-			continue;
+
 		
 		auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
 		if (!target_mob)
-			continue;
+			return;
 
-		if (spells[local_entry->spell_id].base[EFFECTIDTOINDEX(1)] < target_mob->GetLevel())
-			continue;
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 39, NECROMANCER);
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 51, SHADOWKNIGHT);
+		}
+		if (!my_bot) {
+			c->Message(m_fail, "No currently spawned bots are available to summon your corpse.");
+			return;
+		}
 
-		my_bot = ActionableBots::Select_ByMinLevelAndClass(c, local_entry->target_type, sbl, local_entry->spell_level, local_entry->caster_class, target_mob);
-		if (!my_bot)
-			continue;
+		cast_success = helper_cast_standard_spell(my_bot, target_mob, 3);
 
-		cast_success = helper_cast_standard_spell(my_bot, target_mob, local_entry->spell_id);
-		
-		break;
-	}
 
 	helper_no_available_bots(c, my_bot);
 }
