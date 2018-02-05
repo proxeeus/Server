@@ -1930,6 +1930,13 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		ns->spawn.is_npc = 0;
 	else
 		ns->spawn.is_npc = 1;
+	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+		ns->spawn.is_npc = 0;
+		ns->spawn.NPC = 0;
+		ns->spawn.guildID = 0xFFFFFFFF;
+		//ns->spawn.runspeed = 1.0; // test?
+	}
 	UpdateActiveLight();
 	ns->spawn.light = GetActiveLightType();
 	ns->spawn.show_name = NPCTypedata->show_name;
