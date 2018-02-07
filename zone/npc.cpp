@@ -636,6 +636,7 @@ bool NPC::Process()
 			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
 			if (!IsMoving() || !IsEngaged()) {
 				SendPosition();
+				FixZ();
 			}
 		}
 		// End playerbot check
@@ -644,7 +645,7 @@ bool NPC::Process()
 
 		if (currently_fleeing)
 			ProcessFlee();
-
+			
 		uint32 sitting_bonus = 0;
 		uint32 petbonus = 0;
 		uint32 bestregen = 0;

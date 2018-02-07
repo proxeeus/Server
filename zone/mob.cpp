@@ -159,6 +159,11 @@ Mob::Mob(const char* in_name,
 	size = in_size;
 	base_size = size;
 	runspeed = in_runspeed;
+	// Playebots must be set to client runspeed
+	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+		runspeed = 0.7f;
+	}
 	// neotokyo: sanity check
 	if (runspeed < 0 || runspeed > 20)
 		runspeed = 1.25f;
