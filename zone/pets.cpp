@@ -326,7 +326,12 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 		// Keep the DB name
 	} else if (record.petnaming == 3 && IsClient()) {
 		strcpy(npc_type->name, GetRandPetName());
-	} else if (record.petnaming == 5 && IsClient()) {
+	}
+	else if (record.petnaming == 3 && ((npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692))) {
+		strcpy(npc_type->name, GetRandPetName());
+	}
+	else if (record.petnaming == 5 && IsClient()) {
 		strcpy(npc_type->name, this->GetName());
 		npc_type->name[24] = '\0';
 		strcat(npc_type->name, "`s_ward");

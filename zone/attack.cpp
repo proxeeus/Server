@@ -3414,14 +3414,23 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
-				entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->GetCleanName(), this->GetCleanName());
+				if (attacker->npctype_id == 679 || attacker->npctype_id == 680 || attacker->npctype_id == 681 || attacker->npctype_id == 682 || attacker->npctype_id == 683 || attacker->npctype_id == 684 || attacker->npctype_id == 685 || attacker->npctype_id == 686 || attacker->npctype_id == 687
+					|| attacker->npctype_id == 688 || attacker->npctype_id == 689 || attacker->npctype_id == 690 || attacker->npctype_id == 691 || attacker->npctype_id == 692) {
+					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
+				}
+				else
+					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->GetCleanName(), this->GetCleanName());
 				if (attacker->IsClient())
 				{
 					attacker->Message(MT_Say, "You say 'Ahhh, I feel much better now...'");
-					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...", attacker->GetCleanName());
+					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
+				}
+				else if (attacker->npctype_id == 679 || attacker->npctype_id == 680 || attacker->npctype_id == 681 || attacker->npctype_id == 682 || attacker->npctype_id == 683 || attacker->npctype_id == 684 || attacker->npctype_id == 685 || attacker->npctype_id == 686 || attacker->npctype_id == 687
+					|| attacker->npctype_id == 688 || attacker->npctype_id == 689 || attacker->npctype_id == 690 || attacker->npctype_id == 691 || attacker->npctype_id == 692) {
+					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->playerbot_temp_name);
 				}
 				else
-					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...", attacker->GetCleanName());
+					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
 					
 			}
 		}	//end `if there is some damage being done and theres anattacker person involved`

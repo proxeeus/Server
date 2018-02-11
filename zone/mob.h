@@ -65,6 +65,7 @@ enum class eSpecialAttacks : int {
 
 class Mob : public Entity {
 public:
+	char playerbot_temp_name[64];
 	enum CLIENT_CONN_STATUS { CLIENT_CONNECTING, CLIENT_CONNECTED, CLIENT_LINKDEAD,
 						CLIENT_KICKED, DISCONNECTED, CLIENT_ERROR, CLIENT_CONNECTINGALL };
 	enum eStandingPetOrder { SPO_Follow, SPO_Sit, SPO_Guard };
@@ -461,8 +462,9 @@ public:
 	inline const char* GetOrigName() const { return orig_name; }
 	inline const char* GetLastName() const { return lastname; }
 	const char *GetCleanName();
-	virtual void SetName(const char *new_name = nullptr) { new_name ? strn0cpy(name, new_name, 64) :
-		strn0cpy(name, GetName(), 64); return; };
+	const char *GetCleanPlayerBotName();
+	virtual void SetName(const char *new_name = nullptr) {
+		new_name ? strn0cpy(name, new_name, 64) : strn0cpy(name, GetName(), 64); return; };
 	inline Mob* GetTarget() const { return target; }
 	virtual void SetTarget(Mob* mob);
 	inline bool HasTargetReflection() const { return (target && target != this && target->target == this); }
