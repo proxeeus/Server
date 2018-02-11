@@ -1042,8 +1042,15 @@ void Mob::AI_Process() {
 
 		// NPCs will forget people after 10 mins of not interacting with them or out of range
 		// both of these maybe zone specific, hardcoded for now
-		if (mHateListCleanup.Check())
+		if (mHateListCleanup.Check()) {
 			hate_list.RemoveStaleEntries(600000, 600.0f);
+			if (hate_list.IsHateListEmpty()) {
+				AI_Event_NoLongerEngaged();
+				zone->DelAggroMob();
+				if (IsNPC() && !RuleB(Aggro, AllowTickPulling))
+					ResetAssistCap();
+			}
+		}
 		// we are prevented from getting here if we are blind and don't have a target in range
 		// from above, so no extra blind checks needed
 		if ((IsRooted() && !GetSpecialAbility(IGNORE_ROOT_AGGRO_RULES)) || IsBlind())
@@ -1873,7 +1880,7 @@ void NPC::AI_Event_SpellCastFinished(bool iCastSucceeded, uint16 slot) {
 					recovery_time += spells[AIspells[casting_spell_AIindex].spellid].recovery_time;
 					if (AIspells[casting_spell_AIindex].recast_delay >= 0)
 					{
-						if (AIspells[casting_spell_AIindex].recast_delay < 1000)
+						if (AIspells[casting_spell_AIindex].recast_delay < 10000)
 							AIspells[casting_spell_AIindex].time_cancast = Timer::GetCurrentTime() + (AIspells[casting_spell_AIindex].recast_delay*1000);
 					}
 					else

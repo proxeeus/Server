@@ -185,6 +185,7 @@ public:
 	void	AddItem(uint32 itemid, uint16 charges, bool equipitem = true, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0);
 	void	AddLootTable();
 	void	AddLootTable(uint32 ldid);
+	void	CheckGlobalLootTables();
 	void	DescribeAggro(Client *towho, Mob *mob, bool verbose);
 	void	RemoveItem(uint32 item_id, uint16 quantity = 0, uint16 slot = 0);
 	void	CheckMinMaxLevel(Mob *them);
@@ -197,6 +198,7 @@ public:
 	uint32	CountLoot();
 	inline uint32	GetLoottableID()	const { return loottable_id; }
 	virtual void UpdateEquipmentLight();
+	inline bool DropsGlobalLoot() const { return !skip_global_loot; }
 
 	inline uint32	GetCopper()		const { return copper; }
 	inline uint32	GetSilver()		const { return silver; }
@@ -281,6 +283,8 @@ public:
 	inline bool IsNotTargetableWithHotkey() const { return no_target_hotkey; }
 	int32 GetNPCHPRegen() const { return hp_regen + itembonuses.HPRegen + spellbonuses.HPRegen; }
 	inline const char* GetAmmoIDfile() const { return ammo_idfile; }
+
+	void ModifyStatsOnCharm(bool bRemoved);
 
 	//waypoint crap
 	int					GetMaxWp() const { return max_wp; }
@@ -482,6 +486,25 @@ protected:
 	int32 SpellFocusDMG;
 	int32 SpellFocusHeal;
 
+	// stats to switch back to after charm wears off
+	// could probably pick a better name, but these probably aren't taken so ...
+	int default_ac;
+	int default_min_dmg;
+	int default_max_dmg;
+	int default_attack_delay;
+	int default_accuracy_rating;
+	int default_avoidance_rating;
+	int default_atk;
+
+	// when charmed, switch to these
+	int charm_ac;
+	int charm_min_dmg;
+	int charm_max_dmg;
+	int charm_attack_delay;
+	int charm_accuracy_rating;
+	int charm_avoidance_rating;
+	int charm_atk;
+
 	//pet crap:
 	uint16	pet_spell_id;
 	bool	taunting;
@@ -541,6 +564,7 @@ protected:
 
 private:
 	uint32	loottable_id;
+	bool	skip_global_loot;
 	bool	p_depop;
 };
 

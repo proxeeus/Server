@@ -689,6 +689,8 @@ public:
 	void SetFollowDistance(uint32 dist) { follow_dist = dist; }
 	uint32 GetFollowID() const { return follow; }
 	uint32 GetFollowDistance() const { return follow_dist; }
+	inline bool IsRareSpawn() const { return rare_spawn; }
+	inline void SetRareSpawn(bool in) { rare_spawn = in; }
 
 	virtual void Message(uint32 type, const char* message, ...) { }
 	virtual void Message_StringID(uint32 type, uint32 string_id, uint32 distance = 0) { }
@@ -969,8 +971,8 @@ public:
 
 	inline bool			CheckAggro(Mob* other) {return hate_list.IsEntOnHateList(other);}
 	float				CalculateHeadingToTarget(float in_x, float in_y);
-	bool				CalculateNewPosition(float x, float y, float z, int speed, bool checkZ = false, bool calcheading = true);
-	virtual bool		CalculateNewPosition2(float x, float y, float z, int speed, bool checkZ = true, bool calcheading = true);
+	bool				CalculateNewPosition(float x, float y, float z, int speed, bool checkZ = false, bool calcHeading = true);
+	virtual bool		CalculateNewPosition2(float x, float y, float z, int speed, bool checkZ = true, bool calcHeading = true);
 	float				CalculateDistance(float x, float y, float z);
 	float				GetGroundZ(float new_x, float new_y, float z_offset=0.0);
 	void				SendTo(float new_x, float new_y, float new_z);
@@ -1152,7 +1154,7 @@ protected:
 	int _GetWalkSpeed() const;
 	int _GetRunSpeed() const;
 	int _GetFearSpeed() const;
-	virtual bool MakeNewPositionAndSendUpdate(float x, float y, float z, int speed);
+	virtual bool MakeNewPositionAndSendUpdate(float x, float y, float z, int speed, bool checkZ = true, bool calcHeading = true);
 
 	virtual bool AI_EngagedCastCheck() { return(false); }
 	virtual bool AI_PursueCastCheck() { return(false); }
@@ -1225,6 +1227,7 @@ protected:
 	uint32 follow;
 	uint32 follow_dist;
 	bool no_target_hotkey;
+	bool rare_spawn;
 
 	uint32 m_PlayerState;
 	uint32 GetPlayerState() { return m_PlayerState; }

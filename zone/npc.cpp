@@ -208,6 +208,24 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	avoidance_rating = d->avoidance_rating;
 	ATK = d->ATK;
 
+	// used for when switch back to charm
+	default_ac = d->AC;
+	default_min_dmg = min_dmg;
+	default_max_dmg = max_dmg;
+	default_attack_delay = d->attack_delay;
+	default_accuracy_rating = d->accuracy_rating;
+	default_avoidance_rating = d->avoidance_rating;
+	default_atk = d->ATK;
+
+	// used for when getting charmed, if 0, doesn't swap
+	charm_ac = d->charm_ac;
+	charm_min_dmg = d->charm_min_dmg;
+	charm_max_dmg = d->charm_max_dmg;
+	charm_attack_delay = d->charm_attack_delay;
+	charm_accuracy_rating = d->charm_accuracy_rating;
+	charm_avoidance_rating = d->charm_avoidance_rating;
+	charm_atk = d->charm_atk;
+
 	CalcMaxMana();
 	SetMana(GetMaxMana());
 
@@ -227,6 +245,8 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	roambox_delay = 1000;
 	p_depop = false;
 	loottable_id = d->loottable_id;
+	skip_global_loot = d->skip_global_loot;
+	rare_spawn = d->rare_spawn;
 
 	no_target_hotkey = d->no_target_hotkey;
 
@@ -930,6 +950,7 @@ bool NPC::SpawnZoneController(){
 	npc_type->d_melee_texture2 = 0;
 	npc_type->merchanttype = 0;
 	npc_type->bodytype = 11;
+	npc_type->skip_global_loot = true;
 
 	if (RuleB(Zone, EnableZoneControllerGlobals)) {
 		npc_type->qglobal = true;
@@ -2659,3 +2680,42 @@ void NPC::DepopSwarmPets()
 		}
 	}
 }
+
+void NPC::ModifyStatsOnCharm(bool bRemoved)
+{
+	if (bRemoved) {
+		if (charm_ac)
+			AC = default_ac;
+		if (charm_attack_delay)
+			attack_delay = default_attack_delay;
+		if (charm_accuracy_rating)
+			accuracy_rating = default_accuracy_rating;
+		if (charm_avoidance_rating)
+			avoidance_rating = default_avoidance_rating;
+		if (charm_atk)
+			ATK = default_atk;
+		if (charm_min_dmg || charm_max_dmg) {
+			base_damage = round((default_max_dmg - default_min_dmg) / 1.9);
+			min_damage = default_min_dmg - round(base_damage / 10.0);
+		}
+	} else {
+		if (charm_ac)
+			AC = charm_ac;
+		if (charm_attack_delay)
+			attack_delay = charm_attack_delay;
+		if (charm_accuracy_rating)
+			accuracy_rating = charm_accuracy_rating;
+		if (charm_avoidance_rating)
+			avoidance_rating = charm_avoidance_rating;
+		if (charm_atk)
+			ATK = charm_atk;
+		if (charm_min_dmg || charm_max_dmg) {
+			base_damage = round((charm_max_dmg - charm_min_dmg) / 1.9);
+			min_damage = charm_min_dmg - round(base_damage / 10.0);
+		}
+	}
+	// the rest of the stats aren't cached, so lets just do these two instead of full CalcBonuses()
+	SetAttackTimer();
+	CalcAC();
+}
+

@@ -2042,6 +2042,20 @@ void Bot::SetTarget(Mob* mob) {
 	}
 }
 
+void Bot::SetGuardMode() {
+	WipeHateList();
+	SetTarget(nullptr);
+	SetFollowID(GetID());
+	StopMoving();
+	m_GuardPoint = GetPosition();
+
+	if (HasPet()) {
+		GetPet()->WipeHateList();
+		GetPet()->SetTarget(nullptr);
+		GetPet()->StopMoving();
+	}
+}
+
 // AI Processing for the Bot object
 void Bot::AI_Process() {
 
@@ -2092,6 +2106,8 @@ void Bot::AI_Process() {
 		return;
 	}
 	
+	bool guard_mode = (follow_mob == this);
+
 	auto fm_dist = DistanceSquared(m_Position, follow_mob->GetPosition());
 	auto lo_distance = DistanceSquared(m_Position, leash_owner->GetPosition());
 
@@ -2114,6 +2130,17 @@ void Bot::AI_Process() {
 				return;
 			if (fm_dist > GetFollowDistance()) // Cancel out-of-combat casting if movement is required
 				InterruptSpell();
+			if (guard_mode) {
+				auto& my_pos = GetPosition();
+				auto& my_guard = GetGuardPoint();
+
+				if (my_pos.x != my_guard.x ||
+					my_pos.y != my_guard.y ||
+					my_pos.z != my_guard.z)
+				{
+					InterruptSpell();
+				}
+			}
 
 			return;
 		}
@@ -2148,7 +2175,7 @@ void Bot::AI_Process() {
 	}
 
 	// Empty hate list - let's find a target
-	if (!IsEngaged()) {
+	if (!guard_mode && !IsEngaged()) {
 		Mob* lo_target = leash_owner->GetTarget();
 
 		if (lo_target && lo_target->IsNPC() &&
@@ -2235,7 +2262,8 @@ void Bot::AI_Process() {
 		// Let's check if we have a los with our target.
 		// If we don't, our hate_list is wiped.
 		// Else, it was causing the bot to aggro behind wall etc... causing massive trains.
-		if (!tar->IsNPC() ||
+		if (guard_mode ||
+			!tar->IsNPC() ||
 			tar->IsMezzed() ||
 			(!tar->GetHateAmount(this) && !tar->GetHateAmount(leash_owner) && !leash_owner->AutoAttackEnabled()) ||
 			lo_distance > BOT_LEASH_DISTANCE ||
@@ -2432,8 +2460,8 @@ void Bot::AI_Process() {
 			if (AI_movement_timer->Check() && (!spellend_timer.Enabled() || GetClass() == BARD)) {
 				if (!IsRooted()) {
 					if (HasTargetReflection()) {
-						if (GetClass() == ROGUE) {
-							if (!tar->IsFeared() && !tar->IsStunned()) {
+						if (!tar->IsFeared() && !tar->IsStunned()) {
+							if (GetClass() == ROGUE) {
 								if (evade_timer.Check(false)) { // Attempt to evade
 									int timer_duration = (HideReuseTime - GetSkillReuseTime(EQEmu::skills::SkillHide)) * 1000;
 									if (timer_duration < 0)
@@ -2445,10 +2473,13 @@ void Bot::AI_Process() {
 
 									return;
 								}
-								else if (tar->IsRooted()) { // Move rogue back from rooted mob - out of combat range, if necessary
+							}
+
+							if (tar->IsRooted()) { // Move caster/rogue back from rooted mob - out of combat range, if necessary
+								if (GetArchetype() == ARCHETYPE_CASTER || GetClass() == ROGUE) {
 									if (tar_distance <= melee_distance_max) {
 										if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
-											CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed());
+											CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 											return;
 										}
 									}
@@ -2457,34 +2488,26 @@ void Bot::AI_Process() {
 						}
 					}
 					else {
-						if (caster_distance_min && tar_distance < caster_distance_min) { // Caster back-off adjustment
+						if (caster_distance_min && tar_distance < caster_distance_min && !tar->IsFeared()) { // Caster back-off adjustment
 							if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= caster_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed());
+									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
-							}
-							else if (!IsFacingMob(tar)) {
-								FaceTarget(tar);
-								return;
 							}
 						}
 						else if (tar_distance < melee_distance_min) { // Melee back-off adjustment
 							if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed());
+									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
-							}
-							else if (!IsFacingMob(tar)) {
-								FaceTarget(tar);
-								return;
 							}
 						}
 						else if (backstab_weapon && !behind_mob) { // Move the rogue to behind the mob
 							if (PlotPositionAroundTarget(tar, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotRunspeed()); // rogues are agile enough to run in melee range
+									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotRunspeed(), true, false); // rogues are agile enough to run in melee range
 									return;
 								}
 							}
@@ -2495,10 +2518,15 @@ void Bot::AI_Process() {
 								PlotPositionAroundTarget(tar, Goal.x, Goal.y, Goal.z)) // If we're behind the mob, we can attack when it's enraged
 							{
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed());
+									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
 							}
+						}
+
+						if (!IsFacingMob(tar)) {
+							FaceTarget(tar);
+							return;
 						}
 					}
 				}
@@ -2699,8 +2727,28 @@ void Bot::AI_Process() {
 		if (m_PlayerState & static_cast<uint32>(PlayerState::Aggressive))
 			SendRemovePlayerState(PlayerState::Aggressive);
 
+		// Check guard point
+		if (guard_mode) {
+			auto& my_pos = GetPosition();
+			auto& my_guard = GetGuardPoint();
+
+			if (my_pos.x != my_guard.x ||
+				my_pos.y != my_guard.y ||
+				my_pos.z != my_guard.z)
+			{
+				if (IsMoving())
+					StopMoving();
+
+				Warp(glm::vec3(my_guard));
+
+				if (HasPet())
+					GetPet()->Warp(glm::vec3(my_guard));
+
+				return;
+			}
+		}
 		// Leash the bot
-		if (lo_distance > BOT_LEASH_DISTANCE) {
+		else if (lo_distance > BOT_LEASH_DISTANCE) {
 			if (IsMoving())
 				StopMoving();
 
