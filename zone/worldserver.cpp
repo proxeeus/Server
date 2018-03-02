@@ -22,6 +22,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <stdio.h>
 #include <iomanip>
 #include <stdarg.h>
+#include <limits.h>
 
 #ifdef _WINDOWS
 #include <process.h>
@@ -1811,6 +1812,71 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			break;
 		}
 
+		break;
+	}
+	case ServerOP_UCSBroadcastServerReady:
+	{
+		UCSBroadcastServerReady_Struct* bsr = (UCSBroadcastServerReady_Struct*)pack->pBuffer;
+		EQApplicationPacket* outapp = nullptr;
+		std::string buffer;
+
+		for (auto liter : entity_list.GetClientList()) {
+			auto c = liter.second;
+			if (!c)
+				continue;
+
+			int MailKey = zone->random.Int(1, INT_MAX);
+
+			database.SetMailKey(c->CharacterID(), c->GetIP(), MailKey);
+
+			char ConnectionType;
+
+			// chat server packet
+			if (c->ClientVersionBit() & EQEmu::versions::bit_UFAndLater)
+				ConnectionType = 'U';
+			else if (c->ClientVersionBit() & EQEmu::versions::bit_SoFAndLater)
+				ConnectionType = 'S';
+			else
+				ConnectionType = 'C';
+			
+			buffer = bsr->chat_prefix;
+			buffer.append(StringFormat("%s,%c%08X", c->GetName(), ConnectionType, MailKey));
+			
+			outapp = new EQApplicationPacket(OP_SetChatServer, (buffer.length() + 1));
+			memcpy(outapp->pBuffer, buffer.c_str(), buffer.length());
+			outapp->pBuffer[buffer.length()] = '\0';
+
+			c->QueuePacket(outapp);
+			safe_delete(outapp);
+
+			// mail server packet
+			if (c->ClientVersionBit() & EQEmu::versions::bit_TitaniumAndEarlier)
+				ConnectionType = 'M';
+
+			buffer = bsr->mail_prefix;
+			buffer.append(StringFormat("%s,%c%08X", c->GetName(), ConnectionType, MailKey));
+
+			outapp = new EQApplicationPacket(OP_SetChatServer2, (buffer.length() + 1));
+			memcpy(outapp->pBuffer, buffer.c_str(), buffer.length());
+			outapp->pBuffer[buffer.length()] = '\0';
+
+			c->QueuePacket(outapp);
+			safe_delete(outapp);
+		}
+		break;
+	}
+	case ServerOP_UCSClientVersionRequest:
+	{
+		UCSClientVersionRequest_Struct* cvreq = (UCSClientVersionRequest_Struct*)pack->pBuffer;
+		Client* c = entity_list.GetClientByCharID(cvreq->character_id);
+		if (c) {
+			UCSClientVersionReply_Struct cvrep;
+			cvrep.character_id = c->CharacterID();
+			cvrep.client_version = c->ClientVersion();
+			EQ::Net::DynamicPacket dp_cvrep;
+			dp_cvrep.PutData(0, &cvrep, sizeof(cvrep));
+			worldserver.m_connection->Send(ServerOP_UCSClientVersionReply, dp_cvrep);
+		}
 		break;
 	}
 	case ServerOP_CZSetEntityVariableByNPCTypeID:
