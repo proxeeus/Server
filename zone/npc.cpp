@@ -654,9 +654,10 @@ bool NPC::Process()
 		// Playerbot check to avoid ghosting
 		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
 			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+			FixZ();
 			if (!IsMoving() || !IsEngaged()) {
 				SendPosition();
-				FixZ();
+				FixZ();	// needed?
 			}
 		}
 		// End playerbot check
