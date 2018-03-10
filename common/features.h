@@ -206,7 +206,7 @@ enum {	//some random constants
 #define THREATENLY_ARRGO_CHANCE 32 // 32/128 (25%) chance that a mob will arrgo on con Threatenly
 
 //max factions per npc faction list
-#define MAX_NPC_FACTIONS 20
+#define MAX_NPC_FACTIONS 200
 
 //individual faction pool
 #define MAX_PERSONAL_FACTION 2000
