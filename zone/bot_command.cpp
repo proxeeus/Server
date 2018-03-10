@@ -8066,7 +8066,7 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 			}
 		}
 
-		player_bot->Depop();
+		player_bot->Depop(true);
 		bot_subcommand_playerbot_spawn(bot_owner, sep, bot_name);
 		entity_list.GetMobByBotID(bot_id)->CastToBot()->CalcBotStats(true);
 	}
