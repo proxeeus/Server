@@ -152,7 +152,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	in_npc->GetDeity(),in_npc->GetLevel(),in_npc->GetNPCTypeID(),in_npc->GetSize(),0,
 	in_npc->GetPosition(), in_npc->GetInnateLightType(), in_npc->GetTexture(),in_npc->GetHelmTexture(),
 	0,0,0,0,0,0,0,0,0,
-	0,0,0,0,0,0,0,0,0,0,EQEmu::TintProfile(),0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
+	0,0,0,0,0,in_npc->GetLuclinFace(),0,0,0,0,EQEmu::TintProfile(),0xff,0,0,0,0,0,0,0,0,0,0,0,0,0,0),
 	corpse_decay_timer(in_decaytime),
 	corpse_rez_timer(0),
 	corpse_delay_timer(RuleI(NPC, CorpseUnlockTimer)),
@@ -163,6 +163,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 
 	is_corpse_changed = false;
 	is_player_corpse = false;
+	is_player_bot_corpse = false;
 	is_locked = false;
 	being_looted_by = 0xFFFFFFFF;
 	if (in_itemlist) {
@@ -185,7 +186,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 			// Playerbot special decay timer
 			if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
 				|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
-
+				is_player_bot_corpse = true;
 				corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 			}
 			else {
@@ -198,7 +199,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 		// Playerbot special decay timer
 		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
 			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
-
+			is_player_bot_corpse = true;
 			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 		}
 		else {
@@ -211,7 +212,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 		// Playerbot special decay timer
 		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
 			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
-
+			is_player_bot_corpse = true;
 			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 		}
 		else {
@@ -308,6 +309,7 @@ Corpse::Corpse(Client* client, int32 in_rezexp) : Mob (
 	rez_experience			= in_rezexp;
 	can_corpse_be_rezzed			= true;
 	is_player_corpse	= true;
+	is_player_bot_corpse = false;
 	is_locked			= false;
 	being_looted_by	= 0xFFFFFFFF;
 	char_id			= client->CharacterID();
@@ -525,6 +527,7 @@ EQEmu::TintProfile(),
 
 	is_corpse_changed = false;
 	is_player_corpse = true;
+	is_player_bot_corpse = false;
 	is_locked = false;
 	being_looted_by = 0xFFFFFFFF;
 	corpse_db_id = in_dbid;
@@ -905,6 +908,13 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 		return;
 	}
 
+	// Playerbot special no-looting check.
+	if (IsPlayerBotCorpse()) {
+		client->Message(13, "You cannot loot Player Bot corpses!");
+		SendLootReqErrorPacket(client, LootResponse::NotAtThisTime);
+		return;
+	}
+
 	if(IsPlayerCorpse() && corpse_db_id == 0) {
 		// SendLootReqErrorPacket(client, 0);
 		client->Message(13, "Warning: Corpse's dbid = 0! Corpse will not survive zone shutdown!");
@@ -917,7 +927,7 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 		client->Message(13, "Error: Corpse locked by GM.");
 		return;
 	}
-
+	
 	if(being_looted_by == 0)
 		being_looted_by = 0xFFFFFFFF;
 

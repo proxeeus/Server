@@ -63,6 +63,7 @@ class Corpse : public Mob {
 	bool			IsEmpty() const;
 	bool			IsCorpse()			const { return true; }
 	bool			IsPlayerCorpse()	const { return is_player_corpse; }
+	bool			IsPlayerBotCorpse()	const { return is_player_bot_corpse; }
 	bool			IsNPCCorpse()		const { return !is_player_corpse; }
 	bool			IsBecomeNPCCorpse() const { return become_npc; }
 	virtual void	DepopNPCCorpse();
@@ -137,6 +138,7 @@ protected:
 
 private:
 	bool		is_player_corpse; /* Determines if Player Corpse or not */
+	bool		is_player_bot_corpse;	/* Determines if Playerbot corpse or not */
 	bool		is_corpse_changed; /* Determines if corpse has changed or not */
 	bool		is_locked; /* Determines if corpse is locked */
 	int32		player_kill_item; /* Determines if Player Kill Item */
