@@ -2431,10 +2431,14 @@ bool NPC::Death(Mob* killer_mob, int32 damage, uint16 spell, EQEmu::skills::Skil
 		}
 	}
 
-	if (!HasOwner() && !IsMerc() && class_ != MERCHANT && class_ != ADVENTUREMERCHANT && !GetSwarmInfo()
+	if ((!HasOwner() && !IsMerc() && class_ != MERCHANT && class_ != ADVENTUREMERCHANT && !GetSwarmInfo()
 		&& MerchantType == 0 && ((killer && (killer->IsClient() || (killer->HasOwner() && killer->GetUltimateOwner()->IsClient()) ||
 			(killer->IsNPC() && killer->CastToNPC()->GetSwarmInfo() && killer->CastToNPC()->GetSwarmInfo()->GetOwner() && killer->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
-			|| (killer_mob && IsLdonTreasure)))
+			|| (killer_mob && IsLdonTreasure))) 
+		|| // Special check to see if an NPC killed a player bot
+		(killer->IsNPC() && (this->GetNPCTypeID() == 679 || this->GetNPCTypeID() == 680 || this->GetNPCTypeID() == 681 || this->GetNPCTypeID() == 682 || this->GetNPCTypeID() == 683 ||
+			this->GetNPCTypeID() == 684 || this->GetNPCTypeID() == 685 || this->GetNPCTypeID() == 686 || this->GetNPCTypeID() == 687 || this->GetNPCTypeID() == 688 || this->GetNPCTypeID() == 689 ||
+			this->GetNPCTypeID() == 690 || this->GetNPCTypeID() == 691 || this->GetNPCTypeID() == 692)))
 	{
 		if (killer != 0) {
 			if (killer->GetOwner() != 0 && killer->GetOwner()->IsClient())

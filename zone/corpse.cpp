@@ -169,7 +169,6 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 		itemlist = *in_itemlist;
 		in_itemlist->clear();
 	}
-
 	SetCash(in_npc->GetCopper(), in_npc->GetSilver(), in_npc->GetGold(), in_npc->GetPlatinum());
 
 	npctype_id = in_npctypeid;
@@ -181,19 +180,46 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	strcpy(name, in_npc->GetName());
 
 	for(int count = 0; count < 100; count++) {
+
 		if ((level >= npcCorpseDecayTimes[count].minlvl) && (level <= npcCorpseDecayTimes[count].maxlvl)) {
-			corpse_decay_timer.SetTimer(npcCorpseDecayTimes[count].seconds*1000);
+			// Playerbot special decay timer
+			if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+				|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+
+				corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+			}
+			else {
+				corpse_decay_timer.SetTimer(npcCorpseDecayTimes[count].seconds * 1000);
+			}
 			break;
 		}
 	}
 	if(IsEmpty()) {
-		corpse_decay_timer.SetTimer(RuleI(NPC,EmptyNPCCorpseDecayTimeMS)+1000);
+		// Playerbot special decay timer
+		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+
+			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+		}
+		else {
+			corpse_decay_timer.SetTimer(RuleI(NPC, EmptyNPCCorpseDecayTimeMS) + 1000);
+		}
 	}
 
 
 	if(in_npc->HasPrivateCorpse()) {
-		corpse_delay_timer.SetTimer(corpse_decay_timer.GetRemainingTime() + 1000);
+		// Playerbot special decay timer
+		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
+			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+
+			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+		}
+		else {
+			corpse_delay_timer.SetTimer(corpse_decay_timer.GetRemainingTime() + 1000);
+		}
 	}
+
+
 
 	for (int i = 0; i < MAX_LOOTERS; i++){
 		allowed_looters[i] = 0;
