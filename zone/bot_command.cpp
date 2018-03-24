@@ -7945,13 +7945,7 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 	}
 
 	// Put all Player Bot IDs checks here, will probably need to end in #defines somewhere
-	if (bot_owner->GetTarget()->GetNPCTypeID() != 679 && bot_owner->GetTarget()->GetNPCTypeID() != 680 &&
-		bot_owner->GetTarget()->GetNPCTypeID() != 681 && bot_owner->GetTarget()->GetNPCTypeID() != 682 &&
-		bot_owner->GetTarget()->GetNPCTypeID() != 683 && bot_owner->GetTarget()->GetNPCTypeID() != 684 && 
-		bot_owner->GetTarget()->GetNPCTypeID() != 685 && bot_owner->GetTarget()->GetNPCTypeID() != 686 &&
-		bot_owner->GetTarget()->GetNPCTypeID() != 687 && bot_owner->GetTarget()->GetNPCTypeID() != 688 &&
-		bot_owner->GetTarget()->GetNPCTypeID() != 689 && bot_owner->GetTarget()->GetNPCTypeID() != 690 &&
-		bot_owner->GetTarget()->GetNPCTypeID() != 691 && bot_owner->GetTarget()->GetNPCTypeID() != 692  )
+	if (bot_owner->GetTarget()->GetNPCTypeID() != 679 )
 	{
 		bot_owner->Message(m_message, "Target needs to be a Player Bot.");
 		return;

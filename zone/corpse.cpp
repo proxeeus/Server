@@ -184,8 +184,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 
 		if ((level >= npcCorpseDecayTimes[count].minlvl) && (level <= npcCorpseDecayTimes[count].maxlvl)) {
 			// Playerbot special decay timer
-			if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-				|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+			if (npctype_id == 679 ) {
 				is_player_bot_corpse = true;
 				corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 			}
@@ -197,8 +196,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	}
 	if(IsEmpty()) {
 		// Playerbot special decay timer
-		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+		if (npctype_id == 679 ) {
 			is_player_bot_corpse = true;
 			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 		}
@@ -210,8 +208,7 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 
 	if(in_npc->HasPrivateCorpse()) {
 		// Playerbot special decay timer
-		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+		if (npctype_id == 679) {
 			is_player_bot_corpse = true;
 			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
 		}

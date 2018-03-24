@@ -1129,8 +1129,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			// if we got here, we regained concentration
 			regain_conc = true;
 			Message_StringID(MT_Spells,REGAIN_AND_CONTINUE);
-			if (this->npctype_id == 679 || this->npctype_id == 680 || this->npctype_id == 681 || this->npctype_id == 682 || this->npctype_id == 683 || this->npctype_id == 684 || this->npctype_id == 685 || this->npctype_id == 686 || this->npctype_id == 687
-				|| this->npctype_id == 688 || this->npctype_id == 689 || this->npctype_id == 690 || this->npctype_id == 691 || this->npctype_id == 692) {
+			if (this->npctype_id == 679 ) {
 				entity_list.MessageClose_StringID(this, true, RuleI(Range, SpellMessages), MT_Spells, OTHER_REGAIN_CAST, this->playerbot_temp_name);
 			}
 			else

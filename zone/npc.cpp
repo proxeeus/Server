@@ -650,8 +650,7 @@ bool NPC::Process()
 	if (tic_timer.Check()) {
 
 		// Playerbot check to avoid ghosting
-		if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-			|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+		if (npctype_id == 679 ) {
 			FixZ();
 			if (!IsMoving() || !IsEngaged()) {
 				SendPosition();
@@ -1964,8 +1963,7 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		ns->spawn.is_npc = 0;
 	else
 		ns->spawn.is_npc = 1;
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679 ) {
 		ns->spawn.is_npc = 0;
 		ns->spawn.NPC = 0;
 		ns->spawn.guildID = 0xFFFFFFFF;

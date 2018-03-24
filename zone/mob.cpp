@@ -161,8 +161,7 @@ Mob::Mob(const char* in_name,
 	base_size = size;
 	runspeed = in_runspeed;
 	// Playebots must be set to client runspeed
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679 ) {
 		runspeed = 0.7f;
 	}
 	// neotokyo: sanity check
@@ -3140,8 +3139,7 @@ void Mob::Say(const char *format, ...)
 		talker = this;
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679) {
 		entity_list.MessageClose_StringID(talker, false, 200, 10,
 			GENERIC_SAY, playerbot_temp_name, buf);
 	}
@@ -3162,8 +3160,7 @@ void Mob::Say_StringID(uint32 string_id, const char *message3, const char *messa
 	snprintf(string_id_str, 10, "%d", string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679) {
 		entity_list.MessageClose_StringID(this, false, 200, 10,
 			GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str, message3, message4, message5,
 			message6, message7, message8, message9
@@ -3185,8 +3182,7 @@ void Mob::Say_StringID(uint32 type, uint32 string_id, const char *message3, cons
 	snprintf(string_id_str, 10, "%d", string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679 ) {
 		entity_list.MessageClose_StringID(this, false, 200, type,
 			GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str, message3, message4, message5,
 			message6, message7, message8, message9
@@ -3209,8 +3205,7 @@ void Mob::SayTo_StringID(Client *to, uint32 string_id, const char *message3, con
 	auto string_id_str = std::to_string(string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679 ) {
 		to->Message_StringID(10, GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
 	}
 	else
@@ -3227,8 +3222,7 @@ void Mob::SayTo_StringID(Client *to, uint32 type, uint32 string_id, const char *
 	auto string_id_str = std::to_string(string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679) {
 		to->Message_StringID(type, GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
 	}
 	else
@@ -3246,8 +3240,7 @@ void Mob::Shout(const char *format, ...)
 	vsnprintf(buf, 1000, format, ap);
 	va_end(ap);
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692) {
+	if (npctype_id == 679) {
 		entity_list.Message_StringID(this, false, MT_Shout,
 			GENERIC_SHOUT, playerbot_temp_name, buf);
 	}

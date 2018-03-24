@@ -289,8 +289,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	} else if (record.petnaming == 3 && IsClient()) {
 		GetRandPetName(npc_type->name);
 	}
-	else if (record.petnaming == 3 && ((npctype_id == 679 || npctype_id == 680 || npctype_id == 681 || npctype_id == 682 || npctype_id == 683 || npctype_id == 684 || npctype_id == 685 || npctype_id == 686 || npctype_id == 687
-		|| npctype_id == 688 || npctype_id == 689 || npctype_id == 690 || npctype_id == 691 || npctype_id == 692))) {
+	else if (record.petnaming == 3 && ((npctype_id == 679 ))) {
 		GetRandPetName(npc_type->name);
 	}
 	else if (record.petnaming == 5 && IsClient()) {

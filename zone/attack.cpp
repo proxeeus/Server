@@ -2436,9 +2436,7 @@ bool NPC::Death(Mob* killer_mob, int32 damage, uint16 spell, EQEmu::skills::Skil
 			(killer->IsNPC() && killer->CastToNPC()->GetSwarmInfo() && killer->CastToNPC()->GetSwarmInfo()->GetOwner() && killer->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
 			|| (killer_mob && IsLdonTreasure))) 
 		|| // Special check to see if an NPC killed a player bot
-		(killer !=0 && killer->IsNPC() && (this->GetNPCTypeID() == 679 || this->GetNPCTypeID() == 680 || this->GetNPCTypeID() == 681 || this->GetNPCTypeID() == 682 || this->GetNPCTypeID() == 683 ||
-			this->GetNPCTypeID() == 684 || this->GetNPCTypeID() == 685 || this->GetNPCTypeID() == 686 || this->GetNPCTypeID() == 687 || this->GetNPCTypeID() == 688 || this->GetNPCTypeID() == 689 ||
-			this->GetNPCTypeID() == 690 || this->GetNPCTypeID() == 691 || this->GetNPCTypeID() == 692)))
+		(killer !=0 && killer->IsNPC() && (this->GetNPCTypeID() == 679)))
 	{
 		if (killer != 0) {
 			if (killer->GetOwner() != 0 && killer->GetOwner()->IsClient())
@@ -3420,8 +3418,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
-				if (attacker->npctype_id == 679 || attacker->npctype_id == 680 || attacker->npctype_id == 681 || attacker->npctype_id == 682 || attacker->npctype_id == 683 || attacker->npctype_id == 684 || attacker->npctype_id == 685 || attacker->npctype_id == 686 || attacker->npctype_id == 687
-					|| attacker->npctype_id == 688 || attacker->npctype_id == 689 || attacker->npctype_id == 690 || attacker->npctype_id == 691 || attacker->npctype_id == 692) {
+				if (attacker->npctype_id == 679) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
 				}
 				else
@@ -3431,8 +3428,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 					attacker->Message(MT_Say, "You say 'Ahhh, I feel much better now...'");
 					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
 				}
-				else if (attacker->npctype_id == 679 || attacker->npctype_id == 680 || attacker->npctype_id == 681 || attacker->npctype_id == 682 || attacker->npctype_id == 683 || attacker->npctype_id == 684 || attacker->npctype_id == 685 || attacker->npctype_id == 686 || attacker->npctype_id == 687
-					|| attacker->npctype_id == 688 || attacker->npctype_id == 689 || attacker->npctype_id == 690 || attacker->npctype_id == 691 || attacker->npctype_id == 692) {
+				else if (attacker->npctype_id == 679 ) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->playerbot_temp_name);
 				}
 				else
