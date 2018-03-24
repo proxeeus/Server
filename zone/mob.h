@@ -468,6 +468,7 @@ public:
 	const char *GetCleanPlayerBotName();
 	virtual void SetName(const char *new_name = nullptr) {
 		new_name ? strn0cpy(name, new_name, 64) : strn0cpy(name, GetName(), 64); return; };
+	virtual void SetClass(uint8 in) { class_ = in; }
 	inline Mob* GetTarget() const { return target; }
 	virtual void SetTarget(Mob* mob);
 	inline bool HasTargetReflection() const { return (target && target != this && target->target == this); }

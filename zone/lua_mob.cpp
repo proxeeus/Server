@@ -2176,6 +2176,12 @@ void Lua_Mob::CheckNumHitsRemaining(int type, int32 buff_slot, uint16 spell_id)
 	self->CheckNumHitsRemaining((NumHit)type, buff_slot, spell_id);
 }
 
+void Lua_Mob::SetClass(int classId)
+{
+	Lua_Safe_Call_Void();
+	self->SetClass(classId);
+}
+
 luabind::scope lua_register_mob() {
 	return luabind::class_<Lua_Mob, Lua_Entity>("Mob")
 		.def(luabind::constructor<>())
@@ -2557,7 +2563,8 @@ luabind::scope lua_register_mob() {
 		.def("GetOrigBodyType", &Lua_Mob::GetOrigBodyType)
 		.def("CheckNumHitsRemaining", &Lua_Mob::CheckNumHitsRemaining)
 		.def("SendPlayerBotIllusion", &Lua_Mob::SendPlayerBotIllusion)
-		.def("SetSpellsID", &Lua_Mob::SetSpellsID);
+		.def("SetSpellsID", &Lua_Mob::SetSpellsID)
+		.def("SetClass", &Lua_Mob::SetClass);
 }
 
 luabind::scope lua_register_special_abilities() {
