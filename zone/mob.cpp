@@ -1610,8 +1610,8 @@ void Mob::ShowStats(Client* client)
 }
 
 void Mob::DoAnim(const int animnum, int type, bool ackreq, eqFilterType filter) {
-	if (!attack_anim_timer.Check())
-		return;
+	//if (!attack_anim_timer.Check())
+	//	return;
 
 	auto outapp = new EQApplicationPacket(OP_Animation, sizeof(Animation_Struct));
 	Animation_Struct* anim = (Animation_Struct*)outapp->pBuffer;
