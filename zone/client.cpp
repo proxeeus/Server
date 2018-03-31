@@ -1985,6 +1985,19 @@ void Client::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	UpdateEquipmentLight();
 	UpdateActiveLight();
 	ns->spawn.light = m_Light.Type[EQEmu::lightsource::LightActive];
+	ns->spawn.equipment.Slot[EQEmu::textures::weaponPrimary].Material = GetEquipmentMaterial(EQEmu::textures::weaponPrimary);
+	ns->spawn.equipment.Slot[EQEmu::textures::weaponSecondary].Material = GetEquipmentMaterial(EQEmu::textures::weaponSecondary);
+}
+
+bool Client::MonkEpicEquipped() const
+{
+	if (GetClass() == MONK)
+	{
+		auto inst = GetInv().GetItem(11); // 11: hands, 12 Primary
+		if (inst && inst->GetItem()->ID == 10652)
+			return true;
+	}
+	return false;
 }
 
 bool Client::GMHideMe(Client* client) {

@@ -3026,7 +3026,10 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 			equipmaterial = item->Material;
 		}
 	}
-
+	else if ((material_slot == EQEmu::textures::weaponPrimary || material_slot == EQEmu::textures::weaponSecondary) && IsClient() && CastToClient()->MonkEpicEquipped())
+	{
+		return 159; //monk epic model
+	}
 	return equipmaterial;
 }
 

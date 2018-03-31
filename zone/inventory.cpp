@@ -1866,6 +1866,13 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		SendWearChange(matslot);
 	}
 
+	if ((dst_slot_id == EQEmu::inventory::slotHands || src_slot_id == EQEmu::inventory::slotHands)
+		&& (dstitemid == 10652 || srcitemid == 10652))
+	{
+		SendWearChange(EQEmu::textures::weaponPrimary);
+		SendWearChange(EQEmu::textures::weaponSecondary);
+	}
+
 	// Step 7: Save change to the database
 	if (src_slot_id == EQEmu::inventory::slotCursor) {
 		// If not swapping another item to cursor and stacking items were depleted

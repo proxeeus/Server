@@ -1283,7 +1283,7 @@ public:
 
 	void TripInterrogateInvState() { interrogateinv_flag = true; }
 	bool GetInterrogateInvState() { return interrogateinv_flag; }
-
+	bool Client::MonkEpicEquipped() const;
 	bool InterrogateInventory(Client* requester, bool log, bool silent, bool allowtrip, bool& error, bool autolog = true);
 
 	void SetNextInvSnapshot(uint32 interval_in_min) {
