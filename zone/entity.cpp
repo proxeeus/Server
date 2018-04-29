@@ -647,7 +647,10 @@ void EntityList::AddNPC(NPC *npc, bool SendSpawnPacket, bool dontqueue)
 
 	parse->EventNPC(EVENT_SPAWN, npc, nullptr, "", 0);
 
-	npc->FixZ(1);
+	// Sanity check: FixZ must not be called by boat NPCs otherwise they'll appear below sea level in some circumstances.
+	// Sabrina, Sea King, Villa Del Ojo, Maiden Voyage, Barrel Barge, Icebreaker, Bloated Belly etc
+	if(npc->GetRace() != 72 && npc->GetRace() != 73)
+		npc->FixZ(1);
 
 	uint16 emoteid = npc->GetEmoteID();
 	if (emoteid != 0)
