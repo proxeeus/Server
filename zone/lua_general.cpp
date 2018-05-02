@@ -345,6 +345,19 @@ void lua_stop_all_timers(Lua_Encounter enc) {
 	quest_manager.stopalltimers(enc);
 }
 
+void lua_pause_timer(const char *timer) {
+	quest_manager.pausetimer(timer);
+
+}
+
+void lua_resume_timer(const char *timer) {
+	quest_manager.resumetimer(timer);
+}
+
+bool lua_is_paused_timer(const char *timer) {
+	return quest_manager.ispausedtimer(timer);
+}
+
 void lua_depop() {
 	quest_manager.depop(0);
 }
@@ -495,6 +508,10 @@ void lua_set_proximity(float min_x, float max_x, float min_y, float max_y) {
 
 void lua_set_proximity(float min_x, float max_x, float min_y, float max_y, float min_z, float max_z) {
 	quest_manager.set_proximity(min_x, max_x, min_y, max_y, min_z, max_z);
+}
+
+void lua_set_proximity(float min_x, float max_x, float min_y, float max_y, float min_z, float max_z, bool say) {
+	quest_manager.set_proximity(min_x, max_x, min_y, max_y, min_z, max_z, say);
 }
 
 void lua_clear_proximity() {
@@ -1562,6 +1579,9 @@ luabind::scope lua_register_general() {
 		luabind::def("stop_timer", (void(*)(const char*, Lua_ItemInst))&lua_stop_timer),
 		luabind::def("stop_timer", (void(*)(const char*, Lua_Mob))&lua_stop_timer),
 		luabind::def("stop_timer", (void(*)(const char*, Lua_Encounter))&lua_stop_timer),
+		luabind::def("pause_timer", (void(*)(const char*))&lua_pause_timer),
+		luabind::def("resume_timer", (void(*)(const char*))&lua_resume_timer),
+		luabind::def("is_paused_timer", (bool(*)(const char*))&lua_is_paused_timer),
 		luabind::def("stop_all_timers", (void(*)(void))&lua_stop_all_timers),
 		luabind::def("stop_all_timers", (void(*)(Lua_ItemInst))&lua_stop_all_timers),
 		luabind::def("stop_all_timers", (void(*)(Lua_Mob))&lua_stop_all_timers),
@@ -1604,6 +1624,7 @@ luabind::scope lua_register_general() {
 		luabind::def("respawn", &lua_respawn),
 		luabind::def("set_proximity", (void(*)(float,float,float,float))&lua_set_proximity),
 		luabind::def("set_proximity", (void(*)(float,float,float,float,float,float))&lua_set_proximity),
+		luabind::def("set_proximity", (void(*)(float,float,float,float,float,float,bool))&lua_set_proximity),
 		luabind::def("clear_proximity", &lua_clear_proximity),
 		luabind::def("enable_proximity_say", &lua_enable_proximity_say),
 		luabind::def("disable_proximity_say", &lua_disable_proximity_say),

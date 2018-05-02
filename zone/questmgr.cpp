@@ -555,6 +555,107 @@ void QuestManager::stopalltimers(Mob *mob) {
 	}
 }
 
+void QuestManager::pausetimer(const char *timer_name) {
+	QuestManagerCurrentQuestVars();
+
+	std::list<QuestTimer>::iterator cur = QTimerList.begin(), end;
+	std::list<PausedTimer>::iterator pcur = PTimerList.begin(), pend;
+	PausedTimer pt;
+	uint32 milliseconds = 0;
+
+	pend = PTimerList.end();
+	while (pcur != pend)
+	{
+		if (pcur->owner && pcur->owner == owner && pcur->name == timer_name)
+		{
+			Log(Logs::General, Logs::Quests, "Timer %s is already paused for %s. Returning...", timer_name, owner->GetName());
+			return;
+		}
+		++pcur;
+	}
+
+	end = QTimerList.end();
+	while (cur != end)
+	{
+		if (cur->mob && cur->mob == owner && cur->name == timer_name)
+		{
+			milliseconds = cur->Timer_.GetRemainingTime();
+			QTimerList.erase(cur);
+			break;
+		}
+		++cur;
+	}
+
+	std::string timername = timer_name;
+	pt.name = timername;
+	pt.owner = owner;
+	pt.time = milliseconds;
+	Log(Logs::General, Logs::Quests, "Pausing timer %s for %s with %d ms remaining.", timer_name, owner->GetName(), milliseconds);
+	PTimerList.push_back(pt);
+}
+
+void QuestManager::resumetimer(const char *timer_name) {
+	QuestManagerCurrentQuestVars();
+
+	std::list<QuestTimer>::iterator cur = QTimerList.begin(), end;
+	std::list<PausedTimer>::iterator pcur = PTimerList.begin(), pend;
+	PausedTimer pt;
+	uint32 milliseconds = 0;
+
+	pend = PTimerList.end();
+	while (pcur != pend)
+	{
+		if (pcur->owner && pcur->owner == owner && pcur->name == timer_name)
+		{
+			milliseconds = pcur->time;
+			PTimerList.erase(pcur);
+			break;
+		}
+		++pcur;
+	}
+
+	if (milliseconds == 0)
+	{
+		Log(Logs::General, Logs::Quests, "Paused timer %s not found or has expired. Returning...", timer_name);
+		return;
+	}
+
+	end = QTimerList.end();
+	while (cur != end)
+	{
+		if (cur->mob && cur->mob == owner && cur->name == timer_name)
+		{
+			cur->Timer_.Enable();
+			cur->Timer_.Start(milliseconds, false);
+			Log(Logs::General, Logs::Quests, "Resuming timer %s for %s with %d ms remaining.", timer_name, owner->GetName(), milliseconds);
+			return;
+		}
+		++cur;
+	}
+
+	QTimerList.push_back(QuestTimer(milliseconds, owner, timer_name));
+	Log(Logs::General, Logs::Quests, "Creating a new timer and resuming %s for %s with %d ms remaining.", timer_name, owner->GetName(), milliseconds);
+
+}
+
+bool QuestManager::ispausedtimer(const char *timer_name) {
+	QuestManagerCurrentQuestVars();
+	
+	std::list<PausedTimer>::iterator pcur = PTimerList.begin(), pend;
+	
+	pend = PTimerList.end();
+	while (pcur != pend)
+	{
+		if (pcur->owner && pcur->owner == owner && pcur->name == timer_name)
+		{
+			return true;
+		}
+		++pcur;
+	}
+
+	return false;
+}
+
 void QuestManager::emote(const char *str) {
 	QuestManagerCurrentQuestVars();
 	if (!owner) {
@@ -1670,7 +1771,7 @@ void QuestManager::respawn(int npcTypeID, int grid) {
 	}
 }
 
-void QuestManager::set_proximity(float minx, float maxx, float miny, float maxy, float minz, float maxz) {
+void QuestManager::set_proximity(float minx, float maxx, float miny, float maxy, float minz, float maxz, bool bSay) {
 	QuestManagerCurrentQuestVars();
 	if (!owner || !owner->IsNPC())
 		return;
@@ -1683,6 +1784,7 @@ void QuestManager::set_proximity(float minx, float maxx, float miny, float maxy,
 	owner->CastToNPC()->proximity->max_y = maxy;
 	owner->CastToNPC()->proximity->min_z = minz;
 	owner->CastToNPC()->proximity->max_z = maxz;
+	owner->CastToNPC()->proximity->say = bSay;
 }
 
 void QuestManager::clear_proximity() {
