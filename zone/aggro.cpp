@@ -1052,6 +1052,20 @@ int32 Mob::CheckAggroAmount(uint16 spell_id, Mob *target, bool isproc)
 
 	for (int o = 0; o < EFFECT_COUNT; o++) {
 		switch (spells[spell_id].effectid[o]) {
+			case SE_PoisonCounter: {
+				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base[o], spells[spell_id].max[o], slevel, spell_id);
+				if (isproc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
+					val = RuleI(Aggro, MaxScalingProcAggro);
+				AggroAmount += val;
+				break;
+			}
+			case SE_DiseaseCounter: {
+				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base[o], spells[spell_id].max[o], slevel, spell_id)*2;	// double the hate for Disease spells?
+				if (isproc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
+					val = RuleI(Aggro, MaxScalingProcAggro);
+				AggroAmount += val;
+				break;
+			}
 			case SE_CurrentHPOnce:
 			case SE_CurrentHP: {
 				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base[o], spells[spell_id].max[o], slevel, spell_id);
