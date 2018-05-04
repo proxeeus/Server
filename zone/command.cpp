@@ -5719,7 +5719,7 @@ void command_wpinfo(Client *c, const Seperator *sep)
 
 void command_wpadd(Client *c, const Seperator *sep)
 {
-	int	type1=0,
+	int	type1=3,	// Default is now patrol
 		type2=0,
 		pause=0;	// Defaults for a new grid
 
