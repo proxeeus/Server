@@ -3217,6 +3217,8 @@ void bot_command_inventory(Client *c, const Seperator *sep)
 
 void bot_command_invisibility(Client *c, const Seperator *sep)
 {
+
+	// Hardcoding all Invis spells
 	bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Invisibility];
 	if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Invisibility) || helper_command_alias_fail(c, "bot_command_invisibility", sep->arg[0], "invisibility"))
 		return;
@@ -3247,26 +3249,70 @@ void bot_command_invisibility(Client *c, const Seperator *sep)
 	Bot* my_bot = nullptr;
 	std::list<Bot*> sbl;
 	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
-
+	
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
 	bool cast_success = false;
-	for (auto list_iter : *local_list) {
-		auto local_entry = list_iter->SafeCastToInvisibility();
-		if (helper_spell_check_fail(local_entry))
-			continue;
-		if (local_entry->invis_type != invisibility_type)
-			continue;
-
-		auto target_mob = actionable_targets.Select(c, local_entry->target_type, FRIENDLY);
-		if (!target_mob)
-			continue;
-
-		my_bot = ActionableBots::Select_ByMinLevelAndClass(c, local_entry->target_type, sbl, local_entry->spell_level, local_entry->caster_class, target_mob);
-		if (!my_bot)
-			continue;
-
-		cast_success = helper_cast_standard_spell(my_bot, target_mob, local_entry->spell_id);
-		break;
+	if (invisibility_type == BCEnum::IT_Living) {
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 4, ENCHANTER);
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 8, MAGICIAN);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 16, WIZARD);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 29, SHAMAN);
+		}
+		if (!my_bot) {
+			c->Message(m_fail, "No currently spawned bots are able to cast an invisibility spell.");
+			return;
+		}
+		cast_success = helper_cast_standard_spell(my_bot, target_mob, 42);
 	}
+	else if (invisibility_type == BCEnum::IT_Undead) {
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 1, NECROMANCER);
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 9, SHADOWKNIGHT);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, CLERIC);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 16, ENCHANTER);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 22, PALADIN);
+		}
+		if (!my_bot) {
+			c->Message(m_fail, "No currently spawned bots are able to cast an invisibility versus undead spell.");
+			return;
+		}
+		cast_success = helper_cast_standard_spell(my_bot, target_mob, 235);
+	}
+	else if (invisibility_type == BCEnum::IT_See) {
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 4, WIZARD);
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 8, ENCHANTER);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, DRUID);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 16, MAGICIAN);
+		}
+		if (!my_bot) {
+			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 39, RANGER);
+		}
+		if (!my_bot) {
+			c->Message(m_fail, "No currently spawned bots are able to cast a see invisible spell.");
+			return;
+		}
+		cast_success = helper_cast_standard_spell(my_bot, target_mob, 80);
+	}
+
+
 	
 	helper_no_available_bots(c, my_bot);
 }
