@@ -1060,7 +1060,7 @@ int32 Mob::CheckAggroAmount(uint16 spell_id, Mob *target, bool isproc)
 				break;
 			}
 			case SE_DiseaseCounter: {
-				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base[o], spells[spell_id].max[o], slevel, spell_id)*6;	// double the hate for Disease spells?
+				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base[o], spells[spell_id].max[o], slevel, spell_id)*10;	// double the hate for Disease spells?
 				if (isproc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
 					val = RuleI(Aggro, MaxScalingProcAggro);
 				AggroAmount += val;
