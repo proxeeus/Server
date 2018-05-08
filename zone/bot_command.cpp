@@ -8042,6 +8042,12 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 
 void bot_command_invite(Client *bot_owner, const Seperator* sep)
 {
+	// Inviting a Player Bot while in combat crashes the zone soooo...
+	if (bot_owner->GetAggroCount() > 0)
+	{
+		bot_owner->Message(m_message, "You cannot invite a Player Bot while engaged in combat.");
+		return;
+	}
 	if (!bot_owner->GetTarget())
 	{
 		bot_owner->Message(m_message, "You need a valid target to invite.");
