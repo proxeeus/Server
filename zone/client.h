@@ -322,8 +322,8 @@ public:
 	void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
 	bool ShouldISpawnFor(Client *c) { return !GMHideMe(c) && !IsHoveringForRespawn(); }
 	virtual bool Process();
+	void ProcessPackets();
 	void LogMerchant(Client* player, Mob* merchant, uint32 quantity, uint32 price, const EQEmu::ItemData* item, bool buying);
-	void SendPacketQueue(bool Block = true);
 	void QueuePacket(const EQApplicationPacket* app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL, eqFilterType filter=FilterNone);
 	void FastQueuePacket(EQApplicationPacket** app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL);
 	void ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_skill, const char* orig_message, const char* targetname=nullptr);
@@ -816,7 +816,7 @@ public:
 	void ChangeTributeSettings(TributeInfo_Struct *t);
 	void SendTributeTimer();
 	void ToggleTribute(bool enabled);
-	void SendPathPacket(std::vector<FindPerson_Point> &path);
+	void SendPathPacket(const std::vector<FindPerson_Point> &path);
 
 	inline PTimerList &GetPTimers() { return(p_timers); }
 
