@@ -2509,7 +2509,7 @@ void Bot::AI_Process() {
 								if (GetArchetype() == ARCHETYPE_CASTER || GetClass() == ROGUE) {
 									if (tar_distance <= melee_distance_max) {
 										if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
-											CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
+											CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 											return;
 										}
 									}
@@ -2521,7 +2521,7 @@ void Bot::AI_Process() {
 						if (caster_distance_min && tar_distance < caster_distance_min && !tar->IsFeared()) { // Caster back-off adjustment
 							if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= caster_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
+									CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
 							}
@@ -2529,7 +2529,7 @@ void Bot::AI_Process() {
 						else if (tar_distance < melee_distance_min) { // Melee back-off adjustment
 							if (PlotPositionAroundTarget(this, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
+									CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
 							}
@@ -2537,7 +2537,7 @@ void Bot::AI_Process() {
 						else if (backstab_weapon && !behind_mob) { // Move the rogue to behind the mob
 							if (PlotPositionAroundTarget(tar, Goal.x, Goal.y, Goal.z)) {
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotRunspeed(), true, false); // rogues are agile enough to run in melee range
+									CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotRunspeed(), true, false); // rogues are agile enough to run in melee range
 									return;
 								}
 							}
@@ -2548,7 +2548,7 @@ void Bot::AI_Process() {
 								PlotPositionAroundTarget(tar, Goal.x, Goal.y, Goal.z)) // If we're behind the mob, we can attack when it's enraged
 							{
 								if (DistanceSquared(Goal, tar->GetPosition()) <= melee_distance_max) {
-									CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
+									CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotWalkspeed(), true, false);
 									return;
 								}
 							}
@@ -2700,7 +2700,7 @@ void Bot::AI_Process() {
 							tar_ndx = 20;
 					}
 					
-					CalculateNewPosition2(Goal.x, Goal.y, Goal.z, GetBotRunspeed());
+					CalculateNewPosition(Goal.x, Goal.y, Goal.z, GetBotRunspeed());
 					return;
 				}
 				else {
@@ -2828,7 +2828,7 @@ void Bot::AI_Process() {
 							tar_ndx = 20;
 					}
 
-					CalculateNewPosition2(Goal.x, Goal.y, Goal.z, speed);
+					CalculateNewPosition(Goal.x, Goal.y, Goal.z, speed);
 					return;
 				}
 			}

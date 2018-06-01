@@ -547,6 +547,7 @@ int main(int argc, char** argv) {
 			if (previous_loaded && !current_loaded) {
 				process_timer.Stop();
 				process_timer.Start(1000, true);
+			}
 			else if (!previous_loaded && current_loaded) {
 				process_timer.Stop();
 				process_timer.Start(32, true);
