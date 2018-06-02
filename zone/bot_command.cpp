@@ -8074,21 +8074,24 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 		return;
 	}
 
-	//if (!sep->arg[0])
-	//{
-	//	bot_owner->Message(m_message, "You need to provide a name for your player bot.");
-	//	return;
-	//}
 	auto player_bot = bot_owner->GetTarget()->CastToNPC();
 
-	//if (!sep->arg[1])
-	//	bot_id = helper_bot_create(bot_owner, player_bot->GetName(), player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
-	//else
-	//	bot_id = helper_bot_create(bot_owner, sep->arg[1], player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
-	char clean_name[64];
-	clean_name[0] = 0;
-	auto cleaned_name = CleanMobName(player_bot->GetName(), clean_name);
-	std::string bot_name(cleaned_name);
+	std::string bot_name = sep->arg[1];
+	// If a name is provided, use this one. If not, use the lua-assigned name.
+	if (!bot_name.empty())
+	{
+		player_bot->Say("On est dans le if la.");
+		player_bot->Say(sep->arg[1]);
+		bot_name = std::string(sep->arg[1]);
+	}
+	else
+	{
+		player_bot->Say("On est dans le ELSE la.");
+		char clean_name[64];
+		clean_name[0] = 0;
+		auto cleaned_name = CleanMobName(player_bot->GetName(), clean_name);
+		bot_name = std::string(cleaned_name);
+	}
 
 	uint32 bot_id = helper_bot_create(bot_owner, bot_name, player_bot->GetClass(), player_bot->GetRace(), player_bot->CastToNPC()->GetGender());
 
