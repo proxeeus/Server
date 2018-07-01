@@ -645,6 +645,7 @@ public:
 	bool DyeArmor(int16 slot_id, uint32 rgb, bool all_flag = false, bool save_flag = true);
 
 	std::string CreateSayLink(Client* botOwner, const char* message, const char* name);
+	void Bot::SetFeigned(bool in_feigned, Bot* b);
 
 	// Class Destructors
 	virtual ~Bot();
@@ -732,6 +733,8 @@ private:
 	int32	max_end;
 	int32	end_regen;
 	uint32 timers[MaxTimer];
+	bool feigned;
+	Timer forget_timer; // our 2 min everybody forgets you timer
 	
 	Timer evade_timer; // can be moved to pTimers at some point
 

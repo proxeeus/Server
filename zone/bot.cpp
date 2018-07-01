@@ -28,7 +28,6 @@
 #include "../common/eqemu_logsys.h"
 
 extern volatile bool is_zone_loaded;
-
 // This constructor is used during the bot create command
 Bot::Bot(NPCType npcTypeData, Client* botOwner) : NPC(&npcTypeData, nullptr, glm::vec4(), 0, false), rest_timer(1) {
 	if(botOwner) {
@@ -83,7 +82,7 @@ Bot::Bot(NPCType npcTypeData, Client* botOwner) : NPC(&npcTypeData, nullptr, glm
 		SetStopMeleeLevel((uint8)RuleI(Bots, CasterStopMeleeLevel));
 	else
 		SetStopMeleeLevel(255);
-
+	feigned = false;
 	// Do this once and only in this constructor
 	GenerateAppearance();
 	GenerateBaseStats();
@@ -145,7 +144,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	SetBotCharmer(false);
 	SetPetChooser(false);
 	SetRangerAutoWeaponSelect(false);
-
+	feigned = false;
 	bool stance_flag = false;
 	if (!botdb.LoadStance(this, stance_flag) && bot_owner)
 		bot_owner->Message(13, "%s for '%s'", BotDatabase::fail::LoadStance(), GetCleanName());
@@ -185,6 +184,9 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 
 	if (GetClass() == ROGUE)
 		evade_timer.Start();
+
+	if (GetClass() == MONK || GetClass() == NECROMANCER || GetClass() == SHADOWKNIGHT)
+		forget_timer.Start();
 
 	m_CastingRoles.GroupHealer = false;
 	m_CastingRoles.GroupSlower = false;
@@ -1902,64 +1904,120 @@ void Bot::BotRangedAttack(Mob* other) {
 	if((attack_timer.Enabled() && !attack_timer.Check(false)) || (ranged_timer.Enabled() && !ranged_timer.Check())) {
 		Log(Logs::Detail, Logs::Combat, "Bot Archery attack canceled. Timer not up. Attack %d, ranged %d", attack_timer.GetRemainingTime(), ranged_timer.GetRemainingTime());
 		Message(0, "Error: Timer not up. Attack %d, ranged %d", attack_timer.GetRemainingTime(), ranged_timer.GetRemainingTime());
+		other->Say("Debug: timers aren't up!");
 		return;
 	}
 
 	EQEmu::ItemInstance* rangedItem = GetBotItem(EQEmu::inventory::slotRange);
 	const EQEmu::ItemData* RangeWeapon = nullptr;
-	if(rangedItem)
+	if (rangedItem) {
 		RangeWeapon = rangedItem->GetItem();
-
-	EQEmu::ItemInstance* ammoItem = GetBotItem(EQEmu::inventory::slotAmmo);
-	const EQEmu::ItemData* Ammo = nullptr;
-	if(ammoItem)
-		Ammo = ammoItem->GetItem();
-
-	if(!RangeWeapon || !Ammo)
+		
+	}
+	if (!RangeWeapon)
+	{
+		other->Say("I need some kind of ranged weaponry!");
 		return;
-
-	Log(Logs::Detail, Logs::Combat, "Shooting %s with bow %s (%d) and arrow %s (%d)", other->GetCleanName(), RangeWeapon->Name, RangeWeapon->ID, Ammo->Name, Ammo->ID);
-	if(!IsAttackAllowed(other) || IsCasting() || DivineAura() || IsStunned() || IsMezzed() || (GetAppearance() == eaDead))
-		return;
-
-	SendItemAnimation(other, Ammo, EQEmu::skills::SkillArchery);
-	//DoArcheryAttackDmg(GetTarget(), rangedItem, ammoItem);
-	DoArcheryAttackDmg(other, rangedItem, ammoItem); // watch
-
-	//break invis when you attack
-	if(invisible) {
-		Log(Logs::Detail, Logs::Combat, "Removing invisibility due to melee attack.");
-		BuffFadeByEffect(SE_Invisibility);
-		BuffFadeByEffect(SE_Invisibility2);
-		invisible = false;
 	}
+	if (RangeWeapon->ItemType == 7) // Throwing
+	{
+		if (!IsAttackAllowed(other) || IsCasting() || DivineAura() || IsStunned() || IsMezzed() || (GetAppearance() == eaDead))
+			return;
+		SendItemAnimation(other, RangeWeapon, EQEmu::skills::SkillThrowing);
+		//DoArcheryAttackDmg(GetTarget(), rangedItem, ammoItem);
+		DoArcheryAttackDmg(other, rangedItem, rangedItem); // watch
 
-	if(invisible_undead) {
-		Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. undead due to melee attack.");
-		BuffFadeByEffect(SE_InvisVsUndead);
-		BuffFadeByEffect(SE_InvisVsUndead2);
-		invisible_undead = false;
+		//break invis when you attack
+		if (invisible) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility due to melee attack.");
+			BuffFadeByEffect(SE_Invisibility);
+			BuffFadeByEffect(SE_Invisibility2);
+			invisible = false;
+		}
+
+		if (invisible_undead) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. undead due to melee attack.");
+			BuffFadeByEffect(SE_InvisVsUndead);
+			BuffFadeByEffect(SE_InvisVsUndead2);
+			invisible_undead = false;
+		}
+
+		if (invisible_animals) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. animals due to melee attack.");
+			BuffFadeByEffect(SE_InvisVsAnimals);
+			invisible_animals = false;
+		}
+
+		if (spellbonuses.NegateIfCombat)
+			BuffFadeByEffect(SE_NegateIfCombat);
+
+		if (hidden || improved_hidden) {
+			hidden = false;
+			improved_hidden = false;
+			EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+			SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
+			sa_out->spawn_id = GetID();
+			sa_out->type = 0x03;
+			sa_out->parameter = 0;
+			entity_list.QueueClients(this, outapp, true);
+			safe_delete(outapp);
+		}
 	}
+	else
+	{
+		EQEmu::ItemInstance* ammoItem = GetBotItem(EQEmu::inventory::slotAmmo);
+		const EQEmu::ItemData* Ammo = nullptr;
+		if (ammoItem)
+			Ammo = ammoItem->GetItem();
 
-	if(invisible_animals) {
-		Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. animals due to melee attack.");
-		BuffFadeByEffect(SE_InvisVsAnimals);
-		invisible_animals = false;
-	}
 
-	if (spellbonuses.NegateIfCombat)
-		BuffFadeByEffect(SE_NegateIfCombat);
+		if (!RangeWeapon || !Ammo) {
+			return;
+		}
 
-	if(hidden || improved_hidden){
-		hidden = false;
-		improved_hidden = false;
-		EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
-		SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
-		sa_out->spawn_id = GetID();
-		sa_out->type = 0x03;
-		sa_out->parameter = 0;
-		entity_list.QueueClients(this, outapp, true);
-		safe_delete(outapp);
+		Log(Logs::Detail, Logs::Combat, "Shooting %s with bow %s (%d) and arrow %s (%d)", other->GetCleanName(), RangeWeapon->Name, RangeWeapon->ID, Ammo->Name, Ammo->ID);
+		if (!IsAttackAllowed(other) || IsCasting() || DivineAura() || IsStunned() || IsMezzed() || (GetAppearance() == eaDead))
+			return;
+
+		SendItemAnimation(other, Ammo, EQEmu::skills::SkillArchery);
+		//DoArcheryAttackDmg(GetTarget(), rangedItem, ammoItem);
+		DoArcheryAttackDmg(other, rangedItem, ammoItem); // watch
+
+		//break invis when you attack
+		if (invisible) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility due to melee attack.");
+			BuffFadeByEffect(SE_Invisibility);
+			BuffFadeByEffect(SE_Invisibility2);
+			invisible = false;
+		}
+
+		if (invisible_undead) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. undead due to melee attack.");
+			BuffFadeByEffect(SE_InvisVsUndead);
+			BuffFadeByEffect(SE_InvisVsUndead2);
+			invisible_undead = false;
+		}
+
+		if (invisible_animals) {
+			Log(Logs::Detail, Logs::Combat, "Removing invisibility vs. animals due to melee attack.");
+			BuffFadeByEffect(SE_InvisVsAnimals);
+			invisible_animals = false;
+		}
+
+		if (spellbonuses.NegateIfCombat)
+			BuffFadeByEffect(SE_NegateIfCombat);
+
+		if (hidden || improved_hidden) {
+			hidden = false;
+			improved_hidden = false;
+			EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+			SpawnAppearance_Struct* sa_out = (SpawnAppearance_Struct*)outapp->pBuffer;
+			sa_out->spawn_id = GetID();
+			sa_out->type = 0x03;
+			sa_out->parameter = 0;
+			entity_list.QueueClients(this, outapp, true);
+			safe_delete(outapp);
+		}
 	}
 }
 
@@ -8941,6 +8999,18 @@ std::string Bot::CreateSayLink(Client* c, const char* message, const char* name)
 
 	auto saylink = linker.GenerateLink();
 	return saylink;
+}
+
+void Bot::SetFeigned(bool in_feigned, Bot* b) {
+	if (in_feigned)
+	{
+		entity_list.ClearFeignAggro(b);
+		forget_timer.Start(FeignMemoryDuration);
+	}
+	else {
+		forget_timer.Disable();
+	}
+	feigned = in_feigned;
 }
 
 #endif
