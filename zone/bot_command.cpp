@@ -3107,10 +3107,10 @@ void bot_command_pull(Client *c, const Seperator *sep)
 		{
 			my_bot->Say("Debug: Not IsArcheryRange!");
 
-			glm::vec3 pullPos = glm::vec3((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, target_mob->GetPosition().z);
+			//glm::vec3 pullPos = glm::vec3((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z)/2);
 			glm::vec4 pos = glm::vec4((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z) / 2, -1);
-			//my_bot->MoveTo(pullPosition,false);
-			my_bot->SendToFixZ((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z) / 2);
+			my_bot->MoveTo(pos,false);
+			//my_bot->SendToFixZ((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z) / 2);
 			my_bot->FixZ();
 			my_bot->SendPositionUpdate();
 
