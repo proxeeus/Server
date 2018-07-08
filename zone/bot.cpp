@@ -1964,7 +1964,7 @@ void Bot::BotRangedAttack(Mob* other) {
 	}
 	else
 	{
-		EQEmu::ItemInstance* ammoItem = GetBotItem(EQEmu::inventory::slotAmmo);
+		EQEmu::ItemInstance* ammoItem = GetBotItem(EQEmu::invslot::slotAmmo);
 		const EQEmu::ItemData* Ammo = nullptr;
 		if (ammoItem)
 			Ammo = ammoItem->GetItem();

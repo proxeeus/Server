@@ -1866,7 +1866,7 @@ bool Client::SwapItem(MoveItem_Struct* move_in) {
 		SendWearChange(matslot);
 	}
 
-	if ((dst_slot_id == EQEmu::inventory::slotHands || src_slot_id == EQEmu::inventory::slotHands)
+	if ((dst_slot_id == EQEmu::invslot::slotHands || src_slot_id == EQEmu::invslot::slotHands)
 		&& (dstitemid == 10652 || srcitemid == 10652))
 	{
 		SendWearChange(EQEmu::textures::weaponPrimary);
