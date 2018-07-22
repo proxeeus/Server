@@ -325,9 +325,6 @@ Client::Client(EQStreamInterface* ieqs)
 	initial_respawn_selection = 0;
 	alternate_currency_loaded = false;
 
-	EngagedRaidTarget = false;
-	SavedRaidRestTimer = 0;
-
 	interrogateinv_flag = false;
 
 	trapid = 0;
@@ -630,7 +627,7 @@ bool Client::Save(uint8 iCommitNow) {
 	/* Total Time Played */
 	TotalSecondsPlayed += (time(nullptr) - m_pp.lastlogin);
 	m_pp.timePlayedMin = (TotalSecondsPlayed / 60);
-	m_pp.RestTimer = rest_timer.GetRemainingTime() / 1000;
+	m_pp.RestTimer = GetRestTimer();
 
 	/* Save Mercs */
 	if (GetMercInfo().MercTimerRemaining > RuleI(Mercs, UpkeepIntervalMS)) {
@@ -1865,6 +1862,9 @@ void Client::CheckManaEndUpdate() {
 		mana_change->stamina = current_endurance;
 		mana_change->spell_id = casting_spell_id;
 		mana_change->keepcasting = 1;
+		mana_change->padding[0] = 0;
+		mana_change->padding[1] = 0;
+		mana_change->padding[2] = 0;
 		outapp->priority = 6;
 		QueuePacket(outapp);
 		safe_delete(outapp);
@@ -1886,8 +1886,9 @@ void Client::CheckManaEndUpdate() {
 			mana_update->cur_mana = GetMana();
 			mana_update->max_mana = GetMaxMana();
 			mana_update->spawn_id = GetID();
-			QueuePacket(mana_packet);
-			entity_list.QueueClientsByXTarget(this, mana_packet, false);
+			if ((ClientVersionBit() & EQEmu::versions::ClientVersionBit::bit_SoDAndLater) != 0)
+				QueuePacket(mana_packet); // do we need this with the OP_ManaChange packet above?
+			entity_list.QueueClientsByXTarget(this, mana_packet, false, EQEmu::versions::ClientVersionBit::bit_SoDAndLater);
 			safe_delete(mana_packet);
 
 			last_reported_mana_percent = this->GetManaPercent();
@@ -1910,8 +1911,9 @@ void Client::CheckManaEndUpdate() {
 			endurance_update->cur_end = GetEndurance();
 			endurance_update->max_end = GetMaxEndurance();
 			endurance_update->spawn_id = GetID();
-			QueuePacket(endurance_packet);
-			entity_list.QueueClientsByXTarget(this, endurance_packet, false);
+			if ((ClientVersionBit() & EQEmu::versions::ClientVersionBit::bit_SoDAndLater) != 0)
+				QueuePacket(endurance_packet); // do we need this with the OP_ManaChange packet above?
+			entity_list.QueueClientsByXTarget(this, endurance_packet, false, EQEmu::versions::ClientVersionBit::bit_SoDAndLater);
 			safe_delete(endurance_packet);
 
 			last_reported_endurance_percent = this->GetEndurancePercent();
@@ -2691,6 +2693,60 @@ void Client::LogMerchant(Client* player, Mob* merchant, uint32 quantity, uint32 
 	else {
 		database.logevents(player->AccountName(),player->AccountID(),player->admin,player->GetName(),merchant->GetName(),"Selling to Merchant",LogText.c_str(),3);
 	}
+}
+
+void Client::Disarm(Client* disarmer, int chance) {
+	int16 slot = -1;
+	const EQEmu::ItemInstance *inst = this->GetInv().GetItem(EQEmu::invslot::slotPrimary);
+	if (inst && inst->IsWeapon()) {
+		slot = EQEmu::invslot::slotPrimary;
+	}
+	else {
+		inst = this->GetInv().GetItem(EQEmu::invslot::slotSecondary);
+		if (inst && inst->IsWeapon())
+			slot = EQEmu::invslot::slotSecondary;
+	}
+	if (slot != -1 && inst->IsClassCommon()) {
+		// We have an item that can be disarmed.
+		if (zone->random.Int(0, 1000) <= chance) {
+			// Find a free inventory slot
+			int16 slot_id = -1;
+			slot_id = m_inv.FindFreeSlot(false, true, inst->GetItem()->Size, inst->GetItem()->ItemType);
+			if (slot_id != -1)
+			{
+				EQEmu::ItemInstance *InvItem = m_inv.PopItem(slot);
+				if (InvItem) { // there should be no way it is not there, but check anyway
+					EQApplicationPacket* outapp = new EQApplicationPacket(OP_MoveItem, sizeof(MoveItem_Struct));
+					MoveItem_Struct* mi = (MoveItem_Struct*)outapp->pBuffer;
+					mi->from_slot = slot;
+					mi->to_slot = 0xFFFFFFFF;
+					if (inst->IsStackable()) // it should not be stackable
+						mi->number_in_stack = inst->GetCharges();
+					else
+						mi->number_in_stack = 0;
+					FastQueuePacket(&outapp); // this deletes item from the weapon slot on the client
+					if (PutItemInInventory(slot_id, *InvItem, true))
+						database.SaveInventory(this->CharacterID(), NULL, slot);
+					int matslot = slot == EQEmu::invslot::slotPrimary ? EQEmu::textures::weaponPrimary : EQEmu::textures::weaponSecondary;
+					if (matslot != -1)
+						SendWearChange(matslot);
+				}
+				Message_StringID(MT_Skills, DISARMED);
+				if (disarmer != this)
+					disarmer->Message_StringID(MT_Skills, DISARM_SUCCESS, this->GetCleanName());
+				if (chance != 1000)
+					disarmer->CheckIncreaseSkill(EQEmu::skills::SkillDisarm, nullptr, 4);
+				CalcBonuses();
+				// CalcEnduranceWeightFactor();
+				return;
+			}
+			disarmer->Message_StringID(MT_Skills, DISARM_FAILED);
+			if (chance != 1000)
+				disarmer->CheckIncreaseSkill(EQEmu::skills::SkillDisarm, nullptr, 2);
+			return;
+		}
+	}
+	disarmer->Message_StringID(MT_Skills, DISARM_FAILED);
 }
 
 bool Client::BindWound(Mob *bindmob, bool start, bool fail)
@@ -4607,16 +4663,20 @@ int Client::GetAggroCount() {
 	return AggroCount;
 }
 
-void Client::IncrementAggroCount() {
-
+// we pass in for book keeping if RestRegen is enabled
+void Client::IncrementAggroCount(bool raid_target)
+{
 	// This method is called when a client is added to a mob's hate list. It turns the clients aggro flag on so
 	// rest state regen is stopped, and for SoF, it sends the opcode to show the crossed swords in-combat indicator.
-	//
-	//
 	AggroCount++;
 
 	if(!RuleB(Character, RestRegenEnabled))
 		return;
+
+	uint32 newtimer = raid_target ? RuleI(Character, RestRegenRaidTimeToActivate) : RuleI(Character, RestRegenTimeToActivate);
+
+	// save the new timer if it's higher
+	m_pp.RestTimer = std::max(m_pp.RestTimer, newtimer);
 
 	// If we already had aggro before this method was called, the combat indicator should already be up for SoF clients,
 	// so we don't need to send it again.
@@ -4624,12 +4684,11 @@ void Client::IncrementAggroCount() {
 	if(AggroCount > 1)
 		return;
 
-	// Pause the rest timer
+	// Pause the rest timer, it's possible the new timer is a non-raid timer we're currently ticking down on a raid timer
 	if (AggroCount == 1)
-		SavedRaidRestTimer = rest_timer.GetRemainingTime();
+		m_pp.RestTimer = std::max(m_pp.RestTimer, rest_timer.GetRemainingTime() / 1000);
 
 	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
-
 		auto outapp = new EQApplicationPacket(OP_RestState, 1);
 		char *Buffer = (char *)outapp->pBuffer;
 		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x01);
@@ -4639,12 +4698,11 @@ void Client::IncrementAggroCount() {
 
 }
 
-void Client::DecrementAggroCount() {
-
+void Client::DecrementAggroCount()
+{
 	// This should be called when a client is removed from a mob's hate list (it dies or is memblurred).
 	// It checks whether any other mob is aggro on the player, and if not, starts the rest timer.
 	// For SoF, the opcode to start the rest state countdown timer in the UI is sent.
-	//
 
 	// If we didn't have aggro before, this method should not have been called.
 	if(!AggroCount)
@@ -4656,31 +4714,48 @@ void Client::DecrementAggroCount() {
 		return;
 
 	// Something else is still aggro on us, can't rest yet.
-	if(AggroCount) return;
+	if (AggroCount)
+		return;
 
-	uint32 time_until_rest;
-	if (GetEngagedRaidTarget()) {
-		time_until_rest = RuleI(Character, RestRegenRaidTimeToActivate) * 1000;
-		SetEngagedRaidTarget(false);
-	} else {
-		if (SavedRaidRestTimer > (RuleI(Character, RestRegenTimeToActivate) * 1000)) {
-			time_until_rest = SavedRaidRestTimer;
-			SavedRaidRestTimer = 0;
-		} else {
-			time_until_rest = RuleI(Character, RestRegenTimeToActivate) * 1000;
-		}
-	}
-
-	rest_timer.Start(time_until_rest);
+	rest_timer.Start(m_pp.RestTimer * 1000);
 
 	if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
-
 		auto outapp = new EQApplicationPacket(OP_RestState, 5);
 		char *Buffer = (char *)outapp->pBuffer;
 		VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x00);
-		VARSTRUCT_ENCODE_TYPE(uint32, Buffer, (uint32)(time_until_rest / 1000));
+		VARSTRUCT_ENCODE_TYPE(uint32, Buffer, m_pp.RestTimer);
 		QueuePacket(outapp);
 		safe_delete(outapp);
+	}
+}
+
+// when we cast a beneficial spell we need to steal our targets current timer
+// That's what we use this for
+void Client::UpdateRestTimer(uint32 new_timer)
+{
+	// their timer was 0, so we don't do anything
+	if (new_timer == 0)
+		return;
+
+	if (!RuleB(Character, RestRegenEnabled))
+		return;
+
+	// so if we're currently on aggro, we check our saved timer
+	if (AggroCount) {
+		if (m_pp.RestTimer < new_timer) // our timer needs to be updated, don't need to update client here
+			m_pp.RestTimer = new_timer;
+	} else { // if we're not aggro, we need to check if current timer needs updating
+		if (rest_timer.GetRemainingTime() / 1000 < new_timer) {
+			rest_timer.Start(new_timer * 1000);
+			if (ClientVersion() >= EQEmu::versions::ClientVersion::SoF) {
+				auto outapp = new EQApplicationPacket(OP_RestState, 5);
+				char *Buffer = (char *)outapp->pBuffer;
+				VARSTRUCT_ENCODE_TYPE(uint8, Buffer, 0x00);
+				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, new_timer);
+				QueuePacket(outapp);
+				safe_delete(outapp);
+			}
+		}
 	}
 }
 
