@@ -1709,6 +1709,10 @@ void NPC::AI_DoMovement() {
 			 *
 			 * This is also far nicer on CPU since roamboxes are heavy by nature
 			 */
+			/*
+
+			This fucks my roamboxes pretty hardcore. Deactivating for now
+			
 			if (!CheckLosFN(
 				roambox_destination_x,
 				roambox_destination_y,
@@ -1724,7 +1728,7 @@ void NPC::AI_DoMovement() {
 
 				return;
 			}
-
+			*/
 			Log(Logs::Detail,
 				Logs::NPCRoamBox,
 				"Calculate | NPC: %s distance %.3f | min_x %.3f | max_x %.3f | final_x %.3f | min_y %.3f | max_y %.3f | final_y %.3f",
@@ -1737,7 +1741,7 @@ void NPC::AI_DoMovement() {
 				roambox_max_y,
 				roambox_destination_y);
 		}
-
+	
 		if (fix_z_timer.Check()) {
 			this->FixZ();
 		}
