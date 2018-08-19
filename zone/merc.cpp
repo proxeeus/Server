@@ -1303,7 +1303,7 @@ bool Merc::Process()
 		_check_confidence = true;
 	}
 
-	if (sendhpupdate_timer.Check()) {
+	if (send_hp_update_timer.Check()) {
 		SendHPUpdate();
 	}
 
@@ -1481,8 +1481,14 @@ void Merc::AI_Process() {
 			if (RuleB(Mercs, MercsUsePathing) && zone->pathing) {
 				bool WaypointChanged, NodeReached;
 
-				glm::vec3 Goal = UpdatePath(GetTarget()->GetX(), GetTarget()->GetY(), GetTarget()->GetZ(),
-					GetRunspeed(), WaypointChanged, NodeReached);
+				glm::vec3 Goal = UpdatePath(
+					GetTarget()->GetX(),
+					GetTarget()->GetY(),
+					GetTarget()->GetZ(),
+					GetRunspeed(),
+					WaypointChanged,
+					NodeReached
+				);
 
 				if (WaypointChanged)
 					tar_ndx = 20;
@@ -1588,7 +1594,7 @@ void Merc::AI_Process() {
 					}
 				}
 
-				if(IsMoving())
+				if (IsMoving())
 					SendPositionUpdate();
 				else
 					SendPosition();

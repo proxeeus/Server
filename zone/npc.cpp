@@ -116,7 +116,7 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	knightattack_timer(1000),
 	assist_timer(AIassistcheck_delay),
 	qglobal_purge_timer(30000),
-	sendhpupdate_timer(2000),
+	send_hp_update_timer(2000),
 	enraged_timer(1000),
 	taunt_timer(TauntReuseTime * 1000),
 	m_SpawnPoint(position),
@@ -242,8 +242,8 @@ NPC::NPC(const NPCType* d, Spawn2* in_respawn, const glm::vec4& position, int if
 	roambox_max_y = -2;
 	roambox_min_x = -2;
 	roambox_min_y = -2;
-	roambox_movingto_x = -2;
-	roambox_movingto_y = -2;
+	roambox_destination_x = -2;
+	roambox_destination_y = -2;
 	roambox_min_delay = 1000;
 	roambox_delay = 1000;
 	p_depop = false;
@@ -755,11 +755,11 @@ bool NPC::Process()
 		}
 	}
 
-	// we might actually want to reset in this check ... won't until issues arise at least :P
-	if (sendhpupdate_timer.Check(false) && (IsTargeted() || (IsPet() && GetOwner() && GetOwner()->IsClient()))) {
-		if(!IsFullHP || cur_hp<max_hp){
-			SendHPUpdate();
-		}
+	/**
+	 * Send HP updates when engaged
+	 */
+	if (send_hp_update_timer.Check(false) && this->IsEngaged()) {
+		SendHPUpdate();
 	}
 
 	if(HasVirus()) {
