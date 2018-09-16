@@ -2336,10 +2336,10 @@ void Bot::AI_Process() {
 		// Let's check if we have a los with our target.
 		// If we don't, our hate_list is wiped.
 		// Else, it was causing the bot to aggro behind wall etc... causing massive trains.
-		if (guard_mode ||
+		if (/* guard_mode || */
 			!tar->IsNPC() ||
-			tar->IsMezzed() ||
-			(!tar->GetHateAmount(this) && !tar->GetHateAmount(leash_owner) && !leash_owner->AutoAttackEnabled()) ||
+			/* tar->IsMezzed() || */
+			/* (!tar->GetHateAmount(this) && !tar->GetHateAmount(leash_owner) && !leash_owner->AutoAttackEnabled()) || */
 			lo_distance > BOT_LEASH_DISTANCE ||
 			tar_distance > BOT_LEASH_DISTANCE ||
 			(!CheckLosFN(tar) && !leash_owner->CheckLosFN(tar)) ||
