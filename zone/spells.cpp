@@ -4251,6 +4251,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		{
 			Log(Logs::Detail, Logs::Spells, "Our level (%d) is higher than the limit of this Mez spell (%d)", GetLevel(), spells[spell_id].max[effect_index]);
 			caster->Message_StringID(MT_Shout, CANNOT_MEZ_WITH_SPELL);
+			AddToHateList(caster, 1,0,true,false,false,spell_id);
 			return true;
 		}
 	}
@@ -4342,6 +4343,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 			{
 				Log(Logs::Detail, Logs::Spells, "Our level (%d) is higher than the limit of this Charm spell (%d)", GetLevel(), spells[spell_id].max[effect_index]);
 				caster->Message_StringID(MT_Shout, CANNOT_CHARM_YET);
+                AddToHateList(caster, 1,0,true,false,false,spell_id);
 				return true;
 			}
 		}

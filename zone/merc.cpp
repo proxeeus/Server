@@ -1174,11 +1174,11 @@ void Merc::CalcRestState() {
 		}
 	}
 
-	RestRegenHP = 6 * (GetMaxHP() / RuleI(Character, RestRegenHP));
+	RestRegenHP = 6 * (GetMaxHP() / zone->newzone_data.FastRegenHP);
 
-	RestRegenMana = 6 * (GetMaxMana() / RuleI(Character, RestRegenMana));
+	RestRegenMana = 6 * (GetMaxMana() / zone->newzone_data.FastRegenMana);
 
-	RestRegenEndurance = 6 * (GetMaxEndurance() / RuleI(Character, RestRegenEnd));
+	RestRegenEndurance = 6 * (GetMaxEndurance() / zone->newzone_data.FastRegenEndurance);
 }
 
 bool Merc::HasSkill(EQEmu::skills::SkillType skill_id) const {
@@ -1414,7 +1414,7 @@ void Merc::AI_Process() {
 		if(DivineAura())
 			return;
 
-		int hateCount = entity_list.GetHatedCount(this, nullptr);
+		int hateCount = entity_list.GetHatedCount(this, nullptr, false);
 		if(GetHatedCount() < hateCount) {
 			SetHatedCount(hateCount);
 

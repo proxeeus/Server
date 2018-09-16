@@ -200,11 +200,15 @@ bool NPC::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes, bool bInnates
 					case SpellType_Escape: {
 						// If min_hp !=0 then the spell list has specified
 						// custom range and we're inside that range if we
-						// made it here.  The hard coded <=5 is for unspecified.
-						if (AIspells[i].min_hp != 0 || GetHPRatio() <= 5)
-						{
-							AIDoSpellCast(i, tar, mana_cost);
-							return true;
+						// made it here.
+						if (AIspells[i].min_hp != 0 || GetHPRatio() <= (RuleI(NPC, NPCGatePercent))) {
+							auto npcSpawnPoint = CastToNPC()->GetSpawnPoint();
+							if (!RuleB(NPC, NPCGateNearBind) && DistanceNoZ(m_Position, npcSpawnPoint) < RuleI(NPC, NPCGateDistanceBind)) {
+								break;
+							} else {
+								AIDoSpellCast(i, tar, mana_cost);
+								return true;
+							}
 						}
 						break;
 					}
@@ -462,6 +466,7 @@ void NPC::AI_Init()
 	roambox_distance = 0;
 	roambox_destination_x = 0;
 	roambox_destination_y = 0;
+	roambox_destination_z = 0;
 	roambox_min_delay = 2500;
 	roambox_delay = 2500;
 }
@@ -775,44 +780,50 @@ void Client::AI_Process()
 		}
 	}
 
-	if(RuleB(Combat, EnableFearPathing)){
-		if(currently_fleeing) {
+	if (RuleB(Combat, EnableFearPathing)) {
+		if (currently_fleeing) {
 
-			if (fix_z_timer_engaged.Check())
-				this->FixZ();
+			if (fix_z_timer.Check())
+				this->FixZ(5, true);
 
-			if(IsRooted()) {
+			if (IsRooted()) {
 				//make sure everybody knows were not moving, for appearance sake
-				if(IsMoving())
-				{
-					if(GetTarget())
+				if (IsMoving()) {
+					if (GetTarget())
 						SetHeading(CalculateHeadingToTarget(GetTarget()->GetX(), GetTarget()->GetY()));
 					SetCurrentSpeed(0);
 				}
 				//continue on to attack code, ensuring that we execute the engaged code
 				engaged = true;
-			} else {
-				if(AI_movement_timer->Check()) {
+			}
+			else {
+				if (AI_movement_timer->Check()) {
 					int speed = GetFearSpeed();
 					animation = speed;
 					speed *= 2;
 					SetCurrentSpeed(speed);
 					// Check if we have reached the last fear point
 					if ((std::abs(GetX() - m_FearWalkTarget.x) < 0.1) &&
-					    (std::abs(GetY() - m_FearWalkTarget.y) < 0.1)) {
+						(std::abs(GetY() - m_FearWalkTarget.y) < 0.1)) {
 						// Calculate a new point to run to
 						CalculateNewFearpoint();
 					}
-					if(!RuleB(Pathing, Fear) || !zone->pathing)
+
+					if (!RuleB(Pathing, Fear) || !zone->pathing)
 						CalculateNewPosition(m_FearWalkTarget.x, m_FearWalkTarget.y, m_FearWalkTarget.z, speed, true);
-					else
-					{
-						bool WaypointChanged, NodeReached;
+					else {
+						bool waypoint_changed, node_reached;
 
-						glm::vec3 Goal = UpdatePath(m_FearWalkTarget.x, m_FearWalkTarget.y, m_FearWalkTarget.z,
-									speed, WaypointChanged, NodeReached);
+						glm::vec3 Goal = UpdatePath(
+							m_FearWalkTarget.x,
+							m_FearWalkTarget.y,
+							m_FearWalkTarget.z,
+							speed,
+							waypoint_changed,
+							node_reached
+						);
 
-						if(WaypointChanged)
+						if (waypoint_changed)
 							tar_ndx = 20;
 
 						CalculateNewPosition(Goal.x, Goal.y, Goal.z, speed);
@@ -1132,8 +1143,12 @@ void Mob::AI_Process() {
 						bool WaypointChanged, NodeReached;
 
 						glm::vec3 Goal = UpdatePath(
-							m_FearWalkTarget.x, m_FearWalkTarget.y, m_FearWalkTarget.z,
-							GetFearSpeed(), WaypointChanged, NodeReached
+							m_FearWalkTarget.x,
+							m_FearWalkTarget.y,
+							m_FearWalkTarget.z,
+							GetFearSpeed(),
+							WaypointChanged,
+							NodeReached
 						);
 
 						if (WaypointChanged)
@@ -1179,7 +1194,7 @@ void Mob::AI_Process() {
 		// NPCs will forget people after 10 mins of not interacting with them or out of range
 		// both of these maybe zone specific, hardcoded for now
 		if (hate_list_cleanup_timer.Check()) {
-			hate_list.RemoveStaleEntries(600000, 600.0f);
+			hate_list.RemoveStaleEntries(600000, static_cast<float>(zone->newzone_data.NPCAggroMaxDist));
 			if (hate_list.IsHateListEmpty()) {
 				AI_Event_NoLongerEngaged();
 				zone->DelAggroMob();
@@ -1542,26 +1557,46 @@ void Mob::AI_Process() {
 					case SPO_Follow: {
 
 						Mob *owner = GetOwner();
-						if (owner == nullptr)
+						if (owner == nullptr) {
 							break;
+						}
 
-						glm::vec4 ownerPos = owner->GetPosition();
-						float     dist     = DistanceSquared(m_Position, ownerPos);
-						float     distz    = ownerPos.z - m_Position.z;
+						glm::vec4 pet_owner_position = owner->GetPosition();
+						float     distance_to_owner  = DistanceSquared(m_Position, pet_owner_position);
+						float     z_distance         = pet_owner_position.z - m_Position.z;
 
-						if (dist >= 400 || distz > 100) {
-							int speed = GetWalkspeed();
-							if (dist >= 1225) // 35
-								speed = GetRunspeed();
+						if (distance_to_owner >= 400 || z_distance > 100) {
 
-							if (dist >= 202500 || distz > 100) // dist >= 450
-							{
-								m_Position = ownerPos;
+							int pet_speed = GetWalkspeed();
+
+							/**
+							 * Distance: >= 35 (Run if far away)
+							 */
+							if (distance_to_owner >= 1225) {
+								pet_speed = GetRunspeed();
+							}
+
+							/**
+							 * Distance: >= 450 (Snap to owner)
+							 */
+							if (distance_to_owner >= 202500 || z_distance > 100) {
+								m_Position = pet_owner_position;
 								SendPositionUpdate();
 								moved = true;
 							}
 							else {
-								CalculateNewPosition(owner->GetX(), owner->GetY(), owner->GetZ(), speed);
+
+								bool waypoint_changed, node_reached;
+								glm::vec3 Goal = UpdatePath(
+									owner->GetX(),
+									owner->GetY(),
+									owner->GetZ(),
+									pet_speed,
+									waypoint_changed,
+									node_reached
+								);
+
+								CalculateNewPosition(Goal.x, Goal.y, Goal.z, pet_speed, true);
 							}
 						}
 						else {
@@ -1586,24 +1621,43 @@ void Mob::AI_Process() {
 						break;
 					}
 				}
-				if (IsPetRegroup())
+				if (IsPetRegroup()) {
 					return;
+				}
 			}
 				/* Entity has been assigned another entity to follow */
 			else if (GetFollowID()) {
-				Mob *follow = entity_list.GetMob(GetFollowID());
-				if (!follow) { SetFollowID(0); }
+				Mob *follow = entity_list.GetMob(static_cast<uint16>(GetFollowID()));
+				if (!follow) {
+					SetFollowID(0);
+				}
 				else {
-					float dist2      = DistanceSquared(m_Position, follow->GetPosition());
-					int   followdist = GetFollowDistance();
 
-					if (dist2 >= followdist)    // Default follow distance is 100
-					{
+					float distance        = DistanceSquared(m_Position, follow->GetPosition());
+					int   follow_distance = GetFollowDistance();
+
+					/**
+					 * Default follow distance is 100
+					 */
+					if (distance >= follow_distance) {
 						int speed = GetWalkspeed();
-						if (dist2 >= followdist + 150) {
+
+						if (distance >= follow_distance + 150) {
 							speed = GetRunspeed();
 						}
-						CalculateNewPosition(follow->GetX(), follow->GetY(), follow->GetZ(), speed);
+
+						bool waypoint_changed, node_reached;
+
+						glm::vec3 Goal = UpdatePath(
+							follow->GetX(),
+							follow->GetY(),
+							follow->GetZ(),
+							speed,
+							waypoint_changed,
+							node_reached
+						);
+
+						CalculateNewPosition(Goal.x, Goal.y, Goal.z, speed, true);
 					}
 					else {
 						moved = false;
@@ -1692,6 +1746,14 @@ void NPC::AI_DoMovement() {
 						(m_Position.z - 15)
 					);
 
+					/**
+					 * If someone brought us into water when we naturally wouldn't path there, return to spawn
+					 */
+					if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
+						roambox_destination_x = m_SpawnPoint.x;
+						roambox_destination_y = m_SpawnPoint.y;
+					}
+
 					if (zone->watermap->InLiquid(position)) {
 						Log(Logs::Detail,
 							Logs::NPCRoamBox, "%s | My destination is in water and I don't belong there!",
@@ -1702,33 +1764,12 @@ void NPC::AI_DoMovement() {
 				}
 			}
 
-			/**
-			 * We check for line of sight because we dont' want NPC's scaling on top of buildings and over ridiculous
-			 * mountains, this also peels back the frequency of pathing as well because we don't want to spam LOS checks
-			 * so if we fail a LOS check to our randomly chosen destination, we roll another timer cycle and wait again
-			 *
-			 * This is also far nicer on CPU since roamboxes are heavy by nature
-			 */
-			/*
+			glm::vec3 destination;
+			destination.x = roambox_destination_x;
+			destination.y = roambox_destination_y;
+			destination.z = m_Position.z;
+			roambox_destination_z = GetFixedZ(destination) + this->GetZOffset();
 
-			This fucks my roamboxes pretty hardcore. Deactivating for now
-			
-			if (!CheckLosFN(
-				roambox_destination_x,
-				roambox_destination_y,
-				m_Position.z + GetZOffset(),
-				this->GetSize())) {
-
-				time_until_can_move = Timer::GetCurrentTime() + RandomTimer(roambox_min_delay, roambox_delay);
-
-				Log(Logs::Detail,
-					Logs::NPCRoamBox,
-					"%s | Can't see where I want to go... I'll try something else...",
-					this->GetCleanName());
-
-				return;
-			}
-			*/
 			Log(Logs::Detail,
 				Logs::NPCRoamBox,
 				"Calculate | NPC: %s distance %.3f | min_x %.3f | max_x %.3f | final_x %.3f | min_y %.3f | max_y %.3f | final_y %.3f",
@@ -1741,12 +1782,21 @@ void NPC::AI_DoMovement() {
 				roambox_max_y,
 				roambox_destination_y);
 		}
-	
-		if (fix_z_timer.Check()) {
-			this->FixZ();
-		}
 
-		if (!CalculateNewPosition(roambox_destination_x, roambox_destination_y, m_Position.z, move_speed, true)) {
+		bool waypoint_changed, node_reached;
+
+		glm::vec3 Goal = UpdatePath(
+			roambox_destination_x,
+			roambox_destination_y,
+			roambox_destination_z,
+			move_speed,
+			waypoint_changed,
+			node_reached
+		);
+
+		CalculateNewPosition(Goal.x, Goal.y, Goal.z, move_speed, true);
+
+		if (m_Position.x == roambox_destination_x && m_Position.y == roambox_destination_y) {
 			time_until_can_move = Timer::GetCurrentTime() + RandomTimer(roambox_min_delay, roambox_delay);
 			SetMoving(false);
 			this->FixZ();
