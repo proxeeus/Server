@@ -1,19 +1,19 @@
 /*	EQEMu: Everquest Server Emulator
-Copyright (C) 2001-2004 EQEMu Development Team (http://eqemu.org)
+	Copyright (C) 2001-2004 EQEMu Development Team (http://eqemu.org)
 
-This program is free software; you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation; version 2 of the License.
+	This program is free software; you can redistribute it and/or modify
+	it under the terms of the GNU General Public License as published by
+	the Free Software Foundation; version 2 of the License.
 
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY except by those people which sell it, which
-are required to give you total support for your newly bought product;
-without even the implied warranty of MERCHANTABILITY or FITNESS FOR
-A PARTICULAR PURPOSE. See the GNU General Public License for more details.
+	This program is distributed in the hope that it will be useful,
+	but WITHOUT ANY WARRANTY except by those people which sell it, which
+	are required to give you total support for your newly bought product;
+	without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+	A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-You should have received a copy of the GNU General Public License
-along with this program; if not, write to the Free Software
-Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+	You should have received a copy of the GNU General Public License
+	along with this program; if not, write to the Free Software
+	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 
 #include "../common/global_define.h"
@@ -1709,8 +1709,8 @@ void NPC::AI_DoMovement() {
 	}
 
 	/**
-	* Roambox logic sets precedence
-	*/
+	 * Roambox logic sets precedence
+	 */
 	if (roambox_distance > 0) {
 
 		if (!IsMoving()) {
@@ -1721,11 +1721,11 @@ void NPC::AI_DoMovement() {
 			roambox_destination_y = EQEmu::Clamp((GetY() + move_y), roambox_min_y, roambox_max_y);
 
 			/**
-			* If our roambox was configured with large distances, chances of hitting the min or max end of
-			* the clamp is high, this causes NPC's to gather on the border of a box, to reduce clustering
-			* either lower the roambox distance or the code will do a simple random between min - max when it
-			* hits the min or max of the clamp
-			*/
+			 * If our roambox was configured with large distances, chances of hitting the min or max end of
+			 * the clamp is high, this causes NPC's to gather on the border of a box, to reduce clustering
+			 * either lower the roambox distance or the code will do a simple random between min - max when it
+			 * hits the min or max of the clamp
+			 */
 			if (roambox_destination_x == roambox_min_x || roambox_destination_x == roambox_max_x) {
 				roambox_destination_x = static_cast<float>(zone->random.Real(roambox_min_x, roambox_max_x));
 			}
@@ -1735,9 +1735,9 @@ void NPC::AI_DoMovement() {
 			}
 
 			/**
-			* If mob was not spawned in water, let's not randomly roam them into water
-			* if the roam box was sloppily configured
-			*/
+			 * If mob was not spawned in water, let's not randomly roam them into water
+			 * if the roam box was sloppily configured
+			 */
 			if (!this->GetWasSpawnedInWater()) {
 				if (zone->HasMap() && zone->HasWaterMap()) {
 					auto position = glm::vec3(
@@ -1745,6 +1745,14 @@ void NPC::AI_DoMovement() {
 						roambox_destination_y,
 						(m_Position.z - 15)
 					);
+
+					/**
+					 * If someone brought us into water when we naturally wouldn't path there, return to spawn
+					 */
+					if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
+						roambox_destination_x = m_SpawnPoint.x;
+						roambox_destination_y = m_SpawnPoint.y;
+					}
 
 					if (zone->watermap->InLiquid(position)) {
 						Log(Logs::Detail,
@@ -1756,33 +1764,12 @@ void NPC::AI_DoMovement() {
 				}
 			}
 
-			/**
-			* We check for line of sight because we dont' want NPC's scaling on top of buildings and over ridiculous
-			* mountains, this also peels back the frequency of pathing as well because we don't want to spam LOS checks
-			* so if we fail a LOS check to our randomly chosen destination, we roll another timer cycle and wait again
-			*
-			* This is also far nicer on CPU since roamboxes are heavy by nature
-			*/
-			/*
+			glm::vec3 destination;
+			destination.x = roambox_destination_x;
+			destination.y = roambox_destination_y;
+			destination.z = m_Position.z;
+			roambox_destination_z = GetFixedZ(destination) + this->GetZOffset();
 
-			This fucks my roamboxes pretty hardcore. Deactivating for now
-
-			if (!CheckLosFN(
-			roambox_destination_x,
-			roambox_destination_y,
-			m_Position.z + GetZOffset(),
-			this->GetSize())) {
-
-			time_until_can_move = Timer::GetCurrentTime() + RandomTimer(roambox_min_delay, roambox_delay);
-
-			Log(Logs::Detail,
-			Logs::NPCRoamBox,
-			"%s | Can't see where I want to go... I'll try something else...",
-			this->GetCleanName());
-
-			return;
-			}
-			*/
 			Log(Logs::Detail,
 				Logs::NPCRoamBox,
 				"Calculate | NPC: %s distance %.3f | min_x %.3f | max_x %.3f | final_x %.3f | min_y %.3f | max_y %.3f | final_y %.3f",
@@ -1796,11 +1783,22 @@ void NPC::AI_DoMovement() {
 				roambox_destination_y);
 		}
 
-		if (fix_z_timer.Check()) {
-			this->FixZ();
-		}
+		/**
+		bool waypoint_changed, node_reached;
 
-		if (!CalculateNewPosition(roambox_destination_x, roambox_destination_y, m_Position.z, move_speed, true)) {
+		glm::vec3 Goal = UpdatePath(
+			roambox_destination_x,
+			roambox_destination_y,
+			roambox_destination_z,
+			move_speed,
+			waypoint_changed,
+			node_reached
+		);
+		**/
+
+		CalculateNewPosition(roambox_destination_x, roambox_destination_y, roambox_destination_z, move_speed, true);
+
+		if (m_Position.x == roambox_destination_x && m_Position.y == roambox_destination_y) {
 			time_until_can_move = Timer::GetCurrentTime() + RandomTimer(roambox_min_delay, roambox_delay);
 			SetMoving(false);
 			this->FixZ();
@@ -1893,7 +1891,7 @@ void NPC::AI_DoMovement() {
 				}
 			}
 		}        // endif (gridno > 0)
-				 // handle new quest grid command processing
+			// handle new quest grid command processing
 		else if (gridno < 0) {    // this mob is under quest control
 			if (movetimercompleted == true) { // time to pause has ended
 				SetGrid(0 - GetGrid()); // revert to AI control
@@ -2144,7 +2142,7 @@ bool NPC::AI_EngagedCastCheck() {
 		Log(Logs::Detail, Logs::AI, "Engaged autocast check triggered. Trying to cast healing spells then maybe offensive spells.");
 
 		// first try innate (spam) spells
-		if (!AICastSpell(GetTarget(), 0, SpellType_Nuke | SpellType_Lifetap | SpellType_DOT | SpellType_Dispel | SpellType_Mez | SpellType_Slow | SpellType_Debuff | SpellType_Charm | SpellType_Root, true)) {
+		if(!AICastSpell(GetTarget(), 0, SpellType_Nuke | SpellType_Lifetap | SpellType_DOT | SpellType_Dispel | SpellType_Mez | SpellType_Slow | SpellType_Debuff | SpellType_Charm | SpellType_Root, true)) {
 			// try innate (spam) self targeted spells
 			if (!AICastSpell(this, 0, SpellType_InCombatBuff, true)) {
 				// try casting a heal or gate
@@ -2152,7 +2150,7 @@ bool NPC::AI_EngagedCastCheck() {
 					// try casting a heal on nearby
 					if (!entity_list.AICheckCloseBeneficialSpells(this, AISpellVar.engaged_beneficial_other_chance, MobAISpellRange, SpellType_Heal)) {
 						//nobody to heal, try some detrimental spells.
-						if (!AICastSpell(GetTarget(), AISpellVar.engaged_detrimental_chance, SpellType_Nuke | SpellType_Lifetap | SpellType_DOT | SpellType_Dispel | SpellType_Mez | SpellType_Slow | SpellType_Debuff | SpellType_Charm | SpellType_Root)) {
+						if(!AICastSpell(GetTarget(), AISpellVar.engaged_detrimental_chance, SpellType_Nuke | SpellType_Lifetap | SpellType_DOT | SpellType_Dispel | SpellType_Mez | SpellType_Slow | SpellType_Debuff | SpellType_Charm | SpellType_Root)) {
 							//no spell to cast, try again soon.
 							AIautocastspell_timer->Start(RandomTimer(AISpellVar.engaged_no_sp_recast_min, AISpellVar.engaged_no_sp_recast_max), false);
 						}
@@ -2913,9 +2911,9 @@ void NPC::AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType,
 void NPC::RemoveSpellFromNPCList(int16 spell_id)
 {
 	auto iter = AIspells.begin();
-	while (iter != AIspells.end())
+	while(iter != AIspells.end())
 	{
-		if ((*iter).spellid == spell_id)
+		if((*iter).spellid == spell_id)
 		{
 			iter = AIspells.erase(iter);
 			continue;
