@@ -2063,58 +2063,114 @@ uint32 Database::GetGuildIDByCharID(uint32 character_id)
 	return atoi(row[0]);
 }
 
-void Database::LoadLogSettings(EQEmuLogSys::LogSettings* log_settings)
-{
+void Database::LoadLogSettings(EQEmuLogSys::LogSettings* log_settings) {
 	// log_settings previously initialized to '0' by EQEmuLogSys::LoadLogSettingsDefaults()
-	
-	std::string query = 
-		"SELECT "
-		"log_category_id, "
-		"log_category_description, "
-		"log_to_console, "
-		"log_to_file, "
-		"log_to_gmsay "
-		"FROM "
-		"logsys_categories "
-		"ORDER BY log_category_id";
+
+	std::string query =
+					"SELECT "
+					"log_category_id, "
+					"log_category_description, "
+					"log_to_console, "
+					"log_to_file, "
+					"log_to_gmsay "
+					"FROM "
+					"logsys_categories "
+					"ORDER BY log_category_id";
+
 	auto results = QueryDatabase(query);
 
-	int log_category = 0;
-	LogSys.file_logs_enabled = false;
+	int log_category_id = 0;
+
+	int categories_in_database[1000] = {};
 
 	for (auto row = results.begin(); row != results.end(); ++row) {
-		log_category = atoi(row[0]);
-		if (log_category <= Logs::None || log_category >= Logs::MaxCategoryID)
+		log_category_id = atoi(row[0]);
+		if (log_category_id <= Logs::None || log_category_id >= Logs::MaxCategoryID) {
 			continue;
+		}
 
-		log_settings[log_category].log_to_console = atoi(row[2]);
-		log_settings[log_category].log_to_file = atoi(row[3]);
-		log_settings[log_category].log_to_gmsay = atoi(row[4]);
+		log_settings[log_category_id].log_to_console = static_cast<uint8>(atoi(row[2]));
+		log_settings[log_category_id].log_to_file    = static_cast<uint8>(atoi(row[3]));
+		log_settings[log_category_id].log_to_gmsay   = static_cast<uint8>(atoi(row[4]));
 
-		/* Determine if any output method is enabled for the category 
-			and set it to 1 so it can used to check if category is enabled */
-		const bool log_to_console = log_settings[log_category].log_to_console > 0;
-		const bool log_to_file = log_settings[log_category].log_to_file > 0;
-		const bool log_to_gmsay = log_settings[log_category].log_to_gmsay > 0;
+		/**
+		 * Determine if any output method is enabled for the category
+		 * and set it to 1 so it can used to check if category is enabled
+		 */
+		const bool log_to_console      = log_settings[log_category_id].log_to_console > 0;
+		const bool log_to_file         = log_settings[log_category_id].log_to_file > 0;
+		const bool log_to_gmsay        = log_settings[log_category_id].log_to_gmsay > 0;
 		const bool is_category_enabled = log_to_console || log_to_file || log_to_gmsay;
 
-		if (is_category_enabled)
-			log_settings[log_category].is_category_enabled = 1;
+		if (is_category_enabled) {
+			log_settings[log_category_id].is_category_enabled = 1;
+		}
 
-		/* 
-			This determines whether or not the process needs to actually file log anything.
-			If we go through this whole loop and nothing is set to any debug level, there is no point to create a file or keep anything open
-		*/
-		if (log_settings[log_category].log_to_file > 0){
+		/**
+		 * This determines whether or not the process needs to actually file log anything.
+		 * If we go through this whole loop and nothing is set to any debug level, there is no point to create a file or keep anything open
+		 */
+		if (log_settings[log_category_id].log_to_file > 0) {
 			LogSys.file_logs_enabled = true;
+		}
+
+		categories_in_database[log_category_id] = 1;
+	}
+
+	/**
+	 * Auto inject categories that don't exist in the database...
+	 */
+	for (int log_index = Logs::AA; log_index != Logs::MaxCategoryID; log_index++) {
+		if (!categories_in_database[log_index]) {
+
+			Log(Logs::General,
+				Logs::Status,
+				"New Log Category '%s' doesn't exist... Automatically adding to `logsys_categories` table...",
+				Logs::LogCategoryName[log_index]
+			);
+
+			std::string inject_query = StringFormat(
+				"INSERT INTO logsys_categories "
+				"(log_category_id, "
+				"log_category_description, "
+				"log_to_console, "
+				"log_to_file, "
+				"log_to_gmsay) "
+				"VALUES "
+				"(%i, '%s', %i, %i, %i)",
+				log_index,
+				EscapeString(Logs::LogCategoryName[log_index]).c_str(),
+				log_settings[log_category_id].log_to_console,
+				log_settings[log_category_id].log_to_file,
+				log_settings[log_category_id].log_to_gmsay
+			);
+
+			QueryDatabase(inject_query);
 		}
 	}
 }
 
-void Database::ClearInvSnapshots(bool use_rule)
-{
+int Database::CountInvSnapshots() {
+	std::string query = StringFormat("SELECT COUNT(*) FROM (SELECT * FROM `inventory_snapshots` a GROUP BY `charid`, `time_index`) b");
+	auto results = QueryDatabase(query);
+
+	if (!results.Success())
+		return -1;
+
+	auto row = results.begin();
+
+	int64 count = atoll(row[0]);
+	if (count > 2147483647)
+		return -2;
+	if (count < 0)
+		return -3;
+
+	return count;
+}
+
+void Database::ClearInvSnapshots(bool from_now) {
 	uint32 del_time = time(nullptr);
-	if (use_rule) { del_time -= RuleI(Character, InvSnapshotHistoryD) * 86400; }
+	if (!from_now) { del_time -= RuleI(Character, InvSnapshotHistoryD) * 86400; }
 
 	std::string query = StringFormat("DELETE FROM inventory_snapshots WHERE time_index <= %lu", (unsigned long)del_time);
 	QueryDatabase(query);

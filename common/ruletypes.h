@@ -389,6 +389,7 @@ RULE_INT(Spells, AI_PursueDetrimentalChance, 90) // Chance while chasing target 
 RULE_INT(Spells, AI_IdleNoSpellMinRecast, 6000) // AI spell recast time(MS) check when no spell is cast while idle. (min time in random)
 RULE_INT(Spells, AI_IdleNoSpellMaxRecast, 60000) // AI spell recast time(MS) check when no spell is cast while chasing target. (max time in random)
 RULE_INT(Spells, AI_IdleBeneficialChance, 100) // Chance while idle to do a beneficial spell on self or others.
+RULE_INT(Spells, AI_HealHPPct, 50) // HP Pct NPCs will start heals at (in and out of combat) if spell's max_hp is not set
 RULE_BOOL(Spells, SHDProcIDOffByOne, true) // pre June 2009 SHD spell procs were off by 1, they stopped doing this in June 2009 (so UF+ spell files need this false)
 RULE_BOOL(Spells, Jun182014HundredHandsRevamp, false) // this should be true for if you import a spell file newer than June 18, 2014
 RULE_BOOL(Spells, SwarmPetTargetLock, false) // Use old method of swarm pets target locking till target dies then despawning.
@@ -418,6 +419,7 @@ RULE_BOOL(Combat, EnableFearPathing, true)
 RULE_REAL(Combat, FleeMultiplier, 2.0) // Determines how quickly a NPC will slow down while fleeing. Decrease multiplier to slow NPC down quicker.
 RULE_BOOL(Combat, FleeGray, true) // If true FleeGrayHPRatio will be used.
 RULE_INT(Combat, FleeGrayHPRatio, 50) //HP % when a Gray NPC begins to flee.
+RULE_INT(Combat, FleeGrayMaxLevel, 18) // NPC's above this level won't do gray/green con flee
 RULE_INT(Combat, FleeHPRatio, 25) //HP % when a NPC begins to flee.
 RULE_BOOL(Combat, FleeIfNotAlone, false) // If false, mobs won't flee if other mobs are in combat with it.
 RULE_BOOL(Combat, AdjustProcPerMinute, true)

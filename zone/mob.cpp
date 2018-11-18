@@ -258,7 +258,7 @@ Mob::Mob(const char* in_name,
 	max_mana = 0;
 	hp_regen = in_hp_regen;
 	mana_regen = in_mana_regen;
-	oocregen = RuleI(NPC, OOCRegen); //default Out of Combat Regen
+	ooc_regen = RuleI(NPC, OOCRegen); //default Out of Combat Regen
 	maxlevel = in_maxlevel;
 	scalerate = in_scalerate;
 	invisible = false;
@@ -388,8 +388,9 @@ Mob::Mob(const char* in_name,
 	m_CurrentWayPoint = glm::vec4();
 	cur_wp_pause = 0;
 	patrol = 0;
-	follow = 0;
+	follow_id = 0;
 	follow_dist = 100;	// Default Distance for Follow
+	follow_run = true;	// We can run if distance great enough
 	no_target_hotkey = false;
 	flee_mode = false;
 	currently_fleeing = false;
@@ -1314,14 +1315,17 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 	}
 }
 
-// sends hp update of this mob to people who might care
-void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= false*/)
-{
-	
-	/* If our HP is different from last HP update call - let's update ourself */
+void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= false*/) {
+
+	/**
+	 * If our HP is different from last HP update call - let's update selves
+	 */
 	if (IsClient()) {
 		if (cur_hp != last_hp || force_update_all) {
-			/* This is to prevent excessive packet sending under trains/fast combat */
+
+			/**
+			 * This is to prevent excessive packet sending under trains/fast combat
+			 */
 			if (this->CastToClient()->hp_self_update_throttle_timer.Check() || force_update_all) {
 				Log(Logs::General, Logs::HP_Update,
 					"Mob::SendHPUpdate :: Update HP of self (%s) HP: %i last: %i skip_self: %s",
@@ -1333,11 +1337,12 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 
 				if (!skip_self || this->CastToClient()->ClientVersion() >= EQEmu::versions::ClientVersion::SoD) {
 					auto client_packet = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
-					SpawnHPUpdate_Struct* hp_packet_client = (SpawnHPUpdate_Struct*)client_packet->pBuffer;
 
-					hp_packet_client->cur_hp = CastToClient()->GetHP() - itembonuses.HP;
+					SpawnHPUpdate_Struct *hp_packet_client = (SpawnHPUpdate_Struct *) client_packet->pBuffer;
+
+					hp_packet_client->cur_hp   = CastToClient()->GetHP() - itembonuses.HP;
 					hp_packet_client->spawn_id = GetID();
-					hp_packet_client->max_hp = CastToClient()->GetMaxHP() - itembonuses.HP;
+					hp_packet_client->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
 
 					CastToClient()->QueuePacket(client_packet);
 
@@ -1346,7 +1351,9 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 					ResetHPUpdateTimer();
 				}
 
-				/* Used to check if HP has changed to update self next round */
+				/**
+				 * Used to check if HP has changed to update self next round
+				 */
 				last_hp = cur_hp;
 			}
 		}
@@ -1354,7 +1361,12 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 
 	int8 current_hp_percent = (max_hp == 0 ? 0 : static_cast<int>(cur_hp * 100 / max_hp));
 
-	Log(Logs::General, Logs::HP_Update, "Mob::SendHPUpdate :: SendHPUpdate %s HP is %i last %i", this->GetCleanName(), current_hp_percent, last_hp_percent);
+	Log(Logs::General,
+		Logs::HP_Update,
+		"Mob::SendHPUpdate :: SendHPUpdate %s HP is %i last %i",
+		this->GetCleanName(),
+		current_hp_percent,
+		last_hp_percent);
 
 	if (current_hp_percent == last_hp_percent && !force_update_all) {
 		Log(Logs::General, Logs::HP_Update, "Mob::SendHPUpdate :: Same HP - skipping update");
@@ -1363,8 +1375,9 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 	}
 	else {
 
-		if (IsClient() && RuleB(Character, MarqueeHPUpdates))
+		if (IsClient() && RuleB(Character, MarqueeHPUpdates)) {
 			this->CastToClient()->SendHPUpdateMarquee();
+		}
 
 		Log(Logs::General, Logs::HP_Update, "Mob::SendHPUpdate :: HP Changed - Send update");
 
@@ -1372,52 +1385,69 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 	}
 
 	EQApplicationPacket hp_packet;
-	Group *group = nullptr;
+	Group               *group = nullptr;
 
 	CreateHPPacket(&hp_packet);
 
-	/* Update those who have us targeted */
+	/**
+	 * Update those who have us targeted
+	 */
 	entity_list.QueueClientsByTarget(this, &hp_packet, false, 0, false, true, EQEmu::versions::bit_AllClients);
 
-	/* Update those who have us on x-target */
+	/**
+	 * Update those who have us on x-target
+	 */
 	entity_list.QueueClientsByXTarget(this, &hp_packet, false);
 
-	/* Update groups using Group LAA health name tag counter */
+	/**
+	 * Update groups using Group LAA health name tag counter
+	 */
 	entity_list.QueueToGroupsForNPCHealthAA(this, &hp_packet);
 
-	/* Update group */
-	if(IsGrouped()) {
+	/**
+	 * Group
+	 */
+	if (IsGrouped()) {
 		group = entity_list.GetGroupByMob(this);
-		if(group)
+		if (group) {
 			group->SendHPPacketsFrom(this);
+		}
 	}
 
-	/* Update Raid */
-	if(IsClient()){
+	/**
+	 * Raid
+	 */
+	if (IsClient()) {
 		Raid *raid = entity_list.GetRaidByClient(CastToClient());
-		if (raid)
+		if (raid) {
 			raid->SendHPManaEndPacketsFrom(this);
+		}
 	}
 
-	/* Pet - Update master - group and raid if exists */
-	if(GetOwner() && GetOwner()->IsClient()) {
+	/**
+	 * Pet
+	 */
+	if (GetOwner() && GetOwner()->IsClient()) {
 		GetOwner()->CastToClient()->QueuePacket(&hp_packet, false);
 		group = entity_list.GetGroupByClient(GetOwner()->CastToClient());
 
-		if(group)
+		if (group) {
 			group->SendHPPacketsFrom(this);
+		}
 
 		Raid *raid = entity_list.GetRaidByClient(GetOwner()->CastToClient());
-		if(raid)
+		if (raid) {
 			raid->SendHPManaEndPacketsFrom(this);
+		}
 	}
 
-	/* Send to pet */
-	if(GetPet() && GetPet()->IsClient()) {
+	if (GetPet() && GetPet()->IsClient()) {
 		GetPet()->CastToClient()->QueuePacket(&hp_packet, false);
 	}
 
-	/* Destructible objects */
+	/**
+	 * Destructible objects
+	 */
 	if (IsNPC() && IsDestructibleObject()) {
 		if (GetHPRatio() > 74) {
 			if (GetAppearance() != eaStanding) {
