@@ -2637,7 +2637,7 @@ const NPCType* ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 		temp_npctype_data->spellscale = atoi(row[86]);
 		temp_npctype_data->healscale = atoi(row[87]);
 		temp_npctype_data->no_target_hotkey = atoi(row[88]) == 1 ? true: false;
-		temp_npctype_data->raid_target = atoi(row[89]) == 0 ? false: true;
+		temp_npctype_data->raid_target = atoi(row[89]) == 0 ? false : true;
 		temp_npctype_data->attack_delay = atoi(row[90]) * 100; // TODO: fix DB
 		temp_npctype_data->light = (atoi(row[91]) & 0x0F);
 
@@ -4356,15 +4356,15 @@ uint32 ZoneDatabase::GetCharacterCorpseCount(uint32 char_id) {
 }
 
 uint32 ZoneDatabase::GetCharacterCorpseID(uint32 char_id, uint8 corpse) {
-	std::string query = StringFormat("SELECT `id` FROM `character_corpses` WHERE `charid` = '%u'", char_id);
-	auto results = QueryDatabase(query);
+	std::string query = StringFormat("SELECT `id` FROM `character_corpses` WHERE `charid` = '%u' limit %d, 1", char_id, corpse);
 
-	for (auto row = results.begin(); row != results.end(); ++row) {
-		for (int i = 0; i < corpse; i++) {
-			return atoul(row[0]);
-		}
-	}
-	return 0;
+	auto results = QueryDatabase(query);
+	auto row = results.begin();
+
+	if (row != results.end())
+		return atoul(row[0]);
+	else
+		return 0;
 }
 
 uint32 ZoneDatabase::GetCharacterCorpseItemCount(uint32 corpse_id){
