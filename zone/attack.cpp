@@ -3434,6 +3434,10 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 				if (attacker->npctype_id == 679) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
 				}
+				else if (attacker->GetTarget() && attacker->GetTarget()->npctype_id == 679)
+				{
+					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", this->GetCleanName(), attacker->playerbot_temp_name);
+				}
 				else
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->GetCleanName(), this->GetCleanName());
 				if (attacker->IsClient())

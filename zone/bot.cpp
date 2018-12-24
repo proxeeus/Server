@@ -5580,7 +5580,12 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 
 	if(taunting && target && target->IsNPC() && taunt_time) {
 		if(GetTarget() && GetTarget()->GetHateTop() && GetTarget()->GetHateTop() != this) {
-			BotGroupSay(this, "Taunting %s", target->GetCleanName());
+			if (GetTarget()->GetNPCTypeID() == 679) {
+				BotGroupSay(this, "Taunting %s", target->playerbot_temp_name);
+			}
+			else {
+				BotGroupSay(this, "Taunting %s", target->GetCleanName());
+			}
 			Taunt(target->CastToNPC(), false);
 			taunt_timer.Start(TauntReuseTime * 1000);
 		}
