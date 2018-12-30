@@ -2666,15 +2666,16 @@ void bot_command_botgroup(Client *c, const Seperator *sep)
 
 void bot_command_charm(Client *c, const Seperator *sep)
 {
-	auto local_list = &bot_command_spells[BCEnum::SpT_Charm];
-	if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Charm) || helper_command_alias_fail(c, "bot_command_charm", sep->arg[0], "charm"))
-		return;
+	//auto local_list = &bot_command_spells[BCEnum::SpT_Charm];
+	//if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Charm) || helper_command_alias_fail(c, "bot_command_charm", sep->arg[0], "charm"))
+	//	return;
 	if (helper_is_help_or_usage(sep->arg[1])) {
 		c->Message(m_usage, "usage: <enemy_target> %s ([option: dire])", sep->arg[0]);
 		helper_send_usage_required_bots(c, BCEnum::SpT_Charm);
 		return;
 	}
-
+	/*
+	
 	bool dire = false;
 	std::string dire_arg = sep->arg[1];
 	if (!dire_arg.compare("dire"))
@@ -2713,7 +2714,45 @@ void bot_command_charm(Client *c, const Seperator *sep)
 
 		break;
 	}
-	
+	*/
+
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+
+	bool cast_success = false;
+
+
+	auto target_mob = ActionableTarget::VerifyEnemy(c, BCEnum::TT_Single);
+	if (!target_mob) {
+		c->Message(m_fail, "Your current target is not charmable.");
+		return;
+	}
+
+	my_bot = ActionableBots::AsSpawned_ByClass(c, sbl,ENCHANTER);
+	if (!my_bot) {
+		c->Message(m_fail, "No currently spawned bots are available to charm your target.");
+		return;
+	}
+
+	auto level = my_bot->GetLevel();
+	auto charmId = 12; // Defaults to the first one.
+
+	if (level >= 12 && level <= 23)
+		charmId = 12;	// Charm
+	else if (level >= 24 && level <= 38)
+		charmId = 182;	// Beguile
+	else if (level >= 39 && level <= 48)
+		charmId = 183;	// Cajoling Whispers
+	else if (level >= 49 && level <= 52)
+		charmId = 184;
+	else if (level >= 53 && level <= 59)
+		charmId = 1706;	// Boltran's Agacerie
+	else if (level == 60)
+		charmId = 1707;
+
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, charmId);
 	helper_no_available_bots(c, my_bot);
 }
 
