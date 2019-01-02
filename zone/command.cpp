@@ -67,6 +67,7 @@
 #include "water_map.h"
 #include "worldserver.h"
 #include "fastmath.h"
+#include "mob_movement_manager.h"
 #include "npc_scale_manager.h"
 
 extern QueryServ* QServ;
@@ -205,7 +206,7 @@ int command_init(void)
 		command_add("flag", "[status] [acctname] - Refresh your admin status, or set an account's admin status if arguments provided", 0, command_flag) ||
 		command_add("flagedit", "- Edit zone flags on your target", 100, command_flagedit) ||
 		command_add("flags", "- displays the flags of you or your target", 0, command_flags) ||
-		command_add("flymode", "[0/1/2] - Set your or your player target's flymode to off/on/levitate", 50, command_flymode) ||
+		command_add("flymode", "[0/1/2/3/4/5] - Set your or your player target's flymode to ground/flying/levitate/water/floating/levitate_running", 50, command_flymode) ||
 		command_add("fov", "- Check wether you're behind or in your target's field of view", 80, command_fov) ||
 		command_add("freeze", "- Freeze your target", 80, command_freeze) ||
 		command_add("gassign", "[id] - Assign targetted NPC to predefined wandering grid id", 100, command_gassign) ||
@@ -248,6 +249,7 @@ int command_init(void)
 		command_add("itemsearch", "[search criteria] - Search for an item", 10, command_itemsearch) ||
 		command_add("kick", "[charname] - Disconnect charname", 150, command_kick) ||
 		command_add("kill", "- Kill your target", 100, command_kill) ||
+		command_add("killallnpcs", " [npc_name] Kills all npcs by search name, leave blank for all attackable NPC's", 200, command_killallnpcs) ||
 		command_add("lastname", "[new lastname] - Set your or your player target's lastname", 50, command_lastname) ||
 		command_add("level", "[level] - Set your or your target's level", 10, command_level) ||
 		command_add("listnpcs", "[name/range] - Search NPCs", 20, command_listnpcs) ||
@@ -267,6 +269,7 @@ int command_init(void)
 		command_add("modifynpcstat", "- Modifys a NPC's stats", 150, command_modifynpcstat) ||
 		command_add("motd", "[new motd] - Set message of the day", 150, command_motd) ||
 		command_add("movechar", "[charname] [zonename] - Move charname to zonename", 50, command_movechar) ||
+		command_add("movement", "Various movement commands", 200, command_movement) ||
 		command_add("myskills", "- Show details about your current skill levels", 0, command_myskills) ||
 		command_add("mysqltest", "Akkadius MySQL Bench Test", 250, command_mysqltest) ||
 		command_add("mysql", "Mysql CLI, see 'help' for options.", 250, command_mysql) ||
@@ -310,6 +313,7 @@ int command_init(void)
 #endif
 
 		command_add("push", "Lets you do spell push", 150, command_push) ||
+		command_add("proximity", "Shows NPC proximity", 150, command_proximity) ||
 		command_add("pvp", "[on/off] - Set your or your player target's PVP status", 100, command_pvp) ||
 		command_add("qglobal", "[on/off/view] - Toggles qglobal functionality on an NPC", 100, command_qglobal) ||
 		command_add("questerrors", "Shows quest errors.", 100, command_questerrors) ||
@@ -388,6 +392,7 @@ int command_init(void)
 		command_add("tattoo", "- Change the tattoo of your target (Drakkin Only)", 80, command_tattoo) ||
 		command_add("tempname", "[newname] - Temporarily renames your target. Leave name blank to restore the original name.", 100, command_tempname) ||
 		command_add("petname", "[newname] - Temporarily renames your pet. Leave name blank to restore the original name.", 100, command_petname) ||
+		command_add("test", "Test command", 200, command_test) ||
 		command_add("texture", "[texture] [helmtexture] - Change your or your target's appearance, use 255 to show equipment", 10, command_texture) ||
 		command_add("time", "[HH] [MM] - Set EQ time", 90, command_time) ||
 		command_add("timers", "- Display persistent timers for target", 200, command_timers) ||
@@ -748,21 +753,21 @@ void command_serversidename(Client *c, const Seperator *sep)
 
 void command_wc(Client *c, const Seperator *sep)
 {
-	if(sep->argnum < 2)
-	{
-		c->Message(0, "Usage: #wc [wear slot] [material] [ [hero_forge_model] [elite_material] [unknown06] [unknown18] ]");
+	if (sep->argnum < 2) {
+		c->Message(
+			0,
+			"Usage: #wc [wear slot] [material] [ [hero_forge_model] [elite_material] [unknown06] [unknown18] ]"
+		);
 	}
-	else if(c->GetTarget() == nullptr) {
+	else if (c->GetTarget() == nullptr) {
 		c->Message(13, "You must have a target to do a wear change.");
 	}
-	else
-	{
+	else {
 		uint32 hero_forge_model = 0;
-		uint32 wearslot = atoi(sep->arg[1]);
+		uint32 wearslot         = atoi(sep->arg[1]);
 
 		// Hero Forge
-		if (sep->argnum > 2)
-		{
+		if (sep->argnum > 2) {
 			hero_forge_model = atoi(sep->arg[3]);
 
 			if (hero_forge_model != 0 && hero_forge_model < 1000) {
@@ -778,45 +783,43 @@ void command_wc(Client *c, const Seperator *sep)
 		else
 			Color = c->GetTarget()->GetArmorTint(atoi(sep->arg[1]));
 		*/
-		c->GetTarget()->SendTextureWC(wearslot, atoi(sep->arg[2]), hero_forge_model, atoi(sep->arg[4]), atoi(sep->arg[5]), atoi(sep->arg[6]));
+		c->GetTarget()->SendTextureWC(
+			wearslot,
+			atoi(sep->arg[2]),
+			hero_forge_model,
+			atoi(sep->arg[4]),
+			atoi(sep->arg[5]),
+			atoi(sep->arg[6]));
 	}
 }
 
 void command_heromodel(Client *c, const Seperator *sep)
 {
-	if (sep->argnum < 1)
-	{
+	if (sep->argnum < 1) {
 		c->Message(0, "Usage: #heromodel [hero forge model] [ [slot] ] (example: #heromodel 63)");
 	}
-	else if (c->GetTarget() == nullptr)
-	{
+	else if (c->GetTarget() == nullptr) {
 		c->Message(13, "You must have a target to do a wear change for Hero's Forge Models.");
 	}
-	else
-	{
+	else {
 		uint32 hero_forge_model = atoi(sep->arg[1]);
 
-		if (sep->argnum > 1)
-		{
-			uint8 wearslot = (uint8)atoi(sep->arg[2]);
+		if (sep->argnum > 1) {
+			uint8 wearslot = (uint8) atoi(sep->arg[2]);
 			c->GetTarget()->SendTextureWC(wearslot, 0, hero_forge_model, 0, 0, 0);
 		}
-		else
-		{
-			if (hero_forge_model > 0)
-			{
+		else {
+			if (hero_forge_model > 0) {
 				// Conversion to simplify the command arguments
 				// Hero's Forge model is actually model * 1000 + texture * 100 + wearslot
 				// Hero's Forge Model slot 7 is actually for Robes, but it still needs to use wearslot 1 in the packet
 				hero_forge_model *= 100;
 
-				for (uint8 wearslot = 0; wearslot < 7; wearslot++)
-				{
+				for (uint8 wearslot = 0; wearslot < 7; wearslot++) {
 					c->GetTarget()->SendTextureWC(wearslot, 0, (hero_forge_model + wearslot), 0, 0, 0);
 				}
 			}
-			else
-			{
+			else {
 				c->Message(13, "Hero's Forge Model must be greater than 0.");
 			}
 		}
@@ -827,12 +830,14 @@ void command_setanim(Client *c, const Seperator *sep)
 {
 	if (c->GetTarget() && sep->IsNumber(1)) {
 		int num = atoi(sep->arg[1]);
-		if(num < 0 || num >= _eaMaxAppearance) {
-		c->Message(0, "Invalid animation number, between 0 and %d",  _eaMaxAppearance-1);
+		if (num < 0 || num >= _eaMaxAppearance) {
+			c->Message(0, "Invalid animation number, between 0 and %d", _eaMaxAppearance - 1);
 		}
 		c->GetTarget()->SetAppearance(EmuAppearance(num));
-	} else
+	}
+	else {
 		c->Message(0, "Usage: #setanim [animnum]");
+	}
 }
 
 void command_serverinfo(Client *c, const Seperator *sep)
@@ -1027,7 +1032,7 @@ void command_summon(Client *c, const Seperator *sep)
 	{ // npc target
 		c->Message(0, "Summoning NPC %s to %1.1f, %1.1f, %1.1f",  t->GetName(), c->GetX(), c->GetY(), c->GetZ());
 		t->CastToNPC()->GMMove(c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
-		t->CastToNPC()->SaveGuardSpot(true);
+		t->CastToNPC()->SaveGuardSpot(glm::vec4(0.0f));
 	}
 	else if (t->IsCorpse())
 	{ // corpse target
@@ -1261,6 +1266,78 @@ void command_movechar(Client *c, const Seperator *sep)
 		}
 		else
 			c->Message(0, "Character Does Not Exist");
+	}
+}
+
+void command_movement(Client *c, const Seperator *sep)
+{
+	auto &mgr = MobMovementManager::Get();
+
+	if (sep->arg[1][0] == 0) {
+		c->Message(0, "Usage: #movement stats/clearstats/walkto/runto/rotateto/stop/packet");
+		return;
+	}
+
+	if (strcasecmp(sep->arg[1], "stats") == 0)
+	{
+		mgr.DumpStats(c);
+	}
+	else if (strcasecmp(sep->arg[1], "clearstats") == 0)
+	{
+		mgr.ClearStats();
+	}
+	else if (strcasecmp(sep->arg[1], "walkto") == 0)
+	{
+		auto target = c->GetTarget();
+		if (target == nullptr) {
+			c->Message(0, "No target found.");
+			return;
+		}
+
+		target->WalkTo(c->GetX(), c->GetY(), c->GetZ());
+	}
+	else if (strcasecmp(sep->arg[1], "runto") == 0)
+	{
+		auto target = c->GetTarget();
+		if (target == nullptr) {
+			c->Message(0, "No target found.");
+			return;
+		}
+
+		target->RunTo(c->GetX(), c->GetY(), c->GetZ());
+	}
+	else if (strcasecmp(sep->arg[1], "rotateto") == 0)
+	{
+		auto target = c->GetTarget();
+		if (target == nullptr) {
+			c->Message(0, "No target found.");
+			return;
+		}
+
+		target->RotateToWalking(target->CalculateHeadingToTarget(c->GetX(), c->GetY()));
+	}
+	else if (strcasecmp(sep->arg[1], "stop") == 0)
+	{
+		auto target = c->GetTarget();
+		if (target == nullptr) {
+			c->Message(0, "No target found.");
+			return;
+		}
+
+		target->StopNavigation();
+	}
+	else if (strcasecmp(sep->arg[1], "packet") == 0)
+	{
+		auto target = c->GetTarget();
+		if (target == nullptr) {
+			c->Message(0, "No target found.");
+			return;
+		}
+
+		mgr.SendCommandToClients(target, atof(sep->arg[2]), atof(sep->arg[3]), atof(sep->arg[4]), atof(sep->arg[5]), atoi(sep->arg[6]), ClientRangeAny);
+	}
+	else {
+		c->Message(0, "Usage: #movement stats/clearstats/walkto/runto/rotateto/stop/packet");
 	}
 }
 
@@ -2075,7 +2152,7 @@ void command_ai(Client *c, const Seperator *sep)
 	}
 	else if (strcasecmp(sep->arg[1], "guard") == 0) {
 		if (target && target->IsNPC())
-			target->CastToNPC()->SaveGuardSpot();
+			target->CastToNPC()->SaveGuardSpot(target->GetPosition());
 		else
 			c->Message(0, "Usage: (targeted) #ai guard - sets npc to guard the current location (use #summon to move)");
 	}
@@ -2324,7 +2401,7 @@ void command_grid(Client *c, const Seperator *sep)
 				static_cast<uint32>(atoi(row[4])),
 				static_cast<uint32>(atoi(row[5]))
 			);
-			npc->SetFlyMode(1);
+			npc->SetFlyMode(GravityBehavior::Flying);
 			npc->GMMove(node_position.x, node_position.y, node_position.z, node_position.w);
 		}
 	}
@@ -2424,20 +2501,37 @@ void command_mana(Client *c, const Seperator *sep)
 
 void command_flymode(Client *c, const Seperator *sep)
 {
-	Client *t=c;
+	Mob *t = c;
 
-	if (strlen(sep->arg[1]) == 1 && !(sep->arg[1][0] == '0' || sep->arg[1][0] == '1' || sep->arg[1][0] == '2'))
-		c->Message(0, "#flymode [0/1/2]");
+	if (strlen(sep->arg[1]) == 1 && !(sep->arg[1][0] == '0' || sep->arg[1][0] == '1' || sep->arg[1][0] == '2' || sep->arg[1][0] == '3' || sep->arg[1][0] == '4' || sep->arg[1][0] == '5'))
+		c->Message(0, "#flymode [0/1/2/3/4/5]");
 	else {
-		if(c->GetTarget() && c->GetTarget()->IsClient())
-			t=c->GetTarget()->CastToClient();
-		t->SendAppearancePacket(AT_Levitate, atoi(sep->arg[1]));
-		if (sep->arg[1][0] == '1')
-			c->Message(0, "Turning %s's Flymode ON",  t->GetName());
-		else if (sep->arg[1][0] == '2')
-			c->Message(0, "Turning %s's Flymode LEV",  t->GetName());
-		else
-			c->Message(0, "Turning %s's Flymode OFF",  t->GetName());
+		if (c->GetTarget()) {
+			t = c->GetTarget();
+		}
+
+		int fm = atoi(sep->arg[1]);
+
+		t->SetFlyMode(static_cast<GravityBehavior>(fm));
+		t->SendAppearancePacket(AT_Levitate, fm);
+		if (sep->arg[1][0] == '0') {
+			c->Message(0, "Setting %s to Grounded", t->GetName());
+		}
+		else if (sep->arg[1][0] == '1') {
+			c->Message(0, "Setting %s to Flying", t->GetName());
+		}
+		else if (sep->arg[1][0] == '2') {
+			c->Message(0, "Setting %s to Levitating", t->GetName());
+		}
+		else if (sep->arg[1][0] == '3') {
+			c->Message(0, "Setting %s to In Water", t->GetName());
+		}
+		else if (sep->arg[1][0] == '4') {
+			c->Message(0, "Setting %s to Floating(Boat)", t->GetName());
+		}
+		else if (sep->arg[1][0] == '5') {
+			c->Message(0, "Setting %s to Levitating While Running", t->GetName());
+		}
 	}
 }
 
@@ -2639,18 +2733,21 @@ void command_setskillall(Client *c, const Seperator *sep)
 
 void command_race(Client *c, const Seperator *sep)
 {
-	Mob *t=c->CastToMob();
+	Mob *target = c->CastToMob();
 
 	if (sep->IsNumber(1)) {
 		auto race = atoi(sep->arg[1]);
 		if ((race >= 0 && race <= 732) || (race >= 2253 && race <= 2259)) {
-			if ((c->GetTarget()) && c->Admin() >= commandRaceOthers)
-				t = c->GetTarget();
-			t->SendIllusionPacket(race);
-		} else {
+			if ((c->GetTarget()) && c->Admin() >= commandRaceOthers) {
+				target = c->GetTarget();
+			}
+			target->SendIllusionPacket(race);
+		}
+		else {
 			c->Message(0, "Usage: #race [0-732, 2253-2259] (0 for back to normal)");
 		}
-	} else {
+	}
+	else {
 		c->Message(0, "Usage: #race [0-732, 2253-2259] (0 for back to normal)");
 	}
 }
@@ -2728,6 +2825,18 @@ void command_spawn(Client *c, const Seperator *sep)
 	}
 }
 
+void command_test(Client *c, const Seperator *sep)
+{
+	c->Message(15, "Triggering test command");
+
+	if (sep->arg[1]) {
+		c->SetPrimaryWeaponOrnamentation(atoi(sep->arg[1]));
+	}
+	if (sep->arg[2]) {
+		c->SetSecondaryWeaponOrnamentation(atoi(sep->arg[2]));
+	}
+}
+
 void command_texture(Client *c, const Seperator *sep)
 {
 
@@ -2779,7 +2888,7 @@ void command_npctypespawn(Client *c, const Seperator *sep)
 		const NPCType* tmp = 0;
 		if ((tmp = database.LoadNPCTypesData(atoi(sep->arg[1])))) {
 			//tmp->fixedZ = 1;
-			auto npc = new NPC(tmp, 0, c->GetPosition(), FlyMode3);
+			auto npc = new NPC(tmp, 0, c->GetPosition(), GravityBehavior::Water);
 			if (npc && sep->IsNumber(2))
 				npc->SetNPCFactionID(atoi(sep->arg[2]));
 
@@ -4842,6 +4951,76 @@ void command_push(Client *c, const Seperator *sep)
 	}
 }
 
+void command_proximity(Client *c, const Seperator *sep)
+{
+	if (!c->GetTarget() && !c->GetTarget()->IsNPC()) {
+		c->Message(0, "You must target an NPC");
+		return;
+	}
+
+	for (auto &iter : entity_list.GetNPCList()) {
+		auto        npc  = iter.second;
+		std::string name = npc->GetName();
+
+		if (name.find("Proximity") != std::string::npos) {
+			npc->Depop();
+		}
+	}
+
+	NPC *npc = c->GetTarget()->CastToNPC();
+
+	std::vector<FindPerson_Point> points;
+
+	FindPerson_Point p{};
+
+	if (npc->IsProximitySet()) {
+		glm::vec4 position;
+		position.w = npc->GetHeading();
+		position.x = npc->GetProximityMinX();
+		position.y = npc->GetProximityMinY();
+		position.z = npc->GetZ();
+
+		position.x = npc->GetProximityMinX();
+		position.y = npc->GetProximityMinY();
+		NPC::SpawnNodeNPC("Proximity", "", position);
+
+		position.x = npc->GetProximityMinX();
+		position.y = npc->GetProximityMaxY();
+		NPC::SpawnNodeNPC("Proximity", "", position);
+
+		position.x = npc->GetProximityMaxX();
+		position.y = npc->GetProximityMinY();
+		NPC::SpawnNodeNPC("Proximity", "", position);
+
+		position.x = npc->GetProximityMaxX();
+		position.y = npc->GetProximityMaxY();
+		NPC::SpawnNodeNPC("Proximity", "", position);
+
+		p.x = npc->GetProximityMinX();
+		p.y = npc->GetProximityMinY();
+		p.z = npc->GetZ();
+		points.push_back(p);
+
+		p.x = npc->GetProximityMinX();
+		p.y = npc->GetProximityMaxY();
+		points.push_back(p);
+
+		p.x = npc->GetProximityMaxX();
+		p.y = npc->GetProximityMaxY();
+		points.push_back(p);
+
+		p.x = npc->GetProximityMaxX();
+		p.y = npc->GetProximityMinY();
+		points.push_back(p);
+
+		p.x = npc->GetProximityMinX();
+		p.y = npc->GetProximityMinY();
+		points.push_back(p);
+	}
+
+	c->SendPathPacket(points);
+}
+
 void command_pvp(Client *c, const Seperator *sep)
 {
 	bool state=atobool(sep->arg[1]);
@@ -4977,6 +5156,41 @@ void command_kill(Client *c, const Seperator *sep)
 	else
 		if (!c->GetTarget()->IsClient() || c->GetTarget()->CastToClient()->Admin() <= c->Admin())
 			c->GetTarget()->Kill();
+}
+
+void command_killallnpcs(Client *c, const Seperator *sep)
+{
+	std::string search_string;
+	if (sep->arg[1]) {
+		search_string = sep->arg[1];
+	}
+
+	int count = 0;
+	for (auto &itr : entity_list.GetMobList()) {
+		Mob *entity = itr.second;
+		if (!entity->IsNPC()) {
+			continue;
+		}
+
+		std::string entity_name = entity->GetName();
+
+		/**
+		 * Filter by name
+		 */
+		if (search_string.length() > 0 && entity_name.find(search_string) == std::string::npos) {
+			continue;
+		}
+
+		if (entity->IsInvisible() || !entity->IsAttackAllowed(c)) {
+			continue;
+		}
+
+		entity->Damage(c, 1000000000, 0, EQEmu::skills::SkillDragonPunch);
+
+		count++;
+	}
+
+	c->Message(15, "Killed (%i) npc(s)", count);
 }
 
 void command_haste(Client *c, const Seperator *sep)
@@ -7904,10 +8118,8 @@ void command_pf(Client *c, const Seperator *sep)
 		Mob *who = c->GetTarget();
 		c->Message(0, "POS: (%.2f, %.2f, %.2f)",  who->GetX(), who->GetY(), who->GetZ());
 		c->Message(0, "WP: %s (%d/%d)",  to_string(who->GetCurrentWayPoint()).c_str(), who->IsNPC()?who->CastToNPC()->GetMaxWp():-1);
-		c->Message(0, "TAR: (%.2f, %.2f, %.2f)",  who->GetTarX(), who->GetTarY(), who->GetTarZ());
-		c->Message(0, "TARV: (%.2f, %.2f, %.2f)",  who->GetTarVX(), who->GetTarVY(), who->GetTarVZ());
-		c->Message(0, "|TV|=%.2f index=%d",  who->GetTarVector(), who->GetTarNDX());
 		c->Message(0, "pause=%d RAspeed=%d",  who->GetCWPP(), who->GetRunAnimSpeed());
+		//who->DumpMovement(c);
 	} else {
 		c->Message(0, "ERROR: target required");
 	}
@@ -8830,9 +9042,7 @@ void command_advnpcspawn(Client *c, const Seperator *sep)
         }
 
         c->Message(0, "Updating coordinates successful.");
-        target->CastToNPC()->GMMove(c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
-        target->CastToNPC()->SaveGuardSpot(true);
-        target->SendPosition();
+        target->GMMove(c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
 
         return;
     }

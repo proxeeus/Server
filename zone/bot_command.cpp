@@ -3152,7 +3152,7 @@ void bot_command_pull(Client *c, const Seperator *sep)
 			my_bot->MoveTo(pos,false);
 			//my_bot->SendToFixZ((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z) / 2);
 			my_bot->FixZ();
-			my_bot->SendPositionUpdate();
+			my_bot->SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
 
 			Bot::BotGroupSay(my_bot, "Attempting to pull %s..", target_mob->GetCleanName());
 			my_bot->InterruptSpell();
@@ -5609,7 +5609,7 @@ void bot_subcommand_bot_summon(Client *c, const Seperator *sep)
 
 		bot_iter->WipeHateList();
 		bot_iter->SetTarget(nullptr);
-		bot_iter->Warp(glm::vec3(c->GetPosition()));
+		bot_iter->Teleport(c->GetPosition());
 		bot_iter->DoAnim(0);
 
 		if (!bot_iter->HasPet())
@@ -5617,7 +5617,7 @@ void bot_subcommand_bot_summon(Client *c, const Seperator *sep)
 
 		bot_iter->GetPet()->WipeHateList();
 		bot_iter->GetPet()->SetTarget(nullptr);
-		bot_iter->GetPet()->Warp(glm::vec3(c->GetPosition()));
+		bot_iter->GetPet()->Teleport(c->GetPosition());
 	}
 
 	if (sbl.size() == 1)

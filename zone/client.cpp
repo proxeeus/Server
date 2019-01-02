@@ -54,6 +54,7 @@ extern volatile bool RunLoops;
 #include "guild_mgr.h"
 #include "quest_parser_collection.h"
 #include "queryserv.h"
+#include "mob_movement_manager.h"
 
 extern QueryServ* QServ;
 extern EntityList entity_list;
@@ -119,7 +120,6 @@ Client::Client(EQStreamInterface* ieqs)
 	0,
 	0
 	),
-	position_timer(250),
 	hpupdate_timer(2000),
 	camp_timer(29000),
 	process_timer(100),
@@ -167,6 +167,7 @@ Client::Client(EQStreamInterface* ieqs)
 	for (int client_filter = 0; client_filter < _FilterCount; client_filter++)
 		ClientFilters[client_filter] = FilterShow;
 
+	mMovementManager->AddClient(this);
 	character_id = 0;
 	conn_state = NoPacketsReceived;
 	client_data_loaded = false;
@@ -221,7 +222,6 @@ Client::Client(EQStreamInterface* ieqs)
 	npcflag = false;
 	npclevel = 0;
 	pQueuedSaveWorkID = 0;
-	position_timer_counter = 0;
 	position_update_same_count = 0;
 	fishing_timer.Disable();
 	shield_timer.Disable();
@@ -287,14 +287,6 @@ Client::Client(EQStreamInterface* ieqs)
 	XPRate = 100;
 	current_endurance = 0;
 
-	m_TimeSinceLastPositionCheck = 0;
-	m_DistanceSinceLastPositionCheck = 0.0f;
-	m_ShadowStepExemption = 0;
-	m_KnockBackExemption = 0;
-	m_PortExemption = 0;
-	m_SenseExemption = 0;
-	m_AssistExemption = 0;
-	m_CheatDetectMoved = false;
 	CanUseReport = true;
 	aa_los_them_mob = nullptr;
 	los_status = false;
@@ -359,6 +351,8 @@ Client::Client(EQStreamInterface* ieqs)
 }
 
 Client::~Client() {
+	mMovementManager->RemoveClient(this);
+
 #ifdef BOTS
 	Bot::ProcessBotOwnerRefDelete(this);
 #endif
@@ -1135,7 +1129,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				CheckLDoNHail(GetTarget());
 				CheckEmoteHail(GetTarget(), message);
 
-				if(DistanceSquaredNoZ(m_Position, GetTarget()->GetPosition()) <= RuleI(Range, Say)) {
+				if(DistanceNoZ(m_Position, GetTarget()->GetPosition()) <= RuleI(Range, Say)) {
 					NPC *tar = GetTarget()->CastToNPC();
 					parse->EventNPC(EVENT_SAY, tar->CastToNPC(), this, message, language);
 
@@ -2984,13 +2978,12 @@ bool Client::BindWound(Mob *bindmob, bool start, bool fail)
 	return true;
 }
 
-void Client::SetMaterial(int16 in_slot, uint32 item_id) {
-	const EQEmu::ItemData* item = database.GetItem(item_id);
-	if (item && item->IsClassCommon())
-	{
+void Client::SetMaterial(int16 in_slot, uint32 item_id)
+{
+	const EQEmu::ItemData *item = database.GetItem(item_id);
+	if (item && item->IsClassCommon()) {
 		uint8 matslot = EQEmu::InventoryProfile::CalcMaterialFromSlot(in_slot);
-		if (matslot != EQEmu::textures::materialInvalid)
-		{
+		if (matslot != EQEmu::textures::materialInvalid) {
 			m_pp.item_material.Slot[matslot].Material = GetEquipmentMaterial(matslot);
 		}
 	}
@@ -5343,335 +5336,12 @@ void Client::ShowSkillsWindow()
 	this->SendPopupToClient(WindowTitle, WindowText.c_str());
 }
 
-void Client::SetShadowStepExemption(bool v)
-{
-	if(v == true)
-	{
-		uint32 cur_time = Timer::GetCurrentTime();
-		if((cur_time - m_TimeSinceLastPositionCheck) > 1000)
-		{
-			float speed = (m_DistanceSinceLastPositionCheck * 100) / (float)(cur_time - m_TimeSinceLastPositionCheck);
-			int runs = GetRunspeed();
-			if(speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-			{
-				printf("%s %i moving too fast! moved: %.2f in %ims, speed %.2f\n", __FILE__, __LINE__,
-					m_DistanceSinceLastPositionCheck, (cur_time - m_TimeSinceLastPositionCheck), speed);
-				if(!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor)))))
-				{
-					if(IsShadowStepExempted())
-					{
-						if(m_DistanceSinceLastPositionCheck > 800)
-						{
-							CheatDetected(MQWarpShadowStep, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(IsKnockBackExempted())
-					{
-						//still potential to trigger this if you're knocked back off a
-						//HUGE fall that takes > 2.5 seconds
-						if(speed > 30.0f)
-						{
-							CheatDetected(MQWarpKnockBack, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(!IsPortExempted())
-					{
-						if(!IsMQExemptedArea(zone->GetZoneID(), GetX(), GetY(), GetZ()))
-						{
-							if(speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-							{
-								CheatDetected(MQWarp, GetX(), GetY(), GetZ());
-								m_TimeSinceLastPositionCheck = cur_time;
-								m_DistanceSinceLastPositionCheck = 0.0f;
-								//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
-							}
-							else
-							{
-								CheatDetected(MQWarpLight, GetX(), GetY(), GetZ());
-							}
-						}
-					}
-				}
-			}
-		}
-		m_TimeSinceLastPositionCheck = cur_time;
-		m_DistanceSinceLastPositionCheck = 0.0f;
-	}
-	m_ShadowStepExemption = v;
-}
-
-void Client::SetKnockBackExemption(bool v)
-{
-	if(v == true)
-	{
-		uint32 cur_time = Timer::GetCurrentTime();
-		if((cur_time - m_TimeSinceLastPositionCheck) > 1000)
-		{
-			float speed = (m_DistanceSinceLastPositionCheck * 100) / (float)(cur_time - m_TimeSinceLastPositionCheck);
-			int runs = GetRunspeed();
-			if(speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-			{
-				if(!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor)))))
-				{
-					printf("%s %i moving too fast! moved: %.2f in %ims, speed %.2f\n", __FILE__, __LINE__,
-					m_DistanceSinceLastPositionCheck, (cur_time - m_TimeSinceLastPositionCheck), speed);
-					if(IsShadowStepExempted())
-					{
-						if(m_DistanceSinceLastPositionCheck > 800)
-						{
-							CheatDetected(MQWarpShadowStep, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(IsKnockBackExempted())
-					{
-						//still potential to trigger this if you're knocked back off a
-						//HUGE fall that takes > 2.5 seconds
-						if(speed > 30.0f)
-						{
-							CheatDetected(MQWarpKnockBack, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(!IsPortExempted())
-					{
-						if(!IsMQExemptedArea(zone->GetZoneID(), GetX(), GetY(), GetZ()))
-						{
-							if(speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-							{
-								m_TimeSinceLastPositionCheck = cur_time;
-								m_DistanceSinceLastPositionCheck = 0.0f;
-								CheatDetected(MQWarp, GetX(), GetY(), GetZ());
-								//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
-							}
-							else
-							{
-								CheatDetected(MQWarpLight, GetX(), GetY(), GetZ());
-							}
-						}
-					}
-				}
-			}
-		}
-		m_TimeSinceLastPositionCheck = cur_time;
-		m_DistanceSinceLastPositionCheck = 0.0f;
-	}
-	m_KnockBackExemption = v;
-}
-
-void Client::SetPortExemption(bool v)
-{
-	if(v == true)
-	{
-		uint32 cur_time = Timer::GetCurrentTime();
-		if((cur_time - m_TimeSinceLastPositionCheck) > 1000)
-		{
-			float speed = (m_DistanceSinceLastPositionCheck * 100) / (float)(cur_time - m_TimeSinceLastPositionCheck);
-			int runs = GetRunspeed();
-			if(speed > (runs * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-			{
-				if(!GetGMSpeed() && (runs >= GetBaseRunspeed() || (speed > (GetBaseRunspeed() * RuleR(Zone, MQWarpDetectionDistanceFactor)))))
-				{
-					printf("%s %i moving too fast! moved: %.2f in %ims, speed %.2f\n", __FILE__, __LINE__,
-					m_DistanceSinceLastPositionCheck, (cur_time - m_TimeSinceLastPositionCheck), speed);
-					if(IsShadowStepExempted())
-					{
-						if(m_DistanceSinceLastPositionCheck > 800)
-						{
-								CheatDetected(MQWarpShadowStep, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(IsKnockBackExempted())
-					{
-						//still potential to trigger this if you're knocked back off a
-						//HUGE fall that takes > 2.5 seconds
-						if(speed > 30.0f)
-						{
-							CheatDetected(MQWarpKnockBack, GetX(), GetY(), GetZ());
-						}
-					}
-					else if(!IsPortExempted())
-					{
-						if(!IsMQExemptedArea(zone->GetZoneID(), GetX(), GetY(), GetZ()))
-						{
-							if(speed > (runs * 2 * RuleR(Zone, MQWarpDetectionDistanceFactor)))
-							{
-								m_TimeSinceLastPositionCheck = cur_time;
-								m_DistanceSinceLastPositionCheck = 0.0f;
-								CheatDetected(MQWarp, GetX(), GetY(), GetZ());
-								//Death(this, 10000000, SPELL_UNKNOWN, _1H_BLUNT);
-							}
-							else
-							{
-								CheatDetected(MQWarpLight, GetX(), GetY(), GetZ());
-							}
-						}
-					}
-				}
-			}
-		}
-		m_TimeSinceLastPositionCheck = cur_time;
-		m_DistanceSinceLastPositionCheck = 0.0f;
-	}
-	m_PortExemption = v;
-}
-
 void Client::Signal(uint32 data)
 {
 	char buf[32];
 	snprintf(buf, 31, "%d", data);
 	buf[31] = '\0';
 	parse->EventPlayer(EVENT_SIGNAL, this, buf, 0);
-}
-
-const bool Client::IsMQExemptedArea(uint32 zoneID, float x, float y, float z) const
-{
-	float max_dist = 90000;
-	switch(zoneID)
-	{
-	case 2:
-		{
-			float delta = (x-(-713.6));
-			delta *= delta;
-			float distance = delta;
-			delta = (y-(-160.2));
-			delta *= delta;
-			distance += delta;
-			delta = (z-(-12.8));
-			delta *= delta;
-			distance += delta;
-
-			if(distance < max_dist)
-				return true;
-
-			delta = (x-(-153.8));
-			delta *= delta;
-			distance = delta;
-			delta = (y-(-30.3));
-			delta *= delta;
-			distance += delta;
-			delta = (z-(8.2));
-			delta *= delta;
-			distance += delta;
-
-			if(distance < max_dist)
-				return true;
-
-			break;
-		}
-	case 9:
-	{
-		float delta = (x-(-682.5));
-		delta *= delta;
-		float distance = delta;
-		delta = (y-(147.0));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(-9.9));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		delta = (x-(-655.4));
-		delta *= delta;
-		distance = delta;
-		delta = (y-(10.5));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(-51.8));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		break;
-	}
-	case 62:
-	case 75:
-	case 114:
-	case 209:
-	{
-		//The portals are so common in paineel/felwitheb that checking
-		//distances wouldn't be worth it cause unless you're porting to the
-		//start field you're going to be triggering this and that's a level of
-		//accuracy I'm willing to sacrifice
-		return true;
-		break;
-	}
-
-	case 24:
-	{
-		float delta = (x-(-183.0));
-		delta *= delta;
-		float distance = delta;
-		delta = (y-(-773.3));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(54.1));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		delta = (x-(-8.8));
-		delta *= delta;
-		distance = delta;
-		delta = (y-(-394.1));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(41.1));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		delta = (x-(-310.3));
-		delta *= delta;
-		distance = delta;
-		delta = (y-(-1411.6));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(-42.8));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		delta = (x-(-183.1));
-		delta *= delta;
-		distance = delta;
-		delta = (y-(-1409.8));
-		delta *= delta;
-		distance += delta;
-		delta = (z-(37.1));
-		delta *= delta;
-		distance += delta;
-
-		if(distance < max_dist)
-			return true;
-
-		break;
-	}
-
-	case 110:
-	case 34:
-	case 96:
-	case 93:
-	case 68:
-	case 84:
-		{
-			if(GetBoatID() != 0)
-				return true;
-			break;
-		}
-	default:
-		break;
-	}
-	return false;
 }
 
 void Client::SendRewards()
@@ -6506,7 +6176,7 @@ void Client::LocateCorpse()
 		SetHeading(CalculateHeadingToTarget(ClosestCorpse->GetX(), ClosestCorpse->GetY()));
 		SetTarget(ClosestCorpse);
 		SendTargetCommand(ClosestCorpse->GetID());
-		SendPositionUpdate(2);
+		SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
 	}
 	else if(!GetTarget())
 		Message_StringID(clientMessageError, SENSE_CORPSE_NONE);
@@ -6671,7 +6341,7 @@ void Client::Doppelganger(uint16 spell_id, Mob *target, const char *name_overrid
 				(npc_dup!=nullptr)?npc_dup:npc_type,	//make sure we give the NPC the correct data pointer
 				0,
 				GetPosition() + glm::vec4(swarmPetLocations[summon_count], 0.0f, 0.0f),
-				FlyMode3);
+				GravityBehavior::Water);
 
 		if(!swarm_pet_npc->GetSwarmInfo()){
 			auto nSI = new SwarmPet;
@@ -8869,11 +8539,11 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 }
 
 void Client::SendHPUpdateMarquee(){
-	if (!this || !this->IsClient() || !this->cur_hp || !this->max_hp)
+	if (!this || !this->IsClient() || !this->current_hp || !this->max_hp)
 		return;
 
 	/* Health Update Marquee Display: Custom*/
-	uint8 health_percentage = (uint8)(this->cur_hp * 100 / this->max_hp);
+	uint8 health_percentage = (uint8)(this->current_hp * 100 / this->max_hp);
 	if (health_percentage >= 100)
 		return;
 
@@ -9364,7 +9034,48 @@ bool Client::IsDevToolsWindowEnabled() const
 	return dev_tools_window_enabled;
 }
 
+/**
+ * @param in_dev_tools_window_enabled
+ */
 void Client::SetDevToolsWindowEnabled(bool in_dev_tools_window_enabled)
 {
 	Client::dev_tools_window_enabled = in_dev_tools_window_enabled;
+}
+
+/**
+ * @param model_id
+ */
+void Client::SetPrimaryWeaponOrnamentation(uint32 model_id)
+{
+	if (GetItemIDAt(EQEmu::invslot::slotPrimary) > 0) {
+		database.QueryDatabase(
+			StringFormat(
+				"UPDATE `inventory` SET `ornamentidfile` = %i WHERE `charid` = %i AND `slotid` = %i",
+				model_id,
+				character_id,
+				EQEmu::invslot::slotPrimary
+			));
+
+		WearChange(EQEmu::textures::weaponPrimary, static_cast<uint16>(model_id), 0);
+		Message(15, "Your primary weapon appearance has been modified, changes will fully take affect next time you zone");
+	}
+}
+
+/**
+ * @param model_id
+ */
+void Client::SetSecondaryWeaponOrnamentation(uint32 model_id)
+{
+	if (GetItemIDAt(EQEmu::invslot::slotSecondary) > 0) {
+		database.QueryDatabase(
+			StringFormat(
+				"UPDATE `inventory` SET `ornamentidfile` = %i WHERE `charid` = %i AND `slotid` = %i",
+				model_id,
+				character_id,
+				EQEmu::invslot::slotSecondary
+			));
+
+		WearChange(EQEmu::textures::weaponSecondary, static_cast<uint16>(model_id), 0);
+		Message(15, "Your secondary weapon appearance has been modified, changes will fully take affect next time you zone");
+	}
 }
