@@ -537,7 +537,7 @@ int main(int argc, char** argv) {
 	};
 
 	EQ::Timer process_timer(loop_fn);
-	bool is_boat_zone = strstr(zone_name, "erudnext") != NULL || strstr(zone_name, "freporte") != NULL || strstr(zone_name, "qeynos") != NULL || strstr(zone_name, "oot") != NULL || strstr(zone_name, "timorous") != NULL || strstr(zone_name, "erudsxing") != NULL || strstr(zone_name, "firiona") != NULL || strstr(zone_name, "butcher") != NULL;
+	bool is_boat_zone = strstr(zone_name, "erudnext") != NULL || strstr(zone_name, "freporte") != NULL || strstr(zone_name, "qeynos") != NULL || strstr(zone_name, "oot") != NULL || strstr(zone_name, "timorous") != NULL || strstr(zone_name, "erudsxing") != NULL || strstr(zone_name, "firiona") != NULL || strstr(zone_name, "butcher") != NULL || strstr(zone_name, "overthere") != NULL || strstr(zone_name, "oasis") != NULL || strstr(zone_name, "nro") != NULL || strstr(zone_name, "iceclad") != NULL;
 	if (!is_boat_zone)
 		process_timer.Start(1000, true);
 	else
