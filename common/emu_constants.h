@@ -131,6 +131,9 @@ namespace EQEmu
 		const int16 CORPSE_BEGIN = invslot::slotGeneral1;
 		const int16 CORPSE_END = CORPSE_BEGIN + invslot::slotCursor;
 
+		using RoF2::invslot::EQUIPMENT_BITMASK;
+		using RoF2::invslot::GENERAL_BITMASK;
+		using RoF2::invslot::CURSOR_BITMASK;
 		using RoF2::invslot::POSSESSIONS_BITMASK;
 		using RoF2::invslot::CORPSE_BITMASK;
 
@@ -187,6 +190,10 @@ namespace EQEmu
 
 	namespace constants {
 		const EQEmu::versions::ClientVersion CHARACTER_CREATION_CLIENT = EQEmu::versions::ClientVersion::Titanium;
+
+		using RoF2::constants::EXPANSION;
+		using RoF2::constants::EXPANSION_BIT;
+		using RoF2::constants::EXPANSIONS_MASK;
 
 		using RoF2::constants::CHARACTER_CREATION_LIMIT;
 		

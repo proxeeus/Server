@@ -122,12 +122,12 @@ EQEmu::InventoryProfile::~InventoryProfile()
 bool EQEmu::InventoryProfile::SetInventoryVersion(versions::MobVersion inventory_version) {
 	if (!m_mob_version_set) {
 		m_mob_version = versions::ValidateMobVersion(inventory_version);
-		m_lookup = inventory::Lookup(m_mob_version);
+		m_lookup = inventory::StaticLookup(m_mob_version);
 		m_mob_version_set = true;
 		return true;
 	}
 	else {
-		m_lookup = inventory::Lookup(versions::MobVersion::Unknown);
+		m_lookup = inventory::StaticLookup(versions::MobVersion::Unknown);
 		Log(Logs::General, Logs::Error, "InventoryVersion set request after initial set (old: %u, new: %u)",
 			static_cast<uint32>(m_mob_version), static_cast<uint32>(inventory_version));
 		return false;
@@ -241,12 +241,12 @@ int16 EQEmu::InventoryProfile::PutItem(int16 slot_id, const ItemInstance& inst)
 			return EQEmu::invslot::SLOT_INVALID;
 	}
 	else if (slot_id <= EQEmu::invslot::BANK_END && slot_id >= EQEmu::invslot::BANK_BEGIN) {
-		if ((slot_id - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+		if ((slot_id - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize.Bank)
 			return EQEmu::invslot::SLOT_INVALID;
 	}
 	else if (slot_id <= EQEmu::invbag::BANK_BAGS_END && slot_id >= EQEmu::invbag::BANK_BAGS_BEGIN) {
 		auto temp_slot = (slot_id - EQEmu::invbag::BANK_BAGS_BEGIN) / EQEmu::invbag::SLOT_COUNT;
-		if (temp_slot >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+		if (temp_slot >= m_lookup->InventoryTypeSize.Bank)
 			return EQEmu::invslot::SLOT_INVALID;
 	}
 	
@@ -298,14 +298,14 @@ bool EQEmu::InventoryProfile::SwapItem(
 		}
 	}
 	else if (source_slot <= EQEmu::invslot::BANK_END && source_slot >= EQEmu::invslot::BANK_BEGIN) {
-		if ((source_slot - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank]) {
+		if ((source_slot - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize.Bank) {
 			fail_state = swapNotAllowed;
 			return false;
 		}
 	}
 	else if (source_slot <= EQEmu::invbag::BANK_BAGS_END && source_slot >= EQEmu::invbag::BANK_BAGS_BEGIN) {
 		auto temp_slot = (source_slot - EQEmu::invbag::BANK_BAGS_BEGIN) / EQEmu::invbag::SLOT_COUNT;
-		if (temp_slot >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank]) {
+		if (temp_slot >= m_lookup->InventoryTypeSize.Bank) {
 			fail_state = swapNotAllowed;
 			return false;
 		}
@@ -325,14 +325,14 @@ bool EQEmu::InventoryProfile::SwapItem(
 		}
 	}
 	else if (destination_slot <= EQEmu::invslot::BANK_END && destination_slot >= EQEmu::invslot::BANK_BEGIN) {
-		if ((destination_slot - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank]) {
+		if ((destination_slot - EQEmu::invslot::BANK_BEGIN) >= m_lookup->InventoryTypeSize.Bank) {
 			fail_state = swapNotAllowed;
 			return false;
 		}
 	}
 	else if (destination_slot <= EQEmu::invbag::BANK_BAGS_END && destination_slot >= EQEmu::invbag::BANK_BAGS_BEGIN) {
 		auto temp_slot = (destination_slot - EQEmu::invbag::BANK_BAGS_BEGIN) / EQEmu::invbag::SLOT_COUNT;
-		if (temp_slot >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank]) {
+		if (temp_slot >= m_lookup->InventoryTypeSize.Bank) {
 			fail_state = swapNotAllowed;
 			return false;
 		}
@@ -1092,7 +1092,7 @@ bool EQEmu::InventoryProfile::SupportsClickCasting(int16 slot_id)
 		return true;
 	}
 	else if (slot_id >= invbag::GENERAL_BAGS_BEGIN && slot_id <= invbag::GENERAL_BAGS_END) {
-		if (inventory::Lookup(m_mob_version)->AllowClickCastFromBag)
+		if (inventory::StaticLookup(m_mob_version)->AllowClickCastFromBag)
 			return true;
 	}
 
@@ -1308,7 +1308,7 @@ EQEmu::ItemInstance* EQEmu::InventoryProfile::_GetItem(const std::map<int16, Ite
 			return nullptr;
 	}
 	else if (slot_id <= EQEmu::invslot::BANK_END && slot_id >= EQEmu::invslot::BANK_BEGIN) {
-		if (slot_id - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+		if (slot_id - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize.Bank)
 			return nullptr;
 	}
 	
@@ -1360,7 +1360,7 @@ int16 EQEmu::InventoryProfile::_PutItem(int16 slot_id, ItemInstance* inst)
 		result = slot_id;
 	}
 	else if (slot_id >= invslot::BANK_BEGIN && slot_id <= invslot::BANK_END) {
-		if (slot_id - EQEmu::invslot::BANK_BEGIN < m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank]) {
+		if (slot_id - EQEmu::invslot::BANK_BEGIN < m_lookup->InventoryTypeSize.Bank) {
 			m_bank[slot_id] = inst;
 			result = slot_id;
 		}
@@ -1403,7 +1403,7 @@ int16 EQEmu::InventoryProfile::_HasItem(std::map<int16, ItemInstance*>& bucket, 
 				continue;
 		}
 		else if (iter->first <= EQEmu::invslot::BANK_END && iter->first >= EQEmu::invslot::BANK_BEGIN) {
-			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize.Bank)
 				continue;
 		}
 
@@ -1505,7 +1505,7 @@ int16 EQEmu::InventoryProfile::_HasItemByUse(std::map<int16, ItemInstance*>& buc
 				continue;
 		}
 		else if (iter->first <= EQEmu::invslot::BANK_END && iter->first >= EQEmu::invslot::BANK_BEGIN) {
-			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize.Bank)
 				continue;
 		}
 
@@ -1578,7 +1578,7 @@ int16 EQEmu::InventoryProfile::_HasItemByLoreGroup(std::map<int16, ItemInstance*
 				continue;
 		}
 		else if (iter->first <= EQEmu::invslot::BANK_END && iter->first >= EQEmu::invslot::BANK_BEGIN) {
-			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize[EQEmu::invtype::typeBank])
+			if (iter->first - EQEmu::invslot::BANK_BEGIN >= m_lookup->InventoryTypeSize.Bank)
 				continue;
 		}
 
