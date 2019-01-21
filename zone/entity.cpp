@@ -649,6 +649,7 @@ void EntityList::AddNPC(NPC *npc, bool SendSpawnPacket, bool dontqueue)
 	npc->SetID(GetFreeID());
 
 	parse->EventNPC(EVENT_SPAWN, npc, nullptr, "", 0);
+
 	npc->FixZ();
 
 	uint16 emoteid = npc->GetEmoteID();
