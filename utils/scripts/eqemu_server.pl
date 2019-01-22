@@ -1160,7 +1160,7 @@ sub get_remote_file {
     }
 
     #::: wget -O db_update/db_update_manifest.txt https://raw.githubusercontent.com/EQEmu/Server/master/utils/sql/db_update_manifest.txt
-    $wget = `wget -N --cache=no --no-check-certificate --quiet -O $destination_file $request_url`;
+    $wget = `wget -N --no-cache --cache=no --no-check-certificate --quiet -O $destination_file $request_url`;
     print "[Download] Saved: (" . $destination_file . ") from " . $request_url . "\n" if !$silent_download;
     if ($wget =~ /unable to resolve/i) {
         print "Error, no connection or failed request...\n\n";
@@ -2264,14 +2264,14 @@ sub run_database_check {
                 push(@total_updates, $i);
             }
             else {
-                print "[Database] has update: " . $i . " - '" . $file_name . "' \n";
+                print "[Database] has update (" . $i . ") '" . $file_name . "' \n";
             }
             print_match_debug();
             print_break();
         }
         if ($match_type eq "missing") {
             if (get_mysql_result($query_check) =~ /$match_text/i) {
-                print "[Database] has update: " . $i . " - '" . $file_name . "' \n";
+                print "[Database] has update (" . $i . ") '" . $file_name . "' \n";
                 next;
             }
             else {
@@ -2289,7 +2289,7 @@ sub run_database_check {
                 push(@total_updates, $i);
             }
             else {
-                print "[Database] has update: " . $i . " - '" . $file_name . "' \n";
+                print "[Database] has update (" . $i . ") '" . $file_name . "' \n";
             }
             print_match_debug();
             print_break();
@@ -2301,7 +2301,7 @@ sub run_database_check {
                 push(@total_updates, $i);
             }
             else {
-                print "[Database] has update: " . $i . " - '" . $file_name . "' \n";
+                print "[Database] has update (" . $i . ") '" . $file_name . "' \n";
             }
             print_match_debug();
             print_break();
