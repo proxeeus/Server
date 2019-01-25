@@ -1707,6 +1707,9 @@ void NPC::AI_DoMovement() {
 						SetHeading(m_CurrentWayPoint.w);
 						//SetAppearance(eaStanding, false);
 					}
+					if (pause_timer_complete == false && GetNPCTypeID() == 96301 && cur_wp_pause == -1) { // try to keep Maiden's in TD 'alive' during infinite wait
+						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
+					}
 					// wipe feign memory since we reached our first waypoint
 					if (cur_wp == 1)
 						ClearFeignMemory();
