@@ -1695,7 +1695,18 @@ void NPC::AI_DoMovement() {
 					if (cur_wp == -2) {
 						AI_SetupNextWaypoint();
 					}
-		
+					
+					// if indefinite pause, rotate model
+					if (cur_wp_pause == -1) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+						//SetAppearance(eaStanding, false);
+					}
+					if (cur_wp_pause > 0) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+						//SetAppearance(eaStanding, false);
+					}
 					// wipe feign memory since we reached our first waypoint
 					if (cur_wp == 1)
 						ClearFeignMemory();
