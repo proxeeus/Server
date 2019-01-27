@@ -1696,6 +1696,9 @@ void NPC::AI_DoMovement() {
 						AI_SetupNextWaypoint();
 					}
 					
+					//
+					// Boat system edge cases
+					//
 					// if indefinite pause, rotate model
 					if (cur_wp_pause == -1) {
 						RotateTo(m_CurrentWayPoint.w);
@@ -1710,6 +1713,21 @@ void NPC::AI_DoMovement() {
 					if (pause_timer_complete == false && GetNPCTypeID() == 96301 && cur_wp_pause == -1) { // try to keep Maiden's in TD 'alive' during infinite wait
 						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
 					}
+					if (pause_timer_complete == false && GetNPCTypeID() == 68150 && cur_wp_pause == -1) { // try to keep Butcher's skils 'alive' during infinite wait
+						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
+					}
+					if (pause_timer_complete == false && GetNPCTypeID() == 68319 && cur_wp_pause == -1) { // try to keep Butcher's skils 'alive' during infinite wait
+						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
+					}
+					if (pause_timer_complete == false && GetNPCTypeID() == 68320 && cur_wp_pause == -1) { // try to keep Butcher's skils 'alive' during infinite wait
+						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
+					}
+					if (pause_timer_complete == false && GetNPCTypeID() == 68321 && cur_wp_pause == -1) { // try to keep Butcher's skils 'alive' during infinite wait
+						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
+					}
+					//
+					// End boat system edge cases
+					//
 					// wipe feign memory since we reached our first waypoint
 					if (cur_wp == 1)
 						ClearFeignMemory();
