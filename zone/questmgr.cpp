@@ -984,8 +984,15 @@ uint16 QuestManager::scribespells(uint8 max_level, uint8 min_level) {
 	bool SpellGlobalCheckResult = 0;
 	bool SpellBucketCheckResult = 0;
 
-
-	for(spell_id = 0, book_slot = initiator->GetNextAvailableSpellBookSlot(), count = 0; spell_id < SPDAT_RECORDS && book_slot < EQEmu::spells::SPELLBOOK_SIZE; spell_id++, book_slot = initiator->GetNextAvailableSpellBookSlot(book_slot))
+	for (
+		spell_id = 0,
+		book_slot = initiator->GetNextAvailableSpellBookSlot(),
+		count = 0; // ;
+		spell_id < SPDAT_RECORDS &&
+		book_slot < EQEmu::spells::SPELLBOOK_SIZE; // ;
+		spell_id++,
+		book_slot = initiator->GetNextAvailableSpellBookSlot(book_slot)
+	)
 	{
 		if
 		(
@@ -2135,8 +2142,7 @@ bool QuestManager::createBot(const char *name, const char *lastname, uint8 level
 			return false;
 		}
 
-		NPCType DefaultNPCTypeStruct = Bot::CreateDefaultNPCTypeStructForBot(name, lastname, level, race, botclass, gender);
-		Bot* NewBot = new Bot(DefaultNPCTypeStruct, initiator);
+		Bot* NewBot = new Bot(Bot::CreateDefaultNPCTypeStructForBot(name, lastname, level, race, botclass, gender), initiator);
 
 
 		if(NewBot)

@@ -5057,7 +5057,7 @@ void Client::UnscribeSpell(int slot, bool update_client)
 	m_pp.spell_book[slot] = 0xFFFFFFFF;
 
 	database.DeleteCharacterSpell(this->CharacterID(), m_pp.spell_book[slot], slot);
-	if(update_client)
+	if(update_client && slot < EQEmu::spells::DynamicLookup(ClientVersion(), GetGM())->SpellbookSize)
 	{
 		auto outapp = new EQApplicationPacket(OP_DeleteSpell, sizeof(DeleteSpell_Struct));
 		DeleteSpell_Struct* del = (DeleteSpell_Struct*)outapp->pBuffer;
@@ -5070,9 +5070,7 @@ void Client::UnscribeSpell(int slot, bool update_client)
 
 void Client::UnscribeSpellAll(bool update_client)
 {
-	int i;
-
-	for(i = 0; i < EQEmu::spells::SPELLBOOK_SIZE; i++)
+	for(int i = 0; i < EQEmu::spells::SPELLBOOK_SIZE; i++)
 	{
 		if(m_pp.spell_book[i] != 0xFFFFFFFF)
 			UnscribeSpell(i, update_client);
