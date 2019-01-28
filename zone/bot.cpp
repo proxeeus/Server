@@ -29,7 +29,9 @@
 
 extern volatile bool is_zone_loaded;
 // This constructor is used during the bot create command
-Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1) {
+Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1), ping_timer(1) {
+	GiveNPCTypeData(npcTypeData);
+	
 	if(botOwner) {
 		this->SetBotOwner(botOwner);
 		this->_botOwnerCharacterID = botOwner->CharacterID();
@@ -80,6 +82,7 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	SetShowHelm(true);
 	SetPauseAI(false);
 	rest_timer.Disable();
+	ping_timer.Disable();
 	SetFollowDistance(BOT_FOLLOW_DISTANCE_DEFAULT);
 	if (IsCasterClass(GetClass()))
 		SetStopMeleeLevel((uint8)RuleI(Bots, CasterStopMeleeLevel));
@@ -105,8 +108,10 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 
 // This constructor is used when the bot is loaded out of the database
 Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double totalPlayTime, uint32 lastZoneId, NPCType *npcTypeData) 
-	: NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1)
+	: NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1), ping_timer(1)
 {
+	GiveNPCTypeData(npcTypeData);
+	
 	this->_botOwnerCharacterID = botOwnerCharacterID;
 	if(this->_botOwnerCharacterID > 0)
 		this->SetBotOwner(entity_list.GetClientByCharID(this->_botOwnerCharacterID));
@@ -162,6 +167,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	SetPauseAI(false);
 
 	rest_timer.Disable();
+	ping_timer.Disable();
 	SetFollowDistance(BOT_FOLLOW_DISTANCE_DEFAULT);
 	if (IsCasterClass(GetClass()))
 		SetStopMeleeLevel((uint8)RuleI(Bots, CasterStopMeleeLevel));
@@ -2013,6 +2019,9 @@ bool Bot::Process() {
 	if (IsStunned() || IsMezzed())
 		return true;
 
+	if (!IsMoving() && ping_timer.Check())
+		SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
+	
 	// Bot AI
 	AI_Process();
 	return true;
@@ -3309,6 +3318,7 @@ bool Bot::Spawn(Client* botCharacterOwner) {
 		// Load pet
 		LoadPet();
 		SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
+		ping_timer.Start(8000);
 		// there is something askew with spawn struct appearance fields...
 		// I re-enabled this until I can sort it out
 		uint32 itemID = 0;
@@ -9135,6 +9145,20 @@ std::string Bot::CreateSayLink(Client* c, const char* message, const char* name)
 	return saylink;
 }
 
+void Bot::StopMoving() {
+	if (!ping_timer.Enabled())
+		ping_timer.Start(8000);
+
+	Mob::StopMoving();
+}
+
+void Bot::StopMoving(float new_heading) {
+	if (!ping_timer.Enabled())
+		ping_timer.Start(8000);
+
+	Mob::StopMoving(new_heading);
+}
+
 void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	if (in_feigned)
 	{
@@ -9146,5 +9170,4 @@ void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	}
 	feigned = in_feigned;
 }
-
 #endif
