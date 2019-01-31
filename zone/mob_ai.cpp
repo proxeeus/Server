@@ -1679,7 +1679,11 @@ void NPC::AI_DoMovement() {
 					SetWaypointPause();
 					SetAppearance(eaStanding, false);
 					if (cur_wp_pause > 0) {
-						RotateTo(m_CurrentWayPoint.w);
+						// Rotate only if heading isn't -1. Historically -1 headings were ignored way back then, and a massive -1 defaulting on wp grids
+						// has been done in the DB in order to avoid old rotation bugs. Now, the revamped movement code defaults to rotating 
+						// even at -1 headings, which we do not want. This is purely cosmetic.
+						if(m_CurrentWayPoint.w != -1)
+							RotateTo(m_CurrentWayPoint.w);
 					}
 		
 					//kick off event_waypoint arrive
@@ -1699,16 +1703,47 @@ void NPC::AI_DoMovement() {
 					//
 					// Boat system edge cases
 					//
-					// if indefinite pause, rotate model
-					if (cur_wp_pause == -1) {
+					// if indefinite pause, force model rotation
+					if (cur_wp_pause == -1 && GetNPCTypeID() == 96301) {	// Not sure about this one, will need to check TD @ the BB zone point
 						RotateTo(m_CurrentWayPoint.w);
 						SetHeading(m_CurrentWayPoint.w);
-						//SetAppearance(eaStanding, false);
 					}
-					if (cur_wp_pause > 0) {
+					if (cur_wp_pause == -1 && GetNPCTypeID() == 68150) {
 						RotateTo(m_CurrentWayPoint.w);
 						SetHeading(m_CurrentWayPoint.w);
-						//SetAppearance(eaStanding, false);
+					}
+					if (cur_wp_pause == -1 && GetNPCTypeID() == 68319) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause == -1 && GetNPCTypeID() == 68320) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause == -1 && GetNPCTypeID() == 68321) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					//
+					if (cur_wp_pause > 0 && GetNPCTypeID() == 96301) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause > 0 && GetNPCTypeID() == 68150) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause > 0 && GetNPCTypeID() == 68319) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause > 0 && GetNPCTypeID() == 68320) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
+					}
+					if (cur_wp_pause > 0 && GetNPCTypeID() == 68321) {
+						RotateTo(m_CurrentWayPoint.w);
+						SetHeading(m_CurrentWayPoint.w);
 					}
 					if (pause_timer_complete == false && GetNPCTypeID() == 96301 && cur_wp_pause == -1) { // try to keep Maiden's in TD 'alive' during infinite wait
 						SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0, true);
