@@ -5463,7 +5463,7 @@ void command_spawnfix(Client *c, const Seperator *sep) {
 
 		c->Message(10, "Inserting spawn2 entry...");
 
-		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,enabled,animation) values('%i','%s','0','%f','%f','%f','%f','0','0','0','0','1','1','0');", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
+		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,enabled,animation) values('%i','%s','0','%f','%f','%f','%f','600','0','0','0','1','1','0');", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
 		auto spawn2entryResults = database.QueryDatabase(spawn2entryquery);
 		if (spawn2entryResults.Success())
 		{
