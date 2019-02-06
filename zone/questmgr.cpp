@@ -689,6 +689,17 @@ void QuestManager::shout2(const char *str) {
 	}
 }
 
+void QuestManager::debugshout(const char *str) {
+	QuestManagerCurrentQuestVars();
+	if (!owner) {
+		Log(Logs::General, Logs::Quests, "QuestManager::debugshout called with nullptr owner. Probably syntax error in quest file.");
+		return;
+	}
+	else {
+		worldserver.SendEmoteMessage(0, 0, 255, 13, "%s debugs, '%s'", owner->GetCleanName(), str);
+	}
+}
+
 void QuestManager::gmsay(const char *str, uint32 color, bool send_to_world, uint32 to_guilddbid, uint32 to_minstatus) {
 	QuestManagerCurrentQuestVars();
 	if(send_to_world)

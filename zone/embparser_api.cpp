@@ -578,6 +578,19 @@ XS(XS__shout2) {
 	XSRETURN_EMPTY;
 }
 
+XS(XS__debugshout);
+XS(XS__debugshout) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: quest::debugshout(string message)");
+
+	char *message = (char *)SvPV_nolen(ST(0));
+
+	quest_manager.debugshout(message);
+
+	XSRETURN_EMPTY;
+}
+
 XS(XS__gmsay);
 XS(XS__gmsay) {
 	dXSARGS;
@@ -3923,6 +3936,7 @@ EXTERN_C XS(boot_quest) {
 	newXS(strcpy(buf, "sfollow"), XS__sfollow, file);
 	newXS(strcpy(buf, "shout"), XS__shout, file);
 	newXS(strcpy(buf, "shout2"), XS__shout2, file);
+	newXS(strcpy(buf, "debugshout"), XS__debugshout, file);
 	newXS(strcpy(buf, "showgrid"), XS__showgrid, file);
 	newXS(strcpy(buf, "signal"), XS__signal, file);
 	newXS(strcpy(buf, "signalwith"), XS__signalwith, file);
