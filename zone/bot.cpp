@@ -5714,7 +5714,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 
 	if(taunting && target && target->IsNPC() && taunt_time) {
 		if(GetTarget() && GetTarget()->GetHateTop() && GetTarget()->GetHateTop() != this) {
-			if (GetTarget()->GetNPCTypeID() == 679) {
+			if (GetTarget()->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId)) {
 				BotGroupSay(this, "Taunting %s", target->playerbot_temp_name);
 			}
 			else {

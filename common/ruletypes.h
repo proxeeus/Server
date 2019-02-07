@@ -506,6 +506,7 @@ RULE_BOOL(Combat, OneProcPerWeapon, true) //If enabled, One proc per weapon per 
 RULE_BOOL(Combat, ProjectileDmgOnImpact, true) //If enabled, projectiles (ie arrows) will hit on impact, instead of instantly.
 RULE_BOOL(Combat, MeleePush, true) // enable melee push
 RULE_INT(Combat, MeleePushChance, 50) // (NPCs) chance the target will be pushed. Made up, 100 actually isn't that bad
+RULE_INT(Combat, MeleePushForce, 2) // Force multiplier applied to attacks pushing NPCs
 RULE_BOOL(Combat, UseLiveCombatRounds, true) // turn this false if you don't want to worry about fixing up combat rounds for NPCs
 RULE_INT(Combat, NPCAssistCap, 5) // Maxiumium number of NPCs that will assist another NPC at once
 RULE_INT(Combat, NPCAssistCapTimer, 6000) // Time in milliseconds a NPC will take to clear assist aggro cap space
@@ -617,6 +618,11 @@ RULE_INT(Bots, CasterStopMeleeLevel, 13) // Level at which caster bots stop mele
 RULE_INT(Bots, AllowedClasses, 0xFFFFFFFF) // Bitmask of allowed bot classes
 RULE_INT(Bots, AllowedRaces, 0xFFFFFFFF) // Bitmask of allowed bot races
 RULE_INT(Bots, AllowedGenders, 0x3) // Bitmask of allowed bot genders
+RULE_CATEGORY_END()
+
+RULE_CATEGORY(PlayerBots)
+RULE_INT(PlayerBots, PlayerBotId, 679) // ID of the PlayerBot npc in npc_types table
+RULE_INT(PlayerBots, CorpseDecayTimer, 3600000) // How long do PlayerBot corpses stay in the world (3600000 = 1 hour).
 RULE_CATEGORY_END()
 #endif
 

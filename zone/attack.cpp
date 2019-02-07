@@ -2442,7 +2442,7 @@ bool NPC::Death(Mob* killer_mob, int32 damage, uint16 spell, EQEmu::skills::Skil
 			(killer->IsNPC() && killer->CastToNPC()->GetSwarmInfo() && killer->CastToNPC()->GetSwarmInfo()->GetOwner() && killer->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
 			|| (killer_mob && IsLdonTreasure))) 
 		|| // Special check to see if an NPC killed a player bot
-		(killer !=0 && killer->IsNPC() && (this->GetNPCTypeID() == 679)))
+		(killer !=0 && killer->IsNPC() && (this->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))))
 	{
 		if (killer != 0) {
 			if (killer->GetOwner() != 0 && killer->GetOwner()->IsClient())
@@ -3427,10 +3427,10 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
-				if (attacker->npctype_id == 679) {
+				if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
 				}
-				else if (attacker->GetTarget() && attacker->GetTarget()->npctype_id == 679)
+				else if (attacker->GetTarget() && attacker->GetTarget()->npctype_id == RuleI(PlayerBots, PlayerBotId))
 				{
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Emote, "%s beams a smile at %s", this->GetCleanName(), attacker->playerbot_temp_name);
 				}
@@ -3441,7 +3441,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 					attacker->Message(MT_Say, "You say 'Ahhh, I feel much better now...'");
 					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
 				}
-				else if (attacker->npctype_id == 679 ) {
+				else if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), MT_Say, "%s says 'Ahhh, I feel much better now...'", attacker->playerbot_temp_name);
 				}
 				else
@@ -3646,7 +3646,7 @@ void Mob::CommonDamage(Mob* attacker, int &damage, const uint16 spell_id, const 
 		a->hit_heading = attacker ? attacker->GetHeading() : 0.0f;
 		if (RuleB(Combat, MeleePush) && damage > 0 && !IsRooted() &&
 			(IsBot() || IsClient() || zone->random.Roll(RuleI(Combat, MeleePushChance)))) {
-			a->force = EQEmu::skills::GetSkillMeleePushForce(skill_used) * 2;
+			a->force = EQEmu::skills::GetSkillMeleePushForce(skill_used) * RuleI(Combat, MeleePushForce);
 			if (a->force != 0.0f) {
 				m_Delta.x += a->force * g_Math.FastSin(a->hit_heading);
 				m_Delta.y += a->force * g_Math.FastCos(a->hit_heading);

@@ -184,9 +184,9 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 
 		if ((level >= npcCorpseDecayTimes[count].minlvl) && (level <= npcCorpseDecayTimes[count].maxlvl)) {
 			// Playerbot special decay timer
-			if (npctype_id == 679 ) {
+			if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 				is_player_bot_corpse = true;
-				corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+				corpse_decay_timer.SetTimer(RuleI(PlayerBots, CorpseDecayTimer));
 			}
 			else {
 				corpse_decay_timer.SetTimer(npcCorpseDecayTimes[count].seconds * 1000);
@@ -196,9 +196,9 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 	}
 	if(IsEmpty()) {
 		// Playerbot special decay timer
-		if (npctype_id == 679 ) {
+		if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 			is_player_bot_corpse = true;
-			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+			corpse_decay_timer.SetTimer(RuleI(PlayerBots, CorpseDecayTimer)); 
 		}
 		else {
 			corpse_decay_timer.SetTimer(RuleI(NPC, EmptyNPCCorpseDecayTimeMS) + 1000);
@@ -208,9 +208,9 @@ Corpse::Corpse(NPC* in_npc, ItemList* in_itemlist, uint32 in_npctypeid, const NP
 
 	if(in_npc->HasPrivateCorpse()) {
 		// Playerbot special decay timer
-		if (npctype_id == 679) {
+		if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 			is_player_bot_corpse = true;
-			corpse_decay_timer.SetTimer(3600000); // 1h for testing purposes, need to export it to a rule
+			corpse_decay_timer.SetTimer(RuleI(PlayerBots, CorpseDecayTimer));
 		}
 		else {
 			corpse_delay_timer.SetTimer(corpse_decay_timer.GetRemainingTime() + 1000);

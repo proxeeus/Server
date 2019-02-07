@@ -697,7 +697,7 @@ bool NPC::Process()
 	if (tic_timer.Check()) {
 
 		// Playerbot check to avoid ghosting
-		if (npctype_id == 679 ) {
+		if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 			FixZ();
 			if (!IsMoving() || !IsEngaged()) {
 				SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
@@ -2082,7 +2082,7 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		ns->spawn.is_npc = 0;
 	else
 		ns->spawn.is_npc = 1;
-	if (npctype_id == 679 ) {
+	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 		ns->spawn.is_npc = 0;
 		ns->spawn.NPC = 0;
 		ns->spawn.guildID = 0xFFFFFFFF;

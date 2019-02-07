@@ -8252,7 +8252,7 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 	}
 
 	// Put all Player Bot IDs checks here, will probably need to end in #defines somewhere
-	if (bot_owner->GetTarget()->GetNPCTypeID() != 679 )
+	if (bot_owner->GetTarget()->GetNPCTypeID() != RuleI(PlayerBots, PlayerBotId))
 	{
 		bot_owner->Message(m_message, "Target needs to be a Player Bot.");
 		return;
