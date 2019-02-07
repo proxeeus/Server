@@ -618,6 +618,7 @@ RULE_INT(Bots, CasterStopMeleeLevel, 13) // Level at which caster bots stop mele
 RULE_INT(Bots, AllowedClasses, 0xFFFFFFFF) // Bitmask of allowed bot classes
 RULE_INT(Bots, AllowedRaces, 0xFFFFFFFF) // Bitmask of allowed bot races
 RULE_INT(Bots, AllowedGenders, 0x3) // Bitmask of allowed bot genders
+RULE_BOOL(Bots, HealOnSpawn, false)	// Completely heals a bot when ^spawned
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBots)

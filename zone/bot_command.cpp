@@ -5364,6 +5364,9 @@ void bot_subcommand_bot_spawn(Client *c, const Seperator *sep)
 		return;
 	}
 
+	if (RuleB(Bots, HealOnSpawn))
+		my_bot->Heal(); my_bot->SetMana(my_bot->GetMaxMana());
+
 	static const char* bot_spawn_message[16] = {
 		"A solid weapon is my ally!", // WARRIOR / 'generic'
 		"The pious shall never die!", // CLERIC
@@ -6309,6 +6312,9 @@ void bot_subcommand_botgroup_load(Client *c, const Seperator *sep)
 			safe_delete(botgroup_member);
 			return;
 		}
+
+		if (RuleB(Bots, HealOnSpawn))
+			botgroup_member->Heal(); botgroup_member->SetMana(botgroup_member->GetMaxMana());
 
 		Bot::AddBotToGroup(botgroup_member, group_inst);
 	}
