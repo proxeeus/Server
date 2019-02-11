@@ -5629,9 +5629,11 @@ void Bot::TryBackstab(Mob *other, int ReuseTime) {
 				if(zone->random.Real(0, 1) < DoubleAttackProbability) {
 					if(other->GetHP() > 0)
 						RogueBackstab(other,false,ReuseTime);
-
-					if (tripleChance && other->GetHP() > 0 && tripleChance > zone->random.Int(0, 100))
-						RogueBackstab(other,false,ReuseTime);
+					if (RuleB(Bots, RoguesCanTripleBackstab))
+					{
+						if (tripleChance && other->GetHP() > 0 && tripleChance > zone->random.Int(0, 100))
+							RogueBackstab(other, false, ReuseTime);
+					}
 				}
 			}
 		}
@@ -5826,18 +5828,20 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	if (skill_to_use == EQEmu::skills::SkillFlyingKick || skill_to_use == EQEmu::skills::SkillDragonPunch || skill_to_use == EQEmu::skills::SkillEagleStrike || skill_to_use == EQEmu::skills::SkillTigerClaw || skill_to_use == EQEmu::skills::SkillRoundKick) {
 		reuse = (MonkSpecialAttack(target, skill_to_use) - 1);
 		MonkSpecialAttack(target, skill_to_use);
-		uint32 bDoubleSpecialAttack = (itembonuses.DoubleSpecialAttack + spellbonuses.DoubleSpecialAttack + aabonuses.DoubleSpecialAttack);
-		if(bDoubleSpecialAttack && (bDoubleSpecialAttack >= 100 || bDoubleSpecialAttack > zone->random.Int(0, 100))) {
-			int MonkSPA[5] = { EQEmu::skills::SkillFlyingKick, EQEmu::skills::SkillDragonPunch, EQEmu::skills::SkillEagleStrike, EQEmu::skills::SkillTigerClaw, EQEmu::skills::SkillRoundKick };
-			MonkSpecialAttack(target, MonkSPA[zone->random.Int(0, 4)]);
-			int TripleChance = 25;
-			if (bDoubleSpecialAttack > 100)
-				TripleChance += (TripleChance * (100 - bDoubleSpecialAttack) / 100);
-
-			if(TripleChance > zone->random.Int(0,100))
+		if (RuleB(Bots, MonksCanDoubleSpecialAttacks))
+		{
+			uint32 bDoubleSpecialAttack = (itembonuses.DoubleSpecialAttack + spellbonuses.DoubleSpecialAttack + aabonuses.DoubleSpecialAttack);
+			if (bDoubleSpecialAttack && (bDoubleSpecialAttack >= 100 || bDoubleSpecialAttack > zone->random.Int(0, 100))) {
+				int MonkSPA[5] = { EQEmu::skills::SkillFlyingKick, EQEmu::skills::SkillDragonPunch, EQEmu::skills::SkillEagleStrike, EQEmu::skills::SkillTigerClaw, EQEmu::skills::SkillRoundKick };
 				MonkSpecialAttack(target, MonkSPA[zone->random.Int(0, 4)]);
-		}
+				int TripleChance = 25;
+				if (bDoubleSpecialAttack > 100)
+					TripleChance += (TripleChance * (100 - bDoubleSpecialAttack) / 100);
 
+				if (TripleChance > zone->random.Int(0, 100))
+					MonkSpecialAttack(target, MonkSPA[zone->random.Int(0, 4)]);
+			}
+		}
 		reuse *= 1000;
 		did_attack = true;
 	}
