@@ -2978,20 +2978,20 @@ int Mob::GetHandToHandDelay(void)
 
 	int delay = 35;
 	static uint8 mnk_hum_delay[] = { 99,
-		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
-		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 11-20
-		35, 35, 35, 35, 35, 35, 35, 34, 34, 34, // 21-30
-		34, 33, 33, 33, 33, 32, 32, 32, 32, 31, // 31-40
-		31, 31, 31, 30, 30, 30, 30, 29, 29, 29, // 41-50
-		29, 28, 28, 28, 28, 27, 27, 27, 27, 26, // 51-60
+		36, 36, 36, 36, 36, 36, 36, 36, 36, 36, // 1-10
+		36, 36, 36, 36, 36, 36, 36, 36, 36, 36, // 11-20
+		36, 36, 36, 36, 35, 35, 35, 35, 35, 34, // 21-30
+		34, 34, 34, 34, 33, 33, 33, 33, 33, 32, // 31-40
+		32, 32, 32, 32, 31, 31, 31, 31, 31, 30, // 41-50
+		30, 30, 29, 29, 29, 28, 28, 28, 27, 26, // 51-60
 		24, 22 };                                // 61-62
 	static uint8 mnk_iks_delay[] = { 99,
-		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
-		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 11-20
-		35, 35, 35, 35, 35, 35, 35, 35, 35, 34, // 21-30
-		34, 34, 34, 34, 34, 33, 33, 33, 33, 33, // 31-40
-		33, 32, 32, 32, 32, 32, 32, 31, 31, 31, // 41-50
-		31, 31, 31, 30, 30, 30, 30, 30, 30, 29, // 51-60
+		36, 36, 36, 36, 36, 36, 36, 36, 36, 36, // 1-10
+		36, 36, 36, 36, 36, 36, 36, 36, 36, 36, // 11-20
+		36, 36, 36, 36, 36, 36, 36, 36, 36, 35, // 21-30
+		35, 35, 35, 35, 34, 34, 34, 34, 34, 33, // 31-40
+		33, 33, 33, 33, 32, 32, 32, 32, 32, 31, // 41-50
+		31, 31, 30, 30, 30, 29, 29, 29, 38, 27, // 51-60
 		25, 23 };                                // 61-62
 	static uint8 bst_delay[] = { 99,
 		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
@@ -3329,15 +3329,30 @@ bool Client::CheckDoubleAttack()
 // with varying triple attack skill (1-3% error at least)
 bool Client::CheckTripleAttack()
 {
-	int chance = GetSkill(EQEmu::skills::SkillTripleAttack);
-	if (chance < 1)
-		return false;
+	if (!RuleB(Combat, UseOldTripleAttack))
+	{
+		int chance = GetSkill(EQEmu::skills::SkillTripleAttack);
+		if (chance < 1)
+			return false;
 
-	int inc = aabonuses.TripleAttackChance + spellbonuses.TripleAttackChance + itembonuses.TripleAttackChance;
-	chance = static_cast<int>(chance * (1 + inc / 100.0f));
-	chance = (chance * 100) / (chance + 800);
+		int inc = aabonuses.TripleAttackChance + spellbonuses.TripleAttackChance + itembonuses.TripleAttackChance;
+		chance = static_cast<int>(chance * (1 + inc / 100.0f));
+		chance = (chance * 100) / (chance + 800);
 
-	return zone->random.Int(1, 100) <= chance;
+		return zone->random.Int(1, 100) <= chance;
+	}
+	else
+	{
+		int chance = GetSkill(EQEmu::skills::SkillDoubleAttack);
+		if (chance < 1)
+			return false;
+
+		int inc = aabonuses.DoubleAttackChance + spellbonuses.DoubleAttackChance + itembonuses.DoubleAttackChance;
+		chance = static_cast<int>(chance * (1 + inc / 100.0f));
+		chance = (chance * 100) / (chance + 800);
+
+		return zone->random.Int(1, 100) <= chance;
+	}
 }
 
 bool Client::CheckDoubleRangedAttack() {
@@ -5351,16 +5366,20 @@ void Client::DoAttackRounds(Mob *target, int hand, bool IsFromSpell)
 
 			// you can only triple from the main hand
 			if (hand == EQEmu::invslot::slotPrimary && CanThisClassTripleAttack()) {
-				CheckIncreaseSkill(EQEmu::skills::SkillTripleAttack, target, -10);
+				if(!RuleB(Combat, UseOldTripleAttack))
+					CheckIncreaseSkill(EQEmu::skills::SkillTripleAttack, target, -10);
 				if (CheckTripleAttack()) {
 					Attack(target, hand, false, false, IsFromSpell);
-					auto flurrychance = aabonuses.FlurryChance + spellbonuses.FlurryChance +
-							    itembonuses.FlurryChance;
-					if (flurrychance && zone->random.Roll(flurrychance)) {
-						Attack(target, hand, false, false, IsFromSpell);
-						if (zone->random.Roll(flurrychance))
+					if (RuleB(Combat, TripleAttackCanFlurry))
+					{
+						auto flurrychance = aabonuses.FlurryChance + spellbonuses.FlurryChance +
+							itembonuses.FlurryChance;
+						if (flurrychance && zone->random.Roll(flurrychance)) {
 							Attack(target, hand, false, false, IsFromSpell);
-						Message_StringID(MT_NPCFlurry, YOU_FLURRY);
+							if (zone->random.Roll(flurrychance))
+								Attack(target, hand, false, false, IsFromSpell);
+							Message_StringID(MT_NPCFlurry, YOU_FLURRY);
+						}
 					}
 				}
 			}

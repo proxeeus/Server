@@ -515,6 +515,8 @@ RULE_BOOL(Combat, ClassicMasterWu, false) // classic master wu uses a random spe
 RULE_INT(Combat, LevelToStopDamageCaps, 0) // 1 will effectively disable them, 20 should give basically same results as old incorrect system
 RULE_BOOL(Combat, ClassicNPCBackstab, false) // true disables npc facestab - npcs get normal attack if not behind
 RULE_BOOL(Combat, UseNPCDamageClassLevelMods, true) // Uses GetClassLevelDamageMod calc in npc_scale_manager
+RULE_BOOL(Combat, UseOldTripleAttack, false)	// Do not use ROF+ Triple Attack skill to check if a client can Triple Attack
+RULE_BOOL(Combat, TripleAttackCanFlurry, true)	// Can a Triple Attack lead to a client Flurry ?
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -619,6 +621,8 @@ RULE_INT(Bots, AllowedClasses, 0xFFFFFFFF) // Bitmask of allowed bot classes
 RULE_INT(Bots, AllowedRaces, 0xFFFFFFFF) // Bitmask of allowed bot races
 RULE_INT(Bots, AllowedGenders, 0x3) // Bitmask of allowed bot genders
 RULE_BOOL(Bots, HealOnSpawn, false)	// Completely heals a bot when ^spawned
+RULE_BOOL(Bots, MonksCanDoubleSpecialAttacks, true)	// Can Monk-bots double Flying-kick etc ?
+RULE_BOOL(Bots, RoguesCanTripleBackstab, true) // Can Rogue-bots triple Backstab ?
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBots)

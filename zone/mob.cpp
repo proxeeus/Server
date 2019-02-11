@@ -2573,10 +2573,24 @@ bool Mob::CanThisClassDoubleAttack(void) const
 
 bool Mob::CanThisClassTripleAttack() const
 {
-	if (!IsClient())
-		return false; // When they added the real triple attack skill, mobs lost the ability to triple
+	if (!RuleB(Combat, UseOldTripleAttack))
+	{
+		if (!IsClient())
+			return false; // When they added the real triple attack skill, mobs lost the ability to triple
+		else
+			return CastToClient()->HasSkill(EQEmu::skills::SkillTripleAttack);
+	}
 	else
-		return CastToClient()->HasSkill(EQEmu::skills::SkillTripleAttack);
+	{
+		if (!IsClient())
+			return false; // When they added the real triple attack skill, mobs lost the ability to triple
+		else
+		return ((CastToClient()->GetClass() == 1) && (CastToClient()->GetLevel() == 60)
+			||
+			(CastToClient()->GetClass() == 7) && (CastToClient()->GetLevel() == 60)
+			);
+	}
+
 }
 
 bool Mob::IsWarriorClass(void) const
