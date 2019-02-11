@@ -517,6 +517,8 @@ RULE_BOOL(Combat, ClassicNPCBackstab, false) // true disables npc facestab - npc
 RULE_BOOL(Combat, UseNPCDamageClassLevelMods, true) // Uses GetClassLevelDamageMod calc in npc_scale_manager
 RULE_BOOL(Combat, UseOldTripleAttack, false)	// Do not use ROF+ Triple Attack skill to check if a client can Triple Attack
 RULE_BOOL(Combat, TripleAttackCanFlurry, true)	// Can a Triple Attack lead to a client Flurry ?
+RULE_INT(Combat, WarriorOldTripleAttackLevel, 60) // Level at which Warriors can Triple Attack
+RULE_INT(Combat, MonkOldTripleAttackLevel, 60) // Level at which Monks can Triple Attack
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -623,6 +625,7 @@ RULE_INT(Bots, AllowedGenders, 0x3) // Bitmask of allowed bot genders
 RULE_BOOL(Bots, HealOnSpawn, false)	// Completely heals a bot when ^spawned
 RULE_BOOL(Bots, MonksCanDoubleSpecialAttacks, true)	// Can Monk-bots double Flying-kick etc ?
 RULE_BOOL(Bots, RoguesCanTripleBackstab, true) // Can Rogue-bots triple Backstab ?
+RULE_BOOL(Bots, BotsUseOldTripleAttack, false) // Only a few select Bot classes can Triple attack
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBots)

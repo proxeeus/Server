@@ -2585,9 +2585,9 @@ bool Mob::CanThisClassTripleAttack() const
 		if (!IsClient())
 			return false; // When they added the real triple attack skill, mobs lost the ability to triple
 		else
-		return ((CastToClient()->GetClass() == 1) && (CastToClient()->GetLevel() == 60)
+		return ((CastToClient()->GetClass() == 1) && (CastToClient()->GetLevel() >= RuleI(Combat, WarriorOldTripleAttackLevel))
 			||
-			(CastToClient()->GetClass() == 7) && (CastToClient()->GetLevel() == 60)
+			(CastToClient()->GetClass() == 7) && (CastToClient()->GetLevel() >= RuleI(Combat, MonkOldTripleAttackLevel))
 			);
 	}
 

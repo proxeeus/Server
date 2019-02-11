@@ -6785,8 +6785,20 @@ int32 Bot::GenerateBaseManaPoints() {
 }
 
 void Bot::GenerateSpecialAttacks() {
-	if(((GetClass() == MONK) || (GetClass() == WARRIOR) || (GetClass() == RANGER) || (GetClass() == BERSERKER))	&& (GetLevel() >= 60))
-		SetSpecialAbility(SPECATK_TRIPLE, 1);
+	if (RuleB(Bots, BotsUseOldTripleAttack))
+	{
+		if( (GetClass() == MONK || GetLevel() >= RuleI(Combat, MonkOldTripleAttackLevel))
+			||
+			(GetClass() == WARRIOR || GetLevel() >= RuleI(Combat, WarriorOldTripleAttackLevel)))
+			
+			SetSpecialAbility(SPECATK_TRIPLE, 1);
+		
+	}
+	else
+	{
+		if (((GetClass() == MONK) || (GetClass() == WARRIOR) || (GetClass() == RANGER) || (GetClass() == BERSERKER)) && (GetLevel() >= 60))
+			SetSpecialAbility(SPECATK_TRIPLE, 1);
+	}
 }
 
 bool Bot::DoFinishedSpellAETarget(uint16 spell_id, Mob* spellTarget, EQEmu::spells::CastingSlot slot, bool& stopLogic) {
