@@ -315,6 +315,7 @@ RULE_INT(Pathing, CullNodesFromEnd, 1)		// Checks LOS from End point to second t
 RULE_REAL(Pathing, CandidateNodeRangeXY, 400)		// When searching for path start/end nodes, only nodes within this range will be considered.
 RULE_REAL(Pathing, CandidateNodeRangeZ, 10)		// When searching for path start/end nodes, only nodes within this range will be considered.
 RULE_REAL(Pathing, NavmeshStepSize, 30.0f)
+RULE_BOOL(Pathing, DisableWaterRoamBoxLogic, true)	// Will disable Water-based roambox logic to avoid fucking up roamboxes
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Watermap)

@@ -1599,32 +1599,33 @@ void NPC::AI_DoMovement() {
 			 * If mob was not spawned in water, let's not randomly roam them into water
 			 * if the roam box was sloppily configured
 			 */
-			if (!this->GetWasSpawnedInWater()) {
-				if (zone->HasMap() && zone->HasWaterMap()) {
-					auto position = glm::vec3(
-						roambox_destination_x,
-						roambox_destination_y,
-						(m_Position.z - 15)
-					);
+			if (!RuleB(Pathing, DisableWaterRoamBoxLogic))
+			{
+				if (!this->GetWasSpawnedInWater()) {
+					if (zone->HasMap() && zone->HasWaterMap()) {
+						auto position = glm::vec3(
+							roambox_destination_x,
+							roambox_destination_y,
+							(m_Position.z - 15)
+						);
+						/**
+						 * If someone brought us into water when we naturally wouldn't path there, return to spawn
+						 */
+						if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
+							roambox_destination_x = m_SpawnPoint.x;
+							roambox_destination_y = m_SpawnPoint.y;
+						}
 
-					/**
-					 * If someone brought us into water when we naturally wouldn't path there, return to spawn
-					 */
-					if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
-						roambox_destination_x = m_SpawnPoint.x;
-						roambox_destination_y = m_SpawnPoint.y;
-					}
+						if (zone->watermap->InLiquid(position)) {
+							Log(Logs::Detail,
+								Logs::NPCRoamBox, "%s | My destination is in water and I don't belong there!",
+								this->GetCleanName());
 
-					if (zone->watermap->InLiquid(position)) {
-						Log(Logs::Detail,
-							Logs::NPCRoamBox, "%s | My destination is in water and I don't belong there!",
-							this->GetCleanName());
-
-						return;
+							return;
+						}
 					}
 				}
 			}
-
 			glm::vec3 destination;
 			destination.x = roambox_destination_x;
 			destination.y = roambox_destination_y;
