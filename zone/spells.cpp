@@ -4210,7 +4210,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 	{
 		if(GetSpecialAbility(UNMEZABLE)) {
 			Log(Logs::Detail, Logs::Spells, "We are immune to Mez spells.");
-			caster->Message_StringID(MT_Shout, CANNOT_MEZ);
+			caster->Message_StringID(MT_SpellFailure, CANNOT_MEZ);
 			int32 aggro = caster->CheckAggroAmount(spell_id, this);
 			if(aggro > 0) {
 				AddToHateList(caster, aggro);
@@ -4228,7 +4228,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 			(!caster->IsNPC() || (caster->IsNPC() && !RuleB(Spells, NPCIgnoreBaseImmunity))))
 		{
 			Log(Logs::Detail, Logs::Spells, "Our level (%d) is higher than the limit of this Mez spell (%d)", GetLevel(), spells[spell_id].max[effect_index]);
-			caster->Message_StringID(MT_Shout, CANNOT_MEZ_WITH_SPELL);
+			caster->Message_StringID(MT_SpellFailure, CANNOT_MEZ_WITH_SPELL);
 			AddToHateList(caster, 1,0,true,false,false,spell_id);
 			return true;
 		}
@@ -4238,7 +4238,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 	if(GetSpecialAbility(UNSLOWABLE) && IsEffectInSpell(spell_id, SE_AttackSpeed))
 	{
 		Log(Logs::Detail, Logs::Spells, "We are immune to Slow spells.");
-		caster->Message_StringID(MT_Shout, IMMUNE_ATKSPEED);
+		caster->Message_StringID(CC_Red, IMMUNE_ATKSPEED);
 		int32 aggro = caster->CheckAggroAmount(spell_id, this);
 		if(aggro > 0) {
 			AddToHateList(caster, aggro);
@@ -4254,7 +4254,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		effect_index = GetSpellEffectIndex(spell_id, SE_Fear);
 		if(GetSpecialAbility(UNFEARABLE)) {
 			Log(Logs::Detail, Logs::Spells, "We are immune to Fear spells.");
-			caster->Message_StringID(MT_Shout, IMMUNE_FEAR);
+			caster->Message_StringID(CC_Red, IMMUNE_FEAR);	// need to verify message type, not in MQ2Cast for easy look up
 			int32 aggro = caster->CheckAggroAmount(spell_id, this);
 			if(aggro > 0) {
 				AddToHateList(caster, aggro);
@@ -4265,7 +4265,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		} else if(IsClient() && caster->IsClient() && (caster->CastToClient()->GetGM() == false))
 		{
 			Log(Logs::Detail, Logs::Spells, "Clients cannot fear eachother!");
-			caster->Message_StringID(MT_Shout, IMMUNE_FEAR);
+			caster->Message_StringID(CC_Red, IMMUNE_FEAR);	// need to verify message type, not in MQ2Cast for easy look up
 			return true;
 		}
 		else if(GetLevel() > spells[spell_id].max[effect_index] && spells[spell_id].max[effect_index] != 0)
@@ -4284,7 +4284,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		{
 			Message(13, "Your are immune to fear.");
 			Log(Logs::Detail, Logs::Spells, "Clients has WarCry effect, immune to fear!");
-			caster->Message_StringID(MT_Shout, IMMUNE_FEAR);
+			caster->Message_StringID(CC_Red, IMMUNE_FEAR);	// need to verify message type, not in MQ2Cast for easy look up
 			return true;
 		}
 	}
@@ -4294,7 +4294,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		if(GetSpecialAbility(UNCHARMABLE))
 		{
 			Log(Logs::Detail, Logs::Spells, "We are immune to Charm spells.");
-			caster->Message_StringID(MT_Shout, CANNOT_CHARM);
+			caster->Message_StringID(CC_Red, CANNOT_CHARM);	// need to verify message type, not in MQ2Cast for easy look up
 			int32 aggro = caster->CheckAggroAmount(spell_id, this);
 			if(aggro > 0) {
 				AddToHateList(caster, aggro);
@@ -4307,7 +4307,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		if(this == caster)
 		{
 			Log(Logs::Detail, Logs::Spells, "You are immune to your own charms.");
-			caster->Message(MT_Shout, "You cannot charm yourself.");
+			caster->Message(CC_Red, "You cannot charm yourself.");	// need to look up message?
 			return true;
 		}
 
@@ -4320,8 +4320,8 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 			if(GetLevel() > spells[spell_id].max[effect_index] && spells[spell_id].max[effect_index] != 0)
 			{
 				Log(Logs::Detail, Logs::Spells, "Our level (%d) is higher than the limit of this Charm spell (%d)", GetLevel(), spells[spell_id].max[effect_index]);
-				caster->Message_StringID(MT_Shout, CANNOT_CHARM_YET);
-                AddToHateList(caster, 1,0,true,false,false,spell_id);
+				caster->Message_StringID(CC_Red, CANNOT_CHARM_YET);	// need to verify message type, not in MQ2Cast for easy look up<Paste>
+				AddToHateList(caster, 1,0,true,false,false,spell_id);
 				return true;
 			}
 		}
@@ -4335,7 +4335,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 	{
 		if(GetSpecialAbility(UNSNAREABLE)) {
 			Log(Logs::Detail, Logs::Spells, "We are immune to Snare spells.");
-			caster->Message_StringID(MT_Shout, IMMUNE_MOVEMENT);
+			caster->Message_StringID(CC_Red, IMMUNE_MOVEMENT);
 			int32 aggro = caster->CheckAggroAmount(spell_id, this);
 			if(aggro > 0) {
 				AddToHateList(caster, aggro);
@@ -4351,7 +4351,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		if(this == caster)
 		{
 			Log(Logs::Detail, Logs::Spells, "You cannot lifetap yourself.");
-			caster->Message_StringID(MT_Shout, CANT_DRAIN_SELF);
+			caster->Message_StringID(MT_SpellFailure, CANT_DRAIN_SELF);
 			return true;
 		}
 	}
@@ -4361,7 +4361,7 @@ bool Mob::IsImmuneToSpell(uint16 spell_id, Mob *caster)
 		if(this == caster)
 		{
 			Log(Logs::Detail, Logs::Spells, "You cannot sacrifice yourself.");
-			caster->Message_StringID(MT_Shout, CANNOT_SAC_SELF);
+			caster->Message_StringID(MT_SpellFailure, CANNOT_SAC_SELF);
 			return true;
 		}
 	}
