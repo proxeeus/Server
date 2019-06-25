@@ -644,6 +644,14 @@ sub do_self_update_check_routine {
         }
         else {
             print "[Update] No script update necessary...\n";
+
+            if (-e "db_update") {
+                unlink("db_update");
+            }
+
+            if (-e "updates_staged") {
+                unlink("updates_staged");
+            }
         }
 
         unlink("updates_staged/eqemu_server.pl");
@@ -1393,11 +1401,13 @@ sub fetch_latest_windows_binaries {
 }
 
 sub fetch_latest_windows_binaries_bots {
-    print "[Update] Fetching Latest Windows Binaries with Bots...\n";
-    get_remote_file($install_repository_request_url . "master_windows_build_bots.zip", "updates_staged/master_windows_build_bots.zip", 1);
+    print "[Update] Fetching Latest Windows Binaries (unstable) with Bots...\n";
+    get_remote_file("https://ci.appveyor.com/api/projects/KimLS/server/artifacts/eqemu-x86-bots.zip", "updates_staged/eqemu-x86-bots.zip", 1);
+	#::: old repository kept for reference until no issues reported
+	#::: get_remote_file($install_repository_request_url . "master_windows_build_bots.zip", "updates_staged/master_windows_build_bots.zip", 1);
     print "[Update] Fetched Latest Windows Binaries with Bots...\n";
     print "[Update] Extracting...\n";
-    unzip('updates_staged/master_windows_build_bots.zip', 'updates_staged/binaries/');
+    unzip('updates_staged/eqemu-x86-bots.zip', 'updates_staged/binaries/');
     my @files;
     my $start_dir = "updates_staged/binaries";
     find(
