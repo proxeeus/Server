@@ -4260,7 +4260,7 @@ void bot_command_deity(Client *c, const Seperator *sep)
 
 	query = StringFormat("UPDATE bot_data SET `deity` = '%u' WHERE `bot_id`='%u' AND `deity`=0", atoi(sep->arg[1]), my_bot->GetBotID());
 
-	auto results = botdb.QueryDatabase(query);
+	auto results = database.QueryDatabase(query);
 
 	if (results.Success())
 	{
@@ -5430,7 +5430,7 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 
 	if (RuleB(Bots, QuestableSpawnLimit) && !c->GetGM()) {
 		int allowed_bot_count = 0;
-		if (!botdb.LoadQuestableSpawnCount(c->CharacterID(), allowed_bot_count)) {
+		if (!database.botdb.LoadQuestableSpawnCount(c->CharacterID(), allowed_bot_count)) {
 			c->Message(m_fail, "%s", BotDatabase::fail::LoadQuestableSpawnCount());
 			return;
 		}
@@ -5447,7 +5447,7 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 	std::string bot_name = clean_name;
 
 	uint32 bot_id = 0;
-	if (!botdb.LoadBotID(c->CharacterID(), bot_name, bot_id)) {
+	if (!database.botdb.LoadBotID(c->CharacterID(), bot_name, bot_id)) {
 		c->Message(m_fail, "%s for '%s'", BotDatabase::fail::LoadBotID(), bot_name.c_str());
 		return;
 	}
@@ -8397,9 +8397,9 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 				(*cur)->aug_5,
 				(*cur)->aug_6);
 
-			auto results = botdb.QueryDatabase(query);
+			auto results = database.QueryDatabase(query);
 			if (!results.Success()) {
-				botdb.DeleteItemBySlot(bot_id, (*cur)->equip_slot);
+				database.botdb.DeleteItemBySlot(bot_id, (*cur)->equip_slot);
 				return ;
 			}
 		}
