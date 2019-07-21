@@ -890,7 +890,7 @@ void command_chat(Client *c, const Seperator *sep)
 	if (sep->arg[2][0] == 0)
 		c->Message(0, "Usage: #chat [channum] [message]");
 	else
-		if (!worldserver.SendChannelMessage(0, 0, (uint8) atoi(sep->arg[1]), 0, 0, sep->argplus[2]))
+		if (!worldserver.SendChannelMessage(0, 0, (uint8) atoi(sep->arg[1]), 0, 0, 100, sep->argplus[2]))
 			c->Message(0, "Error: World server disconnected");
 }
 
@@ -2802,7 +2802,7 @@ void command_level(Client *c, const Seperator *sep)
 	if ((level <= 0) || ((level > RuleI(Character, MaxLevel)) && (c->Admin() < commandLevelAboveCap))) {
 		c->Message(0, "Error: #Level: Invalid Level");
 	}
-	else if (c->Admin() < 100) {
+	else if (c->Admin() < RuleI(GM, MinStatusToLevelTarget)) {
 		c->SetLevel(level, true);
 #ifdef BOTS
 		if(RuleB(Bots, BotLevelsWithOwner))
@@ -7439,6 +7439,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 		c->Message(0, "#npcedit no_target - Set an NPC's ability to be targeted with the target hotkey");
 		c->Message(0, "#npcedit version - Set an NPC's version");
 		c->Message(0, "#npcedit slow_mitigation - Set an NPC's slow mitigation");
+		c->Message(0, "#npcedit flymode - Set an NPC's flymode [0 = ground, 1 = flying, 2 = levitate, 3 = water, 4 = floating]");
 
 	}
 
@@ -7452,7 +7453,14 @@ void command_npcedit(Client *c, const Seperator *sep)
 
 	if (strcasecmp(sep->arg[1], "lastname") == 0) {
         c->Message(15,"NPCID %u now has the lastname %s.", npcTypeID, sep->argplus[2]);
-		std::string query = StringFormat("UPDATE npc_types SET lastname = '%s' WHERE id = %i",  sep->argplus[2],npcTypeID);
+		std::string query = StringFormat("UPDATE npc_types SET lastname = '%s' WHERE id = %i", sep->argplus[2],npcTypeID);
+		database.QueryDatabase(query);
+		return;
+	}
+
+	if (strcasecmp(sep->arg[1], "flymode") == 0) {
+        c->Message(15,"NPCID %u now has flymode [%s]", npcTypeID, sep->argplus[2]);
+		std::string query = StringFormat("UPDATE npc_types SET flymode = '%s' WHERE id = %i",  sep->argplus[2],npcTypeID);
 		database.QueryDatabase(query);
 		return;
 	}

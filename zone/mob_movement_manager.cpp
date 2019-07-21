@@ -813,7 +813,9 @@ void MobMovementManager::UpdatePathGround(Mob * who, float x, float y, float z, 
 	}
 
 	AdjustRoute(route, who);
-	// Temp fix for stuck mobs
+	   
+	
+	
 	//avoid doing any processing if the mob is stuck to allow normal stuck code to work.
 	if (!stuck)
 	{
@@ -845,7 +847,6 @@ void MobMovementManager::UpdatePathGround(Mob * who, float x, float y, float z, 
 
 		}
 
-
 		if (noValidPath)
 		{
 			//we are 'stuck' in a path, lets just get out of this by 'teleporting' to the next position.
@@ -855,10 +856,11 @@ void MobMovementManager::UpdatePathGround(Mob * who, float x, float y, float z, 
 		}
 
 	}
-	//End temp fix
+	
 	auto iter = route.begin();
 	glm::vec3 previous_pos(who->GetX(), who->GetY(), who->GetZ());
 	bool first_node = true;
+
 
 	while (iter != route.end()) {
 		auto &current_node = (*iter);

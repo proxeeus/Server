@@ -213,6 +213,15 @@ enum {	QSG_LFGuild_PlayerMatches = 0, QSG_LFGuild_UpdatePlayerInfo, QSG_LFGuild_
 
 #define ServerOP_Speech			0x4513
 
+enum {
+	UserToWorldStatusWorldUnavail = 0,
+	UserToWorldStatusSuccess = 1,
+	UserToWorldStatusSuspended = -1,
+	UserToWorldStatusBanned = -2,
+	UserToWorldStatusWorldAtCapacity = -3,
+	UserToWorldStatusAlreadyOnline = -4
+};
+
 /************ PACKET RELATED STRUCT ************/
 class ServerPacket
 {
@@ -343,7 +352,8 @@ struct ServerChannelMessage_Struct {
 	bool noreply;
 	uint16 chan_num;
 	uint32 guilddbid;
-	uint16 language;
+	uint8 language;
+	uint8 lang_skill;
 	uint8 queued; // 0 = not queued, 1 = queued, 2 = queue full, 3 = offline
 	char message[0];
 };
@@ -856,6 +866,8 @@ struct ServerRaidGroupAction_Struct { //add / remove depends on opcode.
 struct ServerRaidMessage_Struct {
 	uint32 rid;
 	uint32 gid;
+	uint8 language;
+	uint8 lang_skill;
 	char from[64];
 	char message[0];
 };
