@@ -917,16 +917,20 @@ void Mob::InterruptSpell(uint16 message, uint16 color, uint16 spellid)
 		default:
 			message_other = INTERRUPT_SPELL_OTHER;
 	}
+	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId)) 
+		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(this->playerbot_temp_name) + 1);
+	else
+		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(GetCleanName()) + 1);
 
-	// this is the actual message, it works the same as a formatted message
-	outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(GetCleanName()) + 1);
-	InterruptCast_Struct* ic = (InterruptCast_Struct*) outapp->pBuffer;
+	InterruptCast_Struct* ic = (InterruptCast_Struct*)outapp->pBuffer;
 	ic->messageid = message_other;
 	ic->spawnid = GetID();
-	strcpy(ic->message, GetCleanName());
+	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId))
+		strcpy(ic->message, this->playerbot_temp_name);
+	else
+		strcpy(ic->message, GetCleanName());
 	entity_list.QueueCloseClients(this, outapp, true, RuleI(Range, SongMessages), 0, true, IsClient() ? FilterPCSpells : FilterNPCSpells);
 	safe_delete(outapp);
-
 }
 
 // this is like interrupt, just it doesn't spam interrupt packets to everyone
