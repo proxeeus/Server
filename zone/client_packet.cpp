@@ -2852,11 +2852,15 @@ void Client::Handle_OP_ApplyPoison(const EQApplicationPacket *app)
 			// Poisons that don't proc until a level higher than the
 			// rogue simply won't apply at all, no skill check done.
 
-			if (ChanceRoll < (.9 + GetLevel()/1000)) {
+			uint16 poison_skill = GetSkill(EQEmu::skills::SkillApplyPoison);
+			
+			if (ChanceRoll < (.75 + poison_skill / 1000)) {
 				ApplyPoisonSuccessResult = 1;
-				AddProcToWeapon(poison->Proc.Effect, false, 
-										(GetDEX() / 100) + 103);
+				AddProcToWeapon(poison->Proc.Effect, false, (GetDEX() / 100) + 103);
 			}
+		}
+		else {
+			Message(Chat::Red, "A piercing weapon must be wielded to apply poison.");
 		}
 
 		// Live always deletes the item, success or failure. Even if too high.
@@ -3952,6 +3956,9 @@ void Client::Handle_OP_Camp(const EQApplicationPacket *app)
 #ifdef BOTS
 	// This block is necessary to clean up any bot objects owned by a Client
 	Bot::BotOrderCampAll(this);
+	auto group = GetGroup();
+	if (group && group->GroupCount() < 2)
+		group->DisbandGroup();
 #endif
 	if (IsLFP())
 		worldserver.StopLFP(CharacterID());
