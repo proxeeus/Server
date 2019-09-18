@@ -1425,7 +1425,8 @@ int bot_command_init(void)
 		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich) ||
 		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
 		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats) ||
-		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign)
+		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
+		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -3179,9 +3180,9 @@ void bot_command_guard(Client *c, const Seperator *sep)
 		c->Message(m_action, "%i of your bots are guarding their positions", sbl.size());
 }
 
-void bot_command_pull(Client *c, const Seperator *sep)
+void bot_command_rpull(Client *c, const Seperator *sep)
 {
-	if (helper_command_alias_fail(c, "bot_command_pull", sep->arg[0], "pull"))
+	if (helper_command_alias_fail(c, "bot_command_rpull", sep->arg[0], "rpull"))
 		return;
 	if (helper_is_help_or_usage(sep->arg[1])) {
 		c->Message(m_usage, "usage: <enemy_target> %s", sep->arg[0]);
@@ -3971,6 +3972,41 @@ void bot_command_pick_lock(Client *c, const Seperator *sep)
 	c->Message(m_action, "%i door%s attempted - %i door%s successful", door_count, ((door_count != 1) ? ("s") : ("")), open_count, ((open_count != 1) ? ("s") : ("")));
 }
 
+void bot_command_pull(Client* c, const Seperator* sep)
+{
+	if (helper_command_alias_fail(c, "bot_command_pull", sep->arg[0], "pull"))
+		return;
+	if (helper_is_help_or_usage(sep->arg[1])) {
+		c->Message(m_usage, "usage: <enemy_target> %s", sep->arg[0]);
+		return;
+	}
+	int ab_mask = ActionableBots::ABM_OwnerGroup; // existing behavior - need to add c->IsGrouped() check and modify code if different behavior is desired
+
+	std::list<Bot*> sbl;
+	if (ActionableBots::PopulateSBL(c, "ownergroup", sbl, ab_mask) == ActionableBots::ABT_None)
+		return;
+	sbl.remove(nullptr);
+
+	auto target_mob = ActionableTarget::VerifyEnemy(c, BCEnum::TT_Single);
+	if (!target_mob) {
+		c->Message(m_fail, "Your current target is not attackable");
+		return;
+	}
+
+	Bot* bot_puller = nullptr;
+	for (auto bot_iter : sbl) {
+		if (!bot_iter->IsArcheryRange(target_mob))
+			continue;
+
+		Bot::BotGroupSay(bot_iter, "Attempting to pull %s..", target_mob->GetCleanName());
+		bot_iter->InterruptSpell();
+		bot_iter->BotRangedAttack(target_mob);
+		bot_puller = bot_iter;
+		break;
+	}
+
+	helper_no_available_bots(c, bot_puller);
+}
 
 void bot_command_release(Client *c, const Seperator *sep)
 {
