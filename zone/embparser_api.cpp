@@ -3609,11 +3609,11 @@ XS(XS__debug) {
 			return;
 
 		if (debug_level == Logs::General) {
-			Log(Logs::General, Logs::QuestDebug, log_message);
+			Log(Logs::General, Logs::QuestDebug, log_message.c_str());
 		} else if (debug_level == Logs::Moderate) {
-			Log(Logs::Moderate, Logs::QuestDebug, log_message);
+			Log(Logs::Moderate, Logs::QuestDebug, log_message.c_str());
 		} else if (debug_level == Logs::Detail) {
-			Log(Logs::Detail, Logs::QuestDebug, log_message);
+			Log(Logs::Detail, Logs::QuestDebug, log_message.c_str());
 		}
 	}
 	XSRETURN_EMPTY;
@@ -3738,7 +3738,7 @@ EXTERN_C XS(boot_quest) {
 	file[255] = '\0';
 
 	if (items != 1)
-		Log(Logs::General, Logs::Error, "boot_quest does not take any arguments.");
+		LogError("boot_quest does not take any arguments");
 
 	char buf[128];    //shouldent have any function names longer than this.
 

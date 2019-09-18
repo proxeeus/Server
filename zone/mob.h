@@ -1470,8 +1470,8 @@ protected:
 	eStandingPetOrder pStandingPetOrder;
 	uint32 minLastFightingDelayMoving;
 	uint32 maxLastFightingDelayMoving;
-	float pAggroRange;
-	float pAssistRange;
+	float pAggroRange = 0;
+	float pAssistRange = 0;
 	std::unique_ptr<Timer> AI_think_timer;
 	std::unique_ptr<Timer> AI_movement_timer;
 	std::unique_ptr<Timer> AI_target_check_timer;
