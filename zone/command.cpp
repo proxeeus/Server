@@ -5716,7 +5716,7 @@ void command_spawnfix(Client *c, const Seperator *sep) {
 		}
 
 		c->Message(10, "Inserting new spawnentry...");
-		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100');", lastSpawnGroupId, targetMob->CastToNPC()->GetNPCTypeID());
+		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100', '1');", lastSpawnGroupId, targetMob->CastToNPC()->GetNPCTypeID());
 		auto spawnentryresults = database.QueryDatabase(spawnentryquery);
 		if (!spawnentryresults.Success())
 		{
