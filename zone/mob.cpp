@@ -1504,17 +1504,23 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 	}
 }
 
-void Mob::StopMoving() {
+void Mob::StopMoving()
+{
 	StopNavigation();
-	if (moved)
+
+	if (moved) {
 		moved = false;
+	}
 }
 
-void Mob::StopMoving(float new_heading) {
+void Mob::StopMoving(float new_heading)
+{
 	StopNavigation();
 	RotateTo(new_heading);
-	if (moved)
+
+	if (moved) {
 		moved = false;
+	}
 }
 
 void Mob::SentPositionPacket(float dx, float dy, float dz, float dh, int anim, bool send_to_self)
@@ -2743,6 +2749,27 @@ bool Mob::PlotPositionAroundTarget(Mob* target, float &x_dest, float &y_dest, fl
 	}
 
 	return Result;
+}
+
+bool Mob::PlotPositionOnArcInFrontOfTarget(Mob* target, float& x_dest, float& y_dest, float& z_dest, float distance, float min_deg, float max_deg)
+{
+
+
+	return false;
+}
+
+bool Mob::PlotPositionOnArcBehindTarget(Mob* target, float& x_dest, float& y_dest, float& z_dest, float distance)
+{
+
+
+	return false;
+}
+
+bool Mob::PlotPositionBehindMeFacingTarget(Mob* target, float& x_dest, float& y_dest, float& z_dest, float min_dist, float max_dist)
+{
+
+
+	return false;
 }
 
 bool Mob::HateSummon() {
