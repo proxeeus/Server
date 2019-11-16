@@ -2809,12 +2809,8 @@ void Client::Handle_OP_ApplyPoison(const EQApplicationPacket *app)
 
 	uint32 ApplyPoisonSuccessResult = 0;
 
-	const EQEmu::ItemInstance* PrimaryWeapon = GetInv().GetItem(EQEmu::invslot::slotPrimary);
-	const EQEmu::ItemInstance* SecondaryWeapon = GetInv().GetItem(EQEmu::invslot::slotSecondary);
 	const EQEmu::ItemInstance* PoisonItemInstance = GetInv().GetItem(ApplyPoisonData->inventorySlot);
 
-	const EQEmu::ItemData* primary = (PrimaryWeapon ? PrimaryWeapon->GetItem() : nullptr);
-	const EQEmu::ItemData* secondary = (SecondaryWeapon ? SecondaryWeapon->GetItem() : nullptr);
 	const EQEmu::ItemData* poison = (PoisonItemInstance ? PoisonItemInstance->GetItem() : nullptr);
 
 	bool IsPoison = (poison && poison->ItemType == EQEmu::item::ItemTypePoison);
@@ -2828,10 +2824,7 @@ void Client::Handle_OP_ApplyPoison(const EQApplicationPacket *app)
 			// Poison is too high to apply.
 			MessageString(Chat::LightBlue, POISON_TOO_HIGH);
 		}
-		else if ((primary && 
-				primary->ItemType == EQEmu::item::ItemType1HPiercing) ||
-			(secondary && 
-			secondary->ItemType == EQEmu::item::ItemType1HPiercing)) {
+		else {
 
 			double ChanceRoll = zone->random.Real(0, 1);
 
@@ -2848,11 +2841,8 @@ void Client::Handle_OP_ApplyPoison(const EQApplicationPacket *app)
 			
 			if (ChanceRoll < (.75 + poison_skill / 1000)) {
 				ApplyPoisonSuccessResult = 1;
-				AddProcToWeapon(poison->Proc.Effect, false, (GetDEX() / 100) + 103);
+				AddProcToWeapon(poison->Proc.Effect, false, (GetDEX() / 100) + 103, POISON_PROC);
 			}
-		}
-		else {
-			Message(Chat::Red, "A piercing weapon must be wielded to apply poison.");
 		}
 
 		// Live always deletes the item, success or failure. Even if too high.
@@ -4375,7 +4365,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 	/* Boat handling */
 	if (ppu->spawn_id != GetID()) {
 		/* If player is controlling boat */
-		if (ppu->spawn_id == controlling_boat_id) {
+		if (ppu->spawn_id && ppu->spawn_id == controlling_boat_id) {
 			Mob *boat = entity_list.GetMob(controlling_boat_id);
 			if (boat == 0) {
 				controlling_boat_id = 0;
@@ -4394,7 +4384,25 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 			/* Update the boat's position on the server, without sending an update */
 			boat->GMMove(ppu->x_pos, ppu->y_pos, ppu->z_pos, EQ12toFloat(ppu->heading), false);
 			return;
-		} else return;
+		}
+		else {
+			// Eye of Zomm needs code here to track position of the eye on server
+			// so that other clients see it.  I could add a check here for eye of zomm
+			// race, to limit this code, but this should handle any client controlled
+			// mob that gets updates from OP_ClientUpdate
+			if (ppu->spawn_id == controlled_mob_id) {
+				Mob *cmob = entity_list.GetMob(ppu->spawn_id);
+				if (cmob != nullptr) {
+					cmob->SetPosition(ppu->x_pos, ppu->y_pos, ppu->z_pos);
+					cmob->SetHeading(EQ12toFloat(ppu->heading));
+					mMovementManager->SendCommandToClients(cmob, 0.0, 0.0, 0.0, 
+							0.0, 0, ClientRangeAny, nullptr, this);
+					cmob->CastToNPC()->SaveGuardSpot(glm::vec4(ppu->x_pos, 
+							ppu->y_pos, ppu->z_pos, EQ12toFloat(ppu->heading)));
+				}
+			}
+		}
+	return;
 	}
 	
 	if (IsDraggingCorpse())
@@ -10776,7 +10784,7 @@ void Client::Handle_OP_PopupResponse(const EQApplicationPacket *app)
 	}
 
 	char buf[16];
-	sprintf(buf, "%d\0", popup_response->popupid);
+	sprintf(buf, "%d", popup_response->popupid);
 
 	parse->EventPlayer(EVENT_POPUP_RESPONSE, this, buf, 0);
 

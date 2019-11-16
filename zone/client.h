@@ -603,7 +603,7 @@ public:
 	void CalculateLeadershipExp(uint32 &add_exp, uint8 conlevel);
 	void CalculateExp(uint32 in_add_exp, uint32 &add_exp, uint32 &add_aaxp, uint8 conlevel, bool resexp);
 	void SetEXP(uint32 set_exp, uint32 set_aaxp, bool resexp=false);
-	void AddLevelBasedExp(uint8 exp_percentage, uint8 max_level=0);
+	void AddLevelBasedExp(uint8 exp_percentage, uint8 max_level = 0, bool ignore_mods = false);
 	void SetLeadershipEXP(uint32 group_exp, uint32 raid_exp);
 	void AddLeadershipEXP(uint32 group_exp, uint32 raid_exp);
 	void SendLeadershipEXPUpdate();
@@ -651,6 +651,7 @@ public:
 
 	FACTION_VALUE GetReverseFactionCon(Mob* iOther);
 	FACTION_VALUE GetFactionLevel(uint32 char_id, uint32 npc_id, uint32 p_race, uint32 p_class, uint32 p_deity, int32 pFaction, Mob* tnpc);
+	bool ReloadCharacterFaction(Client *c, uint32 facid, uint32 charid);
 	int32 GetCharacterFactionLevel(int32 faction_id);
 	int32 GetModCharacterFactionLevel(int32 faction_id);
 	void MerchantRejectMessage(Mob *merchant, int primaryfaction);
@@ -796,6 +797,7 @@ public:
 
 	void SummonHorse(uint16 spell_id);
 	void SetHorseId(uint16 horseid_in);
+	inline void SetControlledMobId(uint16 mob_id_in) { controlled_mob_id = mob_id_in; }
 	uint16 GetHorseId() const { return horseId; }
 	bool CanMedOnHorse();
 
@@ -1431,6 +1433,7 @@ private:
 	bool berserk;
 	bool dead;
 	uint16 controlling_boat_id;
+	uint16 controlled_mob_id;
 	uint16 TrackingID;
 	uint16 CustomerID;
 	uint16 TraderID;
@@ -1646,9 +1649,13 @@ public:
 	bool GetBotPulling() { return m_bot_pulling; }
 	void SetBotPulling(bool flag = true) { m_bot_pulling = flag; }
 
+	bool GetBotPrecombat() { return m_bot_precombat; }
+	void SetBotPrecombat(bool flag = true) { m_bot_precombat = flag; }
+
 private:
 	bool bot_owner_options[_booCount];
 	bool m_bot_pulling;
+	bool m_bot_precombat;
 
 #endif
 };

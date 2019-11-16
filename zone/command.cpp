@@ -202,6 +202,7 @@ int command_init(void)
 		command_add("enablerecipe",  "[recipe_id] - Enables a recipe using the recipe id.",  80, command_enablerecipe) ||
 		command_add("equipitem", "[slotid(0-21)] - Equip the item on your cursor into the specified slot", 50, command_equipitem) ||
 		command_add("face", "- Change the face of your target", 80, command_face) ||
+		command_add("faction", "[Find (criteria | all ) | Review (criteria | all) | Reset (id)] - Resets Player's Faction", 80, command_faction) ||
 		command_add("findaliases", "[search term]- Searches for available command aliases, by alias or command", 0, command_findaliases) ||
 		command_add("findnpctype", "[search criteria] - Search database NPC types", 100, command_findnpctype) ||
 		command_add("findspell", "[searchstring] - Search for a spell", 50, command_findspell) ||
@@ -3064,6 +3065,7 @@ void command_texture(Client *c, const Seperator *sep)
 {
 
 	uint16 texture;
+
 	if (sep->IsNumber(1) && atoi(sep->arg[1]) >= 0 && atoi(sep->arg[1]) <= 255) {
 		texture = atoi(sep->arg[1]);
 		uint8 helm = 0xFF;
@@ -3075,9 +3077,9 @@ void command_texture(Client *c, const Seperator *sep)
 			{
 				c->SendTextureWC(i, texture);
 			}
-		else if ((c->GetTarget()->GetRace() > 0 && c->GetTarget()->GetRace() <= 12) ||
-			c->GetTarget()->GetRace() == 128 || c->GetTarget()->GetRace() == 130 ||
-			c->GetTarget()->GetRace() == 330 || c->GetTarget()->GetRace() == 522) {
+		else if ((c->GetTarget()->GetModel() > 0 && c->GetTarget()->GetModel() <= 12) ||
+			c->GetTarget()->GetModel() == 128 || c->GetTarget()->GetModel() == 130 ||
+			c->GetTarget()->GetModel() == 330 || c->GetTarget()->GetModel() == 522) {
 			for (i = EQEmu::textures::textureBegin; i <= EQEmu::textures::LastTintableTexture; i++)
 			{
 				c->GetTarget()->SendTextureWC(i, texture);
@@ -3096,7 +3098,7 @@ void command_texture(Client *c, const Seperator *sep)
 			}
 
 			if ((c->GetTarget()) && (c->Admin() >= commandTextureOthers))
-				c->GetTarget()->SendIllusionPacket(c->GetTarget()->GetRace(), 0xFF, texture, helm);
+				c->GetTarget()->SendIllusionPacket(c->GetTarget()->GetModel(), 0xFF, texture, helm);
 			else
 				c->SendIllusionPacket(c->GetRace(), 0xFF, texture, helm);
 		}
@@ -3918,6 +3920,121 @@ void command_findnpctype(Client *c, const Seperator *sep)
     if (count <= maxrows)
         c->Message (0, "Query complete. %i rows shown.",  count);
 
+}
+
+void command_faction(Client *c, const Seperator *sep)
+{
+	if (sep->arg[1][0] == 0) {
+		c->Message(Chat::White, "Usage: #faction -- Displays Target NPC's Primary faction");
+		c->Message(Chat::White, "Usage: #faction Find [criteria | all] -- Displays factions name & id");
+		c->Message(Chat::White, "Usage: #faction Review [criteria | all] -- Review Targeted Players faction hits");
+		c->Message(Chat::White, "Usage: #faction Reset [id] -- Reset Targeted Players specified faction to base");
+		uint32 npcfac;
+		std::string npcname;
+		if (c->GetTarget() && c->GetTarget()->IsNPC()) {
+			npcfac = c->GetTarget()->CastToNPC()->GetPrimaryFaction();
+			npcname = c->GetTarget()->CastToNPC()->GetCleanName();
+			std::string blurb = fmt::format("( Target Npc: {} : has primary faction id: {} )", npcname, npcfac);
+			c->Message(Chat::Yellow, blurb.c_str());
+			c->Message(Chat::White, "Use: #setfaction [id] - to alter an NPC's faction");
+		}
+		return;
+	}
+
+	std::string faction_filter;
+	if (sep->arg[2]) {
+		faction_filter = str_tolower(sep->arg[2]);
+	}
+	if (strcasecmp(sep->arg[1], "find") == 0) {
+		std::string query;
+		if (strcasecmp(sep->arg[2], "all") == 0) {
+
+			query = "SELECT `id`,`name` FROM `faction_list`";
+		}
+		else {
+			query = fmt::format("SELECT `id`,`name` FROM `faction_list` WHERE `name` LIKE '%{}%'", faction_filter.c_str());
+		}
+		auto results = database.QueryDatabase(query);
+		if (!results.Success())
+			return;
+		if (results.RowCount() == 0) {
+			c->Message(Chat::Yellow, "No factions found with specified criteria");
+			return;
+		}
+		int _ctr = 0;
+		for (auto row = results.begin(); row != results.end(); ++row) {
+			auto    id = static_cast<uint32>(atoi(row[0]));
+			std::string name = row[1];
+			_ctr++;
+			c->Message(Chat::Yellow, "%s : id: %s", name.c_str(), std::to_string(id).c_str());
+		}
+		std::string response = _ctr > 0 ? fmt::format("Found {} matching factions", _ctr).c_str() : "No factions found.";
+		c->Message(Chat::Yellow, response.c_str());
+	}
+	if (strcasecmp(sep->arg[1], "review") == 0) {
+		if (!(c->GetTarget() && c->GetTarget()->IsClient())) {
+			c->Message(Chat::Red, "Player Target Required for faction review");
+			return;
+		}
+		uint32 charid = c->GetTarget()->CastToClient()->CharacterID();
+		std::string revquery;
+		if (strcasecmp(sep->arg[2], "all") == 0) {
+			revquery = fmt::format(
+				"SELECT id,`name`, current_value FROM faction_list INNER JOIN faction_values ON faction_list.id = faction_values.faction_id WHERE char_id = {}", charid);
+		}
+		else
+		{
+			revquery = fmt::format(
+				"SELECT id,`name`, current_value FROM faction_list INNER JOIN faction_values ON faction_list.id = faction_values.faction_id WHERE `name` like '%{}%' and char_id = {}", faction_filter.c_str(), charid);
+		}
+		auto revresults = database.QueryDatabase(revquery);
+		if (!revresults.Success())
+			return;
+		if (revresults.RowCount() == 0) {
+			c->Message(Chat::Yellow, "No faction hits found. All are at base level");
+			return;
+		}
+		int _ctr2 = 0;
+		for (auto rrow = revresults.begin(); rrow != revresults.end(); ++rrow) {
+			auto    f_id = static_cast<uint32>(atoi(rrow[0]));
+			std::string cname = rrow[1];
+			std::string fvalue = rrow[2];
+			_ctr2++;
+			std::string resetlink = fmt::format("#faction reset {}", f_id);
+			c->Message(Chat::Yellow, "Reset: %s         id: %s (%s)", EQEmu::SayLinkEngine::GenerateQuestSaylink(resetlink, false, cname.c_str()).c_str(), std::to_string(f_id).c_str(), fvalue.c_str());
+		}
+		std::string response = _ctr2 > 0 ? fmt::format("Found {} matching factions", _ctr2).c_str() : "No faction hits found.";
+		c->Message(Chat::Yellow, response.c_str());
+	}
+	else if (strcasecmp(sep->arg[1], "reset") == 0)
+	{
+		if (!(faction_filter == "")) {
+			if (c->GetTarget() && c->GetTarget()->IsClient())
+			{
+				if (!c->CastToClient()->GetFeigned() && c->CastToClient()->GetAggroCount() == 0)
+				{
+					uint32 charid = c->GetTarget()->CastToClient()->CharacterID();
+					uint32 factionid = atoi(faction_filter.c_str());
+
+					if (c->GetTarget()->CastToClient()->ReloadCharacterFaction(c->GetTarget()->CastToClient(), factionid, charid))
+						c->Message(Chat::Yellow, "faction %u was cleared.", factionid);
+					else
+						c->Message(Chat::Red, "An error occurred clearing faction %u", factionid);
+				}
+				else
+				{
+					c->Message(Chat::Red, "Cannot be in Combat");
+					return;
+				}
+			}
+			else {
+				c->Message(Chat::Red, "Player Target Required (whose not feigning death)");
+				return;
+			}
+		}
+		else
+			c->Message(Chat::Red, "No faction id entered");
+	}
 }
 
 void command_findzone(Client *c, const Seperator *sep)
@@ -7531,11 +7648,11 @@ void command_roambox(Client *c, const Seperator *sep)
 					delay = {}
 					WHERE id = {}
 				),
-				box_size,
-				npc->GetX() - 100,
-				npc->GetX() + 100,
-				npc->GetY() - 100,
-				npc->GetY() + 100,
+				(box_size / 2),
+				npc->GetX() - (box_size / 2),
+				npc->GetX() + (box_size / 2),
+				npc->GetY() - (box_size / 2),
+				npc->GetY() + (box_size / 2),
 				delay,
 				spawn_group_id
 			);
@@ -7696,6 +7813,11 @@ void command_npcemote(Client *c, const Seperator *sep)
 
 void command_npceditmass(Client *c, const Seperator *sep)
 {
+	if (strcasecmp(sep->arg[1], "usage") == 0) {
+		c->Message(Chat::White, "#npceditmass search_column [exact_match: =]search_value change_column change_value");
+		return;
+	}
+	
 	std::string query = SQL(
 		SELECT
 				COLUMN_NAME
@@ -7791,6 +7913,12 @@ void command_npceditmass(Client *c, const Seperator *sep)
 
 	std::vector <std::string> npc_ids;
 
+	bool exact_match = false;
+	if (search_value[0] == '=') {
+		exact_match = true;
+		search_value = search_value.substr(1);
+	}
+
 	int found_count = 0;
 	results = database.QueryDatabase(query);
 	for (auto row = results.begin(); row != results.end(); ++row) {
@@ -7800,10 +7928,17 @@ void command_npceditmass(Client *c, const Seperator *sep)
 		std::string search_column_value         = str_tolower(row[2]);
 		std::string change_column_current_value = row[3];
 
-		if (search_column_value.find(search_value) == std::string::npos) {
-			continue;
+		if (exact_match) {
+			if (search_column_value.compare(search_value) != 0) {
+				continue;
+			}
 		}
-
+		else {
+			if (search_column_value.find(search_value) == std::string::npos) {
+				continue;
+			}
+		}
+		
 		c->Message(
 			Chat::Yellow,
 			fmt::format(
@@ -7825,8 +7960,9 @@ void command_npceditmass(Client *c, const Seperator *sep)
 	}
 
 	std::string saylink = fmt::format(
-		"#npceditmass {} {} {} {} apply",
+		"#npceditmass {} {}{} {} {} apply",
 		search_column,
+		(exact_match ? '=' : '\0'),
 		search_value,
 		change_column,
 		change_value
@@ -7841,7 +7977,7 @@ void command_npceditmass(Client *c, const Seperator *sep)
 
 		database.QueryDatabase(
 			fmt::format(
-				"UPDATE `npc_types` SET {} = {} WHERE id IN ({})",
+				"UPDATE `npc_types` SET {} = '{}' WHERE id IN ({})",
 				change_column,
 				change_value,
 				npc_ids_string
@@ -12502,14 +12638,21 @@ void command_reloadaa(Client *c, const Seperator *sep) {
 	entity_list.SendAlternateAdvancementStats();
 }
 
-void command_hotfix(Client *c, const Seperator *sep) {
+inline bool file_exists(const std::string& name) {
+	std::ifstream f(name.c_str());
+	return f.good();
+}
+
+void command_hotfix(Client *c, const Seperator *sep)
+{
 	std::string hotfix;
 	database.GetVariable("hotfix_name", hotfix);
 
 	std::string hotfix_name;
-	if(!strcasecmp(hotfix.c_str(), "hotfix_")) {
+	if (!strcasecmp(hotfix.c_str(), "hotfix_")) {
 		hotfix_name = "";
-	} else {
+	}
+	else {
 		hotfix_name = "hotfix_";
 	}
 
@@ -12523,23 +12666,30 @@ void command_hotfix(Client *c, const Seperator *sep) {
 				if(system(StringFormat("shared_memory").c_str()));
 			}
 #else
-		if(hotfix_name.length() > 0) {
-			if(system(StringFormat("./shared_memory -hotfix=%s", hotfix_name.c_str()).c_str()));
-		}
-		else {
-			if(system(StringFormat("./shared_memory").c_str()));
-		}
+
+			std::string shared_memory_path = "./shared_memory";
+			if (file_exists("./bin/shared_memory")) {
+				shared_memory_path = "./bin/shared_memory";
+			}
+
+			if (hotfix_name.length() > 0) {
+				if (system(StringFormat("%s -hotfix=%s", shared_memory_path.c_str(), hotfix_name.c_str()).c_str())) {}
+			}
+			else {
+				if (system(StringFormat("%s", shared_memory_path.c_str()).c_str())) {}
+			}
 #endif
-		database.SetVariable("hotfix_name", hotfix_name);
+			database.SetVariable("hotfix_name", hotfix_name);
 
-		ServerPacket pack(ServerOP_ChangeSharedMem, hotfix_name.length() + 1);
-		if(hotfix_name.length() > 0) {
-			strcpy((char*)pack.pBuffer, hotfix_name.c_str());
+			ServerPacket pack(ServerOP_ChangeSharedMem, hotfix_name.length() + 1);
+			if (hotfix_name.length() > 0) {
+				strcpy((char *) pack.pBuffer, hotfix_name.c_str());
+			}
+			worldserver.SendPacket(&pack);
+
+			if (c) { c->Message(Chat::White, "Hotfix applied"); }
 		}
-		worldserver.SendPacket(&pack);
-
-		if (c) c->Message(Chat::White, "Hotfix applied");
-	});
+	);
 
 	t1.detach();
 }

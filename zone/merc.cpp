@@ -2156,7 +2156,7 @@ bool Merc::AICastSpell(int8 iChance, uint32 iSpellTypes) {
 								if(castedSpell) {
 									char* gmsg = nullptr;
 
-									if(tar != this) {
+									if(tar && tar != this) { // [tar] was implicitly valid at this point..this change is to catch any bad logic
 										//we don't need spam of bots healing themselves
 										MakeAnyLenString(&gmsg, "Casting %s on %s.", spells[selectedMercSpell.spellid].name, tar->GetCleanName());
 										if(gmsg)
@@ -4169,7 +4169,7 @@ bool Merc::CheckAETaunt() {
 						if(g) {
 							for(int i = 0; i < g->GroupCount(); i++) {
 								//if(npc->IsOnHatelist(g->members[i]) && g->members[i]->GetTarget() != npc && g->members[i]->IsEngaged()) {
-								if(GetTarget() != npc && g->members[i]->GetTarget() != npc && npc->IsOnHatelist(g->members[i])) {
+								if(GetTarget() != npc && g->members[i] && g->members[i]->GetTarget() != npc && npc->IsOnHatelist(g->members[i])) {
 									result++;
 								}
 							}

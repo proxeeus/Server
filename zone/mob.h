@@ -450,6 +450,7 @@ public:
 	virtual inline uint16 GetDeity() const { return deity; }
 	virtual EQEmu::deity::DeityTypeBit GetDeityBit() { return EQEmu::deity::ConvertDeityTypeToDeityTypeBit((EQEmu::deity::DeityType)deity); }
 	inline uint16 GetRace() const { return race; }
+	inline uint16 GetModel() const { return (use_model == 0) ? race : use_model; }
 	inline uint8 GetGender() const { return gender; }
 	inline uint8 GetTexture() const { return texture; }
 	inline uint8 GetHelmTexture() const { return helmtexture; }
@@ -764,7 +765,7 @@ public:
 	virtual void UnStun();
 	inline void Silence(bool newval) { silenced = newval; }
 	inline void Amnesia(bool newval) { amnesiad = newval; }
-	void TemporaryPets(uint16 spell_id, Mob *target, const char *name_override = nullptr, uint32 duration_override = 0, bool followme=true, bool sticktarg=false);
+	void TemporaryPets(uint16 spell_id, Mob *target, const char *name_override = nullptr, uint32 duration_override = 0, bool followme=true, bool sticktarg=false, uint16 *controlled_pet_id = nullptr);
 	void TypesTemporaryPets(uint32 typesid, Mob *target, const char *name_override = nullptr, uint32 duration_override = 0, bool followme=true, bool sticktarg=false);
 	void WakeTheDead(uint16 spell_id, Mob *target, uint32 duration);
 	void Spin();

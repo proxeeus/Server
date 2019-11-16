@@ -41,7 +41,6 @@ extern volatile bool RunLoops;
 #include "../common/profanity_manager.h"
 #include "data_bucket.h"
 #include "position.h"
-#include "net.h"
 #include "worldserver.h"
 #include "zonedb.h"
 #include "petitions.h"
@@ -66,6 +65,8 @@ extern uint32 numclients;
 extern PetitionList petition_list;
 bool commandlogged;
 char entirecommand[255];
+
+void UpdateWindowTitle(char* iNewTitle);
 
 Client::Client(EQStreamInterface* ieqs)
 : Mob("No name",	// name
@@ -244,7 +245,7 @@ Client::Client(EQStreamInterface* ieqs)
 	PendingRezzSpellID = 0;
 	numclients++;
 	// emuerror;
-	UpdateWindowTitle();
+	UpdateWindowTitle(nullptr);
 	horseId = 0;
 	tgb = false;
 	tribute_master_id = 0xFFFFFFFF;
@@ -265,6 +266,7 @@ Client::Client(EQStreamInterface* ieqs)
 	PendingTranslocate = false;
 	PendingSacrifice = false;
 	controlling_boat_id = 0;
+	controlled_mob_id = 0;
 
 	if (!RuleB(Character, PerCharacterQglobalMaxLevel) && !RuleB(Character, PerCharacterBucketMaxLevel)) {
 		SetClientMaxLevel(0);
@@ -352,10 +354,11 @@ Client::Client(EQStreamInterface* ieqs)
 	bot_owner_options[booSpawnMessageSay] = false;
 	bot_owner_options[booSpawnMessageTell] = true;
 	bot_owner_options[booSpawnMessageClassSpecific] = true;
-	bot_owner_options[booAltCombat] = false;
-	bot_owner_options[booAutoDefend] = RuleB(Bots, AllowOwnerAutoDefend);
+	bot_owner_options[booAltCombat] = RuleB(Bots, AllowOwnerOptionAltCombat);
+	bot_owner_options[booAutoDefend] = RuleB(Bots, AllowOwnerOptionAutoDefend);
 
 	SetBotPulling(false);
+	SetBotPrecombat(false);
 #endif
 
 	AI_Init();
@@ -453,7 +456,7 @@ Client::~Client() {
 	ClearRespawnOptions();
 
 	numclients--;
-	UpdateWindowTitle();
+	UpdateWindowTitle(nullptr);
 	if(zone)
 		zone->RemoveAuth(GetName(), lskey);
 
@@ -7703,6 +7706,14 @@ FACTION_VALUE Client::GetReverseFactionCon(Mob* iOther) {
 		return FACTION_INDIFFERENT;
 
 	return GetFactionLevel(CharacterID(), 0, GetFactionRace(), GetClass(), GetDeity(), iOther->GetPrimaryFaction(), iOther);
+}
+
+bool Client::ReloadCharacterFaction(Client *c, uint32 facid, uint32 charid)
+{
+	if (database.SetCharacterFactionLevel(charid, facid, 0, 0, factionvalues))
+		return true;
+	else
+		return false;
 }
 
 //o--------------------------------------------------------------

@@ -1371,6 +1371,13 @@ double lua_clock() {
 	return static_cast<double>(t) / 1000.0;
 }
 
+void lua_log(int category, std::string message) {
+	if (category < Logs::None || category >= Logs::MaxCategoryID)
+		return;
+
+	Log(Logs::General, static_cast<Logs::LogCategory>(category), message.c_str());
+}
+
 void lua_debug(std::string message) {
 	Log(Logs::General, Logs::QuestDebug, message.c_str());
 }
@@ -1380,6 +1387,10 @@ void lua_debug(std::string message, int level) {
 		return;
 
 	Log(static_cast<Logs::DebugLevel>(level), Logs::QuestDebug, message.c_str());
+}
+
+void lua_log_combat(std::string message) {
+	Log(Logs::General, Logs::Combat, message.c_str());
 }
 
 void lua_update_zone_header(std::string type, std::string value) {
@@ -1795,8 +1806,10 @@ luabind::scope lua_register_general() {
 		luabind::def("reloadzonestaticdata", &lua_reloadzonestaticdata),
 		luabind::def("clock", &lua_clock),
 		luabind::def("create_npc", &lua_create_npc),
+		luabind::def("log", (void(*)(int, std::string))&lua_log),
 		luabind::def("debug", (void(*)(std::string))&lua_debug),
-		luabind::def("debug", (void(*)(std::string, int))&lua_debug)
+		luabind::def("debug", (void(*)(std::string, int))&lua_debug),
+		luabind::def("log_combat", (void(*)(std::string))&lua_log_combat)
 //		luabind::def("create_bot", &lua_create_bot),
 //		luabind::def("save_bot_item_by_slot", &lua_save_bot_item_by_slot)
 
@@ -1960,12 +1973,34 @@ luabind::scope lua_register_slot() {
 			luabind::value("EquipmentEnd", static_cast<int>(EQEmu::invslot::EQUIPMENT_END)),
 			luabind::value("GeneralBegin", static_cast<int>(EQEmu::invslot::GENERAL_BEGIN)),
 			luabind::value("GeneralEnd", static_cast<int>(EQEmu::invslot::GENERAL_END)),
+			luabind::value("PossessionsBagsBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN)),
+			luabind::value("PossessionsBagsEnd", static_cast<int>(EQEmu::invbag::CURSOR_BAG_END)),
 			luabind::value("GeneralBagsBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN)),
 			luabind::value("GeneralBagsEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_END)),
+			luabind::value("General1BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN)),
+			luabind::value("General1BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 9),
+			luabind::value("General2BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 10),
+			luabind::value("General2BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 19),
+			luabind::value("General3BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 20),
+			luabind::value("General3BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 29),
+			luabind::value("General4BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 30),
+			luabind::value("General4BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 39),
+			luabind::value("General5BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 40),
+			luabind::value("General5BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 49),
+			luabind::value("General6BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 50),
+			luabind::value("General6BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 59),
+			luabind::value("General7BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 60),
+			luabind::value("General7BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 69),
+			luabind::value("General8BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 70),
+			luabind::value("General8BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 79),
+			luabind::value("General9BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 80),
+			luabind::value("General9BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 89),
+			luabind::value("General10BagBegin", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 90),
+			luabind::value("General10BagEnd", static_cast<int>(EQEmu::invbag::GENERAL_BAGS_BEGIN) + 99),
 			luabind::value("CursorBagBegin", static_cast<int>(EQEmu::invbag::CURSOR_BAG_BEGIN)),
 			luabind::value("CursorBagEnd", static_cast<int>(EQEmu::invbag::CURSOR_BAG_END)),
 			luabind::value("Tradeskill", static_cast<int>(EQEmu::invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE)),
-			luabind::value("Augment", static_cast<int>(EQEmu::invslot::SLOT_AUGMENT_GENERIC_RETURN)), // will be revised out
+			luabind::value("Augment", static_cast<int>(EQEmu::invslot::SLOT_AUGMENT_GENERIC_RETURN)),
 			luabind::value("BankBegin", static_cast<int>(EQEmu::invslot::BANK_BEGIN)),
 			luabind::value("BankEnd", static_cast<int>(EQEmu::invslot::BANK_END)),
 			luabind::value("BankBagsBegin", static_cast<int>(EQEmu::invbag::BANK_BAGS_BEGIN)),
