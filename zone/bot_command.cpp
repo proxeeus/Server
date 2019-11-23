@@ -8975,16 +8975,15 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 		return;
 	}
 
-	// Can't invite PlayerBots 5 levels higher than us
+	// Can't invite PlayerBots x levels higher than us
 	int level_diff = 0;
 	if (bot_owner->GetLevel() > bot_owner->GetTarget()->GetLevel())
 		level_diff = std::abs(bot_owner->GetLevel() - bot_owner->GetTarget()->GetLevel());
 	else if (bot_owner->GetTarget()->GetLevel() > bot_owner->GetLevel())
 		level_diff = std::abs(bot_owner->GetLevel() - bot_owner->GetTarget()->GetLevel());
 
-	//auto level_diff = std::abs(bot_owner->GetLevel() - bot_owner->GetTarget()->GetLevel());
-	if (level_diff > 5) {
-		bot_owner->Message(m_message, "You can't invite a Player Bot five levels higher than you.");
+	if (level_diff > RuleI(PlayerBots, InviteLevelGap)) {
+		bot_owner->Message(m_message, "Cannot invite a PlayerBot above the configured level cap.");
 		return;
 	}
 
