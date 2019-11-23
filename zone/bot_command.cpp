@@ -8994,13 +8994,11 @@ void bot_command_invite(Client *bot_owner, const Seperator* sep)
 	// If a name is provided, use this one. If not, use the lua-assigned name.
 	if (!bot_name.empty())
 	{
-		player_bot->Say("On est dans le if la.");
 		player_bot->Say(sep->arg[1]);
 		bot_name = std::string(sep->arg[1]);
 	}
 	else
 	{
-		player_bot->Say("On est dans le ELSE la.");
 		char clean_name[64];
 		clean_name[0] = 0;
 		auto cleaned_name = CleanMobName(player_bot->GetName(), clean_name);
