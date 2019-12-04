@@ -3006,3 +3006,8 @@ void NPC::SetSimpleRoamBox(float box_size, float move_distance, int move_delay)
 		move_delay
 	);
 }
+
+bool NPC::HasRoamBox()
+{
+	return database.HasRoamBox(this->GetSpawnGroupId());
+}

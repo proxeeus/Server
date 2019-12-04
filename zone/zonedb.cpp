@@ -4850,3 +4850,14 @@ uint32 ZoneDatabase::SaveSaylinkID(const char* saylink_text)
 	
 	return results.LastInsertedID();
 }
+
+bool ZoneDatabase::HasRoamBox(uint32 spawngroupId)
+{
+	std::string query = StringFormat("select* from spawngroup where(min_x != 0 or min_y != 0 or max_x != 0 or max_y != 0 or dist != 0) and id = %u", spawngroupId);
+	auto results = QueryDatabase(query);
+	if (!results.Success())
+		return false;
+	else if (results.RowCount() == 0)
+		return false;
+	return true;
+}

@@ -453,6 +453,7 @@ public:
 	uint32		GetMaxNPCSpellsEffectsID();
 	bool GetAuraEntry(uint16 spell_id, AuraRecord &record);
 	void LoadGlobalLoot();
+	bool		HasRoamBox(uint32 spawngroupId);
 
 	DBnpcspells_Struct*				GetNPCSpells(uint32 iDBSpellsID);
 	DBnpcspellseffects_Struct*		GetNPCSpellsEffects(uint32 iDBSpellsEffectsID);

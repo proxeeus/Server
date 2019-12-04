@@ -472,6 +472,8 @@ public:
 
 	inline bool IsSkipAutoScale() const { return skip_auto_scale; }
 
+	bool HasRoamBox();
+
 protected:
 
 	const NPCType*	NPCTypedata;
@@ -610,7 +612,6 @@ protected:
 
 	bool raid_target;
 	bool ignore_despawn; //NPCs with this set to 1 will ignore the despawn value in spawngroup
-
 
 
 private:
