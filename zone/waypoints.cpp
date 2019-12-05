@@ -169,7 +169,8 @@ void NPC::PauseWandering(int pausetime)
 		}
 	}
 	else {
-		LogError("NPC not on grid - can't pause wandering: [{}]", (unsigned long)GetNPCTypeID());
+		if(GetNPCTypeID() != RuleI(PlayerBots, PlayerBotId))	// Avoid useless logging for PlayerBots (those appear when roamers are hailed)
+			LogError("NPC not on grid - can't pause wandering: [{}]", (unsigned long)GetNPCTypeID());
 	}
 	return;
 }
