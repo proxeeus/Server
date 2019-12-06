@@ -618,6 +618,8 @@ RULE_CATEGORY(PlayerBots)
 RULE_INT(PlayerBots, PlayerBotId, 679,"ID of the PlayerBot npc in npc_types table") 
 RULE_INT(PlayerBots, CorpseDecayTimer, 3600000,"How long do PlayerBot corpses stay in the world (3600000 = 1 hour).") 
 RULE_INT(PlayerBots, InviteLevelGap, 5, "PlayerBots level above this value won't be able to be ^invite'd.")
+RULE_BOOL(PlayerBots, PlayerBotsCanBeGuilded, false, "Can PlayerBots be assigned cosmetic guild tags upon spawning?")
+RULE_INT(PlayerBots, PlayerBotsGuildChance, 50, "Chance % of a PlayerBot being guilded.")
 RULE_CATEGORY_END()
 #endif
 

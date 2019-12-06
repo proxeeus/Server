@@ -4861,3 +4861,57 @@ bool ZoneDatabase::HasRoamBox(uint32 spawngroupId)
 		return false;
 	return true;
 }
+
+uint32 ZoneDatabase::GetPlayerBotGuildId()
+{
+	// First, see if any fake guilds are available -- no need to continue if not.
+	// Fake guilds are guilds where the Leader ID is equal or below 0.
+	std::string query = StringFormat("select * from guilds where leader <= 0");
+	auto results = QueryDatabase(query);
+	if (!results.Success())
+		return 0xFFFFFFFF;
+	else if (results.RowCount() == 0)
+		return 0xFFFFFFFF;
+
+	// Okay, looks like there are some guilds in here !
+	// Try to see if the PlayerBot has a chance to be guilded.
+	unsigned guildedSeed = std::chrono::system_clock::now().time_since_epoch().count();
+	std::mt19937 generator(guildedSeed);
+	srand(time(0));
+	int guildedResult = (generator() % (100 - 1 + 1)) + 1;
+
+	if (guildedResult <= RuleI(PlayerBots, PlayerBotsGuildChance))
+	{
+		// Yay ! The Player Bot is indeed eligible for a guild ! Roll for a random "fake" guild next.
+		int max = results.RowCount();
+		// If only one such guild exists, this is easy: take the only result.
+		if (max == 1)
+		{
+			auto row = results.begin();
+			uint32 guildId = atoi(row[0]);
+			return guildId;
+		}
+		else
+		{
+			// Otherwise, create a new seed & generator, and a 1 to max_row random number.
+			// This will be the index of the guild to choose from.
+			unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
+			std::mt19937 generator(seed);
+			srand(time(0));
+			int min = 1;
+			int result = (generator() % (max - min + 1)) + min;
+			std::vector<uint32> resultSet;
+			for (auto row = results.begin(); row != results.end(); ++row)
+			{
+				uint32 guildid = atoi(row[0]);
+				resultSet.emplace_back(guildid);
+			}
+
+			auto resultFinal = resultSet[result - 1];
+			return resultFinal;
+		}
+		
+	}
+	else
+		return 0xFFFFFFFF;
+}

@@ -2118,7 +2118,13 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
 		ns->spawn.is_npc = 0;
 		ns->spawn.NPC = 0;
-		ns->spawn.guildID = 0xFFFFFFFF;
+		if (RuleB(PlayerBots, PlayerBotsCanBeGuilded)) {
+			auto guildId = database.GetPlayerBotGuildId();
+			ns->spawn.guildID = guildId;
+		}
+		else {
+			ns->spawn.guildID = 0xFFFFFFFF;
+		}
 		ns->spawn.runspeed = 0.7f;
 		//ns->spawn.runspeed = 1.0; // test?
 	}

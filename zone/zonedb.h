@@ -554,6 +554,8 @@ public:
 	/* Things which really dont belong here... */
 	int16	CommandRequirement(const char* commandname);
 
+	uint32 GetPlayerBotGuildId();
+
 #ifdef BOTS
 	// bot database add-on to eliminate the need for a second database connection
 	BotDatabase botdb;
