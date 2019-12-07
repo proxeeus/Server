@@ -210,6 +210,8 @@ uint32 Client::GetExperienceForKill(Mob *against)
 #endif
 
 	if (against && against->IsNPC()) {
+		if ((against->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId)) && (!RuleB(PlayerBots, PlayerBotsGiveXP)))
+			return 0;
 		uint32 level = (uint32)against->GetLevel();
 		return EXP_FORMULA;
 	}
