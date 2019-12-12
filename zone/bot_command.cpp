@@ -1371,7 +1371,7 @@ int bot_command_init(void)
 		bot_command_add("depart", "Orders a bot to open a magical doorway to a specified destination", 0, bot_command_depart) ||
 		bot_command_add("escape", "Orders a bot to send a target group to a safe location within the zone", 0, bot_command_escape) ||
 		bot_command_add("findaliases", "Find available aliases for a bot command", 0, bot_command_find_aliases) ||
-		bot_command_add("follow", "Orders bots to follow a designated target", 0, bot_command_follow) ||
+		bot_command_add("follow", "Orders bots to follow a designated target (option 'chain' auto-links eligible spawned bots)", 0, bot_command_follow) ||
 		bot_command_add("guard", "Orders bots to guard their current positions", 0, bot_command_guard) ||
 		bot_command_add("healrotation", "Lists the available bot heal rotation [subcommands]", 0, bot_command_heal_rotation) ||
 		bot_command_add("healrotationadaptivetargeting", "Enables or disables adaptive targeting within the heal rotation instance", 0, bot_subcommand_heal_rotation_adaptive_targeting) ||
@@ -1403,6 +1403,7 @@ int bot_command_init(void)
 		bot_command_add("inventoryremove", "Removes an item from a bot's inventory", 0, bot_subcommand_inventory_remove) ||
 		bot_command_add("inventorywindow", "Displays all items in a bot's inventory in a pop-up window", 0, bot_subcommand_inventory_window) ||
 		bot_command_add("invisibility", "Orders a bot to cast a cloak of invisibility, or allow them to be seen", 0, bot_command_invisibility) ||
+		bot_command_add("itemuse", "Elicits a report from spawned bots that can use the item on your cursor (option 'empty' yields only empty slots)", 0, bot_command_item_use) ||
 		bot_command_add("levitation", "Orders a bot to cast a levitation spell", 0, bot_command_levitation) ||
 		bot_command_add("lull", "Orders a bot to cast a pacification spell", 0, bot_command_lull) ||
 		bot_command_add("mesmerize", "Orders a bot to cast a mesmerization spell", 0, bot_command_mesmerize) ||
@@ -1432,7 +1433,9 @@ int bot_command_init(void)
 		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
 		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats) ||
 		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
-		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull)
+		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
+		bot_command_add("drink", "Orders a bot to summon drinks", 0, bot_command_summon_drink) ||
+		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) 
 	) {
 		bot_command_deinit();
 		return -1;
@@ -3267,6 +3270,7 @@ void bot_command_follow(Client *c, const Seperator *sep)
 		return;
 	if (helper_is_help_or_usage(sep->arg[1])) {
 		c->Message(m_usage, "usage: (<friendly_target>) %s ([option: reset]) [actionable: byname | ownergroup | botgroup | namesgroup | healrotation | spawned] ([actionable_name])", sep->arg[0]);
+		c->Message(m_usage, "usage: %s chain", sep->arg[0]);
 		return;
 	}
 	const int ab_mask = ActionableBots::ABM_Type2;
@@ -3276,8 +3280,15 @@ void bot_command_follow(Client *c, const Seperator *sep)
 	int name_arg = 2;
 	Mob* target_mob = nullptr;
 
-	std::string reset_arg = sep->arg[1];
-	if (!reset_arg.compare("reset")) {
+	std::string optional_arg = sep->arg[1];
+	if (!optional_arg.compare("chain")) {
+
+		auto chain_count = helper_bot_follow_option_chain(c);
+		c->Message(m_action, "%i of your bots %s now chain following you", chain_count, (chain_count == 1 ? "is" : "are"));
+
+		return;
+	}
+	else if (!optional_arg.compare("reset")) {
 		reset = true;
 		ab_arg = 2;
 		name_arg = 3;
@@ -3304,16 +3315,21 @@ void bot_command_follow(Client *c, const Seperator *sep)
 					bot_iter->SetFollowID(c->GetID());
 				else
 					bot_iter->SetFollowID(my_group->GetLeader()->GetID());
+
+				bot_iter->SetManualFollow(false);
 			}
 			else {
 				if (bot_iter == target_mob)
 					bot_iter->SetFollowID(c->GetID());
 				else
 					bot_iter->SetFollowID(target_mob->GetID());
+
+				bot_iter->SetManualFollow(true);
 			}
 		}
 		else {
 			bot_iter->SetFollowID(0);
+			bot_iter->SetManualFollow(false);
 		}
 		if (!bot_iter->GetPet())
 			continue;
@@ -3768,6 +3784,105 @@ void bot_command_invisibility(Client *c, const Seperator *sep)
 
 	
 	helper_no_available_bots(c, my_bot);
+}
+
+void bot_command_item_use(Client* c, const Seperator* sep)
+{
+	if (helper_is_help_or_usage(sep->arg[1])) {
+
+		c->Message(m_usage, "usage: %s ([empty])", sep->arg[0]);
+		return;
+	}
+
+	bool empty_only = false;
+	std::string arg1 = sep->arg[1];
+	if (arg1.compare("empty") == 0) {
+		empty_only = true;
+	}
+
+	const auto item_instance = c->GetInv().GetItem(EQEmu::invslot::slotCursor);
+	if (!item_instance) {
+
+		c->Message(m_fail, "No item found on cursor!");
+		return;
+	}
+
+	auto item_data = item_instance->GetItem();
+	if (!item_data) {
+
+		c->Message(m_fail, "No data found for cursor item!");
+		return;
+	}
+
+	if (item_data->ItemClass != EQEmu::item::ItemClassCommon || item_data->Slots == 0) {
+
+		c->Message(m_fail, "'%s' is not an equipable item!", item_data->Name);
+		return;
+	}
+
+	std::list<int16> equipable_slot_list;
+	for (int16 equipable_slot = EQEmu::invslot::EQUIPMENT_BEGIN; equipable_slot <= EQEmu::invslot::EQUIPMENT_END; ++equipable_slot) {
+		if (item_data->Slots & (1 << equipable_slot)) {
+			equipable_slot_list.push_back(equipable_slot);
+		}
+	}
+
+	std::string msg;
+	std::string text_link;
+
+	EQEmu::SayLinkEngine linker;
+	linker.SetLinkType(EQEmu::saylink::SayLinkItemInst);
+
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+
+	for (auto bot_iter : sbl) {
+
+		if (!bot_iter) {
+			continue;
+		}
+
+		if (((~item_data->Races) & GetPlayerRaceBit(bot_iter->GetRace())) || ((~item_data->Classes) & GetPlayerClassBit(bot_iter->GetClass()))) {
+			continue;
+		}
+
+		msg = StringFormat("%cinventorygive byname %s", BOT_COMMAND_CHAR, bot_iter->GetCleanName());
+		text_link = bot_iter->CreateSayLink(c, msg.c_str(), bot_iter->GetCleanName());
+		
+		for (auto slot_iter : equipable_slot_list) {
+
+			// needs more failure criteria - this should cover the bulk for now
+			if (slot_iter == EQEmu::invslot::slotSecondary && item_data->Damage && !bot_iter->CanThisClassDualWield()) {
+				continue;
+			}
+
+			auto equipped_item = bot_iter->GetBotInv()[slot_iter];
+
+			if (equipped_item && !empty_only) {
+
+				linker.SetItemInst(equipped_item);
+
+				c->Message(
+					Chat::Say,
+					"[%s] says, 'I can use that for my %s! (replaces: [%s])'",
+					text_link.c_str(),
+					EQEmu::invslot::GetInvPossessionsSlotName(slot_iter),
+					linker.GenerateLink().c_str()
+				);
+				bot_iter->DoAnim(29);
+			}
+			else if (!equipped_item) {
+
+				c->Message(
+					Chat::Say,
+					"[%s] says, 'I can use that for my %s!'",
+					text_link.c_str(),
+					EQEmu::invslot::GetInvPossessionsSlotName(slot_iter)
+				);
+				bot_iter->DoAnim(29);
+			}
+		}
+	}
 }
 
 void bot_command_levitation(Client *c, const Seperator *sep)
@@ -4724,6 +4839,94 @@ void bot_command_size(Client *c, const Seperator *sep)
 	helper_no_available_bots(c, my_bot);
 }
 
+void bot_command_summon_drink(Client* c, const Seperator* sep)
+{
+	//if (helper_command_alias_fail(c, "bot_command_summon_drink", sep->arg[0], "drink"))
+	//	return;
+	//if (helper_is_help_or_usage(sep->arg[1])) {
+	//	c->Message(m_usage, "usage: <friendly_target> %s", sep->arg[0]);
+	//	return;
+	//}
+
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+
+	bool cast_success = false;
+
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
+
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 1, MAGICIAN);
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 5, CLERIC);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 5, SHAMAN);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, DRUID);
+	}
+	if (!my_bot)
+	{
+		c->Message(m_fail, "No currently spawned bots are available to summon you drinks.");
+		return;
+	}
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 211);
+
+
+	helper_no_available_bots(c, my_bot);
+}
+
+void bot_command_summon_food(Client* c, const Seperator* sep)
+{
+	//if (helper_command_alias_fail(c, "bot_command_summon_food", sep->arg[0], "food"))
+	//	return;
+	//if (helper_is_help_or_usage(sep->arg[1])) {
+	//	c->Message(m_usage, "usage: <friendly_target> %s", sep->arg[0]);
+	//	return;
+	//}
+
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+
+	bool cast_success = false;
+
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
+
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 1, MAGICIAN);
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 9, CLERIC);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 9, SHAMAN);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, DRUID);
+	}
+	if (!my_bot)
+	{
+		c->Message(m_fail, "No currently spawned bots are available to summon you food.");
+		return;
+	}
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 50);
+
+
+	helper_no_available_bots(c, my_bot);
+}
+
 void bot_command_summon_corpse(Client *c, const Seperator *sep)
 {
 	// Hardcoding Summon Corpse
@@ -4744,20 +4947,22 @@ void bot_command_summon_corpse(Client *c, const Seperator *sep)
 	bool cast_success = false;
 
 		
-		auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
-		if (!target_mob)
-			return;
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
 
-		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 39, NECROMANCER);
-		if (!my_bot) {
-			my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 51, SHADOWKNIGHT);
-		}
-		if (!my_bot) {
-			c->Message(m_fail, "No currently spawned bots are available to summon your corpse.");
-			return;
-		}
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 39, NECROMANCER);
+	if (!my_bot) 
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 51, SHADOWKNIGHT);
+	}
+	if (!my_bot) 
+	{
+		c->Message(m_fail, "No currently spawned bots are available to summon your corpse.");
+		return;
+	}
 
-		cast_success = helper_cast_standard_spell(my_bot, target_mob, 3);
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 3);
 
 
 	helper_no_available_bots(c, my_bot);
@@ -8997,6 +9202,75 @@ void helper_bot_out_of_combat(Client *bot_owner, Bot *my_bot)
 		break;
 		bot_owner->Message(m_fail, "Undefined bot class for %s", my_bot->GetCleanName());
 	}
+}
+
+int helper_bot_follow_option_chain(Client* bot_owner)
+{
+	if (!bot_owner) {
+		return 0;
+	}
+
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(bot_owner, sbl);
+	if (sbl.empty()) {
+		return 0;
+	}
+
+	int chain_follow_count = 0;
+	Mob* followee = bot_owner;
+
+	// only add groups that do not belong to bot_owner
+	std::map<uint32, Group*> bot_group_map;
+	for (auto bot_iter : sbl) {
+
+		if (!bot_iter || bot_iter->GetManualFollow() || bot_iter->GetGroup() == bot_owner->GetGroup()) {
+			continue;
+		}
+
+		Group* bot_group = bot_iter->GetGroup();
+		if (!bot_iter->GetGroup()) {
+			continue;
+		}
+
+		bot_group_map[bot_group->GetID()] = bot_group;
+	}
+
+	std::list<Bot*> bot_member_list;
+	if (bot_owner->GetGroup()) {
+
+		bot_owner->GetGroup()->GetBotList(bot_member_list);
+		for (auto bot_member_iter : bot_member_list) {
+
+			if (!bot_member_iter || bot_member_iter->GetBotOwnerCharacterID() != bot_owner->CharacterID() || bot_member_iter == followee || bot_member_iter->GetManualFollow()) {
+				continue;
+			}
+
+			bot_member_iter->SetFollowID(followee->GetID());
+			followee = bot_member_iter;
+			++chain_follow_count;
+		}
+	}
+
+	for (auto bot_group_iter : bot_group_map) {
+
+		if (!bot_group_iter.second) {
+			continue;
+		}
+
+		bot_group_iter.second->GetBotList(bot_member_list);
+		for (auto bot_member_iter : bot_member_list) {
+
+			if (!bot_member_iter || bot_member_iter->GetBotOwnerCharacterID() != bot_owner->CharacterID() || bot_member_iter == followee || bot_member_iter->GetManualFollow()) {
+				continue;
+			}
+
+			bot_member_iter->SetFollowID(followee->GetID());
+			followee = bot_member_iter;
+			++chain_follow_count;
+		}
+	}
+
+	return chain_follow_count;
 }
 
 bool helper_cast_standard_spell(Bot* casting_bot, Mob* target_mob, int spell_id, bool annouce_cast, uint32* dont_root_before)

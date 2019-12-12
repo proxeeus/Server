@@ -565,10 +565,17 @@ public:
 	inline const float GetY() const { return m_Position.y; }
 	inline const float GetZ() const { return m_Position.z; }
 	inline const float GetHeading() const { return m_Position.w; }
+	inline const glm::vec4& GetRelativePosition() const { return m_RelativePosition; }
+	inline void SetRelativePosition(const float x, const float y, const float z) { m_RelativePosition.x = x; m_RelativePosition.y = y; m_RelativePosition.z = z; }
+	inline const float GetRelativeX() const { return m_RelativePosition.x; }
+	inline const float GetRelativeY() const { return m_RelativePosition.y; }
+	inline const float GetRelativeZ() const { return m_RelativePosition.z; }
+	inline const float GetRelativeHeading() const { return m_RelativePosition.w; }
 	inline const float GetSize() const { return size; }
 	inline const float GetBaseSize() const { return base_size; }
 	inline const GravityBehavior GetFlyMode() const { return flymode; }
 	bool IsBoat() const;
+	bool IsControllableBoat() const;
 
 	//Group
 	virtual bool HasRaid() = 0;
@@ -1184,8 +1191,8 @@ public:
 	int32 GetManaRegen() const;
 
 
-	// Bots HealRotation methods
 #ifdef BOTS
+	// Bots HealRotation methods
 	bool IsHealRotationTarget() { return (m_target_of_heal_rotation.use_count() && m_target_of_heal_rotation.get()); }
 	bool JoinHealRotationTargetPool(std::shared_ptr<HealRotation>* heal_rotation);
 	bool LeaveHealRotationTargetPool();
@@ -1196,6 +1203,11 @@ public:
 	float HealRotationExtendedHealFrequency();
 
 	const std::shared_ptr<HealRotation>* TargetOfHealRotation() const { return &m_target_of_heal_rotation; }
+
+
+	// not Bots HealRotation methods
+	void SetManualFollow(bool flag) { m_manual_follow = flag; }
+	bool GetManualFollow() const { return m_manual_follow; }
 #endif
 
 protected:
@@ -1301,6 +1313,7 @@ protected:
 	uint32 npctype_id;
 
 	glm::vec4 m_Position;
+	glm::vec4 m_RelativePosition;
 	int animation; // this is really what MQ2 calls SpeedRun just packed like (int)(SpeedRun * 40.0f)
 	float base_size;
 	float size;
@@ -1576,6 +1589,8 @@ private:
 
 #ifdef BOTS
 	std::shared_ptr<HealRotation> m_target_of_heal_rotation;
+
+	bool m_manual_follow;
 #endif
 
 };
