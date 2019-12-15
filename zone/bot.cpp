@@ -83,6 +83,7 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	SetPauseAI(false);
 
 	m_alt_combat_hate_timer.Start(250);
+	m_auto_defend_timer.Disable();
 	//m_combat_jitter_timer.Disable();
 	//SetCombatJitterFlag(false);
 	SetGuardFlag(false);
@@ -180,6 +181,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	SetPauseAI(false);
 
 	m_alt_combat_hate_timer.Start(250);
+	m_auto_defend_timer.Disable();
 	//m_combat_jitter_timer.Disable();
 	//SetCombatJitterFlag(false);
 	SetGuardFlag(false);
@@ -434,15 +436,61 @@ void Bot::SetBotSpellID(uint32 newSpellID) {
 }
 
 void  Bot::SetSurname(std::string bot_surname) {
+
 	_surname = bot_surname.substr(0, 31);
+
+	if (spawned) {
+
+		auto outapp = new EQApplicationPacket(OP_GMLastName, sizeof(GMLastName_Struct));
+		GMLastName_Struct* gmn = (GMLastName_Struct*)outapp->pBuffer;
+
+		strcpy(gmn->name, GetCleanName());
+		strcpy(gmn->gmname, GetCleanName());
+		strcpy(gmn->lastname, GetSurname().c_str());
+		gmn->unknown[0] = 1;
+		gmn->unknown[1] = 1;
+		gmn->unknown[2] = 1;
+		gmn->unknown[3] = 1;
+
+		entity_list.QueueClients(this, outapp);
+		safe_delete(outapp);
+	}
 }
 
 void  Bot::SetTitle(std::string bot_title) {
-		_title = bot_title.substr(0, 31);
+
+	_title = bot_title.substr(0, 31);
+
+	if (spawned) {
+
+		auto outapp = new EQApplicationPacket(OP_SetTitleReply, sizeof(SetTitleReply_Struct));
+		SetTitleReply_Struct* strs = (SetTitleReply_Struct*)outapp->pBuffer;
+
+		strs->is_suffix = 0;
+		strn0cpy(strs->title, _title.c_str(), sizeof(strs->title));
+		strs->entity_id = GetID();
+
+		entity_list.QueueClients(this, outapp, false);
+		safe_delete(outapp);
+	}
 }
 
 void  Bot::SetSuffix(std::string bot_suffix) {
-		_suffix = bot_suffix.substr(0, 31);
+
+	_suffix = bot_suffix.substr(0, 31);
+
+	if (spawned) {
+
+		auto outapp = new EQApplicationPacket(OP_SetTitleReply, sizeof(SetTitleReply_Struct));
+		SetTitleReply_Struct* strs = (SetTitleReply_Struct*)outapp->pBuffer;
+
+		strs->is_suffix = 1;
+		strn0cpy(strs->title, _suffix.c_str(), sizeof(strs->title));
+		strs->entity_id = GetID();
+
+		entity_list.QueueClients(this, outapp, false);
+		safe_delete(outapp);
+	}
 }
 
 uint32 Bot::GetBotArcheryRange() {
@@ -2541,7 +2589,7 @@ constexpr float MAX_CASTER_DISTANCE[PLAYER_CLASS_COUNT] = {
 //  W      C          P          R          S          D      M  B  R      S          N          W          M          E          B      B
 //  A      L          A          N          H          R      N  R  O      H          E          I          A          N          S      E
 //  R      R          L          G          D          U      K  D  G      M          C          Z          G          C          T      R
-	};
+};
 
 void Bot::AI_Process()
 {
@@ -2940,14 +2988,14 @@ void Bot::AI_Process()
 			if (find_target) {
 
 				if (IsRooted()) {
-					SetTarget(hate_list.GetClosestEntOnHateList(this));
+					SetTarget(hate_list.GetClosestEntOnHateList(this, true));
 				}
 				else {
 
 					// This will keep bots on target for now..but, future updates will allow for rooting/stunning
 					SetTarget(hate_list.GetEscapingEntOnHateList(leash_owner, leash_distance));
 					if (!GetTarget()) {
-						SetTarget(hate_list.GetEntWithMostHateOnList(this));
+						SetTarget(hate_list.GetEntWithMostHateOnList(this, nullptr, true));
 					}
 				}
 			}
@@ -3629,9 +3677,15 @@ void Bot::AI_Process()
 
 		// This is as close as I could get without modifying the aggro mechanics and making it an expensive process...
 		// 'class Client' doesn't make use of hate_list...
-		if (bot_owner->GetAggroCount() && bot_owner->GetBotOption(Client::booAutoDefend)) {
+		if (RuleB(Bots, AllowOwnerOptionAutoDefend) && bot_owner->GetBotOption(Client::booAutoDefend)) {
 
-			if (RuleB(Bots, AllowOwnerOptionAutoDefend)) {
+			if (!m_auto_defend_timer.Enabled()) {
+
+				m_auto_defend_timer.Start(zone->random.Int(250, 1250)); // random timer to simulate 'awareness' (cuts down on scanning overhead)
+				return;
+			}
+			
+			if (m_auto_defend_timer.Check() && bot_owner->GetAggroCount()) {
 
 				if (NOT_HOLDING && NOT_PASSIVE) {
 
@@ -3649,7 +3703,7 @@ void Bot::AI_Process()
 							}
 
 							auto hater = entity_list.GetMob(hater_iter.spawn_id);
-							if (hater && DistanceSquared(hater->GetPosition(), bot_owner->GetPosition()) <= leash_distance) {
+							if (hater && !hater->IsMezzed() && DistanceSquared(hater->GetPosition(), bot_owner->GetPosition()) <= leash_distance) {
 
 								// This is roughly equivilent to npc attacking a client pet owner
 								AddToHateList(hater, 1);
@@ -3660,6 +3714,8 @@ void Bot::AI_Process()
 									GetPet()->AddToHateList(hater, 1);
 									GetPet()->SetTarget(hater);
 								}
+
+								m_auto_defend_timer.Disable();
 
 								return;
 							}
