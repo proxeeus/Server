@@ -120,7 +120,7 @@ public:
 
 	/* General Information Queries */
 
-	bool	AddBannedIP(char* bannedIP, const char* notes); //Add IP address to the Banned_IPs table.
+	bool	AddBannedIP(char* bannedIP, const char* notes); //Add IP address to the banned_ips table.
 	bool	AddGMIP(char* ip_address, char* name);
 	bool	CheckBannedIPs(const char* loginIP); //Check incoming connection against banned IP table.
 	bool	CheckGMIPs(const char* loginIP, uint32 account_id);
@@ -179,6 +179,7 @@ public:
 	bool	DeleteAccount(const char *name, const char* loginserver);
 	bool	GetLiveChar(uint32 account_id, char* cname);
 	bool	SetAccountStatus(const char* name, int16 status);
+	bool	SetAccountStatus(const std::string& account_name, int16 status);
 	bool	SetLocalPassword(uint32 accid, const char* password);
 	bool	UpdateLiveChar(char* charname, uint32 account_id);
 
