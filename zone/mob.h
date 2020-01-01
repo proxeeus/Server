@@ -1,3 +1,4 @@
+
 /*	EQEMu: Everquest Server Emulator
 	Copyright (C) 2001-2016 EQEMu Development Team (http://eqemu.org)
 
@@ -169,6 +170,10 @@ public:
 	inline virtual bool InZone() const { return true; }
 
 	void DisplayInfo(Mob *mob);
+
+	std::unordered_map<uint16, Mob *> close_mobs;
+	Timer mob_scan_close;
+	Timer mob_check_moving_timer;
 
 	//Somewhat sorted: needs documenting!
 
@@ -971,7 +976,7 @@ public:
 	void SetEntityVariable(const char *id, const char *m_var);
 	bool EntityVariableExists(const char *id);
 
-	void AI_Event_Engaged(Mob* attacker, bool iYellForHelp = true);
+	void AI_Event_Engaged(Mob* attacker, bool yell_for_help = true);
 	void AI_Event_NoLongerEngaged();
 
 	FACTION_VALUE GetSpecialFactionCon(Mob* iOther);
