@@ -562,6 +562,7 @@ void bot_command_botgroup(Client *c, const Seperator *sep);
 void bot_command_charm(Client *c, const Seperator *sep);
 void bot_command_cure(Client *c, const Seperator *sep);
 void bot_command_defensive(Client *c, const Seperator *sep);
+void bot_command_rdefensive(Client* c, const Seperator* sep);
 void bot_command_depart(Client *c, const Seperator *sep);
 void bot_command_escape(Client *c, const Seperator *sep);
 void bot_command_find_aliases(Client *c, const Seperator *sep);

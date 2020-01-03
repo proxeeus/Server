@@ -1368,6 +1368,7 @@ int bot_command_init(void)
 		bot_command_add("circle", "Orders a Druid bot to open a magical doorway to a specified destination", 0, bot_subcommand_circle) ||
 		bot_command_add("cure", "Orders a bot to remove any ailments", 0, bot_command_cure) ||
 		bot_command_add("defensive", "Orders a bot to use a defensive discipline", 0, bot_command_defensive) ||
+		bot_command_add("rdefensive", "Orders a warrior bot to use a defensive discipline", 0, bot_command_rdefensive) ||
 		bot_command_add("depart", "Orders a bot to open a magical doorway to a specified destination", 0, bot_command_depart) ||
 		bot_command_add("escape", "Orders a bot to send a target group to a safe location within the zone", 0, bot_command_escape) ||
 		bot_command_add("findaliases", "Find available aliases for a bot command", 0, bot_command_find_aliases) ||
@@ -3127,6 +3128,38 @@ void bot_command_defensive(Client *c, const Seperator *sep)
 	}
 
 	c->Message(m_action, "%i of %i bots have used defensive disciplines", success_count, candidate_count);
+}
+
+void bot_command_rdefensive(Client* c, const Seperator* sep)
+{
+	Bot* warrior = nullptr;
+	ActionableTarget::Types actionable_targets;
+	const int ab_mask = (ActionableBots::ABM_Target | ActionableBots::ABM_Type2);
+	std::list<Bot*> sbl;
+	if (ActionableBots::PopulateSBL(c, sep->arg[1], sbl, ab_mask, sep->arg[2]) == ActionableBots::ABT_None)
+		return;
+
+	sbl.remove(nullptr);
+	if (sbl.size() == 1)
+		warrior = sbl.front();
+
+	if (!warrior)
+	{
+		c->Message(m_message, "You need a valid bot target.");
+		return;
+	}
+
+	if ((warrior->GetClass() != WARRIOR) && (warrior->GetLevel() < 55))
+	{
+		c->Message(m_fail, "Your bot needs to be a Warrior (55) in order to use the Defensive Discipline.");
+		return;
+	}
+
+
+	warrior->InterruptSpell();
+	Bot::BotGroupSay(warrior, "Using 'Defensive Discipline !'");
+	warrior->UseDiscipline(4499, warrior->GetID());
+
 }
 
 void bot_command_depart(Client *c, const Seperator *sep)
