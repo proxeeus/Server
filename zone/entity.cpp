@@ -1584,6 +1584,40 @@ void EntityList::QueueClientsByXTarget(Mob *sender, const EQApplicationPacket *a
 	}
 }
 
+// TODO: TEMPORARY FIX TO RESTORE BOTS ATTACK ANIMATIONS
+// TO REMOVE WHEN A PROPER FIX IS IMPLEMENTED
+void EntityList::QueueCloseClients(Mob* sender, const EQApplicationPacket* app,
+	bool ignore_sender, float dist, Mob* SkipThisMob, bool ackreq, eqFilterType filter)
+{
+	if (sender == nullptr) {
+		QueueClients(sender, app, ignore_sender);
+		return;
+	}
+
+	if (dist <= 0)
+		dist = 600;
+	float dist2 = dist * dist; //pow(dist, 2);
+
+	auto it = client_list.begin();
+	while (it != client_list.end()) {
+		Client* ent = it->second;
+
+		if ((!ignore_sender || ent != sender) && (ent != SkipThisMob)) {
+			eqFilterMode filter2 = ent->GetFilter(filter);
+			if (ent->Connected() &&
+				(filter == FilterNone
+					|| filter2 == FilterShow
+					|| (filter2 == FilterShowGroupOnly && (sender == ent ||
+					(ent->GetGroup() && ent->GetGroup()->IsGroupMember(sender))))
+					|| (filter2 == FilterShowSelfOnly && ent == sender))
+				&& (DistanceSquared(ent->GetPosition(), sender->GetPosition()) <= dist2)) {
+				ent->QueuePacket(app, ackreq, Client::CLIENT_CONNECTED);
+			}
+		}
+		++it;
+	}
+}
+
 /**
  * @param sender
  * @param app
@@ -1592,7 +1626,7 @@ void EntityList::QueueClientsByXTarget(Mob *sender, const EQApplicationPacket *a
  * @param skipped_mob
  * @param is_ack_required
  * @param filter
- */
+
 void EntityList::QueueCloseClients(
 	Mob *sender,
 	const EQApplicationPacket *app,
@@ -1645,7 +1679,7 @@ void EntityList::QueueCloseClients(
 		}
 	}
 }
-
+ */
 //sender can be null
 void EntityList::QueueClients(
 	Mob *sender, const EQApplicationPacket *app,
