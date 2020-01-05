@@ -164,7 +164,8 @@ void QuestManager::say(const char *str, Journal::Options &opts) {
 		// if there is no initiator we still want stuff to work (timers, signals, waypoints, etc)
 		if (!RuleB(NPC, EnableNPCQuestJournal) || initiator == nullptr)
 			opts.journal_mode = Journal::Mode::None;
-		owner->QuestJournalledSay(initiator, str, opts);
+		//owner->QuestJournalledSay(initiator, str, opts);
+		owner->Say(str, opts);
 	}
 }
 
