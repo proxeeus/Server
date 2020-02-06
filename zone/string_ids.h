@@ -122,11 +122,13 @@
 #define LOOT_LORE_ERROR				371		//You cannot loot this Lore Item. You already have one.
 #define PICK_LORE					379		//You cannot pick up a lore item you already possess.
 #define POISON_TOO_HIGH				382		// This poison is too high level for you to apply.
+#define CORPSE_TOO_FAR				389		//The corpse is too far away to summon.
 #define CONSENT_DENIED				390		//You do not have consent to summon that corpse.
 #define DISCIPLINE_RDY				393		//You are ready to use a new discipline now.
 #define CONSENT_INVALID_NAME		397		//Not a valid consent name.
 #define CONSENT_NPC					398		//You cannot consent NPC\'s.
 #define CONSENT_YOURSELF			399		//You cannot consent yourself.
+#define CONSENT_WAIT				400		//You must wait 2 seconds between consents.
 #define SONG_NEEDS_DRUM				405		//You need to play a percussion instrument for this song
 #define SONG_NEEDS_WIND				406		//You need to play a wind instrument for this song
 #define SONG_NEEDS_STRINGS			407		//You need to play a stringed instrument for this song
@@ -417,6 +419,7 @@
 #define TARGET_PLAYER_FOR_GUILD_STATUS		12260
 #define GROUP_INVITEE_NOT_FOUND		12268	//You must target a player or use /invite <name> to invite someone to your group.
 #define GROUP_INVITEE_SELF			12270	//12270 You cannot invite yourself.
+#define ALREADY_IN_PARTY			12272	//That person is already in your party.
 #define NO_LONGER_HIDDEN			12337   //You are no longer hidden.
 #define STOP_SNEAKING				12338	//You stop sneaking
 #define NOT_IN_CONTROL				12368	//You do not have control of yourself right now.

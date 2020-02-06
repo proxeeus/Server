@@ -1694,16 +1694,36 @@ void NPC::AI_DoMovement() {
 						GetZ(),
 						GetGrid());
 
+					if (wandertype == GridRandomPath)
+					{
+						if (cur_wp == patrol)
+						{
+							// reached our randomly selected destination; force a pause
+							if (cur_wp_pause == 0)
+							{
+								if (Waypoints.size() > 0 && Waypoints[0].pause)
+									cur_wp_pause = Waypoints[0].pause;
+								else
+									cur_wp_pause = 38;
+							}
+							Log(Logs::Detail, Logs::AI, "NPC using wander type GridRandomPath on grid %d at waypoint %d has reached its random destination; pause time is %d", GetGrid(), cur_wp, cur_wp_pause);
+						}
+						else
+							cur_wp_pause = 0; // skipping pauses until destination
+					}
+
 					SetWaypointPause();
-					SetAppearance(eaStanding, false);
-					if (cur_wp_pause > 0) {
+					if (GetAppearance() != eaStanding) {
+						SetAppearance(eaStanding, false);
+					}
+					if (cur_wp_pause > 0 && m_CurrentWayPoint.w >= 0.0) {
 						// Rotate only if heading isn't -1. Historically -1 headings were ignored way back then, and a massive -1 defaulting on wp grids
 						// has been done in the DB in order to avoid old rotation bugs. Now, the revamped movement code defaults to rotating 
 						// even at -1 headings, which we do not want. This is purely cosmetic.
 						if(m_CurrentWayPoint.w != -1)
 							RotateTo(m_CurrentWayPoint.w);
 					}
-		
+							
 					//kick off event_waypoint arrive
 					char temp[16];
 					sprintf(temp, "%d", cur_wp);
@@ -1857,12 +1877,12 @@ void NPC::AI_SetupNextWaypoint() {
 		}
 	}
 
-	if (wandertype == 4 && cur_wp == CastToNPC()->GetMaxWp()) {
+	if (wandertype == GridOneWayRepop && cur_wp == CastToNPC()->GetMaxWp()) {
 		CastToNPC()->Depop(true); //depop and restart spawn timer
 		if (found_spawn)
 			found_spawn->SetNPCPointerNull();
 	}
-	else if (wandertype == 6 && cur_wp == CastToNPC()->GetMaxWp()) {
+	else if (wandertype == GridOneWayDepop && cur_wp == CastToNPC()->GetMaxWp()) {
 		CastToNPC()->Depop(false);//depop without spawn timer
 		if (found_spawn)
 			found_spawn->SetNPCPointerNull();

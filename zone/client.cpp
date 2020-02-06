@@ -165,6 +165,7 @@ Client::Client(EQStreamInterface* ieqs)
   hp_self_update_throttle_timer(300),
   hp_other_update_throttle_timer(500),
   position_update_timer(10000),
+  consent_throttle_timer(2000),
   tmSitting(0)
 {
 
@@ -6267,6 +6268,52 @@ void Client::DragCorpses()
 	}
 }
 
+void Client::ConsentCorpses(std::string consent_name, bool deny)
+{
+	if (strcasecmp(consent_name.c_str(), GetName()) == 0) {
+		MessageString(Chat::Red, CONSENT_YOURSELF);
+	}
+	else if (!consent_throttle_timer.Check()) {
+		MessageString(Chat::Red, CONSENT_WAIT);
+	}
+	else {
+		auto pack = new ServerPacket(ServerOP_Consent, sizeof(ServerOP_Consent_Struct));
+		ServerOP_Consent_Struct* scs = (ServerOP_Consent_Struct*)pack->pBuffer;
+		strn0cpy(scs->grantname, consent_name.c_str(), sizeof(scs->grantname));
+		strn0cpy(scs->ownername, GetName(), sizeof(scs->ownername));
+		strn0cpy(scs->zonename, "Unknown", sizeof(scs->zonename));
+		scs->permission = deny ? 0 : 1;
+		scs->zone_id = zone->GetZoneID();
+		scs->instance_id = zone->GetInstanceID();
+		scs->consent_type = EQEmu::consent::Normal;
+		scs->consent_id = 0;
+		if (strcasecmp(scs->grantname, "group") == 0) {
+			if (!deny) {
+				Group* grp = GetGroup();
+				scs->consent_id = grp ? grp->GetID() : 0;
+			}
+			scs->consent_type = EQEmu::consent::Group;
+		}
+		else if (strcasecmp(scs->grantname, "raid") == 0) {
+			if (!deny) {
+				Raid* raid = GetRaid();
+				scs->consent_id = raid ? raid->GetID() : 0;
+			}
+			scs->consent_type = EQEmu::consent::Raid;
+		}
+		else if (strcasecmp(scs->grantname, "guild") == 0) {
+			if (!deny) {
+				scs->consent_id = GuildID();
+			}
+			scs->consent_type = EQEmu::consent::Guild;
+			// update all corpses in db so buried/unloaded corpses see new consent id
+			database.UpdateCharacterCorpseConsent(CharacterID(), scs->consent_id);
+		}
+		worldserver.SendPacket(pack);
+		safe_delete(pack);
+	}
+}
+
 void Client::Doppelganger(uint16 spell_id, Mob *target, const char *name_override, int pet_count, int pet_duration)
 {
 	if(!target || !IsValidSpell(spell_id) || this->GetID() == target->GetID())
@@ -8546,13 +8593,13 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 	memset(outapp->pBuffer, 0, sizeof(QuestReward_Struct));
 	QuestReward_Struct* qr = (QuestReward_Struct*)outapp->pBuffer;
 
-	qr->mob_id = target->GetID();		// Entity ID for the from mob name
+	qr->mob_id = target ? target->GetID() : 0;		// Entity ID for the from mob name
 	qr->target_id = GetID();			// The Client ID (this)
 	qr->copper = copper;
 	qr->silver = silver;
 	qr->gold = gold;
 	qr->platinum = platinum;
-	qr->item_id = itemid;
+	qr->item_id[0] = itemid;
 	qr->exp_reward = exp;
 
 	if (copper > 0 || silver > 0 || gold > 0 || platinum > 0)
@@ -8563,7 +8610,7 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 
 	if (faction)
 	{
-		if (target->IsNPC())
+		if (target && target->IsNPC())
 		{
 			int32 nfl_id = target->CastToNPC()->GetNPCFactionID();
 			SetFactionLevel(CharacterID(), nfl_id, GetBaseClass(), GetBaseRace(), GetDeity(), true);
@@ -8574,6 +8621,42 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 
 	if (exp > 0)
 		AddEXP(exp);
+
+	QueuePacket(outapp, true, Client::CLIENT_CONNECTED);
+	safe_delete(outapp);
+}
+
+void Client::QuestReward(Mob* target, const QuestReward_Struct &reward, bool faction)
+{
+	auto outapp = new EQApplicationPacket(OP_Sound, sizeof(QuestReward_Struct));
+	memset(outapp->pBuffer, 0, sizeof(QuestReward_Struct));
+	QuestReward_Struct* qr = (QuestReward_Struct*)outapp->pBuffer;
+
+	memcpy(qr, &reward, sizeof(QuestReward_Struct));
+
+	// not set in caller because reasons
+	qr->mob_id = target ? target->GetID() : 0;		// Entity ID for the from mob name
+
+	if (reward.copper > 0 || reward.silver > 0 || reward.gold > 0 || reward.platinum > 0)
+		AddMoneyToPP(reward.copper, reward.silver, reward.gold, reward.platinum, false);
+
+	for (int i = 0; i < QUESTREWARD_COUNT; ++i)
+		if (reward.item_id[i] > 0)
+			SummonItem(reward.item_id[i], 0, 0, 0, 0, 0, 0, false, EQEmu::invslot::slotCursor);
+
+	if (faction)
+	{
+		if (target && target->IsNPC())
+		{
+			int32 nfl_id = target->CastToNPC()->GetNPCFactionID();
+			SetFactionLevel(CharacterID(), nfl_id, GetBaseClass(), GetBaseRace(), GetDeity(), true);
+			qr->faction = target->CastToNPC()->GetPrimaryFaction();
+			qr->faction_mod = 1; // Too lazy to get real value, not sure if this is even used by client anyhow.
+		}
+	}
+
+	if (reward.exp_reward> 0)
+		AddEXP(reward.exp_reward);
 
 	QueuePacket(outapp, true, Client::CLIENT_CONNECTED);
 	safe_delete(outapp);

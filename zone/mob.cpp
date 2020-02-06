@@ -191,6 +191,7 @@ Mob::Mob(
 
 	last_hp_percent = 0;
 	last_hp         = 0;
+	last_max_hp     = 0;
 
 	current_speed = base_runspeed;
 
@@ -689,7 +690,7 @@ int Mob::_GetRunSpeed() const {
 	int runspeedcap = RuleI(Character,BaseRunSpeedCap);
 	runspeedcap += itembonuses.IncreaseRunSpeedCap + spellbonuses.IncreaseRunSpeedCap + aabonuses.IncreaseRunSpeedCap;
 
-	aa_mod = itembonuses.IncreaseRunSpeedCap + spellbonuses.IncreaseRunSpeedCap + aabonuses.IncreaseRunSpeedCap;
+	aa_mod += aabonuses.BaseMovementSpeed + aabonuses.movementspeed;
 	int spell_mod = spellbonuses.movementspeed + itembonuses.movementspeed;
 	int movemod = 0;
 
@@ -1345,6 +1346,16 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 	 * If our HP is different from last HP update call - let's update selves
 	 */
 	if (IsClient()) {
+
+		// delay to allow the client to catch up on buff states
+		if (max_hp != last_max_hp) {
+
+			last_max_hp = max_hp;
+			CastToClient()->hp_self_update_throttle_timer.Trigger();
+
+			return;
+		}
+
 		if (current_hp != last_hp || force_update_all) {
 
 			/**
@@ -1352,10 +1363,12 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 			 */
 			if (this->CastToClient()->hp_self_update_throttle_timer.Check() || force_update_all) {
 				Log(Logs::General, Logs::HPUpdate,
-					"Mob::SendHPUpdate :: Update HP of self (%s) HP: %i last: %i skip_self: %s",
+					"Mob::SendHPUpdate :: Update HP of self (%s) HP: %i/%i last: %i/%i skip_self: %s",
 					this->GetCleanName(),
 					current_hp,
+					max_hp,
 					last_hp,
+					last_max_hp,
 					(skip_self ? "true" : "false")
 				);
 
