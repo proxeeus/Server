@@ -102,8 +102,8 @@ public:
 	int GuildRank();
 	uint32 GuildID();
 	int GetFace();
-	bool TakeMoneyFromPP(uint64 copper);
-	bool TakeMoneyFromPP(uint64 copper, bool update_client);
+	bool TakeMoneyFromPP(uint32 copper);
+	bool TakeMoneyFromPP(uint32 copper, bool update_client);
 	void AddMoneyToPP(uint32 copper, uint32 silver, uint32 gold, uint32 platinum, bool update_client);
 	bool TGB();
 	int GetSkillPoints();

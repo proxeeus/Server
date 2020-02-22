@@ -385,12 +385,12 @@ int Lua_Client::GetFace() {
 	return self->GetFace();
 }
 
-bool Lua_Client::TakeMoneyFromPP(uint64 copper) {
+bool Lua_Client::TakeMoneyFromPP(uint32 copper) {
 	Lua_Safe_Call_Bool();
 	return self->TakeMoneyFromPP(copper);
 }
 
-bool Lua_Client::TakeMoneyFromPP(uint64 copper, bool update_client) {
+bool Lua_Client::TakeMoneyFromPP(uint32 copper, bool update_client) {
 	Lua_Safe_Call_Bool();
 	return self->TakeMoneyFromPP(copper, update_client);
 }
@@ -1650,8 +1650,8 @@ luabind::scope lua_register_client() {
 		.def("GuildRank", (int(Lua_Client::*)(void))&Lua_Client::GuildRank)
 		.def("GuildID", (uint32(Lua_Client::*)(void))&Lua_Client::GuildID)
 		.def("GetFace", (int(Lua_Client::*)(void))&Lua_Client::GetFace)
-		.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint64))&Lua_Client::TakeMoneyFromPP)
-		.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint64,bool))&Lua_Client::TakeMoneyFromPP)
+		.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint32))&Lua_Client::TakeMoneyFromPP)
+		.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint32,bool))&Lua_Client::TakeMoneyFromPP)
 		.def("AddMoneyToPP", (void(Lua_Client::*)(uint32,uint32,uint32,uint32,bool))&Lua_Client::AddMoneyToPP)
 		.def("TGB", (bool(Lua_Client::*)(void))&Lua_Client::TGB)
 		.def("GetSkillPoints", (int(Lua_Client::*)(void))&Lua_Client::GetSkillPoints)
