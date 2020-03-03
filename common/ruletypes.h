@@ -497,7 +497,6 @@ RULE_INT(Combat, NPCAssistCap, 5, "Maxiumium number of NPCs that will assist ano
 RULE_INT(Combat, NPCAssistCapTimer, 6000, "Time in milliseconds a NPC will take to clear assist aggro cap space")
 RULE_BOOL(Combat, UseRevampHandToHand, false, "use h2h revamped dmg/delays I believe this was implemented during SoF")
 RULE_BOOL(Combat, ClassicMasterWu, false, "classic master wu uses a random special, modern doesn't")
-RULE_BOOL(Combat, MonksHaveExtraTigerClaw, false, "Tiger Claw is on its separate timer")
 RULE_INT(Combat, LevelToStopDamageCaps, 0, "1 will effectively disable them, 20 should give basically same results as old incorrect system")
 RULE_INT(Combat, LevelToStopACTwinkControl, 50, "1 will effectively disable it, 50 should give basically same results as current system")
 RULE_BOOL(Combat, ClassicNPCBackstab, false, "true disables npc facestab - npcs get normal attack if not behind")
