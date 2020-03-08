@@ -597,6 +597,7 @@ void bot_command_track(Client *c, const Seperator *sep);
 void bot_command_water_breathing(Client *c, const Seperator *sep);
 void bot_command_deity(Client *c, const Seperator *sep);
 void bot_command_lich(Client *c, const Seperator *sep);
+void bot_command_dmf(Client* c, const Seperator* sep);
 void bot_command_invite(Client *c, const Seperator* sep);
 void bot_command_stats(Client *c, const Seperator* sep);
 void bot_command_feign(Client *c, const Seperator* sep);

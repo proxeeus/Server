@@ -1431,6 +1431,7 @@ int bot_command_init(void)
 		bot_command_add("waterbreathing", "Orders a bot to cast a water breathing spell", 0, bot_command_water_breathing) ||
 		bot_command_add("deity", "Assigns a Deity to a bot. This can only be set once.", 0, bot_command_deity) ||
 		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich) ||
+		bot_command_add("dmf", "Orders a designated Necromancer bot to cast Dead Man Floating.", 0, bot_command_dmf) ||
 		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
 		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats) ||
 		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
@@ -3926,37 +3927,49 @@ void bot_command_item_use(Client* c, const Seperator* sep)
 
 void bot_command_levitation(Client *c, const Seperator *sep)
 {
-	bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Levitation];
-	if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Levitation) || helper_command_alias_fail(c, "bot_command_levitation", sep->arg[0], "levitation"))
-		return;
-	if (helper_is_help_or_usage(sep->arg[1])) {
-		c->Message(m_usage, "usage: (<friendly_target>) %s", sep->arg[0]);
-		helper_send_usage_required_bots(c, BCEnum::SpT_Levitation);
-		return;
-	}
+	//bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Levitation];
+	//if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Levitation) || helper_command_alias_fail(c, "bot_command_levitation", sep->arg[0], "levitation"))
+	//	return;
+	//if (helper_is_help_or_usage(sep->arg[1])) {
+	//	c->Message(m_usage, "usage: (<friendly_target>) %s", sep->arg[0]);
+	//	helper_send_usage_required_bots(c, BCEnum::SpT_Levitation);
+	//	return;
+	//}
 
-	ActionableTarget::Types actionable_targets;
 	Bot* my_bot = nullptr;
 	std::list<Bot*> sbl;
 	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
 
 	bool cast_success = false;
-	for (auto list_iter : *local_list) {
-		auto local_entry = list_iter;
-		if (helper_spell_check_fail(local_entry))
-			continue;
 
-		auto target_mob = actionable_targets.Select(c, local_entry->target_type, FRIENDLY);
-		if (!target_mob)
-			continue;
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
 
-		my_bot = ActionableBots::Select_ByMinLevelAndClass(c, local_entry->target_type, sbl, local_entry->spell_level, local_entry->caster_class, target_mob);
-		if (!my_bot)
-			continue;
-
-		cast_success = helper_cast_standard_spell(my_bot, target_mob, local_entry->spell_id);
-		break;
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 39, RANGER);
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 24, WIZARD);
 	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, SHAMAN);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 14, DRUID);
+	}
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 16, ENCHANTER);
+	}
+	if (!my_bot)
+	{
+		c->Message(m_fail, "No currently spawned bots are available to cast Levitation.");
+		return;
+	}
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 261);
 	
 	helper_no_available_bots(c, my_bot);
 }
@@ -5261,6 +5274,46 @@ void bot_command_deity(Client *c, const Seperator *sep)
 		return;
 	}
 	return;
+}
+
+void bot_command_dmf(Client* c, const Seperator* sep)
+{
+	if (helper_command_alias_fail(c, "bot_command_dmf", sep->arg[0], "dmf"))
+		return;
+
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+
+	bool cast_success = false;
+
+
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
+
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 49, NECROMANCER);
+	if (!my_bot)
+	{
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 44, NECROMANCER);
+	}
+	if (!my_bot)
+	{
+		c->Message(m_fail, "No currently spawned bots are available to cast Dead Man Floating.");
+		return;
+	}
+
+	int dmf_id = 0;
+
+	if (my_bot->GetLevel() >= 44 && my_bot->GetLevel() <= 48)
+		dmf_id = 457;
+	if (my_bot->GetLevel() >= 49)
+		dmf_id = 1391;
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, dmf_id);
+
+
+	helper_no_available_bots(c, my_bot);
 }
 
 void bot_command_lich(Client *c, const Seperator *sep)
