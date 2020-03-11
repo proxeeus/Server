@@ -286,10 +286,14 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 		strcat(npc_type->name, "`s_Warder");
 	} else if (record.petnaming == 4) {
 		// Keep the DB name
+		// Could probably refactor those 3 calls into 1 elseif but eh.
 	} else if (record.petnaming == 3 && IsClient()) {
 		GetRandPetName(npc_type->name);
 	}
 	else if (record.petnaming == 3 && ((npctype_id == RuleI(PlayerBots, PlayerBotId)))) {
+		GetRandPetName(npc_type->name);
+	}
+	else if (record.petnaming == 3 && IsBot()) {
 		GetRandPetName(npc_type->name);
 	}
 	else if (record.petnaming == 5 && IsClient()) {
