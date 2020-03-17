@@ -3459,15 +3459,12 @@ void bot_command_rpull(Client *c, const Seperator *sep)
 	}
 
 	if (!my_bot) {
-		c->Say("Pas de my_bot, on return.");
 		return;
 	}
 	else
 	{
 		if (!my_bot->IsArcheryRange(target_mob)) 
 		{
-			my_bot->Say("Debug: Not IsArcheryRange!");
-
 			//glm::vec3 pullPos = glm::vec3((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z)/2);
 			glm::vec4 pos = glm::vec4((target_mob->GetPosition().x + my_bot->GetPosition().x) / 2, (target_mob->GetPosition().y + my_bot->GetPosition().y) / 2, (target_mob->GetPosition().z + my_bot->GetPosition().z) / 2, -1);
 			my_bot->MoveTo(pos,false);
@@ -3757,7 +3754,7 @@ void bot_command_invisibility(Client *c, const Seperator *sep)
 	ActionableTarget::Types actionable_targets;
 	Bot* my_bot = nullptr;
 	std::list<Bot*> sbl;
-	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+	MyBots::PopulateSBL_ByMyGroupedBots(c, sbl);
 	
 	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
 	if (!target_mob)
@@ -3988,7 +3985,7 @@ void bot_command_lull(Client *c, const Seperator *sep)
 	ActionableTarget::Types actionable_targets;
 	Bot* my_bot = nullptr;
 	std::list<Bot*> sbl;
-	MyBots::PopulateSBL_BySpawnedBots(c, sbl);
+	MyBots::PopulateSBL_ByMyGroupedBots(c, sbl);
 
 	for (auto list_iter : *local_list) {
 		auto local_entry = list_iter;
@@ -4003,7 +4000,7 @@ void bot_command_lull(Client *c, const Seperator *sep)
 		//	continue;
 
 		my_bot = ActionableBots::Select_ByMinLevelAndClass(c, local_entry->target_type, sbl, local_entry->spell_level, local_entry->caster_class, target_mob);
-		if (!my_bot)
+		if (!my_bot || my_bot && my_bot->GetClass() == BARD)
 			continue;
 
 		uint32 dont_root_before = 0;
