@@ -1437,7 +1437,8 @@ int bot_command_init(void)
 		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
 		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
 		bot_command_add("drink", "Orders a bot to summon drinks", 0, bot_command_summon_drink) ||
-		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) 
+		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) ||
+		bot_command_add("ultravision", "Orders a bot to cast an ultravision spell", 0, bot_command_ultravision)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -5047,6 +5048,32 @@ void bot_command_summon_corpse(Client *c, const Seperator *sep)
 
 	cast_success = helper_cast_standard_spell(my_bot, target_mob, 3);
 
+
+	helper_no_available_bots(c, my_bot);
+}
+
+void bot_command_ultravision(Client* c, const Seperator* sep)
+{
+	ActionableTarget::Types actionable_targets;
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_ByMyGroupedBots(c, sbl);
+
+	auto target_mob = ActionableTarget::AsSingle_ByPlayer(c);
+	if (!target_mob)
+		return;
+	bool cast_success = false;
+
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 29, ENCHANTER);
+
+	if (!my_bot) {
+		my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(c, sbl, 29, SHAMAN);
+	}
+	if (!my_bot) {
+		c->Message(m_fail, "No currently spawned bots are able to cast an ultravision spell.");
+		return;
+	}
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 46);
 
 	helper_no_available_bots(c, my_bot);
 }

@@ -604,6 +604,7 @@ void bot_command_feign(Client *c, const Seperator* sep);
 void bot_command_rpull(Client* c, const Seperator* sep);
 void bot_command_summon_drink(Client* c, const Seperator* sep);
 void bot_command_summon_food(Client* c, const Seperator* sep);
+void bot_command_ultravision(Client* c, const Seperator* sep);
 
 // bot subcommands
 void bot_subcommand_bot_appearance(Client *c, const Seperator *sep);
