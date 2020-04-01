@@ -397,6 +397,10 @@ bool lua_is_disc_tome(int item_id) {
 	return quest_manager.isdisctome(item_id);
 }
 
+std::string lua_get_spell_name(uint32 spell_id) {
+	return quest_manager.getspellname(spell_id);
+}
+
 void lua_safe_move() {
 	quest_manager.safemove();
 }
@@ -733,6 +737,10 @@ bool lua_is_task_appropriate(int task) {
 	return quest_manager.istaskappropriate(task);
 }
 
+std::string lua_get_task_name(uint32 task_id) {
+	return quest_manager.gettaskname(task_id);
+}
+
 void lua_popup(const char *title, const char *text, uint32 id, uint32 buttons, uint32 duration) {
 	quest_manager.popup(title, text, id, buttons, duration);
 }
@@ -809,6 +817,10 @@ std::string lua_item_link(int item_id) {
 	char text[250] = { 0 };
 
 	return quest_manager.varlink(text, item_id);
+}
+
+std::string lua_get_item_name(uint32 item_id) {
+	return quest_manager.getitemname(item_id);
 }
 
 std::string lua_say_link(const char *phrase, bool silent, const char *link_name) {
@@ -928,6 +940,10 @@ void lua_remove_from_instance(uint32 instance_id) {
 
 void lua_remove_from_instance_by_char_id(uint32 instance_id, uint32 char_id) {
 	quest_manager.RemoveFromInstanceByCharID(instance_id, char_id);
+}
+
+bool lua_check_instance_by_char_id(uint32 instance_id, uint32 char_id) {
+	return quest_manager.CheckInstanceByCharID(instance_id, char_id);
 }
 
 void lua_remove_all_from_instance(uint32 instance_id) {
@@ -1671,6 +1687,7 @@ luabind::scope lua_register_general() {
 		luabind::def("depop_zone", &lua_depop_zone),
 		luabind::def("repop_zone", &lua_repop_zone),
 		luabind::def("is_disc_tome", &lua_is_disc_tome),
+		luabind::def("get_spell_name", (std::string(*)(uint32))&lua_get_spell_name),
 		luabind::def("safe_move", &lua_safe_move),
 		luabind::def("rain", &lua_rain),
 		luabind::def("snow", &lua_snow),
@@ -1738,6 +1755,7 @@ luabind::scope lua_register_general() {
 		luabind::def("active_tasks_in_set", &lua_active_tasks_in_set),
 		luabind::def("completed_tasks_in_set", &lua_completed_tasks_in_set),
 		luabind::def("is_task_appropriate", &lua_is_task_appropriate),
+		luabind::def("get_task_name", (std::string(*)(uint32))&lua_get_task_name),
 		luabind::def("popup", &lua_popup),
 		luabind::def("clear_spawn_timers", &lua_clear_spawn_timers),
 		luabind::def("zone_emote", &lua_zone_emote),
@@ -1757,6 +1775,7 @@ luabind::scope lua_register_general() {
 		luabind::def("merchant_set_item", (void(*)(uint32,uint32,uint32))&lua_merchant_set_item),
 		luabind::def("merchant_count_item", &lua_merchant_count_item),
 		luabind::def("item_link", &lua_item_link),
+		luabind::def("get_item_name", (std::string(*)(uint32))&lua_get_item_name),
 		luabind::def("say_link", (std::string(*)(const char*,bool,const char*))&lua_say_link),
 		luabind::def("say_link", (std::string(*)(const char*,bool))&lua_say_link),
 		luabind::def("say_link", (std::string(*)(const char*))&lua_say_link),
@@ -1785,6 +1804,7 @@ luabind::scope lua_register_general() {
 		luabind::def("assign_raid_to_instance", &lua_assign_raid_to_instance),
 		luabind::def("remove_from_instance", &lua_remove_from_instance),
 		luabind::def("remove_from_instance_by_char_id", &lua_remove_from_instance_by_char_id),
+		luabind::def("check_instance_by_char_id", (bool(*)(uint16, uint32))&lua_check_instance_by_char_id),
 		luabind::def("remove_all_from_instance", &lua_remove_all_from_instance),
 		luabind::def("flag_instance_by_group_leader", &lua_flag_instance_by_group_leader),
 		luabind::def("flag_instance_by_raid_leader", &lua_flag_instance_by_raid_leader),
