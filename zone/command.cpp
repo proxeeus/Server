@@ -5945,13 +5945,12 @@ void command_spawnfix(Client *c, const Seperator *sep) {
 // Proxeeus
 void command_setroambox(Client *c, const Seperator *sep)
 {
-	/*
 	Mob *targetMob = c->GetTarget();
 	if (!targetMob || !targetMob->IsNPC()) {
 		c->Message(0, "Error: #setroambox: Need an NPC target.");
 		return;
 	}
-	int spawngroupId = c->GetTarget()->CastToNPC()->GetSp2();
+	int spawngroupId = c->GetTarget()->CastToNPC()->GetSpawnGroupId();
 	uint32 minx = atoi(sep->arg[1]);
 	uint32 maxx = atoi(sep->arg[2]);
 	uint32 miny = atoi(sep->arg[3]);
@@ -5973,8 +5972,8 @@ void command_setroambox(Client *c, const Seperator *sep)
 	}
 
 	c->Message(0, "Updating roambox coordinates successful.");
-	*/
-	c->Message(0, "COMMAND DEPRECATED.");
+	
+	//c->Message(0, "COMMAND DEPRECATED.");
 }
 //
 
