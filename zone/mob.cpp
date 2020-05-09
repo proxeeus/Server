@@ -2401,8 +2401,10 @@ const int32& Mob::SetMana(int32 amount)
 
 
 void Mob::SetAppearance(EmuAppearance app, bool iIgnoreSelf) {
-	if (_appearance == app)
-		return;
+	// Commentting this out as it fucks up custom animations
+	// upon zoning / events / timers etc
+	//if (_appearance == app)
+	//	return;
 	_appearance = app;
 	SendAppearancePacket(AT_Anim, GetAppearanceValue(app), true, iIgnoreSelf);
 	if (this->IsClient() && this->IsAIControlled())
