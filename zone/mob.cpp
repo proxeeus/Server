@@ -119,7 +119,7 @@ Mob::Mob(
 	attack_anim_timer(500),
 	position_update_melee_push_timer(500),
 	hate_list_cleanup_timer(6000),
-	mob_scan_close(6000),
+	mob_close_scan_timer(6000),
 	mob_check_moving_timer(1000)
 {
 	mMovementManager = &MobMovementManager::Get();
@@ -468,7 +468,7 @@ Mob::Mob(
 	m_manual_follow = false;
 #endif
 
-	mob_scan_close.Trigger();
+	mob_close_scan_timer.Trigger();
 }
 
 Mob::~Mob()
@@ -1217,15 +1217,22 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	strn0cpy(ns->spawn.lastName, lastname, sizeof(ns->spawn.lastName));
 
 	//for (i = 0; i < _MaterialCount; i++)
-	for (i = 0; i < 9; i++)
-	{
+	for (i = 0; i < 9; i++) {
 		// Only Player Races Wear Armor
-		if (Mob::IsPlayerRace(race) || i > 6)
-		{
-			ns->spawn.equipment.Slot[i].Material = GetEquipmentMaterial(i);
-			ns->spawn.equipment.Slot[i].EliteModel = IsEliteMaterialItem(i);
+		if (Mob::IsPlayerRace(race) || i > 6) {
+			ns->spawn.equipment.Slot[i].Material        = GetEquipmentMaterial(i);
+			ns->spawn.equipment.Slot[i].EliteModel      = IsEliteMaterialItem(i);
 			ns->spawn.equipment.Slot[i].HerosForgeModel = GetHerosForgeModel(i);
-			ns->spawn.equipment_tint.Slot[i].Color = GetEquipmentColor(i);
+			ns->spawn.equipment_tint.Slot[i].Color      = GetEquipmentColor(i);
+		}
+	}
+
+	if (texture > 0) {
+		for (i = 0; i < 9; i++) {
+			if (i == EQ::textures::weaponPrimary || i == EQ::textures::weaponSecondary || texture == 255) {
+				continue;
+			}
+			ns->spawn.equipment.Slot[i].Material = texture;
 		}
 	}
 
@@ -1924,9 +1931,10 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	safe_delete(outapp);
 
 	/* Refresh armor and tints after send illusion packet */
-	this->SendArmorAppearance();
+	SendArmorAppearance();
 
-	LogSpells("Illusion: Race = [{}], Gender = [{}], Texture = [{}], HelmTexture = [{}], HairColor = [{}], BeardColor = [{}], EyeColor1 = [{}], EyeColor2 = [{}], HairStyle = [{}], Face = [{}], DrakkinHeritage = [{}], DrakkinTattoo = [{}], DrakkinDetails = [{}], Size = [{}]",
+	LogSpells(
+		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
 		race,
 		gender,
 		texture,
@@ -1940,7 +1948,8 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		drakkin_heritage,
 		drakkin_tattoo,
 		drakkin_details,
-		size);
+		size
+	);
 }
 
 bool Mob::RandomizeFeatures(bool send_illusion, bool set_variables)
@@ -2449,7 +2458,7 @@ void Mob::ChangeSize(float in_size = 0, bool bNoRestriction) {
 	if (in_size > 255.0)
 		in_size = 255.0;
 	//End of Size Code
-	this->size = in_size;
+	size = in_size;
 	SendAppearancePacket(AT_Size, (uint32) in_size);
 }
 
