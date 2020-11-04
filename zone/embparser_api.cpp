@@ -3746,10 +3746,11 @@ XS(XS__GetZoneLongName) {
 	if (items != 1)
 		Perl_croak(aTHX_ "Usage: quest::GetZoneLongName(string zone)");
 	dXSTARG;
-	char       *zone   = (char *) SvPV_nolen(ST(0));
-	Const_char *RETVAL = quest_manager.GetZoneLongName(zone);
 
-	sv_setpv(TARG, RETVAL);
+	std::string zone = (std::string) SvPV_nolen(ST(0));
+	std::string RETVAL = quest_manager.GetZoneLongName(zone);
+
+	sv_setpv(TARG, RETVAL.c_str());
 	XSprePUSH;
 	PUSHTARG;
 	XSRETURN(1);
@@ -3780,7 +3781,7 @@ XS(XS__crosszoneassigntaskbycharid) {
 
 		if (items == 3) {
 			enforce_level_requirement = (bool) SvTRUE(ST(2));
-		}	
+		}
 		quest_manager.CrossZoneAssignTaskByCharID(character_id, task_id, enforce_level_requirement);
 	}
 
@@ -3814,13 +3815,13 @@ XS(XS__crosszoneassigntaskbyraidid) {
 		int raid_id = (int) SvIV(ST(0));
 		uint32 task_id = (uint32) SvIV(ST(1));
 		bool enforce_level_requirement = false;
-	
+
 		if (items == 3) {
 			enforce_level_requirement = (bool) SvTRUE(ST(2));
 		}
 		quest_manager.CrossZoneAssignTaskByRaidID(raid_id, task_id, enforce_level_requirement);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneassigntaskbyguildid);
@@ -3838,7 +3839,7 @@ XS(XS__crosszoneassigntaskbyguildid) {
 		}
 		quest_manager.CrossZoneAssignTaskByGuildID(guild_id, task_id, enforce_level_requirement);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonecastspellbycharid);
@@ -3851,7 +3852,7 @@ XS(XS__crosszonecastspellbycharid) {
 		uint32 spell_id = (uint32) SvIV(ST(1));
 		quest_manager.CrossZoneCastSpellByCharID(character_id, spell_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonecastspellbygroupid);
@@ -3864,7 +3865,7 @@ XS(XS__crosszonecastspellbygroupid) {
 		uint32 spell_id = (uint32) SvIV(ST(1));
 		quest_manager.CrossZoneCastSpellByGroupID(group_id, spell_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonecastspellbyraidid);
@@ -3877,7 +3878,7 @@ XS(XS__crosszonecastspellbyraidid) {
 		uint32 spell_id = (uint32) SvIV(ST(1));
 		quest_manager.CrossZoneCastSpellByRaidID(raid_id, spell_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonecastspellbyguildid);
@@ -3890,7 +3891,7 @@ XS(XS__crosszonecastspellbyguildid) {
 		uint32 spell_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneCastSpellByGuildID(guild_id, spell_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonedisabletaskbycharid);
@@ -3903,7 +3904,7 @@ XS(XS__crosszonedisabletaskbycharid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneDisableTaskByCharID(char_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonedisabletaskbygroupid);
@@ -3916,7 +3917,7 @@ XS(XS__crosszonedisabletaskbygroupid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneDisableTaskByGroupID(group_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonedisabletaskbyraidid);
@@ -3929,7 +3930,7 @@ XS(XS__crosszonedisabletaskbyraidid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneDisableTaskByRaidID(raid_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonedisabletaskbyguildid);
@@ -3942,7 +3943,7 @@ XS(XS__crosszonedisabletaskbyguildid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneDisableTaskByGuildID(guild_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneenabletaskbycharid);
@@ -3955,7 +3956,7 @@ XS(XS__crosszoneenabletaskbycharid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneEnableTaskByCharID(char_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneenabletaskbygroupid);
@@ -3968,7 +3969,7 @@ XS(XS__crosszoneenabletaskbygroupid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneEnableTaskByGroupID(group_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneenabletaskbyraidid);
@@ -3981,7 +3982,7 @@ XS(XS__crosszoneenabletaskbyraidid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneEnableTaskByRaidID(raid_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneenabletaskbyguildid);
@@ -3994,7 +3995,7 @@ XS(XS__crosszoneenabletaskbyguildid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneEnableTaskByGuildID(guild_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonefailtaskbycharid);
@@ -4007,7 +4008,7 @@ XS(XS__crosszonefailtaskbycharid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneFailTaskByCharID(char_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonefailtaskbygroupid);
@@ -4020,7 +4021,7 @@ XS(XS__crosszonefailtaskbygroupid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneFailTaskByGroupID(group_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonefailtaskbyraidid);
@@ -4033,7 +4034,7 @@ XS(XS__crosszonefailtaskbyraidid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneFailTaskByRaidID(raid_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonefailtaskbyguildid);
@@ -4046,7 +4047,7 @@ XS(XS__crosszonefailtaskbyguildid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneFailTaskByGuildID(guild_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonemarqueebycharid);
@@ -4403,7 +4404,7 @@ XS(XS__crosszoneremovetaskbycharid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneRemoveTaskByCharID(char_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneremovetaskbygroupid);
@@ -4416,7 +4417,7 @@ XS(XS__crosszoneremovetaskbygroupid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneRemoveTaskByGroupID(group_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneremovetaskbyraidid);
@@ -4429,7 +4430,7 @@ XS(XS__crosszoneremovetaskbyraidid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneRemoveTaskByRaidID(raid_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneremovetaskbyguildid);
@@ -4442,7 +4443,7 @@ XS(XS__crosszoneremovetaskbyguildid) {
 		uint32 task_id = (uint32) SvUV(ST(1));
 		quest_manager.CrossZoneRemoveTaskByGuildID(guild_id, task_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneresetactivitybycharid);
@@ -4456,7 +4457,7 @@ XS(XS__crosszoneresetactivitybycharid) {
 		int activity_id = (int) SvIV(ST(2));
 		quest_manager.CrossZoneResetActivityByCharID(char_id, task_id, activity_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneresetactivitybygroupid);
@@ -4470,7 +4471,7 @@ XS(XS__crosszoneresetactivitybygroupid) {
 		int activity_id = (int) SvIV(ST(2));
 		quest_manager.CrossZoneResetActivityByGroupID(group_id, task_id, activity_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneresetactivitybyraidid);
@@ -4484,7 +4485,7 @@ XS(XS__crosszoneresetactivitybyraidid) {
 		int activity_id = (int) SvIV(ST(2));
 		quest_manager.CrossZoneResetActivityByRaidID(raid_id, task_id, activity_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneresetactivitybyguildid);
@@ -4498,7 +4499,7 @@ XS(XS__crosszoneresetactivitybyguildid) {
 		int activity_id = (int) SvIV(ST(2));
 		quest_manager.CrossZoneResetActivityByGuildID(guild_id, task_id, activity_id);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszonesetentityvariablebynpctypeid);
@@ -4697,7 +4698,7 @@ XS(XS__crosszoneupdateactivitybycharid) {
 		}
 		quest_manager.CrossZoneUpdateActivityByCharID(char_id, task_id, activity_id, activity_count);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneupdateactivitybygroupid);
@@ -4715,7 +4716,7 @@ XS(XS__crosszoneupdateactivitybygroupid) {
 		}
 		quest_manager.CrossZoneUpdateActivityByGroupID(group_id, task_id, activity_id, activity_count);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneupdateactivitybyraidid);
@@ -4733,7 +4734,7 @@ XS(XS__crosszoneupdateactivitybyraidid) {
 		}
 		quest_manager.CrossZoneUpdateActivityByRaidID(raid_id, task_id, activity_id, activity_count);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__crosszoneupdateactivitybyguildid);
@@ -4751,7 +4752,7 @@ XS(XS__crosszoneupdateactivitybyguildid) {
 		}
 		quest_manager.CrossZoneUpdateActivityByGuildID(guild_id, task_id, activity_id, activity_count);
 	}
-	XSRETURN_EMPTY;	
+	XSRETURN_EMPTY;
 }
 
 XS(XS__worldwideassigntask);
@@ -4766,7 +4767,7 @@ XS(XS__worldwideassigntask) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4788,7 +4789,7 @@ XS(XS__worldwidecastspell) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4810,7 +4811,7 @@ XS(XS__worldwidedisabletask) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4832,7 +4833,7 @@ XS(XS__worldwideenabletask) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4854,7 +4855,7 @@ XS(XS__worldwidefailtask) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4881,7 +4882,7 @@ XS(XS__worldwidemarquee) {
 		if (items == 7) {
 			min_status = (uint8) SvUV(ST(6));
 		}
-		
+
 		if (items == 8) {
 			max_status = (uint8) SvUV(ST(7));
 		}
@@ -4904,7 +4905,7 @@ XS(XS__worldwidemessage) {
 		if (items == 3) {
 			min_status = (uint8) SvUV(ST(2));
 		}
-		
+
 		if (items == 4) {
 			max_status = (uint8) SvUV(ST(3));
 		}
@@ -4927,7 +4928,7 @@ XS(XS__worldwidemove) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4949,7 +4950,7 @@ XS(XS__worldwidemoveinstance) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4971,7 +4972,7 @@ XS(XS__worldwideremovespell) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -4993,7 +4994,7 @@ XS(XS__worldwideremovetask) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(2));
 		}
@@ -5016,7 +5017,7 @@ XS(XS__worldwideresetactivity) {
 		if (items == 3) {
 			min_status = (uint8) SvUV(ST(2));
 		}
-		
+
 		if (items == 4) {
 			max_status = (uint8) SvUV(ST(3));
 		}
@@ -5039,7 +5040,7 @@ XS(XS__worldwidesetentityvariableclient) {
 		if (items == 3) {
 			min_status = (uint8) SvUV(ST(2));
 		}
-		
+
 		if (items == 4) {
 			max_status = (uint8) SvUV(ST(3));
 		}
@@ -5088,7 +5089,7 @@ XS(XS__worldwidesignalclient) {
 		if (items == 2) {
 			min_status = (uint8) SvUV(ST(1));
 		}
-		
+
 		if (items == 3) {
 			max_status = (uint8) SvUV(ST(1));
 		}
@@ -5115,7 +5116,7 @@ XS(XS__worldwideupdateactivity) {
 		if (items == 4) {
 			min_status = (uint8) SvUV(ST(3));
 		}
-		
+
 		if (items == 5) {
 			max_status = (uint8) SvUV(ST(4));
 		}
@@ -6184,7 +6185,7 @@ EXTERN_C XS(boot_quest) {
 	newXS(strcpy(buf, "crosszonemoveinstancebycharid"), XS__crosszonemoveinstancebycharid, file);
 	newXS(strcpy(buf, "crosszonemoveinstancebygroupid"), XS__crosszonemoveinstancebygroupid, file);
 	newXS(strcpy(buf, "crosszonemoveinstancebyraidid"), XS__crosszonemoveinstancebyraidid, file);
-	newXS(strcpy(buf, "crosszonemoveinstancebyguildid"), XS__crosszonemoveinstancebyguildid, file);	
+	newXS(strcpy(buf, "crosszonemoveinstancebyguildid"), XS__crosszonemoveinstancebyguildid, file);
 	newXS(strcpy(buf, "crosszoneremovespellbycharid"), XS__crosszoneremovespellbycharid, file);
 	newXS(strcpy(buf, "crosszoneremovespellbygroupid"), XS__crosszoneremovespellbygroupid, file);
 	newXS(strcpy(buf, "crosszoneremovespellbyraidid"), XS__crosszoneremovespellbyraidid, file);
