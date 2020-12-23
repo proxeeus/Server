@@ -1635,7 +1635,7 @@ void NPC::AI_DoMovement() {
 					auto position = glm::vec3(
 						roambox_destination_x,
 						roambox_destination_y,
-						m_Position.z + 15
+						roambox_destination_z
 					);
 					if (!zone->watermap->InLiquid(position)) {
 						roambox_destination_x = m_SpawnPoint.x;
