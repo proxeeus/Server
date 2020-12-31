@@ -18,12 +18,14 @@
 #include "lua_client.h"
 #include "lua_npc.h"
 #include "lua_entity_list.h"
+#include "lua_expedition.h"
 #include "quest_parser_collection.h"
 #include "questmgr.h"
 #include "qglobals.h"
 #include "encounter.h"
 #include "lua_encounter.h"
 #include "data_bucket.h"
+#include "expedition.h"
 
 #if BOTS	
 #include "bot.h"
@@ -808,6 +810,14 @@ int lua_collect_items(uint32 item_id, bool remove) {
 
 int lua_count_item(uint32 item_id) {
 	return quest_manager.countitem(item_id);
+}
+
+void lua_remove_item(uint32 item_id) {
+	quest_manager.removeitem(item_id);
+}
+
+void lua_remove_item(uint32 item_id, uint32 quantity) {
+	quest_manager.removeitem(item_id, quantity);
 }
 
 void lua_update_spawn_timer(uint32 id, uint32 new_time) {
@@ -2174,6 +2184,118 @@ void lua_set_content_flag(std::string flag_name, bool enabled){
 	ZoneStore::SetContentFlag(flag_name, enabled);
 }
 
+Lua_Expedition lua_get_expedition() {
+	if (zone && zone->GetInstanceID() != 0)
+	{
+		return Expedition::FindCachedExpeditionByZoneInstance(zone->GetZoneID(), zone->GetInstanceID());
+	}
+	return nullptr;
+}
+
+Lua_Expedition lua_get_expedition_by_char_id(uint32 char_id) {
+	return Expedition::FindCachedExpeditionByCharacterID(char_id);
+}
+
+Lua_Expedition lua_get_expedition_by_dz_id(uint32 dz_id) {
+	return Expedition::FindCachedExpeditionByDynamicZoneID(dz_id);
+}
+
+Lua_Expedition lua_get_expedition_by_zone_instance(uint32 zone_id, uint32 instance_id) {
+	return Expedition::FindCachedExpeditionByZoneInstance(zone_id, instance_id);
+}
+
+luabind::object lua_get_expedition_lockout_by_char_id(lua_State* L, uint32 char_id, std::string expedition_name, std::string event_name) {
+	luabind::adl::object lua_table = luabind::newtable(L);
+
+	auto lockouts = Expedition::GetExpeditionLockoutsByCharacterID(char_id);
+
+	auto it = std::find_if(lockouts.begin(), lockouts.end(), [&](const ExpeditionLockoutTimer& lockout) {
+		return lockout.IsSameLockout(expedition_name, event_name);
+	});
+
+	if (it != lockouts.end())
+	{
+		lua_table["remaining"] = it->GetSecondsRemaining();
+		lua_table["uuid"] = it->GetExpeditionUUID();
+	}
+
+	return lua_table;
+}
+
+luabind::object lua_get_expedition_lockouts_by_char_id(lua_State* L, uint32 char_id) {
+	luabind::adl::object lua_table = luabind::newtable(L);
+
+	auto lockouts = Expedition::GetExpeditionLockoutsByCharacterID(char_id);
+	for (const auto& lockout : lockouts)
+	{
+		auto lockout_table = lua_table[lockout.GetExpeditionName()];
+		if (luabind::type(lockout_table) != LUA_TTABLE)
+		{
+			lockout_table = luabind::newtable(L);
+		}
+
+		auto event_table = lockout_table[lockout.GetEventName()];
+		if (luabind::type(event_table) != LUA_TTABLE)
+		{
+			event_table = luabind::newtable(L);
+		}
+
+		event_table["remaining"] = lockout.GetSecondsRemaining();
+		event_table["uuid"] = lockout.GetExpeditionUUID();
+	}
+	return lua_table;
+}
+
+luabind::object lua_get_expedition_lockouts_by_char_id(lua_State* L, uint32 char_id, std::string expedition_name) {
+	luabind::adl::object lua_table = luabind::newtable(L);
+
+	auto lockouts = Expedition::GetExpeditionLockoutsByCharacterID(char_id);
+	for (const auto& lockout : lockouts)
+	{
+		if (lockout.GetExpeditionName() == expedition_name)
+		{
+			auto event_table = lua_table[lockout.GetEventName()];
+			if (luabind::type(event_table) != LUA_TTABLE)
+			{
+				event_table = luabind::newtable(L);
+			}
+			event_table["remaining"] = lockout.GetSecondsRemaining();
+			event_table["uuid"] = lockout.GetExpeditionUUID();
+		}
+	}
+	return lua_table;
+}
+
+void lua_add_expedition_lockout_all_clients(std::string expedition_name, std::string event_name, uint32 seconds) {
+	auto lockout = ExpeditionLockoutTimer::CreateLockout(expedition_name, event_name, seconds);
+	Expedition::AddLockoutClients(lockout);
+}
+
+void lua_add_expedition_lockout_all_clients(std::string expedition_name, std::string event_name, uint32 seconds, std::string uuid) {
+	auto lockout = ExpeditionLockoutTimer::CreateLockout(expedition_name, event_name, seconds, uuid);
+	Expedition::AddLockoutClients(lockout);
+}
+
+void lua_add_expedition_lockout_by_char_id(uint32 char_id, std::string expedition_name, std::string event_name, uint32 seconds) {
+	Expedition::AddLockoutByCharacterID(char_id, expedition_name, event_name, seconds);
+}
+
+void lua_add_expedition_lockout_by_char_id(uint32 char_id, std::string expedition_name, std::string event_name, uint32 seconds, std::string uuid) {
+	Expedition::AddLockoutByCharacterID(char_id, expedition_name, event_name, seconds, uuid);
+}
+
+void lua_remove_expedition_lockout_by_char_id(uint32 char_id, std::string expedition_name, std::string event_name) {
+	Expedition::RemoveLockoutsByCharacterID(char_id, expedition_name, event_name);
+}
+
+void lua_remove_all_expedition_lockouts_by_char_id(uint32 char_id) {
+	Expedition::RemoveLockoutsByCharacterID(char_id);
+}
+
+void lua_remove_all_expedition_lockouts_by_char_id(uint32 char_id, std::string expedition_name) {
+	Expedition::RemoveLockoutsByCharacterID(char_id, expedition_name);
+}
+
 #define LuaCreateNPCParse(name, c_type, default_value) do { \
 	cur = table[#name]; \
 	if(luabind::type(cur) != LUA_TNIL) { \
@@ -2510,6 +2632,8 @@ luabind::scope lua_register_general() {
 		luabind::def("modify_npc_stat", &lua_modify_npc_stat),
 		luabind::def("collect_items", &lua_collect_items),
 		luabind::def("count_item", &lua_count_item),
+		luabind::def("remove_item", (void(*)(uint32))&lua_remove_item),
+		luabind::def("remove_item", (void(*)(uint32,uint32))&lua_remove_item),
 		luabind::def("update_spawn_timer", &lua_update_spawn_timer),
 		luabind::def("merchant_set_item", (void(*)(uint32,uint32))&lua_merchant_set_item),
 		luabind::def("merchant_set_item", (void(*)(uint32,uint32,uint32))&lua_merchant_set_item),
@@ -2788,7 +2912,22 @@ luabind::scope lua_register_general() {
 		 * Content flags
 		 */
 		luabind::def("is_content_flag_enabled", (bool(*)(std::string))&lua_is_content_flag_enabled),
-		luabind::def("set_content_flag", (void(*)(std::string, bool))&lua_set_content_flag)
+		luabind::def("set_content_flag", (void(*)(std::string, bool))&lua_set_content_flag),
+
+		luabind::def("get_expedition", &lua_get_expedition),
+		luabind::def("get_expedition_by_char_id", &lua_get_expedition_by_char_id),
+		luabind::def("get_expedition_by_dz_id", &lua_get_expedition_by_dz_id),
+		luabind::def("get_expedition_by_zone_instance", &lua_get_expedition_by_zone_instance),
+		luabind::def("get_expedition_lockout_by_char_id", &lua_get_expedition_lockout_by_char_id),
+		luabind::def("get_expedition_lockouts_by_char_id", (luabind::object(*)(lua_State*, uint32))&lua_get_expedition_lockouts_by_char_id),
+		luabind::def("get_expedition_lockouts_by_char_id", (luabind::object(*)(lua_State*, uint32, std::string))&lua_get_expedition_lockouts_by_char_id),
+		luabind::def("add_expedition_lockout_all_clients", (void(*)(std::string, std::string, uint32))&lua_add_expedition_lockout_all_clients),
+		luabind::def("add_expedition_lockout_all_clients", (void(*)(std::string, std::string, uint32, std::string))&lua_add_expedition_lockout_all_clients),
+		luabind::def("add_expedition_lockout_by_char_id", (void(*)(uint32, std::string, std::string, uint32))&lua_add_expedition_lockout_by_char_id),
+		luabind::def("add_expedition_lockout_by_char_id", (void(*)(uint32, std::string, std::string, uint32, std::string))&lua_add_expedition_lockout_by_char_id),
+		luabind::def("remove_expedition_lockout_by_char_id", &lua_remove_expedition_lockout_by_char_id),
+		luabind::def("remove_all_expedition_lockouts_by_char_id", (void(*)(uint32))&lua_remove_all_expedition_lockouts_by_char_id),
+		luabind::def("remove_all_expedition_lockouts_by_char_id", (void(*)(uint32, std::string))&lua_remove_all_expedition_lockouts_by_char_id)
 //		luabind::def("create_bot", &lua_create_bot),
 //		luabind::def("save_bot_item_by_slot", &lua_save_bot_item_by_slot)
 

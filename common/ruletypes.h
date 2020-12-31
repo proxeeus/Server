@@ -246,6 +246,7 @@ RULE_BOOL(World, MaxClientsSimplifiedLogic, false, "New logic that only uses Exe
 RULE_INT (World, TellQueueSize, 20, "Maximum tell queue size")
 RULE_BOOL(World, StartZoneSameAsBindOnCreation, true, "Should the start zone always be the same location as your bind?")
 RULE_BOOL(World, EnforceCharacterLimitAtLogin, false, "Enforce the limit for characters that are online at login")
+RULE_BOOL(World, EnableDevTools, true, "Enable or Disable the Developer Tools globally (Most of the time you want this enabled)")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Zone)
@@ -801,6 +802,20 @@ RULE_CATEGORY(Instances)
 RULE_INT(Instances, ReservedInstances, 30, "Number of instance IDs which are reserved for globals. This value should not be changed while a server is running")
 RULE_BOOL(Instances, RecycleInstanceIds, true, "Setting whether free instance IDs should be recycled to prevent them from gradually running out at 32k")
 RULE_INT(Instances, GuildHallExpirationDays, 90, "Amount of days before a Guild Hall instance expires")
+RULE_CATEGORY_END()
+
+RULE_CATEGORY(Expedition)
+RULE_INT(Expedition, MinStatusToBypassPlayerCountRequirements, 80, "Minimum GM status to bypass minimum player requirements for Expedition creation")
+RULE_BOOL(Expedition, EmptyDzShutdownEnabled, true, "Enable early instance shutdown after last member of expedition removed")
+RULE_INT(Expedition, EmptyDzShutdownDelaySeconds, 1500, "Seconds to set dynamic zone instance expiration if early shutdown enabled")
+RULE_INT(Expedition, WorldExpeditionProcessRateMS, 6000, "Timer interval (ms) that world checks expedition states")
+RULE_BOOL(Expedition, AlwaysNotifyNewLeaderOnChange, false, "Always notify clients when made expedition leader. If false (live-like) new leaders are only notified when made leader via /dzmakeleader")
+RULE_REAL(Expedition, LockoutDurationMultiplier, 1.0, "Multiplies lockout duration by this value when new lockouts are added")
+RULE_BOOL(Expedition, EnableInDynamicZoneStatus, false, "Enables the 'In Dynamic Zone' member status in expedition window. If false (live-like) players inside the dz will show as 'Online'")
+RULE_CATEGORY_END()
+
+RULE_CATEGORY(DynamicZone)
+RULE_INT(DynamicZone, ClientRemovalDelayMS, 60000, "Delay (ms) until a client is teleported out of dynamic zone after being removed as member")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY
