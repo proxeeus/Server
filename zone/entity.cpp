@@ -4210,7 +4210,7 @@ void EntityList::ForceGroupUpdate(uint32 gid)
 	}
 }
 
-void EntityList::SendGroupLeave(uint32 gid, const char *name)
+void EntityList::SendGroupLeave(uint32 gid, const char *name, bool checkleader)
 {
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
@@ -4226,13 +4226,39 @@ void EntityList::SendGroupLeave(uint32 gid, const char *name)
 					gj->action = groupActLeave;
 					strcpy(gj->yourname, c->GetName());
 					Mob *Leader = g->GetLeader();
-					if (Leader)
+					if (Leader) {
 						Leader->CastToClient()->GetGroupAAs(&gj->leader_aas);
+					}
 					c->QueuePacket(outapp);
 					safe_delete(outapp);
-					g->DelMemberOOZ(name);
-					if (g->IsLeader(c) && c->IsLFP())
+					g->DelMemberOOZ(name, checkleader);
+					if (g->IsLeader(c) && c->IsLFP()) {
 						c->UpdateLFP();
+					}
+				}
+			}
+		}
+		++it;
+	}
+}
+
+void EntityList::SendGroupLeader(uint32 gid, const char *lname, const char *oldlname)
+{
+	auto it = client_list.begin();
+	while (it != client_list.end()) {
+		if (it->second){
+			Group *g = nullptr;
+			g = it->second->GetGroup();
+			if (g) {
+				if (g->GetID() == gid) {
+					EQApplicationPacket* outapp = new EQApplicationPacket(OP_GroupUpdate,sizeof(GroupJoin_Struct));
+					GroupJoin_Struct* gj = (GroupJoin_Struct*) outapp->pBuffer;
+					gj->action = groupActMakeLeader;
+					strcpy(gj->membername, lname);
+					strcpy(gj->yourname, oldlname);
+					it->second->QueuePacket(outapp);
+					Log(Logs::Detail, Logs::Group, "SendGroupLeader(): Entity loop leader update packet sent to: %s .", it->second->GetName());
+					safe_delete(outapp);
 				}
 			}
 		}
@@ -4255,9 +4281,9 @@ void EntityList::SendGroupJoin(uint32 gid, const char *name)
 					gj->action = groupActJoin;
 					strcpy(gj->yourname, it->second->GetName());
 					Mob *Leader = g->GetLeader();
-					if (Leader)
+					if (Leader) {
 						Leader->CastToClient()->GetGroupAAs(&gj->leader_aas);
-
+					}
 					it->second->QueuePacket(outapp);
 					safe_delete(outapp);
 				}
@@ -5225,4 +5251,44 @@ void EntityList::GateAllClientsToSafeReturn()
 			client_list_iter.second->GoToDzSafeReturnOrBind(dz);
 		}
 	}
+}
+
+int EntityList::MovePlayerCorpsesToGraveyard(bool force_move_from_instance)
+{
+	if (!zone)
+	{
+		return 0;
+	}
+
+	int moved_count = 0;
+
+	for (auto it = corpse_list.begin(); it != corpse_list.end();)
+	{
+		bool moved = false;
+		if (it->second && it->second->IsPlayerCorpse())
+		{
+			if (zone->HasGraveyard())
+			{
+				moved = it->second->MovePlayerCorpseToGraveyard();
+			}
+			else if (force_move_from_instance && zone->GetInstanceID() != 0)
+			{
+				moved = it->second->MovePlayerCorpseToNonInstance();
+			}
+		}
+
+		if (moved)
+		{
+			safe_delete(it->second);
+			free_ids.push(it->first);
+			it = corpse_list.erase(it);
+			++moved_count;
+		}
+		else
+		{
+			++it;
+		}
+	}
+
+	return moved_count;
 }

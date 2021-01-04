@@ -206,6 +206,7 @@ int command_init(void)
 		command_add("emotesearch", "Searches NPC Emotes", 80, command_emotesearch) ||
 		command_add("emoteview", "Lists all NPC Emotes", 80, command_emoteview) ||
 		command_add("enablerecipe",  "[recipe_id] - Enables a recipe using the recipe id.",  80, command_enablerecipe) ||
+		command_add("endurance", "Restores you or your target's endurance.", 50, command_endurance) ||
 		command_add("equipitem", "[slotid(0-21)] - Equip the item on your cursor into the specified slot", 50, command_equipitem) ||
 		command_add("face", "- Change the face of your target", 80, command_face) ||
 		command_add("faction", "[Find (criteria | all ) | Review (criteria | all) | Reset (id)] - Resets Player's Faction", 80, command_faction) ||
@@ -441,6 +442,7 @@ int command_init(void)
 		command_add("wp", "[add/delete] [grid_num] [pause] [wp_num] [-h] - Add/delete a waypoint to/from a wandering grid", 170, command_wp) ||
 		command_add("wpadd", "[pause] [-h] - Add your current location as a waypoint to your NPC target's AI path", 170, command_wpadd) ||
 		command_add("wpinfo", "- Show waypoint info about your NPC target", 170, command_wpinfo) ||
+		command_add("wwcast", "Casts the provided spell ID to all players currently online. Use caution with this!!", 250, command_wwcast) ||
 		command_add("xtargets",  "Show your targets Extended Targets and optionally set how many xtargets they can have.",  250, command_xtargets) ||
 		command_add("zclip", "[min] [max] - modifies and resends zhdr packet", 80, command_zclip) ||
 		command_add("zcolor", "[red] [green] [blue] - Change sky color", 80, command_zcolor) ||
@@ -740,6 +742,29 @@ void command_logcommand(Client *c, const char *message)
 /*
  * commands go below here
  */
+void command_wwcast(Client *c, const Seperator *sep)
+{
+	if (sep->arg[1][0] && Seperator::IsNumber(sep->arg[1])) {
+		int spell_id = atoi(sep->arg[1]);
+		quest_manager.WorldWideCastSpell(spell_id, 0, 0);
+		worldserver.SendEmoteMessage(0, 0, 15, fmt::format("<SYSTEMWIDE MESSAGE> A GM has cast {} world-wide!", GetSpellName(spell_id)).c_str());
+	}
+	else
+		c->Message(Chat::Yellow, "Usage: #wwcast <spellid>");
+}
+void command_endurance(Client *c, const Seperator *sep)
+{
+	Mob *t;
+
+	t = c->GetTarget() ? c->GetTarget() : c;
+
+	if (t->IsClient())
+		t->CastToClient()->SetEndurance(t->CastToClient()->GetMaxEndurance());
+	else
+		t->SetEndurance(t->GetMaxEndurance());
+
+	t->Message(Chat::White, "Your endurance has been refilled.");
+}
 void command_setstat(Client* c, const Seperator* sep){
 	if(sep->arg[1][0] && sep->arg[2][0] && c->GetTarget()!=0 && c->GetTarget()->IsClient()){
 		c->GetTarget()->CastToClient()->SetStats(atoi(sep->arg[1]),atoi(sep->arg[2]));
@@ -4843,6 +4868,10 @@ void command_corpse(Client *c, const Seperator *sep)
 			c->Message(Chat::White, "Insufficient status to depop player corpse.");
 
 	}
+	else if (strcasecmp(sep->arg[1], "moveallgraveyard") == 0) {
+		int count = entity_list.MovePlayerCorpsesToGraveyard(true);
+		c->Message(Chat::White, "Moved [%d] player corpse(s) to zone graveyard", count);
+	}
 	else if (sep->arg[1][0] == 0 || strcasecmp(sep->arg[1], "help") == 0) {
 		c->Message(Chat::White, "#Corpse Sub-Commands:");
 		c->Message(Chat::White, "  DeleteNPCCorpses");
@@ -4850,6 +4879,7 @@ void command_corpse(Client *c, const Seperator *sep)
 		c->Message(Chat::White, "  ListNPC");
 		c->Message(Chat::White, "  ListPlayer");
 		c->Message(Chat::White, "  Lock - GM locks the corpse - cannot be looted by non-GM");
+		c->Message(Chat::White, "  MoveAllGraveyard - move all player corpses to zone's graveyard or non-instance");
 		c->Message(Chat::White, "  UnLock");
 		c->Message(Chat::White, "  RemoveCash");
 		c->Message(Chat::White, "  InspectLoot");
