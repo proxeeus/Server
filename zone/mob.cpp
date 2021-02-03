@@ -1744,6 +1744,7 @@ void Mob::GMMove(float x, float y, float z, float heading, bool SendUpdate) {
 	m_Position.x = x;
 	m_Position.y = y;
 	m_Position.z = z;
+	SetHeading(heading);
 	mMovementManager->SendCommandToClients(this, 0.0, 0.0, 0.0, 0.0, 0, ClientRangeAny);
 
 	if (IsNPC()) {
@@ -2872,6 +2873,11 @@ bool Mob::HateSummon() {
 }
 
 void Mob::FaceTarget(Mob* mob_to_face /*= 0*/) {
+
+	if (IsBoat()) {
+		return;
+	}
+
 	Mob* faced_mob = mob_to_face;
 	if(!faced_mob) {
 		if(!GetTarget()) {
