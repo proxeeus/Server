@@ -258,7 +258,7 @@ Client::Client(EQStreamInterface* ieqs)
 	tgb = false;
 	tribute_master_id = 0xFFFFFFFF;
 	tribute_timer.Disable();
-	taskstate = nullptr;
+	task_state         = nullptr;
 	TotalSecondsPlayed = 0;
 	keyring.clear();
 	bind_sight_target = nullptr;
@@ -452,7 +452,7 @@ Client::~Client() {
 	// will need this data right away
 	Save(2); // This fails when database destructor is called first on shutdown
 
-	safe_delete(taskstate);
+	safe_delete(task_state);
 	safe_delete(KarmaUpdateTimer);
 	safe_delete(GlobalChatLimiterTimer);
 	safe_delete(qGlobals);
@@ -10146,4 +10146,28 @@ std::vector<int> Client::GetScribedSpells() {
 		}
 	}		
 	return scribed_spells;
+}
+
+void Client::SetAnon(uint8 anon_flag) {
+	m_pp.anon = anon_flag;
+	auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+	SpawnAppearance_Struct* spawn_appearance = (SpawnAppearance_Struct*)outapp->pBuffer;
+	spawn_appearance->spawn_id = this->GetID();
+	spawn_appearance->type = AT_Anon;
+	spawn_appearance->parameter = anon_flag;
+	entity_list.QueueClients(this, outapp);
+	Save();
+	UpdateWho();
+	safe_delete(outapp);
+}
+
+void Client::SetAFK(uint8 afk_flag) {
+	AFK = afk_flag;
+	auto outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
+	SpawnAppearance_Struct* spawn_appearance = (SpawnAppearance_Struct*)outapp->pBuffer;
+	spawn_appearance->spawn_id = this->GetID();
+	spawn_appearance->type = AT_AFK;
+	spawn_appearance->parameter = afk_flag;
+	entity_list.QueueClients(this, outapp);
+	safe_delete(outapp);
 }

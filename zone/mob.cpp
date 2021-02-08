@@ -469,6 +469,8 @@ Mob::Mob(
 #endif
 
 	mob_close_scan_timer.Trigger();
+
+	SetCanOpenDoors(true);
 }
 
 Mob::~Mob()
@@ -6056,3 +6058,13 @@ float Mob::HealRotationExtendedHealFrequency()
 	return m_target_of_heal_rotation->ExtendedHealFrequency(this);
 }
 #endif
+
+bool Mob::CanOpenDoors() const
+{
+	return m_can_open_doors;
+}
+
+void Mob::SetCanOpenDoors(bool can_open)
+{
+	m_can_open_doors = can_open;
+}

@@ -32,6 +32,7 @@
 #include "../common/features.h"
 #include "../common/guilds.h"
 
+#include "entity.h"
 #include "dynamiczone.h"
 #include "guild_mgr.h"
 #include "petitions.h"
@@ -3604,18 +3605,21 @@ void EntityList::AddHealAggro(Mob *target, Mob *caster, uint16 hate)
 
 void EntityList::OpenDoorsNear(Mob *who)
 {
+	if (!who->CanOpenDoors()) {
+		return;
+	}
 
-	for (auto it = door_list.begin();it != door_list.end(); ++it) {
-		Doors *cdoor = it->second;
-		if (!cdoor || cdoor->IsDoorOpen())
+	for (auto &it : door_list) {
+		Doors *door = it.second;
+		if (!door || door->IsDoorOpen()) {
 			continue;
+		}
 
-		auto diff = who->GetPosition() - cdoor->GetPosition();
-
-		float curdist = diff.x * diff.x + diff.y * diff.y;
-
-		if (diff.z * diff.z < 10 && curdist <= 100)
-			cdoor->Open(who);
+		auto  diff     = who->GetPosition() - door->GetPosition();
+		float distance = diff.x * diff.x + diff.y * diff.y;
+		if (diff.z * diff.z < 10 && distance <= 100) {
+			door->Open(who);
+		}
 	}
 }
 
@@ -3901,22 +3905,24 @@ void EntityList::ProcessProximitySay(const char *Message, Client *c, uint8 langu
 
 void EntityList::SaveAllClientsTaskState()
 {
-	if (!taskmanager)
+	if (!task_manager) {
 		return;
+	}
 
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
 		Client *client = it->second;
-		if (client->IsTaskStateLoaded())
+		if (client->IsTaskStateLoaded()) {
 			client->SaveTaskState();
+		}
 
 		++it;
 	}
 }
 
-void EntityList::ReloadAllClientsTaskState(int TaskID)
+void EntityList::ReloadAllClientsTaskState(int task_id)
 {
-	if (!taskmanager)
+	if (!task_manager)
 		return;
 
 	auto it = client_list.begin();
@@ -3925,11 +3931,11 @@ void EntityList::ReloadAllClientsTaskState(int TaskID)
 		if (client->IsTaskStateLoaded()) {
 			// If we have been passed a TaskID, only reload the client state if they have
 			// that Task active.
-			if ((!TaskID) || (TaskID && client->IsTaskActive(TaskID))) {
+			if ((!task_id) || (task_id && client->IsTaskActive(task_id))) {
 				Log(Logs::General, Logs::Tasks, "[CLIENTLOAD] Reloading Task State For Client %s", client->GetName());
 				client->RemoveClientTaskState();
 				client->LoadClientTaskState();
-				taskmanager->SendActiveTasksToClient(client);
+				task_manager->SendActiveTasksToClient(client);
 			}
 		}
 		++it;
@@ -4137,7 +4143,7 @@ void EntityList::AddTempPetsToHateList(Mob *owner, Mob* other, bool bFrenzy)
 		if (n->GetSwarmInfo()) {
 			if (n->GetSwarmInfo()->owner_id == owner->GetID()) {
 				if (
-					!n->GetSpecialAbility(IMMUNE_AGGRO) && 
+					!n->GetSpecialAbility(IMMUNE_AGGRO) &&
 					!(n->GetSpecialAbility(IMMUNE_AGGRO_CLIENT) && other->IsClient()) &&
 					!(n->GetSpecialAbility(IMMUNE_AGGRO_NPC) && other->IsNPC())
 				) {

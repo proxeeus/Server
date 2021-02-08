@@ -964,7 +964,7 @@ Zone::Zone(uint32 in_zoneid, uint32 in_instanceid, const char* in_short_name)
 	lootvar = 0;
 
 	if(RuleB(TaskSystem, EnableTaskSystem)) {
-		taskmanager->LoadProximities(zoneid);
+		task_manager->LoadProximities(zoneid);
 	}
 
 	short_name = strcpy(new char[strlen(in_short_name)+1], in_short_name);
@@ -1979,7 +1979,7 @@ bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint *> *zone_point_list
 	zone->numzonepoints = 0;
 	zone->virtual_zone_point_list.clear();
 
-	auto zone_points = ZonePointsRepository::GetWhere(
+	auto zone_points = ZonePointsRepository::GetWhere(content_db,
 		fmt::format(
 			"zone = '{}' AND (version = {} OR version = -1) {} ORDER BY number",
 			zonename,
