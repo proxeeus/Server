@@ -507,6 +507,8 @@ RULE_INT(Combat, WarriorOldTripleAttackLevel, 60, "Level at which Warriors can T
 RULE_INT(Combat, MonkOldTripleAttackLevel, 60, "Level at which Monks can Triple Attack") 
 RULE_INT(Combat, LevelToStopACTwinkControl, 50, "Level to stop armorclass twink control. 1 will effectively disable it, 50 should give basically same results as current system")
 RULE_BOOL(Combat, ClassicNPCBackstab, false, "True disables NPC facestab - NPC get normal attack if not behind")
+RULE_BOOL(Combat, EnableSneakPull, false, "Enable implementation of Sneak Pull")
+RULE_INT(Combat, SneakPullAssistRange, 400, "Modified range of assist for sneak pull")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)

@@ -3267,6 +3267,19 @@ void NPC::AIYellForHelp(Mob *sender, Mob *attacker)
 		}
 
 		float assist_range = (mob->GetAssistRange() * mob->GetAssistRange());
+
+		// Implement optional sneak-pull
+		if (RuleB(Combat, EnableSneakPull) && attacker->sneaking) {
+			assist_range = RuleI(Combat, SneakPullAssistRange);
+			if (attacker->IsClient()) {
+				float clientx = attacker->GetX();
+				float clienty = attacker->GetY();
+				if (attacker->CastToClient()->BehindMob(mob, clientx, clienty)) {
+					assist_range = 0;
+				}
+			}
+		}
+
 		if (distance > assist_range) {
 			continue;
 		}
@@ -3359,4 +3372,12 @@ void NPC::RecalculateSkills()
 }bool NPC::HasRoamBox()
 {
 	return database.HasRoamBox(this->GetSpawnGroupId());
+}
+
+void NPC::ScaleNPC(uint8 npc_level) {
+	if (GetLevel() != npc_level) {
+		SetLevel(npc_level);
+	}
+	npc_scale_manager->ResetNPCScaling(this);
+	npc_scale_manager->ScaleNPC(this);
 }

@@ -558,6 +558,12 @@ void Lua_NPC::RecalculateSkills()
 	self->RecalculateSkills();
 }
 
+void Lua_NPC::ScaleNPC(uint8 npc_level)
+{
+	Lua_Safe_Call_Void();
+	self->ScaleNPC(npc_level);
+}
+
 bool Lua_NPC::HasRoamBox()
 {
 	Lua_Safe_Call_Bool();
@@ -676,6 +682,8 @@ luabind::scope lua_register_npc() {
 		.def("MerchantCloseShop", (void(Lua_NPC::*)(void))&Lua_NPC::MerchantCloseShop)
 		.def("GetRawAC", (int(Lua_NPC::*)(void))&Lua_NPC::GetRawAC)
 		.def("GetAvoidanceRating", &Lua_NPC::GetAvoidanceRating)
+		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
+		.def("ScaleNPC", (void(Lua_NPC::*)(uint8))&Lua_NPC::ScaleNPC)
 		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
 		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);
 }
