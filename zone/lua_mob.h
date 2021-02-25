@@ -436,6 +436,7 @@ public:
 	void SendPlayerBotIllusion(int race, int gender, int face, float size);
 	void SetSpellsID(int id);
 	void SetClass(int classId);
+	bool IsHorse();
 };
 
 #endif

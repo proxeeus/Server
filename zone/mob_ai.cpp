@@ -435,13 +435,13 @@ void Mob::AI_Start(uint32 iMoveDelay) {
 		time_until_can_move = 0;
 
 	pAIControlled  = true;
-	AI_think_timer = std::unique_ptr<Timer>(new Timer(AIthink_duration));
+	AI_think_timer = std::make_unique<Timer>(AIthink_duration);
 	AI_think_timer->Trigger();
 
-	AI_walking_timer        = std::unique_ptr<Timer>(new Timer(0));
-	AI_movement_timer       = std::unique_ptr<Timer>(new Timer(AImovement_duration));
-	AI_target_check_timer   = std::unique_ptr<Timer>(new Timer(AItarget_check_duration));
-	AI_feign_remember_timer = std::unique_ptr<Timer>(new Timer(AIfeignremember_delay));
+	AI_walking_timer        = std::make_unique<Timer>(0);
+	AI_movement_timer       = std::make_unique<Timer>(AImovement_duration);
+	AI_target_check_timer   = std::make_unique<Timer>(AItarget_check_duration);
+	AI_feign_remember_timer = std::make_unique<Timer>(AIfeignremember_delay);
 	AI_scan_door_open_timer = std::make_unique<Timer>(AI_scan_door_open_interval);
 
 	if (GetBodyType() == BT_Animal && !RuleB(NPC, AnimalsOpenDoors)) {
@@ -453,9 +453,9 @@ void Mob::AI_Start(uint32 iMoveDelay) {
 	}
 
 	if (CastToNPC()->WillAggroNPCs())
-		AI_scan_area_timer = std::unique_ptr<Timer>(new Timer(RandomTimer(RuleI(NPC, NPCToNPCAggroTimerMin), RuleI(NPC, NPCToNPCAggroTimerMax))));
+		AI_scan_area_timer = std::make_unique<Timer>(RandomTimer(RuleI(NPC, NPCToNPCAggroTimerMin), RuleI(NPC, NPCToNPCAggroTimerMax)));
 
-	AI_check_signal_timer = std::unique_ptr<Timer>(new Timer(AI_check_signal_timer_delay));
+	AI_check_signal_timer = std::make_unique<Timer>(AI_check_signal_timer_delay);
 
 
 	if (GetAggroRange() == 0)
@@ -488,10 +488,10 @@ void NPC::AI_Start(uint32 iMoveDelay) {
 		return;
 
 	if (AIspells.empty()) {
-		AIautocastspell_timer = std::unique_ptr<Timer>(new Timer(1000));
+		AIautocastspell_timer = std::make_unique<Timer>(1000);
 		AIautocastspell_timer->Disable();
 	} else {
-		AIautocastspell_timer = std::unique_ptr<Timer>(new Timer(500));
+		AIautocastspell_timer = std::make_unique<Timer>(500);
 		AIautocastspell_timer->Start(RandomTimer(0, 300), false);
 	}
 
@@ -2557,7 +2557,7 @@ create table npc_spells_entries (
 	);
 */
 
-bool IsSpellInList(DBnpcspells_Struct* spell_list, int16 iSpellID);
+bool IsSpellInList(DBnpcspells_Struct* spell_list, uint16 iSpellID);
 bool IsSpellEffectInList(DBnpcspellseffects_Struct* spelleffect_list, uint16 iSpellEffectID, int32 base, int32 limit, int32 max);
 
 bool NPC::AI_AddNPCSpells(uint32 iDBSpellsID) {
@@ -2829,14 +2829,14 @@ bool IsSpellEffectInList(DBnpcspellseffects_Struct* spelleffect_list, uint16 iSp
 	return false;
 }
 
-bool IsSpellInList(DBnpcspells_Struct* spell_list, int16 iSpellID) {
+bool IsSpellInList(DBnpcspells_Struct* spell_list, uint16 iSpellID) {
 	auto it = std::find_if(spell_list->entries.begin(), spell_list->entries.end(),
 			       [iSpellID](const DBnpcspells_entries_Struct &a) { return a.spellid == iSpellID; });
 	return it != spell_list->entries.end();
 }
 
 // adds a spell to the list, taking into account priority and resorting list as needed.
-void NPC::AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType,
+void NPC::AddSpellToNPCList(int16 iPriority, uint16 iSpellID, uint32 iType,
 							int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust, int8 min_hp, int8 max_hp)
 {
 
@@ -2863,7 +2863,7 @@ void NPC::AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType,
 		AIautocastspell_timer->Start(RandomTimer(0, 300), false);
 }
 
-void NPC::RemoveSpellFromNPCList(int16 spell_id)
+void NPC::RemoveSpellFromNPCList(uint16 spell_id)
 {
 	auto iter = AIspells.begin();
 	while(iter != AIspells.end())

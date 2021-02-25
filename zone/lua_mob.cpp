@@ -2324,6 +2324,11 @@ void Lua_Mob::SetClass(int classId)
 	self->SetClass(classId);
 }
 
+bool Lua_Mob::IsHorse()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsHorse();
+}
 
 luabind::scope lua_register_mob() {
 	return luabind::class_<Lua_Mob, Lua_Entity>("Mob")
@@ -2725,7 +2730,9 @@ luabind::scope lua_register_mob() {
 		.def("SetBucket", (void(Lua_Mob::*)(std::string,std::string,std::string))&Lua_Mob::SetBucket)
 		.def("SendPlayerBotIllusion", &Lua_Mob::SendPlayerBotIllusion)
 		.def("SetSpellsID", &Lua_Mob::SetSpellsID)
-		.def("SetClass", &Lua_Mob::SetClass);
+		.def("SetClass", &Lua_Mob::SetClass)
+		.def("SetBucket", (void(Lua_Mob::*)(std::string,std::string,std::string))&Lua_Mob::SetBucket)
+		.def("IsHorse", &Lua_Mob::IsHorse);
 }
 
 luabind::scope lua_register_special_abilities() {

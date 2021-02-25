@@ -698,6 +698,7 @@ public:
 	bool PlotPositionOnArcInFrontOfTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float distance, float min_deg = 5.0f, float max_deg = 150.0f);
 	bool PlotPositionOnArcBehindTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float distance);
 	bool PlotPositionBehindMeFacingTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float min_dist = 1.0f, float max_dist = 5.0f);
+	virtual int GetKillExpMod() const { return 100; }
 
 	// aura functions
 	void MakeAura(uint16 spell_id);
@@ -903,6 +904,7 @@ public:
 	inline void SetPetOwnerClient(bool value) { pet_owner_client = value; }
 	inline bool IsTempPet() const { return _IsTempPet; }
 	inline void SetTempPet(bool value) { _IsTempPet = value; }
+	inline bool IsHorse() { return is_horse; }
 
 	inline const bodyType GetBodyType() const { return bodytype; }
 	inline const bodyType GetOrigBodyType() const { return orig_bodytype; }
@@ -1593,8 +1595,8 @@ protected:
 
 	std::unordered_map<uint32, std::pair<uint32, uint32>> aa_ranks;
 	Timer aa_timers[aaTimerMax];
-
-	bool IsHorse;
+	
+	bool is_horse;
 
 	AuraMgr aura_mgr;
 	AuraMgr trap_mgr;

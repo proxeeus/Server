@@ -259,12 +259,6 @@ int main(int argc, char** argv) {
 	guild_mgr.SetDatabase(&database);
 	GuildBanks = nullptr;
 
-	/**
-	 * NPC Scale Manager
-	 */
-	npc_scale_manager = new NpcScaleManager;
-	npc_scale_manager->LoadScaleData();
-
 #ifdef _EQDEBUG
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 #endif
@@ -405,6 +399,12 @@ int main(int argc, char** argv) {
 		LogError("Bot spell casting chances loading failed");
 #endif
 
+	/**
+	 * NPC Scale Manager
+	 */
+	npc_scale_manager = new NpcScaleManager;
+	npc_scale_manager->LoadScaleData();
+
 	if (RuleB(TaskSystem, EnableTaskSystem)) {
 		task_manager = new TaskManager;
 		task_manager->LoadTasks();
@@ -483,7 +483,7 @@ int main(int argc, char** argv) {
 		 */
 		if (!websocker_server_opened && Config->ZonePort != 0) {
 			LogInfo("Websocket Server listener started ([{}]:[{}])", Config->TelnetIP.c_str(), Config->ZonePort);
-			ws_server.reset(new EQ::Net::WebsocketServer(Config->TelnetIP, Config->ZonePort));
+			ws_server = std::make_unique<EQ::Net::WebsocketServer>(Config->TelnetIP, Config->ZonePort);
 			RegisterApiService(ws_server);
 			websocker_server_opened = true;
 		}
@@ -500,7 +500,7 @@ int main(int argc, char** argv) {
 			opts.daybreak_options.resend_delay_min = RuleI(Network, ResendDelayMinMS);
 			opts.daybreak_options.resend_delay_max = RuleI(Network, ResendDelayMaxMS);
 			opts.daybreak_options.outgoing_data_rate = RuleR(Network, ClientDataRate);
-			eqsm.reset(new EQ::Net::EQStreamManager(opts));
+			eqsm = std::make_unique<EQ::Net::EQStreamManager>(opts);
 			eqsf_open = true;
 
 			eqsm->OnNewConnection([&stream_identifier](std::shared_ptr<EQ::Net::EQStream> stream) {
@@ -636,6 +636,7 @@ int main(int argc, char** argv) {
 		Zone::Shutdown(true);
 	//Fix for Linux world server problem.
 	safe_delete(task_manager);
+	safe_delete(npc_scale_manager);
 	command_deinit();
 #ifdef BOTS
 	bot_command_deinit();

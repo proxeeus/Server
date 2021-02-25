@@ -422,10 +422,12 @@ public:
 	void SetCombatEvent(bool b) { combat_event = b; }
 
 	/* Only allows players that killed corpse to loot */
-	const bool HasPrivateCorpse() const { return NPCTypedata->private_corpse; }
+	const bool HasPrivateCorpse() const { return NPCTypedata_ours ? NPCTypedata_ours->private_corpse : NPCTypedata->private_corpse; }
 
-	virtual const bool IsUnderwaterOnly() const { return NPCTypedata->underwater; }
-	const char* GetRawNPCTypeName() const { return NPCTypedata->name; }
+	virtual const bool IsUnderwaterOnly() const { return NPCTypedata_ours ? NPCTypedata_ours->underwater : NPCTypedata->underwater; }
+	const char* GetRawNPCTypeName() const { return NPCTypedata_ours ? NPCTypedata_ours->name : NPCTypedata->name; }
+
+	virtual int GetKillExpMod() const { return NPCTypedata_ours ? NPCTypedata_ours->exp_mod : NPCTypedata->exp_mod; }
 
 	void ChangeLastName(const char* in_lastname);
 	void ClearLastName();
@@ -435,9 +437,9 @@ public:
 	void NPCSlotTexture(uint8 slot, uint16 texture);	// Sets new material values for slots
 
 	uint32 GetAdventureTemplate() const { return adventure_template_id; }
-	void AddSpellToNPCList(int16 iPriority, int16 iSpellID, uint32 iType, int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust, int8 min_hp, int8 max_hp);
+	void AddSpellToNPCList(int16 iPriority, uint16 iSpellID, uint32 iType, int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust, int8 min_hp, int8 max_hp);
 	void AddSpellEffectToNPCList(uint16 iSpellEffectID, int32 base, int32 limit, int32 max);
-	void RemoveSpellFromNPCList(int16 spell_id);
+	void RemoveSpellFromNPCList(uint16 spell_id);
 	Timer *GetRefaceTimer() const { return reface_timer; }
 	const uint32 GetAltCurrencyType() const { return NPCTypedata->alt_currency_type; }
 
