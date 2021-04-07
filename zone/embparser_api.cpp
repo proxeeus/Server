@@ -924,9 +924,9 @@ XS(XS__get_spell_level) {
 	uint8 spell_level = IsValidSpell(spell_id) ? GetSpellLevel(spell_id, class_id) : 0;
 	uint8 server_max_level = RuleI(Character, MaxLevel);
 
-	if (spell_level && spell_level > server_max_level) 
+	if (spell_level && spell_level > server_max_level)
 		spell_level = 0;
-	
+
 	XSprePUSH;
 	PUSHu((UV)spell_level);
 
@@ -2966,7 +2966,7 @@ XS(XS__ModifyNPCStat);
 XS(XS__ModifyNPCStat) {
 	dXSARGS;
 	if (items != 2)
-		Perl_croak(aTHX_ "Usage: quest::ModifyNPCStat(string key, string value)");
+		Perl_croak(aTHX_ "Usage: quest::modifynpcstat(string key, string value)");
 
 	quest_manager.ModifyNPCStat(SvPV_nolen(ST(0)), SvPV_nolen(ST(1)));
 
@@ -6482,7 +6482,7 @@ XS(XS__secondstotime) {
 	sv_setpv(TARG, time_string.c_str());
 	XSprePUSH;
 	PUSHTARG;
-	XSRETURN(1);	
+	XSRETURN(1);
 }
 
 /*
