@@ -162,6 +162,7 @@ RULE_BOOL(Character, UseNoJunkFishing, false, "Disregards junk items when fishin
 RULE_BOOL(Character, SoftDeletes, true, "When characters are deleted in character select, they are only soft deleted")
 RULE_INT(Character, DefaultGuild, 0, "If not 0, new characters placed into the guild # indicated")
 RULE_BOOL(Character, ProcessFearedProximity, false, "Processes proximity checks when feared")
+RULE_BOOL(Character, EnableCharacterEXPMods, false, "Enables character zone-based experience modifiers.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Mercs)
@@ -368,6 +369,7 @@ RULE_BOOL(Spells, AllowItemTGB, false, "Target group buff (/tgb) doesn't work wi
 RULE_BOOL(Spells, NPCInnateProcOverride, true, "NPC innate procs override the target type to single target")
 RULE_BOOL(Spells, OldRainTargets, false, "Use old incorrectly implemented maximum targets for rains")
 RULE_BOOL(Spells, NPCSpellPush, false, "Enable spell push on NPCs")
+RULE_BOOL(Spells, July242002PetResists, true, "Enable Pets using PCs resist change from July 24 2002")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)

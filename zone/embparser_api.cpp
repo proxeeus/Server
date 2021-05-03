@@ -3046,9 +3046,9 @@ XS(XS__getnpcnamebyid) {
 
 	dXSTARG;
 	uint32 npc_id = (int) SvIV(ST(0));
-	const char *npc_name = quest_manager.getnpcnamebyid(npc_id);
+	auto npc_name = quest_manager.getnpcnamebyid(npc_id);
 
-	sv_setpv(TARG, npc_name);
+	sv_setpv(TARG, npc_name.c_str());
 	XSprePUSH;
 	PUSHTARG;
 	XSRETURN(1);
@@ -3436,8 +3436,9 @@ XS(XS__getcharnamebyid) {
 
 	Const_char *RETVAL;
 	uint32     char_id = (int) SvUV(ST(0));
+	auto       name    = quest_manager.getcharnamebyid(char_id);
 
-	RETVAL = quest_manager.getcharnamebyid(char_id);
+	RETVAL = name.c_str();
 
 	sv_setpv(TARG, RETVAL);
 	XSprePUSH;
@@ -6507,6 +6508,64 @@ XS(XS__gethexcolorcode) {
 	XSRETURN(1);	
 }
 
+XS(XS__getaaexpmodifierbycharid);
+XS(XS__getaaexpmodifierbycharid) {
+	dXSARGS;
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: quest::getaaexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
+		
+	dXSTARG;
+	double aa_modifier;
+	uint32 character_id = (uint32) SvUV(ST(0));
+	uint32 zone_id = (uint32) SvUV(ST(1));
+	aa_modifier = quest_manager.GetAAEXPModifierByCharID(character_id, zone_id);
+	XSprePUSH;
+	PUSHn((double) aa_modifier);
+	XSRETURN(1);
+}
+
+XS(XS__getexpmodifierbycharid);
+XS(XS__getexpmodifierbycharid) {
+	dXSARGS;
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: quest::getexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
+		
+	dXSTARG;
+	double exp_modifier;
+	uint32 character_id = (uint32) SvUV(ST(0));
+	uint32 zone_id = (uint32) SvUV(ST(1));
+	exp_modifier = quest_manager.GetEXPModifierByCharID(character_id, zone_id);
+	XSprePUSH;
+	PUSHn((double) exp_modifier);
+	XSRETURN(1);
+}
+
+XS(XS__setaaexpmodifierbycharid);
+XS(XS__setaaexpmodifierbycharid) {
+	dXSARGS;
+	if (items != 3) {
+		Perl_croak(aTHX_ "Usage: quest::setaaexpmodifierbycharid(uint32 character_id, uint32 zone_id, float aa_modifier)");
+	}
+	uint32 character_id = (uint32) SvUV(ST(0));
+	uint32 zone_id = (uint32) SvUV(ST(1));
+	double aa_modifier = (double) SvNV(ST(2));
+	quest_manager.SetAAEXPModifierByCharID(character_id, zone_id, aa_modifier);
+	XSRETURN_EMPTY;
+}
+
+XS(XS__setexpmodifierbycharid);
+XS(XS__setexpmodifierbycharid) {
+	dXSARGS;
+	if (items != 3) {
+		Perl_croak(aTHX_ "Usage: quest::setexpmodifierbycharid(uint32 character_id, uint32 zone_id, float exp_modifier)");
+	}
+	uint32 character_id = (uint32) SvUV(ST(0));
+	uint32 zone_id = (uint32) SvUV(ST(1));
+	double exp_modifier = (double) SvNV(ST(2));
+	quest_manager.SetEXPModifierByCharID(character_id, zone_id, exp_modifier);
+	XSRETURN_EMPTY;
+}
+
 /*
 This is the callback perl will look for to setup the
 quest package's XSUBs
@@ -6713,10 +6772,12 @@ EXTERN_C XS(boot_quest) {
 	newXS(strcpy(buf, "follow"), XS__follow, file);
 	newXS(strcpy(buf, "forcedoorclose"), XS__forcedoorclose, file);
 	newXS(strcpy(buf, "forcedooropen"), XS__forcedooropen, file);
+	newXS(strcpy(buf, "getaaexpmodifierbycharid"), XS__getaaexpmodifierbycharid, file);
 	newXS(strcpy(buf, "getcharidbyname"), XS__getcharidbyname, file);
 	newXS(strcpy(buf, "getclassname"), XS__getclassname, file);
 	newXS(strcpy(buf, "gethexcolorcode"), XS__gethexcolorcode, file);
 	newXS(strcpy(buf, "getcurrencyid"), XS__getcurrencyid, file);
+	newXS(strcpy(buf, "getexpmodifierbycharid"), XS__getexpmodifierbycharid, file);
 	newXS(strcpy(buf, "get_expedition"), XS__get_expedition, file);
 	newXS(strcpy(buf, "get_expedition_by_char_id"), XS__get_expedition_by_char_id, file);
 	newXS(strcpy(buf, "get_expedition_by_dz_id"), XS__get_expedition_by_dz_id, file);
@@ -6805,10 +6866,12 @@ EXTERN_C XS(boot_quest) {
 	newXS(strcpy(buf, "scribespells"), XS__scribespells, file);
 	newXS(strcpy(buf, "secondstotime"), XS__secondstotime, file);
 	newXS(strcpy(buf, "selfcast"), XS__selfcast, file);
+	newXS(strcpy(buf, "setaaexpmodifierbycharid"), XS__setaaexpmodifierbycharid, file);
 	newXS(strcpy(buf, "set_proximity"), XS__set_proximity, file);
 	newXS(strcpy(buf, "set_zone_flag"), XS__set_zone_flag, file);
 	newXS(strcpy(buf, "setallskill"), XS__setallskill, file);
 	newXS(strcpy(buf, "setanim"), XS__setanim, file);
+	newXS(strcpy(buf, "setexpmodifierbycharid"), XS__setexpmodifierbycharid, file);
 	newXS(strcpy(buf, "setglobal"), XS__setglobal, file);
 	newXS(strcpy(buf, "setguild"), XS__setguild, file);
 	newXS(strcpy(buf, "sethp"), XS__sethp, file);

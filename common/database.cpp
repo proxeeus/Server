@@ -870,36 +870,40 @@ void Database::GetCharName(uint32 char_id, char* name) {
 	}
 }
 
-const char* Database::GetCharNameByID(uint32 char_id) {
+std::string Database::GetCharNameByID(uint32 char_id) {
 	std::string query = fmt::format("SELECT `name` FROM `character_data` WHERE id = {}", char_id);
 	auto results = QueryDatabase(query);
+	std::string res;
 
 	if (!results.Success()) {
-		return "";
+		return res;
 	}
 
 	if (results.RowCount() == 0) {
-		return "";
+		return res;
 	}
 
 	auto row = results.begin();
-	return row[0];
+	res = row[0];
+	return res;
 }
 
-const char* Database::GetNPCNameByID(uint32 npc_id) {
+std::string Database::GetNPCNameByID(uint32 npc_id) {
 	std::string query = fmt::format("SELECT `name` FROM `npc_types` WHERE id = {}", npc_id);
 	auto results = QueryDatabase(query);
+	std::string res;
 
 	if (!results.Success()) {
-		return "";
+		return res;
 	}
 
 	if (results.RowCount() == 0) {
-		return "";
+		return res;
 	}
 
 	auto row = results.begin();
-	return row[0];
+	res = row[0];
+	return res;
 }
 
 bool Database::LoadVariables() {
@@ -972,6 +976,10 @@ bool Database::SetVariable(const std::string varname, const std::string &varvalu
 
 // Get zone starting points from DB
 bool Database::GetSafePoints(const char* zone_short_name, uint32 instance_version, float* safe_x, float* safe_y, float* safe_z, float* safe_heading, int16* min_status, uint8* min_level, char *flag_needed) {
+
+	if (zone_short_name == nullptr)
+		return false;
+
 	std::string query = fmt::format(
 		SQL(
 			SELECT
