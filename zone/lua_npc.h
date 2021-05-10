@@ -138,6 +138,7 @@ public:
 	bool HasRoamBox();
 	void RecalculateSkills();
 	void ScaleNPC(uint8 npc_level);
+	bool IsRaidTarget();
 };
 
 #endif

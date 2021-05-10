@@ -564,6 +564,12 @@ void Lua_NPC::ScaleNPC(uint8 npc_level)
 	self->ScaleNPC(npc_level);
 }
 
+bool Lua_NPC::IsRaidTarget()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsRaidTarget();
+}
+
 bool Lua_NPC::HasRoamBox()
 {
 	Lua_Safe_Call_Bool();
@@ -682,10 +688,9 @@ luabind::scope lua_register_npc() {
 		.def("MerchantCloseShop", (void(Lua_NPC::*)(void))&Lua_NPC::MerchantCloseShop)
 		.def("GetRawAC", (int(Lua_NPC::*)(void))&Lua_NPC::GetRawAC)
 		.def("GetAvoidanceRating", &Lua_NPC::GetAvoidanceRating)
-		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
 		.def("ScaleNPC", (void(Lua_NPC::*)(uint8))&Lua_NPC::ScaleNPC)
+		.def("IsRaidTarget", (bool(Lua_NPC::*)(void))&Lua_NPC::IsRaidTarget)
 		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
-		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);
-}
+		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);}
 
 #endif

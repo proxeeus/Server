@@ -132,6 +132,7 @@ Mob::Mob(
 	AI_Init();
 	SetMoving(false);
 	moved            = false;
+	turning = false;
 	m_RewindLocation = glm::vec3();
 	m_RelativePosition = glm::vec4();
 
