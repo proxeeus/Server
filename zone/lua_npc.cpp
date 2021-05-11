@@ -691,6 +691,7 @@ luabind::scope lua_register_npc() {
 		.def("ScaleNPC", (void(Lua_NPC::*)(uint8))&Lua_NPC::ScaleNPC)
 		.def("IsRaidTarget", (bool(Lua_NPC::*)(void))&Lua_NPC::IsRaidTarget)
 		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
-		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);}
+		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);
+}
 
 #endif
