@@ -784,14 +784,14 @@ void EntityList::AESpell(
 	/**
 	 * Max AOE targets
 	 */
-	int max_targets_allowed = 0; // unlimited
+	int max_targets_allowed = RuleI(Range, AOEMaxTargets); // unlimited
 	if (max_targets) { // rains pass this in since they need to preserve the count through waves
 		max_targets_allowed = *max_targets;
 	}
 	else if (spells[spell_id].aemaxtargets) {
 		max_targets_allowed = spells[spell_id].aemaxtargets;
 	}
-	else if (IsTargetableAESpell(spell_id) && is_detrimental_spell && !is_npc) {
+	else if (IsTargetableAESpell(spell_id) && is_detrimental_spell && !is_npc && !IsEffectInSpell(spell_id, SE_Lull) && !IsEffectInSpell(spell_id, SE_Mez)) {
 		max_targets_allowed = 4;
 	}
 
@@ -917,6 +917,9 @@ void EntityList::AESpell(
 			}
 		}
 
+		current_mob->CalcSpellPowerDistanceMod(spell_id, distance_to_target);
+		caster_mob->SpellOnTarget(spell_id, current_mob, false, true, resist_adjust);
+
 		/**
 		 * Increment hit count if max targets
 		 */
@@ -926,9 +929,6 @@ void EntityList::AESpell(
 				break;
 			}
 		}
-
-		current_mob->CalcSpellPowerDistanceMod(spell_id, distance_to_target);
-		caster_mob->SpellOnTarget(spell_id, current_mob, false, true, resist_adjust);
 	}
 
 	LogAoeCast("Done iterating [{}]", caster_mob->GetCleanName());
