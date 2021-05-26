@@ -1717,7 +1717,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	/* Task Packets */
 	LoadClientTaskState();
 
-	m_expedition_id = ExpeditionDatabase::GetExpeditionIDFromCharacterID(CharacterID());
+	m_expedition_id = ExpeditionsRepository::GetIDByMemberID(database, CharacterID());
 
 	/**
 	 * DevTools Load Settings
@@ -2032,7 +2032,7 @@ void Client::Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app)
 	{
 		int32 requiredpts = (int32)item->LDoNPrice*-1;
 
-		if (!UpdateLDoNPoints(requiredpts, 6))
+		if (!UpdateLDoNPoints(6, requiredpts))
 			return;
 	}
 	else if (aps->Type == DiscordMerchant)
@@ -2260,7 +2260,7 @@ void Client::Handle_OP_AdventureMerchantSell(const EQApplicationPacket *app)
 	{
 	case ADVENTUREMERCHANT:
 	{
-		UpdateLDoNPoints(price, 6);
+		UpdateLDoNPoints(6, price);
 		break;
 	}
 	case NORRATHS_KEEPERS_MERCHANT:
@@ -12990,9 +12990,9 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 
 	int16 freeslotid = INVALID_INDEX;
 	int16 charges = 0;
-	if (item->Stackable || item->MaxCharges > 1)
+	if (item->Stackable || tmpmer_used)
 		charges = mp->quantity;
-	else
+	else if ( item->MaxCharges > 1)
 		charges = item->MaxCharges;
 
 	EQ::ItemInstance* inst = database.CreateItem(item, charges);
@@ -13238,12 +13238,9 @@ void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)
 		LogMerchant(this, vendor, mp->quantity, price, item, false);
 
 	int charges = mp->quantity;
-	//Hack workaround so usable items with 0 charges aren't simply deleted
-	if (charges == 0 && item->ItemType != 11 && item->ItemType != 17 && item->ItemType != 19 && item->ItemType != 21)
-		charges = 1;
 
 	int freeslot = 0;
-	if (charges > 0 && (freeslot = zone->SaveTempItem(vendor->CastToNPC()->MerchantType, vendor->GetNPCTypeID(), itemid, charges, true)) > 0) {
+	if ((freeslot = zone->SaveTempItem(vendor->CastToNPC()->MerchantType, vendor->GetNPCTypeID(), itemid, charges, true)) > 0) {
 		EQ::ItemInstance* inst2 = inst->Clone();
 
 		while (true) {
