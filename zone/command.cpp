@@ -212,6 +212,7 @@ int command_init(void)
 		command_add("face", "- Change the face of your target", 80, command_face) ||
 		command_add("faction", "[Find (criteria | all ) | Review (criteria | all) | Reset (id)] - Resets Player's Faction", 80, command_faction) ||
 		command_add("findaliases", "[search criteria]- Searches for available command aliases, by alias or command", 0, command_findaliases) ||
+		command_add("findclass", "[search criteria] - Search for a class", 50, command_findclass) ||
 		command_add("findnpctype", "[search criteria] - Search database NPC types", 100, command_findnpctype) ||
 		command_add("findrace", "[search criteria] - Search for a race", 50, command_findrace) ||
 		command_add("findspell", "[search criteria] - Search for a spell", 50, command_findspell) ||
@@ -436,6 +437,7 @@ int command_init(void)
 		command_add("version", "- Display current version of EQEmu server", 0, command_version) ||
 		command_add("viewnpctype", "[npctype id] - Show info about an npctype", 100, command_viewnpctype) ||
 		command_add("viewpetition", "[petition number] - View a petition", 20, command_viewpetition) ||
+		command_add("viewzoneloot", "[item id] - Allows you to search a zone's loot for a specific item ID. (0 shows all loot in the zone)", 80, command_viewzoneloot) ||
 		command_add("wc", "[wear slot] [material] - Sends an OP_WearChange for your target", 200, command_wc) ||
 		command_add("weather", "[0/1/2/3] (Off/Rain/Snow/Manual) - Change the weather", 80, command_weather) ||
 		command_add("who", "[search]", 20, command_who) ||
@@ -2691,33 +2693,100 @@ void command_showskills(Client *c, const Seperator *sep)
 		c->Message(Chat::White, "Skill [%d] is at [%d] - %u",  i, t->GetSkill(i), t->GetRawSkill(i));
 }
 
-void command_findrace(Client *c, const Seperator *sep)
+void command_findclass(Client *c, const Seperator *sep)
 {
 	if (sep->arg[1][0] == 0) {
-		c->Message(Chat::White, "Usage: #findrace [race name]");
+		c->Message(Chat::White, "Usage: #findclass [search criteria]");
 	} else if (Seperator::IsNumber(sep->argplus[1])) {
 		int search_id = atoi(sep->argplus[1]);
-		std::string race_name = GetRaceIDName(search_id);
-		if (race_name != std::string("")) {
-			c->Message(Chat::White, "Race %d: %s", search_id, race_name.c_str());
+		std::string class_name = GetClassIDName(search_id);
+		if (class_name.length() > 0) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Class {}: {}",
+					search_id,
+					class_name
+				).c_str()
+			);
 			return;
 		}
 	} else {
-		const char *search_criteria = sep->argplus[1];
+		std::string search_criteria = str_tolower(sep->argplus[1]);
 		int found_count = 0;
-		char race_name[64];
-		char search_string[65];
-		strn0cpy(search_string, search_criteria, sizeof(search_string));
-		strupr(search_string);
-		char *string_location;
-		for (int race_id = RACE_HUMAN_1; race_id <= RT_PEGASUS_3; race_id++) {
-			strn0cpy(race_name, GetRaceIDName(race_id), sizeof(race_name));
-			strupr(race_name);
-			string_location = strstr(race_name, search_string);
-			if (string_location != nullptr) {
-				c->Message(Chat::White, "Race %d: %s", race_id, GetRaceIDName(race_id));
-				found_count++;
+		for (int class_id = WARRIOR; class_id <= MERCERNARY_MASTER; class_id++) {
+			std::string class_name = GetClassIDName(class_id);
+			std::string class_name_lower = str_tolower(class_name);
+			if (search_criteria.length() > 0 && class_name_lower.find(search_criteria) == std::string::npos) {
+				continue;
 			}
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Class {}: {}",
+					class_id,
+					class_name
+				).c_str()
+			);
+			found_count++;
+
+			if (found_count == 20) {
+				break;
+			}
+		}
+
+		if (found_count == 20) {
+			c->Message(Chat::White, "20 Classes found... max reached.");
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} Class(es) found.",
+					found_count
+				).c_str()
+			);
+		}
+	}
+}
+
+void command_findrace(Client *c, const Seperator *sep)
+{
+	if (sep->arg[1][0] == 0) {
+		c->Message(Chat::White, "Usage: #findrace [search criteria]");
+	} else if (Seperator::IsNumber(sep->argplus[1])) {
+		int search_id = atoi(sep->argplus[1]);
+		std::string race_name = GetRaceIDName(search_id);
+		if (race_name.length() > 0) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Race {}: {}",
+					search_id,
+					race_name
+				).c_str()
+			);
+			return;
+		}
+	} else {
+		std::string search_criteria = str_tolower(sep->argplus[1]);
+		int found_count = 0;
+		for (int race_id = RACE_HUMAN_1; race_id <= RT_PEGASUS_3; race_id++) {
+			std::string race_name = GetRaceIDName(race_id);
+			std::string race_name_lower = str_tolower(race_name);
+			if (search_criteria.length() > 0 && race_name_lower.find(search_criteria) == std::string::npos) {
+				continue;
+			}
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Race {}: {}",
+					race_id,
+					race_name
+				).c_str()
+			);
+			found_count++;
 
 			if (found_count == 20) {
 				break;
@@ -2726,51 +2795,77 @@ void command_findrace(Client *c, const Seperator *sep)
 		if (found_count == 20) {
 			c->Message(Chat::White, "20 Races found... max reached.");
 		} else {
-			c->Message(Chat::White, "%i Race(s) found.", found_count);
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} Race(s) found.",
+					found_count
+				).c_str()
+			);
 		}
 	}
 }
 
 void command_findspell(Client *c, const Seperator *sep)
 {
-	if (sep->arg[1][0] == 0)
-		c->Message(Chat::White, "Usage: #FindSpell [spellname]");
-	else if (SPDAT_RECORDS <= 0)
+	if (sep->arg[1][0] == 0) {
+		c->Message(Chat::White, "Usage: #findspell [search criteria]");
+	} else if (SPDAT_RECORDS <= 0) {
 		c->Message(Chat::White, "Spells not loaded");
-	else if (Seperator::IsNumber(sep->argplus[1])) {
-		int spellid = atoi(sep->argplus[1]);
-		if (spellid <= 0 || spellid >= SPDAT_RECORDS) {
-			c->Message(Chat::White, "Error: Number out of range");
-		}
-		else {
-			c->Message(Chat::White, "  %i: %s",  spellid, spells[spellid].name);
+	} else if (Seperator::IsNumber(sep->argplus[1])) {
+		int spell_id = atoi(sep->argplus[1]);
+		if (!IsValidSpell(spell_id)) {
+			c->Message(Chat::White, "Error: Invalid Spell");
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{}: {}", 
+					spell_id,
+					spells[spell_id].name
+				).c_str()
+			);
 		}
 	}
 	else {
-		int count=0;
-		//int iSearchLen = strlen(sep->argplus[1])+1;
-		char sName[64];
-		char sCriteria[65];
-		strn0cpy(sCriteria, sep->argplus[1], 64);
-		strupr(sCriteria);
-		for (int i=0; i<SPDAT_RECORDS; i++) {
-			if (spells[i].name[0] != 0) {
-				strcpy(sName, spells[i].name);
-
-				strupr(sName);
-				char* pdest = strstr(sName, sCriteria);
-				if ((pdest != nullptr) && (count <=20)) {
-					c->Message(Chat::White, "  %i: %s",  i, spells[i].name);
-					count++;
+		std::string search_criteria = str_tolower(sep->argplus[1]);
+		int found_count = 0;
+		for (int i = 0; i < SPDAT_RECORDS; i++) {
+			auto current_spell = spells[i];
+			if (current_spell.name[0] != 0) {
+				std::string spell_name = current_spell.name;
+				std::string spell_name_lower = str_tolower(spell_name);
+				if (search_criteria.length() > 0 && spell_name_lower.find(search_criteria) == std::string::npos) {
+					continue;
 				}
-				else if (count > 20)
+				
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"{}: {}",
+						i,
+						spell_name
+					).c_str()
+				);
+				found_count++;
+				
+				if (found_count == 20) {
 					break;
+				}
 			}
 		}
-		if (count > 20)
-			c->Message(Chat::White, "20 spells found... max reached.");
-		else
-			c->Message(Chat::White, "%i spells found.",  count);
+
+		if (found_count == 20) {
+			c->Message(Chat::White, "20 Spells found... max reached.");
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} Spell(s) found.",
+					found_count
+				).c_str()
+			);
+		}
 	}
 }
 
@@ -14206,6 +14301,115 @@ void command_network(Client *c, const Seperator *sep)
 	}
 }
 
+void command_viewzoneloot(Client *c, const Seperator *sep)
+{
+	std::map<uint32,ItemList> zone_loot_list;
+	auto npc_list = entity_list.GetNPCList();
+	uint32 loot_amount = 0, loot_id = 1, search_item_id = 0;
+	if (sep->argnum == 1 && sep->IsNumber(1)) {
+		search_item_id = atoi(sep->arg[1]);
+	} else if (sep->argnum == 1 && !sep->IsNumber(1)) {
+		c->Message(
+			Chat::Yellow,
+			"Usage: #viewzoneloot [item id]"
+		);
+		return;
+	}
+	for (auto npc_entity : npc_list) {
+		auto current_npc_item_list = npc_entity.second->GetItemList();
+		zone_loot_list.insert({ npc_entity.second->GetID(), current_npc_item_list });
+	}
+	for (auto loot_item : zone_loot_list) {
+		uint32 current_entity_id = loot_item.first;
+		auto current_item_list = loot_item.second;
+		auto current_npc = entity_list.GetNPCByID(current_entity_id);
+		std::string npc_link;
+		if (current_npc) {
+			std::string npc_name = current_npc->GetCleanName();
+			uint32 instance_id = zone->GetInstanceID();
+			uint32 zone_id = zone->GetZoneID();
+			std::string command_link = EQ::SayLinkEngine::GenerateQuestSaylink(
+				fmt::format(
+					"#{} {} {} {} {}",
+					(instance_id != 0 ? "zoneinstance" : "zone"),
+					(instance_id != 0 ? instance_id : zone_id),
+					current_npc->GetX(),
+					current_npc->GetY(),
+					current_npc->GetZ()
+				),
+				false,
+				"Goto"
+			);
+			npc_link = fmt::format(
+				" NPC: {} (ID {}) [{}]",
+				npc_name,
+				current_entity_id,
+				command_link
+			);
+		}
+
+		for (auto current_item : current_item_list) {
+			if (search_item_id == 0 || current_item->item_id == search_item_id) {
+				EQ::SayLinkEngine linker;
+				linker.SetLinkType(EQ::saylink::SayLinkLootItem);
+				linker.SetLootData(current_item);
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"{}. {} ({}){}",
+						loot_id,
+						linker.GenerateLink(),
+						current_item->item_id,
+						npc_link
+					).c_str()
+				);
+				loot_id++;
+				loot_amount++;
+			}
+		}
+	}
+
+	
+	if (search_item_id != 0) {
+		std::string drop_string = (
+			loot_amount > 0 ?
+			fmt::format(
+				"dropping in {} {}",
+				loot_amount,
+				(loot_amount > 1 ? "places" : "place")
+			) :
+			"not dropping"
+		);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"{} ({}) is {}.",
+				database.CreateItemLink(search_item_id),
+				search_item_id,
+				drop_string
+			).c_str()
+		);
+	} else {
+		std::string drop_string = (
+			loot_amount > 0 ?
+			fmt::format(
+				"{} {} {}",
+				(loot_amount > 1 ? "items" : "item"),
+				(loot_amount > 1 ? "are" : "is"),
+				(loot_amount > 1 ? "dropping" : "not dropping")
+			) :
+			"items are dropping"
+		);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"{} {}.",
+				loot_amount,
+				drop_string
+			).c_str()
+		);	
+	}
+}
 // All new code added to command.cpp should be BEFORE this comment line. Do no append code to this file below the BOTS code block.
 #ifdef BOTS
 #include "bot_command.h"

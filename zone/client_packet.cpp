@@ -4214,7 +4214,7 @@ void Client::Handle_OP_ChannelMessage(const EQApplicationPacket *app)
 		std::cout << "Wrong size " << app->size << ", should be " << sizeof(ChannelMessage_Struct) << "+ on 0x" << std::hex << std::setfill('0') << std::setw(4) << app->GetOpcode() << std::dec << std::endl;
 		return;
 	}
-	if (IsAIControlled()) {
+	if (IsAIControlled() && !GetGM()) {
 		Message(Chat::Red, "You try to speak but cant move your mouth!");
 		return;
 	}
@@ -8876,7 +8876,12 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 			}
 			else if (item->ItemType == EQ::item::ItemTypeSpell)
 			{
-				return;
+				if (RuleB(Spells, AllowSpellMemorizeFromItem)) {
+					DeleteItemInInventory(slot_id, 1, true);
+					MemorizeSpellFromItem(item->ID);
+				} else {
+					return;
+				}
 			}
 			else if ((item->Click.Type == EQ::item::ItemEffectClick) || (item->Click.Type == EQ::item::ItemEffectExpendable) || (item->Click.Type == EQ::item::ItemEffectEquipClick) || (item->Click.Type == EQ::item::ItemEffectClick2))
 			{

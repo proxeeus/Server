@@ -576,6 +576,18 @@ bool Lua_NPC::HasRoamBox()
 	return self->HasRoamBox();
 }
 
+void Lua_NPC::ChangeLastName(const char *lastname)
+{
+	Lua_Safe_Call_Void();
+	self->ChangeLastName(lastname);
+}
+
+void Lua_NPC::ClearLastName()
+{
+	Lua_Safe_Call_Void();
+	self->ClearLastName();
+}
+
 luabind::scope lua_register_npc() {
 	return luabind::class_<Lua_NPC, Lua_Mob>("NPC")
 		.def(luabind::constructor<>())
@@ -691,7 +703,9 @@ luabind::scope lua_register_npc() {
 		.def("ScaleNPC", (void(Lua_NPC::*)(uint8))&Lua_NPC::ScaleNPC)
 		.def("IsRaidTarget", (bool(Lua_NPC::*)(void))&Lua_NPC::IsRaidTarget)
 		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
-		.def("HasRoamBox", (bool(Lua_NPC::*)(void))&Lua_NPC::HasRoamBox);
+		.def("ChangeLastName", (void(Lua_NPC::*)(const char*))&Lua_NPC::ChangeLastName)
+		.def("ClearLastName", (void(Lua_NPC::*)(void))&Lua_NPC::ClearLastName)
+		.def("HasRoamBox", (bool(Lua_NPC::*)(void))& Lua_NPC::HasRoamBox);
 }
 
 #endif
