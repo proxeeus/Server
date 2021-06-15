@@ -1931,11 +1931,13 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	entity_list.QueueClients(this, outapp);
 	safe_delete(outapp);
 
-	/* Refresh armor and tints after send illusion packet */
+	// Refresh armor and tints after send illusion packet
 	SendArmorAppearance();
 
-	LogSpells(
-		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
+	LogMobAppearance(
+		"[SendIllusionPacket] race [{}] gender [{}] new_texture [{}] new_helmtexture [{}] new_haircolor [{}] new_beardcolor [{}] "
+		"new_eyecolor1 [{}] new_eyecolor2 [{}] new_hairstyle [{}] new_luclinface [{}] new_drakkin_heritage [{}] "
+		"new_drakkin_tattoo [{}] new_drakkin_details [{}] size [{}]",
 		race,
 		gender,
 		texture,

@@ -442,8 +442,8 @@ int command_init(void)
 		command_add("weather", "[0/1/2/3] (Off/Rain/Snow/Manual) - Change the weather", 80, command_weather) ||
 		command_add("who", "[search]", 20, command_who) ||
 		command_add("worldshutdown", "- Shut down world and all zones", 200, command_worldshutdown) ||
-		command_add("wp", "[add/delete] [grid_num] [pause] [wp_num] [-h] - Add/delete a waypoint to/from a wandering grid", 170, command_wp) ||
-		command_add("wpadd", "[pause] [-h] - Add your current location as a waypoint to your NPC target's AI path", 170, command_wpadd) ||
+		command_add("wp", "[add|delete] [grid_id] [pause] [waypoint_id] [-h] - Add or delete a waypoint by grid ID. (-h to use current heading)", 170, command_wp) ||
+		command_add("wpadd", "[pause] [-h] - Add your current location as a waypoint to your NPC target's AI path. (-h to use current heading)", 170, command_wpadd) ||
 		command_add("wpinfo", "- Show waypoint info about your NPC target", 170, command_wpinfo) ||
 		command_add("worldwide", "Performs world-wide GM functions such as cast (can be extended for other commands). Use caution", 250, command_worldwide) ||
 		command_add("xtargets",  "Show your targets Extended Targets and optionally set how many xtargets they can have.",  250, command_xtargets) ||
@@ -2473,28 +2473,58 @@ void command_setlsinfo(Client *c, const Seperator *sep)
 
 void command_grid(Client *c, const Seperator *sep)
 {
-	if (strcasecmp("max", sep->arg[1]) == 0) {
-		c->Message(Chat::White, "Highest grid ID in this zone: %d", content_db.GetHighestGrid(zone->GetZoneID()));
-	}
-	else if (strcasecmp("add", sep->arg[1]) == 0) {
-		content_db.ModifyGrid(c, false, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), zone->GetZoneID());
-	}
-	else if (strcasecmp("show", sep->arg[1]) == 0) {
-
-		Mob *target = c->GetTarget();
-
-		if (!target || !target->IsNPC()) {
-			c->Message(Chat::White, "You need a NPC target!");
+	auto command_type = sep->arg[1];
+	auto zone_id = zone->GetZoneID();
+	if (strcasecmp("max", command_type) == 0) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Highest grid ID in this zone is {}.",
+				content_db.GetHighestGrid(zone_id)
+			).c_str()
+		);
+	} else if (strcasecmp("add", command_type) == 0) {
+		auto grid_id = atoi(sep->arg[2]);
+		auto wander_type = atoi(sep->arg[3]);
+		auto pause_type = atoi(sep->arg[4]);
+		if (!content_db.GridExistsInZone(zone_id, grid_id)) {
+			content_db.ModifyGrid(c, false, grid_id, wander_type, pause_type, zone_id);
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Grid {} added to zone ID {} with wander type {} and pause type {}.",
+					grid_id,
+					zone_id,
+					wander_type,
+					pause_type
+				).c_str()
+			);
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Grid {} already exists in zone ID {}.",
+					grid_id,
+					zone_id
+				).c_str()
+			);
 			return;
 		}
-
-		std::string query = StringFormat(
+	} else if (strcasecmp("show", command_type) == 0) {
+		Mob *target = c->GetTarget();
+		if (!target || !target->IsNPC()) {
+			c->Message(Chat::White, "You need to target an NPC!");
+			return;
+		}
+		
+		auto grid_id = target->CastToNPC()->GetGrid();
+		std::string query = fmt::format(
 			"SELECT `x`, `y`, `z`, `heading`, `number` "
 			"FROM `grid_entries` "
-			"WHERE `zoneid` = %u and `gridid` = %i "
+			"WHERE `zoneid` = {} AND `gridid` = {} "
 			"ORDER BY `number`",
-			zone->GetZoneID(),
-			target->CastToNPC()->GetGrid()
+			zone_id,
+			grid_id
 		);
 
 		auto results = content_db.QueryDatabase(query);
@@ -2504,33 +2534,21 @@ void command_grid(Client *c, const Seperator *sep)
 		}
 
 		if (results.RowCount() == 0) {
-			c->Message(Chat::White, "No grid found");
+			c->Message(Chat::White, "No grid found.");
 			return;
 		}
 
-		/**
-		 * Depop any node npc's already spawned
-		 */
-		auto      &mob_list = entity_list.GetMobList();
-		for (auto itr       = mob_list.begin(); itr != mob_list.end(); ++itr) {
-			Mob *mob = itr->second;
-			if (mob->IsNPC() && mob->GetRace() == 2254) {
-				mob->Depop();
-			}
-		}
+		// Depop any node npc's already spawned
+		entity_list.DespawnGridNodes(grid_id);
 
-		/**
-		 * Spawn grid nodes
-		 */
+		// Spawn grid nodes
 		std::map<std::vector<float>, int32> zoffset;
-
-		for (auto row = results.begin(); row != results.end(); ++row) {
+		for (auto row : results) {
 			glm::vec4 node_position = glm::vec4(atof(row[0]), atof(row[1]), atof(row[2]), atof(row[3]));
-
 			std::vector<float> node_loc {
-					node_position.x,
-					node_position.y,
-					node_position.z
+				node_position.x,
+				node_position.y,
+				node_position.z
 			};
 
 			// If we already have a node at this location, set the z offset
@@ -2539,46 +2557,98 @@ void command_grid(Client *c, const Seperator *sep)
 			auto search = zoffset.find(node_loc);
 			if (search != zoffset.end()) {
 				search->second = search->second + 3;
-			}
-			else {
+			} else {
 				zoffset[node_loc] = 0.0;
 			}
 
 			node_position.z += zoffset[node_loc];
-
-			NPC::SpawnGridNodeNPC(node_position,atoi(row[4]),zoffset[node_loc]);
+			NPC::SpawnGridNodeNPC(node_position, grid_id, atoi(row[4]), zoffset[node_loc]);
 		}
-	}
-	else if (strcasecmp("delete", sep->arg[1]) == 0) {
-		content_db.ModifyGrid(c, true, atoi(sep->arg[2]), 0, 0, zone->GetZoneID());
-	}
-	else {
-		c->Message(Chat::White, "Usage: #grid add/delete grid_num wandertype pausetype");
-		c->Message(Chat::White, "Usage: #grid max - displays the highest grid ID used in this zone (for add)");
-		c->Message(Chat::White, "Usage: #grid show - displays wp nodes as boxes");
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Spawning nodes for grid {}.",
+				grid_id
+			).c_str()
+		);
+	} else if (strcasecmp("hide", command_type) == 0) {
+		Mob* target = c->GetTarget();
+		if (!target || !target->IsNPC()) {
+			c->Message(Chat::White, "You need to target an NPC!");
+			return;
+		}
+
+		auto grid_id = target->CastToNPC()->GetGrid();
+		entity_list.DespawnGridNodes(grid_id);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Depawning nodes for grid {}.",
+				grid_id
+			).c_str()
+		);
+	} else if (strcasecmp("delete", command_type) == 0) {
+		auto grid_id = atoi(sep->arg[2]);
+		content_db.ModifyGrid(c, true, grid_id, 0, 0, zone_id);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Grid {} deleted from zone ID {}.",
+				grid_id,
+				zone_id
+			).c_str()
+		);
+	} else {
+		c->Message(Chat::White, "Usage: #grid [add|delete] [grid_id] [wander_type] [pause_type]");
+		c->Message(Chat::White, "Usage: #grid [max] - displays the highest grid ID used in this zone (for add)");
+		c->Message(Chat::White, "Usage: #grid [show] - displays wp nodes as boxes");
 	}
 }
 
 void command_wp(Client *c, const Seperator *sep)
 {
-	int wp = atoi(sep->arg[4]);
+	auto command_type = sep->arg[1];
+	auto grid_id = atoi(sep->arg[2]);
+	if (grid_id != 0) {
+		auto pause = atoi(sep->arg[3]);
+		auto waypoint = atoi(sep->arg[4]);
+		auto zone_id = zone->GetZoneID();
+		if (strcasecmp("add", command_type) == 0) {
+			if (waypoint == 0) { // Default to highest if it's left blank, or we enter 0
+				waypoint = (content_db.GetHighestWaypoint(zone_id, grid_id)  + 1);
+			}
 
-	if (strcasecmp("add", sep->arg[1]) == 0) {
-		if (wp == 0) //default to highest if it's left blank, or we enter 0
-			wp = content_db.GetHighestWaypoint(zone->GetZoneID(), atoi(sep->arg[2])) + 1;
-		if (strcasecmp("-h", sep->arg[5]) == 0) {
-			content_db.AddWP(c, atoi(sep->arg[2]),wp, c->GetPosition(), atoi(sep->arg[3]),zone->GetZoneID());
+			if (strcasecmp("-h", sep->arg[5]) == 0) {
+				content_db.AddWP(c, grid_id, waypoint, c->GetPosition(), pause, zone_id);
+			} else {
+    	        auto position = c->GetPosition();
+    	        position.w = -1;
+				content_db.AddWP(c, grid_id, waypoint, position, pause, zone_id);
+			}
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Waypoint {} added to grid {} with a pause of {} {}.",
+					waypoint,
+					grid_id,
+					pause,
+					(pause == 1 ? "second" : "seconds")
+				).c_str()
+			);
+		} else if (strcasecmp("delete", command_type) == 0) {
+			content_db.DeleteWaypoint(c, grid_id, waypoint, zone_id);
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Waypoint {} deleted from grid {}.",
+					waypoint,
+					grid_id
+				).c_str()
+			);
 		}
-		else {
-            auto position = c->GetPosition();
-            position.w = -1;
-			content_db.AddWP(c, atoi(sep->arg[2]),wp, position, atoi(sep->arg[3]),zone->GetZoneID());
-		}
+	} else {
+		c->Message(Chat::White,"Usage: #wp [add|delete] [grid_id] [pause] [waypoint_id] [-h]");
 	}
-	else if (strcasecmp("delete", sep->arg[1]) == 0)
-		content_db.DeleteWaypoint(c, atoi(sep->arg[2]),wp,zone->GetZoneID());
-	else
-		c->Message(Chat::White,"Usage: #wp add/delete grid_num pause wp_num [-h]");
 }
 
 void command_iplookup(Client *c, const Seperator *sep)
@@ -7950,13 +8020,10 @@ void command_wpadd(Client *c, const Seperator *sep)
 	Mob *target = c->GetTarget();
 	if (target && target->IsNPC()) {
 		Spawn2 *s2info = target->CastToNPC()->respawn2;
-
-		if (s2info ==
-			nullptr)    // Can't figure out where this mob's spawn came from... maybe a dynamic mob created by #spawn
-		{
+		if (s2info == nullptr) {
 			c->Message(
 				Chat::White,
-				"#wpadd FAILED -- Can't determine which spawn record in the database this mob came from!"
+				"#wpadd Failed, you must target a valid spawn."
 			);
 			return;
 		}
@@ -7964,8 +8031,7 @@ void command_wpadd(Client *c, const Seperator *sep)
 		if (sep->arg[1][0]) {
 			if (atoi(sep->arg[1]) >= 0) {
 				pause = atoi(sep->arg[1]);
-			}
-			else {
+			} else {
 				c->Message(Chat::White, "Usage: #wpadd [pause] [-h]");
 				return;
 			}
@@ -7975,18 +8041,23 @@ void command_wpadd(Client *c, const Seperator *sep)
 			position.w = -1;
 		}
 
-		uint32 tmp_grid = content_db.AddWPForSpawn(c, s2info->GetID(), position, pause, type1, type2, zone->GetZoneID());
+		auto zone_id = zone->GetZoneID();
+		uint32 tmp_grid = content_db.AddWPForSpawn(c, s2info->GetID(), position, pause, type1, type2, zone_id);
 		if (tmp_grid) {
 			target->CastToNPC()->SetGrid(tmp_grid);
 		}
 
-		target->CastToNPC()->AssignWaypoints(target->CastToNPC()->GetGrid());
+		auto grid_id = target->CastToNPC()->GetGrid();
+		target->CastToNPC()->AssignWaypoints(grid_id);
 		c->Message(
 			Chat::White,
-			"Waypoint added. Use #wpinfo to see waypoints for this NPC (may need to #repop first)."
+			fmt::format(
+				"Waypoint added to grid {} in zone ID {}. Use #wpinfo to see waypoints for this NPC (may need to #repop first).",
+				grid_id,
+				zone_id
+			).c_str()
 		);
-	}
-	else {
+	} else {
 		c->Message(Chat::White, "You must target an NPC to use this.");
 	}
 }
@@ -8005,122 +8076,171 @@ void command_interrupt(Client *c, const Seperator *sep)
 
 void command_summonitem(Client *c, const Seperator *sep)
 {
-	uint32 itemid = 0;
-
+	uint32 item_id = 0;
+	int16 charges = -1;
+	uint32 augment_one = 0;
+	uint32 augment_two = 0;
+	uint32 augment_three = 0;
+	uint32 augment_four = 0;
+	uint32 augment_five = 0;
+	uint32 augment_six = 0;
+	int arguments = sep->argnum;
 	std::string cmd_msg = sep->msg;
 	size_t link_open = cmd_msg.find('\x12');
 	size_t link_close = cmd_msg.find_last_of('\x12');
 	if (link_open != link_close && (cmd_msg.length() - link_open) > EQ::constants::SAY_LINK_BODY_SIZE) {
 		EQ::SayLinkBody_Struct link_body;
 		EQ::saylink::DegenerateLinkBody(link_body, cmd_msg.substr(link_open + 1, EQ::constants::SAY_LINK_BODY_SIZE));
-		itemid = link_body.item_id;
-	}
-	else if (!sep->IsNumber(1)) {
-		c->Message(Chat::White, "Usage: #summonitem [item id | link] [charges], charges are optional");
+		item_id = link_body.item_id;
+		augment_one = link_body.augment_1;
+		augment_two = link_body.augment_2;
+		augment_three = link_body.augment_3;
+		augment_four = link_body.augment_4;
+		augment_five = link_body.augment_5;
+		augment_six = link_body.augment_6;
+	} else if (!sep->IsNumber(1)) {
+		c->Message(Chat::White, "Usage: #summonitem [item id | link] [charges] [augment_one_id] [augment_two_id] [augment_three_id] [augment_four_id] [augment_five_id] [augment_six_id] (Charges are optional.)");
 		return;
+	} else {
+		item_id = atoi(sep->arg[1]);
 	}
-	else {
-		itemid = atoi(sep->arg[1]);
-	}
-	if (!itemid) {
-		c->Message(Chat::White, "A valid item id number is required (derived: 0)");
+
+	if (!item_id) {
+		c->Message(Chat::White, "Enter a valid item ID.");
 		return;
 	}
 
-	int16 item_status = 0;
-	const EQ::ItemData* item = database.GetItem(itemid);
+	uint8 item_status = 0;
+	uint8 current_status = c->Admin();
+	const EQ::ItemData* item = database.GetItem(item_id);
 	if (item) {
-		item_status = static_cast<int16>(item->MinStatus);
+		item_status = item->MinStatus;
 	}
 
-	if (item_status > c->Admin()) {
-		c->Message(Chat::Red, "Error: Insufficient status to summon this item.");
+	if (item_status > current_status) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Insufficient status to summon this item, current status is {}, required status is {}.",
+				current_status,
+				item_status
+			).c_str()
+		);
 	}
-	else if (sep->argnum == 2 && sep->IsNumber(2)) {
-		c->SummonItem(itemid, atoi(sep->arg[2]));
+	
+	if (arguments >= 2 && sep->IsNumber(2)) {
+		charges = atoi(sep->arg[2]);
 	}
-	else if (sep->argnum == 3) {
-		c->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]));
+	
+	if (arguments >= 3 && sep->IsNumber(3)) {
+		augment_one = atoi(sep->arg[3]);
 	}
-	else if (sep->argnum == 4) {
-		c->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]));
+	
+	if (arguments >= 4 && sep->IsNumber(4)) {
+		augment_two = atoi(sep->arg[4]);
 	}
-	else if (sep->argnum == 5) {
-		c->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), atoi(sep->arg[5]));
+	
+	if (arguments >= 5 && sep->IsNumber(5)) {
+		augment_three = atoi(sep->arg[5]);
 	}
-	else if (sep->argnum == 6) {
-		c->SummonItem(
-			itemid,
-			atoi(sep->arg[2]),
-			atoi(sep->arg[3]),
-			atoi(sep->arg[4]),
-			atoi(sep->arg[5]),
-			atoi(sep->arg[6]));
+	
+	if (arguments >= 6 && sep->IsNumber(6)) {
+		augment_four = atoi(sep->arg[6]);
 	}
-	else if (sep->argnum == 7) {
-		c->SummonItem(
-			itemid,
-			atoi(sep->arg[2]),
-			atoi(sep->arg[3]),
-			atoi(sep->arg[4]),
-			atoi(sep->arg[5]),
-			atoi(sep->arg[6]),
-			atoi(sep->arg[7]));
+	
+	if (arguments >= 7 && sep->IsNumber(7)) {
+		augment_five = atoi(sep->arg[7]);
 	}
-	else if (sep->argnum == 8) {
-		c->SummonItem(
-			itemid,
-			atoi(sep->arg[2]),
-			atoi(sep->arg[3]),
-			atoi(sep->arg[4]),
-			atoi(sep->arg[5]),
-			atoi(sep->arg[6]),
-			atoi(sep->arg[7]),
-			atoi(sep->arg[8]));
-	}
-	else {
-		c->SummonItem(itemid);
+	
+	if (arguments == 8 && sep->IsNumber(8)) {
+		augment_six = atoi(sep->arg[8]);
 	}
 
+	c->SummonItem(item_id, charges, augment_one, augment_two, augment_three, augment_four, augment_five, augment_six);
 }
 
 void command_giveitem(Client *c, const Seperator *sep)
 {
-	if (!sep->IsNumber(1)) {
-		c->Message(Chat::Red, "Usage: #summonitem [item id] [charges], charges are optional");
-	} else if(c->GetTarget() == nullptr) {
+	uint32 item_id = 0;
+	int16 charges = -1;
+	uint32 augment_one = 0;
+	uint32 augment_two = 0;
+	uint32 augment_three = 0;
+	uint32 augment_four = 0;
+	uint32 augment_five = 0;
+	uint32 augment_six = 0;
+	int arguments = sep->argnum;
+	std::string cmd_msg = sep->msg;
+	size_t link_open = cmd_msg.find('\x12');
+	size_t link_close = cmd_msg.find_last_of('\x12');
+	if (link_open != link_close && (cmd_msg.length() - link_open) > EQ::constants::SAY_LINK_BODY_SIZE) {
+		EQ::SayLinkBody_Struct link_body;
+		EQ::saylink::DegenerateLinkBody(link_body, cmd_msg.substr(link_open + 1, EQ::constants::SAY_LINK_BODY_SIZE));
+		item_id = link_body.item_id;
+		augment_one = link_body.augment_1;
+		augment_two = link_body.augment_2;
+		augment_three = link_body.augment_3;
+		augment_four = link_body.augment_4;
+		augment_five = link_body.augment_5;
+		augment_six = link_body.augment_6;
+	} else if (sep->IsNumber(1)) {
+		item_id = atoi(sep->arg[1]);
+	} else if (!sep->IsNumber(1)) {
+		c->Message(Chat::Red, "Usage: #giveitem [item id | link] [charges] [augment_one_id] [augment_two_id] [augment_three_id] [augment_four_id] [augment_five_id] [augment_six_id] (Charges are optional.)");
+	} else if (!c->GetTarget()) {
 		c->Message(Chat::Red, "You must target a client to give the item to.");
-	} else if(!c->GetTarget()->IsClient()) {
+	} else if (!c->GetTarget()->IsClient()) {
 		c->Message(Chat::Red, "You can only give items to players with this command.");
-	} else {
-		Client *t = c->GetTarget()->CastToClient();
-		uint32 itemid = atoi(sep->arg[1]);
-		int16 item_status = 0;
-		const EQ::ItemData* item = database.GetItem(itemid);
-		if(item) {
-			item_status = static_cast<int16>(item->MinStatus);
-		}
-
-		if (item_status > c->Admin())
-			c->Message(Chat::Red, "Error: Insufficient status to summon this item.");
-		else if (sep->argnum==2 && sep->IsNumber(2))
-			t->SummonItem(itemid, atoi(sep->arg[2]));
-		else if (sep->argnum==3)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]));
-		else if (sep->argnum==4)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]));
-		else if (sep->argnum==5)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), atoi(sep->arg[5]));
-		else if (sep->argnum==6)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), atoi(sep->arg[5]), atoi(sep->arg[6]));
-		else if (sep->argnum==7)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), atoi(sep->arg[5]), atoi(sep->arg[6]), atoi(sep->arg[7]));
-		else if (sep->argnum == 7)
-			t->SummonItem(itemid, atoi(sep->arg[2]), atoi(sep->arg[3]), atoi(sep->arg[4]), atoi(sep->arg[5]), atoi(sep->arg[6]), atoi(sep->arg[7]), atoi(sep->arg[8]));
-		else {
-			t->SummonItem(itemid);
-		}
 	}
+	
+	Client *client_target = c->GetTarget()->CastToClient();
+	uint8 item_status = 0;
+	uint8 current_status = c->Admin();
+	const EQ::ItemData* item = database.GetItem(item_id);
+	if (item) {
+		item_status = item->MinStatus;
+	}
+	
+	if (item_status > current_status) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Insufficient status to summon this item, current status is {}, required status is {}.",
+				current_status,
+				item_status
+			).c_str()
+		);
+	}
+		
+	if (arguments >= 2 && sep->IsNumber(2)) {
+		charges = atoi(sep->arg[2]);
+	}
+	
+	if (arguments >= 3 && sep->IsNumber(3)) {
+		augment_one = atoi(sep->arg[3]);
+	}
+	
+	if (arguments >= 4 && sep->IsNumber(4)) {
+		augment_two = atoi(sep->arg[4]);
+	}
+	
+	if (arguments >= 5 && sep->IsNumber(5)) {
+		augment_three = atoi(sep->arg[5]);
+	}
+	
+	if (arguments >= 6 && sep->IsNumber(6)) {
+		augment_four = atoi(sep->arg[6]);
+	}
+
+	if (arguments >= 7 && sep->IsNumber(7)) {
+		augment_five = atoi(sep->arg[7]);
+	}
+
+	if (arguments == 8 && sep->IsNumber(8)) {
+		augment_six = atoi(sep->arg[8]);
+	}
+
+	client_target->SummonItem(item_id, charges, augment_one, augment_two, augment_three, augment_four, augment_five, augment_six);
 }
 
 void command_givemoney(Client *c, const Seperator *sep)
