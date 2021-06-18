@@ -5652,7 +5652,7 @@ XS(XS_Mob_CanClassEquipItem) {
 		uint32 item_id = (uint32) SvUV(ST(1));
 		VALIDATE_THIS_IS_MOB;
 		RETVAL = THIS->CanClassEquipItem(item_id);
-		ST(0)          = boolSV(RETVAL);
+		ST(0) = boolSV(RETVAL);
 		sv_2mortal(ST(0));
 	}
 	XSRETURN(1);
@@ -6257,6 +6257,50 @@ XS(XS_Mob_GetLastName) {
 	XSRETURN(1);
 }
 
+XS(XS_Mob_CanRaceEquipItem); /* prototype to pass -Wmissing-prototypes */
+XS(XS_Mob_CanRaceEquipItem) {
+	dXSARGS;
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: Mob::CanRaceEquipItem(THIS, uint32 item_id)"); // @categories Inventory and Items, Script Utility
+	{
+		Mob *THIS;
+		bool   RETVAL;
+		uint32 item_id = (uint32) SvUV(ST(1));
+		VALIDATE_THIS_IS_MOB;
+		RETVAL = THIS->CanRaceEquipItem(item_id);
+		ST(0) = boolSV(RETVAL);
+		sv_2mortal(ST(0));
+	}
+	XSRETURN(1);
+}
+
+XS(XS_Mob_RemoveAllNimbusEffects); /* prototype to pass -Wmissing-prototypes */
+XS(XS_Mob_RemoveAllNimbusEffects) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: Mob::RemoveAllNimbusEffects(THIS)"); // @categories Script Utility
+	{
+		Mob *THIS;
+		VALIDATE_THIS_IS_MOB;
+		THIS->RemoveAllNimbusEffects();
+	}
+	XSRETURN_EMPTY;
+}
+
+XS(XS_Mob_AddNimbusEffect);
+XS(XS_Mob_AddNimbusEffect) {
+	dXSARGS;
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: Mob::AddNimbusEffect(THIS, int effect_id)"); // @categories Script Utility
+	{
+		Mob* THIS;
+		int effect_id = (int) SvIV(ST(1));
+		VALIDATE_THIS_IS_MOB;
+		THIS->AddNimbusEffect(effect_id);
+	}
+	XSRETURN_EMPTY;
+}
+
 #ifdef BOTS
 XS(XS_Mob_CastToBot); /* prototype to pass -Wmissing-prototypes */
 XS(XS_Mob_CastToBot)
@@ -6625,6 +6669,9 @@ XS(boot_Mob) {
 	newXSproto(strcpy(buf, "GetHateClosest"), XS_Mob_GetHateClosest, file, "$");
 	newXSproto(strcpy(buf, "GetHateListByDistance"), XS_Mob_GetHateListByDistance, file, "$;$");
 	newXSproto(strcpy(buf, "GetLastName"), XS_Mob_GetLastName, file, "$");
+	newXSproto(strcpy(buf, "CanRaceEquipItem"), XS_Mob_CanRaceEquipItem, file, "$$");
+	newXSproto(strcpy(buf, "RemoveAllNimbusEffects"), XS_Mob_RemoveAllNimbusEffects, file, "$");
+	newXSproto(strcpy(buf, "AddNimbusEffect"), XS_Mob_AddNimbusEffect, file, "$$");
 #ifdef BOTS
 	newXSproto(strcpy(buf, "CastToBot"), XS_Mob_CastToBot, file, "$");
 #endif

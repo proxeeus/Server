@@ -662,6 +662,7 @@ public:
 	void MoveZoneInstanceGroup(uint16 instance_id);
 	void MoveZoneInstanceRaid(uint16 instance_id);
 	void SendToGuildHall();
+	void SendToInstance(std::string instance_type, std::string zone_short_name, uint32 instance_version, float x, float y, float z, float heading, std::string instance_identifier, uint32 duration);
 	void AssignToInstance(uint16 instance_id);
 	void RemoveFromInstance(uint16 instance_id);
 	void WhoAll();
@@ -907,6 +908,8 @@ public:
 	bool PushItemOnCursor(const EQ::ItemInstance& inst, bool client_update = false);
 	void SendCursorBuffer();
 	void DeleteItemInInventory(int16 slot_id, int8 quantity = 0, bool client_update = false, bool update_db = true);
+	int CountItem(uint32 item_id);
+	void RemoveItem(uint32 item_id, uint32 quantity = 1);
 	bool SwapItem(MoveItem_Struct* move_in);
 	void SwapItemResync(MoveItem_Struct* move_slots);
 	void QSSwapItemAuditor(MoveItem_Struct* move_in, bool postaction_call = false);

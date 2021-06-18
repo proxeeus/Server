@@ -554,10 +554,14 @@ void Mob::SetInvisible(uint8 state)
 	invisible = state;
 	SendAppearancePacket(AT_Invis, invisible);
 	// Invis and hide breaks charms
-
 	auto formerpet = GetPet();
-	if (formerpet && formerpet->GetPetType() == petCharmed && (invisible || hidden || improved_hidden))
-		formerpet->BuffFadeByEffect(SE_Charm);
+	if (formerpet && formerpet->GetPetType() == petCharmed && (invisible || hidden || improved_hidden || invisible_animals || invisible_undead)) {
+		if (RuleB(Pets, LivelikeBreakCharmOnInvis) || IsInvisible(formerpet)) {
+			formerpet->BuffFadeByEffect(SE_Charm);
+		}
+
+		LogRules("Pets:LivelikeBreakCharmOnInvis for [{}] | Invis [{}] - Hidden [{}] - Shroud of Stealth [{}] - IVA [{}] - IVU [{}]", GetCleanName(), invisible, hidden, improved_hidden, invisible_animals, invisible_undead);
+	}
 }
 
 //check to see if `this` is invisible to `other`
@@ -4980,6 +4984,22 @@ void Mob::RemoveNimbusEffect(int effectid)
 	safe_delete(outapp);
 }
 
+void Mob::RemoveAllNimbusEffects()
+{
+	uint32 nimbus_effects[3] = { nimbus_effect1, nimbus_effect2, nimbus_effect3 };
+	for (auto &current_nimbus : nimbus_effects) {
+		auto remove_packet = new EQApplicationPacket(OP_RemoveNimbusEffect, sizeof(RemoveNimbusEffect_Struct));
+		auto *remove_effect = (RemoveNimbusEffect_Struct*)remove_packet->pBuffer;
+		remove_effect->spawnid = GetID();
+		remove_effect->nimbus_effect = current_nimbus;
+		entity_list.QueueClients(this, remove_packet);
+		safe_delete(remove_packet);
+	}
+	nimbus_effect1 = 0;
+	nimbus_effect2 = 0;
+	nimbus_effect3 = 0;
+}
+
 bool Mob::IsBoat() const {
 
 	return (
@@ -5646,7 +5666,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 
 	if (slot < 16){
 		if (id == "classes") {return spells[spell_id].classes[slot]; }
-		else if (id == "dieties") {return spells[spell_id].deities[slot];}
+		else if (id == "deities") {return spells[spell_id].deities[slot];}
 	}
 
 	if (slot < 12){
@@ -5679,7 +5699,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 	else if (id == "Activated") {return spells[spell_id].Activated;}
 	else if (id == "resisttype") {return spells[spell_id].resisttype;}
 	else if (id == "targettype") {return spells[spell_id].targettype;}
-	else if (id == "basedeiff") {return spells[spell_id].basediff;}
+	else if (id == "basediff") {return spells[spell_id].basediff;}
 	else if (id == "skill") {return spells[spell_id].skill;}
 	else if (id == "zonetype") {return spells[spell_id].zonetype;}
 	else if (id == "EnvironmentType") {return spells[spell_id].EnvironmentType;}
@@ -5690,7 +5710,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 	//else if (id == "spellanim") {stat = spells[spell_id].spellanim; } - Not implemented
 	else if (id == "uninterruptable") {return spells[spell_id].uninterruptable; }
 	else if (id == "ResistDiff") {return spells[spell_id].ResistDiff; }
-	else if (id == "dot_stacking_exemp") {return spells[spell_id].dot_stacking_exempt; }
+	else if (id == "dot_stacking_exempt") {return spells[spell_id].dot_stacking_exempt; }
 	else if (id == "RecourseLink") {return spells[spell_id].RecourseLink; }
 	else if (id == "no_partial_resist") {return spells[spell_id].no_partial_resist; }
 	else if (id == "short_buff_box") {return spells[spell_id].short_buff_box; }
@@ -5701,7 +5721,7 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 	else if (id == "bonushate") {return spells[spell_id].bonushate; }
 	else if (id == "EndurCost") {return spells[spell_id].EndurCost; }
 	else if (id == "EndurTimerIndex") {return spells[spell_id].EndurTimerIndex; }
-	else if (id == "IsDisciplineBuf") {return spells[spell_id].IsDisciplineBuff; }
+	else if (id == "IsDisciplineBuff") {return spells[spell_id].IsDisciplineBuff; }
 	else if (id == "HateAdded") {return spells[spell_id].HateAdded; }
 	else if (id == "EndurUpkeep") {return spells[spell_id].EndurUpkeep; }
 	else if (id == "numhitstype") {return spells[spell_id].numhitstype; }
@@ -5746,22 +5766,53 @@ bool Mob::CanClassEquipItem(uint32 item_id)
 	const EQ::ItemData* itm = nullptr;
 	itm = database.GetItem(item_id);
 
-	if (!itm)
+	if (!itm) {
 		return false;
+	}
 
-	if(itm->Classes == 65535 )
+	auto item_classes = itm->Classes;
+	if(item_classes == PLAYER_CLASS_ALL_MASK) {
 		return true;
+	}
 
-	if (GetClass() > 16)
+	auto class_id = GetClass();
+	if (class_id > BERSERKER) {
 		return false;
+	}
 
-	int bitmask = 1;
-	bitmask = bitmask << (GetClass() - 1);
-
-	if(!(itm->Classes & bitmask))
+	int class_bitmask = GetPlayerClassBit(class_id);
+	if(!(item_classes & class_bitmask)) {
 		return false;
-	else
+	} else {
 		return true;
+	}
+}
+
+bool Mob::CanRaceEquipItem(uint32 item_id)
+{
+	const EQ::ItemData* itm = nullptr;
+	itm = database.GetItem(item_id);
+
+	if (!itm) {
+		return false;
+	}
+
+	auto item_races = itm->Races;
+	if(item_races == PLAYER_RACE_ALL_MASK) {
+		return true;
+	}
+
+	auto race_id = GetBaseRace();
+	if (!IsPlayerRace(race_id)) {
+		return false;
+	}
+
+	int race_bitmask = GetPlayerRaceBit(race_id);
+	if(!(item_races & race_bitmask)) {
+		return false;
+	} else {
+		return true;
+	}
 }
 
 void Mob::SendAddPlayerState(PlayerState new_state)

@@ -414,6 +414,7 @@ public:
 	inline virtual uint32 GetNimbusEffect3() const { return nimbus_effect3; }
 	void AddNimbusEffect(int effectid);
 	void RemoveNimbusEffect(int effectid);
+	void RemoveAllNimbusEffects();
 	inline const glm::vec3& GetTargetRingLocation() const { return m_TargetRing; }
 	inline float GetTargetRingX() const { return m_TargetRing.x; }
 	inline float GetTargetRingY() const { return m_TargetRing.y; }
@@ -441,6 +442,7 @@ public:
 	virtual uint32 GetEquipmentColor(uint8 material_slot) const;
 	virtual uint32 IsEliteMaterialItem(uint8 material_slot) const;
 	bool CanClassEquipItem(uint32 item_id);
+	bool CanRaceEquipItem(uint32 item_id);
 	bool AffectedBySpellExcludingSlot(int slot, int effect);
 	virtual bool Death(Mob* killerMob, int32 damage, uint16 spell_id, EQ::skills::SkillType attack_skill) = 0;
 	virtual void Damage(Mob* from, int32 damage, uint16 spell_id, EQ::skills::SkillType attack_skill,
