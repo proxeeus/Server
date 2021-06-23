@@ -1935,13 +1935,11 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	entity_list.QueueClients(this, outapp);
 	safe_delete(outapp);
 
-	// Refresh armor and tints after send illusion packet
+	/* Refresh armor and tints after send illusion packet */
 	SendArmorAppearance();
 
-	LogMobAppearance(
-		"[SendIllusionPacket] race [{}] gender [{}] new_texture [{}] new_helmtexture [{}] new_haircolor [{}] new_beardcolor [{}] "
-		"new_eyecolor1 [{}] new_eyecolor2 [{}] new_hairstyle [{}] new_luclinface [{}] new_drakkin_heritage [{}] "
-		"new_drakkin_tattoo [{}] new_drakkin_details [{}] size [{}]",
+	LogSpells(
+		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
 		race,
 		gender,
 		texture,
@@ -3217,6 +3215,7 @@ uint32 Mob::GetLevelHP(uint8 tlevel)
 int32 Mob::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 {
 	int32 cast_reducer = GetFocusEffect(focusSpellHaste, spell_id);
+	auto min_cap = casttime / 2;
 
 	if (level > 50 && casttime >= 3000 && !spells[spell_id].goodEffect &&
 	    (GetClass() == RANGER || GetClass() == SHADOWKNIGHT || GetClass() == PALADIN || GetClass() == BEASTLORD)) {
@@ -3225,7 +3224,7 @@ int32 Mob::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 	}
 
 	casttime = casttime * (100 - cast_reducer) / 100;
-	return std::max(casttime, casttime / 2);
+	return std::max(casttime, min_cap);
 }
 
 void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on, int level_override) {
