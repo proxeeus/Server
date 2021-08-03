@@ -31,6 +31,7 @@ public:
 	}
 
 	void SendSound();
+	void Sit();
 	void Save();
 	void Save(int commit_now);
 	void SaveBackup();
@@ -56,7 +57,7 @@ public:
 	bool GetGM();
 	void SetBaseClass(int v);
 	void SetBaseRace(int v);
-	void SetBaseGender(int v);	
+	void SetBaseGender(int v);
 	int GetClassBitmask();
 	int GetRaceBitmask();
 	int GetBaseFace();
@@ -370,6 +371,7 @@ public:
 	int CountItem(uint32 item_id);
 	void RemoveItem(uint32 item_id);
 	void RemoveItem(uint32 item_id, uint32 quantity);
+	void SetGMStatus(uint32 newStatus);
 
 	void SetPrimaryWeaponOrnamentation(uint32 model_id);
 	void SetSecondaryWeaponOrnamentation(uint32 model_id);
