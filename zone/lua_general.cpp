@@ -2483,6 +2483,18 @@ std::string lua_get_data_remaining(std::string bucket_name) {
 	return DataBucket::GetDataRemaining(bucket_name);
 }
 
+int lua_get_item_stat(uint32 item_id, std::string stat_identifier) {
+	return quest_manager.getitemstat(item_id, stat_identifier);
+}
+
+int lua_get_spell_stat(uint32 spell_id, std::string stat_identifier) {
+	return quest_manager.getspellstat(spell_id, stat_identifier);
+}
+
+int lua_get_spell_stat(uint32 spell_id, std::string stat_identifier, uint8 slot) {
+	return quest_manager.getspellstat(spell_id, stat_identifier, slot);
+}
+
 #define LuaCreateNPCParse(name, c_type, default_value) do { \
 	cur = table[#name]; \
 	if(luabind::type(cur) != LUA_TNIL) { \
@@ -3072,6 +3084,9 @@ luabind::scope lua_register_general() {
 		luabind::def("get_inventory_slot_name", &lua_get_inventory_slot_name),
 		luabind::def("rename", &lua_rename),
 		luabind::def("get_data_remaining", &lua_get_data_remaining),
+		luabind::def("get_item_stat", &lua_get_item_stat),
+		luabind::def("get_spell_stat", (int(*)(uint32,std::string))&lua_get_spell_stat),
+		luabind::def("get_spell_stat", (int(*)(uint32,std::string,uint8))&lua_get_spell_stat),
 
 		/**
 		 * Expansions
@@ -3251,6 +3266,7 @@ luabind::scope lua_register_events() {
 			luabind::value("spawn_zone", static_cast<int>(EVENT_SPAWN_ZONE)),
 			luabind::value("death_zone", static_cast<int>(EVENT_DEATH_ZONE)),
 			luabind::value("use_skill", static_cast<int>(EVENT_USE_SKILL)),
+			luabind::value("warp", static_cast<int>(EVENT_WARP)),
 			luabind::value("test_buff", static_cast<int>(EVENT_TEST_BUFF))
 		];
 }

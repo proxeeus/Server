@@ -239,6 +239,7 @@ Mob::Mob(
 	has_shieldequiped       = false;
 	has_twohandbluntequiped = false;
 	has_twohanderequipped   = false;
+	has_duelweaponsequiped  = false;
 	can_facestab            = false;
 	has_numhits             = false;
 	has_MGB                 = false;
@@ -265,7 +266,6 @@ Mob::Mob(
 	MR                = CR = FR = DR = PR = Corrup = PhR = 0;
 	ExtraHaste        = 0;
 	bEnraged          = false;
-	shield_target     = nullptr;
 	current_mana      = 0;
 	max_mana          = 0;
 	hp_regen          = in_hp_regen;
@@ -380,11 +380,13 @@ Mob::Mob(
 	silenced       = false;
 	amnesiad       = false;
 	inWater        = false;
-	int m;
-	for (m = 0; m < MAX_SHIELDERS; m++) {
-		shielder[m].shielder_id    = 0;
-		shielder[m].shielder_bonus = 0;
-	}
+
+	shield_timer.Disable();
+	m_shield_target_id = 0;
+	m_shielder_id = 0;
+	m_shield_target_mitigation = 0;
+	m_shielder_mitigation = 0;
+	m_shielder_max_distance = 0;
 
 	destructibleobject = false;
 	wandertype         = 0;
@@ -412,6 +414,14 @@ Mob::Mob(
 	for (int i = 0; i < MAX_SPELL_TRIGGER * 2; i++) {
 		viral_spells[i] = 0;
 	}
+
+	weaponstance.enabled = false;
+	weaponstance.spellbonus_enabled = false;	//Set when bonus is applied
+	weaponstance.itembonus_enabled = false;		//Set when bonus is applied
+	weaponstance.aabonus_enabled = false;		//Controlled by function TogglePassiveAA
+	weaponstance.spellbonus_buff_spell_id = 0;
+	weaponstance.itembonus_buff_spell_id = 0;
+	weaponstance.aabonus_buff_spell_id = 0;
 
 	pStandingPetOrder = SPO_Follow;
 	pseudo_rooted     = false;
@@ -466,6 +476,8 @@ Mob::Mob(
 	PrimaryAggro = false;
 	AssistAggro = false;
 	npc_assist_cap = 0;
+
+	use_double_melee_round_dmg_bonus = false;
 
 #ifdef BOTS
 	m_manual_follow = false;
@@ -3229,7 +3241,7 @@ int32 Mob::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 	cast_reducer += cast_reducer_no_limit;
 	casttime = casttime * (100 - cast_reducer) / 100;
 	casttime -= cast_reducer_amt;
-	
+
 	return std::max(casttime, 0);
 
 }
@@ -3952,8 +3964,8 @@ int32 Mob::GetPositionalDmgTaken(Mob *attacker)
 	int back_arc = 0;
 	int total_mod = 0;
 
-	back_arc += itembonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD] + aabonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD] + spellbonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD];
-	front_arc += itembonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_LOCATION] + aabonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_LOCATION] + spellbonuses.Damage_Taken_Position_Mod[SBIndex::POSITIONAL_LOCATION];
+	back_arc += itembonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_BACK] + aabonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_BACK] + spellbonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_BACK];
+	front_arc += itembonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_FRONT] + aabonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_FRONT] + spellbonuses.Damage_Taken_Position_Mod[SBIndex::POSITION_FRONT];
 
 	if (back_arc || front_arc) { //Do they have this bonus?
 		if (attacker->BehindMob(this, attacker->GetX(), attacker->GetY()))//Check if attacker is striking from behind
@@ -3969,6 +3981,29 @@ int32 Mob::GetPositionalDmgTaken(Mob *attacker)
 
 	return total_mod;
 }
+
+int32 Mob::GetPositionalDmgTakenAmt(Mob *attacker)
+{
+	if (!attacker)
+		return 0;
+
+	int front_arc = 0;
+	int back_arc = 0;
+	int total_amt = 0;
+
+	back_arc += itembonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_BACK] + aabonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_BACK] + spellbonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_BACK];
+	front_arc += itembonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_FRONT] + aabonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_FRONT] + spellbonuses.Damage_Taken_Position_Amt[SBIndex::POSITION_FRONT];
+
+	if (back_arc || front_arc) {
+		if (attacker->BehindMob(this, attacker->GetX(), attacker->GetY()))
+			total_amt = back_arc;
+		else
+			total_amt = front_arc;
+	}
+
+	return total_amt;
+}
+
 
 int16 Mob::GetHealRate(uint16 spell_id, Mob* caster) {
 
@@ -4121,343 +4156,7 @@ void Mob::TrySympatheticProc(Mob *target, uint32 spell_id)
 
 int32 Mob::GetItemStat(uint32 itemid, const char *identifier)
 {
-	const EQ::ItemInstance* inst = database.CreateItem(itemid);
-	if (!inst)
-		return 0;
-
-	const EQ::ItemData* item = inst->GetItem();
-	if (!item)
-		return 0;
-
-	if (!identifier)
-		return 0;
-
-	int32 stat = 0;
-
-	std::string id = identifier;
-	for(uint32 i = 0; i < id.length(); ++i)
-	{
-		id[i] = tolower(id[i]);
-	}
-
-	if (id == "itemclass")
-		stat = int32(item->ItemClass);
-	if (id == "id")
-		stat = int32(item->ID);
-	if (id == "idfile")
-		stat = atoi(&item->IDFile[2]);
-	if (id == "weight")
-		stat = int32(item->Weight);
-	if (id == "norent")
-		stat = int32(item->NoRent);
-	if (id == "nodrop")
-		stat = int32(item->NoDrop);
-	if (id == "size")
-		stat = int32(item->Size);
-	if (id == "slots")
-		stat = int32(item->Slots);
-	if (id == "price")
-		stat = int32(item->Price);
-	if (id == "icon")
-		stat = int32(item->Icon);
-	if (id == "loregroup")
-		stat = int32(item->LoreGroup);
-	if (id == "loreflag")
-		stat = int32(item->LoreFlag);
-	if (id == "pendingloreflag")
-		stat = int32(item->PendingLoreFlag);
-	if (id == "artifactflag")
-		stat = int32(item->ArtifactFlag);
-	if (id == "summonedflag")
-		stat = int32(item->SummonedFlag);
-	if (id == "fvnodrop")
-		stat = int32(item->FVNoDrop);
-	if (id == "favor")
-		stat = int32(item->Favor);
-	if (id == "guildfavor")
-		stat = int32(item->GuildFavor);
-	if (id == "pointtype")
-		stat = int32(item->PointType);
-	if (id == "bagtype")
-		stat = int32(item->BagType);
-	if (id == "bagslots")
-		stat = int32(item->BagSlots);
-	if (id == "bagsize")
-		stat = int32(item->BagSize);
-	if (id == "bagwr")
-		stat = int32(item->BagWR);
-	if (id == "benefitflag")
-		stat = int32(item->BenefitFlag);
-	if (id == "tradeskills")
-		stat = int32(item->Tradeskills);
-	if (id == "cr")
-		stat = int32(item->CR);
-	if (id == "dr")
-		stat = int32(item->DR);
-	if (id == "pr")
-		stat = int32(item->PR);
-	if (id == "mr")
-		stat = int32(item->MR);
-	if (id == "fr")
-		stat = int32(item->FR);
-	if (id == "astr")
-		stat = int32(item->AStr);
-	if (id == "asta")
-		stat = int32(item->ASta);
-	if (id == "aagi")
-		stat = int32(item->AAgi);
-	if (id == "adex")
-		stat = int32(item->ADex);
-	if (id == "acha")
-		stat = int32(item->ACha);
-	if (id == "aint")
-		stat = int32(item->AInt);
-	if (id == "awis")
-		stat = int32(item->AWis);
-	if (id == "hp")
-		stat = int32(item->HP);
-	if (id == "mana")
-		stat = int32(item->Mana);
-	if (id == "ac")
-		stat = int32(item->AC);
-	if (id == "deity")
-		stat = int32(item->Deity);
-	if (id == "skillmodvalue")
-		stat = int32(item->SkillModValue);
-	if (id == "skillmodtype")
-		stat = int32(item->SkillModType);
-	if (id == "banedmgrace")
-		stat = int32(item->BaneDmgRace);
-	if (id == "banedmgamt")
-		stat = int32(item->BaneDmgAmt);
-	if (id == "banedmgbody")
-		stat = int32(item->BaneDmgBody);
-	if (id == "magic")
-		stat = int32(item->Magic);
-	if (id == "casttime_")
-		stat = int32(item->CastTime_);
-	if (id == "reqlevel")
-		stat = int32(item->ReqLevel);
-	if (id == "bardtype")
-		stat = int32(item->BardType);
-	if (id == "bardvalue")
-		stat = int32(item->BardValue);
-	if (id == "light")
-		stat = int32(item->Light);
-	if (id == "delay")
-		stat = int32(item->Delay);
-	if (id == "reclevel")
-		stat = int32(item->RecLevel);
-	if (id == "recskill")
-		stat = int32(item->RecSkill);
-	if (id == "elemdmgtype")
-		stat = int32(item->ElemDmgType);
-	if (id == "elemdmgamt")
-		stat = int32(item->ElemDmgAmt);
-	if (id == "range")
-		stat = int32(item->Range);
-	if (id == "damage")
-		stat = int32(item->Damage);
-	if (id == "color")
-		stat = int32(item->Color);
-	if (id == "classes")
-		stat = int32(item->Classes);
-	if (id == "races")
-		stat = int32(item->Races);
-	if (id == "maxcharges")
-		stat = int32(item->MaxCharges);
-	if (id == "itemtype")
-		stat = int32(item->ItemType);
-	if (id == "material")
-		stat = int32(item->Material);
-	if (id == "casttime")
-		stat = int32(item->CastTime);
-	if (id == "elitematerial")
-		stat = int32(item->EliteMaterial);
-	if (id == "herosforgemodel")
-		stat = int32(item->HerosForgeModel);
-	if (id == "procrate")
-		stat = int32(item->ProcRate);
-	if (id == "combateffects")
-		stat = int32(item->CombatEffects);
-	if (id == "shielding")
-		stat = int32(item->Shielding);
-	if (id == "stunresist")
-		stat = int32(item->StunResist);
-	if (id == "strikethrough")
-		stat = int32(item->StrikeThrough);
-	if (id == "extradmgskill")
-		stat = int32(item->ExtraDmgSkill);
-	if (id == "extradmgamt")
-		stat = int32(item->ExtraDmgAmt);
-	if (id == "spellshield")
-		stat = int32(item->SpellShield);
-	if (id == "avoidance")
-		stat = int32(item->Avoidance);
-	if (id == "accuracy")
-		stat = int32(item->Accuracy);
-	if (id == "charmfileid")
-		stat = int32(item->CharmFileID);
-	if (id == "factionmod1")
-		stat = int32(item->FactionMod1);
-	if (id == "factionmod2")
-		stat = int32(item->FactionMod2);
-	if (id == "factionmod3")
-		stat = int32(item->FactionMod3);
-	if (id == "factionmod4")
-		stat = int32(item->FactionMod4);
-	if (id == "factionamt1")
-		stat = int32(item->FactionAmt1);
-	if (id == "factionamt2")
-		stat = int32(item->FactionAmt2);
-	if (id == "factionamt3")
-		stat = int32(item->FactionAmt3);
-	if (id == "factionamt4")
-		stat = int32(item->FactionAmt4);
-	if (id == "augtype")
-		stat = int32(item->AugType);
-	if (id == "ldontheme")
-		stat = int32(item->LDoNTheme);
-	if (id == "ldonprice")
-		stat = int32(item->LDoNPrice);
-	if (id == "ldonsold")
-		stat = int32(item->LDoNSold);
-	if (id == "banedmgraceamt")
-		stat = int32(item->BaneDmgRaceAmt);
-	if (id == "augrestrict")
-		stat = int32(item->AugRestrict);
-	if (id == "endur")
-		stat = int32(item->Endur);
-	if (id == "dotshielding")
-		stat = int32(item->DotShielding);
-	if (id == "attack")
-		stat = int32(item->Attack);
-	if (id == "regen")
-		stat = int32(item->Regen);
-	if (id == "manaregen")
-		stat = int32(item->ManaRegen);
-	if (id == "enduranceregen")
-		stat = int32(item->EnduranceRegen);
-	if (id == "haste")
-		stat = int32(item->Haste);
-	if (id == "damageshield")
-		stat = int32(item->DamageShield);
-	if (id == "recastdelay")
-		stat = int32(item->RecastDelay);
-	if (id == "recasttype")
-		stat = int32(item->RecastType);
-	if (id == "augdistiller")
-		stat = int32(item->AugDistiller);
-	if (id == "attuneable")
-		stat = int32(item->Attuneable);
-	if (id == "nopet")
-		stat = int32(item->NoPet);
-	if (id == "potionbelt")
-		stat = int32(item->PotionBelt);
-	if (id == "stackable")
-		stat = int32(item->Stackable);
-	if (id == "notransfer")
-		stat = int32(item->NoTransfer);
-	if (id == "questitemflag")
-		stat = int32(item->QuestItemFlag);
-	if (id == "stacksize")
-		stat = int32(item->StackSize);
-	if (id == "potionbeltslots")
-		stat = int32(item->PotionBeltSlots);
-	if (id == "book")
-		stat = int32(item->Book);
-	if (id == "booktype")
-		stat = int32(item->BookType);
-	if (id == "svcorruption")
-		stat = int32(item->SVCorruption);
-	if (id == "purity")
-		stat = int32(item->Purity);
-	if (id == "backstabdmg")
-		stat = int32(item->BackstabDmg);
-	if (id == "dsmitigation")
-		stat = int32(item->DSMitigation);
-	if (id == "heroicstr")
-		stat = int32(item->HeroicStr);
-	if (id == "heroicint")
-		stat = int32(item->HeroicInt);
-	if (id == "heroicwis")
-		stat = int32(item->HeroicWis);
-	if (id == "heroicagi")
-		stat = int32(item->HeroicAgi);
-	if (id == "heroicdex")
-		stat = int32(item->HeroicDex);
-	if (id == "heroicsta")
-		stat = int32(item->HeroicSta);
-	if (id == "heroiccha")
-		stat = int32(item->HeroicCha);
-	if (id == "heroicmr")
-		stat = int32(item->HeroicMR);
-	if (id == "heroicfr")
-		stat = int32(item->HeroicFR);
-	if (id == "heroiccr")
-		stat = int32(item->HeroicCR);
-	if (id == "heroicdr")
-		stat = int32(item->HeroicDR);
-	if (id == "heroicpr")
-		stat = int32(item->HeroicPR);
-	if (id == "heroicsvcorrup")
-		stat = int32(item->HeroicSVCorrup);
-	if (id == "healamt")
-		stat = int32(item->HealAmt);
-	if (id == "spelldmg")
-		stat = int32(item->SpellDmg);
-	if (id == "ldonsellbackrate")
-		stat = int32(item->LDoNSellBackRate);
-	if (id == "scriptfileid")
-		stat = int32(item->ScriptFileID);
-	if (id == "expendablearrow")
-		stat = int32(item->ExpendableArrow);
-	if (id == "clairvoyance")
-		stat = int32(item->Clairvoyance);
-	// Begin Effects
-	if (id == "clickeffect")
-		stat = int32(item->Click.Effect);
-	if (id == "clicktype")
-		stat = int32(item->Click.Type);
-	if (id == "clicklevel")
-		stat = int32(item->Click.Level);
-	if (id == "clicklevel2")
-		stat = int32(item->Click.Level2);
-	if (id == "proceffect")
-		stat = int32(item->Proc.Effect);
-	if (id == "proctype")
-		stat = int32(item->Proc.Type);
-	if (id == "proclevel")
-		stat = int32(item->Proc.Level);
-	if (id == "proclevel2")
-		stat = int32(item->Proc.Level2);
-	if (id == "worneffect")
-		stat = int32(item->Worn.Effect);
-	if (id == "worntype")
-		stat = int32(item->Worn.Type);
-	if (id == "wornlevel")
-		stat = int32(item->Worn.Level);
-	if (id == "wornlevel2")
-		stat = int32(item->Worn.Level2);
-	if (id == "focuseffect")
-		stat = int32(item->Focus.Effect);
-	if (id == "focustype")
-		stat = int32(item->Focus.Type);
-	if (id == "focuslevel")
-		stat = int32(item->Focus.Level);
-	if (id == "focuslevel2")
-		stat = int32(item->Focus.Level2);
-	if (id == "scrolleffect")
-		stat = int32(item->Scroll.Effect);
-	if (id == "scrolltype")
-		stat = int32(item->Scroll.Type);
-	if (id == "scrolllevel")
-		stat = int32(item->Scroll.Level);
-	if (id == "scrolllevel2")
-		stat = int32(item->Scroll.Level2);
-
-	safe_delete(inst);
-	return stat;
+	return EQ::InventoryProfile::GetItemStatValue(itemid, identifier);
 }
 
 std::string Mob::GetGlobal(const char *varname) {
@@ -4718,6 +4417,7 @@ void Mob::DoKnockback(Mob *caster, uint32 pushback, uint32 pushup)
 {
 	if(IsClient())
 	{
+		CastToClient()->cheat_manager.SetExemptStatus(KnockBack, true);
 		auto outapp_push = new EQApplicationPacket(OP_ClientUpdate, sizeof(PlayerPositionUpdateServer_Struct));
 		PlayerPositionUpdateServer_Struct* spu = (PlayerPositionUpdateServer_Struct*)outapp_push->pBuffer;
 
@@ -4905,6 +4605,10 @@ int16 Mob::GetMeleeDamageMod_SE(uint16 skill)
 	dmg_mod += itembonuses.DamageModifier3[EQ::skills::HIGHEST_SKILL + 1] + spellbonuses.DamageModifier3[EQ::skills::HIGHEST_SKILL + 1] + aabonuses.DamageModifier3[EQ::skills::HIGHEST_SKILL + 1] +
 		itembonuses.DamageModifier3[skill] + spellbonuses.DamageModifier3[skill] + aabonuses.DamageModifier3[skill];
 
+	if (GetUseDoubleMeleeRoundDmgBonus()) {
+		dmg_mod += itembonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_DMG_BONUS] + spellbonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_DMG_BONUS] + aabonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_DMG_BONUS];
+	}
+
 	if(dmg_mod < -100)
 		dmg_mod = -100;
 
@@ -4946,8 +4650,8 @@ int16 Mob::GetMeleeDmgPositionMod(Mob* defender)
 	int back_arc = 0;
 	int total_mod = 0;
 
-	back_arc += itembonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD] + aabonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD] + spellbonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_DAMAGE_MOD];
-	front_arc += itembonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_LOCATION] + aabonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_LOCATION] + spellbonuses.Melee_Damage_Position_Mod[SBIndex::POSITIONAL_LOCATION];
+	back_arc += itembonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_BACK] + aabonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_BACK] + spellbonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_BACK];
+	front_arc += itembonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_FRONT] + aabonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_FRONT] + spellbonuses.Melee_Damage_Position_Mod[SBIndex::POSITION_FRONT];
 
 	if (back_arc || front_arc) { //Do they have this bonus?
 		if (BehindMob(defender, GetX(), GetY()))//Check if attacker is striking from behind
@@ -4986,6 +4690,30 @@ int16 Mob::GetSkillDmgAmt(uint16 skill)
 	return skill_dmg;
 }
 
+int16 Mob::GetPositionalDmgAmt(Mob* defender)
+{
+	if (!defender)
+		return 0;
+
+	//SPA 504
+	int front_arc_dmg_amt = 0;
+	int back_arc_dmg_amt = 0;
+
+	int total_amt = 0;
+
+	back_arc_dmg_amt += itembonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_BACK] + aabonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_BACK] + spellbonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_BACK];
+	front_arc_dmg_amt += itembonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_FRONT] + aabonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_FRONT] + spellbonuses.Melee_Damage_Position_Amt[SBIndex::POSITION_FRONT];
+
+	if (back_arc_dmg_amt || front_arc_dmg_amt) {
+		if (BehindMob(defender, GetX(), GetY()))
+			total_amt = back_arc_dmg_amt;
+		else
+			total_amt = front_arc_dmg_amt;
+	}
+
+	return total_amt;
+}
+
 void Mob::MeleeLifeTap(int32 damage) {
 
 	int32 lifetap_amt = 0;
@@ -5002,6 +4730,20 @@ void Mob::MeleeLifeTap(int32 damage) {
 		else
 			Damage(this, -lifetap_amt, 0, EQ::skills::SkillEvocation, false); //Dmg self for modified damage amount.
 	}
+}
+
+bool Mob::TryDoubleMeleeRoundEffect() {
+
+	auto chance = aabonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_CHANCE] + itembonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_CHANCE] +
+							spellbonuses.DoubleMeleeRound[SBIndex::DOUBLE_MELEE_ROUND_CHANCE];
+
+	if (chance && zone->random.Roll(chance)) {
+		SetUseDoubleMeleeRoundDmgBonus(true);
+		return true;
+	}
+
+	SetUseDoubleMeleeRoundDmgBonus(false);
+	return false;
 }
 
 bool Mob::TryReflectSpell(uint32 spell_id)
@@ -5823,118 +5565,7 @@ bool Mob::GetSeeInvisible(uint8 see_invis)
 
 int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 {
-	if (!IsValidSpell(spell_id))
-		return 0;
-
-	if (!identifier)
-		return 0;
-
-	int32 stat = 0;
-
-	if (slot > 0)
-		slot = slot - 1;
-
-	std::string id = identifier;
-	for(uint32 i = 0; i < id.length(); ++i)
-	{
-		id[i] = tolower(id[i]);
-	}
-
-	if (slot < 16){
-		if (id == "classes") {return spells[spell_id].classes[slot]; }
-		else if (id == "deities") {return spells[spell_id].deities[slot];}
-	}
-
-	if (slot < 12){
-		if (id == "base") {return spells[spell_id].base[slot];}
-		else if (id == "base2") {return spells[spell_id].base2[slot];}
-		else if (id == "max") {return spells[spell_id].max[slot];}
-		else if (id == "formula") {return spells[spell_id].formula[slot];}
-		else if (id == "effectid") {return spells[spell_id].effectid[slot];}
-	}
-
-	if (slot < 4){
-		if (id == "components") { return spells[spell_id].components[slot];}
-		else if (id == "component_counts") { return spells[spell_id].component_counts[slot];}
-		else if (id == "NoexpendReagent") {return spells[spell_id].NoexpendReagent[slot];}
-	}
-
-	if (id == "range") {return static_cast<int32>(spells[spell_id].range); }
-	else if (id == "aoerange") {return static_cast<int32>(spells[spell_id].aoerange);}
-	else if (id == "pushback") {return static_cast<int32>(spells[spell_id].pushback);}
-	else if (id == "pushup") {return static_cast<int32>(spells[spell_id].pushup);}
-	else if (id == "cast_time") {return spells[spell_id].cast_time;}
-	else if (id == "recovery_time") {return spells[spell_id].recovery_time;}
-	else if (id == "recast_time") {return spells[spell_id].recast_time;}
-	else if (id == "buffdurationformula") {return spells[spell_id].buffdurationformula;}
-	else if (id == "buffduration") {return spells[spell_id].buffduration;}
-	else if (id == "AEDuration") {return spells[spell_id].AEDuration;}
-	else if (id == "mana") {return spells[spell_id].mana;}
-	//else if (id == "LightType") {stat = spells[spell_id].LightType;} - Not implemented
-	else if (id == "goodEffect") {return spells[spell_id].goodEffect;}
-	else if (id == "Activated") {return spells[spell_id].Activated;}
-	else if (id == "resisttype") {return spells[spell_id].resisttype;}
-	else if (id == "targettype") {return spells[spell_id].targettype;}
-	else if (id == "basediff") {return spells[spell_id].basediff;}
-	else if (id == "skill") {return spells[spell_id].skill;}
-	else if (id == "zonetype") {return spells[spell_id].zonetype;}
-	else if (id == "EnvironmentType") {return spells[spell_id].EnvironmentType;}
-	else if (id == "TimeOfDay") {return spells[spell_id].TimeOfDay;}
-	else if (id == "CastingAnim") {return spells[spell_id].CastingAnim;}
-	else if (id == "SpellAffectIndex") {return spells[spell_id].SpellAffectIndex; }
-	else if (id == "disallow_sit") {return spells[spell_id].disallow_sit; }
-	//else if (id == "spellanim") {stat = spells[spell_id].spellanim; } - Not implemented
-	else if (id == "uninterruptable") {return spells[spell_id].uninterruptable; }
-	else if (id == "ResistDiff") {return spells[spell_id].ResistDiff; }
-	else if (id == "dot_stacking_exempt") {return spells[spell_id].dot_stacking_exempt; }
-	else if (id == "RecourseLink") {return spells[spell_id].RecourseLink; }
-	else if (id == "no_partial_resist") {return spells[spell_id].no_partial_resist; }
-	else if (id == "short_buff_box") {return spells[spell_id].short_buff_box; }
-	else if (id == "descnum") {return spells[spell_id].descnum; }
-	else if (id == "effectdescnum") {return spells[spell_id].effectdescnum; }
-	else if (id == "npc_no_los") {return spells[spell_id].npc_no_los; }
-	else if (id == "reflectable") {return spells[spell_id].reflectable; }
-	else if (id == "bonushate") {return spells[spell_id].bonushate; }
-	else if (id == "EndurCost") {return spells[spell_id].EndurCost; }
-	else if (id == "EndurTimerIndex") {return spells[spell_id].EndurTimerIndex; }
-	else if (id == "IsDisciplineBuff") {return spells[spell_id].IsDisciplineBuff; }
-	else if (id == "HateAdded") {return spells[spell_id].HateAdded; }
-	else if (id == "EndurUpkeep") {return spells[spell_id].EndurUpkeep; }
-	else if (id == "numhitstype") {return spells[spell_id].numhitstype; }
-	else if (id == "numhits") {return spells[spell_id].numhits; }
-	else if (id == "pvpresistbase") {return spells[spell_id].pvpresistbase; }
-	else if (id == "pvpresistcalc") {return spells[spell_id].pvpresistcalc; }
-	else if (id == "pvpresistcap") {return spells[spell_id].pvpresistcap; }
-	else if (id == "spell_category") {return spells[spell_id].spell_category; }
-	else if (id == "can_mgb") {return spells[spell_id].can_mgb; }
-	else if (id == "dispel_flag") {return spells[spell_id].dispel_flag; }
-	else if (id == "MinResist") {return spells[spell_id].MinResist; }
-	else if (id == "MaxResist") {return spells[spell_id].MaxResist; }
-	else if (id == "viral_targets") {return spells[spell_id].viral_targets; }
-	else if (id == "viral_timer") {return spells[spell_id].viral_timer; }
-	else if (id == "NimbusEffect") {return spells[spell_id].NimbusEffect; }
-	else if (id == "directional_start") {return static_cast<int32>(spells[spell_id].directional_start); }
-	else if (id == "directional_end") {return static_cast<int32>(spells[spell_id].directional_end); }
-	else if (id == "not_focusable") {return spells[spell_id].not_focusable; }
-	else if (id == "suspendable") {return spells[spell_id].suspendable; }
-	else if (id == "viral_range") {return spells[spell_id].viral_range; }
-	else if (id == "spellgroup") {return spells[spell_id].spellgroup; }
-	else if (id == "rank") {return spells[spell_id].rank; }
-	else if (id == "no_resist") {return spells[spell_id].no_resist; }
-	else if (id == "CastRestriction") {return spells[spell_id].CastRestriction; }
-	else if (id == "AllowRest") {return spells[spell_id].AllowRest; }
-	else if (id == "InCombat") {return spells[spell_id].InCombat; }
-	else if (id == "OutofCombat") {return spells[spell_id].OutofCombat; }
-	else if (id == "aemaxtargets") {return spells[spell_id].aemaxtargets; }
-	else if (id == "no_heal_damage_item_mod") {return spells[spell_id].no_heal_damage_item_mod; }
-	else if (id == "persistdeath") {return spells[spell_id].persistdeath; }
-	else if (id == "min_dist") {return static_cast<int32>(spells[spell_id].min_dist); }
-	else if (id == "min_dist_mod") {return static_cast<int32>(spells[spell_id].min_dist_mod); }
-	else if (id == "max_dist") {return static_cast<int32>(spells[spell_id].max_dist); }
-	else if (id == "min_range") {return static_cast<int32>(spells[spell_id].min_range); }
-	else if (id == "DamageShieldType") {return spells[spell_id].DamageShieldType; }
-
-	return stat;
+	return GetSpellStatValue(spell_id, identifier, slot);
 }
 
 bool Mob::CanClassEquipItem(uint32 item_id)
@@ -6214,6 +5845,122 @@ void Mob::CommonBreakInvisible()
 
 float Mob::GetDefaultRaceSize() const {
 	return GetRaceGenderDefaultHeight(race, gender);
+}
+
+bool Mob::ShieldAbility(uint32 target_id, int shielder_max_distance, int shield_duration, int shield_target_mitigation, int shielder_mitigation, bool use_aa, bool can_shield_npc)
+{
+	Mob* shield_target = entity_list.GetMob(target_id);
+	if (!shield_target) {
+		return false;
+	}
+
+	if (!can_shield_npc && shield_target->IsNPC()) {
+		if (IsClient()) {
+			MessageString(Chat::White, SHIELD_TARGET_NPC);
+		}
+		return false;
+	}
+
+	if (shield_target->GetID() == GetID()) { //Client will give message "You can not shield yourself"
+		return false;
+	}
+
+	//Edge case situations. If 'Shield Target' still has Shielder set but Shielder is not in zone. Catch and fix here.
+	if (shield_target->GetShielderID() && !entity_list.GetMob(shield_target->GetShielderID())) {
+		shield_target->SetShielderID(0);
+	}
+
+	if (GetShielderID() && !entity_list.GetMob(GetShielderID())) {
+		SetShielderID(0);
+	}
+
+	//You have a shielder, or your 'Shield Target' already has a 'Shielder'
+	if (GetShielderID() || shield_target->GetShielderID()) {
+		if (IsClient()) {
+			MessageString(Chat::White, ALREADY_SHIELDED);
+		}
+		return false;
+	}
+
+	//You are being shielded or already have a 'Shield Target'
+	if (GetShieldTargetID() || shield_target->GetShieldTargetID()) {
+		if (IsClient()) {
+			MessageString(Chat::White, ALREADY_SHIELDING);
+		}
+		return false;
+	}
+
+	//AA to increase SPA 230 extended shielding (default live is 15 distance units)
+	if (use_aa) {
+		shielder_max_distance += aabonuses.ExtendedShielding + itembonuses.ExtendedShielding + spellbonuses.ExtendedShielding;
+		shielder_max_distance = std::max(shielder_max_distance, 0);
+	}
+
+	if (shield_target->CalculateDistance(GetX(), GetY(), GetZ()) > static_cast<float>(shielder_max_distance)) {
+		return false; //Live does not give a message when out of range.
+	}
+
+	entity_list.MessageCloseString(this, false, 100, 0, START_SHIELDING, GetCleanName(), shield_target->GetCleanName());
+
+	SetShieldTargetID(shield_target->GetID());
+	SetShielderMitigation(shield_target_mitigation);
+	SetShielderMaxDistance(shielder_max_distance);
+
+	shield_target->SetShielderID(GetID());
+	shield_target->SetShieldTargetMitigation(shield_target_mitigation);
+
+	//Calculate AA for adding time SPA 255 extend shield duration (Baseline ability is 12 seconds)
+	if (use_aa) {
+		shield_duration += (aabonuses.ShieldDuration + itembonuses.ShieldDuration + spellbonuses.ShieldDuration) * 1000;
+		shield_duration = std::max(shield_duration, 1); //Incase of negative modifiers lets just make min duration 1 ms.
+	}
+
+	shield_timer.Start(static_cast<uint32>(shield_duration));
+	return true;
+}
+
+void Mob::ShieldAbilityFinish()
+{
+	Mob* shield_target = entity_list.GetMob(GetShieldTargetID());
+
+	if (shield_target) {
+		entity_list.MessageCloseString(this, false, 100, 0, END_SHIELDING, GetCleanName(), shield_target->GetCleanName());
+		shield_target->SetShielderID(0);
+		shield_target->SetShieldTargetMitigation(0);
+	}
+	SetShieldTargetID(0);
+	SetShielderMitigation(0);
+	SetShielderMaxDistance(0);
+	shield_timer.Disable();
+}
+
+void Mob::ShieldAbilityClearVariables()
+{
+	//If 'shield target' dies
+	if (GetShielderID()){
+		Mob* shielder = entity_list.GetMob(GetShielderID());
+		if (shielder) {
+			shielder->SetShieldTargetID(0);
+			shielder->SetShielderMitigation(0);
+			shielder->SetShielderMaxDistance(0);
+			shielder->shield_timer.Disable();
+		}
+		SetShielderID(0);
+		SetShieldTargetMitigation(0);
+	}
+
+	//If 'shielder' dies
+	if (GetShieldTargetID()) {
+		Mob* shield_target = entity_list.GetMob(GetShieldTargetID());
+		if (shield_target) {
+			shield_target->SetShielderID(0);
+			shield_target->SetShieldTargetMitigation(0);
+		}
+		SetShieldTargetID(0);
+		SetShielderMitigation(0);
+		SetShielderMaxDistance(0);
+		shield_timer.Disable();
+	}
 }
 
 #ifdef BOTS

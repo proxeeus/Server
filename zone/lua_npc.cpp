@@ -588,6 +588,30 @@ void Lua_NPC::ClearLastName()
 	self->ClearLastName();
 }
 
+bool Lua_NPC::HasItem(uint32 item_id)
+{
+	Lua_Safe_Call_Bool();
+	return self->HasItem(item_id);
+}
+
+uint16 Lua_NPC::CountItem(uint32 item_id)
+{
+	Lua_Safe_Call_Int();
+	return self->CountItem(item_id);
+}
+
+uint32 Lua_NPC::GetItemIDBySlot(uint16 loot_slot)
+{
+	Lua_Safe_Call_Int();
+	return self->GetItemIDBySlot(loot_slot);
+}
+
+uint16 Lua_NPC::GetFirstSlotByItemID(uint32 item_id)
+{
+	Lua_Safe_Call_Int();
+	return self->GetFirstSlotByItemID(item_id);
+}
+
 luabind::scope lua_register_npc() {
 	return luabind::class_<Lua_NPC, Lua_Mob>("NPC")
 		.def(luabind::constructor<>())
@@ -705,7 +729,10 @@ luabind::scope lua_register_npc() {
 		.def("RecalculateSkills", (void(Lua_NPC::*)(void))&Lua_NPC::RecalculateSkills)
 		.def("ChangeLastName", (void(Lua_NPC::*)(const char*))&Lua_NPC::ChangeLastName)
 		.def("ClearLastName", (void(Lua_NPC::*)(void))&Lua_NPC::ClearLastName)
-		.def("HasRoamBox", (bool(Lua_NPC::*)(void))& Lua_NPC::HasRoamBox);
-}
+		.def("HasItem", (bool(Lua_NPC::*)(uint32))&Lua_NPC::HasItem)
+		.def("CountItem", (uint16(Lua_NPC::*)(uint32))&Lua_NPC::CountItem)
+		.def("GetItemIDBySlot", (uint32(Lua_NPC::*)(uint16))&Lua_NPC::GetItemIDBySlot)
+		.def("GetFirstSlotByItemID", (uint16(Lua_NPC::*)(uint32))&Lua_NPC::GetFirstSlotByItemID)
+		.def("HasRoamBox", (bool(Lua_NPC::*)(void))& Lua_NPC::HasRoamBox);}
 
 #endif

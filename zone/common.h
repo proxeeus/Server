@@ -22,8 +22,6 @@
 #define SEE_POSITION 0.5f	//ratio of GetSize() where NPCs try to see for LOS
 #define CHECK_LOS_STEP 1.0f
 
-#define MAX_SHIELDERS 2		//I dont know if this is based on a client limit
-
 #define ARCHETYPE_HYBRID	1
 #define ARCHETYPE_CASTER	2
 #define ARCHETYPE_MELEE		3
@@ -106,6 +104,10 @@
 #define PET_BUTTON_SPELLHOLD	9
 
 #define AURA_HARDCAP		2
+#define WEAPON_STANCE_TYPE_MAX 2
+
+
+#define SHIELD_ABILITY_RECAST_TIME 180
 
 typedef enum {	//focus types
 	focusSpellHaste = 1,				//@Fc, SPA: 127, SE_IncreaseSpellHaste,				On Caster, cast time mod pct, base: pct
@@ -141,7 +143,8 @@ typedef enum {	//focus types
 	focusIncreaseNumHits,				//@Fc, SPA: 421, SE_FcIncreaseNumHits,				On Caster, numhits mod flat amt, base: amt
 	focusFcLimitUse,					//@Fc, SPA: 420, SE_FcLimitUse,						On Caster, numhits mod pct, base: pct
 	focusFcMute,						//@Fc, SPA: 357, SE_FcMute,							On Caster, prevents spell casting, base: chance pct
-	focusFcTimerRefresh,				//@Fc, SPA: 389, SE_FcTimerRefresh,					On Caster, reset all recast timers, base: 1
+	focusFcTimerRefresh,				//@Fc, SPA: 389, SE_FcTimerRefresh,					On Caster, reset spell recast timer, base: 1
+	focusFcTimerLockout,				//@Fc, SPA: 390, SE_FcTimerLockout,					On Caster, set a spell to be on recast timer, base: recast duration milliseconds
 	focusFcStunTimeMod,					//@Fc, SPA: 133, SE_FcStunTimeMod,					On Caster, stun time mod pct, base: chance pct
 	focusFcResistIncoming,				//@Fc, SPA: 510, SE_Fc_Resist_Incoming,				On Target, resist modifier, base: amt
 	focusFcAmplifyMod,					//@Fc, SPA: 507, SE_Fc_Amplify_Mod,					On Caster, damage-heal-dot mod pct, base: pct
@@ -325,7 +328,7 @@ struct Buffs_Struct {
 	int32	ExtraDIChance;
 	int16	RootBreakChance; //Not saved to dbase
 	uint32	instrument_mod;
-	int16   focusproclimit_time;	//timer to limit number of procs from focus effects
+	int16   focusproclimit_time;	//timer to limit number of procs from focus effects 
 	int16   focusproclimit_procamt; //amount of procs that can be cast before timer limiter is set
 	bool	persistant_buff;
 	bool	client; //True if the caster is a client
@@ -452,6 +455,7 @@ struct StatBonuses {
 	int32	ExtraAttackChance[2];				// base chance(w/ 2H weapon)=0, amt of extra attacks=1
 	int32	ExtraAttackChancePrimary[2];		// base chance=0, , amt of extra attacks=1
 	int32	ExtraAttackChanceSecondary[2];		// base chance=0, , amt of extra attacks=1
+	int32	DoubleMeleeRound[2];				// base chance=0, damage mod=1
 	int32	DoTShielding;
 	int32	DivineSaveChance[2];				// Second Chance (base1 = chance, base2 = spell on trigger)
 	uint32	DeathSave[4];						// Death Pact [0](value = 1 partial 2 = full) [1]=slot [2]=LvLimit [3]=HealAmt
@@ -540,15 +544,22 @@ struct StatBonuses {
 	int32   AC_Avoidance_Max_Percent;			// Increase AC avoidance by percent
 	int32   Damage_Taken_Position_Mod[2];		// base = percent melee damage reduction base2 0=back 1=front. [0]Back[1]Front
 	int32   Melee_Damage_Position_Mod[2];		// base = percent melee damage increase base2 0=back 1=front. [0]Back[1]Front
+	int32   Damage_Taken_Position_Amt[2];		// base = flat amt melee damage reduction base2 0=back 1=front. [0]Back[1]Front
+	int32   Melee_Damage_Position_Amt[2];		// base = flat amt melee damage increase base2 0=back 1=front. [0]Back[1]Front
 	int32   Double_Backstab_Front;				// base = percent chance to double back stab front
 	int32   DS_Mitigation_Amount;				// base = flat amt DS mitigation. Negative value to reduce
 	int32	DS_Mitigation_Percentage;			// base = percent amt of DS mitigation. Negative value to reduce
 	int32   Pet_Crit_Melee_Damage_Pct_Owner;	// base = percent mod for pet critcal damage from owner
 	int32	Pet_Add_Atk;						// base = Pet ATK bonus from owner
-
+	int32	ItemEnduranceRegenCap;				// modify endurance regen cap
+	int32   WeaponStance[WEAPON_STANCE_TYPE_MAX +1];// base = trigger spell id, base2 = 0 is 2h, 1 is shield, 2 is dual wield, [0]spid 2h, [1]spid shield, [2]spid DW
+	bool	ZoneSuspendMinion;					// base 1 allows suspended minions to zone
 
 	// AAs
-	int8	Packrat;							//weight reduction for items, 1 point = 10%
+	uint16  SecondaryForte;						// allow a second skill to be specialized with a cap of this value.
+	int32	ShieldDuration;						// extends duration of /shield ability
+	int32	ExtendedShielding;					// extends range of /shield ability
+	int8	Packrat;							// weight reduction for items, 1 point = 10%
 	uint8	BuffSlotIncrease;					// Increases number of available buff slots
 	uint32	DelayDeath;							// how far below 0 hp you can go
 	int8	BaseMovementSpeed;					// Adjust base run speed, does not stack with other movement bonuses.
@@ -650,8 +661,8 @@ namespace SBIndex {
 	constexpr uint16 ROOT_BUFFSLOT                          = 1; // SPA 99
 	constexpr uint16 RUNE_AMOUNT                            = 0; // SPA 55
 	constexpr uint16 RUNE_BUFFSLOT                          = 1; // SPA 78
-	constexpr uint16 POSITIONAL_DAMAGE_MOD                  = 0; // SPA 503-506
-	constexpr uint16 POSITIONAL_LOCATION                    = 1; // SPA 503-506
+	constexpr uint16 POSITION_BACK							= 0; // SPA 503-506
+	constexpr uint16 POSITION_FRONT							= 1; // SPA 503-506
 	constexpr uint16 PET_RAMPAGE_CHANCE                     = 0; // SPA 464,465
 	constexpr uint16 PET_RAMPAGE_DMG_MOD                    = 1; // SPA 465,465
 	constexpr uint16 SKILLPROC_CHANCE                       = 0; // SPA 427
@@ -666,6 +677,8 @@ namespace SBIndex {
 	constexpr uint16 FINISHING_EFFECT_DMG                   = 1; // SPA 278, 439, 217
 	constexpr uint16 FINISHING_EFFECT_LEVEL_MAX             = 0; // SPA 440, 345, 346
 	constexpr uint16 FINISHING_EFFECT_LEVEL_CHANCE_BONUS    = 1; // SPA 440, 345, 346
+	constexpr uint16 DOUBLE_MELEE_ROUND_CHANCE              = 0; // SPA 471
+	constexpr uint16 DOUBLE_MELEE_ROUND_DMG_BONUS			= 1; // SPA 471
 };
 
 
@@ -677,10 +690,20 @@ typedef struct
 	int level_override;
 } tProc;
 
-struct Shielders_Struct {
-	uint32 shielder_id;
-	uint16 shielder_bonus;
+
+struct WeaponStance_Struct {
+	bool enabled;
+	bool spellbonus_enabled;
+	bool itembonus_enabled;
+	bool aabonus_enabled;
+	int spellbonus_buff_spell_id;
+	int itembonus_buff_spell_id;
+	int aabonus_buff_spell_id;
 };
+
+constexpr uint16 WEAPON_STANCE_TYPE_2H = 0;
+constexpr uint16 WEAPON_STANCE_TYPE_SHIELD = 1;
+constexpr uint16 WEAPON_STANCE_TYPE_DUAL_WIELD = 2;
 
 typedef struct
 {

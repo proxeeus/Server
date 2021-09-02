@@ -1537,8 +1537,13 @@ bool Mob::DetermineSpellTargets(uint16 spell_id, Mob *&spell_target, Mob *&ae_ce
 	if (isproc && IsNPC() && CastToNPC()->GetInnateProcSpellID() == spell_id)
 		targetType = ST_Target;
 
-	if (spell_target && !spell_target->PassCastRestriction(true, spells[spell_id].CastRestriction)){
-		MessageString(Chat::Red,SPELL_NEED_TAR);
+	if (spell_target && spells[spell_id].CastRestriction && !spell_target->PassCastRestriction(spells[spell_id].CastRestriction)){
+		Message(Chat::Red, "Your target does not meet the spell requirements."); //Current live also adds description after this from dbstr_us type 39
+		return false;
+	}
+
+	if (spells[spell_id].caster_requirement_id && !PassCastRestriction(spells[spell_id].caster_requirement_id)) {
+		MessageString(Chat::Red, SPELL_WOULDNT_HOLD);
 		return false;
 	}
 
@@ -2739,6 +2744,22 @@ void Mob::BardPulse(uint16 spell_id, Mob *caster) {
 			entity_list.QueueCloseClients(this, packet, false, RuleI(Range, SongMessages), 0, true, IsClient() ? FilterPCSpells : FilterNPCSpells);
 
 			action->effect_flag = 4;
+
+			if (spells[spell_id].pushback != 0.0f || spells[spell_id].pushup != 0.0f)
+			{
+				if (IsClient())
+				{
+					if (!IsBuffSpell(spell_id))
+					{
+						CastToClient()->cheat_manager.SetExemptStatus(KnockBack, true);
+					}
+				}
+			}
+
+			if (IsClient() && IsEffectInSpell(spell_id, SE_ShadowStep))
+			{
+				CastToClient()->cheat_manager.SetExemptStatus(ShadowStep, true);
+			}
 
 			if(!IsEffectInSpell(spell_id, SE_BindAffinity))
 			{
@@ -4025,12 +4046,24 @@ bool Mob::SpellOnTarget(uint16 spell_id, Mob *spelltar, bool reflect, bool use_r
 
 	if(spells[spell_id].pushback != 0.0f || spells[spell_id].pushup != 0.0f)
 	{
-		if (RuleB(Spells, NPCSpellPush) && !spelltar->IsRooted() && spelltar->ForcedMovement == 0) {
+		if (spelltar->IsClient())
+		{
+			if (!IsBuffSpell(spell_id))
+			{
+				spelltar->CastToClient()->cheat_manager.SetExemptStatus(KnockBack, true);
+			}
+		}
+		else if (RuleB(Spells, NPCSpellPush) && !spelltar->IsRooted() && spelltar->ForcedMovement == 0) {
 			spelltar->m_Delta.x += action->force * g_Math.FastSin(action->hit_heading);
 			spelltar->m_Delta.y += action->force * g_Math.FastCos(action->hit_heading);
 			spelltar->m_Delta.z += action->hit_pitch;
 			spelltar->ForcedMovement = 6;
 		}
+	}
+
+	if (spelltar->IsClient() && IsEffectInSpell(spell_id, SE_ShadowStep))
+	{
+		spelltar->CastToClient()->cheat_manager.SetExemptStatus(ShadowStep, true);
 	}
 
 	if(!IsEffectInSpell(spell_id, SE_BindAffinity))
@@ -4146,6 +4179,16 @@ uint32 Mob::BuffCount() {
 			active_buff_count++;
 
 	return active_buff_count;
+}
+
+bool Mob::HasBuffWithSpellGroup(int spellgroup)
+{
+	for (int i = 0; i < GetMaxTotalSlots(); i++) {
+		if (IsValidSpell(buffs[i].spellid) && spells[buffs[i].spellid].spellgroup == spellgroup) {
+			return true;
+		}
+	}
+	return false;
 }
 
 // removes all buffs

@@ -203,6 +203,8 @@ bool Client::Process() {
 		if (IsStunned() && stunned_timer.Check())
 			Mob::UnStun();
 
+		cheat_manager.ClientProcess();
+
 		if (bardsong_timer.Check() && bardsong != 0) {
 			//NOTE: this is kinda a heavy-handed check to make sure the mob still exists before
 			//doing the next pulse on them...
@@ -394,6 +396,11 @@ bool Client::Process() {
 				TriggerDefensiveProcs(auto_attack_target, EQ::invslot::slotPrimary, false);
 
 				DoAttackRounds(auto_attack_target, EQ::invslot::slotPrimary);
+
+				if (TryDoubleMeleeRoundEffect()) {
+					DoAttackRounds(auto_attack_target, EQ::invslot::slotPrimary);
+				}
+
 				if (CheckAATimer(aaTimerRampage)) {
 					entity_list.AEAttack(this, 30);
 				}
@@ -459,33 +466,9 @@ bool Client::Process() {
 			if (gravity_timer.Check())
 				DoGravityEffect();
 		}
-
-		if (shield_timer.Check())
-		{
-			if (shield_target)
-			{
-				if (!CombatRange(shield_target))
-				{
-					entity_list.MessageCloseString(
-						this, false, 100, 0,
-						END_SHIELDING, GetCleanName(), shield_target->GetCleanName());
-					for (int y = 0; y < 2; y++)
-					{
-						if (shield_target->shielder[y].shielder_id == GetID())
-						{
-							shield_target->shielder[y].shielder_id = 0;
-							shield_target->shielder[y].shielder_bonus = 0;
-						}
-					}
-					shield_target = 0;
-					shield_timer.Disable();
-				}
-			}
-			else
-			{
-				shield_target = 0;
-				shield_timer.Disable();
-			}
+		
+		if (shield_timer.Check()) {
+			ShieldAbilityFinish();
 		}
 
 		SpellProcess();
