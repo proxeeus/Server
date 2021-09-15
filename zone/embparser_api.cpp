@@ -1606,7 +1606,7 @@ XS(XS__addldonpoints) {
 	dXSARGS;
 	if (items != 2)
 		Perl_croak(aTHX_ "Usage: quest::addldonpoints(uint32 theme_id, int points)");
-	
+
 	uint32 theme_id = (uint32) SvUV(ST(0));
 	int points = (int) SvIV(ST(1));
 	quest_manager.addldonpoints(theme_id, points);
@@ -6496,7 +6496,7 @@ XS(XS__gethexcolorcode) {
 	sv_setpv(TARG, hex_color_code.c_str());
 	XSprePUSH;
 	PUSHTARG;
-	XSRETURN(1);	
+	XSRETURN(1);
 }
 
 XS(XS__getaaexpmodifierbycharid);
@@ -6504,7 +6504,7 @@ XS(XS__getaaexpmodifierbycharid) {
 	dXSARGS;
 	if (items != 2)
 		Perl_croak(aTHX_ "Usage: quest::getaaexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
-		
+
 	dXSTARG;
 	double aa_modifier;
 	uint32 character_id = (uint32) SvUV(ST(0));
@@ -6520,7 +6520,7 @@ XS(XS__getexpmodifierbycharid) {
 	dXSARGS;
 	if (items != 2)
 		Perl_croak(aTHX_ "Usage: quest::getexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
-		
+
 	dXSTARG;
 	double exp_modifier;
 	uint32 character_id = (uint32) SvUV(ST(0));
@@ -6883,7 +6883,7 @@ XS(XS__getspellstat) {
 	uint8 slot = 0;
 	if (items == 3)
 		slot = (uint8) SvUV(ST(2));
-		
+
 	stat_value = quest_manager.getspellstat(spell_id, stat_identifier, slot);
 
 	XSprePUSH;

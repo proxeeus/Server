@@ -23,6 +23,7 @@ SET(zone_sources
 	corpse.cpp
 	data_bucket.cpp
 	doors.cpp
+	dialogue_window.cpp
 	dynamic_zone.cpp
 	effects.cpp
 	embparser.cpp
@@ -79,6 +80,7 @@ SET(zone_sources
 	fearpath.cpp
 	forage.cpp
 	global_loot_manager.cpp
+	gm_commands/door_manipulation.cpp
 	groups.cpp
 	guild.cpp
 	guild_mgr.cpp
@@ -129,6 +131,7 @@ SET(zone_sources
 	quest_parser_collection.cpp
 	raids.cpp
 	raycast_mesh.cpp
+	shared_task_zone_messaging.cpp
 	spawn2.cpp
 	spawn2.h
 	spawngroup.cpp
@@ -181,6 +184,7 @@ SET(zone_headers
 	corpse.h
 	data_bucket.h
 	doors.h
+	dialogue_window.h
 	dynamic_zone.h
 	embparser.h
 	embperl.h
@@ -195,6 +199,7 @@ SET(zone_headers
 	fastmath.h
 	forage.h
 	global_loot_manager.h
+	gm_commands/door_manipulation.h
 	groups.h
 	guild_mgr.h
 	hate_list.h
@@ -255,6 +260,7 @@ SET(zone_headers
 	raids.h
 	raycast_mesh.h
 	skills.h
+	shared_task_zone_messaging.h
 	spawn2.cpp
 	spawn2.h
 	spawngroup.h

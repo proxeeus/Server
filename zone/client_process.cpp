@@ -119,8 +119,9 @@ bool Client::Process() {
 
 		// SendHPUpdate calls hpupdate_timer.Start so it can delay this timer, so lets not reset with the check
 		// since the function will anyways
-		if (hpupdate_timer.Check(false))
+		if (hpupdate_timer.Check(false)) {
 			SendHPUpdate();
+		}
 
 		/* I haven't naturally updated my position in 10 seconds, updating manually */
 		if (!is_client_moving && position_update_timer.Check()) {
@@ -180,11 +181,7 @@ bool Client::Process() {
 				myraid->MemberZoned(this);
 			}
 
-			Expedition* expedition = GetExpedition();
-			if (expedition)
-			{
-				expedition->SetMemberStatus(this, DynamicZoneMemberStatus::Offline);
-			}
+			SetDynamicZoneMemberStatus(DynamicZoneMemberStatus::Offline);
 
 			return false; //delete client
 		}
@@ -466,7 +463,7 @@ bool Client::Process() {
 			if (gravity_timer.Check())
 				DoGravityEffect();
 		}
-		
+
 		if (shield_timer.Check()) {
 			ShieldAbilityFinish();
 		}
@@ -561,11 +558,7 @@ bool Client::Process() {
 			AI_Start(CLIENT_LD_TIMEOUT);
 			SendAppearancePacket(AT_Linkdead, 1);
 
-			Expedition* expedition = GetExpedition();
-			if (expedition)
-			{
-				expedition->SetMemberStatus(this, DynamicZoneMemberStatus::LinkDead);
-			}
+			SetDynamicZoneMemberStatus(DynamicZoneMemberStatus::LinkDead);
 		}
 	}
 
@@ -697,10 +690,9 @@ void Client::OnDisconnect(bool hard_disconnect) {
 		}
 	}
 
-	Expedition* expedition = GetExpedition();
-	if (expedition && !bZoning)
+	if (!bZoning)
 	{
-		expedition->SetMemberStatus(this, DynamicZoneMemberStatus::Offline);
+		SetDynamicZoneMemberStatus(DynamicZoneMemberStatus::Offline);
 	}
 
 	RemoveAllAuras();

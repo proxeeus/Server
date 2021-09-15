@@ -91,6 +91,7 @@ RULE_INT(Character, ItemDSMitigationCap, 50, "Limit on damageshield mitigation g
 RULE_INT(Character, ItemEnduranceRegenCap, 15, "Limit on endurance regeneration granted by items")
 RULE_INT(Character, ItemExtraDmgCap, 150, "Cap for bonuses to melee skills like Bash, Frenzy, etc.")
 RULE_INT(Character, HasteCap, 100, "Haste cap for non-v3(over haste) haste")
+RULE_INT(Character, Hastev3Cap, 25, "Haste cap for v3(over haste) haste")
 RULE_INT(Character, SkillUpModifier, 100, "The probability for a skill-up is multiplied by value/100")
 RULE_BOOL(Character, SharedBankPlat, false, "Shared bank platinum. Off by default to prevent duplication")
 RULE_BOOL(Character, BindAnywhere, false, "Allows players to bind their soul anywhere in the world")
@@ -543,6 +544,7 @@ RULE_BOOL(TaskSystem, RecordCompletedTasks, true, "Record completed tasks")
 RULE_BOOL(TaskSystem, RecordCompletedOptionalActivities, false, "Record completed optional activities")
 RULE_BOOL(TaskSystem, KeepOneRecordPerCompletedTask, true, "Keep only one record per completed task")
 RULE_BOOL(TaskSystem, EnableTaskProximity, true, "Enable task proximity system")
+RULE_INT(TaskSystem, RequestCooldownTimerSeconds, 15, "Seconds between allowing characters to request tasks (live-like default: 15 seconds)")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Range)
@@ -615,6 +617,8 @@ RULE_INT(Chat, IntervalDurationMS, 60000, "Interval length in milliseconds")
 RULE_INT(Chat, KarmaUpdateIntervalMS, 1200000, "Karma update interval in milliseconds")
 RULE_INT(Chat, KarmaGlobalChatLimit, 72, "Amount of karma you need to be able to talk in ooc/auction/chat below the level limit")
 RULE_INT(Chat, GlobalChatLevelLimit, 8, "Level limit you need to of reached to talk in ooc/auction/chat if your karma is too low")
+RULE_BOOL(Chat, AutoInjectSaylinksToSay, true, "Automatically injects saylinks into dialogue that has [brackets in them]")
+RULE_BOOL(Chat, AutoInjectSaylinksToClientMessage, true, "Automatically injects saylinks into dialogue that has [brackets in them]")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Merchant)
@@ -794,6 +798,10 @@ RULE_BOOL(Cheat, EnableMQGateDetector, true, "Enable the MQGate Detector. Set to
 RULE_BOOL(Cheat, EnableMQGhostDetector, true, "Enable the MQGhost Detector. Set to False to disable this feature.")
 RULE_BOOL(Cheat, EnableMQFastMemDetector, true, "Enable the MQFastMem Detector. Set to False to disable this feature.")
 RULE_BOOL(Cheat, MarkMQWarpLT, false, "Mark clients makeing smaller warps")
+RULE_CATEGORY_END()
+
+RULE_CATEGORY(Command)
+RULE_BOOL(Command, DyeCommandRequiresDyes, false, "Enable this to require a Prismatic Dye (32557) each time someone uses #dye.")
 RULE_CATEGORY_END()
 
 #undef RULE_CATEGORY

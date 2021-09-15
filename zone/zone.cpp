@@ -361,7 +361,8 @@ void Zone::DumpMerchantList(uint32 npcid) {
 
 int Zone::SaveTempItem(uint32 merchantid, uint32 npcid, uint32 item, int32 charges, bool sold) {
 
-	LogInventory("Transaction of [{}] [{}]", charges, item);
+	LogInventory("[{}] [{}] charges of [{}]", ((sold) ? "Sold" : "Bought"),
+		charges, item);
 	//DumpMerchantList(npcid);
 	// Iterate past main items.
 	// If the item being transacted is in this list, return 0;
@@ -419,8 +420,7 @@ int Zone::SaveTempItem(uint32 merchantid, uint32 npcid, uint32 item, int32 charg
 				if (!ml.origslot) {
 					ml.origslot = ml.slot;
 				}
-				bool is_stackable = database.GetItem(item)->Stackable;
-				if ((is_stackable && charges > 0) || (!is_stackable && sold)) {
+				if (ml.charges > 0) {
 					database.SaveMerchantTemp(npcid, ml.origslot, item, ml.charges);
 					tmp_merlist.push_back(ml);
 				} else {
@@ -533,6 +533,10 @@ void Zone::LoadTempMerchantData()
 			GetInstanceVersion()
 		)
 	);
+
+    if (!results.Success() || results.RowCount() == 0) {
+        return;
+	}
 
 	std::vector<std::string> npc_ids;
 	for (auto row = results.begin(); row != results.end(); ++row) {
@@ -1184,6 +1188,9 @@ bool Zone::Init(bool iStaticZone) {
 	petition_list.ClearPetitions();
 	petition_list.ReadDatabase();
 
+	LogInfo("Loading dynamic zones");
+	DynamicZone::CacheAllFromDatabase();
+
 	LogInfo("Loading active Expeditions");
 	Expedition::CacheAllFromDatabase();
 
@@ -1491,16 +1498,14 @@ bool Zone::Process() {
 		{
 			if(Instance_Timer->Check())
 			{
-				// if this is a dynamic zone instance notify system associated with it
-				auto expedition = Expedition::FindCachedExpeditionByZoneInstance(GetZoneID(), GetInstanceID());
-				if (expedition)
+				auto dz = GetDynamicZone();
+				if (dz)
 				{
-					expedition->RemoveAllMembers(false); // entity list will teleport clients out immediately
+					dz->RemoveAllMembers(); // entity list will teleport clients out immediately
 				}
 
 				// instance shutting down, move corpses to graveyard or non-instanced zone at same coords
 				entity_list.MovePlayerCorpsesToGraveyard(true);
-
 				entity_list.GateAllClientsToSafeReturn();
 				database.DeleteInstance(GetInstanceID());
 				Instance_Shutdown_Timer = new Timer(20000); //20 seconds
@@ -2726,13 +2731,14 @@ DynamicZone* Zone::GetDynamicZone()
 		return nullptr;
 	}
 
-	auto expedition = Expedition::FindCachedExpeditionByZoneInstance(GetZoneID(), GetInstanceID());
-	if (expedition)
+	// todo: cache dynamic zone id on zone later for faster lookup
+	for (const auto& dz_iter : zone->dynamic_zone_cache)
 	{
-		return &expedition->GetDynamicZone();
+		if (dz_iter.second->IsSameDz(GetZoneID(), GetInstanceID()))
+		{
+			return dz_iter.second.get();
+		}
 	}
-
-	// todo: tasks, missions, and quests with an associated dz for this instance id
 
 	return nullptr;
 }

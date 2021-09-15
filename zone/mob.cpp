@@ -195,7 +195,6 @@ Mob::Mob(
 
 	last_hp_percent = 0;
 	last_hp         = 0;
-	last_max_hp     = 0;
 
 	current_speed = base_runspeed;
 
@@ -1366,82 +1365,62 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 	}
 }
 
-void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= false*/) {
+void Mob::SendHPUpdate(bool force_update_all)
+{
 
-	/**
-	 * If our HP is different from last HP update call - let's update selves
-	 */
+	// If our HP is different from last HP update call - let's update selves
 	if (IsClient()) {
-
-		// delay to allow the client to catch up on buff states
-		if (max_hp != last_max_hp) {
-
-			last_max_hp = max_hp;
-			CastToClient()->hp_self_update_throttle_timer.Trigger();
-
-			return;
-		}
-
 		if (current_hp != last_hp || force_update_all) {
 
-			/**
-			 * This is to prevent excessive packet sending under trains/fast combat
-			 */
-			if (this->CastToClient()->hp_self_update_throttle_timer.Check() || force_update_all) {
-				Log(Logs::General, Logs::HPUpdate,
-					"Mob::SendHPUpdate :: Update HP of self (%s) HP: %i/%i last: %i/%i skip_self: %s",
-					this->GetCleanName(),
-					current_hp,
-					max_hp,
-					last_hp,
-					last_max_hp,
-					(skip_self ? "true" : "false")
-				);
+			LogHPUpdate(
+				"[SendHPUpdate] Update HP of self [{}] current_hp [{}] max_hp [{}] last_hp [{}]",
+				GetCleanName(),
+				current_hp,
+				max_hp,
+				last_hp
+			);
 
-				if (!skip_self || this->CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-					auto client_packet     = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
-					auto *hp_packet_client = (SpawnHPUpdate_Struct *) client_packet->pBuffer;
+			if (CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
+				auto client_packet     = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
+				auto *hp_packet_client = (SpawnHPUpdate_Struct *) client_packet->pBuffer;
 
-					hp_packet_client->cur_hp   = static_cast<uint32>(CastToClient()->GetHP() - itembonuses.HP);
-					hp_packet_client->spawn_id = GetID();
-					hp_packet_client->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
+				hp_packet_client->cur_hp   = static_cast<uint32>(CastToClient()->GetHP() - itembonuses.HP);
+				hp_packet_client->spawn_id = GetID();
+				hp_packet_client->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
 
-					CastToClient()->QueuePacket(client_packet);
+				CastToClient()->QueuePacket(client_packet);
 
-					safe_delete(client_packet);
+				safe_delete(client_packet);
 
-					ResetHPUpdateTimer();
-				}
-
-				/**
-				 * Used to check if HP has changed to update self next round
-				 */
-				last_hp = current_hp;
+				ResetHPUpdateTimer();
 			}
+
+			// Used to check if HP has changed to update self next round
+			last_hp = current_hp;
 		}
 	}
 
 	auto current_hp_percent = GetIntHPRatio();
 
-	Log(Logs::General,
-		Logs::HPUpdate,
-		"Mob::SendHPUpdate :: SendHPUpdate %s HP is %i last %i",
-		this->GetCleanName(),
+	LogHPUpdateDetail(
+		"[SendHPUpdate] Client [{}] HP is [{}] last [{}]",
+		GetCleanName(),
 		current_hp_percent,
-		last_hp_percent);
+		last_hp_percent
+	);
 
 	if (current_hp_percent == last_hp_percent && !force_update_all) {
-		Log(Logs::General, Logs::HPUpdate, "Mob::SendHPUpdate :: Same HP - skipping update");
+		LogHPUpdateDetail("[SendHPUpdate] Same HP for mob [{}] skipping update", GetCleanName());
 		ResetHPUpdateTimer();
 		return;
 	}
 	else {
 
 		if (IsClient() && RuleB(Character, MarqueeHPUpdates)) {
-			this->CastToClient()->SendHPUpdateMarquee();
+			CastToClient()->SendHPUpdateMarquee();
 		}
 
-		Log(Logs::General, Logs::HPUpdate, "Mob::SendHPUpdate :: HP Changed - Send update");
+		LogHPUpdate("[SendHPUpdate] HP Changed for mob [{}] send update", GetCleanName());
 
 		last_hp_percent = current_hp_percent;
 	}
@@ -1451,24 +1430,16 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 
 	CreateHPPacket(&hp_packet);
 
-	/**
-	 * Update those who have us targeted
-	 */
+	// update those who have us targeted
 	entity_list.QueueClientsByTarget(this, &hp_packet, false, 0, false, true, EQ::versions::maskAllClients);
 
-	/**
-	 * Update those who have us on x-target
-	 */
+	// Update those who have us on x-target
 	entity_list.QueueClientsByXTarget(this, &hp_packet, false);
 
-	/**
-	 * Update groups using Group LAA health name tag counter
-	 */
+	// Update groups using Group LAA health name tag counter
 	entity_list.QueueToGroupsForNPCHealthAA(this, &hp_packet);
 
-	/**
-	 * Group
-	 */
+	// Group
 	if (IsGrouped()) {
 		group = entity_list.GetGroupByMob(this);
 		if (group) {
@@ -1476,9 +1447,7 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 		}
 	}
 
-	/**
-	 * Raid
-	 */
+	// Raid
 	if (IsClient()) {
 		Raid *raid = entity_list.GetRaidByClient(CastToClient());
 		if (raid) {
@@ -1486,9 +1455,7 @@ void Mob::SendHPUpdate(bool skip_self /*= false*/, bool force_update_all /*= fal
 		}
 	}
 
-	/**
-	 * Pet
-	 */
+	// Pet
 	if (GetOwner() && GetOwner()->IsClient()) {
 		GetOwner()->CastToClient()->QueuePacket(&hp_packet, false);
 		group = entity_list.GetGroupByClient(GetOwner()->CastToClient());
@@ -2191,26 +2158,70 @@ uint16 Mob::GetFactionRace() {
 }
 
 uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
-	if (Mob::IsPlayerRace(in_race) || in_race == 15 || in_race == 50 || in_race == 57 || in_race == 70 || in_race == 98 || in_race == 118 || in_race == 562) {
-		if (in_gender >= 2) {
-			// Male default for PC Races
+	if (
+		Mob::IsPlayerRace(in_race) ||
+		in_race == RACE_BROWNIE_15 ||
+		in_race == RACE_KERRAN_23 ||
+		in_race == RACE_LION_50 ||
+		in_race == RACE_DRACNID_57 ||
+		in_race == RACE_ZOMBIE_70 ||
+		in_race == RACE_QEYNOS_CITIZEN_71 ||
+		in_race == RACE_RIVERVALE_CITIZEN_81 ||
+		in_race == RACE_HALAS_CITIZEN_90 ||
+		in_race == RACE_GROBB_CITIZEN_92 ||
+		in_race == RACE_OGGOK_CITIZEN_93 ||
+		in_race == RACE_KALADIM_CITIZEN_94 ||
+		in_race == RACE_ELF_VAMPIRE_98 ||
+		in_race == RACE_FELGUARD_106 ||
+		in_race == RACE_FAYGUARD_112 ||
+		in_race == RACE_ERUDITE_GHOST_118 ||
+		in_race == RACE_IKSAR_CITIZEN_139 ||
+		in_race == RACE_TROLL_CREW_MEMBER_331 ||
+		in_race == RACE_PIRATE_DECKHAND_332 ||
+		in_race == RACE_GNOME_PIRATE_338 ||
+		in_race == RACE_DARK_ELF_PIRATE_339 ||
+		in_race == RACE_OGRE_PIRATE_340 ||
+		in_race == RACE_HUMAN_PIRATE_341 ||
+		in_race == RACE_ERUDITE_PIRATE_342 ||
+		in_race == RACE_UNDEAD_PIRATE_344 ||
+		in_race == RACE_KNIGHT_OF_HATE_351 ||
+		in_race == RACE_WARLOCK_OF_HATE_352 ||
+		in_race == RACE_UNDEAD_VAMPIRE_359 ||
+		in_race == RACE_VAMPIRE_360 ||
+		in_race == RACE_ZOMBIE_471 ||
+		in_race == RACE_VAMPIRE_497 ||
+		in_race == RACE_KERRAN_562 ||
+		in_race == RACE_BROWNIE_568 ||
+		in_race == RACE_HUMAN_566 ||
+		in_race == RACE_ELVEN_GHOST_587 ||
+		in_race == RACE_HUMAN_GHOST_588 ||
+		in_race == RACE_COLDAIN_645
+	) {
+		if (in_gender >= 2) { // Male default for PC Races
 			return 0;
-		}
-		else
+		} else {
 			return in_gender;
-	}
-	else if (in_race == 44 || in_race == 52 || in_race == 55 || in_race == 65 || in_race == 67 || in_race == 88 || in_race == 117 || in_race == 127 ||
-		in_race == 77 || in_race == 78 || in_race == 81 || in_race == 90 || in_race == 92 || in_race == 93 || in_race == 94 || in_race == 106 || in_race == 112 || in_race == 471) {
-		// Male only races
+		}
+	} else if (
+		in_race == RACE_FREEPORT_GUARD_44 ||
+		in_race == RACE_MIMIC_52 ||
+		in_race == RACE_HUMAN_BEGGAR_55 ||
+		in_race == RACE_VAMPIRE_65 ||
+		in_race == RACE_HIGHPASS_CITIZEN_67 ||
+		in_race == RACE_NERIAK_CITIZEN_77 ||
+		in_race == RACE_ERUDITE_CITIZEN_78 ||
+		in_race == RACE_CLOCKWORK_GNOME_88 ||
+		in_race == RACE_DWARF_GHOST_117 ||
+		in_race == RACE_SPECTRAL_IKSAR_147 ||
+		in_race == RACE_INVISIBLE_MAN_127 ||
+		in_race == RACE_VAMPYRE_208 ||
+		in_race == RACE_BROKEN_SKULL_PIRATE_333 ||
+		in_race == RACE_ERUDITE_678
+	) { // Male only races
 		return 0;
-
-	}
-	else if (in_race == 25 || in_race == 56) {
-		// Female only races
+	} else if (in_race == RACE_FAIRY_25 || in_race == RACE_PIXIE_56) { // Female only races
 		return 1;
-	}
-	else {
-		// Neutral default for NPC Races
+	} else { // Neutral default for NPC Races
 		return 2;
 	}
 }
@@ -3008,15 +3019,23 @@ void Mob::Say(const char *format, ...)
 		talker = this;
 	}
 
-	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
-		entity_list.MessageCloseString(talker, false, 200, 10,
-			GENERIC_SAY, playerbot_temp_name, buf);
+	if (RuleB(Chat, AutoInjectSaylinksToSay)) {
+		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(buf);
+		entity_list.MessageCloseString(
+			talker, false, 200, 10,
+			GENERIC_SAY, GetCleanName(), new_message.c_str()
+		);
 	}
-	else
-	{
-		entity_list.MessageCloseString(talker, false, 200, 10,
-			GENERIC_SAY, GetCleanName(), buf);
+	// If playerbot, use the lua-generated playerbot
+	else if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+			entity_list.MessageCloseString(talker, false, 200, 10,
+				GENERIC_SAY, playerbot_temp_name, buf);
+	}
+	else {
+		entity_list.MessageCloseString(
+			talker, false, 200, 10,
+			GENERIC_SAY, GetCleanName(), buf
+		);
 	}
 }
 
@@ -3353,11 +3372,16 @@ int Mob::GetHaste()
 		h = cap;
 
 	// 51+ 25 (despite there being higher spells...), 1-50 10
-	if (level > 50) // 51+
-		h += spellbonuses.hastetype3 > 25 ? 25 : spellbonuses.hastetype3;
-	else // 1-50
+	if (level > 50) { // 51+
+		cap = RuleI(Character, Hastev3Cap);
+		if (spellbonuses.hastetype3 > cap) {
+			h += cap;
+		} else {
+			h += spellbonuses.hastetype3;
+		}
+	} else { // 1-50
 		h += spellbonuses.hastetype3 > 10 ? 10 : spellbonuses.hastetype3;
-
+	}
 	h += ExtraHaste;	//GM granted haste.
 
 	return 100 + h;
@@ -3378,8 +3402,8 @@ void Mob::SetTarget(Mob *mob)
 	else if (IsClient()) {
 		parse->EventPlayer(EVENT_TARGET_CHANGE, CastToClient(), "", 0);
 
-		if (this->CastToClient()->admin > 200) {
-			this->DisplayInfo(mob);
+		if (CastToClient()->admin > 200) {
+			DisplayInfo(mob);
 		}
 
 #ifdef BOTS
@@ -3391,8 +3415,8 @@ void Mob::SetTarget(Mob *mob)
 		GetOwner()->CastToClient()->UpdateXTargetType(MyPetTarget, mob);
 	}
 
-	if (this->IsClient() && this->GetTarget() && this->CastToClient()->hp_other_update_throttle_timer.Check()) {
-		this->GetTarget()->SendHPUpdate(false, true);
+	if (IsClient() && GetTarget()) {
+		GetTarget()->SendHPUpdate(true);
 	}
 }
 

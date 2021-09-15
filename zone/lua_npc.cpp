@@ -2,10 +2,15 @@
 
 #include "lua.hpp"
 #include <luabind/luabind.hpp>
+#include <luabind/iterator_policy.hpp>
 
 #include "npc.h"
 #include "lua_npc.h"
 #include "lua_client.h"
+
+struct Lua_NPC_Loot_List {
+	std::vector<uint32> entries;
+};
 
 void Lua_NPC::Signal(int id) {
 	Lua_Safe_Call_Void();
@@ -612,6 +617,30 @@ uint16 Lua_NPC::GetFirstSlotByItemID(uint32 item_id)
 	return self->GetFirstSlotByItemID(item_id);
 }
 
+float Lua_NPC::GetHealScale()
+{
+	Lua_Safe_Call_Real();
+	return self->GetHealScale();
+}
+
+float Lua_NPC::GetSpellScale()
+{
+	Lua_Safe_Call_Real();
+	return self->GetSpellScale();
+}
+
+Lua_NPC_Loot_List Lua_NPC::GetLootList(lua_State* L) {
+	Lua_Safe_Call_Class(Lua_NPC_Loot_List);
+	Lua_NPC_Loot_List ret;
+	auto loot_list = self->GetLootList();
+
+	for (auto item_id : loot_list) {
+		ret.entries.push_back(item_id);
+	}
+
+	return ret;
+}
+
 luabind::scope lua_register_npc() {
 	return luabind::class_<Lua_NPC, Lua_Mob>("NPC")
 		.def(luabind::constructor<>())
@@ -732,7 +761,19 @@ luabind::scope lua_register_npc() {
 		.def("HasItem", (bool(Lua_NPC::*)(uint32))&Lua_NPC::HasItem)
 		.def("CountItem", (uint16(Lua_NPC::*)(uint32))&Lua_NPC::CountItem)
 		.def("GetItemIDBySlot", (uint32(Lua_NPC::*)(uint16))&Lua_NPC::GetItemIDBySlot)
+
+
 		.def("GetFirstSlotByItemID", (uint16(Lua_NPC::*)(uint32))&Lua_NPC::GetFirstSlotByItemID)
-		.def("HasRoamBox", (bool(Lua_NPC::*)(void))& Lua_NPC::HasRoamBox);}
+		.def("GetHealScale", (float(Lua_NPC::*)(void))&Lua_NPC::GetHealScale)
+		.def("GetSpellScale", (float(Lua_NPC::*)(void))&Lua_NPC::GetSpellScale)
+		.def("GetLootList", (Lua_NPC_Loot_List(Lua_NPC::*)(lua_State* L))&Lua_NPC::GetLootList)
+		.def("GetFirstSlotByItemID", (uint16(Lua_NPC::*)(uint32))&Lua_NPC::GetFirstSlotByItemID)
+		.def("HasRoamBox", (bool(Lua_NPC::*)(void))& Lua_NPC::HasRoamBox);
+}
+
+luabind::scope lua_register_npc_loot_list() {
+	return luabind::class_<Lua_NPC_Loot_List>("NPCLootList")
+			.def_readwrite("entries", &Lua_NPC_Loot_List::entries, luabind::return_stl_iterator);
+}
 
 #endif

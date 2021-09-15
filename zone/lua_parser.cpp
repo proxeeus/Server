@@ -132,7 +132,8 @@ const char *LuaEvents[_LargestEventID] = {
 	"event_combine_validate",
 	"event_bot_command",
 	"event_warp",
-	"event_test_buff"
+	"event_test_buff",
+	"event_consider_corpse"
 };
 
 extern Zone *zone;
@@ -198,6 +199,7 @@ LuaParser::LuaParser() {
 	PlayerArgumentDispatch[EVENT_PLAYER_PICKUP] = handle_player_pick_up;
 	PlayerArgumentDispatch[EVENT_CAST] = handle_player_cast;
 	PlayerArgumentDispatch[EVENT_CAST_BEGIN] = handle_player_cast;
+	PlayerArgumentDispatch[EVENT_CAST_ON] = handle_player_cast;
 	PlayerArgumentDispatch[EVENT_TASK_FAIL] = handle_player_task_fail;
 	PlayerArgumentDispatch[EVENT_ZONE] = handle_player_zone;
 	PlayerArgumentDispatch[EVENT_DUEL_WIN] = handle_player_duel_win;
@@ -219,6 +221,7 @@ LuaParser::LuaParser() {
 	PlayerArgumentDispatch[EVENT_COMBINE_VALIDATE] = handle_player_combine_validate;
 	PlayerArgumentDispatch[EVENT_BOT_COMMAND] = handle_player_bot_command;
 	PlayerArgumentDispatch[EVENT_WARP] = handle_player_warp;
+	PlayerArgumentDispatch[EVENT_CONSIDER_CORPSE] = handle_player_consider_corpse;
 
 	ItemArgumentDispatch[EVENT_ITEM_CLICK] = handle_item_click;
 	ItemArgumentDispatch[EVENT_ITEM_CLICK_CAST] = handle_item_click;
@@ -1120,6 +1123,8 @@ void LuaParser::MapFunctions(lua_State *L) {
 			lua_register_object_list(),
 			lua_register_door_list(),
 			lua_register_spawn_list(),
+			lua_register_corpse_loot_list(),
+			lua_register_npc_loot_list(),
 			lua_register_group(),
 			lua_register_raid(),
 			lua_register_corpse(),

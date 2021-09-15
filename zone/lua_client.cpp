@@ -15,6 +15,7 @@
 #include "lua_group.h"
 #include "lua_raid.h"
 #include "lua_packet.h"
+#include "dialogue_window.h"
 #include "../common/expedition_lockout_timer.h"
 
 struct InventoryWhere { };
@@ -1824,6 +1825,11 @@ int Lua_Client::GetClientMaxLevel() {
 	return self->GetClientMaxLevel();
 }
 
+void Lua_Client::DialogueWindow(std::string markdown) {
+	Lua_Safe_Call_Void();
+	DialogueWindow::Render(self, std::move(markdown));
+}
+
 DynamicZoneLocation GetDynamicZoneLocationFromTable(const luabind::object& lua_table)
 {
 	DynamicZoneLocation zone_location;
@@ -1864,6 +1870,7 @@ Lua_Expedition Lua_Client::CreateExpedition(luabind::object expedition_table) {
 
 	// luabind will catch thrown cast_failed exceptions for invalid/missing args
 	luabind::object instance_info = expedition_table["instance"];
+	luabind::object expedition_info = expedition_table["expedition"];
 	luabind::object zone = instance_info["zone"];
 
 	uint32_t zone_id = 0;
@@ -1880,6 +1887,9 @@ Lua_Expedition Lua_Client::CreateExpedition(luabind::object expedition_table) {
 	uint32_t zone_duration = luabind::object_cast<uint32_t>(instance_info["duration"]);
 
 	DynamicZone dz{ zone_id, zone_version, zone_duration, DynamicZoneType::Expedition };
+	dz.SetName(luabind::object_cast<std::string>(expedition_info["name"]));
+	dz.SetMinPlayers(luabind::object_cast<uint32_t>(expedition_info["min_players"]));
+	dz.SetMaxPlayers(luabind::object_cast<uint32_t>(expedition_info["max_players"]));
 
 	// the dz_info table supports optional hash entries for 'compass', 'safereturn', and 'zonein' data
 	if (luabind::type(expedition_table["compass"]) == LUA_TTABLE)
@@ -1900,21 +1910,13 @@ Lua_Expedition Lua_Client::CreateExpedition(luabind::object expedition_table) {
 		dz.SetZoneInLocation(zonein_loc);
 	}
 
-	luabind::object expedition_info = expedition_table["expedition"];
-
-	std::string expedition_name = luabind::object_cast<std::string>(expedition_info["name"]);
-	uint32_t min_players        = luabind::object_cast<uint32_t>(expedition_info["min_players"]);
-	uint32_t max_players        = luabind::object_cast<uint32_t>(expedition_info["max_players"]);
-	bool disable_messages       = false;
-
+	bool disable_messages = false;
 	if (luabind::type(expedition_info["disable_messages"]) == LUA_TBOOLEAN)
 	{
 		disable_messages = luabind::object_cast<bool>(expedition_info["disable_messages"]);
 	}
 
-	ExpeditionRequest request{ expedition_name, min_players, max_players, disable_messages };
-
-	return self->CreateExpedition(dz, request);
+	return self->CreateExpedition(dz, disable_messages);
 }
 
 Lua_Expedition Lua_Client::CreateExpedition(std::string zone_name, uint32 version, uint32 duration, std::string expedition_name, uint32 min_players, uint32 max_players) {
@@ -2051,6 +2053,55 @@ void Lua_Client::MovePCDynamicZone(std::string zone_name, int zone_version) {
 void Lua_Client::MovePCDynamicZone(std::string zone_name, int zone_version, bool msg_if_invalid) {
 	Lua_Safe_Call_Void();
 	return self->MovePCDynamicZone(zone_name, zone_version, msg_if_invalid);
+}
+
+void Lua_Client::CreateTaskDynamicZone(int task_id, luabind::object dz_table) {
+	Lua_Safe_Call_Void();
+
+	if (luabind::type(dz_table) != LUA_TTABLE)
+	{
+		return;
+	}
+
+	// luabind will catch thrown cast_failed exceptions for invalid/missing args
+	luabind::object instance_info = dz_table["instance"];
+	luabind::object zone = instance_info["zone"];
+
+	uint32_t zone_id = 0;
+	if (luabind::type(zone) == LUA_TSTRING)
+	{
+		zone_id = ZoneID(luabind::object_cast<std::string>(zone));
+	}
+	else if (luabind::type(zone) == LUA_TNUMBER)
+	{
+		zone_id = luabind::object_cast<uint32_t>(zone);
+	}
+
+	uint32_t zone_version  = luabind::object_cast<uint32_t>(instance_info["version"]);
+
+	// tasks override dz duration so duration is ignored here
+	DynamicZone dz{ zone_id, zone_version, 0, DynamicZoneType::None };
+
+	// the dz_info table supports optional hash entries for 'compass', 'safereturn', and 'zonein' data
+	if (luabind::type(dz_table["compass"]) == LUA_TTABLE)
+	{
+		auto compass_loc = GetDynamicZoneLocationFromTable(dz_table["compass"]);
+		dz.SetCompass(compass_loc);
+	}
+
+	if (luabind::type(dz_table["safereturn"]) == LUA_TTABLE)
+	{
+		auto safereturn_loc = GetDynamicZoneLocationFromTable(dz_table["safereturn"]);
+		dz.SetSafeReturn(safereturn_loc);
+	}
+
+	if (luabind::type(dz_table["zonein"]) == LUA_TTABLE)
+	{
+		auto zonein_loc = GetDynamicZoneLocationFromTable(dz_table["zonein"]);
+		dz.SetZoneInLocation(zonein_loc);
+	}
+
+	self->CreateTaskDynamicZone(task_id, dz);
 }
 
 void Lua_Client::Fling(float value, float target_x, float target_y, float target_z) {
@@ -2451,6 +2502,9 @@ luabind::scope lua_register_client() {
 		.def("GetAlternateCurrencyValue", (int(Lua_Client::*)(uint32))&Lua_Client::GetAlternateCurrencyValue)
 		.def("SendWebLink", (void(Lua_Client::*)(const char *))&Lua_Client::SendWebLink)
 		.def("HasSpellScribed", (bool(Lua_Client::*)(int))&Lua_Client::HasSpellScribed)
+		.def("DiaWind", (void(Lua_Client::*)(std::string))&Lua_Client::DialogueWindow)
+		.def("DialogueWindow", (void(Lua_Client::*)(std::string))&Lua_Client::DialogueWindow)
+		.def("SetAccountFlag", (void(Lua_Client::*)(std::string,std::string))&Lua_Client::SetAccountFlag)
 		.def("SetAccountFlag", (void(Lua_Client::*)(std::string,std::string))&Lua_Client::SetAccountFlag)
 		.def("GetAccountFlag", (std::string(Lua_Client::*)(std::string))&Lua_Client::GetAccountFlag)
 		.def("GetGroup", (Lua_Group(Lua_Client::*)(void))&Lua_Client::GetGroup)
@@ -2515,6 +2569,7 @@ luabind::scope lua_register_client() {
 		.def("MovePCDynamicZone", (void(Lua_Client::*)(std::string))&Lua_Client::MovePCDynamicZone)
 		.def("MovePCDynamicZone", (void(Lua_Client::*)(std::string, int))&Lua_Client::MovePCDynamicZone)
 		.def("MovePCDynamicZone", (void(Lua_Client::*)(std::string, int, bool))&Lua_Client::MovePCDynamicZone)
+		.def("CreateTaskDynamicZone", &Lua_Client::CreateTaskDynamicZone)
 		.def("Fling", (void(Lua_Client::*)(float,float,float,float))&Lua_Client::Fling)
 		.def("Fling", (void(Lua_Client::*)(float,float,float,float,bool))&Lua_Client::Fling)
 		.def("Fling", (void(Lua_Client::*)(float,float,float,float,bool,bool))&Lua_Client::Fling)

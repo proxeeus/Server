@@ -130,6 +130,8 @@ EQEmuLogSys *EQEmuLogSys::LoadLogSettingsDefaults()
 	log_settings[Logs::Loot].log_to_gmsay             = static_cast<uint8>(Logs::General);
 	log_settings[Logs::Scheduler].log_to_console      = static_cast<uint8>(Logs::General);
 	log_settings[Logs::Cheat].log_to_console          = static_cast<uint8>(Logs::General);
+	log_settings[Logs::HTTP].log_to_console           = static_cast<uint8>(Logs::General);
+	log_settings[Logs::HTTP].log_to_gmsay             = static_cast<uint8>(Logs::General);
 
 	/**
 	 * RFC 5424
@@ -235,9 +237,11 @@ void EQEmuLogSys::ProcessGMSay(
 	}
 
 	/**
-	 * Check to see if the process that actually ran this is zone
+	 * Processes that actually support hooks
 	 */
-	if (EQEmuLogSys::log_platform == EQEmuExePlatform::ExePlatformZone) {
+	if (EQEmuLogSys::log_platform == EQEmuExePlatform::ExePlatformZone ||
+		EQEmuLogSys::log_platform == EQEmuExePlatform::ExePlatformWorld
+	) {
 		on_log_gmsay_hook(log_category, message);
 	}
 }

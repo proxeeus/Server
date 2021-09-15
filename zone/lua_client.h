@@ -379,6 +379,8 @@ public:
 	void SetClientMaxLevel(int value);
 	int GetClientMaxLevel();
 
+	void DialogueWindow(std::string markdown);
+
 	Lua_Expedition  CreateExpedition(luabind::object expedition_info);
 	Lua_Expedition  CreateExpedition(std::string zone_name, uint32 version, uint32 duration, std::string expedition_name, uint32 min_players, uint32 max_players);
 	Lua_Expedition  CreateExpedition(std::string zone_name, uint32 version, uint32 duration, std::string expedition_name, uint32 min_players, uint32 max_players, bool disable_messages);
@@ -400,6 +402,7 @@ public:
 	void            MovePCDynamicZone(std::string zone_name);
 	void            MovePCDynamicZone(std::string zone_name, int zone_version);
 	void            MovePCDynamicZone(std::string zone_name, int zone_version, bool msg_if_invalid);
+	void            CreateTaskDynamicZone(int task_id, luabind::object dz_table);
 	void            Fling(float value, float target_x, float target_y, float target_z);
 	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los);
 	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clipping);

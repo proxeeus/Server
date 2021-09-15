@@ -1812,6 +1812,63 @@ XS(XS_NPC_GetFirstSlotByItemID) {
 	XSRETURN(1);
 }
 
+XS(XS_NPC_GetHealScale);
+XS(XS_NPC_GetHealScale) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: NPC::GetHealScale(THIS)");  // @categories Stats and Attributes
+	{
+		NPC *THIS;
+		float healscale;
+		dXSTARG;
+		VALIDATE_THIS_IS_NPC;
+		healscale = THIS->GetHealScale();
+		XSprePUSH;
+		PUSHn((double) healscale);
+	}
+	XSRETURN(1);
+}
+
+XS(XS_NPC_GetSpellScale);
+XS(XS_NPC_GetSpellScale) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: NPC::GetSpellScale(THIS)");  // @categories Stats and Attributes
+	{
+		NPC *THIS;
+		float spellscale;
+		dXSTARG;
+		VALIDATE_THIS_IS_NPC;
+		spellscale = THIS->GetSpellScale();
+		XSprePUSH;
+		PUSHn((double) spellscale);
+	}
+	XSRETURN(1);
+}
+
+XS(XS_NPC_GetLootList);
+XS(XS_NPC_GetLootList) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: NPC::GetLootList(THIS)"); // @categories Script Utility
+	{
+		NPC *THIS;
+		VALIDATE_THIS_IS_NPC;
+		auto npc_items = THIS->GetLootList();
+		auto item_count = npc_items.size();
+		if (item_count > 0) {
+			EXTEND(sp, item_count);
+			for (int index = 0; index < item_count; ++index) {
+				ST(index) = sv_2mortal(newSVuv(npc_items[index]));
+			}
+			XSRETURN(item_count);
+		}
+		SV* return_value = &PL_sv_undef;
+		ST(0) = return_value;
+		XSRETURN(1);
+	}
+}
+
 #ifdef __cplusplus
 extern "C"
 #endif
@@ -1934,6 +1991,9 @@ XS(boot_NPC) {
 	newXSproto(strcpy(buf, "CountItem"), XS_NPC_CountItem, file, "$$");
 	newXSproto(strcpy(buf, "GetItemIDBySlot"), XS_NPC_GetItemIDBySlot, file, "$$");
 	newXSproto(strcpy(buf, "GetFirstSlotByItemID"), XS_NPC_GetFirstSlotByItemID, file, "$$");
+	newXSproto(strcpy(buf, "GetHealScale"), XS_NPC_GetHealScale, file, "$");
+	newXSproto(strcpy(buf, "GetSpellScale"), XS_NPC_GetSpellScale, file, "$");
+	newXSproto(strcpy(buf, "GetLootList"), XS_NPC_GetLootList, file, "$");
 	XSRETURN_YES;
 }
 

@@ -61,6 +61,7 @@
 
 #include "data_bucket.h"
 #include "command.h"
+#include "dynamic_zone.h"
 #include "expedition.h"
 #include "guild_mgr.h"
 #include "map.h"
@@ -76,6 +77,8 @@
 #include "npc_scale_manager.h"
 #include "../common/content/world_content_service.h"
 #include "../common/http/httplib.h"
+#include "../common/shared_tasks.h"
+#include "gm_commands/door_manipulation.h"
 
 extern QueryServ* QServ;
 extern WorldServer worldserver;
@@ -200,7 +203,9 @@ int command_init(void)
 		command_add("disablerecipe",  "[recipe_id] - Disables a recipe using the recipe id.",  80, command_disablerecipe) ||
 		command_add("disarmtrap",  "Analog for ldon disarm trap for the newer clients since we still don't have it working.", 80, command_disarmtrap) ||
 		command_add("distance", "- Reports the distance between you and your target.",  80, command_distance) ||
+		command_add("door", "Door editing command", 80, command_door) ||
 		command_add("doanim", "[animnum] [type] - Send an EmoteAnim for you or your target", 50, command_doanim) ||
+		command_add("dye", "[slot|'help'] [red] [green] [blue] [use_tint] - Dyes the specified armor slot to Red, Green, and Blue provided, allows you to bypass darkness limits.", 20, command_dye) ||
 		command_add("dz", "Manage expeditions and dynamic zone instances", 80, command_dz) ||
 		command_add("dzkickplayers", "Removes all players from current expedition. (/kickplayers alternative for pre-RoF clients)", 0, command_dzkickplayers) ||
 		command_add("editmassrespawn", "[name-search] [second-value] - Mass (Zone wide) NPC respawn timer editing command", 100, command_editmassrespawn) ||
@@ -7242,7 +7247,19 @@ void command_dz(Client* c, const Seperator* sep)
 		return;
 	}
 
-	if (strcasecmp(sep->arg[1], "expedition") == 0)
+	if (strcasecmp(sep->arg[1], "cache") == 0)
+	{
+		if (strcasecmp(sep->arg[2], "reload") == 0)
+		{
+			DynamicZone::CacheAllFromDatabase();
+			Expedition::CacheAllFromDatabase();
+			c->Message(Chat::White, fmt::format(
+				"Reloaded [{}] dynamic zone(s) and [{}] expedition(s) from database",
+				zone->dynamic_zone_cache.size(), zone->expedition_cache.size()
+			).c_str());
+		}
+	}
+	else if (strcasecmp(sep->arg[1], "expedition") == 0)
 	{
 		if (strcasecmp(sep->arg[2], "list") == 0)
 		{
@@ -7260,25 +7277,32 @@ void command_dz(Client* c, const Seperator* sep)
 			c->Message(Chat::White, fmt::format("Total Active Expeditions: [{}]", expeditions.size()).c_str());
 			for (const auto& expedition : expeditions)
 			{
+				auto dz = expedition->GetDynamicZone();
+				if (!dz)
+				{
+					LogExpeditions("Expedition [{}] has an invalid dz [{}] in cache", expedition->GetID(), expedition->GetDynamicZoneID());
+					continue;
+				}
+
 				auto leader_saylink = EQ::SayLinkEngine::GenerateQuestSaylink(fmt::format(
 					"#goto {}", expedition->GetLeaderName()), false, expedition->GetLeaderName());
 				auto zone_saylink = EQ::SayLinkEngine::GenerateQuestSaylink(fmt::format(
-					"#zoneinstance {}", expedition->GetDynamicZone().GetInstanceID()), false, "zone");
+					"#zoneinstance {}", dz->GetInstanceID()), false, "zone");
 
-				auto seconds = expedition->GetDynamicZone().GetSecondsRemaining();
+				auto seconds = dz->GetSecondsRemaining();
 
 				c->Message(Chat::White, fmt::format(
 					"expedition id: [{}] dz id: [{}] name: [{}] leader: [{}] {}: [{}]:[{}]:[{}]:[{}] members: [{}] remaining: [{:02}:{:02}:{:02}]",
 					expedition->GetID(),
-					expedition->GetDynamicZone().GetID(),
+					expedition->GetDynamicZoneID(),
 					expedition->GetName(),
 					leader_saylink,
 					zone_saylink,
-					ZoneName(expedition->GetDynamicZone().GetZoneID()),
-					expedition->GetDynamicZone().GetZoneID(),
-					expedition->GetDynamicZone().GetInstanceID(),
-					expedition->GetDynamicZone().GetZoneVersion(),
-					expedition->GetDynamicZone().GetMemberCount(),
+					ZoneName(dz->GetZoneID()),
+					dz->GetZoneID(),
+					dz->GetInstanceID(),
+					dz->GetZoneVersion(),
+					dz->GetMemberCount(),
 					seconds / 3600,      // hours
 					(seconds / 60) % 60, // minutes
 					seconds % 60         // seconds
@@ -7300,7 +7324,7 @@ void command_dz(Client* c, const Seperator* sep)
 			{
 				c->Message(Chat::White, fmt::format("Destroying expedition [{}] ({})",
 					expedition_id, expedition->GetName()).c_str());
-				expedition->RemoveAllMembers();
+				expedition->GetDynamicZone()->RemoveAllMembers();
 			}
 			else
 			{
@@ -7324,8 +7348,45 @@ void command_dz(Client* c, const Seperator* sep)
 	}
 	else if (strcasecmp(sep->arg[1], "list") == 0)
 	{
+		c->Message(Chat::White, fmt::format("Total Dynamic Zones (cache): [{}]", zone->dynamic_zone_cache.size()).c_str());
+
+		std::vector<DynamicZone*> dynamic_zones;
+		for (const auto& dz : zone->dynamic_zone_cache)
+		{
+			dynamic_zones.emplace_back(dz.second.get());
+		}
+
+		std::sort(dynamic_zones.begin(), dynamic_zones.end(),
+			[](const DynamicZone* lhs, const DynamicZone* rhs) {
+				return lhs->GetID() < rhs->GetID();
+			});
+
+		for (const auto& dz : dynamic_zones)
+		{
+			auto seconds = dz->GetSecondsRemaining();
+			auto zone_saylink = EQ::SayLinkEngine::GenerateQuestSaylink(
+				fmt::format("#zoneinstance {}", dz->GetInstanceID()), false, "zone");
+
+			std::string aligned_type = fmt::format("[{}]", DynamicZone::GetDynamicZoneTypeName(static_cast<DynamicZoneType>(dz->GetType())));
+			c->Message(Chat::White, fmt::format(
+				"id: [{}] type: {:>10} {}: [{}]:[{}]:[{}] members: [{}] remaining: [{:02}:{:02}:{:02}]",
+				dz->GetID(),
+				aligned_type,
+				zone_saylink,
+				dz->GetZoneID(),
+				dz->GetInstanceID(),
+				dz->GetZoneVersion(),
+				dz->GetMemberCount(),
+				seconds / 3600,      // hours
+				(seconds / 60) % 60, // minutes
+				seconds % 60         // seconds
+			).c_str());
+		}
+	}
+	else if (strcasecmp(sep->arg[1], "listdb") == 0)
+	{
 		auto dz_list = DynamicZonesRepository::AllDzInstancePlayerCounts(database);
-		c->Message(Chat::White, fmt::format("Total Dynamic Zones: [{}]", dz_list.size()).c_str());
+		c->Message(Chat::White, fmt::format("Total Dynamic Zones (database): [{}]", dz_list.size()).c_str());
 
 		auto now = std::chrono::system_clock::now();
 
@@ -7342,7 +7403,7 @@ void command_dz(Client* c, const Seperator* sep)
 					fmt::format("#zoneinstance {}", dz.instance), false, "zone");
 
 				c->Message(Chat::White, fmt::format(
-					"dz id: [{}] type: [{}] {}: [{}]:[{}]:[{}] members: [{}] remaining: [{:02}:{:02}:{:02}]",
+					"id: [{}] type: [{}] {}: [{}]:[{}]:[{}] members: [{}] remaining: [{:02}:{:02}:{:02}]",
 					dz.id,
 					DynamicZone::GetDynamicZoneTypeName(static_cast<DynamicZoneType>(dz.type)),
 					zone_saylink,
@@ -7394,11 +7455,13 @@ void command_dz(Client* c, const Seperator* sep)
 	else
 	{
 		c->Message(Chat::White, "#dz usage:");
+		c->Message(Chat::White, "#dz cache reload - reload the current zone cache from db (also reloads expedition cache dependency)");
 		c->Message(Chat::White, "#dz expedition list - list expeditions in current zone cache");
 		c->Message(Chat::White, "#dz expedition reload - reload expedition zone cache from database");
 		c->Message(Chat::White, "#dz expedition destroy <expedition_id> - destroy expedition globally (must be in cache)");
 		c->Message(Chat::White, "#dz expedition unlock <expedition_id> - unlock expedition");
-		c->Message(Chat::White, "#dz list [all] - list dynamic zone instances from database -- 'all' includes expired");
+		c->Message(Chat::White, "#dz list - list all dynamic zone instances from current zone cache");
+		c->Message(Chat::White, "#dz listdb [all] - list dynamic zone instances from database -- 'all' includes expired");
 		c->Message(Chat::White, "#dz lockouts remove <char_name> - delete all of character's expedition lockouts");
 		c->Message(Chat::White, "#dz lockouts remove <char_name> \"<expedition_name>\" - delete lockouts by expedition");
 		c->Message(Chat::White, "#dz lockouts remove <char_name> \"<expedition_name>\" \"<event_name>\" - delete lockout by expedition event");
@@ -10629,6 +10692,25 @@ void command_task(Client *c, const Seperator *sep) {
 				EQ::SayLinkEngine::GenerateQuestSaylink("#task reload sets", false, "reload sets")
 			).c_str()
 		);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"--- [{}] Purges targeted characters task timers",
+				EQ::SayLinkEngine::GenerateQuestSaylink("#task purgetimers", false, "purgetimers")
+			).c_str()
+		);
+
+		c->Message(Chat::White, "------------------------------------------------");
+		c->Message(Chat::White, "# Shared Task System Commands");
+		c->Message(Chat::White, "------------------------------------------------");
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"--- [{}] Purges all active Shared Tasks in memory and database ",
+				EQ::SayLinkEngine::GenerateQuestSaylink("#task sharedpurge", false, "sharedpurge")
+			).c_str()
+		);
+
 		return;
 	}
 
@@ -10639,6 +10721,15 @@ void command_task(Client *c, const Seperator *sep) {
 
 	if (!strcasecmp(sep->arg[1], "show")) {
 		c->ShowClientTasks(client_target);
+		return;
+	}
+
+	if (!strcasecmp(sep->arg[1], "purgetimers")) {
+		c->Message(15, fmt::format("{}'s task timers have been purged", client_target->GetCleanName()).c_str());
+		if (client_target != c) {
+			client_target->Message(15, "[GM] Your task timers have been purged by a GM");
+		}
+		client_target->PurgeTaskTimers();
 		return;
 	}
 
@@ -10665,6 +10756,27 @@ void command_task(Client *c, const Seperator *sep) {
 			client_target->UpdateTaskActivity(task_id, activity_id, count);
 			c->ShowClientTasks(client_target);
 		}
+		return;
+	}
+
+	if (!strcasecmp(sep->arg[1], "sharedpurge")) {
+		if (!strcasecmp(sep->arg[2], "confirm")) {
+			LogTasksDetail("Sending purge request");
+			auto pack = new ServerPacket(ServerOP_SharedTaskPurgeAllCommand, 0);
+			worldserver.SendPacket(pack);
+			safe_delete(pack);
+
+			return;
+		}
+
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"[WARNING] This will purge all active Shared Tasks [{}]?",
+				EQ::SayLinkEngine::GenerateQuestSaylink("#task sharedpurge confirm", false, "confirm")
+			).c_str()
+		);
+
 		return;
 	}
 
@@ -12934,6 +13046,10 @@ void command_distance(Client *c, const Seperator *sep) {
 	}
 }
 
+void command_door(Client *c, const Seperator *sep) {
+	DoorManipulation::CommandHandler(c, sep);
+}
+
 void command_cvs(Client *c, const Seperator *sep)
 {
 	if(c)
@@ -14665,6 +14781,91 @@ void command_viewzoneloot(Client *c, const Seperator *sep)
 		);
 	}
 }
+
+void command_dye(Client *c, const Seperator *sep)
+{
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #dye help | #dye [slot] [red] [green] [blue] [use_tint]");
+		return;
+	}
+	
+	uint8 slot = 0;
+	uint8 red = 255;
+	uint8 green = 255;
+	uint8 blue = 255;
+	uint8 use_tint = 255;
+
+	std::vector<std::string> dye_slots = {
+		"Helmet",
+		"Chest",
+		"Arms",
+		"Wrist",
+		"Hands",
+		"Legs",
+		"Feet"
+	};
+
+	if (arguments == 1 && !strcasecmp(sep->arg[1], "help")) {
+		int slot_id = 0;
+		std::vector<std::string> slot_messages;
+		c->Message(Chat::White, "Command Syntax: #dye help | #dye [slot] [red] [green] [blue] [use_tint]");
+		c->Message(Chat::White, "Red, Green, and Blue go from 0 to 255.");
+		
+		for (const auto& slot : dye_slots) {
+			slot_messages.push_back(fmt::format("({}) {}", slot_id, slot));
+			slot_id++;
+		}
+
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"{} {}",
+				"Slots are as follows:",
+				implode(", ", slot_messages)
+			).c_str()
+		);
+		return;
+	}
+
+	if (arguments >= 1 && sep->IsNumber(1)) {
+		slot = atoi(sep->arg[1]);
+	}
+
+	if (arguments >= 2 && sep->IsNumber(2)) {
+		red = atoi(sep->arg[2]);
+	}
+
+	if (arguments >= 3 && sep->IsNumber(3)) {
+		green = atoi(sep->arg[3]);
+	}
+
+	if (arguments >= 4 && sep->IsNumber(4)) {
+		blue = atoi(sep->arg[4]);
+	}
+
+	if (arguments >= 5 && sep->IsNumber(5)) {
+		use_tint = atoi(sep->arg[5]);
+	}
+
+	if (RuleB(Command, DyeCommandRequiresDyes)) {
+		uint32 dye_item_id = 32557;
+		if (c->CountItem(dye_item_id) >= 1) {
+			c->RemoveItem(dye_item_id);
+		} else {
+			EQ::SayLinkEngine linker;
+			linker.SetLinkType(EQ::saylink::SayLinkItemData);
+			const EQ::ItemData *dye_item = database.GetItem(dye_item_id);
+			linker.SetItemData(dye_item);
+			c->Message(Chat::White, fmt::format("This command requires a {} to use.", linker.GenerateLink()).c_str());
+			return;
+		}
+	}
+
+	c->DyeArmorBySlot(slot, red, green, blue, use_tint);
+}
+
 // All new code added to command.cpp should be BEFORE this comment line. Do no append code to this file below the BOTS code block.
 #ifdef BOTS
 #include "bot_command.h"

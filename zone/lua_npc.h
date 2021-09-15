@@ -8,12 +8,14 @@ class NPC;
 class Lua_Mob;
 class Lua_NPC;
 class Lua_Client;
+struct Lua_NPC_Loot_List;
 
 namespace luabind {
 	struct scope;
 }
 
 luabind::scope lua_register_npc();
+luabind::scope lua_register_npc_loot_list();
 
 class Lua_NPC : public Lua_Mob
 {
@@ -145,6 +147,9 @@ public:
 	uint16 CountItem(uint32 item_id);
 	uint32 GetItemIDBySlot(uint16 slot_id);
 	uint16 GetFirstSlotByItemID(uint32 item_id);
+	float GetHealScale();
+	float GetSpellScale();
+	Lua_NPC_Loot_List GetLootList(lua_State* L);
 };
 
 #endif
