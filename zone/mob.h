@@ -626,6 +626,7 @@ public:
 	void Teleport(const glm::vec3 &pos);
 	void Teleport(const glm::vec4 &pos);
 	void TryMoveAlong(float distance, float angle, bool send = true);
+	glm::vec4 TryMoveAlong(const glm::vec4 &start, float distance, float angle);
 	void ProcessForcedMovement();
 	inline void IncDeltaX(float in) { m_Delta.x += in; }
 	inline void IncDeltaY(float in) { m_Delta.y += in; }
@@ -799,7 +800,7 @@ public:
 	void TryTriggerOnCastFocusEffect(focusType type, uint16 spell_id);
 	bool TryTriggerOnCastProc(uint16 focusspellid, uint16 spell_id, uint16 proc_spellid);
 	bool TrySpellTrigger(Mob *target, uint32 spell_id, int effect);
-	void TryTriggerOnValueAmount(bool IsHP = false, bool IsMana = false, bool IsEndur = false, bool IsPet = false);
+	void TryTriggerOnCastRequirement();
 	void TryTwincast(Mob *caster, Mob *target, uint32 spell_id);
 	void TrySympatheticProc(Mob *target, uint32 spell_id);
 	bool TryFadeEffect(int slot);

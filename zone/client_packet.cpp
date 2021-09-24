@@ -4854,6 +4854,10 @@ void Client::Handle_OP_Consider(const EQApplicationPacket *app)
 	if (tmob == 0)
 		return;
 
+	if (parse->EventPlayer(EVENT_CONSIDER, this, fmt::format("{}", conin->targetid), 0) == 1) {
+		return;
+	}
+
 	if (tmob->GetClass() == LDON_TREASURE)
 	{
 		Message(Chat::Yellow, "%s", tmob->GetCleanName());
@@ -4977,7 +4981,10 @@ void Client::Handle_OP_ConsiderCorpse(const EQApplicationPacket *app)
 	Consider_Struct* conin = (Consider_Struct*)app->pBuffer;
 	Corpse* tcorpse = entity_list.GetCorpseByID(conin->targetid);
 	if (tcorpse && tcorpse->IsNPCCorpse()) {
-		parse->EventPlayer(EVENT_CONSIDER_CORPSE, this, fmt::format("{}", conin->targetid), 0);
+		if (parse->EventPlayer(EVENT_CONSIDER_CORPSE, this, fmt::format("{}", conin->targetid), 0) == 1) {
+			return;
+		}
+
 		uint32 min; uint32 sec; uint32 ttime;
 		if ((ttime = tcorpse->GetDecayTime()) != 0) {
 			sec = (ttime / 1000) % 60; // Total seconds
@@ -4991,7 +4998,10 @@ void Client::Handle_OP_ConsiderCorpse(const EQApplicationPacket *app)
 		}
 	}
 	else if (tcorpse && tcorpse->IsPlayerCorpse()) {
-		parse->EventPlayer(EVENT_CONSIDER_CORPSE, this, fmt::format("{}", conin->targetid), 0);
+		if (parse->EventPlayer(EVENT_CONSIDER_CORPSE, this, fmt::format("{}", conin->targetid), 0) == 1) {
+			return;
+		}
+		
 		uint32 day, hour, min, sec, ttime;
 		if ((ttime = tcorpse->GetDecayTime()) != 0) {
 			sec = (ttime / 1000) % 60; // Total seconds
@@ -11145,10 +11155,21 @@ void Client::Handle_OP_PopupResponse(const EQApplicationPacket *app)
 			return;
 			break;
 
-		case POPUPID_DIAWIND:
-			response = GetEntityVariable(DIAWIND_RESPONSE_KEY.c_str());
-			if (!response.empty()) {
-				ChannelMessageReceived(8, 0, 100, response.c_str());
+		case POPUPID_DIAWIND_ONE:
+			if (EntityVariableExists(DIAWIND_RESPONSE_ONE_KEY.c_str())) {
+				response = GetEntityVariable(DIAWIND_RESPONSE_ONE_KEY.c_str());
+				if (!response.empty()) {
+					ChannelMessageReceived(8, 0, 100, response.c_str());
+				}
+			}
+			break;
+
+		case POPUPID_DIAWIND_TWO:
+			if (EntityVariableExists(DIAWIND_RESPONSE_TWO_KEY.c_str())) {
+				response = GetEntityVariable(DIAWIND_RESPONSE_TWO_KEY.c_str());
+				if (!response.empty()) {
+					ChannelMessageReceived(8, 0, 100, response.c_str());
+				}
 			}
 			break;
 

@@ -133,6 +133,8 @@ const char *LuaEvents[_LargestEventID] = {
 	"event_bot_command",
 	"event_warp",
 	"event_test_buff",
+	"event_combine",
+	"event_consider",
 	"event_consider_corpse"
 };
 
@@ -221,6 +223,8 @@ LuaParser::LuaParser() {
 	PlayerArgumentDispatch[EVENT_COMBINE_VALIDATE] = handle_player_combine_validate;
 	PlayerArgumentDispatch[EVENT_BOT_COMMAND] = handle_player_bot_command;
 	PlayerArgumentDispatch[EVENT_WARP] = handle_player_warp;
+	PlayerArgumentDispatch[EVENT_COMBINE] = handle_player_quest_combine;
+	PlayerArgumentDispatch[EVENT_CONSIDER] = handle_player_consider;
 	PlayerArgumentDispatch[EVENT_CONSIDER_CORPSE] = handle_player_consider_corpse;
 
 	ItemArgumentDispatch[EVENT_ITEM_CLICK] = handle_item_click;

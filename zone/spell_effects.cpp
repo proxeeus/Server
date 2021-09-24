@@ -343,31 +343,13 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Complete Heal");
 #endif
-				//make sure they are not allready affected by this...
-				//I think that is the point of making this a buff.
-				//this is in the wrong spot, it should be in the immune
-				//section so the buff timer does not get refreshed!
-
-				int i;
-				bool inuse = false;
-				int buff_count = GetMaxTotalSlots();
-				for(i = 0; i < buff_count; i++) {
-					if(buffs[i].spellid == spell_id && i != buffslot) {
-						Message(0, "You must wait before you can be affected by this spell again.");
-						inuse = true;
-						break;
-					}
-				}
-				if(inuse)
-					break;
-
-				int32 val = 0;
-				val = 7500 * effect_value;
-				if (caster)
+				int val = 7500 * effect_value;
+				if (caster) {
 					val = caster->GetActSpellHealing(spell_id, val, this);
-
-				if (val > 0)
+				}
+				if (val > 0) {
 					HealDamage(val, caster);
+				}
 
 				break;
 			}
@@ -387,7 +369,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							caster->SetMana(caster->GetMana() + std::abs(effect_value));
 
 						if (effect_value < 0)
-							TryTriggerOnValueAmount(false, true);
+							TryTriggerOnCastRequirement();
 #ifdef SPELL_EFFECT_SPAM
 						if (caster)
 							caster->Message(Chat::White, "You have gained %+i mana!", effect_value);
@@ -403,7 +385,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 				SetMana(GetMana() + effect_value);
 				if (effect_value < 0)
-					TryTriggerOnValueAmount(false, true);
+					TryTriggerOnCastRequirement();
 				}
 
 				break;
@@ -600,7 +582,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Invisibility to Animals");
 #endif
 				invisible_animals = true;
-				SetInvisible(0);
 				break;
 			}
 
@@ -611,7 +592,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Invisibility to Undead");
 #endif
 				invisible_undead = true;
-				SetInvisible(0);
 				break;
 			}
 			case SE_SeeInvis:
@@ -1136,13 +1116,23 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 
 			case SE_Purify:
 			{
-				//Attempt to remove all Deterimental buffs.
-				int buff_count = GetMaxTotalSlots();
-				for(int slot = 0; slot < buff_count; slot++) {
-					if (buffs[slot].spellid != SPELL_UNKNOWN &&
-                            IsDetrimentalSpell(buffs[slot].spellid) && spells[buffs[slot].spellid].dispel_flag == 0)
-					{
-						if (caster && TryDispel(caster->GetLevel(),buffs[slot].casterlevel, effect_value)){
+				//Attempt to remove up to base amount of detrimental effects (excluding charm, fear, resurrection, and revival sickness).
+				int purify_count = spells[spell_id].base[i];
+				if (purify_count > GetMaxTotalSlots()) {
+					purify_count = GetMaxTotalSlots();
+				}
+
+				for(int slot = 0; slot < purify_count; slot++) {
+					if (IsValidSpell(buffs[slot].spellid) && IsDetrimentalSpell(buffs[slot].spellid)){
+
+						if (!IsEffectInSpell(buffs[slot].spellid, SE_Charm) &&
+							!IsEffectInSpell(buffs[slot].spellid, SE_Fear) &&
+							buffs[slot].spellid != SPELL_RESURRECTION_SICKNESS &&
+							buffs[slot].spellid != SPELL_RESURRECTION_SICKNESS2 &&
+							buffs[slot].spellid != SPELL_RESURRECTION_SICKNESS3 &&
+							buffs[slot].spellid != SPELL_RESURRECTION_SICKNESS4 &&
+							buffs[slot].spellid != SPELL_REVIVAL_SICKNESS)
+						{
 							BuffFadeBySlot(slot);
 						}
 					}
@@ -2458,8 +2448,9 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #endif
 				if(IsClient()) {
 					CastToClient()->SetEndurance(CastToClient()->GetEndurance() + effect_value);
-					if (effect_value < 0)
-						TryTriggerOnValueAmount(false, false, true);
+					if (effect_value < 0) {
+						TryTriggerOnCastRequirement();
+					}
 				}
 				break;
 			}
@@ -2470,10 +2461,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Current Endurance Once: %+i", effect_value);
 #endif
 
-				if(IsClient()) {
+				if (IsClient()) {
 					CastToClient()->SetEndurance(CastToClient()->GetEndurance() + effect_value);
-					if (effect_value < 0)
-						TryTriggerOnValueAmount(false, false, true);
+					if (effect_value < 0) {
+						TryTriggerOnCastRequirement();
+					}
 				}
 				break;
 			}
@@ -2652,7 +2644,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				int32 mana_to_use = GetMana() - spell.base[i];
 				if(mana_to_use > -1) {
 					SetMana(GetMana() - spell.base[i]);
-					TryTriggerOnValueAmount(false, true);
+					TryTriggerOnCastRequirement();
 					// we take full dmg(-10 to make the damage the right sign)
 					mana_damage = spell.base[i] / -10 * spell.base2[i];
 					Damage(caster, mana_damage, spell_id, spell.skill, false, i, true);
@@ -2672,7 +2664,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					int32 end_to_use = CastToClient()->GetEndurance() - spell.base[i];
 					if(end_to_use > -1) {
 						CastToClient()->SetEndurance(CastToClient()->GetEndurance() - spell.base[i]);
-						TryTriggerOnValueAmount(false, false, true);
+						TryTriggerOnCastRequirement();
 						// we take full dmg(-10 to make the damage the right sign)
 						end_damage = spell.base[i] / -10 * spell.base2[i];
 						Damage(caster, end_damage, spell_id, spell.skill, false, i, true);
@@ -2754,7 +2746,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					else {
 						dmg = ratio*max_mana/10;
 						caster->SetMana(caster->GetMana() - max_mana);
-						TryTriggerOnValueAmount(false, true);
+						TryTriggerOnCastRequirement();
 					}
 
 					if(IsDetrimentalSpell(spell_id)) {
