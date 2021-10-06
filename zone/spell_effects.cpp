@@ -63,6 +63,11 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 	if (spell.disallow_sit && IsBuffSpell(spell_id) && IsClient() && (CastToClient()->IsSitting() || CastToClient()->GetHorseId() != 0))
 		return false;
 
+	bool CanMemoryBlurFromMez = true;
+	if (IsMezzed()) { //Check for special memory blur behavior when on mez, this needs to be before buff override.
+		CanMemoryBlurFromMez = false;
+	}
+
 	bool c_override = false;
 	if (caster && caster->IsClient() && GetCastedSpellInvSlot() > 0) {
 		const EQ::ItemInstance *inst = caster->CastToClient()->GetInv().GetItem(GetCastedSpellInvSlot());
@@ -216,10 +221,19 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 		if (GetSpellPowerDistanceMod())
 			effect_value = effect_value*GetSpellPowerDistanceMod()/100;
 
+		//Prevents effect from being applied
+		if (spellbonuses.NegateEffects) {
+			if (effect != SE_NegateSpellEffect && NegateSpellEffect(spell_id, effect)) {
+				if (caster) {
+					caster->Message(Chat::Red, "Part or all of this spell has lost its effectiveness."); //Placeholder msg, until live one is obtained.
+				}
+				continue;
+			}
+		}
+
 #ifdef SPELL_EFFECT_SPAM
 		effect_desc[0] = 0;
 #endif
-
 		switch(effect)
 		{
 			case SE_CurrentHP:	// nukes, heals; also regen/dot if a buff
@@ -1521,16 +1535,16 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Memory Blur: %d", effect_value);
 #endif
-				int wipechance = spells[spell_id].base[i];
-				int bonus = 0;
-
-				if (caster){
-					bonus = caster->spellbonuses.IncreaseChanceMemwipe +
-						caster->itembonuses.IncreaseChanceMemwipe +
-						caster->aabonuses.IncreaseChanceMemwipe;
+				//Memory blur component of Mez spells is not checked again if Mez is recast on a target that is already mezed
+				if (!CanMemoryBlurFromMez && IsEffectInSpell(spell_id, SE_Mez)) {
+					break;
 				}
-
-				wipechance += wipechance*bonus/100;
+	
+				int wipechance = 0;
+					
+				if (caster) {
+					wipechance = caster->GetMemoryBlurChance(effect_value);
+				}
 
 				if(zone->random.Roll(wipechance))
 				{
@@ -3850,19 +3864,15 @@ void Mob::DoBuffTic(const Buffs_Struct &buff, int slot, Mob *caster)
 		}
 
 		case SE_WipeHateList: {
-			if (IsMezSpell(buff.spellid))
+			if (IsMezSpell(buff.spellid)) {
 				break;
-
-			int wipechance = spells[buff.spellid].base[i];
-			int bonus = 0;
-
-			if (caster) {
-				bonus = caster->spellbonuses.IncreaseChanceMemwipe +
-					caster->itembonuses.IncreaseChanceMemwipe +
-					caster->aabonuses.IncreaseChanceMemwipe;
 			}
 
-			wipechance += wipechance * bonus / 100;
+			int wipechance = 0;
+
+			if (caster) {
+				wipechance = caster->GetMemoryBlurChance(effect_value);
+			}
 
 			if (zone->random.Roll(wipechance)) {
 				if (IsAIControlled()) {
@@ -5733,7 +5743,7 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 
 			case SE_FcHealPctCritIncoming:
 				if (type == focusFcHealPctCritIncoming) {
-					value = focus_spell.base[i];
+					value = GetFocusRandomEffectivenessValue(focus_spell.base[i], focus_spell.base2[i], best_focus);
 				}
 				break;
 
@@ -5751,7 +5761,7 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 
 			case SE_FcHealPctIncoming:
 				if (type == focusFcHealPctIncoming) {
-					value = focus_spell.base[i];
+					value = GetFocusRandomEffectivenessValue(focus_spell.base[i], focus_spell.base2[i], best_focus);
 				}
 				break;
 
@@ -5915,7 +5925,7 @@ void Mob::TryTriggerOnCastFocusEffect(focusType type, uint16 spell_id)
 		}
 	}
 
-	// Only use of this focus per AA effect.
+	// Only use one of this focus per AA effect.
 	if (IsClient() && aabonuses.FocusEffects[type]) {
 		for (const auto &aa : aa_ranks) {
 			auto ability_rank = zone->GetAlternateAdvancementAbilityAndRank(aa.first, aa.second.first);
@@ -6362,8 +6372,9 @@ int32 NPC::GetFocusEffect(focusType type, uint16 spell_id) {
 
 	//Improved Healing, Damage & Mana Reduction are handled differently in that some are random percentages
 	//In these cases we need to find the most powerful effect, so that each piece of gear wont get its own chance
-	if(RuleB(Spells, LiveLikeFocusEffects) && (type == focusManaCost || type == focusImprovedHeal || type == focusImprovedDamage || type == focusImprovedDamage2))
+	if (RuleB(Spells, LiveLikeFocusEffects) && CanFocusUseRandomEffectivenessByType(type)) {
 		rand_effectiveness = true;
+	}
 
 	if (RuleB(Spells, NPC_UseFocusFromItems) && itembonuses.FocusEffects[type]){
 
@@ -6923,49 +6934,53 @@ int32 Mob::GetFcDamageAmtIncoming(Mob *caster, uint32 spell_id, bool use_skill, 
 
 int32 Mob::GetFocusIncoming(focusType type, int effect, Mob *caster, uint32 spell_id) {
 
+	//**** This can be removed when bot healing focus code is updated ****
+
 	/*
 	This is a general function for calculating best focus effect values for focus effects that exist on targets but modify incoming spells.
 	Should be used when checking for foci that can exist on clients or npcs ect.
 	Example: When your target has a focus limited buff that increases amount of healing on them.
 	*/
 
-	if (!caster)
+	if (!caster) {
 		return 0;
+	}
 
 	int value = 0;
 
 	if (spellbonuses.FocusEffects[type]){
 
-			int32 tmp_focus = 0;
-			int tmp_buffslot = -1;
+		int32 tmp_focus = 0;
+		int tmp_buffslot = -1;
 
-			int buff_count = GetMaxTotalSlots();
-			for(int i = 0; i < buff_count; i++) {
+		int buff_count = GetMaxTotalSlots();
+		for(int i = 0; i < buff_count; i++) {
 
-				if((IsValidSpell(buffs[i].spellid) && IsEffectInSpell(buffs[i].spellid, effect))){
+			if((IsValidSpell(buffs[i].spellid) && IsEffectInSpell(buffs[i].spellid, effect))){
 
-					int32 focus = caster->CalcFocusEffect(type, buffs[i].spellid, spell_id);
+				int32 focus = caster->CalcFocusEffect(type, buffs[i].spellid, spell_id);
 
-					if (!focus)
-						continue;
+				if (!focus) {
+					continue;
+				}
 
-					if (tmp_focus && focus > tmp_focus){
-						tmp_focus = focus;
-						tmp_buffslot = i;
-					}
+				if (tmp_focus && focus > tmp_focus){
+					tmp_focus = focus;
+					tmp_buffslot = i;
+				}
 
-					else if (!tmp_focus){
-						tmp_focus = focus;
-						tmp_buffslot = i;
-					}
+				else if (!tmp_focus){
+					tmp_focus = focus;
+					tmp_buffslot = i;
 				}
 			}
-
-			value = tmp_focus;
-
-			if (tmp_buffslot >= 0)
-				CheckNumHitsRemaining(NumHit::MatchingSpells, tmp_buffslot);
 		}
+
+		value = tmp_focus;
+
+		if (tmp_buffslot >= 0)
+			CheckNumHitsRemaining(NumHit::MatchingSpells, tmp_buffslot);
+	}
 
 
 	return value;
@@ -8488,6 +8503,8 @@ bool Mob::CanFocusUseRandomEffectivenessByType(focusType type)
 	case focusSpellHateMod:
 	case focusSpellVulnerability:
 	case focusFcSpellDamagePctIncomingPC:
+	case focusFcHealPctIncoming:
+	case focusFcHealPctCritIncoming:
 		return true;
 	}
 
@@ -8512,4 +8529,65 @@ int Mob::GetFocusRandomEffectivenessValue(int focus_base, int focus_base2, bool 
 	}
 
 	return zone->random.Int(focus_base, focus_base2);
+}
+
+bool Mob::NegateSpellEffect(uint16 spell_id, int effect_id)
+{
+	/*
+		This works for most effects, anything handled purely by the client will bypass this (ie Gate, Shadowstep)
+		Seen with resurrection effects, likely blocks the client from accepting a ressurection request. *Not implement at this time.
+	*/
+
+	for (int i = 0; i < GetMaxTotalSlots(); i++) {
+		//Check for any buffs containing NegateEffect
+		if (IsValidSpell(buffs[i].spellid) && IsEffectInSpell(buffs[i].spellid, SE_NegateSpellEffect) && spell_id != buffs[i].spellid) {
+			//Match each of the negate effects with the current spell effect, if found, that effect will not be applied.
+			for (int j = 0; j < EFFECT_COUNT; j++)
+			{
+				if (spells[buffs[i].spellid].base2[j] == effect_id) {
+					return true;
+				}
+			}
+		}
+	}
+	return false;
+}
+
+int Mob::GetMemoryBlurChance(int base_chance)
+{
+	/*
+		Memory Blur mechanic for SPA 62
+		Chance formula is effect chance + charisma modifer + caster level modifier
+		Effect chance is base value of spell
+		Charisma modifier is CHA/10 = %, with MAX of 15% (thus 150 cha gives you max bonus)
+		Caster level modifier. +100% if caster < level 17 which scales down to 25% at > 53. **
+		(Yes the above gets worse as you level. Behavior was confirmed on live.)
+		Memory blur is applied to mez on initial cast using same formula. However, recasting on a target that
+		is already mezed will not give a chance to memory blur. The blur is not checked on buff ticks.
+
+		SPA 242 SE_IncreaseChanceMemwipe modifies the final chance after all bonuses are applied.
+		This is also applied to memory blur from mez spells.
+
+		this = caster
+	*/
+	int cha_mod = int(GetCHA() / 10);
+	cha_mod = std::min(cha_mod, 15);
+	
+	int lvl_mod = 0;
+	if (GetLevel() < 17) {
+		lvl_mod = 100;
+	}
+	else if (GetLevel() > 53) {
+		lvl_mod = 25;
+	}
+	else {
+		lvl_mod = 100 + ((GetLevel() - 16)*-2);//Derived from above range of values.**
+	}
+
+	int chance = cha_mod + lvl_mod + base_chance;
+
+	int chance_mod = spellbonuses.IncreaseChanceMemwipe + itembonuses.IncreaseChanceMemwipe + aabonuses.IncreaseChanceMemwipe;
+
+	chance += chance * chance_mod / 100;
+	return chance;
 }

@@ -2206,17 +2206,79 @@ int Lua_Client::CountItem(uint32 item_id) {
 
 void Lua_Client::RemoveItem(uint32 item_id) {
 	Lua_Safe_Call_Void();
-	return self->RemoveItem(item_id);
+	self->RemoveItem(item_id);
 }
 
 void Lua_Client::RemoveItem(uint32 item_id, uint32 quantity) {
 	Lua_Safe_Call_Void();
-	return self->RemoveItem(item_id, quantity);
+	self->RemoveItem(item_id, quantity);
 }
 
 void Lua_Client::SetGMStatus(uint32 newStatus) {
 	Lua_Safe_Call_Void();
-	return self->SetGMStatus(newStatus);
+	self->SetGMStatus(newStatus);
+}
+
+void Lua_Client::UntrainDiscBySpellID(uint16 spell_id) {
+	Lua_Safe_Call_Void();
+	self->UntrainDiscBySpellID(spell_id);
+}
+
+void Lua_Client::UntrainDiscBySpellID(uint16 spell_id, bool update_client) {
+	Lua_Safe_Call_Void();
+	self->UntrainDiscBySpellID(spell_id, update_client);
+}
+
+int Lua_Client::GetIPExemption() {
+	Lua_Safe_Call_Int();
+	return self->GetIPExemption();
+}
+
+std::string Lua_Client::GetIPString() {
+	Lua_Safe_Call_String();
+	return self->GetIPString();
+}
+
+void Lua_Client::SetIPExemption(int exemption_amount) {
+	Lua_Safe_Call_Void();
+	self->SetIPExemption(exemption_amount);
+}
+
+void Lua_Client::ReadBookByName(std::string book_name, uint8 book_type) {
+	Lua_Safe_Call_Void();
+	self->ReadBookByName(book_name, book_type);
+}
+
+void Lua_Client::SummonBaggedItems(uint32 bag_item_id, luabind::adl::object bag_items_table) {
+	Lua_Safe_Call_Void();
+	if (luabind::type(bag_items_table) != LUA_TTABLE) {
+		return;
+	}
+
+	std::vector<ServerLootItem_Struct> bagged_items;
+
+	luabind::raw_iterator end; // raw_iterator uses lua_rawget
+	for (luabind::raw_iterator it(bag_items_table); it != end; ++it)
+	{
+		// verify array element is a table for item details
+		if (luabind::type(*it) == LUA_TTABLE)
+		{
+			// no need to try/catch, quest lua parser already catches exceptions
+			ServerLootItem_Struct item{};
+			item.item_id = luabind::object_cast<uint32>((*it)["item_id"]);
+			item.charges = luabind::object_cast<int16>((*it)["charges"]);
+			item.attuned = luabind::type((*it)["attuned"]) != LUA_TNIL ? luabind::object_cast<uint8>((*it)["attuned"]) : 0;
+			item.aug_1 = luabind::type((*it)["augment_one"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_one"]) : 0;
+			item.aug_2 = luabind::type((*it)["augment_two"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_two"]) : 0;
+			item.aug_3 = luabind::type((*it)["augment_three"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_three"]) : 0;
+			item.aug_4 = luabind::type((*it)["augment_four"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_four"]) : 0;
+			item.aug_5 = luabind::type((*it)["augment_five"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_five"]) : 0;
+			item.aug_6 = luabind::type((*it)["augment_six"]) != LUA_TNIL ? luabind::object_cast<uint32>((*it)["augment_six"]) : 0;
+			bagged_items.emplace_back(item);
+		}
+	}
+
+	self->SummonBaggedItems(bag_item_id, bagged_items);
 }
 
 luabind::scope lua_register_client() {
@@ -2475,7 +2537,7 @@ luabind::scope lua_register_client() {
 		.def("ClearCompassMark",(void(Lua_Client::*)(void))&Lua_Client::ClearCompassMark)
 		.def("GetNextAvailableSpellBookSlot", (int(Lua_Client::*)(void))&Lua_Client::GetNextAvailableSpellBookSlot)
 		.def("GetNextAvailableSpellBookSlot", (int(Lua_Client::*)(int))&Lua_Client::GetNextAvailableSpellBookSlot)
-		.def("GetSpellIDByBookSlot", (uint32(Lua_Client::*)(int))& Lua_Client::GetSpellIDByBookSlot)
+		.def("GetSpellIDByBookSlot", (uint32(Lua_Client::*)(int))&Lua_Client::GetSpellIDByBookSlot)
 		.def("FindSpellBookSlotBySpellID", (int(Lua_Client::*)(int))&Lua_Client::FindSpellBookSlotBySpellID)
 		.def("UpdateTaskActivity", (void(Lua_Client::*)(int,int,int))&Lua_Client::UpdateTaskActivity)
 		.def("AssignTask", (void(Lua_Client::*)(int,int))&Lua_Client::AssignTask)
@@ -2580,19 +2642,26 @@ luabind::scope lua_register_client() {
 		.def("AddLDoNLoss", (void(Lua_Client::*)(uint32))&Lua_Client::AddLDoNLoss)
 		.def("AddLDoNWin", (void(Lua_Client::*)(uint32))&Lua_Client::AddLDoNWin)
 		.def("SetHideMe", (void(Lua_Client::*)(bool))&Lua_Client::SetHideMe)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*))& Lua_Client::Popup)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32))& Lua_Client::Popup)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32))& Lua_Client::Popup)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32))& Lua_Client::Popup)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32,uint32))& Lua_Client::Popup)
-		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32,uint32,const char*,const char*))& Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*))&Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32))&Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32))&Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32))&Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32,uint32))&Lua_Client::Popup)
+		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32,uint32,const char*,const char*))&Lua_Client::Popup)
 		.def("Popup", (void(Lua_Client::*)(const char*,const char*,uint32,uint32,uint32,uint32,const char*,const char*,uint32))&Lua_Client::Popup)
 		.def("ResetAllDisciplineTimers", (void(Lua_Client::*)(void))&Lua_Client::ResetAllDisciplineTimers)
 		.def("SendToInstance", (void(Lua_Client::*)(std::string,std::string,uint32,float,float,float,float,std::string,uint32))&Lua_Client::SendToInstance)
 		.def("CountItem", (int(Lua_Client::*)(uint32))&Lua_Client::CountItem)
 		.def("RemoveItem", (void(Lua_Client::*)(uint32))&Lua_Client::RemoveItem)
 		.def("RemoveItem", (void(Lua_Client::*)(uint32,uint32))&Lua_Client::RemoveItem)
-		.def("SetGMStatus", (void(Lua_Client::*)(int32))& Lua_Client::SetGMStatus);
+		.def("GetIPExemption", (int(Lua_Client::*)(void))&Lua_Client::GetIPExemption)
+		.def("GetIPString", (std::string(Lua_Client::*)(void))&Lua_Client::GetIPString)
+		.def("SetIPExemption", (void(Lua_Client::*)(int))&Lua_Client::SetIPExemption)
+		.def("ReadBookByName", (void(Lua_Client::*)(std::string,uint8))&Lua_Client::ReadBookByName)
+		.def("SetGMStatus", (void(Lua_Client::*)(int32))&Lua_Client::SetGMStatus)
+		.def("UntrainDiscBySpellID", (void(Lua_Client::*)(uint16))&Lua_Client::UntrainDiscBySpellID)
+		.def("UntrainDiscBySpellID", (void(Lua_Client::*)(uint16,bool))&Lua_Client::UntrainDiscBySpellID)
+		.def("SummonBaggedItems", (void(Lua_Client::*)(uint32,luabind::adl::object))&Lua_Client::SummonBaggedItems);
 }
 
 luabind::scope lua_register_inventory_where() {

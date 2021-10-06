@@ -4759,31 +4759,258 @@ XS(XS_Client_GetClientMaxLevel) {
 	XSRETURN(1);
 }
 
+DynamicZoneLocation GetDynamicZoneLocationFromHash(HV* hash)
+{
+	// dynamic zone helper method (caller must validate hash)
+	SV** zone_ptr = hv_fetchs(hash, "zone", false);
+	SV** x_ptr    = hv_fetchs(hash, "x", false);
+	SV** y_ptr    = hv_fetchs(hash, "y", false);
+	SV** z_ptr    = hv_fetchs(hash, "z", false);
+	SV** h_ptr    = hv_fetchs(hash, "h", false);
+
+	uint32_t zone_id = 0;
+	if (zone_ptr && SvIOK(*zone_ptr))
+	{
+		zone_id = static_cast<uint32_t>(SvIV(*zone_ptr));
+	}
+	else if (zone_ptr && SvPOK(*zone_ptr))
+	{
+		zone_id = ZoneID(SvPV_nolen(*zone_ptr));
+	}
+
+	// SvNIOK checks for number, integer or double
+	float x = (x_ptr && SvNIOK(*x_ptr)) ? static_cast<float>(SvNV(*x_ptr)) : 0.0f;
+	float y = (y_ptr && SvNIOK(*y_ptr)) ? static_cast<float>(SvNV(*y_ptr)) : 0.0f;
+	float z = (z_ptr && SvNIOK(*z_ptr)) ? static_cast<float>(SvNV(*z_ptr)) : 0.0f;
+	float h = (h_ptr && SvNIOK(*h_ptr)) ? static_cast<float>(SvNV(*h_ptr)) : 0.0f;
+
+	return { zone_id, x, y, z, h };
+}
+
+Expedition* CreateExpeditionFromHash(Client* client, SV* hash_ref)
+{
+	if (!hash_ref || !SvROK(hash_ref)) // verify valid reference type
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition argument is not a reference type");
+	}
+
+	HV* hash = (HV*)SvRV(hash_ref); // dereference and verify type is hash
+	if (SvTYPE(hash) != SVt_PVHV)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition reference argument is not to a hash type");
+	}
+
+	SV** expedition_info_ptr = hv_fetchs(hash, "expedition", false);
+	if (!expedition_info_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition required 'expedition' key missing from hash");
+	}
+
+	if (!SvROK(*expedition_info_ptr) || SvTYPE(SvRV(*expedition_info_ptr)) != SVt_PVHV)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition 'expedition' entry must have a hash table value");
+	}
+
+	SV** instance_info_ptr = hv_fetchs(hash, "instance", false);
+	if (!instance_info_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition required 'instance' key missing from hash");
+	}
+
+	if (!SvROK(*instance_info_ptr) || SvTYPE(SvRV(*instance_info_ptr)) != SVt_PVHV)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition 'instance' entry must have a hash table value");
+	}
+
+	// dereference the nested hash tables and validate required keys
+	HV* expedition_hash  = (HV*)SvRV(*expedition_info_ptr);
+	SV** name_ptr        = hv_fetchs(expedition_hash, "name", false);
+	SV** min_players_ptr = hv_fetchs(expedition_hash, "min_players", false);
+	SV** max_players_ptr = hv_fetchs(expedition_hash, "max_players", false);
+	SV** disable_msg_ptr = hv_fetchs(expedition_hash, "disable_messages", false);
+	if (!name_ptr || !min_players_ptr || !max_players_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition 'expedition' hash table missing required keys (name, min_players, max_players)");
+	}
+
+	HV* instance_hash      = (HV*)SvRV(*instance_info_ptr);
+	SV** instance_zone_ptr = hv_fetchs(instance_hash, "zone", false);
+	SV** version_ptr       = hv_fetchs(instance_hash, "version", false);
+	SV** duration_ptr      = hv_fetchs(instance_hash, "duration", false);
+	if (!instance_zone_ptr || !version_ptr || !duration_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition 'instance' hash table missing required keys (zone, version, duration)");
+	}
+
+	uint32_t zone_id = 0;
+	if (SvIOK(*instance_zone_ptr))
+	{
+		zone_id = static_cast<uint32_t>(SvIV(*instance_zone_ptr));
+	}
+	else if (SvPOK(*instance_zone_ptr))
+	{
+		zone_id = ZoneID(SvPV_nolen(*instance_zone_ptr));
+	}
+	else
+	{
+		Perl_croak(aTHX_ "Client::CreateExpedition zone value in 'instance' table must be int or string");
+	}
+
+	uint32_t zone_version  = SvIOK(*version_ptr) ? static_cast<uint32_t>(SvIV(*version_ptr)) : 0;
+	uint32_t zone_duration = SvIOK(*duration_ptr) ? static_cast<uint32_t>(SvIV(*duration_ptr)) : 0;
+
+	DynamicZone dz{ zone_id, zone_version, zone_duration, DynamicZoneType::Expedition };
+	dz.SetName(SvPOK(*name_ptr) ? SvPV_nolen(*name_ptr) : "");
+	dz.SetMinPlayers(SvIOK(*min_players_ptr) ? static_cast<uint32_t>(SvIV(*min_players_ptr)) : 0);
+	dz.SetMaxPlayers(SvIOK(*max_players_ptr) ? static_cast<uint32_t>(SvIV(*max_players_ptr)) : 0);
+
+	SV** compass_ptr = hv_fetchs(hash, "compass", false);
+	if (compass_ptr && SvROK(*compass_ptr) && SvTYPE(SvRV(*compass_ptr)) == SVt_PVHV)
+	{
+		auto compass_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*compass_ptr));
+		dz.SetCompass(compass_loc);
+	}
+
+	SV** safereturn_ptr = hv_fetchs(hash, "safereturn", false);
+	if (safereturn_ptr && SvROK(*safereturn_ptr) && SvTYPE(SvRV(*safereturn_ptr)) == SVt_PVHV)
+	{
+		auto safereturn_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*safereturn_ptr));
+		dz.SetSafeReturn(safereturn_loc);
+	}
+
+	SV** zonein_ptr = hv_fetchs(hash, "zonein", false);
+	if (zonein_ptr && SvROK(*zonein_ptr) && SvTYPE(SvRV(*zonein_ptr)) == SVt_PVHV)
+	{
+		auto zonein_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*zonein_ptr));
+		dz.SetZoneInLocation(zonein_loc);
+	}
+
+	bool disable_messages = (disable_msg_ptr && SvIOK(*disable_msg_ptr)) ? SvTRUE(*disable_msg_ptr) : false;
+
+	return client->CreateExpedition(dz, disable_messages);
+}
+
 XS(XS_Client_CreateExpedition);
 XS(XS_Client_CreateExpedition) {
 	dXSARGS;
-	if (items != 7 && items != 8) {
-		Perl_croak(aTHX_ "Usage: Client::CreateExpedition(THIS, string zone_name, uint32 zone_version, uint32 duration, string expedition_name, uint32 min_players, uint32 max_players, [bool disable_messages = false])");
+	if (items != 2 && items != 7 && items != 8) {
+		Perl_croak(aTHX_ "Usage: Client::CreateExpedition(THIS, HASHREF expedition_info | string zone_name, uint32 zone_version, uint32 duration, string expedition_name, uint32 min_players, uint32 max_players, [bool disable_messages = false])");
 	}
 
 	Client* THIS = nullptr;
 	VALIDATE_THIS_IS_CLIENT;
 
-	std::string zone_name(SvPV_nolen(ST(1)));
-	uint32 zone_version = (uint32)SvUV(ST(2));
-	uint32 duration = (uint32)SvUV(ST(3));
-	std::string expedition_name(SvPV_nolen(ST(4)));
-	uint32 min_players = (uint32)SvUV(ST(5));
-	uint32 max_players = (uint32)SvUV(ST(6));
-	bool disable_messages = (items > 7) ? (bool)SvTRUE(ST(7)) : false;
+	Expedition* RETVAL = nullptr;
+	if (items == 2)
+	{
+		RETVAL = CreateExpeditionFromHash(THIS, ST(1));
+	}
+	else
+	{
+		std::string zone_name(SvPV_nolen(ST(1)));
+		uint32 zone_version = (uint32)SvUV(ST(2));
+		uint32 duration = (uint32)SvUV(ST(3));
+		std::string expedition_name(SvPV_nolen(ST(4)));
+		uint32 min_players = (uint32)SvUV(ST(5));
+		uint32 max_players = (uint32)SvUV(ST(6));
+		bool disable_messages = (items > 7) ? (bool)SvTRUE(ST(7)) : false;
 
-	Expedition* RETVAL = THIS->CreateExpedition(zone_name, zone_version, duration,
-		expedition_name, min_players, max_players, disable_messages);
+		RETVAL = THIS->CreateExpedition(zone_name, zone_version, duration,
+			expedition_name, min_players, max_players, disable_messages);
+	}
 
 	ST(0) = sv_newmortal();
 	sv_setref_pv(ST(0), "Expedition", (void*)RETVAL);
 
 	XSRETURN(1);
+}
+
+XS(XS_Client_CreateTaskDynamicZone);
+XS(XS_Client_CreateTaskDynamicZone) {
+	dXSARGS;
+	if (items != 3) {
+		Perl_croak(aTHX_ "Usage: Client::CreateTaskDynamicZone(THIS, int task_id, HASHREF dz_info)");
+	}
+
+	Client* THIS = nullptr;
+	VALIDATE_THIS_IS_CLIENT;
+
+	SV* hash_ref = ST(2);
+	if (!hash_ref || !SvROK(hash_ref))
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone argument is not a reference type");
+	}
+
+	HV* hash = (HV*)SvRV(hash_ref); // dereference into hash
+	if (SvTYPE(hash) != SVt_PVHV)
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone reference argument is not to a hash type");
+	}
+
+	SV** instance_info_ptr = hv_fetchs(hash, "instance", false);
+	if (!instance_info_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone required 'instance' key missing from hash");
+	}
+
+	if (!SvROK(*instance_info_ptr) || SvTYPE(SvRV(*instance_info_ptr)) != SVt_PVHV)
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone 'instance' entry must have a hash table value");
+	}
+
+	HV* instance_hash      = (HV*)SvRV(*instance_info_ptr);
+	SV** instance_zone_ptr = hv_fetchs(instance_hash, "zone", false);
+	SV** version_ptr       = hv_fetchs(instance_hash, "version", false);
+	SV** duration_ptr      = hv_fetchs(instance_hash, "duration", false);
+	if (!instance_zone_ptr || !version_ptr)
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone 'instance' hash table missing required keys (zone, version, duration)");
+	}
+
+	uint32_t zone_id = 0;
+	SV* instance_zone = *instance_zone_ptr;
+	if (SvIOK(instance_zone))
+	{
+		zone_id = static_cast<uint32_t>(SvIV(instance_zone));
+	}
+	else if (SvPOK(instance_zone))
+	{
+		zone_id = ZoneID(SvPV_nolen(instance_zone));
+	}
+	else
+	{
+		Perl_croak(aTHX_ "Client::CreateTaskDynamicZone zone value in 'instance' table must be int or string");
+	}
+
+	uint32_t zone_version  = SvIOK(*version_ptr) ? static_cast<uint32_t>(SvIV(*version_ptr)) : 0;
+
+	// tasks override dz duration so duration is ignored here
+	DynamicZone dz{ zone_id, zone_version, 0, DynamicZoneType::None };
+
+	SV** compass_ptr = hv_fetchs(hash, "compass", false);
+	if (compass_ptr && SvROK(*compass_ptr) && SvTYPE(SvRV(*compass_ptr)) == SVt_PVHV)
+	{
+		auto compass_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*compass_ptr));
+		dz.SetCompass(compass_loc);
+	}
+
+	SV** safereturn_ptr = hv_fetchs(hash, "safereturn", false);
+	if (safereturn_ptr && SvROK(*safereturn_ptr) && SvTYPE(SvRV(*safereturn_ptr)) == SVt_PVHV)
+	{
+		auto safereturn_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*safereturn_ptr));
+		dz.SetSafeReturn(safereturn_loc);
+	}
+
+	SV** zonein_ptr = hv_fetchs(hash, "zonein", false);
+	if (zonein_ptr && SvROK(*zonein_ptr) && SvTYPE(SvRV(*zonein_ptr)) == SVt_PVHV)
+	{
+		auto zonein_loc = GetDynamicZoneLocationFromHash((HV*)SvRV(*zonein_ptr));
+		dz.SetZoneInLocation(zonein_loc);
+	}
+
+	uint32_t task_id = static_cast<uint32_t>(SvUV(ST(1)));
+
+	THIS->CreateTaskDynamicZone(task_id, dz);
 }
 
 XS(XS_Client_GetExpedition);
@@ -5466,6 +5693,150 @@ XS(XS_Client_DiaWind) {
 		XSRETURN_EMPTY;
 }
 
+XS(XS_Client_GetIPExemption);
+XS(XS_Client_GetIPExemption) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: Client::GetIPExemption(THIS)"); // @categories Account and Character
+	{
+		Client* THIS;
+		int exemption_amount = 0;
+		dXSTARG;
+		VALIDATE_THIS_IS_CLIENT;
+		exemption_amount = THIS->GetIPExemption();
+		XSprePUSH;
+		PUSHi((IV) exemption_amount);
+	}
+	XSRETURN(1);	
+}
+
+XS(XS_Client_GetIPString);
+XS(XS_Client_GetIPString) {
+	dXSARGS;
+	if (items != 1)
+		Perl_croak(aTHX_ "Usage: Client::GetIPString(THIS)"); // @categories Account and Character
+	{
+		Client *THIS;
+		dXSTARG;
+		VALIDATE_THIS_IS_CLIENT;
+		std::string ip_string = THIS->GetIPString();
+		sv_setpv(TARG, ip_string.c_str());
+		XSprePUSH;
+		PUSHTARG;
+	}
+	XSRETURN(1);
+}
+
+XS(XS_Client_SetIPExemption); /* prototype to pass -Wmissing-prototypes */
+XS(XS_Client_SetIPExemption) {
+	dXSARGS;
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: Client::SetIPExemption(THIS, int exemption_amount)"); // @categories Account and Character
+	{
+		Client *THIS;
+		int exemption_amount = (int) SvIV(ST(1));
+		dXSTARG;
+		VALIDATE_THIS_IS_CLIENT;
+		THIS->SetIPExemption(exemption_amount);
+  }
+	XSRETURN_EMPTY;
+}
+
+XS(XS_Client_ReadBookByName);
+XS(XS_Client_ReadBookByName) {
+	dXSARGS;
+	if (items != 3)
+		Perl_croak(aTHX_ "Usage: Client::ReadBookByName(THIS, string book_name, uint8 book_type)"); // @categories Script Utility
+	{
+		Client *THIS;
+		std::string book_name(SvPV_nolen(ST(1)));
+		uint8 book_type = (uint8) SvUV(ST(2));
+		VALIDATE_THIS_IS_CLIENT;
+		THIS->ReadBookByName(book_name, book_type);
+	}
+	XSRETURN_EMPTY;
+}
+
+XS(XS_Client_UntrainDiscBySpellID); /* prototype to pass -Wmissing-prototypes */
+XS(XS_Client_UntrainDiscBySpellID) {
+	dXSARGS;
+	if (items < 2 || items > 3)
+		Perl_croak(aTHX_ "Usage: Client::UntrainDiscBySpellID(THIS, uint16 spell_id, [bool update_client = true])"); // @categories Spells and Disciplines
+	{
+		Client *THIS;
+		uint16 spell_id = (uint16) SvUV(ST(1));
+		bool update_client = true;
+		VALIDATE_THIS_IS_CLIENT;
+		if (items == 3) {
+			update_client = (bool) SvTRUE(ST(2));
+		}
+
+		THIS->UntrainDiscBySpellID(spell_id, update_client);
+	}
+	XSRETURN_EMPTY;
+}
+
+XS(XS_Client_SummonBaggedItems); /* prototype to pass -Wmissing-prototypes */
+XS(XS_Client_SummonBaggedItems) {
+	dXSARGS;
+	if (items != 3) {
+		Perl_croak(aTHX_ "Usage: Client::SummonBaggedItems(THIS, uint32 bag_item_id, ARRAYREF bag_items_array)"); // @categories Inventory and Items, Script Utility
+	}
+
+	Client* THIS;
+	VALIDATE_THIS_IS_CLIENT;
+
+	uint32 bag_item_id = (uint32) SvUV(ST(1));
+
+	// verify we're receiving a reference to an array type
+	SV* bag_items_avref = ST(2);
+	if (!bag_items_avref || !SvROK(bag_items_avref) || SvTYPE(SvRV(bag_items_avref)) != SVt_PVAV) {
+		Perl_croak(aTHX_ "Client::SummonBaggedItems second argument is not a reference to an array");
+	}
+
+	// dereference into the array
+	AV* bag_items_av = (AV*)SvRV(bag_items_avref);
+
+	std::vector<ServerLootItem_Struct> bagged_items;
+
+	auto count = av_len(bag_items_av) + 1;
+	for (int i = 0; i < count; ++i) {
+		SV** element = av_fetch(bag_items_av, i, 0);
+
+		// verify array element is a hash reference containing item details
+		if (element && SvROK(*element) && SvTYPE(SvRV(*element)) == SVt_PVHV) {
+			HV* hash = (HV*)SvRV(*element); // dereference
+
+			SV** item_id_ptr = hv_fetchs(hash, "item_id", false);
+			SV** item_charges_ptr = hv_fetchs(hash, "charges", false);
+			SV** attuned_ptr = hv_fetchs(hash, "attuned", false);
+			SV** augment_one_ptr = hv_fetchs(hash, "augment_one", false);
+			SV** augment_two_ptr = hv_fetchs(hash, "augment_two", false);
+			SV** augment_three_ptr = hv_fetchs(hash, "augment_three", false);
+			SV** augment_four_ptr = hv_fetchs(hash, "augment_four", false);
+			SV** augment_five_ptr = hv_fetchs(hash, "augment_five", false);
+			SV** augment_six_ptr = hv_fetchs(hash, "augment_six", false);			
+			if (item_id_ptr && item_charges_ptr) {
+				ServerLootItem_Struct item{};
+				item.item_id = static_cast<uint32>(SvUV(*item_id_ptr));
+				item.charges = static_cast<int16>(SvIV(*item_charges_ptr));
+				item.attuned = attuned_ptr ? static_cast<uint8>(SvUV(*attuned_ptr)) : 0;
+				item.aug_1 = augment_one_ptr ? static_cast<uint32>(SvUV(*augment_one_ptr)) : 0;
+				item.aug_2 = augment_two_ptr ? static_cast<uint32>(SvUV(*augment_two_ptr)) : 0;
+				item.aug_3 = augment_three_ptr ? static_cast<uint32>(SvUV(*augment_three_ptr)) : 0;
+				item.aug_4 = augment_four_ptr ? static_cast<uint32>(SvUV(*augment_four_ptr)) : 0;
+				item.aug_5 = augment_five_ptr ? static_cast<uint32>(SvUV(*augment_five_ptr)) : 0;
+				item.aug_6 = augment_six_ptr ? static_cast<uint32>(SvUV(*augment_six_ptr)) : 0;
+				bagged_items.emplace_back(item);
+			}
+		}
+	}
+
+	THIS->SummonBaggedItems(bag_item_id, bagged_items);
+
+	XSRETURN_EMPTY;
+}
+
 #ifdef __cplusplus
 extern "C"
 #endif
@@ -5515,6 +5886,7 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "ClearCompassMark"), XS_Client_ClearCompassMark, file, "$");
 	newXSproto(strcpy(buf, "ClearZoneFlag"), XS_Client_ClearZoneFlag, file, "$$");
 	newXSproto(strcpy(buf, "CreateExpedition"), XS_Client_CreateExpedition, file, "$$$$$$$;$");
+	newXSproto(strcpy(buf, "CreateTaskDynamicZone"), XS_Client_CreateTaskDynamicZone, file, "$$");
 	newXSproto(strcpy(buf, "Connected"), XS_Client_Connected, file, "$");
 	newXSproto(strcpy(buf, "CountItem"), XS_Client_CountItem, file, "$$");
 	newXSproto(strcpy(buf, "DecreaseByID"), XS_Client_DecreaseByID, file, "$$$");
@@ -5592,6 +5964,8 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "GetInstrumentMod"), XS_Client_GetInstrumentMod, file, "$$");
 	newXSproto(strcpy(buf, "GetInventory"), XS_Client_GetInventory, file, "$");
 	newXSproto(strcpy(buf, "GetIP"), XS_Client_GetIP, file, "$");
+	newXSproto(strcpy(buf, "GetIPExemption"), XS_Client_GetIPExemption, file, "$");
+	newXSproto(strcpy(buf, "GetIPString"), XS_Client_GetIPString, file, "$");
 	newXSproto(strcpy(buf, "GetItemAt"), XS_Client_GetItemAt, file, "$$");
 	newXSproto(strcpy(buf, "GetItemIDAt"), XS_Client_GetItemIDAt, file, "$$");
 	newXSproto(strcpy(buf, "GetItemInInventory"), XS_Client_GetItemInInventory, file, "$$");
@@ -5736,6 +6110,7 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "SetHideMe"), XS_Client_SetHideMe, file, "$$");
 	newXSproto(strcpy(buf, "SetHorseId"), XS_Client_SetHorseId, file, "$$");
 	newXSproto(strcpy(buf, "SetHunger"), XS_Client_SetHunger, file, "$$");
+	newXSproto(strcpy(buf, "SetIPExemption"), XS_Client_SetIPExemption, file, "$$");
 	newXSproto(strcpy(buf, "SetLanguageSkill"), XS_Client_SetLanguageSkill, file, "$$$");
 	newXSproto(strcpy(buf, "SetMaterial"), XS_Client_SetMaterial, file, "$$$");
 	newXSproto(strcpy(buf, "SetPrimaryWeaponOrnamentation"), XS_Client_SetPrimaryWeaponOrnamentation, file, "$$");
@@ -5754,6 +6129,7 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "Sit"), XS_Client_Sit, file, "$");
 	newXSproto(strcpy(buf, "SlotConvert2"), XS_Client_SlotConvert2, file, "$$");
 	newXSproto(strcpy(buf, "Stand"), XS_Client_Stand, file, "$");
+	newXSproto(strcpy(buf, "SummonBaggedItems"), XS_Client_SummonBaggedItems, file, "$$$");
 	newXSproto(strcpy(buf, "SummonItem"), XS_Client_SummonItem, file, "$$;$$$$$$$$");
 	newXSproto(strcpy(buf, "TakeMoneyFromPP"), XS_Client_TakeMoneyFromPP, file, "$$;$");
 	newXSproto(strcpy(buf, "TGB"), XS_Client_TGB, file, "$");
@@ -5770,6 +6146,7 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "UnscribeSpellAll"), XS_Client_UnscribeSpellAll, file, "$;$");
 	newXSproto(strcpy(buf, "UntrainDisc"), XS_Client_UntrainDisc, file, "$$;$");
 	newXSproto(strcpy(buf, "UntrainDiscAll"), XS_Client_UntrainDiscAll, file, "$;$");
+	newXSproto(strcpy(buf, "UntrainDiscBySpellID"), XS_Client_UntrainDiscBySpellID, file, "$$;$");
 	newXSproto(strcpy(buf, "UpdateAdmin"), XS_Client_UpdateAdmin, file, "$;$");
 	newXSproto(strcpy(buf, "SetGMStatus"), XS_Client_SetGMStatus, file, "$$");
 	newXSproto(strcpy(buf, "UpdateGroupAAs"), XS_Client_UpdateGroupAAs, file, "$$$");
@@ -5778,6 +6155,7 @@ XS(boot_Client) {
 	newXSproto(strcpy(buf, "UpdateWho"), XS_Client_UpdateWho, file, "$;$");
 	newXSproto(strcpy(buf, "UseDiscipline"), XS_Client_UseDiscipline, file, "$$$");
 	newXSproto(strcpy(buf, "WorldKick"), XS_Client_WorldKick, file, "$");
+	newXSproto(strcpy(buf, "ReadBookByName"), XS_Client_ReadBookByName, file, "$$$");
 	XSRETURN_YES;
 }
 

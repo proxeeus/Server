@@ -43,6 +43,7 @@
 #include "water_map.h"
 #include "npc_scale_manager.h"
 #include "../common/say_link.h"
+#include "dialogue_window.h"
 
 #ifdef _WINDOWS
 	#define snprintf	_snprintf
@@ -1199,6 +1200,34 @@ bool EntityList::IsMobSpawnedByNpcTypeID(uint32 get_id)
 	}
 
 	return false;
+}
+
+bool EntityList::IsNPCSpawned(std::vector<uint32> npc_ids)
+{
+	return CountSpawnedNPCs(npc_ids) != 0;
+}
+
+uint32 EntityList::CountSpawnedNPCs(std::vector<uint32> npc_ids)
+{
+	uint32 npc_count = 0;
+	if (npc_list.empty() || npc_ids.empty()) {
+		return npc_count;
+	}
+
+	for (auto current_npc : npc_list) {
+		if (
+			std::find(
+				npc_ids.begin(),
+				npc_ids.end(),
+				current_npc.second->GetNPCTypeID()
+			) != npc_ids.end() && 
+			current_npc.second->GetID() != 0
+		) {
+			npc_count++;
+		}
+	}
+
+	return npc_count;
 }
 
 Object *EntityList::GetObjectByDBID(uint32 id)
@@ -4203,8 +4232,25 @@ void EntityList::QuestJournalledSayClose(
 	buf.WriteInt32(0);
 	buf.WriteInt32(0);
 
-	// auto inject saylinks (say)
-	if (RuleB(Chat, AutoInjectSaylinksToSay)) {
+	if (RuleB(Chat, QuestDialogueUsesDialogueWindow)) {
+		for (auto &e : GetCloseMobList(sender, (dist * dist))) {
+			Mob *mob = e.second;
+
+			if (!mob->IsClient()) {
+				continue;
+			}
+
+			Client *client = mob->CastToClient();
+
+			if (client->GetTarget() && client->GetTarget()->IsMob() && client->GetTarget()->CastToMob() == sender) {
+				std::string window_markdown = message;
+				DialogueWindow::Render(client, window_markdown);
+			}
+		}
+
+		return;
+	}
+	else if (RuleB(Chat, AutoInjectSaylinksToSay)) {
 		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(message);
 		buf.WriteString(new_message);
 	}

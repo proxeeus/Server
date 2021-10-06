@@ -3408,7 +3408,7 @@ int Mob::AddBuff(Mob *caster, uint16 spell_id, int duration, int32 level_overrid
 	buffs[emptyslot].focusproclimit_procamt = 0;
 	buffs[emptyslot].instrument_mod = caster ? caster->GetInstrumentMod(spell_id) : 10;
 
-	if (level_override > 0) {
+	if (level_override > 0 || buffs[emptyslot].numhits > 0) {
 		buffs[emptyslot].UpdateClient = true;
 	} else {
 		if (buffs[emptyslot].ticsremaining > (1 + CalcBuffDuration_formula(caster_level, spells[spell_id].buffdurationformula, spells[spell_id].buffduration)))
@@ -5334,6 +5334,16 @@ void Client::UntrainDiscAll(bool update_client)
 	{
 		if(m_pp.disciplines.values[i] != 0)
 			UntrainDisc(i, update_client);
+	}
+}
+
+void Client::UntrainDiscBySpellID(uint16 spell_id, bool update_client)
+{
+	for (int slot = 0; slot < MAX_PP_DISCIPLINES; slot++) {
+		if (m_pp.disciplines.values[slot] == spell_id) {
+			UntrainDisc(slot, update_client);
+			return;
+		}
 	}
 }
 

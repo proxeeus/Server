@@ -26,6 +26,7 @@
 #include "worldserver.h"
 #include "mob_movement_manager.h"
 #include "water_map.h"
+#include "dialogue_window.h"
 
 #include <limits.h>
 #include <math.h>
@@ -1752,6 +1753,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		else
 			gender = in_gender;
 	}
+
 	else
 	{
 		race = in_race;
@@ -1760,6 +1762,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		else
 			gender = in_gender;
 	}
+
 
 	if (in_texture == 0xFF)
 	{
@@ -1772,6 +1775,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	{
 		texture = in_texture;
 	}
+
 
 	if (in_helmtexture == 0xFF)
 	{
@@ -3026,10 +3030,29 @@ void Mob::Say(const char *format, ...)
 		talker = this;
 	}
 
-	if (RuleB(Chat, AutoInjectSaylinksToSay)) {
+	int16 distance = 200;
+
+	if (RuleB(Chat, QuestDialogueUsesDialogueWindow)) {
+		for (auto &e : entity_list.GetCloseMobList(talker, (distance * distance))) {
+			Mob *mob = e.second;
+
+			if (!mob->IsClient()) {
+				continue;
+			}
+
+			Client *client = mob->CastToClient();
+			if (client->GetTarget() && client->GetTarget()->IsMob() && client->GetTarget()->CastToMob() == talker) {
+				std::string window_markdown = buf;
+				DialogueWindow::Render(client, window_markdown);
+			}
+		}
+
+		return;
+	}
+	else if (RuleB(Chat, AutoInjectSaylinksToSay)) {
 		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(buf);
 		entity_list.MessageCloseString(
-			talker, false, 200, 10,
+			talker, false, distance, Chat::NPCQuestSay,
 			GENERIC_SAY, GetCleanName(), new_message.c_str()
 		);
 	}
@@ -3040,7 +3063,7 @@ void Mob::Say(const char *format, ...)
 	}
 	else {
 		entity_list.MessageCloseString(
-			talker, false, 200, 10,
+			talker, false, distance, Chat::NPCQuestSay,
 			GENERIC_SAY, GetCleanName(), buf
 		);
 	}
@@ -3971,20 +3994,6 @@ int32 Mob::GetPositionalDmgTakenAmt(Mob *attacker)
 	}
 
 	return total_amt;
-}
-
-
-int16 Mob::GetHealRate(uint16 spell_id, Mob* caster) {
-
-	int16 heal_rate = 0;
-
-	heal_rate += itembonuses.HealRate + spellbonuses.HealRate + aabonuses.HealRate;
-	heal_rate += GetFocusIncoming(focusFcHealPctIncoming, SE_FcHealPctIncoming, caster, spell_id);
-
-	if(heal_rate < -99)
-		heal_rate = -99;
-
-	return heal_rate;
 }
 
 void Mob::SetBottomRampageList()

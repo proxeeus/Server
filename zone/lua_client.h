@@ -183,6 +183,8 @@ public:
 	int GetDiscSlotBySpellID(int32 spell_id);
 	void UntrainDisc(int slot);
 	void UntrainDisc(int slot, bool update_client);
+	void UntrainDiscBySpellID(uint16 spell_id);
+	void UntrainDiscBySpellID(uint16 spell_id, bool update_client);
 	void UntrainDiscAll();
 	void UntrainDiscAll(bool update_client);
 	bool IsStanding();
@@ -213,6 +215,7 @@ public:
 		bool attuned);
 	void SummonItem(uint32 item_id, int charges, uint32 aug1, uint32 aug2, uint32 aug3, uint32 aug4, uint32 aug5,
 		bool attuned, int to_slot);
+	void SummonBaggedItems(uint32 bag_item_id, luabind::adl::object bag_items_table);
 	void SetStats(int type, int value);
 	void IncStats(int type, int value);
 	void DropItem(int slot_id);
@@ -270,6 +273,7 @@ public:
 	uint32 GetRadiantCrystals();
 	uint32 GetEbonCrystals();
 	void QuestReadBook(const char *text, int type);
+	void ReadBookByName(std::string book_name, uint8 book_type);
 	void UpdateGroupAAs(int points, uint32 type);
 	uint32 GetGroupPoints();
 	uint32 GetRaidPoints();
@@ -280,6 +284,9 @@ public:
 	void SetEndurance(int endur);
 	void SendOPTranslocateConfirm(Lua_Mob caster, int spell_id);
 	uint32 GetIP();
+	std::string GetIPString();
+	int GetIPExemption();
+	void SetIPExemption(int exemption_amount);
 	void AddLevelBasedExp(int exp_pct);
 	void AddLevelBasedExp(int exp_pct, int max_level);
 	void AddLevelBasedExp(int exp_pct, int max_level, bool ignore_mods);
