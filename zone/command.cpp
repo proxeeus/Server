@@ -3126,18 +3126,18 @@ void command_race(Client *c, const Seperator *sep)
 
 	if (sep->IsNumber(1)) {
 		auto race = atoi(sep->arg[1]);
-		if ((race >= 0 && race <= 732) || (race >= 2253 && race <= 2259)) {
+		if ((race >= 0 && race <= RuleI(NPC, MaxRaceID)) || (race >= 2253 && race <= 2259)) {
 			if ((c->GetTarget()) && c->Admin() >= commandRaceOthers) {
 				target = c->GetTarget();
 			}
 			target->SendIllusionPacket(race);
 		}
 		else {
-			c->Message(Chat::White, "Usage: #race [0-732, 2253-2259] (0 for back to normal)");
+			c->Message(Chat::White, fmt::format("Usage: #race [0-{}, 2253-2259] (0 for back to normal)", RuleI(NPC, MaxRaceID)).c_str());
 		}
 	}
 	else {
-		c->Message(Chat::White, "Usage: #race [0-732, 2253-2259] (0 for back to normal)");
+		c->Message(Chat::White, fmt::format("Usage: #race [0-{}, 2253-2259] (0 for back to normal)", RuleI(NPC, MaxRaceID)).c_str());
 	}
 }
 
@@ -5226,8 +5226,8 @@ void command_fixmob(Client *c, const Seperator *sep)
 		if (strcasecmp(command, "race") == 0)
 		{
 			if (Race == 1 && codeMove == 'p')
-				Race = 724;
-			else if (Race >= 724 && codeMove != 'p')
+				Race = RuleI(NPC, MaxRaceID);
+			else if (Race >= RuleI(NPC, MaxRaceID) && codeMove != 'p')
 				Race = 1;
 			else
 				Race += Adjustment;
@@ -6100,7 +6100,7 @@ void command_push(Client *c, const Seperator *sep)
 
 void command_proximity(Client *c, const Seperator *sep)
 {
-	if (!c->GetTarget() && !c->GetTarget()->IsNPC()) {
+	if (!c->GetTarget() || (c->GetTarget() && !c->GetTarget()->IsNPC())) {
 		c->Message(Chat::White, "You must target an NPC");
 		return;
 	}
@@ -8027,7 +8027,7 @@ void command_scribespells(Client *c, const Seperator *sep)
 			}
 
 			if (!IsDiscipline(spell_id_) && !t->HasSpellScribed(spell_id)) { // isn't a discipline & we don't already have it scribed
-				t->ScribeSpell(spell_id_, book_slot);
+				t->ScribeSpell(spell_id_, book_slot, true, true);
 				++count;
 			}
 
@@ -8038,14 +8038,18 @@ void command_scribespells(Client *c, const Seperator *sep)
 	}
 
 	if (count > 0) {
-		t->Message(Chat::White, "Successfully scribed %i spells.",  count);
-		if (t != c)
-			c->Message(Chat::White, "Successfully scribed %i spells for %s.",  count, t->GetName());
+		t->Message(Chat::White, "Successfully scribed %i spells.", count);
+		if (t != c) {
+			c->Message(Chat::White, "Successfully scribed %i spells for %s.", count, t->GetName());
+		}
+
+		t->SaveSpells();
 	}
 	else {
 		t->Message(Chat::White, "No spells scribed.");
-		if (t != c)
-			c->Message(Chat::White, "No spells scribed for %s.",  t->GetName());
+		if (t != c) {
+			c->Message(Chat::White, "No spells scribed for %s.", t->GetName());
+		}
 	}
 }
 
@@ -8157,6 +8161,7 @@ void command_untraindiscs(Client *c, const Seperator *sep) {
 		t = c->GetTarget()->CastToClient();
 
 	t->UntrainDiscAll();
+	t->Message(Chat::Yellow, "All disciplines removed.");
 }
 
 void command_wpinfo(Client *c, const Seperator *sep)
@@ -8447,11 +8452,46 @@ void command_itemsearch(Client *c, const Seperator *sep)
 			item = database.GetItem(atoi(search_criteria));
 			if (item) {
 				linker.SetItemData(item);
+				std::string item_id = std::to_string(item->ID);
+				std::string saylink_commands =
+				"[" +
+					EQ::SayLinkEngine::GenerateQuestSaylink(
+						"#si " + item_id,
+						false,
+						"X"
+					) +
+				"] ";
 
-				c->Message(Chat::White, "%u: %s",  item->ID, linker.GenerateLink().c_str());
+				if (item->Stackable && item->StackSize > 1) {
+					std::string stack_size = std::to_string(item->StackSize);
+					saylink_commands +=
+					"[" +
+						EQ::SayLinkEngine::GenerateQuestSaylink(
+							"#si " + item_id + " " + stack_size,
+							false,
+							stack_size
+						) +
+					"]";
+				}
+
+				c->Message(
+					Chat::White,
+					fmt::format(
+						" Summon {} [{}] [{}]",
+						saylink_commands,
+						linker.GenerateLink(),
+						item->ID
+					).c_str()
+				);
 			}
 			else {
-				c->Message(Chat::White, "Item #%s not found",  search_criteria);
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Item {} not found",
+						search_criteria
+					).c_str()
+				);
 			}
 
 			return;
@@ -8473,21 +8513,21 @@ void command_itemsearch(Client *c, const Seperator *sep)
 				std::string item_id = std::to_string(item->ID);
 				std::string saylink_commands =
 					"[" +
-					EQ::SayLinkEngine::GenerateQuestSaylink(
-						"#si " + item_id,
-						false,
-						"X"
-					) +
+						EQ::SayLinkEngine::GenerateQuestSaylink(
+							"#si " + item_id,
+							false,
+							"X"
+						) +
 					"] ";
 				if (item->Stackable && item->StackSize > 1) {
 					std::string stack_size = std::to_string(item->StackSize);
 					saylink_commands +=
 					"[" +
-					EQ::SayLinkEngine::GenerateQuestSaylink(
-						"#si " + item_id + " " + stack_size,
-						false,
-						stack_size
-					) +
+						EQ::SayLinkEngine::GenerateQuestSaylink(
+							"#si " + item_id + " " + stack_size,
+							false,
+							stack_size
+						) +
 					"]";
 				}
 
@@ -9343,7 +9383,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 	}
 
 	if (strcasecmp(sep->arg[1], "gender") == 0) {
-		auto gender_id = atoi(sep->arg[2]);		
+		auto gender_id = atoi(sep->arg[2]);
 		c->Message(Chat::Yellow, fmt::format("NPC ID {} is now a {} ({}).", npc_id, gender_id, GetGenderName(gender_id)).c_str());
 		std::string query = fmt::format("UPDATE npc_types SET gender = {} WHERE id = {}", gender_id, npc_id);
 		content_db.QueryDatabase(query);
@@ -9529,7 +9569,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 		std::string query = fmt::format("UPDATE npc_types SET ammo_idfile = {} WHERE id = {}", atoi(sep->arg[2]), npc_id);
 		content_db.QueryDatabase(query);
 		return;
-	}	
+	}
 
 	if (strcasecmp(sep->arg[1], "weapon") == 0) {
 		c->Message(Chat::Yellow, fmt::format("NPC ID {} will have Model {} set to their Primary and Model {} set to their Secondary on repop.", npc_id, atoi(sep->arg[2]), atoi(sep->arg[3])).c_str());
@@ -9747,7 +9787,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 		content_db.QueryDatabase(query);
 		return;
 	}
-	
+
 	if (strcasecmp(sep->arg[1], "accuracy") == 0) {
 		c->Message(Chat::Yellow, fmt::format("NPC ID {} now has {} Accuracy.", npc_id, atoi(sep->arg[2])).c_str());
 		std::string query = fmt::format("UPDATE npc_types SET accuracy = {} WHERE id = {}", atoi(sep->arg[2]), npc_id);
@@ -9817,7 +9857,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 		content_db.QueryDatabase(query);
 		return;
 	}
-	
+
 	if (strcasecmp(sep->arg[1], "armtexture") == 0) {
 		c->Message(Chat::Yellow, fmt::format("NPC ID {} is now using Arm Texture {}.", npc_id, atoi(sep->arg[2])).c_str());
 		std::string query = fmt::format("UPDATE npc_types SET armtexture = {} WHERE id = {}", atoi(sep->arg[2]), npc_id);
@@ -10002,7 +10042,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 				animation = 1;
 				animation_name = "Sitting";
 			} else if(strcasecmp(sep->arg[2], "crouch") == 0 || atoi(sep->arg[2]) == 2) { // Crouch
-				animation = 2;				
+				animation = 2;
 				animation_name = "Crouching";
 			} else if(strcasecmp(sep->arg[2], "dead") == 0 || atoi(sep->arg[2]) == 3) { // Dead
 				animation = 3;
@@ -11067,7 +11107,6 @@ void command_traindisc(Client *c, const Seperator *sep)
 				}
 				else if (t->GetPP().disciplines.values[r] == 0) {
 					t->GetPP().disciplines.values[r] = spell_id_;
-					database.SaveCharacterDisc(t->CharacterID(), r, spell_id_);
 					change = true;
 					t->Message(Chat::White, "You have learned a new discipline!");
 					++count; // success counter
@@ -11079,17 +11118,22 @@ void command_traindisc(Client *c, const Seperator *sep)
 		}
 	}
 
-	if (change)
+	if (change) {
 		t->SendDisciplineUpdate();
+		t->SaveDisciplines();
+	}
 
 	if (count > 0) {
-		t->Message(Chat::White, "Successfully trained %u disciplines.",  count);
-		if (t != c)
-			c->Message(Chat::White, "Successfully trained %u disciplines for %s.",  count, t->GetName());
-	} else {
+		t->Message(Chat::White, "Successfully trained %u disciplines.", count);
+		if (t != c) {
+			c->Message(Chat::White, "Successfully trained %u disciplines for %s.", count, t->GetName());
+		}
+	}
+	else {
 		t->Message(Chat::White, "No disciplines trained.");
-		if (t != c)
-			c->Message(Chat::White, "No disciplines trained for %s.",  t->GetName());
+		if (t != c) {
+			c->Message(Chat::White, "No disciplines trained for %s.", t->GetName());
+		}
 	}
 }
 
@@ -14948,7 +14992,7 @@ void command_dye(Client *c, const Seperator *sep)
 		c->Message(Chat::White, "Command Syntax: #dye help | #dye [slot] [red] [green] [blue] [use_tint]");
 		return;
 	}
-	
+
 	uint8 slot = 0;
 	uint8 red = 255;
 	uint8 green = 255;
@@ -14970,7 +15014,7 @@ void command_dye(Client *c, const Seperator *sep)
 		std::vector<std::string> slot_messages;
 		c->Message(Chat::White, "Command Syntax: #dye help | #dye [slot] [red] [green] [blue] [use_tint]");
 		c->Message(Chat::White, "Red, Green, and Blue go from 0 to 255.");
-		
+
 		for (const auto& slot : dye_slots) {
 			slot_messages.push_back(fmt::format("({}) {}", slot_id, slot));
 			slot_id++;

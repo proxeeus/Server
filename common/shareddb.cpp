@@ -1118,7 +1118,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 		item.Haste = (uint32)atoul(row[ItemField::haste]);
 		item.DamageShield = (uint32)atoul(row[ItemField::damageshield]);
 		item.RecastDelay = (uint32)atoul(row[ItemField::recastdelay]);
-		item.RecastType = (uint32)atoul(row[ItemField::recasttype]);
+		item.RecastType = (int)atoi(row[ItemField::recasttype]);
 		item.GuildFavor = (uint32)atoul(row[ItemField::guildfavor]);
 		item.AugDistiller = (uint32)atoul(row[ItemField::augdistiller]);
 		item.Attuneable = (atoi(row[ItemField::attuneable]) == 0) ? false : true;
@@ -1840,6 +1840,7 @@ void SharedDatabase::LoadSpells(void *data, int max_spells) {
 		sp[tempid].effectdescnum = atoi(row[157]);
 
 		sp[tempid].npc_no_los = atoi(row[159]) != 0;
+		sp[tempid].feedbackable = atoi(row[160]) != 0;
 		sp[tempid].reflectable = atoi(row[161]) != 0;
 		sp[tempid].bonushate=atoi(row[162]);
 

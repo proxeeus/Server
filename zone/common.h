@@ -328,8 +328,7 @@ struct Buffs_Struct {
 	int32	ExtraDIChance;
 	int16	RootBreakChance; //Not saved to dbase
 	uint32	instrument_mod;
-	int16   focusproclimit_time;	//timer to limit number of procs from focus effects 
-	int16   focusproclimit_procamt; //amount of procs that can be cast before timer limiter is set
+	int32	virus_spread_time; //time till next attempted viral spread
 	bool	persistant_buff;
 	bool	client; //True if the caster is a client
 	bool	UpdateClient;
@@ -404,7 +403,7 @@ struct StatBonuses {
 	int32	skillmodmax[EQ::skills::HIGHEST_SKILL + 1];
 	int		effective_casting_level;
 	int		adjusted_casting_skill;				// SPA 112 for fizzles
-	int		reflect_chance;						// chance to reflect incoming spell
+	int		reflect[3];					// chance to reflect incoming spell [0]=Chance [1]=Resist Mod [2]= % of Base Dmg
 	uint32	singingMod;
 	uint32	Amplification;						// stacks with singingMod
 	uint32	brassMod;
@@ -680,6 +679,9 @@ namespace SBIndex {
 	constexpr uint16 FINISHING_EFFECT_LEVEL_CHANCE_BONUS    = 1; // SPA 440, 345, 346
 	constexpr uint16 DOUBLE_MELEE_ROUND_CHANCE              = 0; // SPA 471
 	constexpr uint16 DOUBLE_MELEE_ROUND_DMG_BONUS			= 1; // SPA 471
+	constexpr uint16 REFLECT_CHANCE                         = 0; // SPA 158
+	constexpr uint16 REFLECT_RESISTANCE_MOD                 = 1; // SPA 158
+	constexpr uint16 REFLECT_DMG_EFFECTIVENESS              = 2; // SPA 158
 };
 
 

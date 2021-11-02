@@ -1142,7 +1142,8 @@ uint16 QuestManager::scribespells(uint8 max_level, uint8 min_level) {
 			if (initiator->HasSpellScribed(spell_id))
 				continue;
 
-			initiator->ScribeSpell(spell_id, book_slot);
+			// defer saving per spell and bulk save at the end
+			initiator->ScribeSpell(spell_id, book_slot, true, true);
 			book_slot = initiator->GetNextAvailableSpellBookSlot(book_slot);
 			spells_learned++;
 		}
@@ -1151,6 +1152,9 @@ uint16 QuestManager::scribespells(uint8 max_level, uint8 min_level) {
 	if (spells_learned > 0) {
 		std::string spell_message = (spells_learned == 1 ? "a new spell" : fmt::format("{} new spells", spells_learned));
 		initiator->Message(Chat::White, fmt::format("You have learned {}!", spell_message).c_str());
+
+		// bulk insert spells
+		initiator->SaveSpells();
 	}
 	return spells_learned;
 }
@@ -1773,14 +1777,30 @@ void QuestManager::addldonpoints(uint32 theme_id, int points) {
 
 void QuestManager::addldonloss(uint32 theme_id) {
 	QuestManagerCurrentQuestVars();
-	if(initiator)
-		initiator->AddLDoNLoss(theme_id);
+	if(initiator) {
+		initiator->UpdateLDoNWinLoss(theme_id);
+	}
 }
 
 void QuestManager::addldonwin(uint32 theme_id) {
 	QuestManagerCurrentQuestVars();
-	if(initiator)
-		initiator->AddLDoNWin(theme_id);
+	if(initiator) {
+		initiator->UpdateLDoNWinLoss(theme_id, true);
+	}
+}
+
+void QuestManager::removeldonloss(uint32 theme_id) {
+	QuestManagerCurrentQuestVars();
+	if(initiator) {
+		initiator->UpdateLDoNWinLoss(theme_id, false, true);
+	}
+}
+
+void QuestManager::removeldonwin(uint32 theme_id) {
+	QuestManagerCurrentQuestVars();
+	if(initiator) {
+		initiator->UpdateLDoNWinLoss(theme_id, true, true);
+	}
 }
 
 void QuestManager::setnexthpevent(int at) {
@@ -3599,6 +3619,17 @@ int QuestManager::getspellstat(uint32 spell_id, std::string stat_identifier, uin
 	return GetSpellStatValue(spell_id, stat_identifier.c_str(), slot);
 }
 
+void QuestManager::CrossZoneDialogueWindow(uint8 update_type, int update_identifier, const char* message, const char* client_name) {
+	auto pack = new ServerPacket(ServerOP_CZDialogueWindow, sizeof(CZDialogueWindow_Struct));
+	CZDialogueWindow_Struct* CZDW = (CZDialogueWindow_Struct*)pack->pBuffer;
+	CZDW->update_type = update_type;
+	CZDW->update_identifier = update_identifier;
+	strn0cpy(CZDW->message, message, 4096);
+	strn0cpy(CZDW->client_name, client_name, 64);
+	worldserver.SendPacket(pack);
+	safe_delete(pack);
+}
+
 void QuestManager::CrossZoneLDoNUpdate(uint8 update_type, uint8 update_subtype, int update_identifier, uint32 theme_id, int points, const char* client_name) {
 	auto pack = new ServerPacket(ServerOP_CZLDoNUpdate, sizeof(CZLDoNUpdate_Struct));
 	CZLDoNUpdate_Struct* CZLU = (CZLDoNUpdate_Struct*)pack->pBuffer;
@@ -3699,6 +3730,16 @@ void QuestManager::CrossZoneTaskUpdate(uint8 update_type, uint8 update_subtype, 
 	CZTU->update_count = update_count;
 	CZTU->enforce_level_requirement = enforce_level_requirement;
 	strn0cpy(CZTU->client_name, client_name, 64);
+	worldserver.SendPacket(pack);
+	safe_delete(pack);
+}
+
+void QuestManager::WorldWideDialogueWindow(const char* message, uint8 min_status, uint8 max_status) {
+	auto pack = new ServerPacket(ServerOP_WWDialogueWindow, sizeof(WWDialogueWindow_Struct));
+	WWDialogueWindow_Struct* WWDW = (WWDialogueWindow_Struct*)pack->pBuffer;
+	strn0cpy(WWDW->message, message, 4096);
+	WWDW->min_status = min_status;
+	WWDW->max_status = max_status;
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
 }

@@ -138,11 +138,10 @@ void NPC::ResumeWandering()
 
 		if (m_CurrentWayPoint.x == GetX() && m_CurrentWayPoint.y == GetY())
 		{	// are we we at a waypoint? if so, trigger event and start to next
-			char temp[100];
-			itoa(cur_wp, temp, 10);	//do this before updating to next waypoint
+			std::string buf = fmt::format("{}", cur_wp);
 			CalculateNewWaypoint();
 			SetAppearance(eaStanding, false);
-			parse->EventNPC(EVENT_WAYPOINT_DEPART, this, nullptr, temp, 0);
+			parse->EventNPC(EVENT_WAYPOINT_DEPART, this, nullptr, buf.c_str(), 0);
 		}	// if not currently at a waypoint, we continue on to the one we were headed to before the stop
 	}
 	else
@@ -949,10 +948,6 @@ glm::vec4 Mob::TryMoveAlong(const glm::vec4 &start, float distance, float angle)
 	new_pos.z += GetZOffset();
 
 	if (zone->HasMap()) {
-		auto new_z = zone->zonemap->FindClosestZ(new_pos, nullptr);
-		if (new_z != BEST_Z_INVALID)
-			new_pos.z = new_z;
-
 		if (zone->zonemap->LineIntersectsZone(start, new_pos, 0.0f, &tmp_pos))
 			new_pos = tmp_pos;
 	}

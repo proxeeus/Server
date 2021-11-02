@@ -1672,6 +1672,25 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 			newbon->ZoneSuspendMinion = base1;
 			break;
 
+
+		case SE_Reflect:
+
+			if (newbon->reflect[SBIndex::REFLECT_CHANCE] < base1) {
+				newbon->reflect[SBIndex::REFLECT_CHANCE] = base1;
+			}
+			if (newbon->reflect[SBIndex::REFLECT_RESISTANCE_MOD] < base2) {
+				newbon->reflect[SBIndex::REFLECT_RESISTANCE_MOD] = base2;
+			}
+			break;
+
+		case SE_SpellDamageShield:
+			newbon->SpellDamageShield += base1;
+			break;
+
+		case SE_Amplification:
+			newbon->Amplification += base1;
+			break;
+
 		// to do
 		case SE_PetDiscipline:
 			break;
@@ -1780,18 +1799,19 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			if (focus)
 			{
 				if (WornType){
-					if (RuleB(Spells, UseAdditiveFocusFromWornSlot))
+					if (RuleB(Spells, UseAdditiveFocusFromWornSlot)) {
 						new_bonus->FocusEffectsWorn[focus] += spells[spell_id].base[i];
+					}
 				}
-
-				else
+				else {
 					new_bonus->FocusEffects[focus] = static_cast<uint8>(spells[spell_id].effectid[i]);
-
+				}
 				continue;
 			}
 
-			if (WornType && (RuleI(Spells, AdditiveBonusWornType) == WornType))
+			if (WornType && (RuleI(Spells, AdditiveBonusWornType) == WornType)) {
 				AdditiveWornBonus = true;
+			}
 
 			effectid = spells[spell_id].effectid[i];
 			effect_value = CalcSpellEffectValue(spell_id, i, casterlevel, instrument_mod, nullptr, ticsremaining, casterId);
@@ -2148,7 +2168,16 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			}
 
 			case SE_Reflect:
-				new_bonus->reflect_chance += effect_value;
+
+				if (AdditiveWornBonus) {
+					new_bonus->reflect[SBIndex::REFLECT_CHANCE] += effect_value;
+				}
+
+				else if (new_bonus->reflect[SBIndex::REFLECT_CHANCE] < effect_value) {
+					new_bonus->reflect[SBIndex::REFLECT_CHANCE] = effect_value;
+					new_bonus->reflect[SBIndex::REFLECT_RESISTANCE_MOD] = base2;
+					new_bonus->reflect[SBIndex::REFLECT_DMG_EFFECTIVENESS] = max;
+				}
 				break;
 
 			case SE_Amplification:
@@ -3727,7 +3756,7 @@ void NPC::CalcItemBonuses(StatBonuses *newbon)
 					newbon->DamageShield += cur->DamageShield;
 				}
 				if(cur->SpellShield > 0) {
-					newbon->SpellDamageShield += cur->SpellShield;
+					newbon->SpellShield += cur->SpellShield;
 				}
 				if(cur->Shielding > 0) {
 					newbon->MeleeMitigation += cur->Shielding;
@@ -4377,9 +4406,9 @@ void Mob::NegateSpellEffectBonuses(uint16 spell_id)
 					break;
 
 				case SE_Reflect:
-					if (negate_spellbonus) { spellbonuses.reflect_chance = effect_value; }
-					if (negate_aabonus) { aabonuses.reflect_chance = effect_value; }
-					if (negate_itembonus) { itembonuses.reflect_chance = effect_value; }
+					if (negate_spellbonus) { spellbonuses.reflect[SBIndex::REFLECT_CHANCE] = effect_value; }
+					if (negate_aabonus) { aabonuses.reflect[SBIndex::REFLECT_CHANCE] = effect_value; }
+					if (negate_itembonus) { itembonuses.reflect[SBIndex::REFLECT_CHANCE] = effect_value; }
 					break;
 
 				case SE_Amplification:

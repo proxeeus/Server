@@ -444,19 +444,8 @@ bool Client::Process() {
 			}
 		}
 
-		if (HasVirus()) {
-			if (viral_timer.Check()) {
-				viral_timer_counter++;
-				for (int i = 0; i < MAX_SPELL_TRIGGER * 2; i += 2) {
-					if (viral_spells[i]) {
-						if (viral_timer_counter % spells[viral_spells[i]].viral_timer == 0) {
-							SpreadVirus(viral_spells[i], viral_spells[i + 1]);
-						}
-					}
-				}
-			}
-			if (viral_timer_counter > 999)
-				viral_timer_counter = 0;
+		if (viral_timer.Check() && !dead) {
+			VirusEffectProcess();
 		}
 
 		ProjectileAttack();
@@ -519,9 +508,6 @@ bool Client::Process() {
 			}
 		}
 	}
-
-	if (focus_proc_limit_timer.Check() && !dead)
-		FocusProcLimitProcess();
 
 	if (client_state == CLIENT_KICKED) {
 		Save();
@@ -2074,7 +2060,8 @@ void Client::HandleRespawnFromHover(uint32 Option)
 		}
 
 		//After they've respawned into the same zone, trigger EVENT_RESPAWN
-		parse->EventPlayer(EVENT_RESPAWN, this, static_cast<std::string>(itoa(Option)), is_rez ? 1 : 0);
+		std::string export_string = fmt::format("{}", Option);
+		parse->EventPlayer(EVENT_RESPAWN, this, export_string, is_rez ? 1 : 0);
 
 		//Pop Rez option from the respawn options list;
 		//easiest way to make sure it stays at the end and

@@ -63,6 +63,10 @@ extern volatile bool RunLoops;
 #include "../common/expedition_lockout_timer.h"
 #include "cheat_manager.h"
 
+#include "../common/repositories/character_spells_repository.h"
+#include "../common/repositories/character_disciplines_repository.h"
+
+
 extern QueryServ* QServ;
 extern EntityList entity_list;
 extern Zone* zone;
@@ -318,7 +322,7 @@ Client::Client(EQStreamInterface* ieqs)
 	adventure_stats_timer = nullptr;
 	adventure_leaderboard_timer = nullptr;
 	adv_data = nullptr;
-	adv_requested_theme = 0;
+	adv_requested_theme = LDoNThemes::Unused;
 	adv_requested_id = 0;
 	adv_requested_member_count = 0;
 
@@ -1375,9 +1379,8 @@ bool Client::UpdateLDoNPoints(uint32 theme_id, int points) {
 			return false;
 	}
 
-	switch (theme_id)
-	{
-		case 0: { // No theme, so distribute evenly across all
+	switch (theme_id) {
+		case LDoNThemes::Unused: { // No theme, so distribute evenly across all
 			int split_points = (points / 5);
 			int guk_points = (split_points + (points % 5));
 			int mir_points = split_points;
@@ -1421,47 +1424,52 @@ bool Client::UpdateLDoNPoints(uint32 theme_id, int points) {
 			m_pp.ldon_points_ruj += ruj_points;
 			m_pp.ldon_points_tak += tak_points;
 			points -= split_points;
-			if (split_points != 0) // if anything left, recursively loop thru again
+			if (split_points != 0) { // if anything left, recursively loop thru again
 				UpdateLDoNPoints(0, split_points);
-
+			}
 			break;
 		}
-		case 1:	{
+		case LDoNThemes::GUK:	{
 			if(points < 0) {
-				if(m_pp.ldon_points_guk < (0 - points))
+				if(m_pp.ldon_points_guk < (0 - points)) {
 					return false;
+				}
 			}
 			m_pp.ldon_points_guk += points;
 			break;
 		}
-		case 2: {
+		case LDoNThemes::MIR: {
 			if(points < 0) {
-				if(m_pp.ldon_points_mir < (0 - points))
+				if(m_pp.ldon_points_mir < (0 - points)) {
 					return false;
+				}
 			}
 			m_pp.ldon_points_mir += points;
 			break;
 		}
-		case 3: {
+		case LDoNThemes::MMC: {
 			if(points < 0) {
-				if(m_pp.ldon_points_mmc < (0 - points))
+				if(m_pp.ldon_points_mmc < (0 - points)) {
 					return false;
+				}
 			}
 			m_pp.ldon_points_mmc += points;
 			break;
 		}
-		case 4: {
+		case LDoNThemes::RUJ: {
 			if(points < 0) {
-				if(m_pp.ldon_points_ruj < (0 - points))
+				if(m_pp.ldon_points_ruj < (0 - points)) {
 					return false;
+				}
 			}
 			m_pp.ldon_points_ruj += points;
 			break;
 		}
-		case 5: {
+		case LDoNThemes::TAK: {
 			if(points < 0) {
-				if(m_pp.ldon_points_tak < (0 - points))
+				if(m_pp.ldon_points_tak < (0 - points)) {
 					return false;
+				}
 			}
 			m_pp.ldon_points_tak += points;
 			break;
@@ -2424,9 +2432,12 @@ bool Client::CheckIncreaseSkill(EQ::skills::SkillType skillid, Mob *against_who,
 		return false;
 	int skillval = GetRawSkill(skillid);
 	int maxskill = GetMaxSkillAfterSpecializationRules(skillid, MaxSkill(skillid));
-	char buffer[24] = { 0 };
-	snprintf(buffer, 23, "%d %d", skillid, skillval);
-	parse->EventPlayer(EVENT_USE_SKILL, this, buffer, 0);
+	std::string export_string = fmt::format(
+		"{} {}",
+		skillid,
+		skillval
+	);
+	parse->EventPlayer(EVENT_USE_SKILL, this, export_string, 0);
 	if (against_who) {
 		if (
 			against_who->GetSpecialAbility(IMMUNE_AGGRO) ||
@@ -5352,10 +5363,8 @@ void Client::ShowSkillsWindow()
 
 void Client::Signal(uint32 data)
 {
-	char buf[32];
-	snprintf(buf, 31, "%d", data);
-	buf[31] = '\0';
-	parse->EventPlayer(EVENT_SIGNAL, this, buf, 0);
+	std::string export_string = fmt::format("{}", data);
+	parse->EventPlayer(EVENT_SIGNAL, this, export_string, 0);
 }
 
 void Client::SendRewards()
@@ -5503,15 +5512,15 @@ uint32 Client::GetLDoNPointsTheme(uint32 t)
 {
 	switch(t)
 	{
-	case 1:
+	case LDoNThemes::GUK:
 		return m_pp.ldon_points_guk;
-	case 2:
+	case LDoNThemes::MIR:
 		return m_pp.ldon_points_mir;
-	case 3:
+	case LDoNThemes::MMC:
 		return m_pp.ldon_points_mmc;
-	case 4:
+	case LDoNThemes::RUJ:
 		return m_pp.ldon_points_ruj;
-	case 5:
+	case LDoNThemes::TAK:
 		return m_pp.ldon_points_tak;
 	default:
 		return 0;
@@ -5522,15 +5531,15 @@ uint32 Client::GetLDoNWinsTheme(uint32 t)
 {
 	switch(t)
 	{
-	case 1:
+	case LDoNThemes::GUK:
 		return m_pp.ldon_wins_guk;
-	case 2:
+	case LDoNThemes::MIR:
 		return m_pp.ldon_wins_mir;
-	case 3:
+	case LDoNThemes::MMC:
 		return m_pp.ldon_wins_mmc;
-	case 4:
+	case LDoNThemes::RUJ:
 		return m_pp.ldon_wins_ruj;
-	case 5:
+	case LDoNThemes::TAK:
 		return m_pp.ldon_wins_tak;
 	default:
 		return 0;
@@ -5541,77 +5550,62 @@ uint32 Client::GetLDoNLossesTheme(uint32 t)
 {
 	switch(t)
 	{
-	case 1:
+	case LDoNThemes::GUK:
 		return m_pp.ldon_losses_guk;
-	case 2:
+	case LDoNThemes::MIR:
 		return m_pp.ldon_losses_mir;
-	case 3:
+	case LDoNThemes::MMC:
 		return m_pp.ldon_losses_mmc;
-	case 4:
+	case LDoNThemes::RUJ:
 		return m_pp.ldon_losses_ruj;
-	case 5:
+	case LDoNThemes::TAK:
 		return m_pp.ldon_losses_tak;
 	default:
 		return 0;
 	}
 }
 
-void Client::AddLDoNLoss(uint32 theme_id)
-{
-	switch (theme_id)
-	{
-		case 1:
-			m_pp.ldon_losses_guk += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, false);
+void Client::UpdateLDoNWinLoss(uint32 theme_id, bool win, bool remove) {
+	switch (theme_id) {
+		case LDoNThemes::GUK:
+			if (win) {
+				m_pp.ldon_wins_guk += (remove ? -1 : 1);
+			} else {
+				m_pp.ldon_losses_guk += (remove ? -1 : 1);
+			}
 			break;
-		case 2:
-			m_pp.ldon_losses_mir += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, false);
+		case LDoNThemes::MIR:
+			if (win) {
+				m_pp.ldon_wins_mir += (remove ? -1 : 1);
+			} else {
+				m_pp.ldon_losses_mir += (remove ? -1 : 1);
+			}
 			break;
-		case 3:
-			m_pp.ldon_losses_mmc += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, false);
+		case LDoNThemes::MMC:
+			if (win) {
+				m_pp.ldon_wins_mmc += (remove ? -1 : 1);
+			} else {
+				m_pp.ldon_losses_mmc += (remove ? -1 : 1);
+			}
 			break;
-		case 4:
-			m_pp.ldon_losses_ruj += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, false);
+		case LDoNThemes::RUJ:
+			if (win) {
+				m_pp.ldon_wins_ruj += (remove ? -1 : 1);
+			} else {
+				m_pp.ldon_losses_ruj += (remove ? -1 : 1);
+			}
 			break;
-		case 5:
-			m_pp.ldon_losses_tak += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, false);
-			break;
-		default:
-			return;
-	}
-}
-
-void Client::AddLDoNWin(uint32 theme_id)
-{
-	switch (theme_id)
-	{
-		case 1:
-			m_pp.ldon_wins_guk += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, true);
-			break;
-		case 2:
-			m_pp.ldon_wins_mir += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, true);
-			break;
-		case 3:
-			m_pp.ldon_wins_mmc += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, true);
-			break;
-		case 4:
-			m_pp.ldon_wins_ruj += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, true);
-			break;
-		case 5:
-			m_pp.ldon_wins_tak += 1;
-			database.UpdateAdventureStatsEntry(CharacterID(), theme_id, true);
+		case LDoNThemes::TAK:
+			if (win) {
+				m_pp.ldon_wins_tak += (remove ? -1 : 1);
+			} else {
+				m_pp.ldon_losses_tak += (remove ? -1 : 1);
+			}
 			break;
 		default:
 			return;
 	}
+	database.UpdateAdventureStatsEntry(CharacterID(), theme_id, win, remove);
 }
 
 
@@ -5994,7 +5988,7 @@ void Client::NewAdventure(int id, int theme, const char *text, int member_count,
 void Client::ClearPendingAdventureData()
 {
 	adv_requested_id = 0;
-	adv_requested_theme = 0;
+	adv_requested_theme = LDoNThemes::Unused;
 	safe_delete_array(adv_requested_data);
 	adv_requested_member_count = 0;
 }
@@ -10573,7 +10567,7 @@ void Client::ReadBookByName(std::string book_name, uint8 book_type)
 		out->window = 0xFF;
 		out->type = book_type;
 		out->invslot = 0;
-		
+
 		memcpy(out->booktext, book_text.c_str(), length);
 
 		if (book_language > 0 && book_language < MAX_PP_LANGUAGE) {
@@ -10695,4 +10689,46 @@ void Client::SummonBaggedItems(uint32 bag_item_id, const std::vector<ServerLootI
 	PushItemOnCursor(*summoned_bag);
 	SendItemPacket(EQ::invslot::slotCursor, summoned_bag, ItemPacketLimbo);
 	safe_delete(summoned_bag);
+}
+
+void Client::SaveSpells()
+{
+	std::vector<CharacterSpellsRepository::CharacterSpells> character_spells = {};
+
+	for (int index = 0; index < EQ::spells::SPELLBOOK_SIZE; index++) {
+		if (IsValidSpell(m_pp.spell_book[index])) {
+			auto spell = CharacterSpellsRepository::NewEntity();
+			spell.id       = CharacterID();
+			spell.slot_id  = index;
+			spell.spell_id = m_pp.spell_book[index];
+			character_spells.emplace_back(spell);
+		}
+	}
+
+	CharacterSpellsRepository::DeleteWhere(database, fmt::format("id = {}", CharacterID()));
+
+	if (!character_spells.empty()) {
+		CharacterSpellsRepository::InsertMany(database, character_spells);
+	}
+}
+
+void Client::SaveDisciplines()
+{
+	std::vector<CharacterDisciplinesRepository::CharacterDisciplines> character_discs = {};
+
+	for (int index = 0; index < MAX_PP_DISCIPLINES; index++) {
+		if (IsValidSpell(m_pp.disciplines.values[index])) {
+			auto discipline = CharacterDisciplinesRepository::NewEntity();
+			discipline.id      = CharacterID();
+			discipline.slot_id = index;
+			discipline.disc_id = m_pp.disciplines.values[index];
+			character_discs.emplace_back(discipline);
+		}
+	}
+
+	CharacterDisciplinesRepository::DeleteWhere(database, fmt::format("id = {}", CharacterID()));
+
+	if (!character_discs.empty()) {
+		CharacterDisciplinesRepository::InsertMany(database, character_discs);
+	}
 }

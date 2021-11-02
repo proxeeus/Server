@@ -104,7 +104,6 @@ Mob::Mob(
 	ranged_timer(2000),
 	tic_timer(6000),
 	mana_timer(2000),
-	focus_proc_limit_timer(250),
 	spellend_timer(0),
 	rewind_timer(30000),
 	bindwound_timer(10000),
@@ -355,6 +354,11 @@ Mob::Mob(
 		ProjectileAtk[i].speed_mod     = 0.0f;
 	}
 
+	for (int i = 0; i < MAX_FOCUS_PROC_LIMIT_TIMERS; i++) {
+		focusproclimit_spellid[i] = 0;
+		focusproclimit_timer[i].Disable();
+	}
+
 	memset(&itembonuses, 0, sizeof(StatBonuses));
 	memset(&spellbonuses, 0, sizeof(StatBonuses));
 	memset(&aabonuses, 0, sizeof(StatBonuses));
@@ -372,6 +376,7 @@ Mob::Mob(
 	pet_regroup       = false;
 	_IsTempPet        = false;
 	pet_owner_client  = false;
+	pet_owner_npc     = false;
 	pet_targetlock_id = 0;
 
 	attacked_count = 0;
@@ -410,10 +415,6 @@ Mob::Mob(
 	roamer = false;
 	rooted = false;
 	charmed = false;
-	has_virus = false;
-	for (int i = 0; i < MAX_SPELL_TRIGGER * 2; i++) {
-		viral_spells[i] = 0;
-	}
 
 	weaponstance.enabled = false;
 	weaponstance.spellbonus_enabled = false;	//Set when bonus is applied
@@ -1345,11 +1346,9 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 	{
 		if (ds->hp < GetNextHPEvent())
 		{
-			char buf[10];
-			snprintf(buf, 9, "%i", GetNextHPEvent());
-			buf[9] = '\0';
+			std::string buf = fmt::format("{}", GetNextHPEvent());
 			SetNextHPEvent(-1);
-			parse->EventNPC(EVENT_HP, CastToNPC(), nullptr, buf, 0);
+			parse->EventNPC(EVENT_HP, CastToNPC(), nullptr, buf.c_str(), 0);
 		}
 	}
 
@@ -1357,11 +1356,9 @@ void Mob::CreateHPPacket(EQApplicationPacket* app)
 	{
 		if (ds->hp > GetNextIncHPEvent())
 		{
-			char buf[10];
-			snprintf(buf, 9, "%i", GetNextIncHPEvent());
-			buf[9] = '\0';
+			std::string buf = fmt::format("{}", GetNextIncHPEvent());
 			SetNextIncHPEvent(-1);
-			parse->EventNPC(EVENT_HP, CastToNPC(), nullptr, buf, 1);
+			parse->EventNPC(EVENT_HP, CastToNPC(), nullptr, buf.c_str(), 1);
 		}
 	}
 }
@@ -1381,20 +1378,18 @@ void Mob::SendHPUpdate(bool force_update_all)
 				last_hp
 			);
 
-			if (CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::SoD) {
-				auto client_packet     = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
-				auto *hp_packet_client = (SpawnHPUpdate_Struct *) client_packet->pBuffer;
+			auto client_packet     = new EQApplicationPacket(OP_HPUpdate, sizeof(SpawnHPUpdate_Struct));
+			auto *hp_packet_client = (SpawnHPUpdate_Struct *) client_packet->pBuffer;
 
-				hp_packet_client->cur_hp   = static_cast<uint32>(CastToClient()->GetHP() - itembonuses.HP);
-				hp_packet_client->spawn_id = GetID();
-				hp_packet_client->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
+			hp_packet_client->cur_hp   = static_cast<uint32>(CastToClient()->GetHP() - itembonuses.HP);
+			hp_packet_client->spawn_id = GetID();
+			hp_packet_client->max_hp   = CastToClient()->GetMaxHP() - itembonuses.HP;
 
-				CastToClient()->QueuePacket(client_packet);
+			CastToClient()->QueuePacket(client_packet);
 
-				safe_delete(client_packet);
+			safe_delete(client_packet);
 
-				ResetHPUpdateTimer();
-			}
+			ResetHPUpdateTimer();
 
 			// Used to check if HP has changed to update self next round
 			last_hp = current_hp;
@@ -3342,12 +3337,12 @@ void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on,
 	if (IsBeneficialSpell(spell_id) && (!IsNPC() || (IsNPC() && CastToNPC()->GetInnateProcSpellID() != spell_id))) { // NPC innate procs don't take this path ever
 		SpellFinished(spell_id, this, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff, true, level_override);
 		if(twinproc)
-			SpellOnTarget(spell_id, this, false, false, 0, true, level_override);
+			SpellOnTarget(spell_id, this, 0, false, 0, true, level_override);
 	}
 	else if(!(on->IsClient() && on->CastToClient()->dead)) { //dont proc on dead clients
 		SpellFinished(spell_id, on, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].ResistDiff, true, level_override);
 		if(twinproc)
-			SpellOnTarget(spell_id, on, false, false, 0, true, level_override);
+			SpellOnTarget(spell_id, on, 0, false, 0, true, level_override);
 	}
 	return;
 }
@@ -4500,7 +4495,7 @@ bool Mob::TrySpellOnDeath()
 			}
 		}
 
-	BuffFadeAll();
+	BuffFadeNonPersistDeath();
 	return false;
 	//You should not be able to use this effect and survive (ALWAYS return false),
 	//attempting to place a heal in these effects will still result
@@ -4724,19 +4719,6 @@ bool Mob::TryDoubleMeleeRoundEffect() {
 	return false;
 }
 
-bool Mob::TryReflectSpell(uint32 spell_id)
-{
-	if (!spells[spell_id].reflectable)
- 		return false;
-
-	int chance = itembonuses.reflect_chance + spellbonuses.reflect_chance + aabonuses.reflect_chance;
-
-	if(chance && zone->random.Roll(chance))
-		return true;
-
-	return false;
-}
-
 void Mob::DoGravityEffect()
 {
 	Mob *caster = nullptr;
@@ -4824,28 +4806,6 @@ void Mob::DoGravityEffect()
 			this->CastToClient()->MovePC(zone->GetZoneID(), zone->GetInstanceID(), cur_x, cur_y, new_ground, GetHeading());
 		else
 			this->GMMove(cur_x, cur_y, new_ground, GetHeading());
-	}
-}
-
-void Mob::SpreadVirus(uint16 spell_id, uint16 casterID)
-{
-	int num_targs = spells[spell_id].viral_targets;
-
-	Mob* caster = entity_list.GetMob(casterID);
-	Mob* target = nullptr;
-	// Only spread in zones without perm buffs
-	if(!zone->BuffTimersSuspended()) {
-		for(int i = 0; i < num_targs; i++) {
-			target = entity_list.GetTargetForVirus(this, spells[spell_id].viral_range);
-			if(target) {
-				// Only spreads to the uninfected
-				if(!target->FindBuff(spell_id)) {
-					if(caster)
-						caster->SpellOnTarget(spell_id, target);
-
-				}
-			}
-		}
 	}
 }
 
