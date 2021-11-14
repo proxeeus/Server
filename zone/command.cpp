@@ -79,6 +79,7 @@
 #include "../common/http/httplib.h"
 #include "../common/shared_tasks.h"
 #include "gm_commands/door_manipulation.h"
+#include "../common/languages.h"
 
 extern QueryServ* QServ;
 extern WorldServer worldserver;
@@ -181,7 +182,7 @@ int command_init(void)
 #endif
 
 		command_add("camerashake",  "Shakes the camera on everyone's screen globally.",  80, command_camerashake) ||
-		command_add("castspell", "[spellid] - Cast a spell", 50, command_castspell) ||
+		command_add("castspell", "[Spell ID] [Instant (0 = False, 1 = True, Default is 1 if Unused)] - Cast a spell", 50, command_castspell) ||
 		command_add("chat", "[channel num] [message] - Send a channel message to all zones", 200, command_chat) ||
 		command_add("checklos", "- Check for line of sight to your target", 50, command_checklos) ||
 		command_add("copycharacter", "[source_char_name] [dest_char_name] [dest_account_name] Copies character to destination account", 250, command_copycharacter) ||
@@ -212,6 +213,7 @@ int command_init(void)
 		command_add("emote", "['name'/'world'/'zone'] [type] [message] - Send an emote message", 80, command_emote) ||
 		command_add("emotesearch", "Searches NPC Emotes", 80, command_emotesearch) ||
 		command_add("emoteview", "Lists all NPC Emotes", 80, command_emoteview) ||
+		command_add("emptyinventory", "- Clears you or your target's entire inventory (Equipment, General, Bank, and Shared Bank)", 250, command_emptyinventory) ||
 		command_add("enablerecipe",  "[recipe_id] - Enables a recipe using the recipe id.",  80, command_enablerecipe) ||
 		command_add("endurance", "Restores you or your target's endurance.", 50, command_endurance) ||
 		command_add("equipitem", "[slotid(0-21)] - Equip the item on your cursor into the specified slot", 50, command_equipitem) ||
@@ -219,9 +221,12 @@ int command_init(void)
 		command_add("faction", "[Find (criteria | all ) | Review (criteria | all) | Reset (id)] - Resets Player's Faction", 80, command_faction) ||
 		command_add("findaliases", "[search criteria]- Searches for available command aliases, by alias or command", 0, command_findaliases) ||
 		command_add("findclass", "[search criteria] - Search for a class", 50, command_findclass) ||
+		command_add("findfaction", "[search criteria] - Search for a faction", 50, command_findfaction) ||
 		command_add("findnpctype", "[search criteria] - Search database NPC types", 100, command_findnpctype) ||
 		command_add("findrace", "[search criteria] - Search for a race", 50, command_findrace) ||
+		command_add("findskill", "[search criteria] - Search for a skill", 50, command_findskill) ||
 		command_add("findspell", "[search criteria] - Search for a spell", 50, command_findspell) ||
+		command_add("findtask", "[search criteria] - Search for a task", 50, command_findtask) ||
 		command_add("findzone", "[search criteria] - Search database zones", 100, command_findzone) ||
 		command_add("fixmob", "[race|gender|texture|helm|face|hair|haircolor|beard|beardcolor|heritage|tattoo|detail] [next|prev] - Manipulate appearance of your target", 80, command_fixmob) ||
 		command_add("flag", "[status] [acctname] - Refresh your admin status, or set an account's admin status if arguments provided", 0, command_flag) ||
@@ -275,7 +280,6 @@ int command_init(void)
 		command_add("killallnpcs", " [npc_name] Kills all npcs by search name, leave blank for all attackable NPC's", 200, command_killallnpcs) ||
 		command_add("lastname", "[new lastname] - Set your or your player target's lastname", 50, command_lastname) ||
 		command_add("level", "[level] - Set your or your target's level", 10, command_level) ||
-		command_add("listnpcs", "[name/range] - Search NPCs", 20, command_listnpcs) ||
 		command_add("list", "[npcs|players|corpses|doors|objects] [search] - Search entities", 20, command_list) ||
 		command_add("listpetition", "- List petitions", 50, command_listpetition) ||
 		command_add("load_shared_memory", "[shared_memory_name] - Reloads shared memory and uses the input as output", 250, command_load_shared_memory) ||
@@ -411,8 +415,6 @@ int command_init(void)
 		command_add("spawnfix", "- Find targeted NPC in database based on its X/Y/heading and update the database to make it spawn at your current location/heading.", 170, command_spawnfix) ||
 		command_add("spawnstatus", "- Show respawn timer status", 100, command_spawnstatus) ||
 		command_add("spellinfo", "[spellid] - Get detailed info about a spell", 10, command_spellinfo) ||
-		command_add("spoff", "- Sends OP_ManaChange", 80, command_spoff) ||
-		command_add("spon", "- Sends OP_MemorizeSpell", 80, command_spon) ||
 		command_add("stun", "[duration] - Stuns you or your target for duration", 100, command_stun) ||
 		command_add("summon", "[charname] - Summons your player/npc/corpse target, or charname if specified", 80, command_summon) ||
 		command_add("summonburiedplayercorpse", "- Summons the target's oldest buried corpse, if any exist.",  100, command_summonburiedplayercorpse) ||
@@ -422,7 +424,6 @@ int command_init(void)
 		command_add("tattoo", "- Change the tattoo of your target (Drakkin Only)", 80, command_tattoo) ||
 		command_add("tempname", "[newname] - Temporarily renames your target. Leave name blank to restore the original name.", 100, command_tempname) ||
 		command_add("petname", "[newname] - Temporarily renames your pet. Leave name blank to restore the original name.", 100, command_petname) ||
-		command_add("test", "Test command", 200, command_test) ||
 		command_add("texture", "[texture] [helmtexture] - Change your or your target's appearance, use 255 to show equipment", 10, command_texture) ||
 		command_add("time", "[HH] [MM] - Set EQ time", 90, command_time) ||
 		command_add("timers", "- Display persistent timers for target", 200, command_timers) ||
@@ -431,7 +432,7 @@ int command_init(void)
 		command_add("titlesuffix", "[text] [1 = create title table row] - Set your or your player target's title suffix", 50, command_titlesuffix) ||
 		command_add("traindisc", "[level] - Trains all the disciplines usable by the target, up to level specified. (may freeze client for a few seconds)", 150, command_traindisc) ||
 		command_add("trapinfo", "- Gets infomation about the traps currently spawned in the zone.", 81, command_trapinfo) ||
-		command_add("tune",  "Calculate ideal statical values related to combat.",  100, command_tune) ||
+		command_add("tune",  "Calculate statistical values related to combat.",  100, command_tune) ||
 		command_add("ucs", "- Attempts to reconnect to the UCS server", 0, command_ucs) ||
 		command_add("undyeme", "- Remove dye from all of your armor slots", 0, command_undyeme) ||
 		command_add("unfreeze", "- Unfreeze your target", 80, command_unfreeze) ||
@@ -760,20 +761,131 @@ void command_worldwide(Client *c, const Seperator *sep)
 	}
 
 	if (sub_command == "cast") {
-		if (sep->arg[2][0] && Seperator::IsNumber(sep->arg[2])) {
+		if (sep->arg[2] && Seperator::IsNumber(sep->arg[2])) {
 			uint8 update_type = WWSpellUpdateType_Cast;
-			int spell_id = atoi(sep->arg[2]);
+			auto spell_id = std::stoul(sep->arg[2]);
+			bool disable_message = false;
+			if (sep->arg[3] && Seperator::IsNumber(sep->arg[3])) {
+				disable_message = std::stoi(sep->arg[3]) ? true : false;
+			}
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"World Wide Cast Spell | Spell: {} ({})",
+					GetSpellName(spell_id),
+					spell_id
+				).c_str()
+			);
+
 			quest_manager.WorldWideSpell(update_type, spell_id);
-			worldserver.SendEmoteMessage(0, 0, 15, fmt::format("<SYSTEMWIDE MESSAGE> A GM has cast [{}] world-wide!", GetSpellName(spell_id)).c_str());
+			if (!disable_message) {
+				quest_manager.WorldWideMessage(
+					Chat::Yellow,
+					fmt::format(
+						"[SYSTEM] A GM has cast [{}] world-wide!",
+						GetSpellName(spell_id)
+					).c_str()
+				);
+			}
+		} else {
+			c->Message(Chat::White, "Usage: #worldwide cast [Spell ID] [Disable Message]");
 		}
-		else {
-			c->Message(Chat::Yellow, "Usage: #worldwide cast [spellid]");
+	} else if (sub_command == "remove") {
+		if (sep->arg[2] && Seperator::IsNumber(sep->arg[2])) {
+			uint8 update_type = WWSpellUpdateType_Remove;
+			auto spell_id = std::stoul(sep->arg[2]);
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"World Wide Remove Spell | Spell: {} ({})",
+					GetSpellName(spell_id),
+					spell_id
+				).c_str()
+			);
+
+			quest_manager.WorldWideSpell(update_type, spell_id);
+		} else {
+			c->Message(Chat::White, "Usage: #worldwide remove [Spell ID]");
 		}
+	} else if (sub_command == "message") {
+		if (sep->arg[2]) {
+			std::string message = sep->arg[2];
+			quest_manager.WorldWideMessage(
+				Chat::White,
+				fmt::format(
+					"{}",
+					message
+				).c_str()
+			);
+		} else {
+			c->Message(Chat::White, "Usage: #worldwide message [Message]");
+		}
+	} else if (sub_command == "move") {
+		if (sep->arg[2]) {
+			uint8 update_type = WWMoveUpdateType_MoveZone;
+			uint32 zone_id = 0;
+			std::string zone_short_name;
+			if (Seperator::IsNumber(sep->arg[2])) {
+				zone_id = std::stoul(sep->arg[2]);
+			}
+
+			if (zone_id) {
+				zone_short_name = ZoneName(zone_id);
+			} else {
+				zone_short_name = sep->arg[2];
+			}
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"World Wide Zone | Zone: {} ({}) ID: {}",
+					ZoneLongName(
+						ZoneID(zone_short_name)
+					),
+					zone_short_name,
+					ZoneID(zone_short_name)
+				).c_str()
+			);
+
+			quest_manager.WorldWideMove(update_type, zone_short_name.c_str());
+		} else {
+			c->Message(
+				Chat::White,
+				"Usage: #worldwide move [Zone ID] or #worldwide move [Zone Short Name]"
+			);
+		}
+	} else if (sub_command == "moveinstance") {
+		if (Seperator::IsNumber(sep->arg[2])) {
+			uint8 update_type = WWMoveUpdateType_MoveZoneInstance;
+			const char* zone_short_name = "";
+			uint16 instance_id = std::stoi(sep->arg[2]);
+			
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"World Wide Zone Instance | Instance ID: {}",
+					instance_id
+				).c_str()
+			);
+
+			quest_manager.WorldWideMove(update_type, zone_short_name, instance_id);
+		} else {
+			c->Message(Chat::White, "Usage: #worldwide moveinstance [Instance ID]");
+		}	
 	}
 
 	if (!sep->arg[1]) {
-		c->Message(Chat::White, "This command is used to perform world-wide tasks");
-		c->Message(Chat::White, "Usage: #worldwide cast [spellid]");
+		c->Message(Chat::White, "This command is used to perform world-wide tasks.");
+		c->Message(Chat::White, "Usage: #worldwide cast [Spell ID] [Disable Message]");
+		c->Message(Chat::White, "Usage: #worldwide remove [Spell ID]");
+		c->Message(Chat::White, "Usage: #worldwide message [Message]");
+		c->Message(
+			Chat::White,
+			"Usage: #worldwide move [Zone ID] or #worldwide move [Zone Short Name]"
+		);
+		c->Message(Chat::White, "Usage: #worldwide moveinstance [Instance ID]");
 	}
 }
 void command_endurance(Client *c, const Seperator *sep)
@@ -1557,11 +1669,6 @@ void command_delpetition(Client *c, const Seperator *sep)
 
 }
 
-void command_listnpcs(Client *c, const Seperator *sep)
-{
-	c->Message(Chat::White, "Deprecated, use the #list command (#list npcs <search>)");
-}
-
 void command_list(Client *c, const Seperator *sep)
 {
 	std::string search_type;
@@ -1924,45 +2031,57 @@ void command_emote(Client *c, const Seperator *sep)
 
 void command_fov(Client *c, const Seperator *sep)
 {
-	if(c->GetTarget())
-		if(c->BehindMob(c->GetTarget(), c->GetX(), c->GetY()))
-			c->Message(Chat::White, "You are behind mob %s, it is looking to %d",  c->GetTarget()->GetName(), c->GetTarget()->GetHeading());
-		else
-			c->Message(Chat::White, "You are NOT behind mob %s, it is looking to %d",  c->GetTarget()->GetName(), c->GetTarget()->GetHeading());
-	else
-		c->Message(Chat::White, "I Need a target!");
+	if (c->GetTarget()) {
+		auto target = c->GetTarget();
+		std::string behind_message = (
+			c->BehindMob(
+				target,
+				c->GetX(),
+				c->GetY()
+			) ?
+			"behind" :
+			"not behind"
+		);
+		std::string gender_message = (
+			target->GetGender() == MALE ?
+			"he" :
+			(
+				target->GetGender() == FEMALE ?
+				"she" :
+				"it"
+			)
+		);
+
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"You are {} {} ({}), {} has a heading of {}.",
+				behind_message,
+				target->GetCleanName(),
+				target->GetID(),
+				gender_message,
+				target->GetHeading()
+			).c_str()
+		);
+	} else {
+		c->Message(Chat::White, "You must have a target to use this command.");
+	}
 }
 
 void command_npcstats(Client *c, const Seperator *sep)
 {
-	if (c->GetTarget() == 0)
-		c->Message(Chat::White, "ERROR: No target!");
-	else if (!c->GetTarget()->IsNPC())
-		c->Message(Chat::White, "ERROR: Target is not a NPC!");
-	else {
-		auto target_npc = c->GetTarget()->CastToNPC();
-		c->Message(Chat::White, "# NPC Stats");
-		c->Message(Chat::White, "- Name: %s   NpcID: %u", target_npc->GetName(), target_npc->GetNPCTypeID());
-		c->Message(Chat::White, "- Race: %i  Level: %i  Class: %i  Material: %i", target_npc->GetRace(), target_npc->GetLevel(), target_npc->GetClass(), target_npc->GetTexture());
-		c->Message(Chat::White, "- Current HP: %i  Max HP: %i", target_npc->GetHP(), target_npc->GetMaxHP());
-		//c->Message(Chat::White, "Weapon Item Number: %s", target_npc->GetWeapNo());
-		c->Message(Chat::White, "- Gender: %i  Size: %f  Bodytype: %d", target_npc->GetGender(), target_npc->GetSize(), target_npc->GetBodyType());
-		c->Message(Chat::White, "- Runspeed: %.3f  Walkspeed: %.3f", static_cast<float>(0.025f * target_npc->GetRunspeed()), static_cast<float>(0.025f * target_npc->GetWalkspeed()));
-		c->Message(Chat::White, "- Spawn Group: %i  Grid: %i", target_npc->GetSpawnGroupId(), target_npc->GetGrid());
-		if (target_npc->proximity) {
-			c->Message(Chat::White, "- Proximity: Enabled");
-			c->Message(Chat::White, "-- Cur_X: %1.3f, Cur_Y: %1.3f, Cur_Z: %1.3f", target_npc->GetX(), target_npc->GetY(), target_npc->GetZ());
-			c->Message(Chat::White, "-- Min_X: %1.3f(%1.3f), Max_X: %1.3f(%1.3f), X_Range: %1.3f", target_npc->proximity->min_x, (target_npc->proximity->min_x - target_npc->GetX()), target_npc->proximity->max_x, (target_npc->proximity->max_x - target_npc->GetX()), (target_npc->proximity->max_x - target_npc->proximity->min_x));
-			c->Message(Chat::White, "-- Min_Y: %1.3f(%1.3f), Max_Y: %1.3f(%1.3f), Y_Range: %1.3f", target_npc->proximity->min_y, (target_npc->proximity->min_y - target_npc->GetY()), target_npc->proximity->max_y, (target_npc->proximity->max_y - target_npc->GetY()), (target_npc->proximity->max_y - target_npc->proximity->min_y));
-			c->Message(Chat::White, "-- Min_Z: %1.3f(%1.3f), Max_Z: %1.3f(%1.3f), Z_Range: %1.3f", target_npc->proximity->min_z, (target_npc->proximity->min_z - target_npc->GetZ()), target_npc->proximity->max_z, (target_npc->proximity->max_z - target_npc->GetZ()), (target_npc->proximity->max_z - target_npc->proximity->min_z));
-			c->Message(Chat::White, "-- Say: %s", (target_npc->proximity->say ? "Enabled" : "Disabled"));
+	if (c->GetTarget() && c->GetTarget()->IsNPC()) {
+		NPC* target = c->GetTarget()->CastToNPC();
+
+		// Stats
+		target->ShowStats(c);
+
+		// Loot Data
+		if (target->GetLoottableID()) {
+			target->QueryLoot(c);
 		}
-		else {
-			c->Message(Chat::White, "-Proximity: Disabled");
-		}
-		c->Message(Chat::White, "");
-		c->Message(Chat::White, "EmoteID: %i", target_npc->GetEmoteID());
-		target_npc->QueryLoot(c);
+	} else {
+		c->Message(Chat::White, "You must target an NPC to use this command.");
 	}
 }
 
@@ -1997,32 +2116,294 @@ void command_zclip(Client *c, const Seperator *sep)
 
 void command_npccast(Client *c, const Seperator *sep)
 {
-	if (c->GetTarget() && c->GetTarget()->IsNPC() && !sep->IsNumber(1) && sep->arg[1] != 0 && sep->IsNumber(2)) {
-		Mob* spelltar = entity_list.GetMob(sep->arg[1]);
-		if (spelltar)
-			c->GetTarget()->CastSpell(atoi(sep->arg[2]), spelltar->GetID());
-		else
-			c->Message(Chat::White, "Error: %s not found",  sep->arg[1]);
+	if (c->GetTarget() && c->GetTarget()->IsNPC()) {
+		NPC* target = c->GetTarget()->CastToNPC();
+		if (!sep->IsNumber(1) && sep->arg[1] && sep->IsNumber(2)) {
+			const char* entity_name = sep->arg[1] ? sep->arg[1] : 0;
+			auto spell_id = sep->arg[2] ? std::stoul(sep->arg[2]) : 0;
+			Mob* spell_target = entity_list.GetMob(entity_name);
+			if (spell_target && IsValidSpell(spell_id) && spell_id < SPDAT_RECORDS) {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"{} ({}) casting {} ({}) on {} ({}).",
+						target->GetCleanName(),
+						target->GetID(),
+						GetSpellName(static_cast<uint16>(spell_id)),
+						spell_id,
+						spell_target->GetCleanName(),
+						spell_target->GetID()
+					).c_str()
+				);
+
+				target->CastSpell(spell_id, spell_target->GetID());
+			} else {
+				if (!spell_target) {
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Entity {} was not found",
+							entity_name
+						).c_str()
+					);
+				} else if (!spell_id || !IsValidSpell(spell_id)) {
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Spell ID {} was not found",
+							spell_id
+						).c_str()
+					);
+				}
+			}
+		} else if (sep->IsNumber(1) && sep->IsNumber(2) ) {
+			uint16 entity_id = sep->arg[1] ? std::stoul(sep->arg[1]) : 0;
+			auto spell_id = sep->arg[2] ? std::stoul(sep->arg[2]) : 0;
+			Mob* spell_target = entity_list.GetMob(entity_id);
+			if (spell_target && IsValidSpell(spell_id) && spell_id < SPDAT_RECORDS) {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"{} ({}) casting {} ({}) on {} ({}).",
+						target->GetCleanName(),
+						target->GetID(),
+						GetSpellName(static_cast<uint16>(spell_id)),
+						spell_id,
+						spell_target->GetCleanName(),
+						spell_target->GetID()
+					).c_str()
+				);
+
+				target->CastSpell(spell_id, spell_target->GetID());
+			} else {
+				if (!spell_target) {
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Entity ID {} was not found",
+							entity_id
+						).c_str()
+					);
+				} else if (!spell_id || !IsValidSpell(spell_id)) {
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Spell ID {} was not found",
+							spell_id
+						).c_str()
+					);
+				}
+			}
+		}
+	} else {
+		c->Message(Chat::White, "You must target an NPC to use this command.");
 	}
-	else if (c->GetTarget() && c->GetTarget()->IsNPC() && sep->IsNumber(1) && sep->IsNumber(2) ) {
-		Mob* spelltar = entity_list.GetMob(atoi(sep->arg[1]));
-		if (spelltar)
-			c->GetTarget()->CastSpell(atoi(sep->arg[2]), spelltar->GetID());
-		else
-			c->Message(Chat::White, "Error: target ID %i not found", atoi(sep->arg[1]));
-	}
-	else
-		c->Message(Chat::White, "Usage: (needs NPC targeted) #npccast targetname/entityid spellid");
 }
 
 void command_zstats(Client *c, const Seperator *sep)
 {
-	c->Message(Chat::White, "Zone Header Data:");
-	c->Message(Chat::White, "Sky Type: %i",  zone->newzone_data.sky);
-	c->Message(Chat::White, "Fog Colour: Red: %i; Blue: %i; Green %i",  zone->newzone_data.fog_red[0], zone->newzone_data.fog_green[0], zone->newzone_data.fog_blue[0]);
-	c->Message(Chat::White, "Safe Coords: %f, %f, %f",  zone->newzone_data.safe_x, zone->newzone_data.safe_y, zone->newzone_data.safe_z);
-	c->Message(Chat::White, "Underworld Coords: %f",  zone->newzone_data.underworld);
-	c->Message(Chat::White, "Clip Plane: %f - %f",  zone->newzone_data.minclip, zone->newzone_data.maxclip);
+	// Zone
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Zone | ID: {} Instance ID: {} Name: {} ({})",
+			zone->GetZoneID(),
+			zone->GetInstanceID(),
+			zone->GetLongName(),
+			zone->GetShortName()
+		).c_str()
+	);
+
+	// Type
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Type: {}",
+			zone->newzone_data.ztype
+		).c_str()
+	);
+
+	// Fog Data
+	for (int fog_index = 0; fog_index < 4; fog_index++) {
+		int fog_number = (fog_index + 1);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Fog {} Colors | Red: {} Blue: {} Green: {} ",
+				fog_number,
+				zone->newzone_data.fog_red[fog_index],
+				zone->newzone_data.fog_green[fog_index],
+				zone->newzone_data.fog_blue[fog_index]
+			).c_str()
+		);
+
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Fog {} Clipping Distance | Min: {} Max: {}",
+				fog_number,
+				zone->newzone_data.fog_minclip[fog_index],
+				zone->newzone_data.fog_maxclip[fog_index]
+			).c_str()
+		);
+	}
+
+	// Fog Density
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Fog Density: {}",
+			zone->newzone_data.fog_density
+		).c_str()
+	);
+
+
+	// Gravity
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Gravity: {}",
+			zone->newzone_data.gravity
+		).c_str()
+	);
+
+	// Time Type
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Time Type: {}",
+			zone->newzone_data.time_type
+		).c_str()
+	);
+
+	// Experience Multiplier
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Experience Multiplier: {}",
+			zone->newzone_data.zone_exp_multiplier
+		).c_str()
+	);
+
+	// Safe Coordinates
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Safe Coordinates: {}, {}, {}",
+			zone->newzone_data.safe_x,
+			zone->newzone_data.safe_y,
+			zone->newzone_data.safe_z
+		).c_str()
+	);
+
+	// Max Z
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Max Z: {}",
+			zone->newzone_data.max_z
+		).c_str()
+	);
+
+	// Underworld Z
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Underworld Z: {}",
+			zone->newzone_data.underworld
+		).c_str()
+	);
+
+	// Clipping Distance
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Clipping Distance | Min: {} Max: {}",
+			zone->newzone_data.minclip,
+			zone->newzone_data.maxclip
+		).c_str()
+	);
+
+	// Weather Data
+	for (int weather_index = 0; weather_index < 4; weather_index++) {
+		int weather_number = (weather_index + 1);
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Rain {} | Chance: {} Duration: {} ",
+				weather_number,
+				zone->newzone_data.rain_chance[weather_index],
+				zone->newzone_data.rain_duration[weather_index]
+			).c_str()
+		);
+		
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Snow {} | Chance: {} Duration: {}",
+				weather_number,
+				zone->newzone_data.snow_chance[weather_index],
+				zone->newzone_data.snow_duration[weather_index]
+			).c_str()
+		);
+	}
+
+	// Sky Type
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Sky Type: {}",
+			zone->newzone_data.sky
+		).c_str()
+	);
+
+	// Suspend Buffs
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Suspend Buffs: {}",
+			zone->newzone_data.SuspendBuffs
+		).c_str()
+	);
+
+	// Regeneration Data
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Regen | Health: {} Mana: {} Endurance: {}",
+			zone->newzone_data.FastRegenHP,
+			zone->newzone_data.FastRegenMana,
+			zone->newzone_data.FastRegenEndurance
+		).c_str()
+	);
+
+	// NPC Max Aggro Distance
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"NPC Max Aggro Distance: {}",
+			zone->newzone_data.NPCAggroMaxDist
+		).c_str()
+	);
+
+	// Underworld Teleport Index
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Underworld Teleport Index: {}",
+			zone->newzone_data.underworld_teleport_index
+		).c_str()
+	);
+
+	// Lava Damage
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Lava Damage | Min: {} Max: {}",
+			zone->newzone_data.MinLavaDamage,
+			zone->newzone_data.LavaDamage
+		).c_str()
+	);
 }
 
 void command_permaclass(Client *c, const Seperator *sep)
@@ -2220,19 +2601,6 @@ void command_zcolor(Client *c, const Seperator *sep)
 	}
 }
 
-void command_spon(Client *c, const Seperator *sep)
-{
-	c->MemorizeSpell(0, SPELLBAR_UNLOCK, memSpellSpellbar);
-}
-
-void command_spoff(Client *c, const Seperator *sep)
-{
-	auto outapp = new EQApplicationPacket(OP_ManaChange, 0);
-	outapp->priority = 5;
-	c->QueuePacket(outapp);
-	safe_delete(outapp);
-}
-
 void command_gassign(Client *c, const Seperator *sep)
 {
 	if (sep->IsNumber(1) && c->GetTarget() && c->GetTarget()->IsNPC() && c->GetTarget()->CastToNPC()->GetSpawnPointID() > 0) {
@@ -2344,46 +2712,65 @@ void command_ai(Client *c, const Seperator *sep)
 void command_worldshutdown(Client *c, const Seperator *sep)
 {
 	// GM command to shutdown world server and all zone servers
-	uint32 time=0;
-	uint32 interval=0;
+	uint32 time = 0;
+	uint32 interval = 0;
 	if (worldserver.Connected()) {
-		if(sep->IsNumber(1) && sep->IsNumber(2) && ((time=atoi(sep->arg[1]))>0) && ((interval=atoi(sep->arg[2]))>0)) {
-			worldserver.SendEmoteMessage(0,0,15,"<SYSTEMWIDE MESSAGE>:SYSTEM MSG:World coming down in %i minutes, everyone log out before this time.",  (time / 60 ));
-			c->Message(Chat::White, "Sending shutdown packet now, World will shutdown in: %i minutes with an interval of: %i seconds",  (time / 60), interval);
+		if (
+			sep->IsNumber(1) &&
+			sep->IsNumber(2) &&
+			(time = std::stoi(sep->arg[1]) > 0) &&
+			(interval = std::stoi(sep->arg[2]) > 0)
+		) {
+			int time_minutes = (time / 60);
+			quest_manager.WorldWideMessage(
+				Chat::Yellow,
+				fmt::format(
+					"[SYSTEM] World will be shutting down in {} minutes.", 
+					time_minutes
+				).c_str()
+			);
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"World will be shutting down in {} minutes, notifying every {} seconds",
+					time_minutes,
+					interval
+				).c_str()
+			);
 			auto pack = new ServerPacket(ServerOP_ShutdownAll, sizeof(WorldShutDown_Struct));
 			WorldShutDown_Struct* wsd = (WorldShutDown_Struct*)pack->pBuffer;
-			wsd->time=time*1000;
-			wsd->interval=(interval*1000);
+			wsd->time = (time * 1000);
+			wsd->interval = (interval * 1000);
 			worldserver.SendPacket(pack);
 			safe_delete(pack);
-		}
-		else if(strcasecmp(sep->arg[1], "now") == 0){
-			worldserver.SendEmoteMessage(0,0,15,"<SYSTEMWIDE MESSAGE>:SYSTEM MSG:World coming down, everyone log out now.");
-			c->Message(Chat::White, "Sending shutdown packet");
+		} else if (!strcasecmp(sep->arg[1], "now")){
+			quest_manager.WorldWideMessage(
+				Chat::Yellow,
+				"[SYSTEM] World is shutting down now."
+			);
+			c->Message(Chat::White, "World is shutting down now.");
 			auto pack = new ServerPacket;
 			pack->opcode = ServerOP_ShutdownAll;
-			pack->size=0;
+			pack->size = 0;
 			worldserver.SendPacket(pack);
 			safe_delete(pack);
-		}
-		else if(strcasecmp(sep->arg[1], "disable") == 0){
-			c->Message(Chat::White, "Shutdown prevented, next time I may not be so forgiving...");
+		} else if (!strcasecmp(sep->arg[1], "disable")) {
+			c->Message(Chat::White, "World shutdown has been aborted.");
 			auto pack = new ServerPacket(ServerOP_ShutdownAll, sizeof(WorldShutDown_Struct));
 			WorldShutDown_Struct* wsd = (WorldShutDown_Struct*)pack->pBuffer;
-			wsd->time=0;
-			wsd->interval=0;
+			wsd->time = 0;
+			wsd->interval = 0;
 			worldserver.SendPacket(pack);
 			safe_delete(pack);
-		}
-		else{
+		} else {
 			c->Message(Chat::White,"#worldshutdown - Shuts down the server and all zones.");
 			c->Message(Chat::White,"Usage: #worldshutdown now - Shuts down the server and all zones immediately.");
 			c->Message(Chat::White,"Usage: #worldshutdown disable - Stops the server from a previously scheduled shut down.");
-			c->Message(Chat::White,"Usage: #worldshutdown [timer] [interval] - Shuts down the server and all zones after [timer] seconds and sends warning every [interval] seconds.");
+			c->Message(Chat::White,"Usage: #worldshutdown [timer] [interval] - Shuts down the server and all zones after [timer] seconds and notifies players every [interval] seconds.");
 		}
+	} else {
+		c->Message(Chat::White, "Error: World server is disconnected.");
 	}
-	else
-		c->Message(Chat::White, "Error: World server disconnected");
 }
 
 void command_sendzonespawns(Client *c, const Seperator *sep)
@@ -2761,33 +3148,75 @@ void command_flymode(Client *c, const Seperator *sep)
 
 void command_showskills(Client *c, const Seperator *sep)
 {
-	Client *t=c;
+	Client *target = c;
+	if (c->GetTarget() && c->GetTarget()->IsClient()) {
+		target = c->GetTarget()->CastToClient();
+	}
 
-	if(c->GetTarget() && c->GetTarget()->IsClient())
-		t=c->GetTarget()->CastToClient();
+	bool show_all = false;
 
-	c->Message(Chat::White, "Skills for %s",  t->GetName());
-	for (EQ::skills::SkillType i = EQ::skills::Skill1HBlunt; i <= EQ::skills::HIGHEST_SKILL; i = (EQ::skills::SkillType)(i + 1))
-		c->Message(Chat::White, "Skill [%d] is at [%d] - %u",  i, t->GetSkill(i), t->GetRawSkill(i));
+	if (!strcasecmp("all", sep->arg[1])) {
+		show_all = true;
+	}
+
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Skills | Name: {}",
+			target->GetCleanName()
+		).c_str()
+	);
+
+	for (
+		EQ::skills::SkillType skill_type = EQ::skills::Skill1HBlunt;
+		skill_type <= EQ::skills::HIGHEST_SKILL;
+		skill_type = (EQ::skills::SkillType)(skill_type + 1)
+	) {
+		if (show_all || (target->CanHaveSkill(skill_type) && target->MaxSkill(skill_type))) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} ({}) | Current: {} Max: {} Raw: {}",
+					EQ::skills::GetSkillName(skill_type),
+					skill_type,
+					target->GetSkill(skill_type),
+					target->MaxSkill(skill_type),
+					target->GetRawSkill(skill_type)
+				).c_str()
+			);
+		}
+	}
 }
 
 void command_findclass(Client *c, const Seperator *sep)
 {
-	if (sep->arg[1][0] == 0) {
-		c->Message(Chat::White, "Usage: #findclass [search criteria]");
-	} else if (Seperator::IsNumber(sep->argplus[1])) {
-		int search_id = atoi(sep->argplus[1]);
-		std::string class_name = GetClassIDName(search_id);
-		if (class_name.length() > 0) {
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #findclass [search criteria]");
+		return;
+	}
+
+	if (sep->IsNumber(1)) {
+		int class_id = std::stoi(sep->arg[1]);
+		if (class_id >= WARRIOR && class_id <= MERCERNARY_MASTER) {
+			std::string class_name = GetClassIDName(class_id);
 			c->Message(
 				Chat::White,
 				fmt::format(
 					"Class {}: {}",
-					search_id,
+					class_id,
 					class_name
 				).c_str()
 			);
-			return;
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Class ID {} was not found.",
+					class_id
+				).c_str()
+			);
 		}
 	} else {
 		std::string search_criteria = str_tolower(sep->argplus[1]);
@@ -2817,11 +3246,105 @@ void command_findclass(Client *c, const Seperator *sep)
 		if (found_count == 20) {
 			c->Message(Chat::White, "20 Classes found... max reached.");
 		} else {
+			auto class_message = (
+				found_count > 0 ?
+				(
+					found_count == 1 ?
+					"A Class was" :
+					fmt::format("{} Classes were", found_count)
+				) :
+				"No Classes were"
+			);
+
 			c->Message(
 				Chat::White,
 				fmt::format(
-					"{} Class(es) found.",
-					found_count
+					"{} found.",
+					class_message
+				).c_str()
+			);
+		}
+	}
+}
+
+void command_findfaction(Client *c, const Seperator *sep)
+{
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #findfaction [search criteria]");
+		return;
+	}
+
+	if (sep->IsNumber(1)) {
+		int faction_id = std::stoi(sep->arg[1]);
+		auto faction_name = content_db.GetFactionName(faction_id);
+		if (!faction_name.empty()) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Faction {}: {}",
+					faction_id,
+					faction_name
+				).c_str()
+			);
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Faction ID {} was not found.",
+					faction_id
+				).c_str()
+			);
+		}
+	} else {
+		std::string search_criteria = str_tolower(sep->argplus[1]);
+		int found_count = 0;
+		int max_faction_id = content_db.GetMaxFaction();
+		for (int faction_id = 0; faction_id < max_faction_id; faction_id++) {
+			std::string faction_name = content_db.GetFactionName(faction_id);
+			std::string faction_name_lower = str_tolower(faction_name);
+			if (faction_name.empty()) {
+				continue;
+			}
+
+			if (faction_name.find(search_criteria) == std::string::npos) {
+				continue;
+			}
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Faction {}: {}",
+					faction_id,
+					faction_name
+				).c_str()
+			);
+			found_count++;
+
+			if (found_count == 20) {
+				break;
+			}
+		}
+		
+		if (found_count == 20) {
+			c->Message(Chat::White, "20 Factions found... max reached.");
+		} else {
+			auto faction_message = (
+				found_count > 0 ?
+				(
+					found_count == 1 ?
+					"A Faction was" :
+					fmt::format("{} Factions were", found_count)
+				) :
+				"No Factions were"
+			);
+
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} found.",
+					faction_message
 				).c_str()
 			);
 		}
@@ -2830,26 +3353,38 @@ void command_findclass(Client *c, const Seperator *sep)
 
 void command_findrace(Client *c, const Seperator *sep)
 {
-	if (sep->arg[1][0] == 0) {
-		c->Message(Chat::White, "Usage: #findrace [search criteria]");
-	} else if (Seperator::IsNumber(sep->argplus[1])) {
-		int search_id = atoi(sep->argplus[1]);
-		std::string race_name = GetRaceIDName(search_id);
-		if (race_name.length() > 0) {
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #findrace [search criteria]");
+		return;
+	}
+
+	if (sep->IsNumber(1)) {
+		int race_id = std::stoi(sep->arg[1]);
+		std::string race_name = GetRaceIDName(race_id);
+		if (race_id >= RACE_HUMAN_1 && race_id <= RACE_PEGASUS_732) {
 			c->Message(
 				Chat::White,
 				fmt::format(
 					"Race {}: {}",
-					search_id,
+					race_id,
 					race_name
 				).c_str()
 			);
-			return;
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Race ID {} was not found.",
+					race_id
+				).c_str()
+			);
 		}
 	} else {
 		std::string search_criteria = str_tolower(sep->argplus[1]);
 		int found_count = 0;
-		for (int race_id = RACE_HUMAN_1; race_id <= RT_PEGASUS_3; race_id++) {
+		for (int race_id = RACE_HUMAN_1; race_id <= RACE_PEGASUS_732; race_id++) {
 			std::string race_name = GetRaceIDName(race_id);
 			std::string race_name_lower = str_tolower(race_name);
 			if (search_criteria.length() > 0 && race_name_lower.find(search_criteria) == std::string::npos) {
@@ -2870,46 +3405,155 @@ void command_findrace(Client *c, const Seperator *sep)
 				break;
 			}
 		}
+
 		if (found_count == 20) {
 			c->Message(Chat::White, "20 Races found... max reached.");
 		} else {
+			auto race_message = (
+				found_count > 0 ?
+				(
+					found_count == 1 ?
+					"A Race was" :
+					fmt::format("{} Races were", found_count)
+				) :
+				"No Races were"
+			);
+
 			c->Message(
 				Chat::White,
 				fmt::format(
-					"{} Race(s) found.",
-					found_count
+					"{} found.",
+					race_message
 				).c_str()
 			);
 		}
 	}
 }
 
-void command_findspell(Client *c, const Seperator *sep)
+void command_findskill(Client *c, const Seperator *sep)
 {
-	if (sep->arg[1][0] == 0) {
-		c->Message(Chat::White, "Usage: #findspell [search criteria]");
-	} else if (SPDAT_RECORDS <= 0) {
-		c->Message(Chat::White, "Spells not loaded");
-	} else if (Seperator::IsNumber(sep->argplus[1])) {
-		int spell_id = atoi(sep->argplus[1]);
-		if (!IsValidSpell(spell_id)) {
-			c->Message(Chat::White, "Error: Invalid Spell");
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #findskill [search criteria]");
+		return;
+	}
+	
+	std::map<EQ::skills::SkillType, std::string> skills = EQ::skills::GetSkillTypeMap();
+	if (sep->IsNumber(1)) {
+		int skill_id = std::stoi(sep->arg[1]);
+		if (skill_id >= EQ::skills::Skill1HBlunt && skill_id < EQ::skills::SkillCount) {
+			for (auto skill : skills) {
+				if (skill_id == skill.first) {
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Skill {}: {}",
+							skill.first,
+							skill.second
+						).c_str()
+					);
+					break;
+				}
+			}
 		} else {
 			c->Message(
 				Chat::White,
 				fmt::format(
-					"{}: {}",
+					"Skill ID {} was not found.",
+					skill_id
+				).c_str()
+			);
+		}
+	} else {
+		std::string search_criteria = str_tolower(sep->argplus[1]);
+		if (!search_criteria.empty()) {
+			int found_count = 0;
+			for (auto skill : skills) {
+				std::string skill_name_lower = str_tolower(skill.second);
+				if (skill_name_lower.find(search_criteria) == std::string::npos) {
+					continue;
+				}
+
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Skill {}: {}",
+						skill.first,
+						skill.second
+					).c_str()
+				);			
+				found_count++;
+
+				if (found_count == 20) {
+					break;
+				}
+			}
+
+			if (found_count == 20) {
+				c->Message(Chat::White, "20 Skills were found, max reached.");
+			} else {
+				auto skill_message = (
+					found_count > 0 ? 
+					(
+						found_count == 1 ?
+						"A Skill was" :
+						fmt::format("{} Skills were", found_count)
+					) :
+					"No Skills were"
+				);
+
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"{} found.",
+						skill_message
+					).c_str()
+				);
+			}
+		}
+	}
+}
+
+void command_findspell(Client *c, const Seperator *sep)
+{
+	if (SPDAT_RECORDS <= 0) {
+		c->Message(Chat::White, "Spells not loaded");
+		return;
+	}
+
+	int arguments = sep->argnum;
+
+	if (arguments == 0) {
+		c->Message(Chat::White, "Command Syntax: #findspell [search criteria]");
+		return;
+	}
+
+	if (sep->IsNumber(1)) {
+		int spell_id = std::stoi(sep->arg[1]);
+		if (!IsValidSpell(spell_id)) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Spell ID {} was not found.",
+					spell_id
+				).c_str()
+			);
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Spell {}: {}",
 					spell_id,
 					spells[spell_id].name
 				).c_str()
 			);
 		}
-	}
-	else {
+	} else {
 		std::string search_criteria = str_tolower(sep->argplus[1]);
 		int found_count = 0;
-		for (int i = 0; i < SPDAT_RECORDS; i++) {
-			auto current_spell = spells[i];
+		for (int spell_id = 0; spell_id < SPDAT_RECORDS; spell_id++) {
+			auto current_spell = spells[spell_id];
 			if (current_spell.name[0] != 0) {
 				std::string spell_name = current_spell.name;
 				std::string spell_name_lower = str_tolower(spell_name);
@@ -2920,8 +3564,8 @@ void command_findspell(Client *c, const Seperator *sep)
 				c->Message(
 					Chat::White,
 					fmt::format(
-						"{}: {}",
-						i,
+						"Spell {}: {}",
+						spell_id,
 						spell_name
 					).c_str()
 				);
@@ -2936,11 +3580,21 @@ void command_findspell(Client *c, const Seperator *sep)
 		if (found_count == 20) {
 			c->Message(Chat::White, "20 Spells found... max reached.");
 		} else {
+			auto spell_message = (
+				found_count > 0 ?
+				(
+					found_count == 1 ?
+					"A Spell was" :
+					fmt::format("{} Spells were", found_count)
+				) :
+				"No Spells were"
+			);
+
 			c->Message(
 				Chat::White,
 				fmt::format(
-					"{} Spell(s) found.",
-					found_count
+					"{} found.",
+					spell_message
 				).c_str()
 			);
 		}
@@ -2987,113 +3641,170 @@ inline bool CastRestrictedSpell(int spellid)
 
 void command_castspell(Client *c, const Seperator *sep)
 {
-	if (!sep->IsNumber(1))
-		c->Message(Chat::White, "Usage: #CastSpell spellid");
-	else {
-		uint16 spellid = atoi(sep->arg[1]);
-		/*
-		Spell restrictions.
-		*/
-		if (CastRestrictedSpell(spellid) && c->Admin() < commandCastSpecials)
+	if (SPDAT_RECORDS <= 0) {
+		c->Message(Chat::White, "Spells not loaded.");
+		return;
+	}
+
+	Mob *target = c;
+	if(c->GetTarget()) {
+		target = c->GetTarget();
+	}
+
+	if (!sep->IsNumber(1)) {
+		c->Message(Chat::White, "Usage: #castspell [Spell ID]  [Instant (0 = False, 1 = True, Default is 1 if Unused)]");
+	} else {
+		uint16 spell_id = std::stoul(sep->arg[1]);
+
+		if (CastRestrictedSpell(spell_id) && c->Admin() < commandCastSpecials) {
 			c->Message(Chat::Red, "Unable to cast spell.");
-		else if (spellid >= SPDAT_RECORDS)
-			c->Message(Chat::White, "Error: #CastSpell: Argument out of range");
-		else
-			if (c->GetTarget() == 0)
-				if(c->Admin() >= commandInstacast)
-					c->SpellFinished(spellid, 0, EQ::spells::CastingSlot::Item, 0, -1, spells[spellid].resist_difficulty);
-				else
-					c->CastSpell(spellid, 0, EQ::spells::CastingSlot::Item, 0);
-			else
-				if(c->Admin() >= commandInstacast)
-					c->SpellFinished(spellid, c->GetTarget(), EQ::spells::CastingSlot::Item, 0, -1, spells[spellid].resist_difficulty);
-				else
-					c->CastSpell(spellid, c->GetTarget()->GetID(), EQ::spells::CastingSlot::Item, 0);
+		} else if (spell_id >= SPDAT_RECORDS) {
+			c->Message(Chat::White, "Invalid Spell ID.");
+		} else {
+			bool instant_cast = (c->Admin() >= commandInstacast ? true : false);
+			if (instant_cast && sep->IsNumber(2)) {
+				instant_cast = std::stoi(sep->arg[2]) ? true : false;
+				c->Message(Chat::White, fmt::format("{}", std::stoi(sep->arg[2])).c_str());
+			}
+
+			if (c->Admin() >= commandInstacast && instant_cast) {
+				c->SpellFinished(spell_id, target, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].resist_difficulty);
+			} else {
+				c->CastSpell(spell_id, target->GetID(), EQ::spells::CastingSlot::Item, spells[spell_id].cast_time);
+			}
+
+			if (c != target) {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Cast {} ({}) on {}{}.",
+						GetSpellName(spell_id),
+						spell_id,
+						target->GetCleanName(),
+						instant_cast ? " instantly" : ""
+					).c_str()
+				);
+			} else {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Cast {} ({}) on yourself{}.",
+						GetSpellName(spell_id),
+						spell_id,
+						instant_cast ? " instantly" : ""
+					).c_str()
+				);
+			}
+		}
 	}
 }
 
 void command_setlanguage(Client *c, const Seperator *sep)
 {
-	if (strcasecmp(sep->arg[1], "list" ) == 0 )
-	{
-		c->Message(Chat::White, "Languages:");
-		c->Message(Chat::White, "(0) Common Tongue");
-		c->Message(Chat::White, "(1) Barbarian");
-		c->Message(Chat::White, "(2) Erudian");
-		c->Message(Chat::White, "(3) Elvish");
-		c->Message(Chat::White, "(4) Dark Elvish");
-		c->Message(Chat::White, "(5) Dwarvish");
-		c->Message(Chat::White, "(6) Troll");
-		c->Message(Chat::White, "(7) Ogre");
-		c->Message(Chat::White, "(8) Gnomish");
-		c->Message(Chat::White, "(9) Halfling");
-		c->Message(Chat::White, "(10) Thieves Cant");
-		c->Message(Chat::White, "(11) Old Erudian");
-		c->Message(Chat::White, "(12) Elder Elvish");
-		c->Message(Chat::White, "(13) Froglok");
-		c->Message(Chat::White, "(14) Goblin");
-		c->Message(Chat::White, "(15) Gnoll");
-		c->Message(Chat::White, "(16) Combine Tongue");
-		c->Message(Chat::White, "(17) Elder Teir`Dal");
-		c->Message(Chat::White, "(18) Lizardman");
-		c->Message(Chat::White, "(19) Orcish");
-		c->Message(Chat::White, "(20) Faerie");
-		c->Message(Chat::White, "(21) Dragon");
-		c->Message(Chat::White, "(22) Elder Dragon");
-		c->Message(Chat::White, "(23) Dark Speech");
-		c->Message(Chat::White, "(24) Vah Shir");
-		c->Message(Chat::White, "(25) Alaran");
-		c->Message(Chat::White, "(26) Hadal");
-		c->Message(Chat::White, "(27) Unknown1");
+	Client* target = c;
+	if (c->GetTarget() && c->GetTarget()->IsClient()) {
+		target = c->GetTarget()->CastToClient();
 	}
-	else if( c->GetTarget() == 0 )
-	{
-		c->Message(Chat::White, "Error: #setlanguage: No target.");
-	}
-	else if( !c->GetTarget()->IsClient() )
-	{
-		c->Message(Chat::White, "Error: Target must be a player.");
-	}
-	else if (
-				!sep->IsNumber(1) || atoi(sep->arg[1]) < 0 || atoi(sep->arg[1]) > 27 ||
-				!sep->IsNumber(2) || atoi(sep->arg[2]) < 0 || atoi(sep->arg[2]) > 100
-			)
-	{
-		c->Message(Chat::White, "Usage: #setlanguage [language ID] [value] (0-27, 0-100)");
-		c->Message(Chat::White, "Try #setlanguage list for a list of language IDs");
-	}
-	else
-	{
-		LogInfo("Set language request from [{}], target:[{}] lang_id:[{}] value:[{}]",  c->GetName(), c->GetTarget()->GetName(), atoi(sep->arg[1]), atoi(sep->arg[2]) );
-		uint8 langid = (uint8)atoi(sep->arg[1]);
-		uint8 value = (uint8)atoi(sep->arg[2]);
-		c->GetTarget()->CastToClient()->SetLanguageSkill( langid, value );
+
+	auto language_id = sep->IsNumber(1) ? std::stoi(sep->arg[1]) : -1;
+	auto language_value = sep->IsNumber(2) ? std::stoi(sep->arg[2]) : -1;
+	if (!strcasecmp(sep->arg[1], "list" )) {
+		for (int language = LANG_COMMON_TONGUE; language <= LANG_UNKNOWN; language++) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Language {}: {}",
+					language,
+					EQ::constants::GetLanguageName(language)
+				).c_str()
+			);
+		}
+	} else if (
+		language_id < LANG_COMMON_TONGUE ||
+		language_id > LANG_UNKNOWN ||
+		language_value < 0 ||
+		language_value > 100
+	) {
+		c->Message(Chat::White, "Usage: #setlanguage [Language ID] [Language Value]");
+		c->Message(Chat::White, "Usage: #setlanguage [List]");
+		c->Message(Chat::White, "Language ID = 0 to 27", LANG_UNKNOWN);
+		c->Message(Chat::White, "Language Value = 0 to 100", HIGHEST_CAN_SET_SKILL);
+	} else {
+		LogInfo(
+			"Set language request from [{}], Target: [{}] Language ID: [{}] Language Value: [{}]",
+			c->GetCleanName(),
+			target->GetCleanName(),
+			language_id,
+			language_value
+		);
+
+		target->SetLanguageSkill(language_id, language_value);
+
+		if (c != target) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Set {} ({}) to {} for {}.",
+					EQ::constants::GetLanguageName(language_id),
+					language_id,
+					language_value,
+					target->GetCleanName()
+				).c_str()
+			);
+		}
 	}
 }
 
-void command_setskill(Client *c, const Seperator *sep)
+void command_setskill(Client* c, const Seperator* sep)
 {
-	if (c->GetTarget() == nullptr) {
-		c->Message(Chat::White, "Error: #setskill: No target.");
+	Client* target = c;
+	if (c->GetTarget() && c->GetTarget()->IsClient()) {
+		target = c->GetTarget()->CastToClient();
 	}
-	else if (!c->GetTarget()->IsClient()) {
-		c->Message(Chat::White, "Error: #setskill: Target must be a client.");
-	}
-	else if (
-		!sep->IsNumber(1) || atoi(sep->arg[1]) < 0 || atoi(sep->arg[1]) > EQ::skills::HIGHEST_SKILL ||
-						!sep->IsNumber(2) || atoi(sep->arg[2]) < 0 || atoi(sep->arg[2]) > HIGHEST_CAN_SET_SKILL
-					)
-	{
-		c->Message(Chat::White, "Usage: #setskill skill x ");
-		c->Message(Chat::White, "       skill = 0 to %d", EQ::skills::HIGHEST_SKILL);
-		c->Message(Chat::White, "       x = 0 to %d",  HIGHEST_CAN_SET_SKILL);
+
+	auto skill_id = sep->IsNumber(1) ? std::stoi(sep->arg[1]) : -1;
+	auto skill_value = sep->IsNumber(2) ? std::stoi(sep->arg[2]) : -1;
+	if (
+		skill_id < 0 ||
+		skill_id > EQ::skills::HIGHEST_SKILL ||
+		skill_value < 0 ||
+		skill_value > HIGHEST_CAN_SET_SKILL
+	) {
+		c->Message(Chat::White, "Usage: #setskill [Skill ID] [Skill Value]");
+		c->Message(Chat::White, fmt::format("Skill ID = 0 to {}", EQ::skills::HIGHEST_SKILL).c_str());
+		c->Message(Chat::White, fmt::format("Skill Value = 0 to {}", HIGHEST_CAN_SET_SKILL).c_str());
 	}
 	else {
-		LogInfo("Set skill request from [{}], target:[{}] skill_id:[{}] value:[{}]",  c->GetName(), c->GetTarget()->GetName(), atoi(sep->arg[1]), atoi(sep->arg[2]) );
-		int skill_num = atoi(sep->arg[1]);
-		uint16 skill_value = atoi(sep->arg[2]);
-		if (skill_num <= EQ::skills::HIGHEST_SKILL)
-			c->GetTarget()->CastToClient()->SetSkill((EQ::skills::SkillType)skill_num, skill_value);
+		LogInfo(
+			"Set skill request from [{}], Target: [{}] Skill ID: [{}] Skill Value: [{}]",
+			c->GetCleanName(),
+			target->GetCleanName(),
+			skill_id,
+			skill_value
+		);
+
+		if (
+			skill_id >= EQ::skills::Skill1HBlunt &&
+			skill_id <= EQ::skills::HIGHEST_SKILL
+			) {
+			target->SetSkill(
+				(EQ::skills::SkillType)skill_id,
+				skill_value
+			);
+
+			if (c != target) {
+				c->Message(
+					Chat::White,
+					fmt::format(
+						"Set {} ({}) to {} for {}.",
+						EQ::skills::GetSkillName((EQ::skills::SkillType)skill_id),
+						skill_id,
+						skill_value,
+						target->GetCleanName()
+					).c_str()
+				);
+			}
+		}
 	}
 }
 
@@ -3518,18 +4229,6 @@ void command_spawn(Client *c, const Seperator *sep)
 		c->Message(Chat::White, "Format: #spawn name race level material hp gender class priweapon secweapon merchantid bodytype - spawns a npc those parameters.");
 		c->Message(Chat::White, "Name Format: NPCFirstname_NPCLastname - All numbers in a name are stripped and \"_\" characters become a space.");
 		c->Message(Chat::White, "Note: Using \"-\" for gender will autoselect the gender for the race. Using \"-\" for HP will use the calculated maximum HP.");
-	}
-}
-
-void command_test(Client *c, const Seperator *sep)
-{
-	c->Message(Chat::Yellow, "Triggering test command");
-
-	if (sep->arg[1]) {
-		c->SetPrimaryWeaponOrnamentation(atoi(sep->arg[1]));
-	}
-	if (sep->arg[2]) {
-		c->SetSecondaryWeaponOrnamentation(atoi(sep->arg[2]));
 	}
 }
 
@@ -12905,19 +13604,11 @@ void command_object(Client *c, const Seperator *sep)
 void command_showspellslist(Client *c, const Seperator *sep)
 {
 	Mob *target = c->GetTarget();
-
-	if (!target) {
-		c->Message(Chat::White, "Must target an NPC.");
+	if (!target || !target->IsNPC()) {		
+		c->Message(Chat::White, "You must target an NPC to use this command.");
 		return;
 	}
-
-	if (!target->IsNPC()) {
-		c->Message(Chat::White, "%s is not an NPC.",  target->GetName());
-		return;
-	}
-
 	target->CastToNPC()->AISpellsList(c);
-
 	return;
 }
 
@@ -13165,10 +13856,22 @@ void command_globalview(Client *c, const Seperator *sep)
 }
 
 void command_distance(Client *c, const Seperator *sep) {
-	if(c && c->GetTarget()) {
+	if (c->GetTarget()) {
 		Mob* target = c->GetTarget();
-
-		c->Message(Chat::White, "Your target, %s, is %1.1f units from you.",  c->GetTarget()->GetName(), Distance(c->GetPosition(), target->GetPosition()));
+		if (c != target) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} ({}) is {:.2f} units from you.",
+					target->GetCleanName(),
+					target->GetID(),
+					Distance(
+						c->GetPosition(),
+						target->GetPosition()
+					)
+				).c_str()
+			);
+		}
 	}
 }
 
@@ -13178,20 +13881,14 @@ void command_door(Client *c, const Seperator *sep) {
 
 void command_cvs(Client *c, const Seperator *sep)
 {
-	if(c)
-	{
-		auto pack =
-		    new ServerPacket(ServerOP_ClientVersionSummary, sizeof(ServerRequestClientVersionSummary_Struct));
-
-		ServerRequestClientVersionSummary_Struct *srcvss = (ServerRequestClientVersionSummary_Struct*)pack->pBuffer;
-
-		strn0cpy(srcvss->Name, c->GetName(), sizeof(srcvss->Name));
-
-		worldserver.SendPacket(pack);
-
-		safe_delete(pack);
-
-	}
+	auto pack = new ServerPacket(
+		ServerOP_ClientVersionSummary,
+		sizeof(ServerRequestClientVersionSummary_Struct)
+	);
+	auto srcvss = (ServerRequestClientVersionSummary_Struct*)pack->pBuffer;
+	strn0cpy(srcvss->Name, c->GetName(), sizeof(srcvss->Name));
+	worldserver.SendPacket(pack);
+	safe_delete(pack);
 }
 
 void command_max_all_skills(Client *c, const Seperator *sep)
@@ -13734,53 +14431,108 @@ void command_tune(Client *c, const Seperator *sep)
 {
 	//Work in progress - Kayen
 
-	if(sep->arg[1][0] == '\0' || !strcasecmp(sep->arg[1], "help")) {
+	if (sep->arg[1][0] == '\0' || !strcasecmp(sep->arg[1], "help")) {
 		c->Message(Chat::White, "Syntax: #tune [subcommand].");
 		c->Message(Chat::White, "-- Tune System Commands --");
-		c->Message(Chat::White, "-- Usage: Returning recommended combat statistical values based on a desired outcome.");
-		c->Message(Chat::White, "-- Note: If targeted mob does not have a target (ie not engaged in combat), YOU will be considered the target.");
+		c->Message(Chat::White, "-- Usage: Returns recommended combat statistical values based on a desired outcome through simulated combat.");
+		c->Message(Chat::White, "-- This commmand can answer the following difficult questions whening tunings NPCs and Players.");
+		c->Message(Chat::White, "-- Question: What is the average damage mitigation my AC provides against a specific targets attacks?");
+		c->Message(Chat::White, "-- Question: What is amount of AC would I need to add to acheive a specific average damage mitigation agianst specific targets attacks?");
+		c->Message(Chat::White, "-- Question: What is amount of AC would I need to add to my target to acheive a specific average damage mitigation from my attacks?");
+		c->Message(Chat::White, "-- Question: What is my targets average AC damage mitigation based on my ATK stat?");
+		c->Message(Chat::White, "-- Question: What is amount of ATK would I need to add to myself to acheive a specific average damage mitigation on my target?");
+		c->Message(Chat::White, "-- Question: What is amount of ATK would I need to add to my target to acheive a specific average AC damage mitigation on myself?");
+		c->Message(Chat::White, "-- Question: What is my hit chance against a target?");
+		c->Message(Chat::White, "-- Question: What is the amount of avoidance I need to add to my target to achieve a specific hit chance?");
+		c->Message(Chat::White, "-- Question: What is the amount of accuracy I need to add to my target to achieve a specific chance of hitting me?");
+		c->Message(Chat::White, "-- Question: ... and many more...");
+		c->Message(Chat::White, " ");
+		c->Message(Chat::White, "...#tune stats [A/D]");
+		c->Message(Chat::White, "...#tune FindATK [A/D] [pct mitigation] [interval] [loop_max] [AC override] [Info Level]");
+		c->Message(Chat::White, "...#tune FindAC  [A/D] [pct mitigation] [interval] [loop_max] [ATK override] [Info Level] ");
+		c->Message(Chat::White, "...#tune FindAccuracy  [A/D] [hit chance] [interval] [loop_max] [Avoidance override] [Info Level]");
+		c->Message(Chat::White, "...#tune FindAvoidance [A/D] [hit chance] [interval] [loop_max] [Accuracy override] [Info Level] ");
+		c->Message(Chat::White, " ");
+		c->Message(Chat::White, "-- DETAILS AND EXAMPLES ON USAGE");
+		c->Message(Chat::White, " ");
+		c->Message(Chat::White, "...Returns combat statistics, including AC mitigation pct, hit chance, and avoid melee chance for attacker and defender.");
+		c->Message(Chat::White, "...#tune stats [A/D]");
+		c->Message(Chat::White, "...");
+		c->Message(Chat::White, "...Returns recommended ATK adjustment (+/-) on ATTACKER that will result in a specific average AC mitigation pct on DEFENDER. ");
+		c->Message(Chat::White, "...#tune FindATK [A/D] [pct mitigation] [interval][loop_max][AC override][Info Level]");
+		c->Message(Chat::White, "...Example: Find the amount of ATK stat I need to add to the targeted NPC so that it hits me for 50 pct damage on average.");
+		c->Message(Chat::White, "...Example: #tune FindATK D 50");
+		c->Message(Chat::White, "...");
+		c->Message(Chat::White, "...Returns recommended AC adjustment(+/-) on DEFENDER for a specific average AC mitigation pct from ATTACKER. ");
+		c->Message(Chat::White, "...#tune FindAC  [A/D] [pct mitigation] [interval][loop_max][ATK override][Info Level] ");
+		c->Message(Chat::White, "...Example: Find the amount of AC stat I need to add to the targeted NPC so that I hit it for 70 pct damage on average.");
+		c->Message(Chat::White, "...Example: #tune FindAC D 70");
+		c->Message(Chat::White, "...");
+		c->Message(Chat::White, "...Returns recommended Accuracy adjustment (+/-) on ATTACKER that will result in a specific hit chance pct on DEFENDER. ");
+		c->Message(Chat::White, "...#tune FindAccuracy  [A/D] [hit chance] [interval][loop_max][Avoidance override][Info Level]");
+		c->Message(Chat::White, "...Example: Find the amount of Accuracy stat I need to add to the targeted NPC so that it has a 60 pct hit chance against me.");
+		c->Message(Chat::White, "...Example: #tune FindAccuracy D 60");
+		c->Message(Chat::White, "...");
+		c->Message(Chat::White, "...Returns recommended Avoidance adjustment (+/-) on DEFENDER for in a specific hit chance pct from ATTACKER. ");
+		c->Message(Chat::White, "...#tune FindAvoidance [A/D] [hit chance] [interval][loop_max][Accuracy override][Info Level] ");
+		c->Message(Chat::White, "...Example: Find the amount of Avoidance stat I need to add to the targeted NPC so that I have a 30 pct hit chance against it.");
+		c->Message(Chat::White, "...Example: #tune FindAvoidance D 30");
+		c->Message(Chat::White, "... ");
+		c->Message(Chat::White, "...Usage: [A/D] You must input either A or D.");
+		c->Message(Chat::White, "...Category [A] : YOU are the ATTACKER. YOUR TARGET is the DEFENDER.");
+		c->Message(Chat::White, "...Category [D] : YOU are the DEFENDER. YOUR TARGET is the ATTACKER.");
+		c->Message(Chat::White, "...If TARGET is in combat, DEFENDER is the TARGETs TARGET.");
+
+		c->Message(Chat::White, " ");
+
 		c->Message(Chat::White, "-- Warning: The calculations done in this process are intense and can potentially cause zone crashes depending on parameters set, use with caution!");
 		c->Message(Chat::White, "-- Below are OPTIONAL parameters.");
-		c->Message(Chat::White, "-- Note: [interval] Determines how fast the stat being checked increases/decreases till it finds the best result. Default [ATK/AC 50][Acc/Avoid 10] ");
-		c->Message(Chat::White, "-- Note: [loop_max] Determines how many iterations are done to increases/decreases the stat till it finds the best result. Default [ATK/AC 100][Acc/Avoid 1000]");
-		c->Message(Chat::White, "-- Note: [Stat Override] Will override that stat on mob being checkd with the specified value. Default=0");
-		c->Message(Chat::White, "-- Note: [Info Level] How much statistical detail is displayed[0 - 3]. Default=0 ");
-		c->Message(Chat::White, "-- Note: Results are only approximations usually accurate to +/- 2 intervals.");
-
-		c->Message(Chat::White, "... ");
-		c->Message(Chat::White, "...### Category A ### Target = ATTACKER ### YOU or Target's Target = DEFENDER ###");
-		c->Message(Chat::White, "...### Category B ### Target = DEFENDER ### YOU or Target's Target = ATTACKER ###");
-		c->Message(Chat::White, "... ");
-		c->Message(Chat::White, "...#Returns recommended ATK adjustment +/- on ATTACKER that will result in an average mitigation pct on DEFENDER. ");
-		c->Message(Chat::White, "...tune FindATK [A/B] [pct mitigation] [interval][loop_max][AC Overwride][Info Level]");
-		c->Message(Chat::White, "... ");
-		c->Message(Chat::White, "...#Returns recommended AC adjustment +/- on DEFENDER for an average mitigation pct from ATTACKER. ");
-		c->Message(Chat::White, "...tune FindAC [A/B] [pct mitigation] [interval][loop_max][ATK Overwride][Info Level] ");
-		c->Message(Chat::White, "... ");
-		c->Message(Chat::White, "...#Returns recommended Accuracy adjustment +/- on ATTACKER that will result in a hit chance pct on DEFENDER. ");
-		c->Message(Chat::White, "...tune FindAccuracy [A/B] [hit chance] [interval][loop_max][Avoidance Overwride][Info Level]");
-		c->Message(Chat::White, "... ");
-		c->Message(Chat::White, "...#Returns recommended Avoidance adjustment +/- on DEFENDER for in a hit chance pct from ATTACKER. ");
-		c->Message(Chat::White, "...tune FindAvoidance [A/B] [pct mitigation] [interval][loop_max][Accuracy Overwride][Info Level] ");
+		c->Message(Chat::White, "-- Note: [interval] Determines how much the stat being checked increases/decreases till it finds the best result. Lower is more accurate. Default=10");
+		c->Message(Chat::White, "-- Note: [loop_max] Determines how many iterations are done to increases/decreases the stat till it finds the best result. Higher is more accurate. Default=1000");
+		c->Message(Chat::White, "-- Note: [Stat Override] Will override that stat on mob being checked with the specified value. Default=0");
+		c->Message(Chat::White, "-- Example: If as the attacker you want to find the ATK value you would need to have agianst a target with 1000 AC to achieve an average AC mitigation of 50 pct.");
+		c->Message(Chat::White, "-- Example: #tune FindATK A 50 0 0 1000");
+		c->Message(Chat::White, "-- Note: [Info Level] How much parsing detail is displayed[0 - 1]. Default: [0] ");
+		c->Message(Chat::White, " ");
 
 		return;
 	}
-	//Default is category A for attacker/defender settings, which then are swapped under category B.
-	Mob* defender = c;
-	Mob* attacker = c->GetTarget();
+	/*
+		Category A: YOU are the attacker and your target is the defender
+		Category D: YOU are the defender and your target is the attacker
+	*/
 
-	if (!attacker)
+	Mob* attacker = c;
+	Mob* defender = c->GetTarget();
+
+	if (!defender)
 	{
-		c->Message(Chat::White, "#Tune - Error no target selected. [#Tune help]");
+		c->Message(Chat::White, "[#Tune] - Error no target selected. [#Tune help]");
 		return;
 	}
 
+	//Use if checkings on engaged targets.
 	Mob* ttarget = attacker->GetTarget();
-
-	if (ttarget)
+	if (ttarget) {
 		defender = ttarget;
+	}
 
-	if(!strcasecmp(sep->arg[1], "FindATK"))
+	if (!strcasecmp(sep->arg[1], "stats"))
+	{
+
+		if (!strcasecmp(sep->arg[2], "A")) {
+			c->TuneGetStats(defender, attacker);
+		}
+		else if (!strcasecmp(sep->arg[2], "D")){
+			c->TuneGetStats(attacker, defender);
+		}
+		else {
+			c->TuneGetStats(defender, attacker);
+		}
+		return;
+	}
+
+	if (!strcasecmp(sep->arg[1], "FindATK"))
 	{
 		float pct_mitigation = atof(sep->arg[3]);
 		int interval = atoi(sep->arg[4]);
@@ -13790,32 +14542,48 @@ void command_tune(Client *c, const Seperator *sep)
 
 		if (!pct_mitigation)
 		{
-			c->Message(Chat::Red, "#Tune - Error must enter the desired percent mitigation on defender. Ie. Defender to mitigate on average 20 pct of max damage.");
+			c->Message(Chat::White, "[#Tune] - Error must enter the desired percent mitigation on defender.");
+			c->Message(Chat::White, "...Returns recommended ATK adjustment (+/-) on ATTACKER that will result in a specific average AC mitigation pct on DEFENDER. ");
+			c->Message(Chat::White, "...#tune FindATK [A/D] [pct mitigation] [interval][loop_max][AC override][Info Level]");
+			c->Message(Chat::White, "...Example: Find the amount of ATK stat I need to add to the targeted NPC so that it hits me for 50 pct damage on average.");
+			c->Message(Chat::White, "...Example: #tune FindATK D 50");
 			return;
 		}
 
-		if (!interval)
-			interval = 50;
-		if (!max_loop)
-			max_loop = 100;
-		if(!ac_override)
+		if (!interval) {
+			interval = 10;
+		}
+		if (!max_loop) {
+			max_loop = 1000;
+		}
+		if (!ac_override) {
 			ac_override = 0;
-		if (!info_level)
-			info_level = 1;
+		}
+		if (!info_level) {
+			info_level = 0;
+		}
 
-		if(!strcasecmp(sep->arg[2], "A"))
-			c->Tune_FindATKByPctMitigation(defender, attacker, pct_mitigation, interval, max_loop,ac_override,info_level);
-		else if(!strcasecmp(sep->arg[2], "B"))
-			c->Tune_FindATKByPctMitigation(attacker,defender, pct_mitigation, interval, max_loop,ac_override,info_level);
+		if (!strcasecmp(sep->arg[2], "A")) {
+			c->TuneGetATKByPctMitigation(defender, attacker, pct_mitigation, interval, max_loop, ac_override, info_level);
+		}
+		else if (!strcasecmp(sep->arg[2], "D")) {
+			c->TuneGetATKByPctMitigation(attacker, defender, pct_mitigation, interval, max_loop, ac_override, info_level);
+		}
 		else {
 			c->Message(Chat::White, "#Tune - Error no category selcted. [#Tune help]");
 			c->Message(Chat::White, "Usage #tune FindATK [A/B] [pct mitigation] [interval][loop_max][AC Overwride][Info Level] ");
-			c->Message(Chat::White, "Example #tune FindATK A 60");
+			c->Message(Chat::White, "...Usage: [A/D] You must input either A or D.");
+			c->Message(Chat::White, "...Category [A] : YOU are the ATTACKER. YOUR TARGET is the DEFENDER.");
+			c->Message(Chat::White, "...Category [D] : YOU are the DEFENDER. YOUR TARGET is the ATTACKER.");
+			c->Message(Chat::White, "...If TARGET is in combat, DEFENDER is the TARGETs TARGET.");
+			c->Message(Chat::White, "... ");
+			c->Message(Chat::White, "...Example: Find the amount of ATK stat I need to add to the targeted NPC so that it hits me for 50 pct damage on average.");
+			c->Message(Chat::White, "...Example: #tune FindATK D 50");
 		}
 		return;
 	}
 
-	if(!strcasecmp(sep->arg[1], "FindAC"))
+	if (!strcasecmp(sep->arg[1], "FindAC"))
 	{
 		float pct_mitigation = atof(sep->arg[3]);
 		int interval = atoi(sep->arg[4]);
@@ -13825,33 +14593,49 @@ void command_tune(Client *c, const Seperator *sep)
 
 		if (!pct_mitigation)
 		{
-			c->Message(Chat::Red, "#Tune - Error must enter the desired percent mitigation on defender. Ie. Defender to mitigate on average 20 pct of max damage.");
+			c->Message(Chat::White, "#Tune - Error must enter the desired percent mitigation on defender.");
+			c->Message(Chat::White, "...Returns recommended AC adjustment(+/-) on DEFENDER for a specific average AC mitigation pct from ATTACKER. ");
+			c->Message(Chat::White, "...#tune FindAC  [A/D] [pct mitigation] [interval][loop_max][ATK override][Info Level] ");
+			c->Message(Chat::White, "...Example: Find the amount of AC stat I need to add to the targeted NPC so that I hit it for 70 pct damage on average.");
+			c->Message(Chat::White, "...Example: #tune FindAC D 70");
 			return;
 		}
 
-		if (!interval)
-			interval = 50;
-		if (!max_loop)
-			max_loop = 100;
-		if(!atk_override)
+		if (!interval) {
+			interval = 10;
+		}
+		if (!max_loop) {
+			max_loop = 1000;
+		}
+		if (!atk_override) {
 			atk_override = 0;
-		if (!info_level)
-			info_level = 1;
+		}
+		if (!info_level) {
+			info_level = 0;
+		}
 
-		if(!strcasecmp(sep->arg[2], "A"))
-			c->Tune_FindACByPctMitigation(defender, attacker, pct_mitigation, interval, max_loop,atk_override,info_level);
-		else if(!strcasecmp(sep->arg[2], "B"))
-			c->Tune_FindACByPctMitigation(attacker, defender, pct_mitigation, interval, max_loop,atk_override,info_level);
+		if (!strcasecmp(sep->arg[2], "A")) {
+			c->TuneGetACByPctMitigation(defender, attacker, pct_mitigation, interval, max_loop, atk_override, info_level);
+		}
+		else if (!strcasecmp(sep->arg[2], "D")) {
+			c->TuneGetACByPctMitigation(attacker, defender, pct_mitigation, interval, max_loop, atk_override, info_level);
+		}
 		else {
 			c->Message(Chat::White, "#Tune - Error no category selcted. [#Tune help]");
-			c->Message(Chat::White, "Usage #tune FindAC [A/B] [pct mitigation] [interval][loop_max][ATK Overwride][Info Level] ");
-			c->Message(Chat::White, "Example #tune FindAC A 60");
+			c->Message(Chat::White, "Usage #tune FindATK [A/B] [pct mitigation] [interval][loop_max][AC Overwride][Info Level] ");
+			c->Message(Chat::White, "...Usage: [A/D] You must input either A or D.");
+			c->Message(Chat::White, "...Category [A] : YOU are the ATTACKER. YOUR TARGET is the DEFENDER.");
+			c->Message(Chat::White, "...Category [D] : YOU are the DEFENDER. YOUR TARGET is the ATTACKER.");
+			c->Message(Chat::White, "...If TARGET is in combat, DEFENDER is the TARGETs TARGET.");
+			c->Message(Chat::White, "... ");
+			c->Message(Chat::White, "...Example: Find the amount of AC stat I need to add to the targeted NPC so that I hit it for 70 pct damage on average.");
+			c->Message(Chat::White, "...Example: #tune FindAC D 70");
 		}
 
 		return;
 	}
 
-	if(!strcasecmp(sep->arg[1], "FindAccuracy"))
+	if (!strcasecmp(sep->arg[1], "FindAccuracy"))
 	{
 		float hit_chance = atof(sep->arg[3]);
 		int interval = atoi(sep->arg[4]);
@@ -13861,39 +14645,47 @@ void command_tune(Client *c, const Seperator *sep)
 
 		if (!hit_chance)
 		{
-			c->Message(Chat::NPCQuestSay, "#Tune - Error must enter the desired percent mitigation on defender. Ie. Defender to mitigate on average 20 pct of max damage.");
+			c->Message(Chat::White, "#Tune - Error must enter the desired hit chance on defender.");
+			c->Message(Chat::White, "...Returns recommended Accuracy adjustment (+/-) on ATTACKER that will result in a specific hit chance pct on DEFENDER. ");
+			c->Message(Chat::White, "...#tune FindAccuracy  [A/D] [hit chance] [interval][loop_max][Avoidance override][Info Level]");
+			c->Message(Chat::White, "...Example: Find the amount of Accuracy stat I need to add to the targeted NPC so that it has a 60 pct hit chance against me.");
+			c->Message(Chat::White, "...Example: #tune FindAccuracy D 60");
 			return;
 		}
 
-		if (!interval)
+		if (!interval) {
 			interval = 10;
-		if (!max_loop)
+		}
+		if (!max_loop) {
 			max_loop = 1000;
-		if(!avoid_override)
+		}
+		if (!avoid_override) {
 			avoid_override = 0;
-		if (!info_level)
-			info_level = 1;
-
-		if (hit_chance > RuleR(Combat,MaxChancetoHit) || hit_chance < RuleR(Combat,MinChancetoHit))
-		{
-			c->Message(Chat::NPCQuestSay, "#Tune - Error hit chance out of bounds. [Max %.2f Min .2f]",  RuleR(Combat,MaxChancetoHit),RuleR(Combat,MinChancetoHit));
-			return;
+		}
+		if (!info_level) {
+			info_level = 0;
 		}
 
-		if(!strcasecmp(sep->arg[2], "A"))
-			c->Tune_FindAccuaryByHitChance(defender, attacker, hit_chance, interval, max_loop,avoid_override,info_level);
-		else if(!strcasecmp(sep->arg[2], "B"))
-			c->Tune_FindAccuaryByHitChance(attacker, defender, hit_chance, interval, max_loop,avoid_override,info_level);
+		if (!strcasecmp(sep->arg[2], "A"))
+			c->TuneGetAccuracyByHitChance(defender, attacker, hit_chance, interval, max_loop, avoid_override, info_level);
+		else if (!strcasecmp(sep->arg[2], "D"))
+			c->TuneGetAccuracyByHitChance(attacker, defender, hit_chance, interval, max_loop, avoid_override, info_level);
 		else {
 			c->Message(Chat::White, "#Tune - Error no category selcted. [#Tune help]");
-			c->Message(Chat::White, "Usage #tune FindAcccuracy [A/B] [hit chance] [interval][loop_max][Avoidance Overwride][Info Level]");
-			c->Message(Chat::White, "Exampled #tune FindAccuracy B 30");
+			c->Message(Chat::White, "...#tune FindAccuracy  [A/D] [hit chance] [interval][loop_max][Avoidance override][Info Level]");
+			c->Message(Chat::White, "...Usage: [A/D] You must input either A or D.");
+			c->Message(Chat::White, "...Category [A] : YOU are the ATTACKER. YOUR TARGET is the DEFENDER.");
+			c->Message(Chat::White, "...Category [D] : YOU are the DEFENDER. YOUR TARGET is the ATTACKER.");
+			c->Message(Chat::White, "...If TARGET is in combat, DEFENDER is the TARGETs TARGET.");
+			c->Message(Chat::White, "... ");
+			c->Message(Chat::White, "...Example: Find the amount of Accuracy stat I need to add to the targeted NPC so that it has a 60 pct hit chance against me.");
+			c->Message(Chat::White, "...Example: #tune FindAccuracy D 60");
 		}
 
 		return;
 	}
 
-	if(!strcasecmp(sep->arg[1], "FindAvoidance"))
+	if (!strcasecmp(sep->arg[1], "FindAvoidance"))
 	{
 		float hit_chance = atof(sep->arg[3]);
 		int interval = atoi(sep->arg[4]);
@@ -13903,39 +14695,46 @@ void command_tune(Client *c, const Seperator *sep)
 
 		if (!hit_chance)
 		{
-			c->Message(Chat::White, "#Tune - Error must enter the desired hit chance on defender. Ie. Defender to have hit chance of 40 pct.");
+			c->Message(Chat::White, "#Tune - Error must enter the desired hit chance on defender.");
+			c->Message(Chat::White, "...Returns recommended Avoidance adjustment (+/-) on DEFENDER for in a specific hit chance pct from ATTACKER. ");
+			c->Message(Chat::White, "...#tune FindAvoidance [A/D] [hit chance] [interval][loop_max][Accuracy override][Info Level] ");
+			c->Message(Chat::White, "...Example: Find the amount of Avoidance stat I need to add to the targeted NPC so that I have a 30 pct hit chance against it.");
+			c->Message(Chat::White, "...Example: #tune FindAvoidance D 30");
 			return;
 		}
-
-		if (!interval)
+		if (!interval) {
 			interval = 10;
-		if (!max_loop)
+		}
+		if (!max_loop) {
 			max_loop = 1000;
-		if(!acc_override)
+		}
+		if (!acc_override) {
 			acc_override = 0;
-		if (!info_level)
-			info_level = 1;
-
-		if (hit_chance > RuleR(Combat,MaxChancetoHit) || hit_chance < RuleR(Combat,MinChancetoHit))
-		{
-			c->Message(Chat::NPCQuestSay, "#Tune - Error hit chance out of bounds. [Max %.2f Min .2f]",  RuleR(Combat,MaxChancetoHit),RuleR(Combat,MinChancetoHit));
-			return;
+		}
+		if (!info_level) {
+			info_level = 0;
 		}
 
-		if(!strcasecmp(sep->arg[2], "A"))
-			c->Tune_FindAvoidanceByHitChance(defender, attacker, hit_chance, interval, max_loop,acc_override, info_level);
-		else if(!strcasecmp(sep->arg[2], "B"))
-			c->Tune_FindAvoidanceByHitChance(attacker, defender, hit_chance, interval, max_loop,acc_override, info_level);
+		if (!strcasecmp(sep->arg[2], "A"))
+			c->TuneGetAvoidanceByHitChance(defender, attacker, hit_chance, interval, max_loop, acc_override, info_level);
+		else if (!strcasecmp(sep->arg[2], "D"))
+			c->TuneGetAvoidanceByHitChance(attacker, defender, hit_chance, interval, max_loop, acc_override, info_level);
 		else {
 			c->Message(Chat::White, "#Tune - Error no category selcted. [#Tune help]");
-			c->Message(Chat::White, "Usage #tune FindAvoidance [A/B] [hit chance] [interval][loop_max][Accuracy Overwride][Info Level]");
-			c->Message(Chat::White, "Exampled #tune FindAvoidance B 30");
+			c->Message(Chat::White, "...#tune FindAvoidance [A/D] [hit chance] [interval][loop_max][Accuracy override][Info Level] ");
+			c->Message(Chat::White, "...Usage: [A/D] You must input either A or D.");
+			c->Message(Chat::White, "...Category [A] : YOU are the ATTACKER. YOUR TARGET is the DEFENDER.");
+			c->Message(Chat::White, "...Category [D] : YOU are the DEFENDER. YOUR TARGET is the ATTACKER.");
+			c->Message(Chat::White, "...If TARGET is in combat, DEFENDER is the TARGETs TARGET.");
+			c->Message(Chat::White, "... ");
+			c->Message(Chat::White, "...Example: Find the amount of Avoidance stat I need to add to the targeted NPC so that I have a 30 pct hit chance against it.");
+			c->Message(Chat::White, "...Example: #tune FindAvoidance D 30");
 		}
 
 		return;
 	}
 
-
+	c->Message(Chat::White, "#Tune - Error no command [#Tune help]");
 	return;
 }
 
@@ -14812,10 +15611,12 @@ void command_viewzoneloot(Client *c, const Seperator *sep)
 		);
 		return;
 	}
+
 	for (auto npc_entity : npc_list) {
 		auto current_npc_item_list = npc_entity.second->GetItemList();
 		zone_loot_list.insert({ npc_entity.second->GetID(), current_npc_item_list });
 	}
+	
 	for (auto loot_item : zone_loot_list) {
 		uint32 current_entity_id = loot_item.first;
 		auto current_item_list = loot_item.second;
@@ -14877,6 +15678,7 @@ void command_viewzoneloot(Client *c, const Seperator *sep)
 			) :
 			"not dropping"
 		);
+
 		c->Message(
 			Chat::White,
 			fmt::format(
@@ -14890,13 +15692,13 @@ void command_viewzoneloot(Client *c, const Seperator *sep)
 		std::string drop_string = (
 			loot_amount > 0 ?
 			fmt::format(
-				"{} {} {}",
+				"{} {} dropping",
 				(loot_amount > 1 ? "items" : "item"),
-				(loot_amount > 1 ? "are" : "is"),
-				(loot_amount > 1 ? "dropping" : "not dropping")
+				(loot_amount > 1 ? "are" : "is")
 			) :
 			"items are dropping"
 		);
+
 		c->Message(
 			Chat::White,
 			fmt::format(
@@ -14990,6 +15792,155 @@ void command_dye(Client *c, const Seperator *sep)
 	}
 
 	c->DyeArmorBySlot(slot, red, green, blue, use_tint);
+}
+
+void command_findtask(Client *c, const Seperator *sep)
+{
+	if (RuleB(TaskSystem, EnableTaskSystem)) {
+		int arguments = sep->argnum;
+
+		if (arguments == 0) {
+			c->Message(Chat::White, "Command Syntax: #findtask [search criteria]");
+			return;
+		}
+
+		if (sep->IsNumber(1)) {
+			auto task_id = std::stoul(sep->arg[1]);		
+			auto task_name = task_manager->GetTaskName(task_id);
+			auto task_message = (
+				!task_name.empty() ?
+				fmt::format(
+					"Task {}: {}",
+					task_id,
+					task_name
+				).c_str() :
+				fmt::format(
+					"Task ID {} was not found.",
+					task_id
+				).c_str()
+			);
+
+			c->Message(
+				Chat::White,
+				task_message
+			);
+		} else {
+			std::string search_criteria = str_tolower(sep->argplus[1]);
+			if (!search_criteria.empty()) {
+				int found_count = 0;
+				for (uint32 task_id = 1; task_id <= MAXTASKS; task_id++) {
+					auto task_name = task_manager->GetTaskName(task_id);
+					std::string task_name_lower = str_tolower(task_name);
+					if (task_name_lower.find(search_criteria) == std::string::npos) {
+						continue;
+					}
+
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"Task {}: {}",
+							task_id,
+							task_name
+						).c_str()
+					);			
+					found_count++;
+
+					if (found_count == 20) {
+						break;
+					}
+				}
+
+				if (found_count == 20) {
+					c->Message(Chat::White, "20 Tasks were found, max reached.");
+				} else {
+					auto task_message = (
+						found_count > 0 ? 
+						(
+							found_count == 1 ?
+							"A Task was" :
+							fmt::format("{} Tasks were", found_count)
+						) :
+						"No Tasks were"
+					);
+
+					c->Message(
+						Chat::White,
+						fmt::format(
+							"{} found.",
+							task_message
+						).c_str()
+					);
+				}
+			}
+		}
+	} else {
+		c->Message(Chat::White, "This command cannot be used while the Task system is disabled.");
+	}
+}
+
+void command_emptyinventory(Client *c, const Seperator *sep)
+{
+	Client *target = c;
+	if (c->GetGM() && c->GetTarget() && c->GetTarget()->IsClient()) {
+		target = c->GetTarget()->CastToClient();
+	}
+
+	EQ::ItemInstance *item = nullptr;
+	static const int16 slots[][2] = {
+		{ EQ::invslot::POSSESSIONS_BEGIN, EQ::invslot::POSSESSIONS_END },
+		{ EQ::invbag::GENERAL_BAGS_BEGIN, EQ::invbag::GENERAL_BAGS_END },
+		{ EQ::invbag::CURSOR_BAG_BEGIN, EQ::invbag::CURSOR_BAG_END},
+		{ EQ::invslot::BANK_BEGIN, EQ::invslot::BANK_END },
+		{ EQ::invbag::BANK_BAGS_BEGIN, EQ::invbag::BANK_BAGS_END },
+		{ EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END },
+		{ EQ::invbag::SHARED_BANK_BAGS_BEGIN, EQ::invbag::SHARED_BANK_BAGS_END },
+	};
+	int removed_count = 0;
+	const size_t size = sizeof(slots) / sizeof(slots[0]);
+	for (int slot_index = 0; slot_index < size; ++slot_index) {
+		for (int slot_id = slots[slot_index][0]; slot_id <= slots[slot_index][1]; ++slot_id) {
+			item = target->GetInv().GetItem(slot_id);
+			if (item) {
+				int stack_size = std::max(static_cast<int>(item->GetCharges()), 1);
+				removed_count += stack_size;
+				target->DeleteItemInInventory(slot_id, 0, true);
+			}
+		}
+	}
+
+	if (c != target) {
+		auto target_name = target->GetCleanName();
+		if (removed_count) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Inventory cleared for {}, {} items deleted.",
+					target_name,
+					removed_count
+				).c_str()
+			);
+		} else {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"{} has no items to delete.",
+					target_name
+				).c_str()
+			);
+		}
+	} else {
+		if (removed_count) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Your inventory has been cleared, {} items deleted.",
+					removed_count
+				).c_str()
+			);
+		} else {
+			c->Message(Chat::White, "You have no items to delete.");
+		}
+  }
 }
 
 // All new code added to command.cpp should be BEFORE this comment line. Do no append code to this file below the BOTS code block.

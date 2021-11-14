@@ -177,10 +177,13 @@
 #define EFFECT_COUNT 12
 #define MAX_SPELL_TRIGGER 12	// One for each slot(only 6 for AA since AA use 2)
 #define MAX_RESISTABLE_EFFECTS 12	// Number of effects that are typcially checked agianst resists.
-#define MaxLimitInclude 16 //Number(x 0.5) of focus Limiters that have inclusive checks used when calcing focus effects
+#define MaxLimitInclude 18 //Number(x 0.5) of focus Limiters that have inclusive checks used when calcing focus effects
 #define MAX_SKILL_PROCS 4 //Number of spells to check skill procs from. (This is arbitrary) [Single spell can have multiple proc checks]
+#define MAX_AA_PROCS 16 //(Actual Proc Amount is MAX_AA_PROCS/4) Number of spells to check AA procs from. (This is arbitrary)
 #define MAX_SYMPATHETIC_PROCS 10 // Number of sympathetic procs a client can have (This is arbitrary)
-#define MAX_FOCUS_PROC_LIMIT_TIMERS 20 //Number of proc limiting timers that can be going at same time (This is arbitrary)
+#define MAX_FOCUS_PROC_LIMIT_TIMERS 20 //Number of focus recast timers that can be going at same time (This is arbitrary)
+#define MAX_PROC_LIMIT_TIMERS 8 //Number of proc delay timers that can be going at same time, different proc types get their own timer array. (This is arbitrary)
+
 
 
 const int Z_AGGRO=10;
@@ -203,7 +206,9 @@ enum FocusLimitIncludes {
 	IncludeExistsSELimitSpellClass    = 12,
 	IncludeFoundSELimitSpellClass     = 13,
 	IncludeExistsSELimitSpellSubclass = 14,
-	IncludeFoundSELimitSpellSubclass  = 15
+	IncludeFoundSELimitSpellSubclass  = 15,
+	IncludeExistsSEFFItemClass        = 16,
+	IncludeFoundSEFFItemClass         = 17
 };
 /*
 	The id's correspond to 'type' 39 in live(2021) dbstr_us gives the message for target and caster restricted effects. These are not present in the ROF2 dbstr_us.
@@ -1112,7 +1117,7 @@ typedef enum {
 #define SE_LimitRace					412 // implemented, @Ff, Race that can use the spell focus, base1: race, Note: not used in any known live spells. Use only single race at a time.
 #define SE_FcBaseEffects				413 // implemented, @Fc, On Caster, base spell effectiveness mod pct, base: pct
 #define SE_LimitCastingSkill			414 // implemented, @Ff, Spell and singing skills(s) that a spell focus can require or exclude, base1: skill id, Include: Positive Exclude: Negative
-//#define SE_FFItemClass				415 // not used - base1 matches ItemType, base2 matches SubType, -1 ignored, max is bitmask of valid slots
+#define SE_FFItemClass					415 // implemented, @Ff, Limits focuses to be applied only from item click. base1: item ItemType (-1 to include for all ItemTypes,-1000 to exclude clicks from getting the focus, or exclude specific SubTypes or Slots if set), limit: item SubType (-1 for all SubTypes), max: item Slots (bitmask of valid slots, -1 ALL slots), Note: not used on live. See comments in Mob::CalcFocusEffect for more details.
 #define SE_ACv2							416 // implemented - New AC spell effect
 #define SE_ManaRegen_v2					417 // implemented - New mana regen effect
 #define SE_SkillDamageAmount2			418 // implemented - adds skill damage directly to certain attacks
@@ -1209,7 +1214,7 @@ typedef enum {
 #define SE_Health_Transfer				509 // implemented - exchange health for damage or healing on a target. ie Lifeburn/Act of Valor
 #define SE_Fc_ResistIncoming			510 // implemented, @Fc, On Target, resist modifier, base: amt
 #define SE_Ff_FocusTimerMin				511 // implemented, @Ff, sets a recast time until focus can be used again, base: 1, limit: time ms, Note:  ie. limit to 1 trigger every 1.5 seconds 
-#define SE_Proc_Timer_Modifier 			512 // not implemented - limits procs per amount of a time based on timer value (ie limit to 1 proc every 55 seconds)
+#define SE_Proc_Timer_Modifier 			512 // implemented - limits procs per amount of a time based on timer value, base: 1, limit: time ms, Note:, ie limit to 1 proc every 55 seconds)
 //#define SE_Mana_Max_Percent			513 //
 //#define SE_Endurance_Max_Percent		514 //
 #define SE_AC_Avoidance_Max_Percent		515 // implemented - stackable avoidance modifier
@@ -1514,6 +1519,7 @@ int GetViralMinSpreadTime(int32 spell_id);
 int GetViralMaxSpreadTime(int32 spell_id);
 int GetViralSpreadRange(int32 spell_id);
 bool IsInstrumentModAppliedToSpellEffect(int32 spell_id, int effect);
+uint32 GetProcLimitTimer(int32 spell_id, int proc_type);
 
 int CalcPetHp(int levelb, int classb, int STA = 75);
 int GetSpellEffectDescNum(uint16 spell_id);

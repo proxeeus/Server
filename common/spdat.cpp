@@ -1230,7 +1230,7 @@ bool IsEffectIgnoredInStacking(int spa)
 	case SE_LimitClass:
 	case SE_LimitRace:
 	case SE_FcBaseEffects:
-	case 415:
+	case SE_FFItemClass:
 	case SE_SkillDamageAmount2:
 	case SE_FcLimitUse:
 	case SE_FcIncreaseNumHits:
@@ -1298,6 +1298,7 @@ bool IsFocusLimit(int spa)
 	case SE_Ff_Value_Min:
 	case SE_Ff_Value_Max:
 	case SE_Ff_FocusTimerMin:
+	case SE_FFItemClass:
 		return true;
 	default:
 		return false;
@@ -1606,4 +1607,38 @@ bool IsManaRegenSpell(uint16 spell_id)
 			return true;
 	}
 	return false;
+}
+uint32 GetProcLimitTimer(int32 spell_id, int proc_type) {
+
+	//This allows for support for effects that may have multiple different proc types and timers.
+	if (!IsValidSpell(spell_id)) {
+		return 0;
+	}
+		
+	bool use_next_timer = false;
+	for (int i = 0; i < EFFECT_COUNT; ++i) {
+
+		if (proc_type == SE_WeaponProc) {
+			if (spells[spell_id].effect_id[i] == SE_WeaponProc || spells[spell_id].effect_id[i] == SE_AddMeleeProc) {
+				use_next_timer = true;
+			}
+		}
+
+		if (proc_type == SE_RangedProc) {
+			if (spells[spell_id].effect_id[i] == SE_RangedProc) {
+				use_next_timer = true;
+			}
+		}
+
+		if (proc_type == SE_DefensiveProc) {
+			if (spells[spell_id].effect_id[i] == SE_DefensiveProc) {
+				use_next_timer = true;
+			}
+		}
+
+		if (use_next_timer && spells[spell_id].effect_id[i] == SE_Proc_Timer_Modifier) {
+			return spells[spell_id].limit_value[i];
+		}
+	}
+	return 0;
 }

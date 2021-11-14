@@ -732,27 +732,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					break;
 				}
 
-				if (IsClient() && caster->IsClient()) {
-					caster->Message(Chat::White, "Unable to cast charm on a fellow player.");
-					BuffFadeByEffect(SE_Charm);
-					break;
-				}
-				else if (IsCorpse()) {
-					caster->Message(Chat::White, "Unable to cast charm on a corpse.");
-					BuffFadeByEffect(SE_Charm);
-					break;
-				}
-				else if (caster->GetPet() != nullptr && caster->IsClient()) {
-					caster->Message(Chat::White, "You cannot charm something when you already have a pet.");
-					BuffFadeByEffect(SE_Charm);
-					break;
-				}
-				else if (GetOwner()) {
-					caster->Message(Chat::White, "You cannot charm someone else's pet!");
-					BuffFadeByEffect(SE_Charm);
-					break;
-				}
-
 				if (IsNPC()) {
 					CastToNPC()->SaveGuardSpotCharm();
 				}
@@ -1467,35 +1446,44 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						gender_id
 					);
 					
-					if (spell.max_value[i] > 0) {
-						if (spell.limit_value[i] == 0) {
-							SendIllusionPacket(
-								spell.base_value[i],
-								gender_id
-							);
-						} else {
-							if (spell.max_value[i] != 3) {
+					if (spell.base_value[i] != RACE_ELEMENTAL_75) {
+						if (spell.max_value[i] > 0) {
+							if (spell.limit_value[i] == 0) {
 								SendIllusionPacket(
 									spell.base_value[i],
-									gender_id,
-									spell.limit_value[i],
-									spell.max_value[i]
+									gender_id
 								);
 							} else {
-								SendIllusionPacket(
-									spell.base_value[i],
-									gender_id,
-									spell.limit_value[i],
-									spell.limit_value[i]
-								);
+								if (spell.max_value[i] != 3) {
+									SendIllusionPacket(
+										spell.base_value[i],
+										gender_id,
+										spell.limit_value[i],
+										spell.max_value[i]
+									);
+								} else {
+									SendIllusionPacket(
+										spell.base_value[i],
+										gender_id,
+										spell.limit_value[i],
+										spell.limit_value[i]
+									);
+								}
 							}
+						} else {
+							SendIllusionPacket(
+								spell.base_value[i],
+								gender_id,
+								spell.limit_value[i],
+								spell.max_value[i]
+							);
 						}
+						
 					} else {
 						SendIllusionPacket(
 							spell.base_value[i],
 							gender_id,
-							spell.limit_value[i],
-							spell.max_value[i]
+							spell.limit_value[i]
 						);
 					}
 					SendAppearancePacket(AT_Size, race_size);
@@ -1918,11 +1906,27 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Weapon Proc: %s (id %d)", spells[effect_value].name, procid);
 #endif
+				AddProcToWeapon(procid, false, 100 + spells[spell_id].limit_value[i], spell_id, caster_level, GetProcLimitTimer(spell_id, SE_WeaponProc));
+				break;
+			}
 
-				if(spells[spell_id].limit_value[i] == 0)
-					AddProcToWeapon(procid, false, 100, spell_id, caster_level);
-				else
-					AddProcToWeapon(procid, false, spells[spell_id].limit_value[i]+100, spell_id, caster_level);
+			case SE_RangedProc:
+			{
+				uint16 procid = GetProcID(spell_id, i);
+#ifdef SPELL_EFFECT_SPAM
+				snprintf(effect_desc, _EDLEN, "Ranged Proc: %+i", effect_value);
+#endif
+				AddRangedProc(procid, 100 + spells[spell_id].limit_value[i], spell_id, GetProcLimitTimer(spell_id, SE_RangedProc));
+				break;
+			}
+
+			case SE_DefensiveProc:
+			{
+				uint16 procid = GetProcID(spell_id, i);
+#ifdef SPELL_EFFECT_SPAM
+				snprintf(effect_desc, _EDLEN, "Defensive Proc: %s (id %d)", spells[effect_value].name, procid);
+#endif
+				AddDefensiveProc(procid, 100 + spells[spell_id].limit_value[i], spell_id, GetProcLimitTimer(spell_id, SE_DefensiveProc));
 				break;
 			}
 
@@ -2294,20 +2298,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				break;
 			}
 
-			case SE_RangedProc:
-			{
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "Ranged Proc: %+i", effect_value);
-#endif
-				uint16 procid = GetProcID(spell_id, i);
-
-				if(spells[spell_id].limit_value[i] == 0)
-					AddRangedProc(procid, 100, spell_id);
-				else
-					AddRangedProc(procid, spells[spell_id].limit_value[i]+100, spell_id);
-				break;
-			}
-
 			case SE_Rampage:
 			{
 #ifdef SPELL_EFFECT_SPAM
@@ -2401,21 +2391,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					int pet_duration = spells[spell_id].max_value[i];
 					caster->CastToClient()->Doppelganger(spell_id, this, pet_name, pet_count, pet_duration);
 				}
-				break;
-			}
-
-			case SE_DefensiveProc:
-			{
-				uint16 procid = GetProcID(spell_id, i);
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "Defensive Proc: %s (id %d)", spells[effect_value].name, procid);
-#endif
-				if(spells[spell_id].limit_value[i] == 0)
-					AddDefensiveProc(procid, 100,spell_id);
-				else
-					AddDefensiveProc(procid, spells[spell_id].limit_value[i]+100,spell_id);
-				break;
-
 				break;
 			}
 
@@ -3299,6 +3274,8 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_Worn_Endurance_Regen_Cap:
 			case SE_Buy_AA_Rank:
 			case SE_Ff_FocusTimerMin:
+			case SE_Proc_Timer_Modifier:
+			case SE_FFItemClass:
 			{
 				break;
 			}
@@ -4562,12 +4539,20 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 	int    spell_level = 0;
 	int    lvldiff     = 0;
 	uint32 effect      = 0;
-	int32  base_value       = 0;
-	int32  limit_value       = 0;
+	int32  base_value  = 0;
+	int32  limit_value = 0;
 	uint32 slot        = 0;
 
 	int index_id = -1;
 	uint32 focus_reuse_time = 0;
+
+	bool   is_from_item_click      = false;
+	bool   try_apply_to_item_click = false;
+	bool   has_item_limit_check    = false;
+
+	if (casting_spell_inventory_slot && casting_spell_inventory_slot != -1) {
+		is_from_item_click = true;
+	}
 
 	bool LimitFailure                  = false;
 	bool LimitInclude[MaxLimitInclude] = {false};
@@ -4581,6 +4566,7 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 	10/11 SE_LimitCastingSkill:
 	12/13 SE_LimitSpellClass:
 	14/15 SE_LimitSpellSubClass:
+	16/17 SE_FFItemCLass:
 	Remember: Update MaxLimitInclude in spdat.h if adding new limits that require Includes
 	*/
 
@@ -4924,6 +4910,60 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 				}
 				break;
 
+			case SE_FFItemClass:
+				has_item_limit_check = true;
+				if (casting_spell_inventory_slot && casting_spell_inventory_slot != -1) {
+					if (IsClient() && casting_spell_slot == EQ::spells::CastingSlot::Item && casting_spell_inventory_slot != 0xFFFFFFFF) {
+						auto item = CastToClient()->GetInv().GetItem(casting_spell_inventory_slot);
+						if (item && item->GetItem()) {
+							//If ItemType set to < -1, then we will exclude either all Subtypes (-1000), or specific items by ItemType, SubType or Slot. See above for rules.
+							if (base_value < -1) { //Excludes
+								bool exclude_this_item = true;
+								int tmp_itemtype = (item->GetItem()->ItemType + 100) * -1;
+								//ItemType (if set to -1000, ignore and exclude any ItemType)
+								if (base_value < -1 && base_value != -1000) {
+									if (base_value != tmp_itemtype) {
+										exclude_this_item = false;
+									}
+								}
+								//SubType (if set to -1, ignore and exclude all SubTypes)
+								if (limit_value >= 0) {
+									if (limit_value != item->GetItem()->SubType) {
+										exclude_this_item = false;
+									}
+								}
+								if (exclude_this_item) {
+									LimitFailure = true;
+								}
+							}
+							else {//Includes
+								LimitInclude[IncludeExistsSEFFItemClass] = true;
+								bool include_this_item = true;
+								//ItemType (if set to -1, ignore and include any ItemType)
+								if (base_value >= 0) {
+									if (base_value != item->GetItem()->ItemType) {
+										include_this_item = false;
+									}
+								}
+								//SubType (if set to -1, ignore and include any SubType)
+								if (limit_value >= 0) {
+									if (limit_value != item->GetItem()->SubType) {
+										include_this_item = false;
+									}
+								}
+								if (include_this_item) {
+									LimitInclude[IncludeFoundSEFFItemClass] = true;
+								}
+							}
+						}
+					}
+				}
+				//If this is checking that focus can only be cast from an item, then if its not cast from item fail.
+				else if (base_value >= -1) {
+					LimitFailure = true;
+				}
+				//If we are checking to exclude items from a focus then do not fail unless the above check fails.
+				break;
 
 				/* These are not applicable to AA's because there is never a 'caster' of the 'buff' with the focus effect.
 				case SE_Ff_Same_Caster:
@@ -4964,18 +5004,21 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 			case SE_IncreaseSpellHaste:
 				if (type == focusSpellHaste && base_value > value) {
 					value = base_value;
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
 			case SE_Fc_CastTimeMod2:
 				if (type == focusFcCastTimeMod2 && base_value > value) {
 					value = base_value;
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
 			case SE_Fc_CastTimeAmt:
 				if (type == focusFcCastTimeAmt && base_value > value) {
 					value = base_value;
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
@@ -5050,6 +5093,7 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 			case SE_ReduceReuseTimer:
 				if (type == focusReduceRecastTime) {
 					value = base_value / 1000;
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
@@ -5216,6 +5260,10 @@ int32 Client::CalcAAFocus(focusType type, const AA::Rank &rank, uint16 spell_id)
 		}
 	}
 
+	if (try_apply_to_item_click && !has_item_limit_check) {
+		return 0;
+	}
+
 	if (LimitFailure) {
 		return 0;
 	}
@@ -5259,6 +5307,14 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 	uint32 Caston_spell_id = 0;
 	int    index_id        = -1;
 	uint32 focus_reuse_time = 0; //If this is set and all limits pass, start timer at end of script.
+	
+	bool   is_from_item_click      = false;
+	bool   try_apply_to_item_click = false;
+	bool   has_item_limit_check    = false;
+	
+	if (casting_spell_inventory_slot && casting_spell_inventory_slot != -1) {
+		is_from_item_click = true;
+	}
 
 	bool LimitInclude[MaxLimitInclude] = {false};
 	/* Certain limits require only one of several Include conditions to be true. Determined by limits being negative or positive
@@ -5272,13 +5328,14 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 	10/11 SE_LimitCastingSkill:
 	12/13 SE_LimitSpellClass:
 	14/15 SE_LimitSpellSubClass:
+	16/17 SE_FFItemCLass:
 	Remember: Update MaxLimitInclude in spdat.h if adding new limits that require Includes
 	*/
 
 	for (int i = 0; i < EFFECT_COUNT; i++) {
 
 		switch (focus_spell.effect_id[i]) {
-
+			
 			case SE_Blank:
 				break;
 
@@ -5600,6 +5657,96 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 				}
 				break;
 
+			case SE_FFItemClass:
+
+				/*
+					Limits focuses to check if cast from item clicks. Can be used to INCLUDE or EXCLUDE items by ItemType and/or SubType and/or Slots
+					Not used on live, going on information we have plus implemented as broadly as possible to allow all possible options.
+					base = item table field 'ItemType' Limit = item table field 'SubType' Max = item table field 'Slots' (this is slot bitmask)
+
+					When including: Setting base, limit, max respectively to -1 will cause it to ignore that check, letting any type or slot ect be used.
+
+					Special rules for excluding. base value needs to be negative < -1, if excluding all ItemTypes set to -1000.
+					For SubType and Slots set using same rules above as for includes. Ie. -1 for all, positive for specifics
+					To exclude a specific ItemType we have to do some math. The exclude value will be the negative value of (ItemType + 100).
+					If ItemType = 10, then SET ItemType= -110 to exclude. If its ItemType 0, then SET ItemType= -100 to exclude ect. Not ideal but it works.
+
+					Usage example: [INCLUDE] Only focus spell if from click cast and is a 'defense armor' item type=10 [base= 10, limit= -1, max= -1]
+					Usage example: [INCLUDE] Only focus spell if from click cast and is from helmet slot' slots= 4     [base= -1, limit= -1, max= 4]
+					Usage example: [EXCLUDE] Do not focus spell if it is from an item click. [base= -1000, limit= -1, max= -1]
+					Usage example: [EXCLUDE] Do not focus spell if it is from an item click from a helmet slot. [base= -1000, limit= -1, max= 4]
+					Usage example: [EXCLUDE] Do not focus spell if it is from an item click and is a 'defense armor' item type=10. [base= -110, limit= -1, max= -1]
+
+					Note: You can apply multiple includes or excludes to a single focus spell,  using multiple SPA 415 limits in the spell. Ie. Check for clicks from ItemType 10 or 11.
+
+				*/
+				has_item_limit_check = true;
+				if (casting_spell_inventory_slot && casting_spell_inventory_slot != -1) {
+					if (IsClient() && casting_spell_slot == EQ::spells::CastingSlot::Item && casting_spell_inventory_slot != 0xFFFFFFFF) {
+						auto item = CastToClient()->GetInv().GetItem(casting_spell_inventory_slot);
+						if (item && item->GetItem()) {
+							//If ItemType set to < -1, then we will exclude either all Subtypes (-1000), or specific items by ItemType, SubType or Slot. See above for rules.
+							if (focus_spell.base_value[i] < -1) { //Excludes
+								bool exclude_this_item = true;
+								int tmp_itemtype = (item->GetItem()->ItemType + 100) * -1;
+								//ItemType (if set to -1000, ignore and exclude any ItemType)
+								if (focus_spell.base_value[i] < -1 && focus_spell.base_value[i] != -1000) {
+									if (focus_spell.base_value[i] != tmp_itemtype) {
+										exclude_this_item = false;
+									}
+								}
+								//SubType (if set to -1, ignore and exclude all SubTypes)
+								if (focus_spell.limit_value[i] >= 0) {
+									if (focus_spell.limit_value[i] != item->GetItem()->SubType) {
+										exclude_this_item = false;
+									}
+								}
+								//item slot bitmask (if set to -1, ignore and exclude all SubTypes)
+								if (focus_spell.max_value[i] >= 0) {
+									if (focus_spell.max_value[i] != item->GetItem()->Slots) {
+										exclude_this_item = false;
+									}
+								}
+								if (exclude_this_item) {
+									return 0;
+								}
+							}
+							else {//Includes
+								LimitInclude[IncludeExistsSEFFItemClass] = true;
+								bool include_this_item = true;
+								//ItemType (if set to -1, ignore and include any ItemType)
+								if (focus_spell.base_value[i] >= 0) {
+									if (focus_spell.base_value[i] != item->GetItem()->ItemType) {
+										include_this_item = false;
+									}
+								}
+								//SubType (if set to -1, ignore and include any SubType)
+								if (focus_spell.limit_value[i] >= 0) {
+									if (focus_spell.limit_value[i] != item->GetItem()->SubType) {
+										include_this_item = false;
+									}
+								}
+								//item slot bitmask (if set to -1, ignore and include any slot)
+								if (focus_spell.max_value[i] >= 0) {
+									if (focus_spell.max_value[i] != item->GetItem()->Slots) {
+										include_this_item = false;
+									}
+								}
+
+								if (include_this_item) {
+									LimitInclude[IncludeFoundSEFFItemClass] = true;
+								}
+							}
+						}
+					}
+				}
+				//If this is checking that focus can only be cast from an item, then if its not cast from item fail.
+				else if (focus_spell.base_value[i] >= -1) {
+					return 0;
+				}
+				//If we are checking to exclude items from a focus then do not fail unless the above check fails.
+				break;
+
 			// handle effects
 			case SE_ImprovedDamage:
 				if (type == focusImprovedDamage) {
@@ -5634,18 +5781,21 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 			case SE_IncreaseSpellHaste:
 				if (type == focusSpellHaste && focus_spell.base_value[i] > value) {
 					value = focus_spell.base_value[i];
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
 			case SE_Fc_CastTimeMod2:
 				if (type == focusFcCastTimeMod2 && focus_spell.base_value[i] > value) {
 					value = focus_spell.base_value[i];
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
 			case SE_Fc_CastTimeAmt:
 				if (type == focusFcCastTimeAmt && focus_spell.base_value[i] > value) {
 					value = focus_spell.base_value[i];
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
@@ -5706,6 +5856,7 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 			case SE_ReduceReuseTimer:
 				if (type == focusReduceRecastTime) {
 					value = focus_spell.base_value[i] / 1000;
+					try_apply_to_item_click = is_from_item_click ? true : false;
 				}
 				break;
 
@@ -5888,6 +6039,15 @@ int32 Mob::CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, boo
 		if (LimitInclude[e] && !LimitInclude[e + 1]) {
 			return 0;
 		}
+	}
+	
+	/*
+		For item click cast/recast focus modifiers. Only use if SPA 415 exists.
+		This is an item click but does not have SPA 415 limiter. Fail here.
+	*/
+
+	if (try_apply_to_item_click && !has_item_limit_check) {
+		return 0;
 	}
 
 	if (Caston_spell_id) {
@@ -8439,6 +8599,35 @@ bool Mob::HarmonySpellLevelCheck(int32 spell_id, Mob *target)
 	return true;
 }
 
+bool Mob::PassCharmTargetRestriction(Mob *target) {
+	
+	//Level restriction check should not go here.
+	if (!target) {
+		return false;
+	}
+	
+	if (target->IsClient() && IsClient()) {
+		MessageString(Chat::Red, CANNOT_AFFECT_PC);
+		LogSpells("Spell casting canceled: Can not cast charm on a client.");
+		return false;
+	}
+	else if (target->IsCorpse()) {
+		LogSpells("Spell casting canceled: Can not cast charm on a corpse.");
+		return false;
+	}
+	else if (GetPet() && IsClient()) {
+		MessageString(Chat::Red, ONLY_ONE_PET);
+		LogSpells("Spell casting canceled: Can not cast charm if you have a pet.");
+		return false;
+	}
+	else if (target->GetOwner()) {
+		MessageString(Chat::Red, CANNOT_CHARM);
+		LogSpells("Spell casting canceled: Can not cast charm on a pet.");
+		return false;
+	}
+	return true;
+}
+
 bool Mob::CanFocusUseRandomEffectivenessByType(focusType type)
 {
 	switch (type) {
@@ -8626,7 +8815,7 @@ void Mob::SpreadVirusEffect(int32 spell_id, uint32 caster_id, int32 buff_tics_re
 
 bool Mob::IsFocusProcLimitTimerActive(int32 focus_spell_id) {
 	/*
-		Used with SPA SE_Ff_FocusTimerMin to limit how often a focus effect can be applied.
+		Used with SPA 511 SE_Ff_FocusTimerMin to limit how often a focus effect can be applied. 
 		Ie. Can only have a spell trigger once every 15 seconds, or to be more creative can only
 		have the fire spells received a very high special focused once every 30 seconds.
 		Note, this stores timers for both spell, item and AA related focuses For AA the focus_spell_id
@@ -8665,3 +8854,110 @@ void Mob::SetFocusProcLimitTimer(int32 focus_spell_id, uint32 focus_reuse_time) 
 		}
 	}
 }
+
+bool Mob::IsProcLimitTimerActive(int32 base_spell_id, uint32 proc_reuse_time, int proc_type) {
+	/*
+		Used with SPA 512 SE_Proc_Timer_Modifier to limit how often a proc can be cast.
+		If this effect exists it will prevent the next proc from firing until the timer
+		defined in SPA 512 is finished. Ie. 1 proc every 55 seconds.
+		Spell, Ranged, and Defensive procs all have their own timer array, therefore
+		you can stack multiple different types of effects in the same spell. Make sure
+		SPA 512 goes directly after each proc you want to have the timer.
+	*/
+	if (!proc_reuse_time) {
+		return false;
+	}
+
+	for (int i = 0; i < MAX_PROC_LIMIT_TIMERS; i++) {
+		
+		if (proc_type == SE_WeaponProc) {
+			if (spell_proclimit_spellid[i] == base_spell_id) {
+				if (spell_proclimit_timer[i].Enabled()) {
+					if (spell_proclimit_timer[i].GetRemainingTime() > 0) {
+						return true;
+					}
+					else {
+						spell_proclimit_timer[i].Disable();
+						spell_proclimit_spellid[i] = 0;
+					}
+				}
+			}
+		}
+		else if (proc_type == SE_RangedProc) {
+			if (ranged_proclimit_spellid[i] == base_spell_id) {
+				if (ranged_proclimit_timer[i].Enabled()) {
+					if (ranged_proclimit_timer[i].GetRemainingTime() > 0) {
+						return true;
+					}
+					else {
+						ranged_proclimit_timer[i].Disable();
+						ranged_proclimit_spellid[i] = 0;
+					}
+				}
+			}
+		}
+		else if (proc_type == SE_DefensiveProc) {
+			if (def_proclimit_spellid[i] == base_spell_id) {
+				if (def_proclimit_timer[i].Enabled()) {
+					if (def_proclimit_timer[i].GetRemainingTime() > 0) {
+						return true;
+					}
+					else {
+						def_proclimit_timer[i].Disable();
+						def_proclimit_spellid[i] = 0;
+					}
+				}
+			}
+		}
+	}
+	return false;
+}
+
+void Mob::SetProcLimitTimer(int32 base_spell_id, uint32 proc_reuse_time, int proc_type) {
+
+	if (!proc_reuse_time) {
+		return;
+	}
+
+	bool is_set = false;
+
+	for (int i = 0; i < MAX_PROC_LIMIT_TIMERS; i++) {
+
+		if (proc_type == SE_WeaponProc) {
+			if (!spell_proclimit_spellid[i] && !is_set) {
+				spell_proclimit_spellid[i] = base_spell_id;
+				spell_proclimit_timer[i].SetTimer(proc_reuse_time);
+				is_set = true;
+			}
+			else if (spell_proclimit_spellid[i] > 0 && !FindBuff(base_spell_id)) {
+				spell_proclimit_spellid[i] = 0;
+				spell_proclimit_timer[i].Disable();
+			}
+		}
+
+		if (proc_type == SE_RangedProc) {
+			if (!ranged_proclimit_spellid[i] && !is_set) {
+				ranged_proclimit_spellid[i] = base_spell_id;
+				ranged_proclimit_timer[i].SetTimer(proc_reuse_time);
+				is_set = true;
+			}
+			else if (ranged_proclimit_spellid[i] > 0 && !FindBuff(base_spell_id)) {
+				ranged_proclimit_spellid[i] = 0;
+				ranged_proclimit_timer[i].Disable();
+			}
+		}
+
+		if (proc_type == SE_DefensiveProc) {
+			if (!def_proclimit_spellid[i] && !is_set) {
+				def_proclimit_spellid[i] = base_spell_id;
+				def_proclimit_timer[i].SetTimer(proc_reuse_time);
+				is_set = true;
+			}
+			else if (def_proclimit_spellid[i] > 0 && !FindBuff(base_spell_id)) {
+				def_proclimit_spellid[i] = 0;
+				def_proclimit_timer[i].Disable();
+			}
+		}
+	}
+}
+

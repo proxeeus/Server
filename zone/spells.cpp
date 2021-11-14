@@ -229,6 +229,21 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		return false;
 	}
 
+	if (IsEffectInSpell(spell_id, SE_Charm) && !PassCharmTargetRestriction(entity_list.GetMobID(target_id))) {
+		bool can_send_spellbar_enable = true;
+		if ((item_slot != -1 && cast_time == 0) || aa_id) {
+			can_send_spellbar_enable = false;
+		}
+
+		if (can_send_spellbar_enable) {
+			SendSpellBarEnable(spell_id);
+		}
+		if (casting_spell_id && IsNPC()) {
+			CastToNPC()->AI_Event_SpellCastFinished(false, static_cast<uint16>(casting_spell_slot));
+		}
+		return false;
+	}
+
 	if (HasActiveSong() && IsBardSong(spell_id)) {
 		LogSpells("Casting a new song while singing a song. Killing old song [{}]", bardsong);
 		//Note: this does NOT tell the client
@@ -402,12 +417,19 @@ bool Mob::DoCastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		target_id = GetID();
 	}
 
-	if(cast_time <= -1) {
+	if (cast_time <= -1) {
 		// save the non-reduced cast time to use in the packet
 		cast_time = orgcasttime = spell.cast_time;
 		// if there's a cast time, check if they have a modifier for it
-		if(cast_time) {
+		if (cast_time) {
 			cast_time = GetActSpellCasttime(spell_id, cast_time);
+		}
+	}
+	//must use SPA 415 with focus (SPA 127/500/501) to reduce item recast
+	else if (cast_time && IsClient() && slot == CastingSlot::Item && item_slot != 0xFFFFFFFF) {
+		orgcasttime = cast_time;
+		if (cast_time) {
+			cast_time = GetActSpellCasttime(spell_id, cast_time); 
 		}
 	}
 	else
@@ -1009,7 +1031,10 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			return;
 		}
 	}
-
+	/*
+		Titanium client will prevent item recast on its own. This is only used to enforce. Titanium items are cast from Handle_OP_CastSpell.
+		SOF+ client does not prevent item recast on its own. We enforce this in Handle_OP_ItemVerifyRequest where items are cast from.
+	*/
 	if(IsClient() && (slot == CastingSlot::Item || slot == CastingSlot::PotionBelt))
 	{
 		IsFromItem = true;
@@ -1456,7 +1481,8 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			}
 			if (spells[spell_id].timer_id > 0 && slot < CastingSlot::MaxGems)
 				c->SetLinkedSpellReuseTimer(spells[spell_id].timer_id, spells[spell_id].recast_time / 1000);
-			c->MemorizeSpell(static_cast<uint32>(slot), spell_id, memSpellSpellbar);
+			if(RuleB(Spells, EnableBardMelody))
+				c->MemorizeSpell(static_cast<uint32>(slot), spell_id, memSpellSpellbar);
 		}
 		LogSpells("Bard song [{}] should be started", spell_id);
 	}
@@ -2527,6 +2553,7 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, ui
 				recast -= GetAA(aaTouchoftheWicked) * 420;
 			}
 			int reduction = CastToClient()->GetFocusEffect(focusReduceRecastTime, spell_id);//Client only
+
 			if(reduction)
 				recast -= reduction;
 
@@ -2540,20 +2567,32 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, ui
 		EQ::ItemInstance *itm = CastToClient()->GetInv().GetItem(inventory_slot);
 		if(itm && itm->GetItem()->RecastDelay > 0){
 			auto recast_type = itm->GetItem()->RecastType;
-			CastToClient()->GetPTimers().Start((pTimerItemStart + recast_type), itm->GetItem()->RecastDelay);
-			if (recast_type != -1) {
-				database.UpdateItemRecastTimestamps(
-				    CastToClient()->CharacterID(),
-					recast_type,
-					CastToClient()->GetPTimers().Get(pTimerItemStart + recast_type)->GetReadyTimestamp()
-				);
+			int recast_delay = itm->GetItem()->RecastDelay;
+			//must use SPA 415 with focus (SPA 310) to reduce item recast
+			int reduction = CastToClient()->GetFocusEffect(focusReduceRecastTime, spell_id);
+			if (reduction) {
+				recast_delay -= reduction;
 			}
-			auto outapp = new EQApplicationPacket(OP_ItemRecastDelay, sizeof(ItemRecastDelay_Struct));
-			ItemRecastDelay_Struct *ird = (ItemRecastDelay_Struct *)outapp->pBuffer;
-			ird->recast_delay = itm->GetItem()->RecastDelay;
-			ird->recast_type = recast_type;
-			CastToClient()->QueuePacket(outapp);
-			safe_delete(outapp);
+			recast_delay = std::max(recast_delay, 0);
+
+			if (recast_delay > 0) {
+
+				CastToClient()->GetPTimers().Start((pTimerItemStart + recast_type), recast_delay);
+				if (recast_type != -1) {
+					database.UpdateItemRecastTimestamps(
+						CastToClient()->CharacterID(),
+						recast_type,
+						CastToClient()->GetPTimers().Get(pTimerItemStart + recast_type)->GetReadyTimestamp()
+					);
+				}
+
+				auto outapp = new EQApplicationPacket(OP_ItemRecastDelay, sizeof(ItemRecastDelay_Struct));
+				ItemRecastDelay_Struct *ird = (ItemRecastDelay_Struct *)outapp->pBuffer;
+				ird->recast_delay = static_cast<uint32>(recast_delay);
+				ird->recast_type = recast_type;
+				CastToClient()->QueuePacket(outapp);
+				safe_delete(outapp);
+			}
 		}
 	}
 
@@ -5652,7 +5691,7 @@ bool Mob::IsCombatProc(uint16 spell_id) {
 	return false;
 }
 
-bool Mob::AddProcToWeapon(uint16 spell_id, bool bPerma, uint16 iChance, uint16 base_spell_id, int level_override) {
+bool Mob::AddProcToWeapon(uint16 spell_id, bool bPerma, uint16 iChance, uint16 base_spell_id, int level_override, uint32 proc_reuse_time) {
 	if(spell_id == SPELL_UNKNOWN)
 		return(false);
 
@@ -5664,8 +5703,8 @@ bool Mob::AddProcToWeapon(uint16 spell_id, bool bPerma, uint16 iChance, uint16 b
 				PermaProcs[i].chance = iChance;
 				PermaProcs[i].base_spellID = base_spell_id;
 				PermaProcs[i].level_override = level_override;
+				PermaProcs[i].proc_reuse_time = proc_reuse_time;
 				LogSpells("Added permanent proc spell [{}] with chance [{}] to slot [{}]", spell_id, iChance, i);
-
 				return true;
 			}
 		}
@@ -5679,6 +5718,7 @@ bool Mob::AddProcToWeapon(uint16 spell_id, bool bPerma, uint16 iChance, uint16 b
 					SpellProcs[i].spellID = spell_id;
 					SpellProcs[i].chance = iChance;
 					SpellProcs[i].level_override = level_override;
+					SpellProcs[i].proc_reuse_time = proc_reuse_time;
 					Log(Logs::Detail, Logs::Spells, "Replaced poison-granted proc spell %d with chance %d to slot %d", spell_id, iChance, i);
 					return true;
 				}
@@ -5695,6 +5735,7 @@ bool Mob::AddProcToWeapon(uint16 spell_id, bool bPerma, uint16 iChance, uint16 b
 				SpellProcs[i].chance = iChance;
 				SpellProcs[i].base_spellID = base_spell_id;;
 				SpellProcs[i].level_override = level_override;
+				SpellProcs[i].proc_reuse_time = proc_reuse_time;
 				LogSpells("Added [{}]-granted proc spell [{}] with chance [{}] to slot [{}]", (base_spell_id == POISON_PROC) ? "poison" : "spell", spell_id, iChance, i);
 				return true;
 			}
@@ -5711,13 +5752,14 @@ bool Mob::RemoveProcFromWeapon(uint16 spell_id, bool bAll) {
 			SpellProcs[i].chance = 0;
 			SpellProcs[i].base_spellID = SPELL_UNKNOWN;
 			SpellProcs[i].level_override = -1;
+			SpellProcs[i].proc_reuse_time = 0;
 			LogSpells("Removed proc [{}] from slot [{}]", spell_id, i);
 		}
 	}
 	return true;
 }
 
-bool Mob::AddDefensiveProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id)
+bool Mob::AddDefensiveProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id, uint32 proc_reuse_time)
 {
 	if(spell_id == SPELL_UNKNOWN)
 		return(false);
@@ -5728,6 +5770,7 @@ bool Mob::AddDefensiveProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id
 			DefensiveProcs[i].spellID = spell_id;
 			DefensiveProcs[i].chance = iChance;
 			DefensiveProcs[i].base_spellID = base_spell_id;
+			DefensiveProcs[i].proc_reuse_time = proc_reuse_time;
 			LogSpells("Added spell-granted defensive proc spell [{}] with chance [{}] to slot [{}]", spell_id, iChance, i);
 			return true;
 		}
@@ -5743,13 +5786,14 @@ bool Mob::RemoveDefensiveProc(uint16 spell_id, bool bAll)
 			DefensiveProcs[i].spellID = SPELL_UNKNOWN;
 			DefensiveProcs[i].chance = 0;
 			DefensiveProcs[i].base_spellID = SPELL_UNKNOWN;
+			DefensiveProcs[i].proc_reuse_time = 0;
 			LogSpells("Removed defensive proc [{}] from slot [{}]", spell_id, i);
 		}
 	}
 	return true;
 }
 
-bool Mob::AddRangedProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id)
+bool Mob::AddRangedProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id, uint32 proc_reuse_time)
 {
 	if(spell_id == SPELL_UNKNOWN)
 		return(false);
@@ -5760,6 +5804,7 @@ bool Mob::AddRangedProc(uint16 spell_id, uint16 iChance, uint16 base_spell_id)
 			RangedProcs[i].spellID = spell_id;
 			RangedProcs[i].chance = iChance;
 			RangedProcs[i].base_spellID = base_spell_id;
+			RangedProcs[i].proc_reuse_time = proc_reuse_time;
 			LogSpells("Added spell-granted ranged proc spell [{}] with chance [{}] to slot [{}]", spell_id, iChance, i);
 			return true;
 		}
@@ -5774,7 +5819,8 @@ bool Mob::RemoveRangedProc(uint16 spell_id, bool bAll)
 		if (bAll || RangedProcs[i].spellID == spell_id) {
 			RangedProcs[i].spellID = SPELL_UNKNOWN;
 			RangedProcs[i].chance = 0;
-			RangedProcs[i].base_spellID = SPELL_UNKNOWN;;
+			RangedProcs[i].base_spellID = SPELL_UNKNOWN;
+			RangedProcs[i].proc_reuse_time = 0;
 			LogSpells("Removed ranged proc [{}] from slot [{}]", spell_id, i);
 		}
 	}

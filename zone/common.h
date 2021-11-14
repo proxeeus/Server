@@ -201,14 +201,15 @@ enum {
 	ALLOW_TO_TANK = 41,
 	IGNORE_ROOT_AGGRO_RULES = 42,
 	CASTING_RESIST_DIFF = 43,
-	COUNTER_AVOID_DAMAGE = 44,
+	COUNTER_AVOID_DAMAGE = 44,                   //Modify by percent NPC's opponents chance to riposte, block, parry or dodge individually, or for all skills
 	PROX_AGGRO = 45,
 	IMMUNE_RANGED_ATTACKS = 46,
 	IMMUNE_DAMAGE_CLIENT = 47,
 	IMMUNE_DAMAGE_NPC = 48,
 	IMMUNE_AGGRO_CLIENT = 49,
 	IMMUNE_AGGRO_NPC = 50,
-	MAX_SPECIAL_ATTACK = 51
+	MODIFY_AVOID_DAMAGE = 51,                    //Modify by percent the NPCs chance to riposte, block, parry or dodge individually, or for all skills
+	MAX_SPECIAL_ATTACK = 52
 };
 
 typedef enum {	//fear states
@@ -535,6 +536,10 @@ struct StatBonuses {
 	bool	LimitToSkill[EQ::skills::HIGHEST_SKILL + 2];		// Determines if we need to search for a skill proc.
 	uint32  SkillProc[MAX_SKILL_PROCS];			// Max number of spells containing skill_procs.
 	uint32  SkillProcSuccess[MAX_SKILL_PROCS];	// Max number of spells containing skill_procs_success.
+	int32   SpellProc[MAX_AA_PROCS];		// Max number of spells containing melee spell procs.
+	int32   RangedProc[MAX_AA_PROCS];	    // Max number of spells containing ranged spell procs.
+	int32   DefensiveProc[MAX_AA_PROCS];	// Max number of spells containing defensive spell procs.
+	bool	Proc_Timer_Modifier;				// Used to check if this exists, to avoid any further unnncessary checks.
 	uint32  PC_Pet_Rampage[2];					// 0= % chance to rampage, 1=damage modifier
 	uint32  PC_Pet_AE_Rampage[2];				// 0= % chance to AE rampage, 1=damage modifier
 	uint32  PC_Pet_Flurry;						// Percent chance flurry from double attack
@@ -691,6 +696,7 @@ typedef struct
 	uint16 chance;
 	uint16 base_spellID;
 	int level_override;
+	uint32 proc_reuse_time;
 } tProc;
 
 

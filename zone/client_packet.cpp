@@ -761,17 +761,17 @@ void Client::CompleteConnect()
 			case SE_AddMeleeProc:
 			case SE_WeaponProc:
 			{
-				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel);
+				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel, GetProcLimitTimer(buffs[j1].spellid, SE_WeaponProc));
 				break;
 			}
 			case SE_DefensiveProc:
 			{
-				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid);
+				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, SE_DefensiveProc));
 				break;
 			}
 			case SE_RangedProc:
 			{
-				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid);
+				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, SE_RangedProc));
 				break;
 			}
 			}
@@ -3388,6 +3388,9 @@ void Client::Handle_OP_AutoFire(const EQApplicationPacket *app)
 	}
 	bool *af = (bool*)app->pBuffer;
 	auto_fire = *af;
+	if(!RuleB(Character, EnableRangerAutoFire))
+		auto_fire = false;
+
 	auto_attack = false;
 	SetAttackTimer();
 }
@@ -8959,6 +8962,14 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 				}
 				if (GetLevel() >= item->Click.Level2)
 				{
+					if (item->RecastDelay > 0)
+					{
+						if (!GetPTimers().Expired(&database, (pTimerItemStart + item->RecastType), false)) {
+							LogSpells("Casting of [{}] canceled: item spell reuse timer not expired", spell_id);
+							return;
+						}
+					}
+
 					int i = parse->EventItem(EVENT_ITEM_CLICK_CAST, this, p_inst, nullptr, "", slot_id);
 					inst = m_inv[slot_id];
 					if (!inst)
@@ -8988,6 +8999,15 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 				}
 				if (GetLevel() >= augitem->Click.Level2)
 				{
+					if (augitem->RecastDelay > 0)
+					{
+						if (!GetPTimers().Expired(&database, (pTimerItemStart + augitem->RecastType), false)) {
+							LogSpells("Casting of [{}] canceled: item spell reuse timer from augment not expired", spell_id);
+							MessageString(Chat::Red, SPELL_RECAST);
+							return;
+						}
+					}
+
 					int i = parse->EventItem(EVENT_ITEM_CLICK_CAST, this, clickaug, nullptr, "", slot_id);
 					inst = m_inv[slot_id];
 					if (!inst)
