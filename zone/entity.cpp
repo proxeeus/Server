@@ -3153,50 +3153,75 @@ char *EntityList::RemoveNumbers(char *name)
 
 void EntityList::ListNPCCorpses(Client *client)
 {
-	uint32 x = 0;
-
-	auto it = corpse_list.begin();
-	client->Message(Chat::White, "NPC Corpses in the zone:");
-	while (it != corpse_list.end()) {
-		if (it->second->IsNPCCorpse()) {
-			client->Message(Chat::White, "  %5d: %s", it->first, it->second->GetName());
-			x++;
+	uint32 corpse_count = 0;
+	for (const auto& corpse : corpse_list) {
+		uint32 corpse_number = (corpse_count + 1);
+		if (corpse.second->IsNPCCorpse()) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Corpse {} | Name: {} ({})",
+					corpse_number,
+					corpse.second->GetName(),
+					corpse.second->GetID()
+				).c_str()
+			);
+			corpse_count++;
 		}
-		++it;
 	}
-	client->Message(Chat::White, "%d npc corpses listed.", x);
+
+	if (corpse_count > 0) {
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"{} NPC corpses listed.",
+				corpse_count
+			).c_str()
+		);
+	}
 }
 
 void EntityList::ListPlayerCorpses(Client *client)
 {
-	uint32 x = 0;
-
-	auto it = corpse_list.begin();
-	client->Message(Chat::White, "Player Corpses in the zone:");
-	while (it != corpse_list.end()) {
-		if (it->second->IsPlayerCorpse()) {
-			client->Message(Chat::White, "  %5d: %s", it->first, it->second->GetName());
-			x++;
+	uint32 corpse_count = 0;
+	for (const auto& corpse : corpse_list) {
+		uint32 corpse_number = (corpse_count + 1);
+		if (corpse.second->IsPlayerCorpse()) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Corpse {} | Name: {} ({})",
+					corpse_number,
+					corpse.second->GetName(),
+					corpse.second->GetID()
+				).c_str()
+			);
+			corpse_count++;
 		}
-		++it;
 	}
-	client->Message(Chat::White, "%d player corpses listed.", x);
+
+	if (corpse_count > 0) {
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"{} Player corpses listed.",
+				corpse_count
+			).c_str()
+		);
+	}
 }
 
 // returns the number of corpses deleted. A negative number indicates an error code.
-int32 EntityList::DeleteNPCCorpses()
+uint32 EntityList::DeleteNPCCorpses()
 {
-	int32 x = 0;
-
-	auto it = corpse_list.begin();
-	while (it != corpse_list.end()) {
-		if (it->second->IsNPCCorpse()) {
-			it->second->DepopNPCCorpse();
-			x++;
+	uint32 corpse_count = 0;
+	for (const auto& corpse : corpse_list) {
+		if (corpse.second->IsNPCCorpse()) {
+			corpse.second->DepopNPCCorpse();
+			corpse_count++;
 		}
-		++it;
 	}
-	return x;
+	return corpse_count;
 }
 
 void EntityList::CorpseFix(Client* c)
@@ -3216,19 +3241,16 @@ void EntityList::CorpseFix(Client* c)
 }
 
 // returns the number of corpses deleted. A negative number indicates an error code.
-int32 EntityList::DeletePlayerCorpses()
+uint32 EntityList::DeletePlayerCorpses()
 {
-	int32 x = 0;
-
-	auto it = corpse_list.begin();
-	while (it != corpse_list.end()) {
-		if (it->second->IsPlayerCorpse()) {
-			it->second->CastToCorpse()->Delete();
-			x++;
+	uint32 corpse_count = 0;
+	for (const auto& corpse : corpse_list) {
+		if (corpse.second->IsPlayerCorpse()) {
+			corpse.second->Delete();
+			corpse_count++;
 		}
-		++it;
 	}
-	return x;
+	return corpse_count;
 }
 
 void EntityList::SendPetitionToAdmins()
@@ -3244,7 +3266,7 @@ void EntityList::SendPetitionToAdmins()
 	pcus->quetotal=0;
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
-		if (it->second->CastToClient()->Admin() >= 80)
+		if (it->second->CastToClient()->Admin() >= AccountStatus::QuestTroupe)
 			it->second->CastToClient()->QueuePacket(outapp);
 		++it;
 	}
@@ -3272,7 +3294,7 @@ void EntityList::SendPetitionToAdmins(Petition *pet)
 	pcus->quetotal = petition_list.GetTotalPetitions();
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
-		if (it->second->CastToClient()->Admin() >= 80) {
+		if (it->second->CastToClient()->Admin() >= AccountStatus::QuestTroupe) {
 			if (pet->CheckedOut())
 				strcpy(pcus->gmsenttoo, "");
 			else
@@ -3297,7 +3319,7 @@ void EntityList::ClearClientPetitionQueue()
 	pet->quetotal = petition_list.GetTotalPetitions();
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
-		if (it->second->CastToClient()->Admin() >= 100) {
+		if (it->second->CastToClient()->Admin() >= AccountStatus::GMAdmin) {
 			int x = 0;
 			for (x = 0; x < 64; x++) {
 				pet->petnumber = x;
@@ -3672,7 +3694,7 @@ void EntityList::SendAlarm(Trap *trap, Mob *currenttarget, uint8 kos)
 
 		if (kos) {
 			uint8 factioncon = currenttarget->GetReverseFactionCon(cur);
-			if (factioncon == FACTION_THREATENLY || factioncon == FACTION_SCOWLS) {
+			if (factioncon == FACTION_THREATENINGLY || factioncon == FACTION_SCOWLS) {
 				cur->AddToHateList(currenttarget,1);
 			}
 		}
@@ -4687,7 +4709,7 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 				WAPP2->RankMSGID = 12315;
 			else if (ClientEntry->IsBuyer())
 				WAPP2->RankMSGID = 6056;
-			else if (ClientEntry->Admin() >= 10 && ClientEntry->GetGM())
+			else if (ClientEntry->Admin() >= AccountStatus::Steward && ClientEntry->GetGM())
 				WAPP2->RankMSGID = 12312;
 			else
 				WAPP2->RankMSGID = 0xFFFFFFFF;
@@ -5332,6 +5354,7 @@ void EntityList::StopMobAI()
 
 void EntityList::SendAlternateAdvancementStats() {
 	for(auto &c : client_list) {
+		c.second->SendClearPlayerAA();
 		c.second->SendAlternateAdvancementTable();
 		c.second->SendAlternateAdvancementStats();
 		c.second->SendAlternateAdvancementPoints();

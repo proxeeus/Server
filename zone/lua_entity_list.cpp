@@ -217,7 +217,12 @@ void Lua_EntityList::Message(uint32 guild_dbid, uint32 type, const char *message
 
 void Lua_EntityList::MessageStatus(uint32 guild_dbid, int min_status, uint32 type, const char *message) {
 	Lua_Safe_Call_Void();
-	self->MessageStatus(guild_dbid, min_status, type, message);
+	self->MessageStatus(
+		guild_dbid,
+		min_status,
+		type,
+		message
+	);
 }
 
 void Lua_EntityList::MessageClose(Lua_Mob sender, bool skip_sender, float dist, uint32 type, const char *message) {
@@ -272,12 +277,12 @@ void Lua_EntityList::SignalMobsByNPCID(uint32 npc_id, int signal) {
 	self->SignalMobsByNPCID(npc_id, signal);
 }
 
-int Lua_EntityList::DeleteNPCCorpses() {
+uint32 Lua_EntityList::DeleteNPCCorpses() {
 	Lua_Safe_Call_Int();
 	return self->DeleteNPCCorpses();
 }
 
-int Lua_EntityList::DeletePlayerCorpses() {
+uint32 Lua_EntityList::DeletePlayerCorpses() {
 	Lua_Safe_Call_Int();
 	return self->DeletePlayerCorpses();
 }
@@ -484,8 +489,8 @@ luabind::scope lua_register_entity_list() {
 	.def("ChannelMessage", (void(Lua_EntityList::*)(Lua_Mob, int, int, const char*))&Lua_EntityList::ChannelMessage)
 	.def("ClearClientPetitionQueue", (void(Lua_EntityList::*)(void))&Lua_EntityList::ClearClientPetitionQueue)
 	.def("ClearFeignAggro", (void(Lua_EntityList::*)(Lua_Mob))&Lua_EntityList::ClearFeignAggro)
-	.def("DeleteNPCCorpses", (int(Lua_EntityList::*)(void))&Lua_EntityList::DeleteNPCCorpses)
-	.def("DeletePlayerCorpses", (int(Lua_EntityList::*)(void))&Lua_EntityList::DeletePlayerCorpses)
+	.def("DeleteNPCCorpses", (uint32(Lua_EntityList::*)(void))&Lua_EntityList::DeleteNPCCorpses)
+	.def("DeletePlayerCorpses", (uint32(Lua_EntityList::*)(void))&Lua_EntityList::DeletePlayerCorpses)
 	.def("DoubleAggro", (void(Lua_EntityList::*)(Lua_Mob))&Lua_EntityList::DoubleAggro)
 	.def("Fighting", (bool(Lua_EntityList::*)(Lua_Mob))&Lua_EntityList::Fighting)
 	.def("FilteredMessageClose", &Lua_EntityList::FilteredMessageClose)

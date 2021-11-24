@@ -856,7 +856,12 @@ XS(XS_EntityList_MessageStatus) {
 		uint32     type         = (uint32) SvUV(ST(3));
 		char       *message     = (char *) SvPV_nolen(ST(4));
 		VALIDATE_THIS_IS_ENTITY;
-		THIS->MessageStatus(to_guilddbid, to_minstatus, type, message);
+		THIS->MessageStatus(
+			to_guilddbid,
+			to_minstatus,
+			type,
+			message
+		);
 	}
 	XSRETURN_EMPTY;
 }
@@ -1035,12 +1040,12 @@ XS(XS_EntityList_DeleteNPCCorpses) {
 		Perl_croak(aTHX_ "Usage: EntityList::DeleteNPCCorpses(THIS)"); // @categories Corpse
 	{
 		EntityList *THIS;
-		int32      RETVAL;
+		uint32      RETVAL;
 		dXSTARG;
 		VALIDATE_THIS_IS_ENTITY;
 		RETVAL = THIS->DeleteNPCCorpses();
 		XSprePUSH;
-		PUSHi((IV) RETVAL);
+		PUSHu((UV) RETVAL);
 	}
 	XSRETURN(1);
 }
@@ -1052,12 +1057,12 @@ XS(XS_EntityList_DeletePlayerCorpses) {
 		Perl_croak(aTHX_ "Usage: EntityList::DeletePlayerCorpses(THIS)"); // @categories Account and Character, Corpse
 	{
 		EntityList *THIS;
-		int32      RETVAL;
+		uint32      RETVAL;
 		dXSTARG;
 		VALIDATE_THIS_IS_ENTITY;
 		RETVAL = THIS->DeletePlayerCorpses();
 		XSprePUSH;
-		PUSHi((IV) RETVAL);
+		PUSHu((UV) RETVAL);
 	}
 	XSRETURN(1);
 }

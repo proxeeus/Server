@@ -674,12 +674,18 @@ void NPC::QueryLoot(Client* to)
 			to->Message(
 				Chat::White,
 				fmt::format(
-					"Item {} | Name: {} ID: {} Min Level: {} Max Level: {}",
+					"Item {} | Name: {} ({}){}",
 					item_number,
 					linker.GenerateLink().c_str(),
 					current_item->item_id,
-					current_item->trivial_min_level,
-					current_item->trivial_max_level
+					(
+						current_item->charges > 1 ?
+						fmt::format(
+							" Amount: {}",
+							current_item->charges
+						) :
+						""
+					)
 				).c_str()
 			);
 			item_count++;
@@ -696,11 +702,13 @@ void NPC::QueryLoot(Client* to)
 		to->Message(
 			Chat::White,
 			fmt::format(
-				"Money | Platinum: {} Gold: {} Silver: {} Copper: {}",
-				platinum,
-				gold,
-				silver,
-				copper
+				"Money | {}",
+				ConvertMoneyToString(
+					platinum,
+					gold,
+					silver,
+					copper
+				)
 			).c_str()
 		);
 	}
@@ -1729,25 +1737,25 @@ uint32 ZoneDatabase::AddNPCTypes(const char *zone, uint32 zone_version, Client *
 uint32 ZoneDatabase::NPCSpawnDB(uint8 command, const char* zone, uint32 zone_version, Client *c, NPC* spawn, uint32 extra) {
 
 	switch (command) {
-		case 0: { // Create a new NPC and add all spawn related data
+		case NPCSpawnTypes::CreateNewSpawn: { // Create a new NPC and add all spawn related data
 			return CreateNewNPCCommand(zone, zone_version, c, spawn, extra);
 		}
-		case 1:{ // Add new spawn group and spawn point for an existing NPC Type ID
+		case NPCSpawnTypes::AddNewSpawngroup: { // Add new spawn group and spawn point for an existing NPC Type ID
 			return AddNewNPCSpawnGroupCommand(zone, zone_version, c, spawn, extra);
 		}
-		case 2: { // Update npc_type appearance and other data on targeted spawn
+		case NPCSpawnTypes::UpdateAppearance: { // Update npc_type appearance and other data on targeted spawn
 			return UpdateNPCTypeAppearance(c, spawn);
 		}
-		case 3: { // delete spawn from spawning, but leave in npc_types table
+		case NPCSpawnTypes::RemoveSpawn: { // delete spawn from spawning, but leave in npc_types table
 			return DeleteSpawnLeaveInNPCTypeTable(zone, c, spawn);
 		}
-		case 4: { //delete spawn from DB (including npc_type)
+		case NPCSpawnTypes::DeleteSpawn: { //delete spawn from DB (including npc_type)
 			return DeleteSpawnRemoveFromNPCTypeTable(zone, zone_version, c, spawn);
 		}
-		case 5: { // add a spawn from spawngroup
+		case NPCSpawnTypes::AddSpawnFromSpawngroup: { // add a spawn from spawngroup
 			return AddSpawnFromSpawnGroup(zone, zone_version, c, spawn, extra);
         }
-		case 6: { // add npc_type
+		case NPCSpawnTypes::CreateNewNPC: { // add npc_type
 			return AddNPCTypes(zone, zone_version, c, spawn, extra);
 		}
 	}
@@ -2935,7 +2943,7 @@ FACTION_VALUE NPC::GetReverseFactionCon(Mob* iOther) {
 		return GetSpecialFactionCon(iOther);
 
 	if (primaryFaction == 0)
-		return FACTION_INDIFFERENT;
+		return FACTION_INDIFFERENTLY;
 
 	//if we are a pet, use our owner's faction stuff
 	Mob *own = GetOwner();
@@ -2945,7 +2953,7 @@ FACTION_VALUE NPC::GetReverseFactionCon(Mob* iOther) {
 	//make sure iOther is an npc
 	//also, if we dont have a faction, then they arnt gunna think anything of us either
 	if(!iOther->IsNPC() || GetPrimaryFaction() == 0)
-		return(FACTION_INDIFFERENT);
+		return(FACTION_INDIFFERENTLY);
 
 	//if we get here, iOther is an NPC too
 
@@ -2969,7 +2977,7 @@ FACTION_VALUE NPC::CheckNPCFactionAlly(int32 other_faction) {
 			else if (fac->npc_value < 0)
 				return FACTION_SCOWLS;
 			else
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 		}
 	}
 
@@ -2981,7 +2989,7 @@ FACTION_VALUE NPC::CheckNPCFactionAlly(int32 other_faction) {
 	if (GetPrimaryFaction() == other_faction)
 		return FACTION_ALLY;
 	else
-		return FACTION_INDIFFERENT;
+		return FACTION_INDIFFERENTLY;
 }
 
 bool NPC::IsFactionListAlly(uint32 other_faction) {
@@ -3449,7 +3457,7 @@ void NPC::AIYellForHelp(Mob *sender, Mob *attacker)
 					}
 				}
 
-				if (sender->GetReverseFactionCon(mob) <= FACTION_AMIABLE) {
+				if (sender->GetReverseFactionCon(mob) <= FACTION_AMIABLY) {
 					//attacking someone on same faction, or a friend
 					//Father Nitwit: make sure we can see them.
 					if (mob->CheckLosFN(sender)) {

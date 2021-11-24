@@ -1652,15 +1652,21 @@ void Mob::ShowStats(Client* client)
 		);
 
 		// Spawn Data
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Group: {} Point: {} Grid: {}",
-				target->GetSpawnGroupId(),
-				target->GetSpawnPointID(),
-				target->GetGrid()
-			).c_str()
-		);
+		if (
+			target->GetGrid() ||
+			target->GetSpawnGroupId() ||
+			target->GetSpawnPointID()
+		) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Spawn | Group: {} Point: {} Grid: {}",
+					target->GetSpawnGroupId(),
+					target->GetSpawnPointID(),
+					target->GetGrid()
+				).c_str()
+			);
+		}
 
 		client->Message(
 			Chat::White,
@@ -1713,8 +1719,9 @@ void Mob::ShowStats(Client* client)
 		client->Message(
 			Chat::White,
 			fmt::format(
-				"NPC | ID: {} Name: {}{} Level: {}",
+				"NPC | ID: {} Entity ID: {} Name: {}{} Level: {}",
 				target->GetNPCTypeID(),
+				target->GetID(),
 				target_name,
 				(
 					!target_last_name.empty() ?
@@ -1828,24 +1835,35 @@ void Mob::ShowStats(Client* client)
 			).c_str()
 		);
 		
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Textures | Arms: {} Bracers: {} Hands: {}",
-				target->GetArmTexture(),
-				target->GetBracerTexture(),
-				target->GetHandTexture()
-			).c_str()
-		);
+		if (
+			target->GetArmTexture() ||
+			target->GetBracerTexture() ||
+			target->GetHandTexture()
+		) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Textures | Arms: {} Bracers: {} Hands: {}",
+					target->GetArmTexture(),
+					target->GetBracerTexture(),
+					target->GetHandTexture()
+				).c_str()
+			);
+		}
 		
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Textures | Legs: {} Feet: {}",
-				target->GetLegTexture(),
-				target->GetFeetTexture()
-			).c_str()
-		);
+		if (
+			target->GetFeetTexture() ||
+			target->GetLegTexture()
+		) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Textures | Legs: {} Feet: {}",
+					target->GetLegTexture(),
+					target->GetFeetTexture()
+				).c_str()
+			);
+		}
 
 		// Hero's Forge
 		if (target->GetHeroForgeModel()) {
@@ -2158,14 +2176,16 @@ void Mob::ShowStats(Client* client)
 			).c_str()
 		);
 
-		// Emote		
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Emote: {}",
-				target->GetEmoteID()
-			).c_str()
-		);
+		// Emote
+		if (target->GetEmoteID()) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Emote: {}",
+					target->GetEmoteID()
+				).c_str()
+			);
+		}
 
 		// Run/Walk Speed
 		client->Message(
@@ -2956,13 +2976,21 @@ void Mob::CameraEffect(uint32 duration, uint32 intensity, Client *c, bool global
 	safe_delete(outapp);
 }
 
-void Mob::SendSpellEffect(uint32 effect_id, uint32 duration, uint32 finish_delay, bool zone_wide, uint32 unk020, bool perm_effect, Client *c) {
+void Mob::SendSpellEffect(uint32 effect_id, uint32 duration, uint32 finish_delay, bool zone_wide, uint32 unk020, bool perm_effect, Client *c, uint32 caster_id, uint32 target_id) {
+
+	if (!caster_id) {
+		caster_id = GetID();
+	}
+
+	if (!target_id) {
+		target_id = GetID();
+	}
 
 	auto outapp = new EQApplicationPacket(OP_SpellEffect, sizeof(SpellEffect_Struct));
 	SpellEffect_Struct* se = (SpellEffect_Struct*) outapp->pBuffer;
 	se->EffectID = effect_id;	// ID of the Particle Effect
-	se->EntityID = GetID();
-	se->EntityID2 = GetID();	// EntityID again
+	se->EntityID = caster_id; //casting graphic animation
+	se->EntityID2 = target_id;	// //target graphic animation
 	se->Duration = duration;	// In Milliseconds
 	se->FinishDelay = finish_delay;	// Seen 0
 	se->Unknown020 = unk020;	// Seen 3000
@@ -3050,10 +3078,13 @@ void Mob::SetAppearance(EmuAppearance app, bool iIgnoreSelf) {
 	// upon zoning / events / timers etc
 	//if (_appearance == app)
 	//	return;
+	
+
 	_appearance = app;
 	SendAppearancePacket(AT_Anim, GetAppearanceValue(app), true, iIgnoreSelf);
-	if (this->IsClient() && this->IsAIControlled())
+	if (IsClient() && IsAIControlled()) {
 		SendAppearancePacket(AT_Anim, ANIM_FREEZE, false, false);
+	}
 }
 
 bool Mob::UpdateActiveLight()
@@ -4042,7 +4073,7 @@ void Mob::SetTarget(Mob *mob)
 	else if (IsClient()) {
 		parse->EventPlayer(EVENT_TARGET_CHANGE, CastToClient(), "", 0);
 
-		if (CastToClient()->admin > 200) {
+		if (CastToClient()->admin > AccountStatus::GMMgmt) {
 			DisplayInfo(mob);
 		}
 
@@ -5305,18 +5336,20 @@ int16 Mob::GetPositionalDmgAmt(Mob* defender)
 void Mob::MeleeLifeTap(int32 damage) {
 
 	int32 lifetap_amt = 0;
-	lifetap_amt = spellbonuses.MeleeLifetap + itembonuses.MeleeLifetap + aabonuses.MeleeLifetap
-				+ spellbonuses.Vampirism + itembonuses.Vampirism + aabonuses.Vampirism;
+	int32 melee_lifetap_mod = spellbonuses.MeleeLifetap + itembonuses.MeleeLifetap + aabonuses.MeleeLifetap
+					+ spellbonuses.Vampirism + itembonuses.Vampirism + aabonuses.Vampirism;
 
-	if(lifetap_amt && damage > 0){
+	if(melee_lifetap_mod && damage > 0){
 
-		lifetap_amt = damage * lifetap_amt / 100;
-		LogCombat("Melee lifetap healing for [{}] damage", damage);
+		lifetap_amt = damage * (static_cast<float>(melee_lifetap_mod) / 100.0f);
+		LogCombat("Melee lifetap healing [{}] points of damage with modifier of [{}] ", lifetap_amt, melee_lifetap_mod);
 
-		if (lifetap_amt > 0)
+		if (lifetap_amt >= 0) {
 			HealDamage(lifetap_amt); //Heal self for modified damage amount.
-		else
+		}
+		else {
 			Damage(this, -lifetap_amt, 0, EQ::skills::SkillEvocation, false); //Dmg self for modified damage amount.
+		}
 	}
 }
 
@@ -5816,7 +5849,7 @@ void Mob::ClearItemFactionBonuses() {
 
 FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 	if (!iOther)
-		return FACTION_INDIFFERENT;
+		return FACTION_INDIFFERENTLY;
 
 	iOther = iOther->GetOwnerOrSelf();
 	Mob* self = this->GetOwnerOrSelf();
@@ -5827,9 +5860,9 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 	int iOtherPrimaryFaction = iOther->GetPrimaryFaction();
 
 	if (selfPrimaryFaction >= 0 && selfAIcontrolled)
-		return FACTION_INDIFFERENT;
+		return FACTION_INDIFFERENTLY;
 	if (iOther->GetPrimaryFaction() >= 0)
-		return FACTION_INDIFFERENT;
+		return FACTION_INDIFFERENTLY;
 /* special values:
 	-2 = indiff to player, ally to AI on special values, indiff to AI
 	-3 = dub to player, ally to AI on special values, indiff to AI
@@ -5849,27 +5882,27 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 			if (selfAIcontrolled && iOtherAIControlled)
 				return FACTION_ALLY;
 			else
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 		case -3: // -3 = dub to player, ally to AI on special values, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled)
 				return FACTION_ALLY;
 			else
-				return FACTION_DUBIOUS;
+				return FACTION_DUBIOUSLY;
 		case -4: // -4 = atk to player, ally to AI on special values, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled)
 				return FACTION_ALLY;
 			else
 				return FACTION_SCOWLS;
 		case -5: // -5 = indiff to player, indiff to AI
-			return FACTION_INDIFFERENT;
+			return FACTION_INDIFFERENTLY;
 		case -6: // -6 = dub to player, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled)
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 			else
-				return FACTION_DUBIOUS;
+				return FACTION_DUBIOUSLY;
 		case -7: // -7 = atk to player, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled)
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 			else
 				return FACTION_SCOWLS;
 		case -8: // -8 = indiff to players, ally to AI on same value, indiff to AI
@@ -5877,25 +5910,25 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 				if (selfPrimaryFaction == iOtherPrimaryFaction)
 					return FACTION_ALLY;
 				else
-					return FACTION_INDIFFERENT;
+					return FACTION_INDIFFERENTLY;
 			}
 			else
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 		case -9: // -9 = dub to players, ally to AI on same value, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled) {
 				if (selfPrimaryFaction == iOtherPrimaryFaction)
 					return FACTION_ALLY;
 				else
-					return FACTION_INDIFFERENT;
+					return FACTION_INDIFFERENTLY;
 			}
 			else
-				return FACTION_DUBIOUS;
+				return FACTION_DUBIOUSLY;
 		case -10: // -10 = atk to players, ally to AI on same value, indiff to AI
 			if (selfAIcontrolled && iOtherAIControlled) {
 				if (selfPrimaryFaction == iOtherPrimaryFaction)
 					return FACTION_ALLY;
 				else
-					return FACTION_INDIFFERENT;
+					return FACTION_INDIFFERENTLY;
 			}
 			else
 				return FACTION_SCOWLS;
@@ -5907,7 +5940,7 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 					return FACTION_SCOWLS;
 			}
 			else
-				return FACTION_INDIFFERENT;
+				return FACTION_INDIFFERENTLY;
 		case -12: // -12 = dub to players, ally to AI on same value, atk to AI
 			if (selfAIcontrolled && iOtherAIControlled) {
 				if (selfPrimaryFaction == iOtherPrimaryFaction)
@@ -5918,7 +5951,7 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 
 			}
 			else
-				return FACTION_DUBIOUS;
+				return FACTION_DUBIOUSLY;
 		case -13: // -13 = atk to players, ally to AI on same value, atk to AI
 			if (selfAIcontrolled && iOtherAIControlled) {
 				if (selfPrimaryFaction == iOtherPrimaryFaction)
@@ -5929,7 +5962,7 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 			else
 				return FACTION_SCOWLS;
 		default:
-			return FACTION_INDIFFERENT;
+			return FACTION_INDIFFERENTLY;
 	}
 }
 

@@ -257,6 +257,27 @@ namespace BeastlordPetData {
 	};
 }
 
+namespace NPCSpawnTypes {
+	enum : uint8 {
+		CreateNewSpawn,
+		AddNewSpawngroup,
+		UpdateAppearance,
+		RemoveSpawn,
+		DeleteSpawn,
+		AddSpawnFromSpawngroup,
+		CreateNewNPC
+  };
+}
+
+namespace RaidLootTypes {
+	enum : uint32 {
+		RaidLeader = 1,
+		GroupLeader,
+		Selected,
+		All
+	};
+}
+
 class ZoneDatabase : public SharedDatabase {
 	typedef std::list<ServerLootItem_Struct*> ItemList;
 public:
@@ -417,7 +438,7 @@ public:
 	/* Zone related   */
 	bool		GetZoneCFG(
 		uint32 zoneid, 
-		uint16 instance_id, 
+		uint16 instance_version, 
 		NewZone_Struct *data, 
 		bool &can_bind, 
 		bool &can_combat, 
@@ -430,7 +451,7 @@ public:
 		uint8 &zone_type, 
 		int &ruleset, 
 		char **map_filename);
-	bool		SaveZoneCFG(uint32 zoneid, uint16 instance_id, NewZone_Struct* zd);
+	bool		SaveZoneCFG(uint32 zoneid, uint16 instance_version, NewZone_Struct* zd);
 	bool		LoadStaticZonePoints(LinkedList<ZonePoint*>* zone_point_list,const char* zonename, uint32 version);
 	bool		UpdateZoneSafeCoords(const char* zonename, const glm::vec3& location);
 	uint8		GetUseCFGSafeCoords();
@@ -556,7 +577,7 @@ public:
 	uint8 RaidGroupCount(uint32 raidid, uint32 groupid);
 
 	/* Instancing   */
-	void ListAllInstances(Client* c, uint32 charid);
+	void ListAllInstances(Client* c, uint32 character_id);
 
 	/* QGlobals   */
 	void QGlobalPurge();
