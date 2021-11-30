@@ -140,6 +140,7 @@ int command_init(void)
 		command_add("copycharacter", "[source_char_name] [dest_char_name] [dest_account_name] Copies character to destination account", AccountStatus::GMImpossible, command_copycharacter) ||
 		command_add("corpse", "- Manipulate corpses, use with no arguments for help", AccountStatus::Guide, command_corpse) ||
 		command_add("corpsefix", "Attempts to bring corpses from underneath the ground within close proximity of the player", AccountStatus::Player, command_corpsefix) ||
+		command_add("countitem", "[Item ID] - Counts the specified Item ID in your or your target's inventory", AccountStatus::GMLeadAdmin, command_countitem) ||
 		command_add("cvs", "- Summary of client versions currently online.", AccountStatus::GMMgmt, command_cvs) ||
 		command_add("damage", "[Amount] - Damage yourself or your target", AccountStatus::GMAdmin, command_damage) ||
 		command_add("databuckets", "View|Delete [key] [limit]- View data buckets, limit 50 default or Delete databucket by key", AccountStatus::QuestTroupe, command_databuckets) ||
@@ -164,9 +165,9 @@ int command_init(void)
 		command_add("emote", "['name'/'world'/'zone'] [type] [message] - Send an emote message", AccountStatus::QuestTroupe, command_emote) ||
 		command_add("emotesearch", "Searches NPC Emotes", AccountStatus::QuestTroupe, command_emotesearch) ||
 		command_add("emoteview", "Lists all NPC Emotes", AccountStatus::QuestTroupe, command_emoteview) ||
-		command_add("emptyinventory", "- Clears you or your target's entire inventory (Equipment, General, Bank, and Shared Bank)", AccountStatus::GMImpossible, command_emptyinventory) ||
+		command_add("emptyinventory", "- Clears your or your target's entire inventory (Equipment, General, Bank, and Shared Bank)", AccountStatus::GMImpossible, command_emptyinventory) ||
 		command_add("enablerecipe",  "[Recipe ID] - Enables a Recipe", AccountStatus::QuestTroupe, command_enablerecipe) ||
-		command_add("endurance", "Restores you or your target's endurance.", AccountStatus::Guide, command_endurance) ||
+		command_add("endurance", "Restores your or your target's endurance.", AccountStatus::Guide, command_endurance) ||
 		command_add("equipitem", "[slotid(0-21)] - Equip the item on your cursor into the specified slot", AccountStatus::Guide, command_equipitem) ||
 		command_add("face", "- Change the face of your target", AccountStatus::QuestTroupe, command_face) ||
 		command_add("faction", "[Find (criteria | all ) | Review (criteria | all) | Reset (id)] - Resets Player's Faction", AccountStatus::QuestTroupe, command_faction) ||
@@ -189,15 +190,15 @@ int command_init(void)
 		command_add("gassign", "[id] - Assign targetted NPC to predefined wandering grid id", AccountStatus::GMAdmin, command_gassign) ||
 		command_add("gearup", "Developer tool to quickly equip a character", AccountStatus::GMMgmt, command_gearup) ||
 		command_add("gender", "[0/1/2] - Change your or your target's gender to male/female/neuter", AccountStatus::Guide, command_gender) ||
-		command_add("getplayerburiedcorpsecount", "- Get the target's total number of buried player corpses.", AccountStatus::GMAdmin, command_getplayerburiedcorpsecount) ||
+		command_add("getplayerburiedcorpsecount", "- Get your or your target's total number of buried player corpses.", AccountStatus::GMAdmin, command_getplayerburiedcorpsecount) ||
 		command_add("getvariable", "[varname] - Get the value of a variable from the database", AccountStatus::GMMgmt, command_getvariable) ||
 		command_add("ginfo", "- get group info on target.", AccountStatus::ApprenticeGuide, command_ginfo) ||
 		command_add("giveitem", "[itemid] [charges] - Summon an item onto your target's cursor. Charges are optional.", AccountStatus::GMMgmt, command_giveitem) ||
 		command_add("givemoney", "[Platinum] [Gold] [Silver] [Copper] - Gives specified amount of money to you or your player target", AccountStatus::GMMgmt, command_givemoney) ||
 		command_add("globalview", "Lists all qglobals in cache if you were to do a quest with this target.", AccountStatus::QuestTroupe, command_globalview) ||
-		command_add("gm", "- Turn player target's or your GM flag on or off", AccountStatus::QuestTroupe, command_gm) ||
-		command_add("gmspeed", "[on/off] - Turn GM speed hack on/off for you or your player target", AccountStatus::GMAdmin, command_gmspeed) ||
-		command_add("gmzone", "[zone_short_name] [zone_version=0] [identifier=gmzone] - Zones to a private GM instance", AccountStatus::GMAdmin, command_gmzone) ||
+		command_add("gm", "[On|Off] - Modify your or your target's GM Flag", AccountStatus::QuestTroupe, command_gm) ||
+		command_add("gmspeed", "[On|Off] - Turn GM Speed On or Off for you or your player target", AccountStatus::GMAdmin, command_gmspeed) ||
+		command_add("gmzone", "[Zone ID|Zone Short Name] [Version] [Instance Identifier] - Zones to a private GM instance (Version defaults to 0 and Instance Identifier defaults to 'gmzone' if not used)", AccountStatus::GMAdmin, command_gmzone) ||
 		command_add("goto", "[playername] or [x y z] [h] - Teleport to the provided coordinates or to your target", AccountStatus::Steward, command_goto) ||
 		command_add("grid", "[add/delete] [grid_num] [wandertype] [pausetype] - Create/delete a wandering grid", AccountStatus::GMAreas, command_grid) ||
 		command_add("guild", "- Guild manipulation commands. Use argument help for more info.", AccountStatus::Steward, command_guild) ||
@@ -245,10 +246,10 @@ int command_init(void)
 		command_add("merchant_open_shop",  "Opens a merchants shop", AccountStatus::GMAdmin, command_merchantopenshop) ||
 		command_add("modifynpcstat", "- Modifys a NPC's stats", AccountStatus::GMLeadAdmin, command_modifynpcstat) ||
 		command_add("motd", "[new motd] - Set message of the day", AccountStatus::GMLeadAdmin, command_motd) ||
-		command_add("movechar", "[charname] [zonename] - Move charname to zonename", AccountStatus::Guide, command_movechar) ||
+		command_add("movechar", "[Character ID|Character Name] [Zone ID|Zone Short Name] - Move an offline character to the specified zone", AccountStatus::Guide, command_movechar) ||
 		command_add("movement", "Various movement commands", AccountStatus::GMMgmt, command_movement) ||
 		command_add("myskills", "- Show details about your current skill levels", AccountStatus::Player, command_myskills) ||
-		command_add("mysql", "Mysql CLI, see 'help' for options.", AccountStatus::GMImpossible, command_mysql) ||
+		command_add("mysql", "[Help|Query] [SQL Query] - Mysql CLI, see 'Help' for options.", AccountStatus::GMImpossible, command_mysql) ||
 		command_add("mystats", "- Show details about you or your pet", AccountStatus::Guide, command_mystats) ||
 		command_add("name", "[newname] - Rename your player target", AccountStatus::GMLeadAdmin, command_name) ||
 		command_add("netstats", "- Gets the network stats for a stream.", AccountStatus::GMMgmt, command_netstats) ||
@@ -277,6 +278,7 @@ int command_init(void)
 		command_add("permaclass", "[Class ID] - Change your or your player target's class, changed client is disconnected", AccountStatus::QuestTroupe, command_permaclass) ||
 		command_add("permagender", "[Gender ID] - Change your or your player target's gender", AccountStatus::QuestTroupe, command_permagender) ||
 		command_add("permarace", "[Race ID] - Change your or your player target's race", AccountStatus::QuestTroupe, command_permarace) ||
+		command_add("petitems", "- View your pet's items if you have one", AccountStatus::ApprenticeGuide, command_petitems) ||
 		command_add("petitioninfo", "[petition number] - Get info about a petition", AccountStatus::ApprenticeGuide, command_petitioninfo) ||
 		command_add("pf", "- Display additional mob coordinate and wandering data", AccountStatus::Player, command_pf) ||
 		command_add("picklock",  "Analog for ldon pick lock for the newer clients since we still don't have it working.", AccountStatus::Player, command_picklock) ||
@@ -303,6 +305,7 @@ int command_init(void)
 		command_add("reloadtitles", "- Reload player titles from the database", AccountStatus::GMLeadAdmin, command_reloadtitles) ||
 		command_add("reloadworld", "[0|1] - Clear quest cache (0 - no repop, 1 - repop)", AccountStatus::Max, command_reloadworld) ||
 		command_add("reloadzps", "- Reload zone points from database", AccountStatus::GMLeadAdmin, command_reloadzps) ||
+		command_add("removeitem", "[Item ID] [Amount] - Removes the specified Item ID by Amount from you or your player target's inventory (Amount defaults to 1 if not used)", AccountStatus::GMAdmin, command_removeitem) ||
 		command_add("repop", "[delay] - Repop the zone with optional delay", AccountStatus::GMAdmin, command_repop) ||
 		command_add("resetaa", "- Resets a Player's AA in their profile and refunds spent AA's to unspent, may disconnect player.", AccountStatus::GMMgmt, command_resetaa) ||
 		command_add("resetaa_timer", "Command to reset AA cooldown timers.", AccountStatus::GMMgmt, command_resetaa_timer) ||
@@ -323,10 +326,13 @@ int command_init(void)
 		command_add("setadventurepoints", "- Set your or your player target's available adventure points", AccountStatus::GMLeadAdmin, command_set_adventure_points) ||
 		command_add("setanim", "[Animation ID (IDs are 0 to 4)] - Set target's appearance to Animation ID", AccountStatus::GMMgmt, command_setanim) ||
 		command_add("setcrystals", "[value] - Set your or your player target's available radiant or ebon crystals", AccountStatus::GMAdmin, command_setcrystals) ||
+		command_add("setendurance", "[Endurance] - Set your or your target's Endurance", AccountStatus::GMAdmin, command_setendurance) ||
 		command_add("setfaction", "[Faction ID] - Sets targeted NPC's faction in the database", AccountStatus::GMAreas, command_setfaction) ||
 		command_add("setgraveyard", "[zone name] - Creates a graveyard for the specified zone based on your target's LOC.", AccountStatus::GMMgmt, command_setgraveyard) ||
+		command_add("sethp", "[Health] - Set your or your target's Health", AccountStatus::GMAdmin, command_sethp) ||
 		command_add("setlanguage", "[language ID] [value] - Set your target's language skillnum to value", AccountStatus::Guide, command_setlanguage) ||
 		command_add("setlsinfo", "[email] [password] - Set login server email address and password (if supported by login server)", AccountStatus::Steward, command_setlsinfo) ||
+		command_add("setmana", "[Mana] - Set your or your target's Mana", AccountStatus::GMAdmin, command_setmana) ||
 		command_add("setpass", "[accountname] [password] - Set local password for accountname", AccountStatus::GMLeadAdmin, command_setpass) ||
 		command_add("setpvppoints", "[Amount] - Set your or your player target's PVP points", AccountStatus::GMAdmin, command_setpvppoints) ||
 		command_add("setskill", "[skillnum] [value] - Set your target's skill skillnum to value", AccountStatus::Guide, command_setskill) ||
@@ -359,12 +365,12 @@ int command_init(void)
 		command_add("tattoo", "- Change the tattoo of your target (Drakkin Only)", AccountStatus::QuestTroupe, command_tattoo) ||
 		command_add("tempname", "[newname] - Temporarily renames your target. Leave name blank to restore the original name.", AccountStatus::GMAdmin, command_tempname) ||
 		command_add("petname", "[newname] - Temporarily renames your pet. Leave name blank to restore the original name.", AccountStatus::GMAdmin, command_petname) ||
-		command_add("texture", "[texture] [helmtexture] - Change your or your target's appearance, use 255 to show equipment", AccountStatus::Steward, command_texture) ||
+		command_add("texture", "[Texture] [Helmet Texture] - Change your or your target's texture (Helmet Texture defaults to 0 if not used)", AccountStatus::Steward, command_texture) ||
 		command_add("time", "[HH] [MM] - Set EQ time", AccountStatus::EQSupport, command_time) ||
 		command_add("timers", "- Display persistent timers for target", AccountStatus::GMMgmt, command_timers) ||
 		command_add("timezone", "[HH] [MM] - Set timezone. Minutes are optional", AccountStatus::EQSupport, command_timezone) ||
-		command_add("title", "[text] [1 = create title table row] - Set your or your player target's title", AccountStatus::Guide, command_title) ||
-		command_add("titlesuffix", "[text] [1 = create title table row] - Set your or your player target's title suffix", AccountStatus::Guide, command_titlesuffix) ||
+		command_add("title", "[Remove|Title] [Save (0 = False, 1 = True)] - Set your or your player target's title (use remove to remove title, Save defaults to false if not used)", AccountStatus::Guide, command_title) ||
+		command_add("titlesuffix", "[Remove|Title Suffix] [Save (0 = False, 1 = True)] - Set your or your player target's title suffix (use remove to remove title suffix, Save defaults to false if not used)", AccountStatus::Guide, command_titlesuffix) ||
 		command_add("traindisc", "[level] - Trains all the disciplines usable by the target, up to level specified. (may freeze client for a few seconds)", AccountStatus::GMLeadAdmin, command_traindisc) ||
 		command_add("trapinfo", "- Gets infomation about the traps currently spawned in the zone.", AccountStatus::QuestTroupe, command_trapinfo) ||
 		command_add("tune",  "Calculate statistical values related to combat.", AccountStatus::GMAdmin, command_tune) ||
@@ -378,6 +384,7 @@ int command_init(void)
 		command_add("untraindiscs", "- Untrains all disciplines from your target.", AccountStatus::GMCoder, command_untraindiscs) ||
 		command_add("uptime", "[zone server id] - Get uptime of worldserver, or zone server if argument provided", AccountStatus::Steward, command_uptime) ||
 		command_add("version", "- Display current version of EQEmu server", AccountStatus::Player, command_version) ||
+		command_add("viewcurrencies", "- View your or your target's currencies", AccountStatus::GMAdmin, command_viewcurrencies) ||
 		command_add("viewnpctype", "[NPC ID] - Show stats for an NPC by NPC ID", AccountStatus::GMAdmin, command_viewnpctype) ||
 		command_add("viewpetition", "[petition number] - View a petition", AccountStatus::ApprenticeGuide, command_viewpetition) ||
 		command_add("viewzoneloot", "[item id] - Allows you to search a zone's loot for a specific item ID. (0 shows all loot in the zone)", AccountStatus::QuestTroupe, command_viewzoneloot) ||
@@ -1101,39 +1108,40 @@ void command_emptyinventory(Client *c, const Seperator *sep)
 		}
 	}
 
-	if (c != target) {
-		auto target_name = target->GetCleanName();
-		if (removed_count) {
-			c->Message(
-				Chat::White,
-				fmt::format(
-					"Inventory cleared for {}, {} items deleted.",
-					target_name,
-					removed_count
-				).c_str()
-			);
-		} else {
-			c->Message(
-				Chat::White,
-				fmt::format(
-					"{} has no items to delete.",
-					target_name
-				).c_str()
-			);
-		}
+	if (removed_count) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Inventory cleared for {}, {} items deleted.",
+				(
+					c == target ?
+					"yourself" :
+					fmt::format(
+						"{} ({})",
+						target->GetCleanName(),
+						target->GetID()
+					)
+				),
+				removed_count
+			).c_str()
+		);
 	} else {
-		if (removed_count) {
-			c->Message(
-				Chat::White,
-				fmt::format(
-					"Your inventory has been cleared, {} items deleted.",
-					removed_count
-				).c_str()
-			);
-		} else {
-			c->Message(Chat::White, "You have no items to delete.");
-		}
-  }
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"{} no items to delete.",
+				(
+					c == target ?
+					"You have" :
+					fmt::format(
+						"{} ({}) has",
+						target->GetCleanName(),
+						target->GetID()
+					)
+				)
+			).c_str()
+		);
+	}
 }
 
 // All new code added to command.cpp should be BEFORE this comment line. Do no append code to this file below the BOTS code block.

@@ -221,8 +221,9 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		return(false);
 	}
 
-	if (spellbonuses.NegateIfCombat)
+	if (spellbonuses.NegateIfCombat) {
 		BuffFadeByEffect(SE_NegateIfCombat);
+	}
 
 	if (IsClient() && IsHarmonySpell(spell_id) && !HarmonySpellLevelCheck(spell_id, entity_list.GetMobID(target_id))) {
 		InterruptSpell(SPELL_NO_EFFECT, 0x121, spell_id);
@@ -999,12 +1000,18 @@ void Mob::StopCasting()
 			c->ResetAlternateAdvancementTimer(casting_spell_aa_id);
 		}
 
+		int casting_slot = -1;
+		if (casting_spell_slot < CastingSlot::MaxGems) {
+			casting_slot = static_cast<int>(casting_spell_slot);
+		}
+
 		auto outapp = new EQApplicationPacket(OP_ManaChange, sizeof(ManaChange_Struct));
 		auto mc = (ManaChange_Struct *)outapp->pBuffer;
 		mc->new_mana = GetMana();
 		mc->stamina = GetEndurance();
 		mc->spell_id = casting_spell_id;
 		mc->keepcasting = 0;
+		mc->slot = casting_slot;
 		c->FastQueuePacket(&outapp);
 	}
 	ZeroCastingVars();
@@ -1459,6 +1466,24 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 
 	if(DeleteChargeFromSlot >= 0)
 		CastToClient()->DeleteItemInInventory(DeleteChargeFromSlot, 1, true);
+
+	if (IsClient() && IsEffectInSpell(spell_id, SE_BindSight)) {
+		for (int i = 0; i < GetMaxTotalSlots(); i++) {
+			if (buffs[i].spellid == spell_id) {
+				CastToClient()->SendBuffNumHitPacket(buffs[i], i);//its hack, it works.
+			}
+		}
+	}
+
+	//Check if buffs has numhits, then resend packet so it displays the hit count.
+	if (IsClient() && (spells[spell_id].buff_duration > 0 || spells[spell_id].short_buff_box)) {
+		for (int i = 0; i < GetMaxTotalSlots(); i++) {
+			if (buffs[i].spellid == spell_id && buffs[i].hit_number > 0) {
+				CastToClient()->SendBuffNumHitPacket(buffs[i], i);
+				break;
+			}
+		}
+	}
 
 	//
 	// at this point the spell has successfully been cast
@@ -2997,6 +3022,12 @@ int Mob::CheckStackConflict(uint16 spellid1, int caster_level1, uint16 spellid2,
 	}
 
 	if (spellid1 == spellid2 ) {
+		
+		if (spellid1 == SPELL_EYE_OF_ZOMM && spellid2 == SPELL_EYE_OF_ZOMM) {//only the original Eye of Zomm spell will not take hold if affect is already on you, other versions client fades the buff as soon as cast.
+			MessageString(Chat::Red, SPELL_NO_HOLD);
+			return -1;
+		}
+
 		if (!IsStackableDot(spellid1) && !IsEffectInSpell(spellid1, SE_ManaBurn)) { // mana burn spells we need to use the stacking command blocks live actually checks those first, we should probably rework to that too
 			if (caster_level1 > caster_level2) { // cur buff higher level than new
 				if (IsEffectInSpell(spellid1, SE_ImprovedTaunt)) {
@@ -3647,11 +3678,7 @@ bool Mob::SpellOnTarget(uint16 spell_id, Mob *spelltar, int reflect_effectivenes
 	}
 
 	// select target
-	if	// Bind Sight line of spells
-	(
-		spell_id == 500 ||	// bind sight
-		spell_id == 407		// cast sight
-	)
+	if (IsEffectInSpell(spell_id, SE_BindSight))
 	{
 		action->target = GetID();
 	}
@@ -5206,6 +5233,7 @@ void Mob::SendSpellBarEnable(uint16 spell_id)
 	manachange->spell_id = spell_id;
 	manachange->stamina = CastToClient()->GetEndurance();
 	manachange->keepcasting = 0;
+	manachange->slot = CastToClient()->FindMemmedSpellByID(spell_id);
 	outapp->priority = 6;
 	CastToClient()->QueuePacket(outapp);
 	safe_delete(outapp);
@@ -5412,6 +5440,15 @@ int Client::MemmedCount() {
 			memmed_count++;
 
 	return memmed_count;
+}
+
+int Client::FindMemmedSpellByID(uint16 spell_id) {
+	for (int i = 0; i < EQ::spells::SPELL_GEM_COUNT; i++) {
+		if (m_pp.mem_spells[i] == spell_id) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 
