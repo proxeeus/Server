@@ -499,6 +499,7 @@ SET(gm_commands
     gm_commands/setmana.cpp
     gm_commands/setpass.cpp
     gm_commands/setpvppoints.cpp
+    gm_commands/setroambox.cpp
     gm_commands/setskill.cpp
     gm_commands/setskillall.cpp
     gm_commands/setstartzone.cpp
