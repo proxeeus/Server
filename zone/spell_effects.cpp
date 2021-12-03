@@ -593,6 +593,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Invisibility to Animals");
 #endif
 				invisible_animals = true;
+				SetInvisible(Invisibility::Special);
 				break;
 			}
 
@@ -603,6 +604,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				snprintf(effect_desc, _EDLEN, "Invisibility to Undead");
 #endif
 				invisible_undead = true;
+				SetInvisible(Invisibility::Special);
 				break;
 			}
 			case SE_SeeInvis:
@@ -2291,7 +2293,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					else
 					{
 						entity_list.RemoveFromTargets(caster);
-						SetInvisible(1);
+						SetInvisible(Invisibility::Invisible);
 					}
 				}
 				break;
@@ -2546,6 +2548,9 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							if (CalcFocusEffect(focusFcTimerRefresh, spell_id, CastToClient()->m_pp.mem_spells[i])){
 								CastToClient()->m_pp.spellSlotRefresh[i] = 1;
 								CastToClient()->GetPTimers().Clear(&database, (pTimerSpellStart + CastToClient()->m_pp.mem_spells[i]));
+								if (!CastToClient()->IsLinkedSpellReuseTimerReady(spells[CastToClient()->m_pp.mem_spells[i]].timer_id)) {
+									CastToClient()->GetPTimers().Clear(&database, (pTimerLinkedSpellReuseStart + spells[CastToClient()->m_pp.mem_spells[i]].timer_id));
+								}
 							}
 						}
 					}
@@ -4187,7 +4192,7 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 			case SE_Invisibility2:
 			case SE_Invisibility:
 			{
-				SetInvisible(0);
+				SetInvisible(Invisibility::Visible);
 				break;
 			}
 
@@ -6323,7 +6328,7 @@ uint16 Client::GetSympatheticFocusEffect(focusType type, uint16 spell_id) {
 
 int32 Client::GetFocusEffect(focusType type, uint16 spell_id)
 {
-	if (IsBardSong(spell_id) && type != focusFcBaseEffects && type != focusSpellDuration)
+	if (IsBardSong(spell_id) && type != focusFcBaseEffects && type != focusSpellDuration && type != focusReduceRecastTime)
 		return 0;
 
 	int32 realTotal = 0;

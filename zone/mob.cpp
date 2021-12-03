@@ -338,6 +338,7 @@ Mob::Mob(
 	casting_spell_timer_duration = 0;
 	casting_spell_inventory_slot = 0;
 	casting_spell_aa_id          = 0;
+	casting_spell_recast_adjust  = 0;
 	target                       = 0;
 
 	ActiveProjectileATK = false;
@@ -579,13 +580,16 @@ uint32 Mob::GetAppearanceValue(EmuAppearance iAppearance) {
 
 void Mob::SetInvisible(uint8 state)
 {
-	invisible = state;
-	SendAppearancePacket(AT_Invis, invisible);
+	if (state != Invisibility::Special) {
+		invisible = state;
+		SendAppearancePacket(AT_Invis, invisible);
+	}
+
 	// Invis and hide breaks charms
-	auto formerpet = GetPet();
-	if (formerpet && formerpet->GetPetType() == petCharmed && (invisible || hidden || improved_hidden || invisible_animals || invisible_undead)) {
-		if (RuleB(Pets, LivelikeBreakCharmOnInvis) || IsInvisible(formerpet)) {
-			formerpet->BuffFadeByEffect(SE_Charm);
+	auto pet = GetPet();
+	if (pet && pet->GetPetType() == petCharmed && (invisible || hidden || improved_hidden || invisible_animals || invisible_undead)) {
+		if (RuleB(Pets, LivelikeBreakCharmOnInvis) || IsInvisible(pet)) {
+			pet->BuffFadeByEffect(SE_Charm);
 		}
 
 		LogRules("Pets:LivelikeBreakCharmOnInvis for [{}] | Invis [{}] - Hidden [{}] - Shroud of Stealth [{}] - IVA [{}] - IVU [{}]", GetCleanName(), invisible, hidden, improved_hidden, invisible_animals, invisible_undead);

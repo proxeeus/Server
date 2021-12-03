@@ -2671,17 +2671,17 @@ bool Client::CheckAccess(int16 iDBLevel, int16 iDefaultLevel) {
 		return false;
 }
 
-void Client::MemorizeSpell(uint32 slot,uint32 spellid,uint32 scribing){
+void Client::MemorizeSpell(uint32 slot,uint32 spellid,uint32 scribing, uint32 reduction){
 	if (slot < 0 || slot >= EQ::spells::DynamicLookup(ClientVersion(), GetGM())->SpellbookSize)
 		return;
 	if ((spellid < 3 || spellid > EQ::spells::DynamicLookup(ClientVersion(), GetGM())->SpellIdMax) && spellid != 0xFFFFFFFF)
 		return;
-
 	auto outapp = new EQApplicationPacket(OP_MemorizeSpell, sizeof(MemorizeSpell_Struct));
 	MemorizeSpell_Struct* mss=(MemorizeSpell_Struct*)outapp->pBuffer;
 	mss->scribing=scribing;
 	mss->slot=slot;
 	mss->spell_id=spellid;
+	mss->reduction = reduction;
 	outapp->priority = 5;
 	QueuePacket(outapp);
 	safe_delete(outapp);
@@ -3478,7 +3478,7 @@ uint8 Client::SlotConvert2(uint8 slot){
 void Client::Escape()
 {
 	entity_list.RemoveFromTargets(this, true);
-	SetInvisible(1);
+	SetInvisible(Invisibility::Invisible);
 
 	MessageString(Chat::Skills, ESCAPE);
 }
@@ -6959,7 +6959,7 @@ void Client::SendStatsWindow(Client* client, bool use_window)
 	for (auto iter = item_faction_bonuses.begin(); iter != item_faction_bonuses.end(); ++iter) {
 		memset(&faction_buf, 0, sizeof(faction_buf));
 
-		if(!content_db.GetFactionName((int32)((*iter).first), faction_buf, sizeof(faction_buf)))
+		if(!content_db.GetFactionName((int)((*iter).first), faction_buf, sizeof(faction_buf)))
 			strcpy(faction_buf, "Not in DB");
 
 		if((*iter).second > 0) {
