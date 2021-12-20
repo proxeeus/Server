@@ -721,17 +721,17 @@ void Client::CompleteConnect()
 			case SE_AddMeleeProc:
 			case SE_WeaponProc:
 			{
-				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel, GetProcLimitTimer(buffs[j1].spellid, SE_WeaponProc));
+				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel, GetProcLimitTimer(buffs[j1].spellid, ProcType::MELEE_PROC));
 				break;
 			}
 			case SE_DefensiveProc:
 			{
-				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, SE_DefensiveProc));
+				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, ProcType::DEFENSIVE_PROC));
 				break;
 			}
 			case SE_RangedProc:
 			{
-				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, SE_RangedProc));
+				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, ProcType::RANGED_PROC));
 				break;
 			}
 			}
@@ -747,28 +747,11 @@ void Client::CompleteConnect()
 
 	entity_list.SendAppearanceEffects(this);
 
-	int x;
-	for (x = EQ::textures::textureBegin; x <= EQ::textures::LastTexture; x++) {
-		SendWearChange(x);
-	}
-	// added due to wear change above
-	UpdateActiveLight();
-	SendAppearancePacket(AT_Light, GetActiveLightType());
-
-	Mob *pet = GetPet();
-	if (pet != nullptr) {
-		for (x = EQ::textures::textureBegin; x <= EQ::textures::LastTexture; x++) {
-			pet->SendWearChange(x);
-		}
-		// added due to wear change above
-		pet->UpdateActiveLight();
-		pet->SendAppearancePacket(AT_Light, pet->GetActiveLightType());
-	}
-
 	entity_list.SendTraders(this);
 
-	if (GetPet()) {
-		GetPet()->SendPetBuffsToClient();
+	Mob *pet = GetPet();
+	if (pet) {
+		pet->SendPetBuffsToClient();
 	}
 
 	if (GetGroup())
@@ -918,6 +901,8 @@ void Client::CompleteConnect()
 		worldserver.SendPacket(p);
 		safe_delete(p);
 	}
+
+	heroforge_wearchange_timer.Start(250);
 }
 
 // connecting opcode handlers
@@ -5464,8 +5449,11 @@ void Client::Handle_OP_DisarmTraps(const EQApplicationPacket *app)
 			}
 			else
 			{
+				int fail_rate = 25;
+				int trap_circumvention = spellbonuses.TrapCircumvention + itembonuses.TrapCircumvention + aabonuses.TrapCircumvention;
+				fail_rate -= fail_rate * trap_circumvention / 100;
 				MessageString(Chat::Skills, FAIL_DISARM_DETECTED_TRAP);
-				if (zone->random.Int(0, 99) < 25) {
+				if (zone->random.Int(0, 99) < fail_rate) {
 					trap->Trigger(this);
 				}
 			}

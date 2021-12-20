@@ -307,7 +307,12 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 	std::string export_string = fmt::format("{}", spell_id);
 	if(IsClient()) {
 		if (parse->EventPlayer(EVENT_CAST_BEGIN, CastToClient(), export_string, 0) != 0) {
-			return false;
+			if (IsDiscipline(spell_id)) {
+				CastToClient()->SendDisciplineTimer(spells[spell_id].timer_id, 0);
+			} else {
+				CastToClient()->SendSpellBarEnable(spell_id);
+			}
+			return(false);
 		}
 	} else if(IsNPC()) {
 		parse->EventNPC(EVENT_CAST_BEGIN, CastToNPC(), nullptr, export_string, 0);
@@ -2931,9 +2936,10 @@ int Mob::CalcBuffDuration(Mob *caster, Mob *target, uint16 spell_id, int32 caste
 
 	int res = CalcBuffDuration_formula(castlevel, formula, duration);
 	if (caster == target && (target->aabonuses.IllusionPersistence || target->spellbonuses.IllusionPersistence ||
-				 target->itembonuses.IllusionPersistence) &&
-	    spell_id != SPELL_MINOR_ILLUSION && spell_id != SPELL_ILLUSION_TREE && IsEffectInSpell(spell_id, SE_Illusion))
+		target->itembonuses.IllusionPersistence) &&
+		spell_id != SPELL_MINOR_ILLUSION && spell_id != SPELL_ILLUSION_TREE && IsEffectInSpell(spell_id, SE_Illusion)) {
 		res = 10000; // ~16h override
+	}
 
 
 	res = mod_buff_duration(res, caster, target, spell_id);
@@ -4375,7 +4381,8 @@ void Mob::BuffFadeNonPersistDeath()
 		auto current_spell_id = buffs[buff_slot].spellid;
 		if (
 			IsValidSpell(current_spell_id) &&
-			!IsPersistDeathSpell(current_spell_id)
+			!IsPersistDeathSpell(current_spell_id) &&
+			!HasPersistDeathIllusion(current_spell_id)
 		) {
 			BuffFadeBySlot(buff_slot, false);
 			recalc_bonus = true;
@@ -4820,7 +4827,7 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 
 	resist_modifier -= 2 * focus_resist;
 
-	int focus_incoming_resist = GetFocusEffect(focusFcResistIncoming, spell_id);
+	int focus_incoming_resist = GetFocusEffect(focusFcResistIncoming, spell_id, caster);
 
 	resist_modifier -= focus_incoming_resist;
 
