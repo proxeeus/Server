@@ -163,6 +163,10 @@
 #define SPELL_PACT_OF_HATE_RECOURSE 40375
 #define SPELL_INCENDIARY_OOZE_BUFF 32513
 #define SPELL_EYE_OF_ZOMM 323
+#define SPELL_MINOR_ILLUSION 287
+#define SPELL_ILLUSION_TREE 601
+#define SPELL_ILLUSION_FEMALE 1731
+#define SPELL_ILLUSION_MALE 1732
 
 //spellgroup ids
 #define SPELLGROUP_FRENZIED_BURNOUT 2754
@@ -184,7 +188,7 @@
 #define MAX_SYMPATHETIC_PROCS 10 // Number of sympathetic procs a client can have (This is arbitrary)
 #define MAX_FOCUS_PROC_LIMIT_TIMERS 20 //Number of focus recast timers that can be going at same time (This is arbitrary)
 #define MAX_PROC_LIMIT_TIMERS 8 //Number of proc delay timers that can be going at same time, different proc types get their own timer array. (This is arbitrary)
-
+#define MAX_APPEARANCE_EFFECTS 20 //Up to 20 Appearance Effects can be saved to a mobs appearance effect array, these will be sent to other clients when they enter a zone (This is arbitrary)
 
 
 const int Z_AGGRO=10;
