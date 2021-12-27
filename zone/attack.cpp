@@ -2378,6 +2378,8 @@ bool NPC::Death(Mob* killer_mob, int32 damage, uint16 spell, EQ::skills::SkillTy
 #ifdef BOTS
 		if (!RuleB(Bots, BotGroupXP) && !ownerInGroup) {
 			give_exp = nullptr;
+			// Still do Faction
+			hate_list.DoFactionHits(GetNPCFactionID());
 		}
 #endif //BOTS
 	}
