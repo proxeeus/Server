@@ -4061,7 +4061,12 @@ void Client::Handle_OP_CastSpell(const EQApplicationPacket *app)
 			return;
 		}
 
-		CastSpell(spell_to_cast, castspell->target_id, slot);
+		if (IsValidSpell(spell_to_cast)) {
+			CastSpell(spell_to_cast, castspell->target_id, slot);
+		}
+		else {
+			InterruptSpell();
+		}
 	}
 	/* Spell Slot or Potion Belt Slot */
 	else if (slot == CastingSlot::Item || slot == CastingSlot::PotionBelt)	// ITEM or POTION cast
@@ -14059,8 +14064,9 @@ void Client::Handle_OP_TGB(const EQApplicationPacket *app)
 
 void Client::Handle_OP_Track(const EQApplicationPacket *app)
 {
-	if (GetClass() != RANGER && GetClass() != DRUID && GetClass() != BARD)
+	if (!CanThisClassTrack()) {
 		return;
+	}
 
 	if (GetSkill(EQ::skills::SkillTracking) == 0)
 		SetSkill(EQ::skills::SkillTracking, 1);
@@ -14075,10 +14081,9 @@ void Client::Handle_OP_Track(const EQApplicationPacket *app)
 
 void Client::Handle_OP_TrackTarget(const EQApplicationPacket *app)
 {
-	int PlayerClass = GetClass();
-
-	if ((PlayerClass != RANGER) && (PlayerClass != DRUID) && (PlayerClass != BARD))
+	if (!CanThisClassTrack()) {
 		return;
+	}
 
 	if (app->size != sizeof(TrackTarget_Struct))
 	{

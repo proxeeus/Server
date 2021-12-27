@@ -810,6 +810,11 @@ public:
 	uint16 ScribeSpells(uint8 min_level, uint8 max_level);
 	uint16 LearnDisciplines(uint8 min_level, uint8 max_level);
 
+	// Configurable Tracking Skill
+	uint16 GetClassTrackingDistanceMultiplier(uint16 class_);
+
+	bool CanThisClassTrack();
+
 	// defer save used when bulk saving
 	void UnscribeSpell(int slot, bool update_client = true, bool defer_save = false);
 	void UnscribeSpellAll(bool update_client = true);
@@ -1528,6 +1533,7 @@ public:
 	void UpdateMercLevel();
 	void CheckMercSuspendTimer();
 	Timer* GetMercTimer() { return &merc_timer; };
+	Timer* GetPickLockTimer() { return &pick_lock_timer; };
 
 	const char* GetRacePlural(Client* client);
 	const char* GetClassPlural(Client* client);
@@ -1869,6 +1875,7 @@ private:
 	Timer consent_throttle_timer;
 	Timer dynamiczone_removal_timer;
 	Timer task_request_timer;
+	Timer pick_lock_timer;
 
 	Timer heroforge_wearchange_timer;
 	
