@@ -145,7 +145,6 @@ Client::Client(EQStreamInterface* ieqs)
   global_channel_timer(1000),
   fishing_timer(8000),
   endupkeep_timer(1000),
-  forget_timer(0),
   autosave_timer(RuleI(Character, AutosaveIntervalS) * 1000),
   client_scan_npc_aggro_timer(RuleI(Aggro, ClientAggroCheckIdleInterval)),
   client_zone_wide_full_position_update_timer(5 * 60 * 1000),
@@ -186,7 +185,6 @@ Client::Client(EQStreamInterface* ieqs)
 	character_id = 0;
 	conn_state = NoPacketsReceived;
 	client_data_loaded = false;
-	feigned = false;
 	berserk = false;
 	dead = false;
 	eqs = ieqs;
@@ -2689,22 +2687,6 @@ void Client::MemorizeSpell(uint32 slot,uint32 spellid,uint32 scribing, uint32 re
 	QueuePacket(outapp);
 	safe_delete(outapp);
 }
-
-void Client::SetFeigned(bool in_feigned) {
-	if (in_feigned)
-	{
-		if(RuleB(Character, FeignKillsPet))
-		{
-			SetPet(0);
-		}
-		SetHorseId(0);
-		entity_list.ClearFeignAggro(this);
-		forget_timer.Start(FeignMemoryDuration);
-	} else {
-		forget_timer.Disable();
-	}
-	feigned=in_feigned;
- }
 
 void Client::LogMerchant(Client* player, Mob* merchant, uint32 quantity, uint32 price, const EQ::ItemData* item, bool buying)
 {
@@ -7203,7 +7185,7 @@ void Client::OpenLFGuildWindow()
 
 bool Client::IsXTarget(const Mob *m) const
 {
-	if(!XTargettingAvailable() || !m || (m->GetID() == 0))
+	if(!XTargettingAvailable() || !m || !m->IsValidXTarget())
 		return false;
 
 	for(int i = 0; i < GetMaxXTargets(); ++i)
@@ -7246,10 +7228,10 @@ void Client::UpdateClientXTarget(Client *c)
 // IT IS NOT SAFE TO CALL THIS IF IT'S NOT INITIAL AGGRO
 void Client::AddAutoXTarget(Mob *m, bool send)
 {
-	m_activeautohatermgr->increment_count(m);
-
 	if (!XTargettingAvailable() || !XTargetAutoAddHaters || IsXTarget(m))
 		return;
+	
+	m_activeautohatermgr->increment_count(m);
 
 	for(int i = 0; i < GetMaxXTargets(); ++i)
 	{
@@ -7459,8 +7441,17 @@ void Client::ProcessXTargetAutoHaters()
 		if (XTargets[i].Type != Auto)
 			continue;
 
+		auto *mob = entity_list.GetMob(XTargets[i].ID);
+
 		if (XTargets[i].ID != 0 && !GetXTargetAutoMgr()->contains_mob(XTargets[i].ID)) {
 			XTargets[i].ID = 0;
+			XTargets[i].Name[0] = 0;
+			XTargets[i].dirty = true;
+		}
+
+		if (XTargets[i].ID != 0 && mob && !mob->IsValidXTarget()) {
+			XTargets[i].ID = 0;
+			XTargets[i].Name[0] = 0;
 			XTargets[i].dirty = true;
 		}
 
@@ -7496,6 +7487,7 @@ void Client::ProcessXTargetAutoHaters()
 				break;
 		}
 	}
+	
 	m_dirtyautohaters = false;
 	SendXTargetUpdates();
 }

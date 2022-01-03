@@ -1753,7 +1753,7 @@ XS(XS_Client_GetDuelTarget) {
 		Perl_croak(aTHX_ "Usage: Client::GetDuelTarget(THIS)"); // @categories Account and Character, Script Utility
 	{
 		Client *THIS;
-		uint16 RETVAL;
+		uint32 RETVAL;
 		dXSTARG;
 		VALIDATE_THIS_IS_CLIENT;
 		RETVAL = THIS->GetDuelTarget();
@@ -1786,7 +1786,7 @@ XS(XS_Client_SetDuelTarget) {
 		Perl_croak(aTHX_ "Usage: Client::SetDuelTarget(THIS, set_id)"); // @categories Account and Character
 	{
 		Client *THIS;
-		uint16 set_id = (uint16) SvUV(ST(1));
+		uint32 set_id = (uint32) SvUV(ST(1));
 		VALIDATE_THIS_IS_CLIENT;
 		THIS->SetDuelTarget(set_id);
 	}
@@ -5613,7 +5613,7 @@ XS(XS_Client_SendToInstance);
 XS(XS_Client_SendToInstance) {
 	dXSARGS;
 	if (items != 10)
-		Perl_croak(aTHX_ "Usage: Client::SendToInstance(THIS, std::string instance_type, std::string zone_short_name, uint32 instance_version, float x, float y, float z, float heading, std::string instance_identifier, uint32 duration)");
+		Perl_croak(aTHX_ "Usage: Client::SendToInstance(THIS, string instance_type, string zone_short_name, uint32 instance_version, float x, float y, float z, float heading, string instance_identifier, uint32 duration)");
 	{
 		Client* THIS;
 		std::string instance_type = (std::string) SvPV_nolen(ST(1));

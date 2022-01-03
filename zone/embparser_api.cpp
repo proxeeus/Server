@@ -4815,7 +4815,8 @@ XS(XS__SetContentFlag)
 
 	std::string flag_name = (std::string) SvPV_nolen(ST(0));
 	bool        enabled   = (int) SvIV(ST(1)) != 0;
-	ZoneStore::SetContentFlag(flag_name, enabled);
+
+	content_service.SetContentFlag(flag_name, enabled);
 	XSRETURN_EMPTY;
 }
 
@@ -5154,7 +5155,7 @@ XS(XS__gethexcolorcode) {
 	sv_setpv(TARG, hex_color_code.c_str());
 	XSprePUSH;
 	PUSHTARG;
-	XSRETURN(1);	
+	XSRETURN(1);
 }
 
 XS(XS__getaaexpmodifierbycharid);
@@ -5162,7 +5163,7 @@ XS(XS__getaaexpmodifierbycharid) {
 	dXSARGS;
 	if (items != 2)
 		Perl_croak(aTHX_ "Usage: quest::getaaexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
-		
+
 	dXSTARG;
 	double aa_modifier;
 	uint32 character_id = (uint32) SvUV(ST(0));
@@ -5178,7 +5179,7 @@ XS(XS__getexpmodifierbycharid) {
 	dXSARGS;
 	if (items != 2)
 		Perl_croak(aTHX_ "Usage: quest::getexpmodifierbycharid(uint32 character_id, uint32 zone_id)");
-		
+
 	dXSTARG;
 	double exp_modifier;
 	uint32 character_id = (uint32) SvUV(ST(0));
@@ -5326,7 +5327,7 @@ XS(XS__getspellstat) {
 	uint8 slot = 0;
 	if (items == 3)
 		slot = (uint8) SvUV(ST(2));
-		
+
 	stat_value = quest_manager.getspellstat(spell_id, stat_identifier, slot);
 
 	XSprePUSH;
@@ -7564,7 +7565,7 @@ XS(XS__worldwideassigntask) {
 
 		if (items == 3)
 			max_status = (uint8) SvUV(ST(2));
-			
+
 		quest_manager.WorldWideTaskUpdate(update_type, task_identifier, task_subidentifier, update_count, enforce_level_requirement, min_status, max_status);
 	}
 	XSRETURN_EMPTY;
@@ -7629,7 +7630,7 @@ XS(XS__worldwidedisabletask) {
 
 		if (items == 3)
 			max_status = (uint8) SvUV(ST(2));
-			
+
 		quest_manager.WorldWideTaskUpdate(update_type, task_identifier, task_subidentifier, update_count, enforce_level_requirement, min_status, max_status);
 	}
 	XSRETURN_EMPTY;
@@ -7653,7 +7654,7 @@ XS(XS__worldwideenabletask) {
 
 		if (items == 3)
 			max_status = (uint8) SvUV(ST(2));
-			
+
 		quest_manager.WorldWideTaskUpdate(update_type, task_identifier, task_subidentifier, update_count, enforce_level_requirement, min_status, max_status);
 	}
 	XSRETURN_EMPTY;
@@ -7677,7 +7678,7 @@ XS(XS__worldwidefailtask) {
 
 		if (items == 3)
 			max_status = (uint8) SvUV(ST(2));
-			
+
 		quest_manager.WorldWideTaskUpdate(update_type, task_identifier, task_subidentifier, update_count, enforce_level_requirement, min_status, max_status);
 	}
 	XSRETURN_EMPTY;

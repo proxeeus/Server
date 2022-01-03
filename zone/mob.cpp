@@ -110,6 +110,7 @@ Mob::Mob(
 	stunned_timer(0),
 	spun_timer(0),
 	bardsong_timer(6000),
+	forget_timer(0),
 	gravity_timer(1000),
 	viral_timer(0),
 	m_FearWalkTarget(-999999.0f, -999999.0f, -999999.0f),
@@ -286,6 +287,8 @@ Mob::Mob(
 	always_aggro      = in_always_aggro;
 
 	InitializeBuffSlots();
+
+	feigned = false;
 
 	// clear the proc arrays
 	for (int j = 0; j < MAX_PROCS; j++) {
@@ -6630,6 +6633,24 @@ void Mob::ShieldAbilityClearVariables()
 	}
 }
 
+void Mob::SetFeigned(bool in_feigned) {
+	
+	if (in_feigned)	{
+		if (IsClient()) {
+			if (RuleB(Character, FeignKillsPet)){
+				SetPet(0);
+			}
+			CastToClient()->SetHorseId(0);
+		}
+		entity_list.ClearFeignAggro(this);
+		forget_timer.Start(FeignMemoryDuration);
+	}
+	else {
+		forget_timer.Disable();
+	}
+	feigned = in_feigned;
+}
+
 #ifdef BOTS
 bool Mob::JoinHealRotationTargetPool(std::shared_ptr<HealRotation>* heal_rotation)
 {
@@ -6752,4 +6773,8 @@ std::string Mob::GetBucketRemaining(std::string bucket_name) {
 void Mob::SetBucket(std::string bucket_name, std::string bucket_value, std::string expiration) {
 	std::string full_bucket_name = fmt::format("{}-{}", GetBucketKey(), bucket_name);
 	DataBucket::SetData(full_bucket_name, bucket_value, expiration);
+}
+
+bool Mob::IsValidXTarget() const {
+	return (GetID() > 0 || !IsCorpse());
 }
