@@ -514,7 +514,7 @@ RULE_INT(Combat, SneakPullAssistRange, 400, "Modified range of assist for sneak 
 RULE_BOOL(Combat, Classic2HBAnimation, false, "2HB will use the 2 hand piercing animation instead of the overhead slashing animation")
 RULE_BOOL(Combat, ArcheryConsumesAmmo, true, "Set to false to disable Archery Ammo Consumption")
 RULE_BOOL(Combat, ThrowingConsumesAmmo, true, "Set to false to disable Throwing Ammo Consumption")
-RULE_BOOL(Combat, ImmuneToEnrageFromRiposteSpellEffect, true, "Set to false to disable SPA 173 SE_RiposteChance from making those with the effect on them immune to enrage")
+RULE_BOOL(Combat, UseLiveRiposteMechanics, false, "Set to true to disable SPA 173 SE_RiposteChance from making those with the effect on them immune to enrage, can longer riposte from a riposte.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -763,6 +763,7 @@ RULE_BOOL(Inventory, EnforceAugmentWear, true, "Forces augment wear slot validat
 RULE_BOOL(Inventory, DeleteTransformationMold, true, "False if you want mold to last forever")
 RULE_BOOL(Inventory, AllowAnyWeaponTransformation, false, "Weapons can use any weapon transformation")
 RULE_BOOL(Inventory, TransformSummonedBags, false, "Transforms summoned bags into disenchanted ones instead of deleting")
+RULE_BOOL(Inventory, AllowMultipleOfSameAugment, false, "Allows multiple of the same augment to be placed in an item via #augmentitem or MQ2, set to true to allow")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Client)
