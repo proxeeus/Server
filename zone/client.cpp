@@ -7186,7 +7186,7 @@ void Client::OpenLFGuildWindow()
 
 bool Client::IsXTarget(const Mob *m) const
 {
-	if(!XTargettingAvailable() || !m || !m->IsValidXTarget())
+	if(!XTargettingAvailable() || !m || (m->GetID() == 0))
 		return false;
 
 	for(int i = 0; i < GetMaxXTargets(); ++i)
@@ -7229,10 +7229,10 @@ void Client::UpdateClientXTarget(Client *c)
 // IT IS NOT SAFE TO CALL THIS IF IT'S NOT INITIAL AGGRO
 void Client::AddAutoXTarget(Mob *m, bool send)
 {
+	m_activeautohatermgr->increment_count(m);
+
 	if (!XTargettingAvailable() || !XTargetAutoAddHaters || IsXTarget(m))
 		return;
-	
-	m_activeautohatermgr->increment_count(m);
 
 	for(int i = 0; i < GetMaxXTargets(); ++i)
 	{
@@ -7444,7 +7444,6 @@ void Client::ProcessXTargetAutoHaters()
 
 		if (XTargets[i].ID != 0 && !GetXTargetAutoMgr()->contains_mob(XTargets[i].ID)) {
 			XTargets[i].ID = 0;
-			XTargets[i].Name[0] = 0;
 			XTargets[i].dirty = true;
 		}
 
@@ -8692,7 +8691,7 @@ void Client::QuestReward(Mob* target, uint32 copper, uint32 silver, uint32 gold,
 
 	if (faction)
 	{
-		if (target && target->IsNPC())
+		if (target && target->IsNPC() && !target->IsCharmed())
 		{
 			int32 nfl_id = target->CastToNPC()->GetNPCFactionID();
 			SetFactionLevel(CharacterID(), nfl_id, GetBaseClass(), GetBaseRace(), GetDeity(), true);
@@ -8728,7 +8727,7 @@ void Client::QuestReward(Mob* target, const QuestReward_Struct &reward, bool fac
 
 	if (faction)
 	{
-		if (target && target->IsNPC())
+		if (target && target->IsNPC() && !target->IsCharmed())
 		{
 			int32 nfl_id = target->CastToNPC()->GetNPCFactionID();
 			SetFactionLevel(CharacterID(), nfl_id, GetBaseClass(), GetBaseRace(), GetDeity(), true);
