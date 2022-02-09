@@ -3676,7 +3676,10 @@ bool Mob::HateSummon() {
 		if(summon_level == 1) {
 			entity_list.MessageClose(this, true, 500, Chat::Say, "%s says 'You will not evade me, %s!' ", GetCleanName(), target->GetCleanName() );
 
+			float summoner_zoff = this->GetZOffset();
+			float summoned_zoff = target->GetZOffset();
 			auto new_pos = m_Position;
+			new_pos.z -= (summoner_zoff - summoned_zoff);
 			float angle = new_pos.w - target->GetHeading();
 			new_pos.w = target->GetHeading();
 
@@ -4103,6 +4106,16 @@ void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on,
 			Message(0, "Invalid spell proc %u", spell_id);
 			LogSpells("Player [{}], Weapon Procced invalid spell [{}]", this->GetName(), spell_id);
 		}
+		return;
+	}
+
+	if (IsSilenced() && !IsDiscipline(spell_id)) {
+		MessageString(Chat::Red, SILENCED_STRING);
+		return;
+	}
+
+	if (IsAmnesiad() && IsDiscipline(spell_id)) {
+		MessageString(Chat::Red, MELEE_SILENCE);
 		return;
 	}
 
@@ -4587,14 +4600,15 @@ void Mob::TryTwincast(Mob *caster, Mob *target, uint32 spell_id)
 }
 
 //Used for effects that should occur after the completion of the spell
-void Mob::TryOnSpellFinished(Mob *caster, Mob *target, uint16 spell_id)
+void Mob::ApplyHealthTransferDamage(Mob *caster, Mob *target, uint16 spell_id)
 {
 	if (!IsValidSpell(spell_id))
 		return;
 
-	/*Apply damage from Lifeburn type effects on caster at end of spell cast.
-	 This allows for the AE spells to function without repeatedly killing caster
-	 Damage or heal portion can be found as regular single use spell effect
+	/*
+		Apply damage from Lifeburn type effects on caster at end of spell cast.
+		This allows for the AE spells to function without repeatedly killing caster
+		Damage or heal portion can be found as regular single use spell effect
 	*/
 	if (IsEffectInSpell(spell_id, SE_Health_Transfer)){
 		for (int i = 0; i < EFFECT_COUNT; i++) {
@@ -4603,10 +4617,12 @@ void Mob::TryOnSpellFinished(Mob *caster, Mob *target, uint16 spell_id)
 				int new_hp = GetMaxHP();
 				new_hp -= GetMaxHP()  * spells[spell_id].base_value[i] / 1000;
 
-				if (new_hp > 0)
+				if (new_hp > 0) {
 					SetHP(new_hp);
-				else
+				}
+				else {
 					Kill();
+				}
 			}
 		}
 	}

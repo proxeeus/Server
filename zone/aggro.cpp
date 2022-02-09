@@ -660,6 +660,9 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 	if (target->GetSpecialAbility(IMMUNE_DAMAGE_NPC) && IsNPC())
 		return false;
 
+	if (target->IsHorse())
+		return false;
+
 	// can't damage own pet (applies to everthing)
 	Mob *target_owner = target->GetOwner();
 	Mob *our_owner = GetOwner();
@@ -1340,10 +1343,10 @@ int32 Mob::CheckAggroAmount(uint16 spell_id, Mob *target, bool isproc)
 	if (dispel && target && target->GetHateAmount(this) < 100)
 		AggroAmount += 50;
 
-	if (spells[spell_id].hate_added > 0) // overrides the hate (ex. tash)
+	if (spells[spell_id].hate_added != 0) // overrides the hate (ex. tash), can be negative.
 		AggroAmount = spells[spell_id].hate_added;
 
-	if (GetOwner() && IsPet())
+	if (GetOwner() && IsPet() && AggroAmount > 0)
 		AggroAmount = AggroAmount * RuleI(Aggro, PetSpellAggroMod) / 100;
 
 	// hate focus ignored on first action for some reason
