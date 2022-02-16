@@ -46,7 +46,7 @@ extern WorldServer worldserver;
 
 // the spell can still fail here, if the buff can't stack
 // in this case false will be returned, true otherwise
-bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_override, int reflect_effectiveness, int32 duration_override)
+bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_override, int reflect_effectiveness, int32 duration_override, bool disable_buff_overrwrite)
 {
 	int caster_level, buffslot, effect, effect_value, i;
 	EQ::ItemInstance *SummonedItem=nullptr;
@@ -119,7 +119,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			}
 			else
 			{
-				buffslot = AddBuff(caster, spell_id, duration_override);
+				buffslot = AddBuff(caster, spell_id, duration_override, -1, disable_buff_overrwrite);
 			}
 			if(buffslot == -1)	// stacking failure
 				return false;
@@ -580,45 +580,6 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					if(!target_zone)
 						GMMove(x, y, z, heading);
 				}
-				break;
-			}
-
-			case SE_Invisibility:
-			case SE_Invisibility2:
-			{
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "Invisibility");
-#endif
-				SetInvisible(spell.base_value[i]);
-				break;
-			}
-
-			case SE_InvisVsAnimals:
-			{
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "Invisibility to Animals");
-#endif
-				invisible_animals = true;
-				SetInvisible(Invisibility::Special);
-				break;
-			}
-
-			case SE_InvisVsUndead2:
-			case SE_InvisVsUndead:
-			{
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "Invisibility to Undead");
-#endif
-				invisible_undead = true;
-				SetInvisible(Invisibility::Special);
-				break;
-			}
-			case SE_SeeInvis:
-			{
-#ifdef SPELL_EFFECT_SPAM
-				snprintf(effect_desc, _EDLEN, "See Invisible");
-#endif
-				see_invis = spell.base_value[i];
 				break;
 			}
 
@@ -3277,6 +3238,13 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_Proc_Timer_Modifier:
 			case SE_FFItemClass:
 			case SE_SpellEffectResistChance:
+			case SE_SeeInvis:
+			case SE_Invisibility:
+			case SE_Invisibility2:
+			case SE_InvisVsAnimals:
+			case SE_ImprovedInvisAnimals:
+			case SE_InvisVsUndead:
+			case SE_InvisVsUndead2:
 			{
 				break;
 			}
@@ -3700,7 +3668,8 @@ void Mob::BuffProcess()
 
 			// DF_Permanent uses -1 DF_Aura uses -4 but we need to check negatives for some spells for some reason?
 			if (spells[buffs[buffs_i].spellid].buff_duration_formula != DF_Permanent &&
-			    spells[buffs[buffs_i].spellid].buff_duration_formula != DF_Aura) {
+			    spells[buffs[buffs_i].spellid].buff_duration_formula != DF_Aura &&
+				buffs[buffs_i].ticsremaining != PERMANENT_BUFF_DURATION) {
 				if(!zone->BuffTimersSuspended() || !IsSuspendableSpell(buffs[buffs_i].spellid))
 				{
 					--buffs[buffs_i].ticsremaining;
@@ -3946,10 +3915,13 @@ void Mob::DoBuffTic(const Buffs_Struct &buff, int slot, Mob *caster)
 				}
 			}
 		}
+		case SE_ImprovedInvisAnimals:
 		case SE_Invisibility2:
 		case SE_InvisVsUndead2: {
-			if (buff.ticsremaining <= 3 && buff.ticsremaining > 1) {
-				MessageString(Chat::Spells, INVIS_BEGIN_BREAK);
+			if (!IsBardSong(buff.spellid)) {
+				if (buff.ticsremaining <= 3 && buff.ticsremaining > 1) {
+					MessageString(Chat::Spells, INVIS_BEGIN_BREAK);
+				}
 			}
 			break;
 		}
@@ -4183,32 +4155,6 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 			{
 				if (!AffectedBySpellExcludingSlot(slot, SE_Levitate))
 					SendAppearancePacket(AT_Levitate, 0);
-				break;
-			}
-
-			case SE_Invisibility2:
-			case SE_Invisibility:
-			{
-				SetInvisible(Invisibility::Visible);
-				break;
-			}
-
-			case SE_InvisVsUndead2:
-			case SE_InvisVsUndead:
-			{
-				invisible_undead = false;	// Mongrel: No longer IVU
-				break;
-			}
-
-			case SE_InvisVsAnimals:
-			{
-				invisible_animals = false;
-				break;
-			}
-
-			case SE_SeeInvis:
-			{
-				see_invis = 0;
 				break;
 			}
 
@@ -9580,18 +9526,19 @@ void Mob::CalcSpellPowerDistanceMod(uint16 spell_id, float range, Mob* caster)
 void Mob::BreakInvisibleSpells()
 {
 	if(invisible) {
+		ZeroInvisibleVars(InvisType::T_INVISIBLE);
 		BuffFadeByEffect(SE_Invisibility);
 		BuffFadeByEffect(SE_Invisibility2);
-		invisible = false;
 	}
 	if(invisible_undead) {
+		ZeroInvisibleVars(InvisType::T_INVISIBLE_VERSE_UNDEAD);
 		BuffFadeByEffect(SE_InvisVsUndead);
 		BuffFadeByEffect(SE_InvisVsUndead2);
-		invisible_undead = false;
 	}
 	if(invisible_animals){
+		ZeroInvisibleVars(InvisType::T_INVISIBLE_VERSE_ANIMAL);
+		BuffFadeByEffect(SE_ImprovedInvisAnimals);
 		BuffFadeByEffect(SE_InvisVsAnimals);
-		invisible_animals = false;
 	}
 }
 
@@ -9600,22 +9547,20 @@ void Client::BreakSneakWhenCastOn(Mob *caster, bool IsResisted)
 	bool IsCastersTarget = false; // Chance to avoid only applies to AOE spells when not targeted.
 	if (hidden || improved_hidden) {
 		if (caster) {
-			Mob *target = nullptr;
-			target = caster->GetTarget();
-			IsCastersTarget = target && target == this;
+			Mob *spell_target = caster->GetTarget();
+			if (spell_target && spell_target == this) {
+				IsCastersTarget = true;
+			}
 		}
-
 		if (!IsCastersTarget) {
-			int chance =
-			    spellbonuses.NoBreakAESneak + itembonuses.NoBreakAESneak + aabonuses.NoBreakAESneak;
-
-			if (IsResisted)
+			int chance = spellbonuses.NoBreakAESneak + itembonuses.NoBreakAESneak + aabonuses.NoBreakAESneak;
+			if (IsResisted) {
 				chance *= 2;
-
-			if (chance && zone->random.Roll(chance))
+			}
+			if (chance && zone->random.Roll(chance)) {
 				return; // Do not drop Sneak/Hide
+			}
 		}
-
 		CancelSneakHide();
 	}
 }
@@ -9702,7 +9647,7 @@ bool Mob::PassLimitToSkill(EQ::skills::SkillType skill, int32 spell_id, int proc
 	bool match_proc_type = false;
 	bool has_limit_check = false;
 
-	if (!aa_id && spellbonuses.LimitToSkill[EQ::skills::HIGHEST_SKILL + 3]) {
+	if (!aa_id && spellbonuses.LimitToSkill[EQ::skills::HIGHEST_SKILL + 2]) {
 
 		if (spell_id == SPELL_UNKNOWN) {
 			return false;
@@ -9721,7 +9666,7 @@ bool Mob::PassLimitToSkill(EQ::skills::SkillType skill, int32 spell_id, int proc
 			}
 		}
 	}
-	else if (aabonuses.LimitToSkill[EQ::skills::HIGHEST_SKILL + 3]) {
+	else if (aabonuses.LimitToSkill[EQ::skills::HIGHEST_SKILL + 2]) {
 
 		int rank_id = 1;
 		AA::Rank *rank = zone->GetAlternateAdvancementRank(aa_id);
@@ -10265,4 +10210,117 @@ bool Mob::HasPersistDeathIllusion(int32 spell_id) {
 		}
 	}
 	return false;
+}
+
+void Mob::SetBuffDuration(int32 spell_id, int32 duration) {
+
+	/*
+		Will refresh the buff with specified spell_id to the specified duration
+		If spell is -1, then all spells will be set to the specified duration
+		If duration 0, then will set duration to buffs normal max duration.
+	*/
+
+	bool adjust_all_buffs = false;
+
+	if (spell_id == -1) {
+		adjust_all_buffs = true;
+	}
+
+	if (!adjust_all_buffs && !IsValidSpell(spell_id)){
+		return;
+	}
+
+	if (duration < -1) {
+		duration = PERMANENT_BUFF_DURATION;
+	}
+
+	int buff_count = GetMaxBuffSlots();
+	for (int slot = 0; slot < buff_count; slot++) {
+		
+		if (!adjust_all_buffs) {
+			if (buffs[slot].spellid != SPELL_UNKNOWN && buffs[slot].spellid == spell_id) {
+				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, -1, duration, true);
+				return;
+			}
+		}
+		else {
+			if (buffs[slot].spellid != SPELL_UNKNOWN) {
+				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, -1, duration, true);
+			}
+		}
+	}
+}
+
+void Mob::ApplySpellBuff(int32 spell_id, int32 duration)
+{
+	/*
+		Used for quest command to apply a new buff with custom duration.
+		Duration set to 0 will apply with normal duration.
+	*/
+	if (!IsValidSpell(spell_id)) {
+		return;
+	}
+	if (!spells[spell_id].buff_duration) {
+		return;
+	}
+	
+	if (duration < -1) {
+		duration = PERMANENT_BUFF_DURATION;
+	}
+
+	SpellOnTarget(spell_id, this, 0, false, 0, false, -1, duration);
+}
+
+int Mob::GetBuffStatValueBySpell(int32 spell_id, const char* stat_identifier)
+{
+	if (!IsValidSpell(spell_id)) {
+		return 0;
+	}
+
+	if (!stat_identifier) {
+		return 0;
+	}
+	
+	std::string id = str_tolower(stat_identifier);
+
+	int buff_count = GetMaxBuffSlots();
+	for (int slot = 0; slot < buff_count; slot++) {
+		if (buffs[slot].spellid != SPELL_UNKNOWN && buffs[slot].spellid == spell_id) {
+			return GetBuffStatValueBySlot(slot, stat_identifier);
+		}
+	}
+	return 0;
+}
+
+int Mob::GetBuffStatValueBySlot(uint8 slot, const char* stat_identifier) 
+{
+	if (slot > GetMaxBuffSlots()) {
+		return 0;
+	}
+
+	if (!stat_identifier) {
+		return 0;
+	}
+
+	std::string id = str_tolower(stat_identifier);
+
+	if (id == "caster_level") { return buffs[slot].casterlevel; }
+	else if (id == "spell_id") { return buffs[slot].spellid; }
+	else if (id == "caster_id") { return buffs[slot].spellid;; }
+	else if (id == "ticsremaining") { return buffs[slot].ticsremaining; }
+	else if (id == "counters") { return buffs[slot].counters; }
+	else if (id == "hit_number") { return  buffs[slot].hit_number; }
+	else if (id == "melee_rune") { return  buffs[slot].melee_rune; }
+	else if (id == "magic_rune") { return  buffs[slot].magic_rune; }
+	else if (id == "dot_rune") { return  buffs[slot].dot_rune; }
+	else if (id == "caston_x") { return  buffs[slot].caston_x; }
+	else if (id == "caston_y") { return buffs[slot].caston_y; }
+	else if (id == "caston_z") { return  buffs[slot].caston_z; }
+	else if (id == "instrument_mod") { return  buffs[slot].instrument_mod; }
+	else if (id == "persistant_buff") { return  buffs[slot].persistant_buff; }
+	else if (id == "client") { return  buffs[slot].client; }
+	else if (id == "extra_di_chance") { return  buffs[slot].ExtraDIChance; }
+	else if (id == "root_break_chance") { return  buffs[slot].RootBreakChance; }
+	else if (id == "virus_spread_time") { return  buffs[slot].virus_spread_time; }
+	return 0;
 }
