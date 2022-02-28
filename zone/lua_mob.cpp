@@ -2464,7 +2464,7 @@ void Lua_Mob::SetSeeInvisibleUndeadLevel(uint8 invisible_level)
 
 void Lua_Mob::ApplySpellBuff(int spell_id) {
 	Lua_Safe_Call_Void();
-	self->ApplySpellBuff(spell_id, 0);
+	self->ApplySpellBuff(spell_id);
 }
 
 void Lua_Mob::ApplySpellBuff(int spell_id, int duration) {
@@ -2484,7 +2484,7 @@ int Lua_Mob::GetBuffStatValueBySpell(int spell_id, const char* identifier) {
 
 void Lua_Mob::SetBuffDuration(int spell_id) {
 	Lua_Safe_Call_Void();
-	self->SetBuffDuration(spell_id, 0);
+	self->SetBuffDuration(spell_id);
 }
 
 void Lua_Mob::SetBuffDuration(int spell_id, int duration) {
