@@ -2995,6 +2995,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_HealOverTime: {
 				//This is here so buffs with hit counters tic down on initial cast.
 				caster->GetActSpellHealing(spell_id, effect_value, nullptr, false);
+				break;
 			}
 
 			case SE_PersistentEffect:
@@ -9547,7 +9548,7 @@ void Mob::CalcSpellPowerDistanceMod(uint16 spell_id, float range, Mob* caster)
 void Mob::BreakInvisibleSpells()
 {
 	if(invisible) {
-		ZeroInvisibleVars(InvisType::T_INVISIBLE);
+		nobuff_invisible = 0;
 		BuffFadeByEffect(SE_Invisibility);
 		BuffFadeByEffect(SE_Invisibility2);
 	}
