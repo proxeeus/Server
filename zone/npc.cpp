@@ -2799,6 +2799,28 @@ float NPC::GetNPCStat(const char *identifier)
 	else if (id == "npc_spells_effects_id") {
 		return npc_spells_effects_id;
 	}
+	//default values
+	else if (id == "default_ac") {
+		return default_ac;
+	}
+	else if (id == "default_min_hit") {
+		return default_min_dmg;
+	}
+	else if (id == "default_max_hit") {
+		return default_max_dmg;
+	}
+	else if (id == "default_attack_delay") {
+		return default_attack_delay;
+	}
+	else if (id == "default_accuracy") {
+		return default_accuracy_rating;
+	}
+	else if (id == "default_avoidance") {
+		return default_avoidance_rating;
+	}
+	else if (id == "default_atk") {
+		return default_atk;
+	}
 }
 
 void NPC::LevelScale() {

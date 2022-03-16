@@ -237,7 +237,12 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		}
 	}
 
-	std::string export_string = fmt::format("{}", spell_id);
+	std::string export_string = fmt::format(
+		"{} {} {}",
+		spell_id,
+		GetID(),
+		GetCasterLevel(spell_id)
+	);
 	if(IsClient()) {
 		if (parse->EventPlayer(EVENT_CAST_BEGIN, CastToClient(), export_string, 0) != 0) {
 			if (IsDiscipline(spell_id)) {
@@ -1653,7 +1658,12 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 	// at this point the spell has successfully been cast
 	//
 
-	std::string export_string = fmt::format("{}", spell_id);
+	std::string export_string = fmt::format(
+		"{} {} {}",
+		spell_id,
+		GetID(),
+		GetCasterLevel(spell_id)
+	);
 	if(IsClient()) {
 		parse->EventPlayer(EVENT_CAST, CastToClient(), export_string, 0);
 	} else if(IsNPC()) {
@@ -3591,8 +3601,13 @@ bool Mob::SpellOnTarget(uint16 spell_id, Mob *spelltar, int reflect_effectivenes
 	);
 
 	/* Send the EVENT_CAST_ON event */
-	std::string export_string = fmt::format("{}", spell_id);
-	if(spelltar->IsNPC()) {
+	std::string export_string = fmt::format(
+		"{} {} {}",
+		spell_id,
+		GetID(),
+		caster_level
+	);
+	if (spelltar->IsNPC()) {
 		parse->EventNPC(EVENT_CAST_ON, spelltar->CastToNPC(), this, export_string, 0);
 	} else if (spelltar->IsClient()) {
 		parse->EventPlayer(EVENT_CAST_ON, spelltar->CastToClient(), export_string, 0);
@@ -5499,10 +5514,11 @@ uint32 Client::GetHighestScribedSpellinSpellGroup(uint32 spell_group)
 }
 
 bool Client::SpellGlobalCheck(uint16 spell_id, uint32 char_id) {
-	std::string spell_global_name;
-	int spell_global_value;
-	int global_value;
-	std::string query = fmt::format("SELECT qglobal, value FROM spell_globals WHERE spellid = {}", spell_id);
+	std::string query = fmt::format(
+		"SELECT qglobal, value FROM spell_globals WHERE spellid = {}",
+		spell_id
+	);
+
 	auto results = database.QueryDatabase(query);
 	if (!results.Success()) {
 		return false; // Query failed, do not allow scribing.
@@ -5513,8 +5529,8 @@ bool Client::SpellGlobalCheck(uint16 spell_id, uint32 char_id) {
 	}
 
 	auto row = results.begin();
-	spell_global_name = row[0];
-	spell_global_value = std::stoi(row[1]);
+	std::string spell_global_name = row[0];
+	std::string spell_global_value = row[1];
 
 	if (spell_global_name.empty()) {
 		return true; // If the entry in the spell_globals table has nothing set for the qglobal name, allow scribing.
@@ -5529,50 +5545,57 @@ bool Client::SpellGlobalCheck(uint16 spell_id, uint32 char_id) {
 	results = database.QueryDatabase(query);
 	if (!results.Success()) {
 		LogError(
-			"Spell ID [{}] query of spell_globals with Name: [{}] Value: [{}] failed",
-			spell_id,
+			"Spell global [{}] for spell ID [{}] for character ID [{}] query failed.",
 			spell_global_name,
-			spell_global_value
+			spell_id,
+			char_id
 		);
 
-		return false;
+		return false; // Query failed, do not allow scribing.
 	}
 
-	if (results.RowCount() != 1) {
+	if (!results.RowCount()) {
 		LogError(
-			"Char ID: [{}] does not have the Qglobal Name: [{}] for Spell ID [{}]",
-			char_id,
+			"Spell global [{}] for spell ID [{}] for character ID [{}] does not exist.",
 			spell_global_name,
-			spell_id
+			spell_id,
+			char_id
 		);
 
-		return false;
+		return false; // No rows found, do not allow scribing.
 	}
 
 	row = results.begin();
-	global_value = std::stoi(row[0]);
-	if (global_value >= spell_global_value) { // If value is greater than or equal to spell global value, allow scribing.
-		return true;
+	std::string global_value = row[0];
+	if (StringIsNumber(global_value) && StringIsNumber(spell_global_value)) {
+		if (std::stoi(global_value) >= std::stoi(spell_global_value)) {
+			return true; // If value is greater than or equal to spell global value, allow scribing.
+		}
+	} else {
+		if (global_value == spell_global_value) {
+			return true; // If value is equal to spell bucket value, allow scribing.
+		}
 	}
 
 	// If user's qglobal does not meet requirements, do not allow scribing.
 	LogError(
-		"Char ID: [{}] SpellGlobals Name: [{}] Value: [{}] did not match QGlobal Value: [{}] for Spell ID [{}]",
-		char_id,
+		"Spell global [{}] for spell ID [{}] for character ID [{}] did not match value [{}] value found was [{}].",
 		spell_global_name,
+		spell_id,
+		char_id,
 		spell_global_value,
-		global_value,
-		spell_id
+		global_value
 	);
 
 	return false;
 }
 
 bool Client::SpellBucketCheck(uint16 spell_id, uint32 char_id) {
-	std::string spell_bucket_name;
-	int spell_bucket_value;
-	int bucket_value;
-	std::string query = fmt::format("SELECT `key`, value FROM spell_buckets WHERE spellid = {}", spell_id);
+	auto query = fmt::format(
+		"SELECT `key`, value FROM spell_buckets WHERE spellid = {}",
+		spell_id
+	);
+
 	auto results = database.QueryDatabase(query);
 	if (!results.Success()) {
 		return false; // Query failed, do not allow scribing.
@@ -5583,8 +5606,8 @@ bool Client::SpellBucketCheck(uint16 spell_id, uint32 char_id) {
 	}
 
 	auto row = results.begin();
-	spell_bucket_name = row[0];
-	spell_bucket_value = std::stoi(row[1]);
+	std::string spell_bucket_name = row[0];
+	std::string spell_bucket_value = row[1];
 
 	if (spell_bucket_name.empty()) {
 		return true; // If the entry in the spell_buckets table has nothing set for the qglobal name, allow scribing.
@@ -5599,39 +5622,46 @@ bool Client::SpellBucketCheck(uint16 spell_id, uint32 char_id) {
 	results = database.QueryDatabase(query);
 	if (!results.Success()) {
 		LogError(
-			"Spell bucket [{}] for spell ID [{}] for char ID [{}] failed",
+			"Spell bucket [{}] for spell ID [{}] for character ID [{}] query failed.",
 			spell_bucket_name,
 			spell_id,
 			char_id
 		);
 
-		return false;
+		return false; // Query failed, do not allow scribing.
 	}
 
-	if (results.RowCount() != 1) {
+	if (!results.RowCount()) {
 		LogError(
-			"Spell bucket [{}] does not exist for spell ID [{}] for char ID [{}]",
+			"Spell bucket [{}] for spell ID [{}] for character ID [{}] does not exist.",
 			spell_bucket_name,
 			spell_id,
 			char_id
 		);
 
-		return false;
+		return false; // No rows found, do not allow scribing.
 	}
 
 	row = results.begin();
-	bucket_value = std::stoi(row[0]);
-	if (bucket_value >= spell_bucket_value) { // If value is greater than or equal to spell bucket value, allow scribing.
-		return true;
+	std::string bucket_value = row[0];
+	if (StringIsNumber(bucket_value) && StringIsNumber(spell_bucket_value)) {
+		if (std::stoi(bucket_value) >= std::stoi(spell_bucket_value)) {
+			return true; // If value is greater than or equal to spell bucket value, allow scribing.
+		}
+	} else {
+		if (bucket_value == spell_bucket_value) {
+			return true; // If value is equal to spell bucket value, allow scribing.
+		}
 	}
 
 	// If user's data bucket does not meet requirements, do not allow scribing.
 	LogError(
-		"Spell bucket [{}] for spell ID [{}] for char ID [{}] did not match value [{}]",
+		"Spell bucket [{}] for spell ID [{}] for character ID [{}] did not match value [{}] value found was [{}].",
 		spell_bucket_name,
 		spell_id,
 		char_id,
-		spell_bucket_value
+		spell_bucket_value,
+		bucket_value
 	);
 
 	return false;
