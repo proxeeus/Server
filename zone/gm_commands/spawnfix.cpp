@@ -28,7 +28,7 @@ void command_spawnfix(Client *c, const Seperator *sep)
 		}
 		c->Message(10, "Inserting new spawngroup...");
 
-		std::string spawngroupquery = StringFormat("insert into spawngroup(name, spawn_limit, dist, max_x, min_x, max_y, min_y, delay, mindelay, despawn, despawn_timer) values('spfix_%s_%i', '0','0','0','0','0','0', '0', '15000','0','100');", zone->GetShortName(), lastSpawnGroupId + 1);
+		std::string spawngroupquery = StringFormat("insert into spawngroup(name, spawn_limit, dist, max_x, min_x, max_y, min_y, delay, mindelay, despawn, despawn_timer, wp_spawns) values('spfix_%s_%i', '0','0','0','0','0','0', '0', '15000','0','100', '0');", zone->GetShortName(), lastSpawnGroupId + 1);
 
 		auto spawngroupResults = database.QueryDatabase(spawngroupquery);
 		if (!spawngroupResults.Success())
@@ -50,7 +50,7 @@ void command_spawnfix(Client *c, const Seperator *sep)
 		}
 
 		c->Message(10, "Inserting new spawnentry...");
-		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100', '1');", lastSpawnGroupId, target_mob->CastToNPC()->GetNPCTypeID());
+		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100', '1', '-1', '-1',NULL, NULL);", lastSpawnGroupId, target_mob->CastToNPC()->GetNPCTypeID());
 		auto spawnentryresults = database.QueryDatabase(spawnentryquery);
 		if (!spawnentryresults.Success())
 		{
@@ -60,7 +60,7 @@ void command_spawnfix(Client *c, const Seperator *sep)
 
 		c->Message(10, "Inserting spawn2 entry...");
 
-		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,enabled,animation) values('%i','%s','0','%f','%f','%f','%f','600','0','0','0','1','1','0');", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
+		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,enabled,animation, min_expansion, max_expansion, content_flags,content_flags_disabled) values('%i','%s','0','%f','%f','%f','%f','600','0','0','0','1','1','0', '-1', '-1', NULL, NULL);", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
 		auto spawn2entryResults = database.QueryDatabase(spawn2entryquery);
 		if (spawn2entryResults.Success())
 		{
