@@ -490,6 +490,10 @@ bool Lua_Client::TakeMoneyFromPP(uint32 copper, bool update_client) {
 	return self->TakeMoneyFromPP(copper, update_client);
 }
 
+void Lua_Client::AddMoneyToPP(uint32 copper, uint32 silver, uint32 gold, uint32 platinum) {
+	Lua_Safe_Call_Void();
+	self->AddMoneyToPP(copper, silver, gold, platinum);
+}
 void Lua_Client::AddMoneyToPP(uint32 copper, uint32 silver, uint32 gold, uint32 platinum, bool update_client) {
 	Lua_Safe_Call_Void();
 	self->AddMoneyToPP(copper, silver, gold, platinum, update_client);
@@ -2397,6 +2401,51 @@ void Lua_Client::AddItem(luabind::object item_table) {
 	);
 }
 
+int Lua_Client::CountAugmentEquippedByID(uint32 item_id) {
+	Lua_Safe_Call_Int();
+	return self->GetInv().CountAugmentEquippedByID(item_id);
+}
+
+bool Lua_Client::HasAugmentEquippedByID(uint32 item_id) {
+	Lua_Safe_Call_Bool();
+	return self->GetInv().HasAugmentEquippedByID(item_id);
+}
+
+int Lua_Client::CountItemEquippedByID(uint32 item_id) {
+	Lua_Safe_Call_Int();
+	return self->GetInv().CountItemEquippedByID(item_id);
+}
+
+bool Lua_Client::HasItemEquippedByID(uint32 item_id) {
+	Lua_Safe_Call_Bool();
+	return self->GetInv().HasItemEquippedByID(item_id);
+}
+
+void Lua_Client::AddPlatinum(uint32 platinum) {
+	Lua_Safe_Call_Void();
+	self->AddPlatinum(platinum);
+}
+
+void Lua_Client::AddPlatinum(uint32 platinum, bool update_client) {
+	Lua_Safe_Call_Void();
+	self->AddPlatinum(platinum, update_client);
+}
+
+uint32 Lua_Client::GetCarriedPlatinum() {
+	Lua_Safe_Call_Int();
+	return self->GetCarriedPlatinum();
+}
+
+bool Lua_Client::TakePlatinum(uint32 platinum) {
+	Lua_Safe_Call_Bool();
+	return self->TakePlatinum(platinum);
+}
+
+bool Lua_Client::TakePlatinum(uint32 platinum, bool update_client) {
+	Lua_Safe_Call_Bool();
+	return self->TakePlatinum(platinum, update_client);
+}
+
 luabind::scope lua_register_client() {
 	return luabind::class_<Lua_Client, Lua_Mob>("Client")
 	.def(luabind::constructor<>())
@@ -2418,7 +2467,10 @@ luabind::scope lua_register_client() {
 	.def("AddLevelBasedExp", (void(Lua_Client::*)(int))&Lua_Client::AddLevelBasedExp)
 	.def("AddLevelBasedExp", (void(Lua_Client::*)(int,int))&Lua_Client::AddLevelBasedExp)
 	.def("AddLevelBasedExp", (void(Lua_Client::*)(int,int,bool))&Lua_Client::AddLevelBasedExp)
+	.def("AddMoneyToPP", (void(Lua_Client::*)(uint32,uint32,uint32,uint32))&Lua_Client::AddMoneyToPP)
 	.def("AddMoneyToPP", (void(Lua_Client::*)(uint32,uint32,uint32,uint32,bool))&Lua_Client::AddMoneyToPP)
+	.def("AddPlatinum", (void(Lua_Client::*)(uint32))&Lua_Client::AddPlatinum)
+	.def("AddPlatinum", (void(Lua_Client::*)(uint32,bool))&Lua_Client::AddPlatinum)
 	.def("AddPVPPoints", (void(Lua_Client::*)(uint32))&Lua_Client::AddPVPPoints)
 	.def("AddSkill", (void(Lua_Client::*)(int,int))&Lua_Client::AddSkill)
 	.def("Admin", (int(Lua_Client::*)(void))&Lua_Client::Admin)
@@ -2439,7 +2491,9 @@ luabind::scope lua_register_client() {
 	.def("ClearCompassMark",(void(Lua_Client::*)(void))&Lua_Client::ClearCompassMark)
 	.def("ClearZoneFlag", (void(Lua_Client::*)(int))&Lua_Client::ClearZoneFlag)
 	.def("Connected", (bool(Lua_Client::*)(void))&Lua_Client::Connected)
+	.def("CountAugmentEquippedByID", (int(Lua_Client::*)(uint32))&Lua_Client::CountAugmentEquippedByID)
 	.def("CountItem", (int(Lua_Client::*)(uint32))&Lua_Client::CountItem)
+	.def("CountItemEquippedByID", (int(Lua_Client::*)(uint32))&Lua_Client::CountItemEquippedByID)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(luabind::object))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32, bool))&Lua_Client::CreateExpedition)
@@ -2506,6 +2560,7 @@ luabind::scope lua_register_client() {
 	.def("GetBindZoneID", (uint32(Lua_Client::*)(int))&Lua_Client::GetBindZoneID)
 	.def("GetBindZoneID", (uint32(Lua_Client::*)(void))&Lua_Client::GetBindZoneID)
 	.def("GetCarriedMoney", (uint64(Lua_Client::*)(void))&Lua_Client::GetCarriedMoney)
+	.def("GetCarriedPlatinum", (uint32(Lua_Client::*)(void))&Lua_Client::GetCarriedPlatinum)
 	.def("GetCharacterFactionLevel", (int(Lua_Client::*)(int))&Lua_Client::GetCharacterFactionLevel)
 	.def("GetClassBitmask", (int(Lua_Client::*)(void))&Lua_Client::GetClassBitmask)
 	.def("GetClientMaxLevel", (int(Lua_Client::*)(void))&Lua_Client::GetClientMaxLevel)
@@ -2587,8 +2642,10 @@ luabind::scope lua_register_client() {
 	.def("GrantAlternateAdvancementAbility", (bool(Lua_Client::*)(int, int, bool))&Lua_Client::GrantAlternateAdvancementAbility)
 	.def("GuildID", (uint32(Lua_Client::*)(void))&Lua_Client::GuildID)
 	.def("GuildRank", (int(Lua_Client::*)(void))&Lua_Client::GuildRank)
+	.def("HasAugmentEquippedByID", (bool(Lua_Client::*)(uint32))&Lua_Client::HasAugmentEquippedByID)
 	.def("HasDisciplineLearned", (bool(Lua_Client::*)(uint16))&Lua_Client::HasDisciplineLearned)
 	.def("HasExpeditionLockout", (bool(Lua_Client::*)(std::string, std::string))&Lua_Client::HasExpeditionLockout)
+	.def("HasItemEquippedByID", (bool(Lua_Client::*)(uint32))&Lua_Client::HasItemEquippedByID)
 	.def("HasSkill", (bool(Lua_Client::*)(int))&Lua_Client::HasSkill)
 	.def("HasSpellScribed", (bool(Lua_Client::*)(int))&Lua_Client::HasSpellScribed)
 	.def("HasZoneFlag", (bool(Lua_Client::*)(int))&Lua_Client::HasZoneFlag)
@@ -2769,6 +2826,8 @@ luabind::scope lua_register_client() {
 	.def("TGB", (bool(Lua_Client::*)(void))&Lua_Client::TGB)
 	.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint32))&Lua_Client::TakeMoneyFromPP)
 	.def("TakeMoneyFromPP", (bool(Lua_Client::*)(uint32,bool))&Lua_Client::TakeMoneyFromPP)
+	.def("TakePlatinum", (bool(Lua_Client::*)(uint32))&Lua_Client::TakePlatinum)
+	.def("TakePlatinum", (bool(Lua_Client::*)(uint32,bool))&Lua_Client::TakePlatinum)
 	.def("Thirsty", (bool(Lua_Client::*)(void))&Lua_Client::Thirsty)
 	.def("TrainDisc", (void(Lua_Client::*)(int))&Lua_Client::TrainDisc)
 	.def("TrainDiscBySpellID", (void(Lua_Client::*)(int32))&Lua_Client::TrainDiscBySpellID)
