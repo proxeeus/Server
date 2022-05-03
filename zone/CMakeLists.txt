@@ -19,6 +19,7 @@ SET(zone_sources
     client_mods.cpp
     client_packet.cpp
     client_process.cpp
+    combat_record.cpp
     command.cpp
     corpse.cpp
     data_bucket.cpp
@@ -162,7 +163,7 @@ SET(zone_sources
     zone_reload.cpp
     zone_store.cpp
     zoning.cpp
-    )
+)
 
 SET(zone_headers
     aa.h
@@ -179,6 +180,7 @@ SET(zone_headers
     cheat_manager.h
     client.h
     client_packet.h
+    combat_record.h
     command.h
     common.h
     corpse.h
@@ -582,11 +584,7 @@ SET(gm_commands
     gm_commands/zunderworld.cpp
 )
 
-SOURCE_GROUP(gm_commands FILES
-    ${gm_commands}
-)
-
-ADD_EXECUTABLE(zone ${zone_sources} ${zone_headers} ${gm_commands})
+ADD_EXECUTABLE(zone ${zone_sources} ${zone_headers})
 
 INSTALL(TARGETS zone RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin)
 
