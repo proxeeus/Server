@@ -2455,6 +2455,18 @@ void Mob::GMMove(float x, float y, float z, float heading) {
 	}
 }
 
+void Mob::GMMove(const glm::vec4& position) {
+	m_Position.x = position.x;
+	m_Position.y = position.y;
+	m_Position.z = position.z;
+	SetHeading(position.w);
+	mMovementManager->SendCommandToClients(this, 0.0, 0.0, 0.0, 0.0, 0, ClientRangeAny);
+
+	if (IsNPC()) {
+		CastToNPC()->SaveGuardSpot(position);
+	}
+}
+
 void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, uint8 in_helmtexture, uint8 in_haircolor, uint8 in_beardcolor, uint8 in_eyecolor1, uint8 in_eyecolor2, uint8 in_hairstyle, uint8 in_luclinface, uint8 in_beard, uint8 in_aa_title, uint32 in_drakkin_heritage, uint32 in_drakkin_tattoo, uint32 in_drakkin_details, float in_size, bool send_appearance_effects) {
 
 	uint16 BaseRace = GetBaseRace();
