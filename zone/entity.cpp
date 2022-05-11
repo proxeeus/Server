@@ -3619,7 +3619,7 @@ void EntityList::ClearZoneFeignAggro(Mob *targ)
 	}
 }
 
-void EntityList::AggroZone(Mob *who, uint32 hate)
+void EntityList::AggroZone(Mob *who, int64 hate)
 {
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
@@ -3646,7 +3646,7 @@ bool EntityList::MakeTrackPacket(Client *client)
 	uint32 distance = 0;
 	float MobDistance;
 
-	distance = (client->GetSkill(EQ::skills::SkillTracking) * client->GetClassTrackingDistanceMultiplier(client->GetClass()));	
+	distance = (client->GetSkill(EQ::skills::SkillTracking) * client->GetClassTrackingDistanceMultiplier(client->GetClass()));
 
 	if (distance <= 0)
 		return false;
@@ -4615,7 +4615,7 @@ uint16 EntityList::CreateDoor(const char *model, const glm::vec4& position, uint
 
 	auto door = new Doors(model, position, opentype, size);
 	RemoveAllDoors();
-	zone->LoadZoneDoors(zone->GetShortName(), zone->GetInstanceVersion());
+	zone->LoadZoneDoors();
 	entity_list.AddDoor(door);
 	entity_list.RespawnAllDoors();
 
@@ -5510,8 +5510,8 @@ std::vector<Mob*> EntityList::GetTargetsForVirusEffect(Mob *spreader, Mob *origi
 	for (auto          &it : entity_list.GetCloseMobList(spreader, range)) {
 		Mob *mob = it.second;
 
-		if (!mob) { 
-			continue; 
+		if (!mob) {
+			continue;
 		}
 
 		if (mob == spreader) {
@@ -5602,7 +5602,7 @@ void EntityList::StopMobAI()
 }
 
 void EntityList::SendAlternateAdvancementStats() {
-	for(auto &c : client_list) {
+	for (auto &c : client_list) {
 		c.second->SendClearPlayerAA();
 		c.second->SendAlternateAdvancementTable();
 		c.second->SendAlternateAdvancementStats();

@@ -94,7 +94,7 @@ class MobMovementManager;
 
 class Zone {
 public:
-	static bool Bootup(uint32 iZoneID, uint32 iInstanceID, bool iStaticZone = false);
+	static bool Bootup(uint32 iZoneID, uint32 iInstanceID, bool is_static = false);
 	static void Shutdown(bool quiet = false);
 
 	Zone(uint32 in_zoneid, uint32 in_instanceid, const char *in_short_name);
@@ -125,7 +125,7 @@ public:
 	);
 	bool HasGraveyard();
 	bool HasWeather();
-	bool Init(bool iStaticZone);
+	bool Init(bool is_static);
 	bool IsCity() const { return (is_city); }
 	bool IsHotzone() const { return (is_hotzone); }
 	bool IsLoaded();
@@ -244,6 +244,9 @@ public:
 	uint32 GetCurrencyID(uint32 item_id);
 	uint32 GetCurrencyItemID(uint32 currency_id);
 
+	std::string GetZoneDescription();
+	void SendReloadMessage(std::string reload_type);
+
 	void AddAggroMob() { aggroedmobs++; }
 	void AddAuth(ServerZoneIncomingClient_Struct *szic);
 	void ChangeWeather();
@@ -261,7 +264,7 @@ public:
 	void LoadAdventureFlavor();
 	void LoadAlternateAdvancement();
 	void LoadAlternateCurrencies();
-	void LoadZoneBlockedSpells(uint32 zone_id);
+	void LoadZoneBlockedSpells();
 	void LoadLDoNTrapEntries();
 	void LoadLDoNTraps();
 	void LoadLevelEXPMods();
@@ -273,12 +276,12 @@ public:
 	void LoadTempMerchantData();
 	void LoadTickItems();
 	void LoadVeteranRewards();
-	void LoadZoneDoors(const char *zone, int16 version);
+	void LoadZoneDoors();
 	void ReloadStaticData();
-	void ReloadWorld(uint32 Option);
+	void ReloadWorld(uint8 global_repop);
 	void RemoveAuth(const char *iCharName, const char *iLSKey);
 	void RemoveAuth(uint32 lsid);
-	void Repop(uint32 delay = 0);
+	void Repop();
 	void RequestUCSServerStatus();
 	void ResetAuth();
 	void SetDate(uint16 year, uint8 month, uint8 day, uint8 hour, uint8 minute);
@@ -287,14 +290,11 @@ public:
 	void SetStaticZone(bool sz) { staticzone = sz; }
 	void SetTime(uint8 hour, uint8 minute, bool update_world = true);
 	void SetUCSServerAvailable(bool ucss_available, uint32 update_timestamp);
-	void ShowDisabledSpawnStatus(Mob *client);
-	void ShowEnabledSpawnStatus(Mob *client);
-	void ShowSpawnStatusByID(Mob *client, uint32 spawnid);
 	void SpawnConditionChanged(const SpawnCondition &c, int16 old_value);
-	void SpawnStatus(Mob *client);
 	void StartShutdownTimer(uint32 set_time = (RuleI(Zone, AutoShutdownDelay)));
 	void UpdateQGlobal(uint32 qid, QGlobal newGlobal);
 	void weatherSend(Client *client = nullptr);
+	void ClearSpawnTimers();
 
 	bool IsQuestHotReloadQueued() const;
 	void SetQuestHotReloadQueued(bool in_quest_hot_reload_queued);
