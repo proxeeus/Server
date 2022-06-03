@@ -1623,8 +1623,8 @@ bool lua_is_call_of_the_forsaken_enabled() {
 	return content_service.IsCallOfTheForsakenEnabled();
 }
 
-bool lua_is_the_darkend_sea_enabled() {
-	return content_service.IsTheDarkendSeaEnabled();
+bool lua_is_the_darkened_sea_enabled() {
+	return content_service.IsTheDarkenedSeaEnabled();
 }
 
 bool lua_is_the_broken_mirror_enabled() {
@@ -1731,8 +1731,8 @@ bool lua_is_current_expansion_call_of_the_forsaken() {
 	return content_service.IsCurrentExpansionCallOfTheForsaken();
 }
 
-bool lua_is_current_expansion_the_darkend_sea() {
-	return content_service.IsCurrentExpansionTheDarkendSea();
+bool lua_is_current_expansion_the_darkened_sea() {
+	return content_service.IsCurrentExpansionTheDarkenedSea();
 }
 
 bool lua_is_current_expansion_the_broken_mirror() {
@@ -3396,6 +3396,10 @@ std::string lua_commify(std::string number) {
 	return commify(number);
 }
 
+bool lua_check_name_filter(std::string name) {
+	return database.CheckNameFilter(name);
+}
+
 #define LuaCreateNPCParse(name, c_type, default_value) do { \
 	cur = table[#name]; \
 	if(luabind::type(cur) != LUA_TNIL) { \
@@ -3868,6 +3872,7 @@ luabind::scope lua_register_general() {
 		luabind::def("get_consider_level_name", &lua_get_consider_level_name),
 		luabind::def("get_environmental_damage_name", &lua_get_environmental_damage_name),
 		luabind::def("commify", &lua_commify),
+		luabind::def("check_name_filter", &lua_check_name_filter),
 
 		/*
 			Cross Zone
@@ -4101,7 +4106,7 @@ luabind::scope lua_register_general() {
 		luabind::def("is_veil_of_alaris_enabled", &lua_is_veil_of_alaris_enabled),
 		luabind::def("is_rain_of_fear_enabled", &lua_is_rain_of_fear_enabled),
 		luabind::def("is_call_of_the_forsaken_enabled", &lua_is_call_of_the_forsaken_enabled),
-		luabind::def("is_the_darkend_sea_enabled", &lua_is_the_darkend_sea_enabled),
+		luabind::def("is_the_darkened_sea_enabled", &lua_is_the_darkened_sea_enabled),
 		luabind::def("is_the_broken_mirror_enabled", &lua_is_the_broken_mirror_enabled),
 		luabind::def("is_empires_of_kunark_enabled", &lua_is_empires_of_kunark_enabled),
 		luabind::def("is_ring_of_scale_enabled", &lua_is_ring_of_scale_enabled),
@@ -4128,7 +4133,7 @@ luabind::scope lua_register_general() {
 		luabind::def("is_current_expansion_veil_of_alaris", &lua_is_current_expansion_veil_of_alaris),
 		luabind::def("is_current_expansion_rain_of_fear", &lua_is_current_expansion_rain_of_fear),
 		luabind::def("is_current_expansion_call_of_the_forsaken", &lua_is_current_expansion_call_of_the_forsaken),
-		luabind::def("is_current_expansion_the_darkend_sea", &lua_is_current_expansion_the_darkend_sea),
+		luabind::def("is_current_expansion_the_darkened_sea", &lua_is_current_expansion_the_darkened_sea),
 		luabind::def("is_current_expansion_the_broken_mirror", &lua_is_current_expansion_the_broken_mirror),
 		luabind::def("is_current_expansion_empires_of_kunark", &lua_is_current_expansion_empires_of_kunark),
 		luabind::def("is_current_expansion_ring_of_scale", &lua_is_current_expansion_ring_of_scale),

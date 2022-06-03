@@ -1282,7 +1282,7 @@ XS(XS_NPC_GetNPCStat) {
 
 		RETVAL = THIS->GetNPCStat(identifier);
 		XSprePUSH;
-		PUSHn((double)RETVAL);
+		PUSHn((double) RETVAL);
 	}
 	XSRETURN(1);
 }
@@ -1496,7 +1496,7 @@ XS(XS_NPC_GetScore) {
 		VALIDATE_THIS_IS_NPC;
 		RETVAL = THIS->GetScore();
 		XSprePUSH;
-		PUSHi((UV) RETVAL);
+		PUSHi((IV) RETVAL);
 	}
 	XSRETURN(1);
 }
@@ -1625,15 +1625,13 @@ XS(XS_NPC_RemoveDefensiveProc) {
 XS(XS_NPC_ChangeLastName); /* prototype to pass -Wmissing-prototypes */
 XS(XS_NPC_ChangeLastName) {
 	dXSARGS;
-	if (items < 1 || items > 2)
-		Perl_croak(aTHX_ "Usage: NPC::ChangeLastName(THIS, string name)"); // @categories Script Utility
+	if (items != 2)
+		Perl_croak(aTHX_ "Usage: NPC::ChangeLastName(THIS, string last_name)"); // @categories Script Utility
 	{
 		NPC  *THIS;
-		char *name = nullptr;
+		std::string last_name = (std::string) SvPV_nolen(ST(1));
 		VALIDATE_THIS_IS_NPC;
-		if (items > 1) { name = (char *) SvPV_nolen(ST(1)); }
-
-		THIS->ChangeLastName(name);
+		THIS->ChangeLastName(last_name);
 	}
 	XSRETURN_EMPTY;
 }
