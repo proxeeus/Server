@@ -1091,11 +1091,11 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 
 		// Health, Mana, and Endurance
 		item.HP = std::stoi(row[ItemField::hp]);
-		item.Regen = std::stoul(row[ItemField::regen]);
+		item.Regen = std::stoi(row[ItemField::regen]);
 		item.Mana = std::stoi(row[ItemField::mana]);
-		item.ManaRegen = std::stoul(row[ItemField::manaregen]);
-		item.Endur = std::stoul(row[ItemField::endur]);
-		item.EnduranceRegen = std::stoul(row[ItemField::enduranceregen]);
+		item.ManaRegen = std::stoi(row[ItemField::manaregen]);
+		item.Endur = std::stoi(row[ItemField::endur]);
+		item.EnduranceRegen = std::stoi(row[ItemField::enduranceregen]);
 
 		// Bane Damage
 		item.BaneDmgAmt = std::stoi(row[ItemField::banedmgamt]);
@@ -1119,7 +1119,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 		item.Attack = std::stoi(row[ItemField::attack]);
 		item.Avoidance = static_cast<int8>(EQ::Clamp(std::stoi(row[ItemField::avoidance]), -128, 127));
 		item.Clairvoyance = std::stoul(row[ItemField::clairvoyance]);
-		item.CombatEffects = static_cast<int8>(EQ::Clamp(std::stoi(row[ItemField::combateffects]), -128, 127));
+		item.CombatEffects = StringIsNumber(row[ItemField::combateffects]) ? static_cast<int8>(EQ::Clamp(std::stoi(row[ItemField::combateffects]), -128, 127)) : 0;
 		item.DamageShield = std::stoi(row[ItemField::damageshield]);
 		item.DotShielding = std::stoi(row[ItemField::dotshielding]);
 		item.DSMitigation = std::stoul(row[ItemField::dsmitigation]);
@@ -1212,7 +1212,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 		// Click Effect
 		item.CastTime = std::stoul(row[ItemField::casttime]);
 		item.CastTime_ = std::stoi(row[ItemField::casttime_]);
-		item.Click.Effect = std::stoul(row[ItemField::clickeffect]);
+		item.Click.Effect = std::stoi(row[ItemField::clickeffect]);
 		item.Click.Type = static_cast<uint8>(std::stoul(row[ItemField::clicktype]));
 		item.Click.Level = static_cast<uint8>(std::stoul(row[ItemField::clicklevel]));
 		item.Click.Level2 = static_cast<uint8>(std::stoul(row[ItemField::clicklevel2]));
@@ -1256,7 +1256,7 @@ void SharedDatabase::LoadItems(void *data, uint32 size, int32 items, uint32 max_
 		item.EvolvingMax = static_cast<uint8>(std::stoul(row[ItemField::evomax]));
 
 		// Scripting
-		item.CharmFileID = std::stoul(row[ItemField::charmfileid]);
+		item.CharmFileID = StringIsNumber(row[ItemField::charmfileid]) ? std::stoul(row[ItemField::charmfileid]) : 0;
 		strn0cpy(item.CharmFile, row[ItemField::charmfile], sizeof(item.CharmFile));
 		strn0cpy(item.Filename, row[ItemField::filename], sizeof(item.Filename));
 		item.ScriptFileID = std::stoul(row[ItemField::scriptfileid]);

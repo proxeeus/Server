@@ -3396,8 +3396,14 @@ std::string lua_commify(std::string number) {
 	return commify(number);
 }
 
-bool lua_check_name_filter(std::string name) {
+bool lua_check_name_filter(std::string name)
+{
 	return database.CheckNameFilter(name);
+}
+
+void lua_discord_send(std::string webhook_name, std::string message)
+{
+	zone->SendDiscordMessage(webhook_name, message);
 }
 
 #define LuaCreateNPCParse(name, c_type, default_value) do { \
@@ -3873,6 +3879,7 @@ luabind::scope lua_register_general() {
 		luabind::def("get_environmental_damage_name", &lua_get_environmental_damage_name),
 		luabind::def("commify", &lua_commify),
 		luabind::def("check_name_filter", &lua_check_name_filter),
+		luabind::def("discord_send", &lua_discord_send),
 
 		/*
 			Cross Zone
@@ -4472,17 +4479,16 @@ luabind::scope lua_register_classes() {
 			luabind::value("BANKER", BANKER),
 			luabind::value("MERCHANT", MERCHANT),
 			luabind::value("DISCORD_MERCHANT", DISCORD_MERCHANT),
-			luabind::value("ADVENTURERECRUITER", ADVENTURERECRUITER),
-			luabind::value("ADVENTUREMERCHANT", ADVENTUREMERCHANT),
+			luabind::value("ADVENTURE_RECRUITER", ADVENTURE_RECRUITER),
+			luabind::value("ADVENTURE_MERCHANT", ADVENTURE_MERCHANT),
 			luabind::value("LDON_TREASURE", LDON_TREASURE),
-			luabind::value("CORPSE_CLASS", CORPSE_CLASS),
 			luabind::value("TRIBUTE_MASTER", TRIBUTE_MASTER),
 			luabind::value("GUILD_TRIBUTE_MASTER", GUILD_TRIBUTE_MASTER),
 			luabind::value("NORRATHS_KEEPERS_MERCHANT", NORRATHS_KEEPERS_MERCHANT),
 			luabind::value("DARK_REIGN_MERCHANT", DARK_REIGN_MERCHANT),
 			luabind::value("FELLOWSHIP_MASTER", FELLOWSHIP_MASTER),
 			luabind::value("ALT_CURRENCY_MERCHANT", ALT_CURRENCY_MERCHANT),
-			luabind::value("MERCERNARY_MASTER", MERCERNARY_MASTER)
+			luabind::value("MERCENARY_MASTER", MERCENARY_MASTER)
 		];
 }
 

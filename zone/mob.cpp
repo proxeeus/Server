@@ -1079,77 +1079,99 @@ uint8 Mob::GetArchetype() const {
 	}
 }
 
+void Mob::SetSpawnLastNameByClass(NewSpawn_Struct* ns)
+{
+	switch (ns->spawn.class_) {
+		case TRIBUTE_MASTER:
+			strcpy(ns->spawn.lastName, "Tribute Master");
+			break;
+		case GUILD_TRIBUTE_MASTER:
+			strcpy(ns->spawn.lastName, "Guild Tribute Master");
+			break;
+		case GUILD_BANKER:
+			strcpy(ns->spawn.lastName, "Guild Banker");
+			break;
+		case ADVENTURE_RECRUITER:
+			strcpy(ns->spawn.lastName, "Adventure Recruiter");
+			break;
+		case ADVENTURE_MERCHANT:
+			strcpy(ns->spawn.lastName, "Adventure Merchant");
+			break;
+		case BANKER:
+			strcpy(ns->spawn.lastName, "Banker");
+			break;
+		case WARRIORGM:
+			strcpy(ns->spawn.lastName, "Warrior Guildmaster");
+			break;
+		case CLERICGM:
+			strcpy(ns->spawn.lastName, "Cleric Guildmaster");
+			break;
+		case PALADINGM:
+			strcpy(ns->spawn.lastName, "Paladin Guildmaster");
+			break;
+		case RANGERGM:
+			strcpy(ns->spawn.lastName, "Ranger Guildmaster");
+			break;
+		case SHADOWKNIGHTGM:
+			strcpy(ns->spawn.lastName, "Shadow Knight Guildmaster");
+			break;
+		case DRUIDGM:
+			strcpy(ns->spawn.lastName, "Druid Guildmaster");
+			break;
+		case MONKGM:
+			strcpy(ns->spawn.lastName, "Monk Guildmaster");
+			break;
+		case BARDGM:
+			strcpy(ns->spawn.lastName, "Bard Guildmaster");
+			break;
+		case ROGUEGM:
+			strcpy(ns->spawn.lastName, "Rogue Guildmaster");
+			break;
+		case SHAMANGM:
+			strcpy(ns->spawn.lastName, "Shaman Guildmaster");
+			break;
+		case NECROMANCERGM:
+			strcpy(ns->spawn.lastName, "Necromancer Guildmaster");
+			break;
+		case WIZARDGM:
+			strcpy(ns->spawn.lastName, "Wizard Guildmaster");
+			break;
+		case MAGICIANGM:
+			strcpy(ns->spawn.lastName, "Magician Guildmaster");
+			break;
+		case ENCHANTERGM:
+			strcpy(ns->spawn.lastName, "Enchanter Guildmaster");
+			break;
+		case BEASTLORDGM:
+			strcpy(ns->spawn.lastName, "Beastlord Guildmaster");
+			break;
+		case BERSERKERGM:
+			strcpy(ns->spawn.lastName, "Berserker Guildmaster");
+			break;
+		case MERCENARY_MASTER:
+			strcpy(ns->spawn.lastName, "Mercenary Liaison");
+			break;
+		default:
+			strcpy(ns->spawn.lastName, ns->spawn.lastName);
+			break;
+	}
+}
+
 void Mob::CreateSpawnPacket(EQApplicationPacket *app, Mob *ForWho)
 {
 	app->SetOpcode(OP_NewSpawn);
-	app->size    = sizeof(NewSpawn_Struct);
+	app->size = sizeof(NewSpawn_Struct);
 	app->pBuffer = new uchar[app->size];
 	memset(app->pBuffer, 0, app->size);
-	NewSpawn_Struct *ns = (NewSpawn_Struct *) app->pBuffer;
+	auto ns = (NewSpawn_Struct *) app->pBuffer;
 	FillSpawnStruct(ns, ForWho);
 
-	if (RuleB(NPC, UseClassAsLastName) && strlen(ns->spawn.lastName) == 0) {
-		switch (ns->spawn.class_) {
-			case TRIBUTE_MASTER:
-				strcpy(ns->spawn.lastName, "Tribute Master");
-				break;
-			case ADVENTURERECRUITER:
-				strcpy(ns->spawn.lastName, "Adventure Recruiter");
-				break;
-			case BANKER:
-				strcpy(ns->spawn.lastName, "Banker");
-				break;
-			case ADVENTUREMERCHANT:
-				strcpy(ns->spawn.lastName, "Adventure Merchant");
-				break;
-			case WARRIORGM:
-				strcpy(ns->spawn.lastName, "GM Warrior");
-				break;
-			case PALADINGM:
-				strcpy(ns->spawn.lastName, "GM Paladin");
-				break;
-			case RANGERGM:
-				strcpy(ns->spawn.lastName, "GM Ranger");
-				break;
-			case SHADOWKNIGHTGM:
-				strcpy(ns->spawn.lastName, "GM Shadowknight");
-				break;
-			case DRUIDGM:
-				strcpy(ns->spawn.lastName, "GM Druid");
-				break;
-			case BARDGM:
-				strcpy(ns->spawn.lastName, "GM Bard");
-				break;
-			case ROGUEGM:
-				strcpy(ns->spawn.lastName, "GM Rogue");
-				break;
-			case SHAMANGM:
-				strcpy(ns->spawn.lastName, "GM Shaman");
-				break;
-			case NECROMANCERGM:
-				strcpy(ns->spawn.lastName, "GM Necromancer");
-				break;
-			case WIZARDGM:
-				strcpy(ns->spawn.lastName, "GM Wizard");
-				break;
-			case MAGICIANGM:
-				strcpy(ns->spawn.lastName, "GM Magician");
-				break;
-			case ENCHANTERGM:
-				strcpy(ns->spawn.lastName, "GM Enchanter");
-				break;
-			case BEASTLORDGM:
-				strcpy(ns->spawn.lastName, "GM Beastlord");
-				break;
-			case BERSERKERGM:
-				strcpy(ns->spawn.lastName, "GM Berserker");
-				break;
-			case MERCERNARY_MASTER:
-				strcpy(ns->spawn.lastName, "Mercenary Recruiter");
-				break;
-			default:
-				break;
-		}
+	if (
+		!RuleB(NPC, DisableLastNames) &&
+		RuleB(NPC, UseClassAsLastName) &&
+		!strlen(ns->spawn.lastName)
+	) {
+		SetSpawnLastNameByClass(ns);
 	}
 }
 
@@ -1163,80 +1185,20 @@ void Mob::CreateSpawnPacket(EQApplicationPacket* app, NewSpawn_Struct* ns) {
 	memcpy(app->pBuffer, ns, sizeof(NewSpawn_Struct));
 
 	// Custom packet data
-	NewSpawn_Struct* ns2 = (NewSpawn_Struct*)app->pBuffer;
+	auto ns2 = (NewSpawn_Struct*) app->pBuffer;
 	strcpy(ns2->spawn.name, ns->spawn.name);
 
 	// Set default Last Names for certain Classes if not defined
-	if (RuleB(NPC, UseClassAsLastName) && strlen(ns->spawn.lastName) == 0)
-	{
-		switch (ns->spawn.class_)
-		{
-			case TRIBUTE_MASTER:
-				strcpy(ns2->spawn.lastName, "Tribute Master");
-				break;
-			case ADVENTURERECRUITER:
-				strcpy(ns2->spawn.lastName, "Adventure Recruiter");
-				break;
-			case BANKER:
-				strcpy(ns2->spawn.lastName, "Banker");
-				break;
-			case ADVENTUREMERCHANT:
-				strcpy(ns2->spawn.lastName, "Adventure Merchant");
-				break;
-			case WARRIORGM:
-				strcpy(ns2->spawn.lastName, "GM Warrior");
-				break;
-			case PALADINGM:
-				strcpy(ns2->spawn.lastName, "GM Paladin");
-				break;
-			case RANGERGM:
-				strcpy(ns2->spawn.lastName, "GM Ranger");
-				break;
-			case SHADOWKNIGHTGM:
-				strcpy(ns2->spawn.lastName, "GM Shadowknight");
-				break;
-			case DRUIDGM:
-				strcpy(ns2->spawn.lastName, "GM Druid");
-				break;
-			case BARDGM:
-				strcpy(ns2->spawn.lastName, "GM Bard");
-				break;
-			case ROGUEGM:
-				strcpy(ns2->spawn.lastName, "GM Rogue");
-				break;
-			case SHAMANGM:
-				strcpy(ns2->spawn.lastName, "GM Shaman");
-				break;
-			case NECROMANCERGM:
-				strcpy(ns2->spawn.lastName, "GM Necromancer");
-				break;
-			case WIZARDGM:
-				strcpy(ns2->spawn.lastName, "GM Wizard");
-				break;
-			case MAGICIANGM:
-				strcpy(ns2->spawn.lastName, "GM Magician");
-				break;
-			case ENCHANTERGM:
-				strcpy(ns2->spawn.lastName, "GM Enchanter");
-				break;
-			case BEASTLORDGM:
-				strcpy(ns2->spawn.lastName, "GM Beastlord");
-				break;
-			case BERSERKERGM:
-				strcpy(ns2->spawn.lastName, "GM Berserker");
-				break;
-			case MERCERNARY_MASTER:
-				strcpy(ns2->spawn.lastName, "Mercenary liaison");
-				break;
-			default:
-				strcpy(ns2->spawn.lastName, ns->spawn.lastName);
-				break;
-		}
-	}
-	else
-	{
+	if (
+		!RuleB(NPC, DisableLastNames) &&
+		RuleB(NPC, UseClassAsLastName) &&
+		!strlen(ns->spawn.lastName)
+	) {
+		SetSpawnLastNameByClass(ns2);
+	} else {
 		strcpy(ns2->spawn.lastName, ns->spawn.lastName);
 	}
+
 	memset(&app->pBuffer[sizeof(Spawn_Struct)-7], 0xFF, 7);
 }
 
@@ -1729,101 +1691,6 @@ void Mob::ShowStats(Client* client)
 			target->GetCharmedAvoidance() != 0 ||
 			target->GetCharmedMaxDamage() != 0 ||
 			target->GetCharmedMinDamage() != 0
-		);
-
-		// Spawn Data
-		if (
-			target->GetGrid() ||
-			target->GetSpawnGroupId() ||
-			target->GetSpawnPointID()
-		) {
-			client->Message(
-				Chat::White,
-				fmt::format(
-					"Spawn | Group: {} Point: {} Grid: {}",
-					target->GetSpawnGroupId(),
-					target->GetSpawnPointID(),
-					target->GetGrid()
-				).c_str()
-			);
-		}
-
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Raid: {} Rare: {}",
-				target->IsRaidTarget() ? "Yes" : "No",
-				target->IsRareSpawn() ? "Yes" : "No",
-				target->GetSkipGlobalLoot() ? "Yes" : "No"
-			).c_str()
-		);
-
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Skip Global Loot: {} Ignore Despawn: {}",
-				target->GetSkipGlobalLoot() ? "Yes" : "No",
-				target->GetIgnoreDespawn() ? "Yes" : "No"
-			).c_str()
-		);
-
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Findable: {} Trackable: {} Underwater: {}",
-				target->IsFindable() ? "Yes" : "No",
-				target->IsTrackable() ? "Yes" : "No",
-				target->IsUnderwaterOnly() ? "Yes" : "No"
-			).c_str()
-		);
-
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Stuck Behavior: {} Fly Mode: {}",
-				target->GetStuckBehavior(),
-				static_cast<int>(target->GetFlyMode())
-			).c_str()
-		);
-
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Spawn | Aggro NPCs: {} Always Aggro: {}",
-				target->GetNPCAggro() ? "Yes" : "No",
-				target->GetAlwaysAggro() ? "Yes" : "No"
-			).c_str()
-		);
-
-		// NPC
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"NPC | ID: {} Entity ID: {} Name: {}{} Level: {}",
-				target->GetNPCTypeID(),
-				target->GetID(),
-				target_name,
-				(
-					!target_last_name.empty() ?
-					fmt::format(" ({})", target_last_name) :
-					""
-				),
-				target->GetLevel()
-			).c_str()
-		);
-
-		// Race / Class / Gender
-		client->Message(
-			Chat::White,
-			fmt::format(
-				"Race: {} ({}) Class: {} ({}) Gender: {} ({})",
-				GetRaceIDName(target->GetRace()),
-				target->GetRace(),
-				GetClassIDName(target->GetClass()),
-				target->GetClass(),
-				GetGenderName(target->GetGender()),
-				target->GetGender()
-			).c_str()
 		);
 
 		// Faction
@@ -2359,6 +2226,101 @@ void Mob::ShowStats(Client* client)
 				).c_str()
 			);
 		}
+
+		// Spawn Data
+		if (
+			target->GetGrid() ||
+			target->GetSpawnGroupId() ||
+			target->GetSpawnPointID()
+		) {
+			client->Message(
+				Chat::White,
+				fmt::format(
+					"Spawn | Group: {} Point: {} Grid: {}",
+					target->GetSpawnGroupId(),
+					target->GetSpawnPointID(),
+					target->GetGrid()
+				).c_str()
+			);
+		}
+
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Spawn | Raid: {} Rare: {}",
+				target->IsRaidTarget() ? "Yes" : "No",
+				target->IsRareSpawn() ? "Yes" : "No",
+				target->GetSkipGlobalLoot() ? "Yes" : "No"
+			).c_str()
+		);
+
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Spawn | Skip Global Loot: {} Ignore Despawn: {}",
+				target->GetSkipGlobalLoot() ? "Yes" : "No",
+				target->GetIgnoreDespawn() ? "Yes" : "No"
+			).c_str()
+		);
+
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Spawn | Findable: {} Trackable: {} Underwater: {}",
+				target->IsFindable() ? "Yes" : "No",
+				target->IsTrackable() ? "Yes" : "No",
+				target->IsUnderwaterOnly() ? "Yes" : "No"
+			).c_str()
+		);
+
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Spawn | Stuck Behavior: {} Fly Mode: {}",
+				target->GetStuckBehavior(),
+				static_cast<int>(target->GetFlyMode())
+			).c_str()
+		);
+
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Spawn | Aggro NPCs: {} Always Aggro: {}",
+				target->GetNPCAggro() ? "Yes" : "No",
+				target->GetAlwaysAggro() ? "Yes" : "No"
+			).c_str()
+		);
+
+		// Race / Class / Gender
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"Race: {} ({}) Class: {} ({}) Gender: {} ({})",
+				GetRaceIDName(target->GetRace()),
+				target->GetRace(),
+				GetClassIDName(target->GetClass()),
+				target->GetClass(),
+				GetGenderName(target->GetGender()),
+				target->GetGender()
+			).c_str()
+		);
+
+		// NPC
+		client->Message(
+			Chat::White,
+			fmt::format(
+				"NPC | ID: {} Entity ID: {} Name: {}{} Level: {}",
+				target->GetNPCTypeID(),
+				target->GetID(),
+				target_name,
+				(
+					!target_last_name.empty() ?
+					fmt::format(" ({})", target_last_name) :
+					""
+				),
+				target->GetLevel()
+			).c_str()
+		);
 	}
 }
 
@@ -2975,6 +2937,7 @@ uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 		in_race == RACE_FAYGUARD_112 ||
 		in_race == RACE_ERUDITE_GHOST_118 ||
 		in_race == RACE_IKSAR_CITIZEN_139 ||
+		in_race == RACE_SHADE_224 ||
 		in_race == RACE_TROLL_CREW_MEMBER_331 ||
 		in_race == RACE_PIRATE_DECKHAND_332 ||
 		in_race == RACE_GNOME_PIRATE_338 ||
@@ -2987,7 +2950,12 @@ uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 		in_race == RACE_WARLOCK_OF_HATE_352 ||
 		in_race == RACE_UNDEAD_VAMPIRE_359 ||
 		in_race == RACE_VAMPIRE_360 ||
+		in_race == RACE_SAND_ELF_364 ||
+		in_race == RACE_TAELOSIAN_NATIVE_385 ||
+		in_race == RACE_TAELOSIAN_EVOKER_386 ||
+		in_race == RACE_DRACHNID_461 ||
 		in_race == RACE_ZOMBIE_471 ||
+		in_race == RACE_ELDDAR_489 ||
 		in_race == RACE_VAMPIRE_497 ||
 		in_race == RACE_KERRAN_562 ||
 		in_race == RACE_BROWNIE_568 ||
@@ -3014,11 +2982,22 @@ uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 		in_race == RACE_SPECTRAL_IKSAR_147 ||
 		in_race == RACE_INVISIBLE_MAN_127 ||
 		in_race == RACE_VAMPYRE_208 ||
+		in_race == RACE_RECUSO_237 ||
 		in_race == RACE_BROKEN_SKULL_PIRATE_333 ||
+		in_race == RACE_INVISIBLE_MAN_OF_ZOMM_600 ||
+		in_race == RACE_OGRE_NPC_MALE_624 ||
+		in_race == RACE_BEEFEATER_667 ||
 		in_race == RACE_ERUDITE_678
 	) { // Male only races
 		return 0;
-	} else if (in_race == RACE_FAIRY_25 || in_race == RACE_PIXIE_56) { // Female only races
+	} else if (
+		in_race == RACE_FAIRY_25 ||
+		in_race == RACE_PIXIE_56 ||
+		in_race == RACE_BANSHEE_487 ||
+		in_race == RACE_BANSHEE_488 ||
+		in_race == RACE_AYONAE_RO_498 ||
+		in_race == RACE_SULLON_ZEK_499
+	) { // Female only races
 		return 1;
 	} else { // Neutral default for NPC Races
 		return 2;
