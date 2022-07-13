@@ -408,6 +408,11 @@ void Perl__gmsay(const char* message)
 	quest_manager.gmsay(message, Chat::LightGray, false, 0, AccountStatus::QuestTroupe);
 }
 
+void Perl__debugshout(const char* message)
+{
+	quest_manager.debugshout(message);
+}
+
 XS(XS__debugshout);
 XS(XS__debugshout) {
 	dXSARGS;
@@ -425,6 +430,11 @@ XS(XS__debugshout) {
 void Perl__gmsay(const char* message, int color_id, bool send_to_world)
 {
 	quest_manager.gmsay(message, color_id, send_to_world, 0, AccountStatus::QuestTroupe);
+}
+
+void Perl__gmsay(const char* message, int color_id)
+{
+	quest_manager.gmsay(message, color_id, false, 0, AccountStatus::QuestTroupe);
 }
 
 void Perl__gmsay(const char* message, int color_id, bool send_to_world, int to_guilddbid)

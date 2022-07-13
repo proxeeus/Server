@@ -6802,7 +6802,7 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 	if (RuleB(Bots, QuestableSpawnLimit) && !c->GetGM()) {
 		int allowed_bot_count = 0;
 		if (!database.botdb.LoadQuestableSpawnCount(c->CharacterID(), allowed_bot_count)) {
-			c->Message(Chat::Red, "%s", BotDatabase::fail::LoadQuestableSpawnCount());
+			c->Message(Chat::Red, "Failed to load questable spawn count.");
 			return;
 		}
 		if (!allowed_bot_count) {
@@ -8077,13 +8077,13 @@ void bot_subcommand_botgroup_load(Client *c, const Seperator *sep)
 
 	auto botgroup_leader = Bot::LoadBot(leader_id);
 	if (!botgroup_leader) {
-		c->Message(Chat::Red, "Could not load bot-group leader for '%s'", botgroup_name_arg.c_str());
+		c->Message(Chat::Red, "Could not load bot-group leader for '%s'", botgroup_name.c_str());
 		safe_delete(botgroup_leader);
 		return;
 	}
 
 	if (!botgroup_leader->Spawn(c)) {
-		c->Message(Chat::Red, "Could not spawn bot-group leader %s for '%s'", botgroup_leader->GetName(), botgroup_name_arg.c_str());
+		c->Message(Chat::Red, "Could not spawn bot-group leader %s for '%s'", botgroup_leader->GetName(), botgroup_name.c_str());
 		safe_delete(botgroup_leader);
 		return;
 	}
@@ -8117,7 +8117,7 @@ void bot_subcommand_botgroup_load(Client *c, const Seperator *sep)
 		Bot::AddBotToGroup(botgroup_member, group_inst);
 	}
 
-	c->Message(Chat::Yellow, "Successfully loaded bot-group %s", botgroup_name_arg.c_str());
+	c->Message(Chat::Yellow, "Successfully loaded bot-group %s", botgroup_name.c_str());
 }
 
 void bot_subcommand_botgroup_remove_member(Client *c, const Seperator *sep)
