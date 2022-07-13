@@ -2039,6 +2039,7 @@ void Client::Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app)
 	{
 		PutLootInInventory(EQ::invslot::slotCursor, *inst);
 	}
+	safe_delete(inst);
 	Save(1);
 }
 
@@ -2549,6 +2550,7 @@ void Client::Handle_OP_AltCurrencyPurchase(const EQApplicationPacket *app)
 		{
 			PutLootInInventory(EQ::invslot::slotCursor, *inst);
 		}
+		safe_delete(inst);
 
 		Save(1);
 	}
@@ -3672,12 +3674,18 @@ void Client::Handle_OP_Bind_Wound(const EQApplicationPacket *app)
 		LogError("Size mismatch for Bind wound packet");
 		DumpPacket(app);
 	}
+
+	// Not allowed to forage while mounted
+	if (RuleB(Character, NoSkillsOnHorse) && GetHorseId()) {
+		MessageString(Chat::Skills, NO_SKILL_WHILE_MOUNTED);
+		return;
+	}
+
 	BindWound_Struct* bind_in = (BindWound_Struct*)app->pBuffer;
 	Mob* bindmob = entity_list.GetMob(bind_in->to);
 	if (!bindmob) {
 		LogError("Bindwound on non-exsistant mob from [{}]", GetName());
-	}
-	else {
+	} else {
 		LogDebug("BindWound in: to:\'[{}]\' from=\'[{}]\'", bindmob->GetName(), GetName());
 		BindWound(bindmob, true);
 	}
@@ -6055,6 +6063,13 @@ void Client::Handle_OP_Forage(const EQApplicationPacket *app)
 		Message(Chat::Red, "Ability recovery time not yet met.");
 		return;
 	}
+
+	// Not allowed to forage while mounted
+	if (RuleB(Character, NoSkillsOnHorse) && GetHorseId()) {
+		MessageString(Chat::Skills, NO_SKILL_WHILE_MOUNTED);
+		return;
+	}
+
 	p_timers.Start(pTimerForaging, ForagingReuseTime - 1);
 
 	ForageItem();
@@ -11059,35 +11074,30 @@ void Client::Handle_OP_PickPocket(const EQApplicationPacket *app)
 		return;
 
 	p_timers.Start(pTimerBeggingPickPocket, 8);
-	auto outapp = new EQApplicationPacket(OP_PickPocket, sizeof(sPickPocket_Struct));
-	sPickPocket_Struct* pick_out = (sPickPocket_Struct*)outapp->pBuffer;
-	pick_out->coin = 0;
-	pick_out->from = victim->GetID();
-	pick_out->to = GetID();
-	pick_out->myskill = GetSkill(EQ::skills::SkillPickPockets);
-	pick_out->type = 0;
-	//if we do not send this packet the client will lock up and require the player to relog.
 
 	if (victim == this) {
-		Message(0, "You catch yourself red-handed.");
+		Message(Chat::White, "You catch yourself red-handed.");
 	}
 	else if (victim->GetOwnerID()) {
-		Message(0, "You cannot steal from pets!");
+		Message(Chat::White, "You cannot steal from pets!");
+	}
+	else if (victim->IsClient()) {
+		Message(Chat::White, "Stealing from clients not yet supported.");
 	}
 	else if (Distance(GetPosition(), victim->GetPosition()) > 20) {
 		Message(Chat::Red, "Attempt to pickpocket out of range detected.");
 		database.SetMQDetectionFlag(AccountName(), GetName(), "OP_PickPocket was sent from outside combat range.", zone->GetShortName());
 	}
 	else if (victim->IsNPC()) {
-		safe_delete(outapp);
-		victim->CastToNPC()->PickPocket(this);
-		return;
+		auto body = victim->GetBodyType();
+		if (body == BT_Humanoid || body == BT_Monster || body == BT_Giant ||
+			body == BT_Lycanthrope) {
+			victim->CastToNPC()->PickPocket(this);
+			return;
+		}
 	}
-	else {
-		Message(0, "Stealing from clients not yet supported.");
-	}
-	QueuePacket(outapp);
-	safe_delete(outapp);
+
+	SendPickPocketResponse(victim, 0, PickPocketFailed);
 }
 
 void Client::Handle_OP_PopupResponse(const EQApplicationPacket *app)
@@ -14165,16 +14175,14 @@ void Client::Handle_OP_TrackTarget(const EQApplicationPacket *app)
 		return;
 	}
 
-	if (app->size != sizeof(TrackTarget_Struct))
-	{
-		LogError("Invalid size for OP_TrackTarget: Expected: [{}], Got: [{}]",
-			sizeof(TrackTarget_Struct), app->size);
+	if (app->size != sizeof(TrackTarget_Struct)) {
+		LogError("Invalid size for OP_TrackTarget: Expected: [{}], Got: [{}]", sizeof(TrackTarget_Struct), app->size);
 		return;
 	}
 
-	TrackTarget_Struct *tts = (TrackTarget_Struct*)app->pBuffer;
+	auto *t = (TrackTarget_Struct*) app->pBuffer;
 
-	TrackingID = tts->EntityID;
+	SetTrackingID(t->EntityID);
 }
 
 void Client::Handle_OP_TrackUnknown(const EQApplicationPacket *app)
@@ -14452,6 +14460,7 @@ void Client::Handle_OP_Trader(const EQApplicationPacket *app)
 
 			if (!TradeItemsValid) {
 				Trader_EndTrader();
+				safe_delete(gis);
 				return;
 			}
 

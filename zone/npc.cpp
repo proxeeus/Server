@@ -236,7 +236,7 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 	if (npc_type_data->flymode >= 0) {
 		flymode = static_cast<GravityBehavior>(npc_type_data->flymode);
 	}
-	else if (IsBoat()) {
+	else if (GetIsBoat()) {
 		flymode = GravityBehavior::Floating;
 	}
 
@@ -1877,7 +1877,7 @@ void NPC::PickPocket(Client* thief)
 				continue;
 
 			auto item_test = database.GetItem(item_iter->item_id);
-			if (item_test->Magic || !item_test->NoDrop || item_test->IsClassBag() || thief->CheckLoreConflict(item_test))
+			if (item_test->Magic || !item_test->NoDrop || item_test->IsClassBag() || thief->CheckLoreConflict(item_test) || item_iter->equip_slot != EQ::invslot::SLOT_INVALID)
 				continue;
 
 			loot_selection.push_back(std::make_pair(item_test, ((item_test->Stackable) ? (1) : (item_iter->charges))));
@@ -1913,6 +1913,7 @@ void NPC::PickPocket(Client* thief)
 		}
 		RemoveItem(item_inst->GetID());
 		thief->SendPickPocketResponse(this, 0, PickPocketItem, item_inst->GetItem());
+		safe_delete(item_inst);
 
 		return;
 	}
