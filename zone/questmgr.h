@@ -357,7 +357,6 @@ public:
 	//void addItemToPlayerBotInventory(uint32 botid, uint32 itemid, uint32 slot, uint32 charges);
 #endif
 
-	inline uint16 GetMana(uint32 spell_id) { return( spells[spell_id].mana); }
 
 private:
 	std::stack<running_quest> quests_running_;

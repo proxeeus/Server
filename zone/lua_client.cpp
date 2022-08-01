@@ -1430,6 +1430,11 @@ bool Lua_Client::IsTaskActivityActive(int task, int activity) {
 	return self->IsTaskActivityActive(task, activity);
 }
 
+void Lua_Client::LockSharedTask(bool lock) {
+	Lua_Safe_Call_Void();
+	return self->LockSharedTask(lock);
+}
+
 int Lua_Client::GetCorpseCount() {
 	Lua_Safe_Call_Int();
 	return self->GetCorpseCount();
@@ -1944,6 +1949,11 @@ Lua_Expedition Lua_Client::CreateExpedition(luabind::object expedition_table) {
 		dz.SetZoneInLocation(zonein_loc);
 	}
 
+	if (luabind::type(expedition_table["switchid"]) == LUA_TNUMBER)
+	{
+		dz.SetSwitchID(luabind::object_cast<int>(expedition_table["switchid"]));
+	}
+
 	bool disable_messages = false;
 	if (luabind::type(expedition_info["disable_messages"]) == LUA_TBOOLEAN)
 	{
@@ -1961,6 +1971,11 @@ Lua_Expedition Lua_Client::CreateExpedition(std::string zone_name, uint32 versio
 Lua_Expedition Lua_Client::CreateExpedition(std::string zone_name, uint32 version, uint32 duration, std::string expedition_name, uint32 min_players, uint32 max_players, bool disable_messages) {
 	Lua_Safe_Call_Class(Lua_Expedition);
 	return self->CreateExpedition(zone_name, version, duration, expedition_name, min_players, max_players, disable_messages);
+}
+
+Lua_Expedition Lua_Client::CreateExpeditionFromTemplate(uint32_t dz_template_id) {
+	Lua_Safe_Call_Class(Lua_Expedition);
+	return self->CreateExpeditionFromTemplate(dz_template_id);
 }
 
 Lua_Expedition Lua_Client::GetExpedition() {
@@ -2133,6 +2148,11 @@ void Lua_Client::CreateTaskDynamicZone(int task_id, luabind::object dz_table) {
 	{
 		auto zonein_loc = GetDynamicZoneLocationFromTable(dz_table["zonein"]);
 		dz.SetZoneInLocation(zonein_loc);
+	}
+
+	if (luabind::type(dz_table["switchid"]) == LUA_TNUMBER)
+	{
+		dz.SetSwitchID(luabind::object_cast<int>(dz_table["switchid"]));
 	}
 
 	self->CreateTaskDynamicZone(task_id, dz);
@@ -2589,6 +2609,7 @@ luabind::scope lua_register_client() {
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(luabind::object))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32))&Lua_Client::CreateExpedition)
 	.def("CreateExpedition", (Lua_Expedition(Lua_Client::*)(std::string, uint32, uint32, std::string, uint32, uint32, bool))&Lua_Client::CreateExpedition)
+	.def("CreateExpeditionFromTemplate", &Lua_Client::CreateExpeditionFromTemplate)
 	.def("CreateTaskDynamicZone", &Lua_Client::CreateTaskDynamicZone)
 	.def("DecreaseByID", (bool(Lua_Client::*)(uint32,int))&Lua_Client::DecreaseByID)
 	.def("DeleteItemInInventory", (void(Lua_Client::*)(int,int))&Lua_Client::DeleteItemInInventory)
@@ -2772,6 +2793,7 @@ luabind::scope lua_register_client() {
 	.def("LeaveGroup", (void(Lua_Client::*)(void))&Lua_Client::LeaveGroup)
 	.def("LoadPEQZoneFlags", (void(Lua_Client::*)(void))&Lua_Client::LoadPEQZoneFlags)
 	.def("LoadZoneFlags", (void(Lua_Client::*)(void))&Lua_Client::LoadZoneFlags)
+	.def("LockSharedTask", &Lua_Client::LockSharedTask)
 	.def("MarkSingleCompassLoc", (void(Lua_Client::*)(float,float,float))&Lua_Client::MarkSingleCompassLoc)
 	.def("MarkSingleCompassLoc", (void(Lua_Client::*)(float,float,float,int))&Lua_Client::MarkSingleCompassLoc)
 	.def("MaxSkill", (int(Lua_Client::*)(int))&Lua_Client::MaxSkill)

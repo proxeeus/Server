@@ -220,6 +220,7 @@ Client::Client(EQStreamInterface* ieqs)
 	LFGComments[0] = '\0';
 	LFP = false;
 	gmspeed = 0;
+	gminvul = false;
 	playeraction = 0;
 	SetTarget(0);
 	auto_attack = false;
@@ -349,7 +350,8 @@ Client::Client(EQStreamInterface* ieqs)
 		m_pp.InnateSkills[i] = InnateDisabled;
 
 	temp_pvp = false;
-	is_client_moving = false;
+
+	moving = false;
 
 	environment_damage_modifier = 0;
 	invulnerable_environment_damage = false;
@@ -3390,27 +3392,26 @@ void Client::SetTint(int16 in_slot, EQ::textures::Tint_Struct& color) {
 
 }
 
-void Client::SetHideMe(bool flag)
+void Client::SetHideMe(bool gm_hide_me)
 {
 	EQApplicationPacket app;
 
-	gm_hide_me = flag;
-
-	if(gm_hide_me)
-	{
-		database.SetHideMe(AccountID(),true);
+	if (gm_hide_me) {
+		database.SetHideMe(AccountID(), true);
 		CreateDespawnPacket(&app, false);
 		entity_list.RemoveFromTargets(this);
 		trackable = false;
+		tellsoff  = true;
 	}
-	else
-	{
-		database.SetHideMe(AccountID(),false);
+	else {
+		database.SetHideMe(AccountID(), false);
 		CreateSpawnPacket(&app);
 		trackable = true;
+		tellsoff  = false;
 	}
 
-	entity_list.QueueClientsStatus(this, &app, true, 0, Admin()-1);
+	entity_list.QueueClientsStatus(this, &app, true, 0, Admin() - 1);
+	UpdateWho();
 }
 
 void Client::SetLanguageSkill(int langid, int value)
@@ -7104,6 +7105,7 @@ void Client::SendStatsWindow(Client* client, bool use_window)
 	client->Message(Chat::White, " compute_tohit: %i TotalToHit: %i", compute_tohit(skill), GetTotalToHit(skill, 0));
 	client->Message(Chat::White, " compute_defense: %i TotalDefense: %i", compute_defense(), GetTotalDefense());
 	client->Message(Chat::White, " offense: %i mitigation ac: %i", offense(skill), GetMitigationAC());
+	client->Message(Chat::White, " AFK: %i LFG: %i Anon: %i PVP: %i GM: %i Flymode: %i GMSpeed: %i Hideme: %i GMInvul: %d LD: %i ClientVersion: %i TellsOff: %i", AFK, LFG, GetAnon(), GetPVP(), GetGM(), flymode, GetGMSpeed(), GetHideMe(), GetGMInvul(), IsLD(), ClientVersionBit(), tellsoff);
 	if(CalcMaxMana() > 0)
 		client->Message(Chat::White, " Mana: %i/%i  Mana Regen: %i/%i", GetMana(), GetMaxMana(), CalcManaRegen(), CalcManaRegenCap());
 	client->Message(Chat::White, " End.: %i/%i  End. Regen: %i/%i",GetEndurance(), GetMaxEndurance(), CalcEnduranceRegen(), CalcEnduranceRegenCap());
@@ -9853,6 +9855,19 @@ Expedition* Client::CreateExpedition(
 	return Expedition::TryCreate(this, dz, disable_messages);
 }
 
+Expedition* Client::CreateExpeditionFromTemplate(uint32_t dz_template_id)
+{
+	Expedition* expedition = nullptr;
+	auto it = zone->dz_template_cache.find(dz_template_id);
+	if (it != zone->dz_template_cache.end())
+	{
+		DynamicZone dz(DynamicZoneType::Expedition);
+		dz.LoadTemplate(it->second);
+		expedition = Expedition::TryCreate(this, dz, false);
+	}
+	return expedition;
+}
+
 void Client::CreateTaskDynamicZone(int task_id, DynamicZone& dz_request)
 {
 	if (task_state)
@@ -10114,12 +10129,23 @@ void Client::SendDzCompassUpdate()
 	// client may be associated with multiple dynamic zone compasses in this zone
 	std::vector<DynamicZoneCompassEntry_Struct> compass_entries;
 
+	// need to sort by local doorid in case multiple have same dz switch id (live only sends first)
+	// todo: just store zone's door list ordered and ditch this
+	std::vector<Doors*> switches;
+	switches.reserve(entity_list.GetDoorsList().size());
+	for (const auto& door_pair : entity_list.GetDoorsList())
+	{
+		switches.push_back(door_pair.second);
+	}
+	std::sort(switches.begin(), switches.end(),
+		[](Doors* lhs, Doors* rhs) { return lhs->GetDoorID() < rhs->GetDoorID(); });
+
 	for (const auto& client_dz : GetDynamicZones())
 	{
 		auto compass = client_dz->GetCompassLocation();
 		if (zone && zone->IsZone(compass.zone_id, 0))
 		{
-			DynamicZoneCompassEntry_Struct entry;
+			DynamicZoneCompassEntry_Struct entry{};
 			entry.dz_zone_id = client_dz->GetZoneID();
 			entry.dz_instance_id = client_dz->GetInstanceID();
 			entry.dz_type = static_cast<uint32_t>(client_dz->GetType());
@@ -10129,12 +10155,36 @@ void Client::SendDzCompassUpdate()
 
 			compass_entries.emplace_back(entry);
 		}
+
+		// if client has a dz with a switch id add compass to any switch locs that share it
+		if (client_dz->GetSwitchID() != 0)
+		{
+			// live only sends one if multiple in zone have the same switch id
+			auto it = std::find_if(switches.begin(), switches.end(),
+				[&](const auto& eqswitch) {
+					return eqswitch->GetDzSwitchID() == client_dz->GetSwitchID();
+				});
+
+			if (it != switches.end())
+			{
+				DynamicZoneCompassEntry_Struct entry{};
+				entry.dz_zone_id = client_dz->GetZoneID();
+				entry.dz_instance_id = client_dz->GetInstanceID();
+				entry.dz_type = static_cast<uint32_t>(client_dz->GetType());
+				entry.dz_switch_id = client_dz->GetSwitchID();
+				entry.x = (*it)->GetX();
+				entry.y = (*it)->GetY();
+				entry.z = (*it)->GetZ();
+
+				compass_entries.emplace_back(entry);
+			}
+		}
 	}
 
 	// compass set via MarkSingleCompassLocation()
 	if (m_has_quest_compass)
 	{
-		DynamicZoneCompassEntry_Struct entry;
+		DynamicZoneCompassEntry_Struct entry{};
 		entry.dz_zone_id = 0;
 		entry.dz_instance_id = 0;
 		entry.dz_type = 0;
@@ -10262,6 +10312,27 @@ void Client::MovePCDynamicZone(uint32 zone_id, int zone_version, bool msg_if_inv
 		// client has more than one dz for this zone, send out the switchlist window
 		QueuePacket(CreateDzSwitchListPacket(client_dzs).get());
 	}
+}
+
+bool Client::TryMovePCDynamicZoneSwitch(int dz_switch_id)
+{
+	auto client_dzs = GetDynamicZones();
+
+	std::vector<DynamicZone*> switch_dzs;
+	auto it = std::copy_if(client_dzs.begin(), client_dzs.end(), std::back_inserter(switch_dzs),
+		[&](const DynamicZone* dz) { return dz->GetSwitchID() == dz_switch_id; });
+
+	if (switch_dzs.size() == 1)
+	{
+		LogDynamicZonesDetail("Moving client [{}] to dz with switch id [{}]", GetName(), dz_switch_id);
+		switch_dzs.front()->MovePCInto(this, true);
+	}
+	else if (switch_dzs.size() > 1)
+	{
+		QueuePacket(CreateDzSwitchListPacket(switch_dzs).get());
+	}
+
+	return !switch_dzs.empty();
 }
 
 std::unique_ptr<EQApplicationPacket> Client::CreateDzSwitchListPacket(
@@ -11286,6 +11357,9 @@ void Client::SendReloadCommandMessages() {
 			doors_link
 		).c_str()
 	);
+
+	auto dztemplates_link = Saylink::Create("#reload dztemplates", false, "#reload dztemplates");
+	Message(Chat::White, fmt::format("Usage: {} - Reloads Dynamic Zone Templates globally", dztemplates_link).c_str());
 
 	auto ground_spawns_link = Saylink::Create(
 		"#reload ground_spawns",

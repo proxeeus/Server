@@ -44,6 +44,7 @@ RULE_INT(Character, DeathExpLossLevel, 10, "Any level equal to or greater than t
 RULE_INT(Character, DeathExpLossMaxLevel, 255, "Every higher level will no longer lose experience at death")
 RULE_INT(Character, DeathItemLossLevel, 10, "From this level on, items are left in the corpse when LeaveCorpses is activated")
 RULE_INT(Character, DeathExpLossMultiplier, 3, "Adjust how much experience is lost. Default 3.5% (0=0.5%, 1=1.5%, 2=2.5%, 3=3.5%, 4=4.5%, 5=5.5%, 6=6.5%, 7=7.5%, 8=8.5%, 9=9.5%, 10=11%)")
+RULE_BOOL(Character, DeathKeepLevel, false, "Players can not drop below 0% experience from death.")
 RULE_BOOL(Character, UseDeathExpLossMult, false, "Setting to control whether DeathExpLossMultiplier or the code default is used: (Level x Level / 18.0) x 12000")
 RULE_BOOL(Character, UseOldRaceRezEffects, false, "Older clients had ID 757 for races with high starting STR, but it doesn't seem used anymore")
 RULE_INT(Character, CorpseDecayTimeMS, 10800000, "Time after which the corpse decays (milliseconds)")
@@ -301,6 +302,7 @@ RULE_INT(Zone, GlobalLootMultiplier, 1, "Sets Global Loot drop multiplier for da
 RULE_BOOL(Zone, KillProcessOnDynamicShutdown, true, "When process has booted a zone and has hit its zone shut down timer, it will hard kill the process to free memory back to the OS")
 RULE_INT(Zone, SecondsBeforeIdle, 60, "Seconds before IDLE_WHEN_EMPTY define kicks in")
 RULE_INT(Zone, SpawnEventMin, 3, "When strict is set in spawn_events, specifies the max EQ minutes into the trigger hour a spawn_event will fire. Going below 3 may cause the spawn_event to not fire.")
+RULE_INT(Zone, ForageChance, 25, "Chance of foraging from zone table vs global table")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Map)
@@ -493,6 +495,8 @@ RULE_INT(Combat, FrontalStunImmunityClasses, 0, "Bitmask for Classes than have f
 RULE_BOOL(Combat, NPCsUseFrontalStunImmunityClasses, false, "Enable or disable NPCs using frontal stun immunity Classes from Combat:FrontalStunImmunityClasses, false by default.")
 RULE_INT(Combat, FrontalStunImmunityRaces, 512, "Bitmask for Races than have frontal stun immunity, Ogre (512) only by default.")
 RULE_BOOL(Combat, NPCsUseFrontalStunImmunityRaces, true, "Enable or disable NPCs using frontal stun immunity Races from Combat:FrontalStunImmunityRaces, true by default.")
+RULE_BOOL(Combat, AssassinateOnlyHumanoids, true, "Enable or disable Assassinate only being allowed on Humanoids, true by default.")
+RULE_BOOL(Combat, HeadshotOnlyHumanoids, true, "Enable or disable Headshot only being allowed on Humanoids, true by default.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -557,6 +561,8 @@ RULE_BOOL(TaskSystem, RecordCompletedOptionalActivities, false, "Record complete
 RULE_BOOL(TaskSystem, KeepOneRecordPerCompletedTask, true, "Keep only one record per completed task")
 RULE_BOOL(TaskSystem, EnableTaskProximity, true, "Enable task proximity system")
 RULE_INT(TaskSystem, RequestCooldownTimerSeconds, 15, "Seconds between allowing characters to request tasks (live-like default: 15 seconds)")
+RULE_INT(TaskSystem, SharedTasksWorldProcessRate, 6000, "Timer interval (milliseconds) that shared tasks are processed in world")
+RULE_INT(TaskSystem, SharedTasksTerminateTimerMS, 120000, "Delay (milliseconds) until a shared task is terminated if requirements are no longer met after member removal (default: 2 minutes)")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Range)

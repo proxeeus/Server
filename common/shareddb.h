@@ -79,6 +79,8 @@ public:
 	bool UpdateInjectedCommandSettings(const std::vector<std::pair<std::string, uint8>> &injected);
 	bool UpdateOrphanedCommandSettings(const std::vector<std::string> &orphaned);
 	uint32 GetTotalTimeEntitledOnAccount(uint32 AccountID);
+	bool SetGMInvul(uint32 account_id, bool gminvul);
+	bool SetGMFlymode(uint32 account_id, uint8 flymode);
 	void SetMailKey(int CharID, int IPAddress, int MailKey);
 	std::string GetMailKey(int CharID, bool key_only = false);
 	bool SaveCursor(
@@ -217,6 +219,10 @@ protected:
 	std::unique_ptr<EQ::MemoryMappedFile>                             base_data_mmf;
 	std::unique_ptr<EQ::MemoryMappedFile>                             spells_mmf;
 
+public:
+	void SetSharedItemsCount(uint32 shared_items_count);
+	void SetSharedSpellsCount(uint32 shared_spells_count);
+protected:
 	uint32 m_shared_items_count = 0;
 	uint32 m_shared_spells_count = 0;
 };

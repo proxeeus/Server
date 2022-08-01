@@ -39,6 +39,7 @@
 #include "eqemu_config.h"
 #include "data_verification.h"
 #include "repositories/criteria/content_filter_criteria.h"
+#include "repositories/account_repository.h"
 
 namespace ItemField
 {
@@ -65,40 +66,56 @@ SharedDatabase::~SharedDatabase() = default;
 
 bool SharedDatabase::SetHideMe(uint32 account_id, uint8 hideme)
 {
-	const std::string query = StringFormat("UPDATE account SET hideme = %i WHERE id = %i", hideme, account_id);
-	const auto results = QueryDatabase(query);
-	if (!results.Success()) {
-		return false;
+	auto a = AccountRepository::FindOne(*this, account_id);
+	if (a.id > 0) {
+		a.hideme = hideme ? 1 : 0;
+		AccountRepository::UpdateOne(*this, a);
 	}
 
-	return true;
+	return a.id > 0;
 }
 
 uint8 SharedDatabase::GetGMSpeed(uint32 account_id)
 {
-	const std::string query = StringFormat("SELECT gmspeed FROM account WHERE id = '%i'", account_id);
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
-		return 0;
+	auto a = AccountRepository::FindOne(*this, account_id);
+	if (a.id > 0) {
+		return a.gmspeed;
 	}
 
-    if (results.RowCount() != 1)
-        return 0;
-
-    auto& row = results.begin();
-
-	return atoi(row[0]);
+	return 0;
 }
 
 bool SharedDatabase::SetGMSpeed(uint32 account_id, uint8 gmspeed)
 {
-	const std::string query = StringFormat("UPDATE account SET gmspeed = %i WHERE id = %i", gmspeed, account_id);
-	const auto results = QueryDatabase(query);
-	if (!results.Success()) {
-		return false;
+	auto a = AccountRepository::FindOne(*this, account_id);
+	if (a.id > 0) {
+		a.gmspeed = gmspeed ? 1 : 0;
+		AccountRepository::UpdateOne(*this, a);
 	}
 
-	return true;
+	return a.id > 0;
+}
+
+bool SharedDatabase::SetGMInvul(uint32 account_id, bool gminvul)
+{
+	auto a = AccountRepository::FindOne(*this, account_id);
+	if (a.id > 0) {
+		a.invulnerable = gminvul ? 1 : 0;
+		AccountRepository::UpdateOne(*this, a);
+	}
+
+	return a.id > 0;
+}
+
+bool SharedDatabase::SetGMFlymode(uint32 account_id, uint8 flymode)
+{
+	auto a = AccountRepository::FindOne(*this, account_id);
+	if (a.id > 0) {
+		a.flymode = flymode;
+		AccountRepository::UpdateOne(*this, a);
+	}
+
+	return a.id > 0;
 }
 
 uint32 SharedDatabase::GetTotalTimeEntitledOnAccount(uint32 AccountID) {
@@ -931,8 +948,6 @@ bool SharedDatabase::LoadItems(const std::string &prefix) {
 		LogError("Error Loading Items: {}", ex.what());
 		return false;
 	}
-
-	m_shared_items_count = GetItemsCount();
 
 	return true;
 }
@@ -1784,8 +1799,6 @@ bool SharedDatabase::LoadSpells(const std::string &prefix, int32 *records, const
 		LogError("Error Loading Spells: {}", ex.what());
 		return false;
 	}
-	
-	m_shared_spells_count = GetSpellsCount();
 
 	return true;
 }
@@ -2403,4 +2416,14 @@ uint32 SharedDatabase::GetItemsCount()
 	}
 
 	return 0;
+}
+
+void SharedDatabase::SetSharedItemsCount(uint32 shared_items_count)
+{
+	SharedDatabase::m_shared_items_count = shared_items_count;
+}
+
+void SharedDatabase::SetSharedSpellsCount(uint32 shared_spells_count)
+{
+	SharedDatabase::m_shared_spells_count = shared_spells_count;
 }

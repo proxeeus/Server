@@ -1408,6 +1408,11 @@ bool Perl_Client_IsTaskActivityActive(Client* self, int task_id, int activity_id
 	return self->IsTaskActivityActive(task_id, activity_id);
 }
 
+void Perl_Client_LockSharedTask(Client* self, bool lock)
+{
+	return self->LockSharedTask(lock);
+}
+
 uint32_t Perl_Client_GetCorpseCount(Client* self) // @categories Account and Character, Corpse
 {
 	return self->GetCorpseCount();
@@ -1776,6 +1781,11 @@ Expedition* Perl_Client_CreateExpedition(Client* self, perl::reference table_ref
 		dz.SetZoneInLocation(zonein);
 	}
 
+	if (table.exists("switchid"))
+	{
+		dz.SetSwitchID(table["switchid"].as<int>());
+	}
+
 	if (expedition.exists("disable_messages"))
 	{
 		return self->CreateExpedition(dz, expedition["disable_messages"].as<bool>());
@@ -1792,6 +1802,11 @@ Expedition* Perl_Client_CreateExpedition(Client* self, std::string zone_name, ui
 Expedition* Perl_Client_CreateExpedition(Client* self, std::string zone_name, uint32 version, uint32 duration, std::string expedition_name, uint32 min_players, uint32 max_players, bool disable_messages)
 {
 	return self->CreateExpedition(zone_name, version, duration, expedition_name, min_players, max_players, disable_messages);
+}
+
+Expedition* Perl_Client_CreateExpeditionFromTemplate(Client* self, uint32_t dz_template_id)
+{
+	return self->CreateExpeditionFromTemplate(dz_template_id);
 }
 
 void Perl_Client_CreateTaskDynamicZone(Client* self, int task_id, perl::reference table_ref)
@@ -1822,6 +1837,11 @@ void Perl_Client_CreateTaskDynamicZone(Client* self, int task_id, perl::referenc
 	{
 		auto zonein = GetDynamicZoneLocationFromHash(table["zonein"]);
 		dz.SetZoneInLocation(zonein);
+	}
+
+	if (table.exists("switchid"))
+	{
+		dz.SetSwitchID(table["switchid"].as<int>());
 	}
 
 	self->CreateTaskDynamicZone(task_id, dz);
@@ -2437,6 +2457,7 @@ void perl_register_client()
 	package.add("CreateExpedition", (Expedition*(*)(Client*, perl::reference))&Perl_Client_CreateExpedition);
 	package.add("CreateExpedition", (Expedition*(*)(Client*, std::string, uint32, uint32, std::string, uint32, uint32))&Perl_Client_CreateExpedition);
 	package.add("CreateExpedition", (Expedition*(*)(Client*, std::string, uint32, uint32, std::string, uint32, uint32, bool))&Perl_Client_CreateExpedition);
+	package.add("CreateExpeditionFromTemplate", &Perl_Client_CreateExpeditionFromTemplate);
 	package.add("CreateTaskDynamicZone", &Perl_Client_CreateTaskDynamicZone);
 	package.add("DecreaseByID", &Perl_Client_DecreaseByID);
 	package.add("DeleteItemInInventory", (void(*)(Client*, int16))&Perl_Client_DeleteItemInInventory);
@@ -2621,6 +2642,7 @@ void perl_register_client()
 	package.add("LeaveGroup", &Perl_Client_LeaveGroup);
 	package.add("LoadPEQZoneFlags", &Perl_Client_LoadPEQZoneFlags);
 	package.add("LoadZoneFlags", &Perl_Client_LoadZoneFlags);
+	package.add("LockSharedTask", &Perl_Client_LockSharedTask);
 	package.add("MarkCompassLoc", &Perl_Client_MarkCompassLoc);
 	package.add("MaxSkill", (int(*)(Client*, uint16))&Perl_Client_MaxSkill);
 	package.add("MaxSkill", (int(*)(Client*, uint16, uint16))&Perl_Client_MaxSkill);

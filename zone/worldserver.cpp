@@ -1929,6 +1929,15 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		entity_list.RespawnAllDoors();
 		break;
 	}
+	case ServerOP_ReloadDzTemplates:
+	{
+		if (zone)
+		{
+			zone->SendReloadMessage("Dynamic Zone Templates");
+			zone->LoadDynamicZoneTemplates();
+		}
+		break;
+	}
 	case ServerOP_ReloadGroundSpawns:
 	{
 		zone->SendReloadMessage("Ground Spawns");
@@ -3227,16 +3236,18 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	case ServerOP_DzSetCompass:
 	case ServerOP_DzSetSafeReturn:
 	case ServerOP_DzSetZoneIn:
+	case ServerOP_DzSetSwitchID:
 	case ServerOP_DzUpdateMemberStatus:
 	case ServerOP_DzLeaderChanged:
 	case ServerOP_DzExpireWarning:
+	case ServerOP_DzMovePC:
 	{
 		DynamicZone::HandleWorldMessage(pack);
 		break;
 	}
 	case ServerOP_SharedTaskAcceptNewTask:
 	case ServerOP_SharedTaskUpdate:
-	case ServerOP_SharedTaskAttemptRemove:
+	case ServerOP_SharedTaskQuit:
 	case ServerOP_SharedTaskMemberlist:
 	case ServerOP_SharedTaskMemberChange:
 	case ServerOP_SharedTaskInvitePlayer:
