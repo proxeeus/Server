@@ -526,6 +526,7 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 				}
 			} else {
 				if (
+					scm->chan_num == ChatChannel_Guild ||
 					scm->chan_num == ChatChannel_Auction ||
 					scm->chan_num == ChatChannel_OOC ||
 					scm->chan_num == ChatChannel_Broadcast ||
@@ -1307,6 +1308,7 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 		case ServerOP_ReloadAAData:
 		case ServerOP_ReloadAlternateCurrencies:
 		case ServerOP_ReloadBlockedSpells:
+		case ServerOP_ReloadCommands:
 		case ServerOP_ReloadDoors:
 		case ServerOP_ReloadGroundSpawns:
 		case ServerOP_ReloadLevelEXPMods:

@@ -891,7 +891,7 @@ public:
 	int16 GetMeleeDmgPositionMod(Mob* defender);
 	int16 GetSkillReuseTime(uint16 skill);
 	int GetCriticalChanceBonus(uint16 skill);
-	int16 GetSkillDmgAmt(uint16 skill);
+	int GetSkillDmgAmt(uint16 skill);
 	int16 GetPositionalDmgAmt(Mob* defender);
 	inline bool CanBlockSpell() const { return(spellbonuses.FocusEffects[focusBlockNextSpell]); }
 	bool DoHPToManaCovert(int32 mana_cost = 0);
@@ -1259,8 +1259,8 @@ public:
 	void TarGlobal(const char *varname, const char *value, const char *duration, int npcid, int charid, int zoneid);
 	void DelGlobal(const char *varname);
 
-	inline void SetEmoteID(uint16 emote) { emoteid = emote; }
-	inline uint16 GetEmoteID() { return emoteid; }
+	inline void SetEmoteID(uint32 emote) { emoteid = emote; }
+	inline uint32 GetEmoteID() { return emoteid; }
 
 	bool HasSpellEffect(int effect_id);
 	int mod_effect_value(int effect_value, uint16 spell_id, int effect_type, Mob *caster, uint16 caster_id);
@@ -1611,7 +1611,7 @@ protected:
 	bool delaytimer;
 	uint16 casting_spell_targetid;
 	EQ::spells::CastingSlot casting_spell_slot;
-	uint16 casting_spell_mana;
+	int32 casting_spell_mana;
 	uint32 casting_spell_inventory_slot;
 	uint32 casting_spell_timer;
 	uint32 casting_spell_timer_duration;
@@ -1783,7 +1783,7 @@ protected:
 	bool m_targetable;
 	int QGVarDuration(const char *fmt);
 	void InsertQuestGlobal(int charid, int npcid, int zoneid, const char *name, const char *value, int expdate);
-	uint16 emoteid;
+	uint32 emoteid;
 
 	SpecialAbility SpecialAbilities[MAX_SPECIAL_ATTACK];
 	bool bEnraged;

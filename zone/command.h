@@ -27,6 +27,7 @@ int command_add(std::string command_name, std::string description, uint8 admin, 
 int command_notavail(Client *c, std::string message);
 int command_realdispatch(Client *c, std::string message);
 void command_logcommand(Client *c, std::string message);
+uint8 GetCommandStatus(Client *c, std::string command_name);
 
 // Commands
 void command_acceptrules(Client *c, const Seperator *sep);
@@ -137,6 +138,7 @@ void command_lastname(Client *c, const Seperator *sep);
 void command_level(Client *c, const Seperator *sep);
 void command_list(Client *c, const Seperator *sep);
 void command_listpetition(Client *c, const Seperator *sep);
+void command_lootsim(Client *c, const Seperator *sep);
 void command_load_shared_memory(Client *c, const Seperator *sep);
 void command_loc(Client *c, const Seperator *sep);
 void command_logs(Client *c, const Seperator *sep);

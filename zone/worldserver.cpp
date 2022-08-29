@@ -40,6 +40,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/profanity_manager.h"
 
 #include "client.h"
+#include "command.h"
 #include "corpse.h"
 #include "entity.h"
 #include "expedition.h"
@@ -1915,6 +1916,12 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		zone->LoadZoneBlockedSpells();
 		break;
 	}
+	case ServerOP_ReloadCommands:
+	{
+		zone->SendReloadMessage("Commands");
+		command_init();
+		break;
+	}
 	case ServerOP_ReloadContentFlags:
 	{
 		zone->SendReloadMessage("Content Flags");
@@ -3147,16 +3154,8 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		if (request_zone_short_name == local_zone_short_name || can_reload_global_script) {
 			zone->SetQuestHotReloadQueued(true);
 		} else if (request_zone_short_name == "all") {
-			std::string reload_quest_saylink = Saylink::Create(
-				"#reload quest",
-				false,
-				"Locally"
-			);
-			std::string reload_world_saylink = Saylink::Create(
-				"#reload world",
-				false,
-				"Globally"
-			);
+			std::string reload_quest_saylink = Saylink::Silent("#reload quest", "Locally");
+			std::string reload_world_saylink = Saylink::Silent("#reload world", "Globally");
 			worldserver.SendEmoteMessage(
 				0,
 				0,

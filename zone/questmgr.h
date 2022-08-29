@@ -255,7 +255,7 @@ public:
 	void UpdateSpawnTimer(uint32 id, uint32 newTime);
 	void MerchantSetItem(uint32 NPCid, uint32 itemid, uint32 quantity = 0);
 	uint32 MerchantCountItem(uint32 NPCid, uint32 itemid);
-	uint16 CreateInstance(const char *zone, int16 version, uint32 duration);
+	uint16 CreateInstance(const char *zone_short_name, int16 instance_version, uint32 duration);
 	void UpdateInstanceTimer(uint16 instance_id, uint32 new_duration);
 	void UpdateZoneHeader(std::string type, std::string value);
 	uint32 GetInstanceTimer();
@@ -326,10 +326,10 @@ public:
 	void ReloadZoneStaticData();
 	std::string secondstotime(int duration);
 	std::string gethexcolorcode(std::string color_name);
-	double GetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id) const;
-	double GetEXPModifierByCharID(uint32 character_id, uint32 zone_id) const;
-	void SetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, double aa_modifier);
-	void SetEXPModifierByCharID(uint32 character_id, uint32 zone_id, double exp_modifier);
+	double GetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, int16 instance_version = -1) const;
+	double GetEXPModifierByCharID(uint32 character_id, uint32 zone_id, int16 instance_version = -1) const;
+	void SetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, double aa_modifier, int16 instance_version = -1);
+	void SetEXPModifierByCharID(uint32 character_id, uint32 zone_id, double exp_modifier, int16 instance_version = -1);
 	std::string getgendername(uint32 gender_id);
 	std::string getdeityname(uint32 deity_id);
 	std::string getinventoryslotname(int16 slot_id);
@@ -338,6 +338,9 @@ public:
 	const SPDat_Spell_Struct *getspell(uint32 spell_id);
 	std::string getenvironmentaldamagename(uint8 damage_type);
 	void TrackNPC(uint32 entity_id);
+	int GetRecipeMadeCount(uint32 recipe_id);
+	std::string GetRecipeName(uint32 recipe_id);
+	bool HasRecipeLearned(uint32 recipe_id);
 
 	Client *GetInitiator() const;
 	NPC *GetNPC() const;

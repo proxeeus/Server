@@ -39,6 +39,8 @@
 #include "dialogue_window.h"
 #include "string_ids.h"
 
+#include "../common/repositories/tradeskill_recipe_repository.h"
+
 #include <iostream>
 #include <limits.h>
 #include <list>
@@ -2913,30 +2915,33 @@ std::string QuestManager::getcleannpcnamebyid(uint32 npc_id) {
 	return res;
 }
 
-uint16 QuestManager::CreateInstance(const char *zone, int16 version, uint32 duration)
+uint16 QuestManager::CreateInstance(const char *zone_short_name, int16 instance_version, uint32 duration)
 {
 	QuestManagerCurrentQuestVars();
-	if(initiator)
-	{
-		uint32 zone_id = ZoneID(zone);
-		if(zone_id == 0)
-			return 0;
 
-		uint16 id = 0;
-		if(!database.GetUnusedInstanceID(id))
-		{
-			initiator->Message(Chat::Red, "Server was unable to find a free instance id.");
-			return 0;
-		}
-
-		if(!database.CreateInstance(id, zone_id, version, duration))
-		{
-			initiator->Message(Chat::Red, "Server was unable to create a new instance.");
-			return 0;
-		}
-		return id;
+	uint32 zone_id = ZoneID(zone_short_name);
+	if (!zone_id) {
+		return 0;
 	}
-	return 0;
+
+	uint16 instance_id = 0;
+	if (!database.GetUnusedInstanceID(instance_id)) {
+		if (initiator) {
+			initiator->Message(Chat::Red, "Server was unable to find a free instance id.");
+		}
+
+		return 0;
+	}
+
+	if (!database.CreateInstance(instance_id, zone_id, instance_version, duration)) {
+		if (initiator) {
+			initiator->Message(Chat::Red, "Server was unable to create a new instance.");
+		}
+
+		return 0;
+	}
+
+	return instance_id;
 }
 
 void QuestManager::DestroyInstance(uint16 instance_id)
@@ -3298,13 +3303,6 @@ void QuestManager::voicetell(const char *str, int macronum, int racenum, int gen
 	}
 }
 
-void QuestManager::LearnRecipe(uint32 recipe_id) {
-	QuestManagerCurrentQuestVars();
-	if(!initiator)
-		return;
-	initiator->LearnRecipe(recipe_id);
-}
-
 void QuestManager::SendMail(const char *to, const char *from, const char *subject, const char *message) {
 	if(to == nullptr || from == nullptr || subject == nullptr || message == nullptr) {
 		return;
@@ -3536,20 +3534,20 @@ std::string QuestManager::gethexcolorcode(std::string color_name) {
 	return std::string();
 }
 
-double QuestManager::GetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id) const {
-	return database.GetAAEXPModifier(character_id, zone_id);
+double QuestManager::GetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, int16 instance_version) const {
+	return database.GetAAEXPModifier(character_id, zone_id, instance_version);
 }
 
-double QuestManager::GetEXPModifierByCharID(uint32 character_id, uint32 zone_id) const {
-	return database.GetEXPModifier(character_id, zone_id);
+double QuestManager::GetEXPModifierByCharID(uint32 character_id, uint32 zone_id, int16 instance_version) const {
+	return database.GetEXPModifier(character_id, zone_id, instance_version);
 }
 
-void QuestManager::SetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, double aa_modifier) {
-	database.SetAAEXPModifier(character_id, zone_id, aa_modifier);
+void QuestManager::SetAAEXPModifierByCharID(uint32 character_id, uint32 zone_id, double aa_modifier, int16 instance_version) {
+	database.SetAAEXPModifier(character_id, zone_id, aa_modifier, instance_version);
 }
 
-void QuestManager::SetEXPModifierByCharID(uint32 character_id, uint32 zone_id, double exp_modifier) {
-	database.SetEXPModifier(character_id, zone_id, exp_modifier);
+void QuestManager::SetEXPModifierByCharID(uint32 character_id, uint32 zone_id, double exp_modifier, int16 instance_version) {
+	database.SetEXPModifier(character_id, zone_id, exp_modifier, instance_version);
 }
 
 std::string QuestManager::getgendername(uint32 gender_id) {
@@ -3817,4 +3815,44 @@ void QuestManager::TrackNPC(uint32 entity_id) {
 	}
 
 	initiator->SetTrackingID(entity_id);
+}
+
+int QuestManager::GetRecipeMadeCount(uint32 recipe_id) {
+	QuestManagerCurrentQuestVars();
+	if (!initiator) {
+		return 0;
+	}
+
+	return initiator->GetRecipeMadeCount(recipe_id);
+}
+
+std::string QuestManager::GetRecipeName(uint32 recipe_id) {
+	auto r = TradeskillRecipeRepository::GetWhere(
+		database,
+		fmt::format("id = {}", recipe_id)
+	);
+
+	if (!r.empty() && r[0].id) {
+		return r[0].name;
+	}
+
+	return std::string();
+}
+
+bool QuestManager::HasRecipeLearned(uint32 recipe_id) {
+	QuestManagerCurrentQuestVars();
+	if (!initiator) {
+		return false;
+	}
+
+	return initiator->HasRecipeLearned(recipe_id);
+}
+
+void QuestManager::LearnRecipe(uint32 recipe_id) {
+	QuestManagerCurrentQuestVars();
+	if (!initiator) {
+		return;
+	}
+
+	initiator->LearnRecipe(recipe_id);
 }

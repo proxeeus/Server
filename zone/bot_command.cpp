@@ -6404,9 +6404,8 @@ void bot_subcommand_bot_list(Client *c, const Seperator *sep)
 		}
 
 		auto* bot = entity_list.GetBotByBotName(bots_iter.Name);
-		auto bot_spawn_saylink = Saylink::Create(
+		auto bot_spawn_saylink = Saylink::Silent(
 			fmt::format("^spawn {}", bots_iter.Name),
-			false,
 			bots_iter.Name
 		);
 
@@ -7594,19 +7593,7 @@ void bot_subcommand_botgroup_create(Client *c, const Seperator *sep)
 		return;
 	}
 
-	bool extant_flag = false;
-	if (!database.botdb.QueryBotGroupExistence(botgroup_name, extant_flag)) {
-		c->Message(
-			Chat::White,
-			fmt::format(
-				"Failed to query bot-group existence for '{}'.",
-				botgroup_name
-			).c_str()
-		);
-		return;
-	}
-
-	if (extant_flag) {
+	if (database.botdb.QueryBotGroupExistence(botgroup_name)) {
 		c->Message(
 			Chat::White,
 			fmt::format(
@@ -7891,9 +7878,8 @@ void bot_subcommand_botgroup_list(Client *c, const Seperator *sep)
 				botgroups_iter.first,
 				botgroups_iter.second,
 				database.botdb.IsBotGroupAutoSpawn(botgroups_iter.first) ? " (Auto Spawn)" : "",
-				Saylink::Create(
+				Saylink::Silent(
 					fmt::format("^botgroupload {}", botgroups_iter.first),
-					false,
 					"Load"
 				)
 			).c_str()
@@ -7935,23 +7921,11 @@ void bot_subcommand_botgroup_load(Client *c, const Seperator *sep)
 		return;
 	}
 
-	bool extant_flag = false;
-	if (!database.botdb.QueryBotGroupExistence(botgroup_name, extant_flag)) {
+	if (!database.botdb.QueryBotGroupExistence(botgroup_name)) {
 		c->Message(
 			Chat::White,
 			fmt::format(
 				"Failed to query bot-group existence for '{}'.",
-				botgroup_name
-			).c_str()
-		);
-		return;
-	}
-
-	if (!extant_flag) {
-		c->Message(
-			Chat::White,
-			fmt::format(
-				"Bot-group {} does not exist.",
 				botgroup_name
 			).c_str()
 		);
@@ -9440,9 +9414,8 @@ void bot_subcommand_inventory_list(Client *c, const Seperator *sep)
 				slot_id,
 				EQ::invslot::GetInvPossessionsSlotName(slot_id),
 				linker.GenerateLink(),
-				Saylink::Create(
+				Saylink::Silent(
 					fmt::format("^inventoryremove {}", slot_id),
-					false,
 					"Remove"
 				)
 			).c_str()
@@ -9969,7 +9942,7 @@ uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_clas
 	if (!Bot::IsValidRaceClassCombo(bot_race, bot_class)) {
 		const char* bot_race_name = GetRaceIDName(bot_race);
 		const char* bot_class_name = GetClassIDName(bot_class);
-		std::string view_saylink = Saylink::Create(fmt::format("^viewcombos {}", bot_race), false, "view");
+		std::string view_saylink = Saylink::Silent(fmt::format("^viewcombos {}", bot_race), "view");
 		bot_owner->Message(
 			Chat::White,
 			fmt::format(

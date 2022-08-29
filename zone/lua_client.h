@@ -73,9 +73,13 @@ public:
 	int GetWeight();
 	uint32 GetEXP();
 	double GetEXPModifier(uint32 zone_id);
+	double GetEXPModifier(uint32 zone_id, int16 instance_version);
 	double GetAAEXPModifier(uint32 zone_id);
+	double GetAAEXPModifier(uint32 zone_id, int16 instance_version);
 	void SetAAEXPModifier(uint32 zone_id, double aa_modifier);
+	void SetAAEXPModifier(uint32 zone_id, double aa_modifier, int16 instance_version);
 	void SetEXPModifier(uint32 zone_id, double exp_modifier);
+	void SetEXPModifier(uint32 zone_id, double exp_modifier, int16 instance_version);
 	uint32 GetAAExp();
 	uint32 GetAAPercent();
 	uint32 GetTotalSecondsPlayed();
@@ -118,6 +122,12 @@ public:
 	void MoveZoneInstance(uint16 instance_id);
 	void MoveZoneInstanceGroup(uint16 instance_id);
 	void MoveZoneInstanceRaid(uint16 instance_id);
+	bool TeleportToPlayerByCharID(uint32 character_id);
+	bool TeleportToPlayerByName(std::string player_name);
+	bool TeleportGroupToPlayerByCharID(uint32 character_id);
+	bool TeleportGroupToPlayerByName(std::string player_name);
+	bool TeleportRaidToPlayerByCharID(uint32 character_id);
+	bool TeleportRaidToPlayerByName(std::string player_name);
 	void ChangeLastName(std::string last_name);
 	int GetFactionLevel(uint32 char_id, uint32 npc_id, uint32 race, uint32 class_, uint32 deity, uint32 faction, Lua_NPC npc);
 	void SetFactionLevel(uint32 char_id, uint32 npc_id, int char_class, int char_race, int char_deity);
@@ -301,7 +311,9 @@ public:
 	void UpdateGroupAAs(int points, uint32 type);
 	uint32 GetGroupPoints();
 	uint32 GetRaidPoints();
-	void LearnRecipe(uint32 recipe);
+	void LearnRecipe(uint32 recipe_id);
+	int GetRecipeMadeCount(uint32 recipe_id);
+	bool HasRecipeLearned(uint32 recipe_id);
 	int GetEndurance();
 	int GetMaxEndurance();
 	int GetEndurancePercent();

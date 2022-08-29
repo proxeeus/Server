@@ -53,6 +53,7 @@ int (*command_dispatch)(Client *,std::string) = command_notavail;
 std::map<std::string, CommandRecord *> commandlist;
 std::map<std::string, std::string> commandaliases;
 std::vector<CommandRecord *> command_delete_list;
+std::map<std::string, uint8> commands_map;
 
 /*
  * command_notavail
@@ -82,7 +83,9 @@ int command_notavail(Client *c, std::string message)
 
 int command_init(void)
 {
-	commandaliases.clear();
+	if (!commandaliases.empty()) {
+		command_deinit();
+	}
 
 	if (
 		command_add("acceptrules", "[acceptrules] - Accept the EQEmu Agreement", AccountStatus::Player, command_acceptrules) ||
@@ -198,6 +201,7 @@ int command_init(void)
 		command_add("level", "[Level] - Set your target's level", AccountStatus::Steward, command_level) ||
 		command_add("list", "[npcs|players|corpses|doors|objects] [search] - Search entities", AccountStatus::ApprenticeGuide, command_list) ||
 		command_add("listpetition", "List petitions", AccountStatus::Guide, command_listpetition) ||
+		command_add("lootsim", "[npc_type_id] [loottable_id] [iterations] - Runs benchmark simulations using real loot logic to report numbers and data", AccountStatus::GMImpossible, command_lootsim) ||
 		command_add("load_shared_memory", "[shared_memory_name] - Reloads shared memory and uses the input as output", AccountStatus::GMImpossible, command_load_shared_memory) ||
 		command_add("loc", "Print out your or your target's current location and heading", AccountStatus::Player, command_loc) ||
 		command_add("logs",  "Manage anything to do with logs", AccountStatus::GMImpossible, command_logs) ||
@@ -471,8 +475,10 @@ int command_init(void)
  */
 void command_deinit(void)
 {
-	for (auto &c : command_delete_list)
+	for (auto &c : command_delete_list) {
 		delete c;
+	}
+
 	command_delete_list.clear();
 	commandlist.clear();
 	commandaliases.clear();
@@ -523,12 +529,19 @@ int command_add(std::string command_name, std::string description, uint8 admin, 
 	c->description = description;
 	c->function = function;
 
+	commands_map[command_name] = admin;
+
 	commandlist[command_name] = c;
 	commandaliases[command_name] = command_name;
 	command_delete_list.push_back(c);
 	command_count++;
 
 	return 0;
+}
+
+uint8 GetCommandStatus(Client *c, std::string command_name) {
+	auto command_status = commands_map[command_name];
+	return command_status;
 }
 
 /*
@@ -609,13 +622,7 @@ void command_help(Client *c, const Seperator *sep)
 			continue;
 		}
 
-		command_link = Saylink::Create(
-			fmt::format(
-				"{}{}",
-				COMMAND_CHAR,
-				cur.first
-			),
-			false,
+		command_link = Saylink::Silent(
 			fmt::format(
 				"{}{}",
 				COMMAND_CHAR,
@@ -626,8 +633,9 @@ void command_help(Client *c, const Seperator *sep)
 		c->Message(
 			Chat::White,
 			fmt::format(
-				"{} | {}",
+				"{} | Status: {} | {}",
 				command_link,
+				cur.second->admin,
 				!cur.second->description.empty() ? cur.second->description : ""
 			).c_str()
 		);
@@ -691,13 +699,7 @@ void command_findaliases(Client *c, const Seperator *sep)
 		return;
 	}
 
-	auto current_commmand_link = Saylink::Create(
-		fmt::format(
-			"{}{}",
-			COMMAND_CHAR,
-			command_iter->first
-		),
-		false,
+	auto current_commmand_link = Saylink::Silent(
 		fmt::format(
 			"{}{}",
 			COMMAND_CHAR,
@@ -716,13 +718,7 @@ void command_findaliases(Client *c, const Seperator *sep)
 			continue;
 		}
 
-		alias_link = Saylink::Create(
-			fmt::format(
-				"{}{}",
-				COMMAND_CHAR,
-				a.first
-			),
-			false,
+		alias_link = Saylink::Silent(
 			fmt::format(
 				"{}{}",
 				COMMAND_CHAR,
@@ -1041,6 +1037,7 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/level.cpp"
 #include "gm_commands/list.cpp"
 #include "gm_commands/listpetition.cpp"
+#include "gm_commands/lootsim.cpp"
 #include "gm_commands/loc.cpp"
 #include "gm_commands/logcommand.cpp"
 #include "gm_commands/logs.cpp"
