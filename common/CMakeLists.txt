@@ -84,6 +84,7 @@ SET(common_sources
     unix.cpp
     platform.cpp
     json/jsoncpp.cpp
+    zone_store.cpp
     net/console_server.cpp
     net/console_server_connection.cpp
     net/crc32.cpp
@@ -259,7 +260,6 @@ SET(repositories
     repositories/base/base_pets_equipmentset_repository.h
     repositories/base/base_pets_equipmentset_entries_repository.h
     repositories/base/base_player_titlesets_repository.h
-    repositories/base/base_proximities_repository.h
     repositories/base/base_quest_globals_repository.h
     repositories/base/base_raid_details_repository.h
     repositories/base/base_raid_members_repository.h
@@ -436,7 +436,6 @@ SET(repositories
     repositories/pets_equipmentset_repository.h
     repositories/pets_equipmentset_entries_repository.h
     repositories/player_titlesets_repository.h
-    repositories/proximities_repository.h
     repositories/quest_globals_repository.h
     repositories/raid_details_repository.h
     repositories/raid_members_repository.h
@@ -597,6 +596,7 @@ SET(common_headers
     useperl.h
     version.h
     zone_numbers.h
+    zone_store.h
     event/event_loop.h
     event/task.h
     event/timer.h

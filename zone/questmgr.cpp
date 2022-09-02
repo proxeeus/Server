@@ -35,7 +35,7 @@
 #include "worldserver.h"
 #include "zone.h"
 #include "zonedb.h"
-#include "zone_store.h"
+#include "../common/zone_store.h"
 #include "dialogue_window.h"
 #include "string_ids.h"
 
@@ -2498,13 +2498,6 @@ void QuestManager::resettaskactivity(int task, int activity) {
 		initiator->ResetTaskActivity(task, activity);
 }
 
-void QuestManager::taskexploredarea(int exploreid) {
-	QuestManagerCurrentQuestVars();
-
-	if(RuleB(TaskSystem, EnableTaskSystem) && initiator)
-		initiator->UpdateTasksOnExplore(exploreid);
-}
-
 void QuestManager::assigntask(int taskid, bool enforce_level_requirement) {
 	QuestManagerCurrentQuestVars();
 
@@ -2567,16 +2560,16 @@ int QuestManager::nexttaskinset(int taskset, int taskid) {
 int QuestManager::activespeaktask() {
 	QuestManagerCurrentQuestVars();
 
-	if(RuleB(TaskSystem, EnableTaskSystem) && initiator && owner)
-		return initiator->ActiveSpeakTask(owner->GetNPCTypeID());
+	if (RuleB(TaskSystem, EnableTaskSystem) && initiator && owner && owner->IsNPC())
+		return initiator->ActiveSpeakTask(owner->CastToNPC());
 	return 0;
 }
 
 int QuestManager::activespeakactivity(int taskid) {
 	QuestManagerCurrentQuestVars();
 
-	if(RuleB(TaskSystem, EnableTaskSystem) && initiator && owner)
-		return initiator->ActiveSpeakActivity(owner->GetNPCTypeID(), taskid);
+	if (RuleB(TaskSystem, EnableTaskSystem) && initiator && owner && owner->IsNPC())
+		return initiator->ActiveSpeakActivity(owner->CastToNPC(), taskid);
 
 	return 0;
 }
@@ -3499,11 +3492,11 @@ void QuestManager::UpdateZoneHeader(std::string type, std::string value) {
 	} else if (strcasecmp(type.c_str(), "fog_density") == 0) {
 		zone->newzone_data.fog_density = atof(value.c_str());
 	} else if (strcasecmp(type.c_str(), "suspendbuffs") == 0) {
-		zone->newzone_data.SuspendBuffs = atoi(value.c_str());
+		zone->newzone_data.suspend_buffs = atoi(value.c_str());
 	} else if (strcasecmp(type.c_str(), "lavadamage") == 0) {
-		zone->newzone_data.LavaDamage = atoi(value.c_str());
+		zone->newzone_data.lava_damage = atoi(value.c_str());
 	} else if (strcasecmp(type.c_str(), "minlavadamage") == 0) {
-		zone->newzone_data.MinLavaDamage = atoi(value.c_str());
+		zone->newzone_data.min_lava_damage = atoi(value.c_str());
 	}
 
 	auto outapp = new EQApplicationPacket(OP_NewZone, sizeof(NewZone_Struct));

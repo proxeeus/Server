@@ -179,28 +179,32 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		return;
 	}
 
-	/* Load up the Safe Coordinates, restrictions and verify the zone name*/
-	float safe_x, safe_y, safe_z, safe_heading;
-	int16 min_status = AccountStatus::Player;
-	uint8 min_level = 0;
-	char flag_needed[128];
-	if(!content_db.GetSafePoints(
-		target_zone_name,
-		database.GetInstanceVersion(target_instance_id),
-		&safe_x,
-		&safe_y,
-		&safe_z,
-		&safe_heading,
-		&min_status,
-		&min_level,
-		flag_needed
-	)) {
-		//invalid zone...
+	auto zone_data = GetZoneVersionWithFallback(
+		ZoneID(target_zone_name),
+		database.GetInstanceVersion(target_instance_id)
+	);
+	if (!zone_data) {
 		Message(Chat::Red, "Invalid target zone while getting safe points.");
 		LogError("Zoning [{}]: Unable to get safe coordinates for zone [{}]", GetName(), target_zone_name);
 		SendZoneCancel(zc);
 		return;
 	}
+
+	float safe_x, safe_y, safe_z, safe_heading;
+	int16 min_status = AccountStatus::Player;
+	uint8 min_level  = 0;
+	char  flag_needed[128];
+
+	if (!zone_data->flag_needed.empty()) {
+		strcpy(flag_needed, zone_data->flag_needed.c_str());
+	}
+
+	safe_x       = zone_data->safe_x;
+	safe_y       = zone_data->safe_y;
+	safe_z       = zone_data->safe_z;
+	safe_heading = zone_data->safe_heading;
+	min_status   = zone_data->min_status;
+	min_level    = zone_data->min_level;
 
 	std::string export_string = fmt::format(
 		"{} {}",
@@ -318,7 +322,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	//not sure when we would use ZONE_ERROR_NOTREADY
 
 	//enforce min status and level
-	if (!ignore_restrictions && (Admin() < min_status || GetLevel() < min_level))
+	if (!ignore_restrictions && (Admin() < min_status || GetLevel() < zone_data->min_level))
 	{
 		myerror = ZONE_ERROR_NOEXPERIENCE;
 	}
@@ -344,7 +348,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		 */
 		bool      meets_zone_expansion_check = false;
 		bool      found_zone                 = false;
-		for (auto &z: zone_store.zones) {
+		for (auto &z: zone_store.GetZones()) {
 			if (z.short_name == target_zone_name && z.version == 0) {
 				found_zone = true;
 				if (z.expansion <= content_service.GetCurrentExpansion() || z.bypass_expansion_check) {
@@ -488,8 +492,6 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 		zc2->success = 1;
 		outapp->priority = 6;
 		FastQueuePacket(&outapp);
-
-		zone->StartShutdownTimer(AUTHENTICATION_TIMEOUT * 1000);
 	} else {
 		// vesuvias - zoneing to another zone so we need to the let the world server
 		//handle things with the client for a while
@@ -513,6 +515,9 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 	m_ZoneSummonLocation = glm::vec4();
 	zonesummon_id = 0;
 	zonesummon_ignorerestrictions = 0;
+
+	// this simply resets the zone shutdown timer
+	zone->ResetShutdownTimer();
 }
 
 void Client::MovePC(const char* zonename, float x, float y, float z, float heading, uint8 ignorerestrictions, ZoneMode zm) {
@@ -663,7 +668,11 @@ void Client::ZonePC(uint32 zoneID, uint32 instance_id, float x, float y, float z
 	char* pZoneName = nullptr;
 
 	pShortZoneName = ZoneName(zoneID);
-	content_db.GetZoneLongName(pShortZoneName, &pZoneName);
+
+	auto zd = GetZoneVersionWithFallback(zoneID, zone->GetInstanceVersion());
+	if (zd) {
+		pZoneName = strcpy(new char[strlen(zd->long_name.c_str()) + 1], zd->long_name.c_str());
+	}
 
 	cheat_manager.SetExemptStatus(Port, true);
 
@@ -1046,21 +1055,10 @@ void Client::SendZoneFlagInfo(Client *to) const {
 		const char* zone_short_name = ZoneName(zone_id, true);
 		if (strncmp(zone_short_name, "UNKNOWN", strlen(zone_short_name)) != 0) {
 			std::string zone_long_name = ZoneLongName(zone_id);
-			float safe_x, safe_y, safe_z, safe_heading;
-			int16 min_status = AccountStatus::Player;
-			uint8 min_level = 0;
 			char flag_name[128];
-			if (!content_db.GetSafePoints(
-				zone_short_name,
-				0,
-				&safe_x,
-				&safe_y,
-				&safe_z,
-				&safe_heading,
-				&min_status,
-				&min_level,
-				flag_name
-			)) {
+
+			auto z = GetZone(zone_id);
+			if (!z) {
 				strcpy(flag_name, "ERROR");
 			}
 
@@ -1235,43 +1233,50 @@ bool Client::CanBeInZone() {
 	//only enforce rules here which are serious enough to warrant being kicked from
 	//the zone
 
-	if(Admin() >= RuleI(GM, MinStatusToZoneAnywhere))
-		return(true);
+	if (Admin() >= RuleI(GM, MinStatusToZoneAnywhere)) {
+		return (true);
+	}
 
 	float safe_x, safe_y, safe_z, safe_heading;
 	int16 min_status = AccountStatus::Player;
 	uint8 min_level = 0;
 	char flag_needed[128];
-	if(!content_db.GetSafePoints(
-		zone->GetShortName(),
-		zone->GetInstanceVersion(),
-		&safe_x,
-		&safe_y,
-		&safe_z,
-		&safe_heading,
-		&min_status,
-		&min_level,
-		flag_needed
-	)) {
+
+	auto z = GetZoneVersionWithFallback(
+		ZoneID(zone->GetShortName()),
+		zone->GetInstanceVersion()
+	);
+	if (!z) {
 		//this should not happen...
 		LogDebug("[CLIENT] Unable to query zone info for ourself [{}]", zone->GetShortName());
-		return(false);
+		return false;
 	}
 
-	if(GetLevel() < min_level) {
+	safe_x       = z->safe_x;
+	safe_y       = z->safe_y;
+	safe_z       = z->safe_z;
+	safe_heading = z->safe_heading;
+	min_status   = z->min_status;
+	min_level    = z->min_level;
+
+	if (!z->flag_needed.empty()) {
+		strcpy(flag_needed, z->flag_needed.c_str());
+	}
+
+	if (GetLevel() < min_level) {
 		LogDebug("[CLIENT] Character does not meet min level requirement ([{}] < [{}])!", GetLevel(), min_level);
-		return(false);
+		return (false);
 	}
-	if(Admin() < min_status) {
+	if (Admin() < min_status) {
 		LogDebug("[CLIENT] Character does not meet min status requirement ([{}] < [{}])!", Admin(), min_status);
-		return(false);
+		return (false);
 	}
 
-	if(flag_needed[0] != '\0') {
+	if (flag_needed[0] != '\0') {
 		//the flag needed string is not empty, meaning a flag is required.
-		if(Admin() < minStatusToIgnoreZoneFlags && !HasZoneFlag(zone->GetZoneID())) {
+		if (Admin() < minStatusToIgnoreZoneFlags && !HasZoneFlag(zone->GetZoneID())) {
 			LogDebug("[CLIENT] Character does not have the flag to be in this zone ([{}])!", flag_needed);
-			return(false);
+			return (false);
 		}
 	}
 

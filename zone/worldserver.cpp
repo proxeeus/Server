@@ -413,8 +413,6 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 				ztz->response = -1;
 			else {
 				ztz->response = 1;
-				// since they asked about comming, lets assume they are on their way and not shut down.
-				zone->StartShutdownTimer(AUTHENTICATION_TIMEOUT * 1000);
 			}
 
 			SendPacket(pack);
@@ -550,7 +548,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			SetZoneData(zone->GetZoneID(), zone->GetInstanceID());
 			if (zst->zoneid == zone->GetZoneID()) {
 				// This packet also doubles as "incoming client" notification, lets not shut down before they get here
-				zone->StartShutdownTimer(AUTHENTICATION_TIMEOUT * 1000);
+//				zone->StartShutdownTimer(AUTHENTICATION_TIMEOUT * 1000);
 			}
 			else {
 				SendEmoteMessage(
@@ -590,8 +588,6 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 
 				zone->RemoveAuth(szic->lsid);
 				zone->AddAuth(szic);
-				// This packet also doubles as "incoming client" notification, lets not shut down before they get here
-				zone->StartShutdownTimer(AUTHENTICATION_TIMEOUT * 1000);
 			}
 		}
 		else {
@@ -2045,6 +2041,13 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		content_db.LoadStaticZonePoints(&zone->zone_point_list, zone->GetShortName(), zone->GetInstanceVersion());
 		break;
 	}
+	case ServerOP_ReloadZoneData:
+	{
+		zone_store.LoadZones(content_db);
+		zone->LoadZoneCFG(zone->GetShortName(), zone->GetInstanceVersion());
+		zone->SendReloadMessage("Zone Data");
+		break;
+	}
 	case ServerOP_CameraShake:
 	{
 		if (zone)
@@ -3448,24 +3451,11 @@ void WorldServer::HandleReloadTasks(ServerPacket *pack)
 				task_manager = new TaskManager;
 				task_manager->LoadTasks();
 
-				if (zone) {
-					task_manager->LoadProximities(zone->GetZoneID());
-				}
-
 				entity_list.ReloadAllClientsTaskState();
 			} else {
 				LogTasks("Global reload of Task ID [{}]", rts->task_id);
 				task_manager->LoadTasks(rts->task_id);
 				entity_list.ReloadAllClientsTaskState(rts->task_id);
-			}
-
-			break;
-		}
-		case RELOADTASKPROXIMITIES:
-		{
-			if (zone) {
-				LogTasks("Global reload of all Task Proximities");
-				task_manager->LoadProximities(zone->GetZoneID());
 			}
 
 			break;
