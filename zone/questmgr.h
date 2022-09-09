@@ -151,6 +151,7 @@ public:
 	void attacknpctype(int npc_type_id);
 	void save();
 	void faction(int faction_id, int faction_value, int temp);
+	void rewardfaction(int faction_id, int faction_value);
 	void setsky(uint8 new_sky);
 	void setguild(uint32 new_guild_id, uint8 new_rank);
 	void CreateGuild(const char *guild_name, const char *leader);
@@ -210,8 +211,8 @@ public:
 	void playerfeature(char *feature, int setting);
 	void npcfeature(char *feature, int setting);
 	void popup(const char *title, const char *text, uint32 popupid, uint32 buttons, uint32 Duration);
-	void taskselector(int taskcount, int *tasks);
-	void tasksetselector(int tasksettid);
+	void taskselector(const std::vector<int>& tasks, bool ignore_cooldown = false);
+	void tasksetselector(int tasksettid, bool ignore_cooldown = false);
 	void enabletask(int taskcount, int *tasks);
 	void disabletask(int taskcount, int *tasks);
 	bool istaskenabled(int taskid);

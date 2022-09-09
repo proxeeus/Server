@@ -1166,27 +1166,16 @@ public:
 	{
 		if (task_state) { task_state->UpdateTasksOnTouch(this, dz_switch_id); }
 	}
-	inline void TaskSetSelector(Mob *mob, int task_set_id)
+	inline void TaskSetSelector(Mob* mob, int task_set_id, bool ignore_cooldown)
 	{
-		if (task_manager) {
-			task_manager->TaskSetSelector(
-				this,
-				task_state,
-				mob,
-				task_set_id
-			);
+		if (task_manager && task_state) {
+			task_manager->TaskSetSelector(this, mob, task_set_id, ignore_cooldown);
 		}
 	}
-	inline void TaskQuestSetSelector(Mob *mob, int count, int *tasks)
+	inline void TaskQuestSetSelector(Mob* mob, const std::vector<int>& tasks, bool ignore_cooldown)
 	{
-		if (task_manager) {
-			task_manager->TaskQuestSetSelector(
-				this,
-				task_state,
-				mob,
-				count,
-				tasks
-			);
+		if (task_manager && task_state) {
+			task_manager->TaskQuestSetSelector(this, mob, tasks, ignore_cooldown);
 		}
 	}
 	inline void EnableTask(int task_count, int *task_list)
@@ -1613,8 +1602,9 @@ public:
 	uint32 GetNextInvSnapshotTime() { return m_epp.next_invsnapshot_time; }
 
 	void QuestReward(Mob* target, uint32 copper = 0, uint32 silver = 0, uint32 gold = 0, uint32 platinum = 0, uint32 itemid = 0, uint32 exp = 0, bool faction = false);
-	void QuestReward(Mob* target, const QuestReward_Struct &reward, bool faction); // TODO: Fix faction processing
+	void QuestReward(Mob* target, const QuestReward_Struct &reward, bool faction = false);
 	void CashReward(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
+	void RewardFaction(int id, int amount);
 
 	void ResetHPUpdateTimer() { hpupdate_timer.Start(); }
 

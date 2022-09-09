@@ -436,6 +436,11 @@ void Lua_Client::SetFactionLevel2(uint32 char_id, int faction_id, int char_class
 	self->SetFactionLevel2(char_id, faction_id, char_class, char_race, char_deity, value, temp);
 }
 
+void Lua_Client::RewardFaction(int id, int amount) {
+	Lua_Safe_Call_Void();
+	self->RewardFaction(id, amount);
+}
+
 int Lua_Client::GetRawItemAC() {
 	Lua_Safe_Call_Int();
 	return self->GetRawItemAC();
@@ -1678,92 +1683,52 @@ void Lua_Client::QuestReward(Lua_Mob target, luabind::adl::object reward) {
 	QuestReward_Struct quest_reward;
 	quest_reward.mob_id = 0;
 	quest_reward.target_id = self->GetID();
-	quest_reward.copper = 0;
-	quest_reward.silver = 0;
-	quest_reward.gold = 0;
-	quest_reward.platinum = 0;
-	quest_reward.exp_reward = 0;
+	quest_reward.copper = luabind::type(reward["copper"]) != LUA_TNIL ? luabind::object_cast<uint32>(reward["copper"]) : 0;
+	quest_reward.silver = luabind::type(reward["silver"]) != LUA_TNIL ? luabind::object_cast<uint32>(reward["silver"]) : 0;
+	quest_reward.gold = luabind::type(reward["gold"]) != LUA_TNIL ? luabind::object_cast<uint32>(reward["gold"]) : 0;
+	quest_reward.platinum = luabind::type(reward["platinum"]) != LUA_TNIL ? luabind::object_cast<uint32>(reward["platinum"]) : 0;
+	quest_reward.exp_reward = luabind::type(reward["exp"]) != LUA_TNIL ? luabind::object_cast<uint32>(reward["exp"]) : 0;
 	quest_reward.faction = 0;
 	quest_reward.faction_mod = 0;
 	bool faction = false;
 	std::fill(std::begin(quest_reward.item_id), std::end(quest_reward.item_id), -1);
 
-	auto cur = reward["copper"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.copper = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
-	}
-
-	cur = reward["silver"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.silver = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
-	}
-
-	cur = reward["gold"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.gold = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
-	}
-
-	cur = reward["platinum"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.platinum = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
-	}
-
-	cur = reward["itemid"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.item_id[0] = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
+	auto item_id = reward["itemid"];
+	if (luabind::type(item_id) != LUA_TNIL) {
+		quest_reward.item_id[0] = luabind::object_cast<uint32>(item_id);
 	}
 
 	// if you define both an itemid and items table, the itemid is thrown away
 	// should we error?
-	cur = reward["items"];
-	if (luabind::type(cur) == LUA_TTABLE) {
-		try {
-			// assume they defined a compatible table
-			for (int i = 1; i <= QUESTREWARD_COUNT; ++i) {
-				auto item = cur[i];
-				int cur_value = -1;
-				if (luabind::type(item) != LUA_TNIL) {
-					try {
-						cur_value = luabind::object_cast<uint32>(item);
-					} catch (luabind::cast_failed &) {
-					}
-				} else {
-					break;
-				}
-				quest_reward.item_id[i - 1] = cur_value;
+	auto items = reward["items"];
+	if (luabind::type(items) == LUA_TTABLE) {
+		// assume they defined a compatible table
+		for (int i = 1; i <= QUESTREWARD_COUNT; ++i) {
+			auto item = items[i];
+			int cur_value = -1;
+			if (luabind::type(item) != LUA_TNIL) {
+				cur_value = luabind::object_cast<uint32>(item);
+			} else {
+				break;
 			}
-		} catch (luabind::cast_failed &) {
+			quest_reward.item_id[i - 1] = cur_value;
 		}
 	}
 
-	cur = reward["exp"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			quest_reward.exp_reward = luabind::object_cast<uint32>(cur);
-		} catch (luabind::cast_failed &) {
-		}
-	}
-
-	cur = reward["faction"];
-	if (luabind::type(cur) != LUA_TNIL) {
-		try {
-			faction = luabind::object_cast<bool>(cur);
-		} catch (luabind::cast_failed &) {
+	auto lua_faction = reward["faction"];
+	if (luabind::type(lua_faction) != LUA_TNIL) {
+		// if it's a table it will be {faction, faction_mod}
+		if (luabind::type(lua_faction) == LUA_TTABLE) {
+			auto item = lua_faction[1];
+			if (luabind::type(item) != LUA_TNIL) {
+				quest_reward.faction = luabind::object_cast<uint32>(item);
+			}
+			item = lua_faction[2];
+			if (luabind::type(item) != LUA_TNIL) {
+				quest_reward.faction_mod = luabind::object_cast<uint32>(item);
+			}
+		} else {
+			faction = luabind::object_cast<bool>(lua_faction);
 		}
 	}
 
@@ -2547,32 +2512,25 @@ int Lua_Client::GetSpellDamage() {
 }
 
 void Lua_Client::TaskSelector(luabind::adl::object table) {
+	TaskSelector(table, false);
+}
+
+void Lua_Client::TaskSelector(luabind::adl::object table, bool ignore_cooldown) {
 	Lua_Safe_Call_Void();
 
 	if(luabind::type(table) != LUA_TTABLE) {
 		return;
 	}
 
-	int tasks[MAXCHOOSERENTRIES] = { 0 };
-	int task_count = 0;
-
+	std::vector<int> tasks;
 	for(int i = 1; i <= MAXCHOOSERENTRIES; ++i) {
 		auto cur = table[i];
-		int cur_value = 0;
-		if(luabind::type(cur) != LUA_TNIL) {
-			try {
-				cur_value = luabind::object_cast<int>(cur);
-			} catch(luabind::cast_failed &) {
-			}
-		} else {
-			task_count = i - 1;
-			break;
+		if (luabind::type(cur) == LUA_TNUMBER) {
+			tasks.push_back(luabind::object_cast<int>(cur));
 		}
-
-		tasks[i - 1] = cur_value;
 	}
 
-	self->TaskQuestSetSelector(self, task_count, tasks);
+	self->TaskQuestSetSelector(self, tasks, ignore_cooldown);
 }
 
 bool Lua_Client::TeleportToPlayerByCharID(uint32 character_id) {
@@ -2922,6 +2880,7 @@ luabind::scope lua_register_client() {
 	.def("ResetCastbarCooldownBySpellID", (void(Lua_Client::*)(uint32))&Lua_Client::ResetCastbarCooldownBySpellID)
 	.def("ResetDisciplineTimer", (void(Lua_Client::*)(uint32))&Lua_Client::ResetDisciplineTimer)
 	.def("ResetTrade", (void(Lua_Client::*)(void))&Lua_Client::ResetTrade)
+	.def("RewardFaction", (void(Lua_Client::*)(int,int))&Lua_Client::RewardFaction)
 	.def("Save", (void(Lua_Client::*)(int))&Lua_Client::Save)
 	.def("Save", (void(Lua_Client::*)(void))&Lua_Client::Save)
 	.def("SaveBackup", (void(Lua_Client::*)(void))&Lua_Client::SaveBackup)
@@ -3017,6 +2976,7 @@ luabind::scope lua_register_client() {
 	.def("TakePlatinum", (bool(Lua_Client::*)(uint32))&Lua_Client::TakePlatinum)
 	.def("TakePlatinum", (bool(Lua_Client::*)(uint32,bool))&Lua_Client::TakePlatinum)
 	.def("TaskSelector", (void(Lua_Client::*)(luabind::adl::object))&Lua_Client::TaskSelector)
+	.def("TaskSelector", (void(Lua_Client::*)(luabind::adl::object, bool))&Lua_Client::TaskSelector)
 	.def("TeleportToPlayerByCharID", (bool(Lua_Client::*)(uint32))&Lua_Client::TeleportToPlayerByCharID)
 	.def("TeleportToPlayerByName", (bool(Lua_Client::*)(std::string))&Lua_Client::TeleportToPlayerByName)
 	.def("TeleportGroupToPlayerByCharID", (bool(Lua_Client::*)(uint32))&Lua_Client::TeleportGroupToPlayerByCharID)

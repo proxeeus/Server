@@ -259,6 +259,7 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 	rare_spawn            = npc_type_data->rare_spawn;
 	no_target_hotkey      = npc_type_data->no_target_hotkey;
 	primary_faction       = 0;
+	faction_amount        = npc_type_data->faction_amount;
 
 	SetNPCFactionID(npc_type_data->npc_faction_id);
 
@@ -3673,10 +3674,18 @@ void NPC::RecalculateSkills()
 	return database.HasRoamBox(this->GetSpawnGroupId());
 }
 
+void NPC::ReloadSpells() {
+	AI_AddNPCSpells(GetNPCSpellsID());
+	AI_AddNPCSpellsEffects(GetNPCSpellsEffectsID());
+}
+
 void NPC::ScaleNPC(uint8 npc_level) {
 	if (GetLevel() != npc_level) {
 		SetLevel(npc_level);
+		RecalculateSkills();
+		ReloadSpells();
 	}
+
 	npc_scale_manager->ResetNPCScaling(this);
 	npc_scale_manager->ScaleNPC(this);
 }
