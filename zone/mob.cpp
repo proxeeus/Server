@@ -3948,6 +3948,9 @@ void Mob::Say(const char *format, ...)
 	if (RuleB(Chat, QuestDialogueUsesDialogueWindow)) {
 		for (auto &e : entity_list.GetCloseMobList(talker, (distance * distance))) {
 			Mob *mob = e.second;
+			if (!mob) {
+				continue;
+			}
 
 			if (!mob->IsClient()) {
 				continue;
