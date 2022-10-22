@@ -2190,16 +2190,7 @@ bool Mob::Flurry(ExtraAttackOptions *opts)
 	// this is wrong, flurry is extra attacks on the current target
 	Mob *target = GetTarget();
 	if (target) {
-		if (!IsPet()) {
-			entity_list.MessageCloseString(
-				this,
-				true,
-				200,
-				Chat::NPCFlurry,
-				NPC_FLURRY,
-				GetCleanName(),
-				target->GetCleanName());
-		} else {
+		if (IsPet() || IsTempPet() || IsCharmed() || IsAnimation()) {
 			entity_list.MessageCloseString(
 				this,
 				true,
@@ -2208,8 +2199,17 @@ bool Mob::Flurry(ExtraAttackOptions *opts)
 				NPC_FLURRY,
 				GetCleanName(),
 				target->GetCleanName());
+		} else {
+			entity_list.MessageCloseString(
+				this,
+				true,
+				200,
+				Chat::NPCFlurry,
+				NPC_FLURRY,
+				GetCleanName(),
+				target->GetCleanName());
 		}
-
+		
 		int num_attacks = GetSpecialAbilityParam(SPECATK_FLURRY, 1);
 		num_attacks = num_attacks > 0 ? num_attacks : RuleI(Combat, MaxFlurryHits);
 		for (int i = 0; i < num_attacks; i++)
@@ -2243,11 +2243,11 @@ void Mob::ClearRampage()
 bool Mob::Rampage(ExtraAttackOptions *opts)
 {
 	int index_hit = 0;
-	if (!IsPet())
-		entity_list.MessageCloseString(this, true, 200, Chat::NPCRampage, NPC_RAMPAGE, GetCleanName());
-	else
+	if (IsPet() || IsTempPet() || IsCharmed() || IsAnimation()){
 		entity_list.MessageCloseString(this, true, 200, Chat::PetFlurry, NPC_RAMPAGE, GetCleanName());
-
+	} else {
+		entity_list.MessageCloseString(this, true, 200, Chat::NPCRampage, NPC_RAMPAGE, GetCleanName());
+	}	
 	int rampage_targets = GetSpecialAbilityParam(SPECATK_RAMPAGE, 1);
 	if (rampage_targets == 0) // if set to 0 or not set in the DB
 		rampage_targets = RuleI(Combat, DefaultRampageTargets);
@@ -2300,10 +2300,10 @@ bool Mob::Rampage(ExtraAttackOptions *opts)
 void Mob::AreaRampage(ExtraAttackOptions *opts)
 {
 	int index_hit = 0;
-	if (!IsPet()) { // do not know every pet AA so thought it safer to add this
-		entity_list.MessageCloseString(this, true, 200, Chat::NPCRampage, AE_RAMPAGE, GetCleanName());
-	} else {
+	if (IsPet() || IsTempPet() || IsCharmed() || IsAnimation()) { // do not know every pet AA so thought it safer to add this
 		entity_list.MessageCloseString(this, true, 200, Chat::PetFlurry, AE_RAMPAGE, GetCleanName());
+	} else {
+		entity_list.MessageCloseString(this, true, 200, Chat::NPCRampage, AE_RAMPAGE, GetCleanName());
 	}
 
 	int rampage_targets = GetSpecialAbilityParam(SPECATK_AREA_RAMPAGE, 1);

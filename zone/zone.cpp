@@ -1859,7 +1859,7 @@ void Zone::ResetShutdownTimer() {
 		zone->GetZoneDescription()
 	);
 
-	autoshutdown_timer.SetTimer(autoshutdown_timer.GetDuration());
+	autoshutdown_timer.Start(autoshutdown_timer.GetDuration(), true);
 }
 
 bool Zone::Depop(bool StartSpawnTimer) {
@@ -2872,7 +2872,8 @@ std::string Zone::GetZoneDescription()
 	}
 
 	return fmt::format(
-		"{} ({}){}{}",
+		"PID ({}) {} ({}){}{}",
+		EQ::GetPID(),
 		GetLongName(),
 		GetZoneID(),
 		(
