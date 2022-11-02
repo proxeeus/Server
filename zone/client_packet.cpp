@@ -9155,7 +9155,13 @@ void Client::Handle_OP_LDoNInspect(const EQApplicationPacket *app)
 {
 	Mob * target = GetTarget();
 	if (target && target->GetClass() == LDON_TREASURE && !target->IsAura())
-		Message(Chat::Yellow, "%s", target->GetCleanName());
+	{
+		std::vector<std::any> args = { target };
+		if (parse->EventPlayer(EVENT_INSPECT, this, "", target->GetID(), &args) == 0)
+		{
+			Message(Chat::Yellow, "%s", target->GetCleanName());
+		}
+	}
 }
 
 void Client::Handle_OP_LDoNOpen(const EQApplicationPacket *app)
@@ -12978,10 +12984,14 @@ void Client::Handle_OP_Shielding(const EQApplicationPacket *app)
 		return;
 	}
 
-	pTimerType timer = pTimerShieldAbility;
+	if (!RuleB(Combat, EnableWarriorShielding)) {
+		Message(Chat::White, "/shield is disabled.");
+		return;
+	}
 
+	pTimerType timer = pTimerShieldAbility;
 	if (!p_timers.Expired(&database, timer, false)) {
-		uint32 remaining_time = p_timers.GetRemainingTime(timer);
+		auto remaining_time = p_timers.GetRemainingTime(timer);
 		Message(
 			Chat::White,
 			fmt::format(
@@ -12992,8 +13002,7 @@ void Client::Handle_OP_Shielding(const EQApplicationPacket *app)
 		return;
 	}
 
-	Shielding_Struct* shield = (Shielding_Struct*)app->pBuffer;
-
+	auto shield = (Shielding_Struct*) app->pBuffer;
 	if (ShieldAbility(shield->target_id, 15, 12000, 50, 25, true, false)) {
 		p_timers.Start(timer, SHIELD_ABILITY_RECAST_TIME);
 	}
