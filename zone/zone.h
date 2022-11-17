@@ -249,6 +249,8 @@ public:
 	uint32 GetCurrencyID(uint32 item_id);
 	uint32 GetCurrencyItemID(uint32 currency_id);
 
+	std::string GetAAName(int aa_id);
+
 	inline bool IsRaining() { return zone_weather == EQ::constants::WeatherTypes::Raining; }
 	inline bool IsSnowing() { return zone_weather == EQ::constants::WeatherTypes::Snowing; }
 
@@ -308,6 +310,8 @@ public:
 
 	bool IsQuestHotReloadQueued() const;
 	void SetQuestHotReloadQueued(bool in_quest_hot_reload_queued);
+
+	bool CheckDataBucket(uint8 bucket_comparison, std::string bucket_value, std::string player_value);
 
 	WaterMap *watermap;
 	ZonePoint *GetClosestZonePoint(const glm::vec3 &location, uint32 to, Client *client, float max_distance = 40000.0f);

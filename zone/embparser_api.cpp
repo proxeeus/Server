@@ -1276,6 +1276,21 @@ std::string Perl__gettaskname(uint32 task_id)
 	return quest_manager.gettaskname(task_id);
 }
 
+int Perl__get_dz_task_id()
+{
+	return quest_manager.GetCurrentDzTaskID();
+}
+
+void Perl__end_dz_task()
+{
+	quest_manager.EndCurrentDzTask();
+}
+
+void Perl__end_dz_task(bool send_fail)
+{
+	quest_manager.EndCurrentDzTask(send_fail);
+}
+
 void Perl__popup(const char* window_title, const char* message)
 {
 	quest_manager.popup(window_title, message, 0, 0, 0);
@@ -3743,6 +3758,15 @@ bool Perl__IsSnowing()
 	return zone->IsSnowing();
 }
 
+std::string Perl__getaaname(int aa_id)
+{
+	if (!zone) {
+		return std::string();
+	}
+
+	return zone->GetAAName(aa_id);
+}
+
 void perl_register_quest()
 {
 	perl::interpreter perl(PERL_GET_THX);
@@ -4088,6 +4112,8 @@ void perl_register_quest()
 	package.add("enablerecipe", &Perl__enablerecipe);
 	package.add("enabletask", &Perl__enabletask);
 	package.add("enabletitle", &Perl__enabletitle);
+	package.add("end_dz_task", (void(*)())&Perl__end_dz_task);
+	package.add("end_dz_task", (void(*)(bool))&Perl__end_dz_task);
 	package.add("exp", &Perl__exp);
 	package.add("faction", (void(*)(int, int))&Perl__faction);
 	package.add("faction", (void(*)(int, int, int))&Perl__faction);
@@ -4102,6 +4128,7 @@ void perl_register_quest()
 	package.add("forcedooropen", (void(*)(uint32, bool))&Perl__forcedooropen);
 	package.add("getaaexpmodifierbycharid", (double(*)(uint32, uint32))&Perl__getaaexpmodifierbycharid);
 	package.add("getaaexpmodifierbycharid", (double(*)(uint32, uint32, int16))&Perl__getaaexpmodifierbycharid);
+	package.add("getaaname", (std::string(*)(int))&Perl__getaaname);
 	package.add("getbodytypename", &Perl__getbodytypename);
 	package.add("getcharidbyname", &Perl__getcharidbyname);
 	package.add("getclassname", (std::string(*)(uint8))&Perl__getclassname);
@@ -4110,6 +4137,7 @@ void perl_register_quest()
 	package.add("getconsiderlevelname", &Perl__getconsiderlevelname);
 	package.add("gethexcolorcode", &Perl__gethexcolorcode);
 	package.add("getcurrencyid", &Perl__getcurrencyid);
+	package.add("get_dz_task_id", &Perl__get_dz_task_id);
 	package.add("getexpmodifierbycharid", (double(*)(uint32, uint32))&Perl__getexpmodifierbycharid);
 	package.add("getexpmodifierbycharid", (double(*)(uint32, uint32, int16))&Perl__getexpmodifierbycharid);
 	package.add("get_expedition", &Perl__get_expedition);

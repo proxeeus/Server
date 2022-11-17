@@ -1062,6 +1062,7 @@ public:
 	inline uint32 GetSpellByBookSlot(int book_slot) { return m_pp.spell_book[book_slot]; }
 	inline bool HasSpellScribed(int spellid) { return FindSpellBookSlotBySpellID(spellid) != -1; }
 	uint32 GetHighestScribedSpellinSpellGroup(uint32 spell_group);
+	std::unordered_map<uint32, std::vector<uint16>> LoadSpellGroupCache(uint8 min_level, uint8 max_level);
 	uint16 GetMaxSkillAfterSpecializationRules(EQ::skills::SkillType skillid, uint16 maxSkill);
 	void SendPopupToClient(const char *Title, const char *Text, uint32 PopupID = 0, uint32 Buttons = 0, uint32 Duration = 0);
 	void SendFullPopup(const char *Title, const char *Text, uint32 PopupID = 0, uint32 NegativeID = 0, uint32 Buttons = 0, uint32 Duration = 0, const char *ButtonName0 = 0, const char *ButtonName1 = 0, uint32 SoundControls = 0);
@@ -1138,15 +1139,16 @@ public:
 			);
 		}
 	}
-	inline void UpdateTasksForItem(
-		TaskActivityType activity_type,
-		NPC* npc,
-		int item_id,
-		int count = 1
-	)
+	inline void UpdateTasksForItem(TaskActivityType type, int item_id, int count = 1)
 	{
 		if (task_state) {
-			task_state->UpdateTasksForItem(this, activity_type, npc, item_id, count);
+			task_state->UpdateTasksForItem(this, type, item_id, count);
+		}
+	}
+	inline void UpdateTasksOnLoot(Corpse* corpse, int item_id, int count = 1)
+	{
+		if (task_state) {
+			task_state->UpdateTasksOnLoot(this, corpse, item_id, count);
 		}
 	}
 	inline void UpdateTasksOnExplore(const glm::vec4& pos)
@@ -1273,6 +1275,7 @@ public:
 	}
 	void PurgeTaskTimers();
 	void LockSharedTask(bool lock) { if (task_state) { task_state->LockSharedTask(this, lock); } }
+	void EndSharedTask(bool fail = false) { if (task_state) { task_state->EndSharedTask(this, fail); } }
 
 	// shared task shims / middleware
 	// these variables are used as a shim to intercept normal localized task functionality
@@ -1631,7 +1634,6 @@ public:
 	Timer m_list_task_timers_rate_limit = {};
 
 	std::map<std::string,std::string> GetMerchantDataBuckets();
-	bool CheckMerchantDataBucket(uint8 bucket_comparison, std::string bucket_value, std::string player_value);
 
 protected:
 	friend class Mob;

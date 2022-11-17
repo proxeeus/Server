@@ -10526,6 +10526,8 @@ std::vector<int> Client::GetMemmedSpells() {
 
 std::vector<int> Client::GetScribeableSpells(uint8 min_level, uint8 max_level) {
 	std::vector<int> scribeable_spells;
+	std::unordered_map<uint32, std::vector<uint16>> spell_group_cache = LoadSpellGroupCache(min_level, max_level);
+
 	for (uint16 spell_id = 0; spell_id < SPDAT_RECORDS; ++spell_id) {
 		bool scribeable = true;
 		if (!IsValidSpell(spell_id)) {
@@ -10560,13 +10562,33 @@ std::vector<int> Client::GetScribeableSpells(uint8 min_level, uint8 max_level) {
 			continue;
 		}
 
-		if (RuleB(Spells, EnableSpellGlobals) && !SpellGlobalCheck(spell_id, CharacterID())) {
+		if (
+			RuleB(Spells, EnableSpellGlobals) &&
+			!SpellGlobalCheck(spell_id, CharacterID())
+		) {
 			scribeable = false;
-		} else if (RuleB(Spells, EnableSpellBuckets) && !SpellBucketCheck(spell_id, CharacterID())) {
+		} else if (
+			RuleB(Spells, EnableSpellBuckets) &&
+			!SpellBucketCheck(spell_id, CharacterID())
+		) {
 			scribeable = false;
 		}
 
-		if (scribeable) {
+		if (spells[spell_id].spell_group) {
+			const auto& g = spell_group_cache.find(spells[spell_id].spell_group);
+			if (g != spell_group_cache.end()) {
+				for (const auto& s : g->second) {
+					if (
+						EQ::ValueWithin(spells[s].classes[m_pp.class_ - 1], min_level, max_level) &&
+						s == spell_id &&
+						scribeable
+					) {
+						scribeable_spells.push_back(spell_id);
+					}
+					continue;
+				}
+			}
+		} else if (scribeable) {
 			scribeable_spells.push_back(spell_id);
 		}
 	}
@@ -10575,7 +10597,7 @@ std::vector<int> Client::GetScribeableSpells(uint8 min_level, uint8 max_level) {
 
 std::vector<int> Client::GetScribedSpells() {
 	std::vector<int> scribed_spells;
-	for(int index = 0; index < EQ::spells::SPELLBOOK_SIZE; index++) {
+	for (int index = 0; index < EQ::spells::SPELLBOOK_SIZE; index++) {
 		if (IsValidSpell(m_pp.spell_book[index])) {
 			scribed_spells.push_back(m_pp.spell_book[index]);
 		}
@@ -11618,149 +11640,6 @@ void Client::SendReloadCommandMessages() {
 	);
 
 	SendChatLineBreak();
-}
-
-bool Client::CheckMerchantDataBucket(uint8 bucket_comparison, std::string bucket_value, std::string player_value)
-{
-	std::vector<std::string> bucket_checks;
-	bool found = false;
-	bool passes = false;
-
-	switch (bucket_comparison) {
-		case MerchantBucketComparison::BucketEqualTo:
-		{
-			if (player_value != bucket_value) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketNotEqualTo:
-		{
-			if (player_value == bucket_value) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketGreaterThanOrEqualTo:
-		{
-			if (player_value < bucket_value) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketLesserThanOrEqualTo:
-		{
-			if (player_value > bucket_value) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketGreaterThan:
-		{
-			if (player_value <= bucket_value) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketLesserThan:
-		{
-			if (player_value >= bucket_value) {
-				break;
-			}
-
-			passes = true;
-
-			break;
-		}
-		case MerchantBucketComparison::BucketIsAny:
-		{
-			bucket_checks = Strings::Split(bucket_value, "|");
-			if (bucket_checks.empty()) {
-				break;
-			}
-
-			for (const auto &bucket : bucket_checks) {
-				if (player_value == bucket) {
-					found = true;
-					break;
-				}
-			}
-
-			if (!found) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketIsNotAny:
-		{
-			bucket_checks = Strings::Split(bucket_value, "|");
-			if (bucket_checks.empty()) {
-				break;
-			}
-
-			for (const auto &bucket : bucket_checks) {
-				if (player_value == bucket) {
-					found = true;
-					break;
-				}
-			}
-
-			if (found) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketIsBetween:
-		{
-			bucket_checks = Strings::Split(bucket_value, "|");
-			if (bucket_checks.empty()) {
-				break;
-			}
-
-			if (
-				std::stoll(player_value) < std::stoll(bucket_checks[0]) ||
-				std::stoll(player_value) > std::stoll(bucket_checks[1])
-			) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-		case MerchantBucketComparison::BucketIsNotBetween:
-		{
-			bucket_checks = Strings::Split(bucket_value, "|");
-			if (bucket_checks.empty()) {
-				break;
-			}
-
-			if (
-				std::stoll(player_value) >= std::stoll(bucket_checks[0]) &&
-				std::stoll(player_value) <= std::stoll(bucket_checks[1])
-			) {
-				break;
-			}
-
-			passes = true;
-			break;
-		}
-	}
-
-	return passes;
 }
 
 std::map<std::string,std::string> Client::GetMerchantDataBuckets()

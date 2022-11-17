@@ -1875,7 +1875,7 @@ bool Zone::Depop(bool StartSpawnTimer) {
 	// clear spell cache
 	database.ClearNPCSpells();
 	database.ClearBotSpells();
-	
+
 	zone->spawn_group_list.ReloadSpawnGroups();
 
 	return true;
@@ -2949,4 +2949,205 @@ void Zone::LoadDynamicZoneTemplates()
 	{
 		dz_template_cache[dz_template.id] = dz_template;
 	}
+}
+
+std::string Zone::GetAAName(int aa_id)
+{
+	if (!aa_id) {
+		return std::string();
+	}
+
+	int current_aa_id = 0;
+
+	const auto& r = aa_ranks.find(aa_id);
+	if (
+		r != aa_ranks.end() &&
+		r->second.get()->base_ability
+	) {
+		current_aa_id = r->second.get()->base_ability->id;
+	}
+
+	if (current_aa_id) {
+		const auto& a = aa_abilities.find(current_aa_id);
+		if (a != aa_abilities.end()) {
+			return a->second.get()->name;
+		}
+	}
+
+	return std::string();
+}
+
+bool Zone::CheckDataBucket(uint8 bucket_comparison, std::string bucket_value, std::string player_value)
+{
+	std::vector<std::string> bucket_checks;
+	bool found = false;
+	bool passes = false;
+
+	switch (bucket_comparison) {
+		case BucketComparison::BucketEqualTo:
+		{
+			if (player_value != bucket_value) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketNotEqualTo:
+		{
+			if (player_value == bucket_value) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketGreaterThanOrEqualTo:
+		{
+			if (!Strings::IsNumber(player_value) || !Strings::IsNumber(bucket_value)) {
+				break;
+			}
+
+			if (std::stoll(player_value) < std::stoll(bucket_value)) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketLesserThanOrEqualTo:
+		{
+			if (!Strings::IsNumber(player_value) || !Strings::IsNumber(bucket_value)) {
+				break;
+			}
+
+			if (std::stoll(player_value) > std::stoll(bucket_value)) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketGreaterThan:
+		{
+			if (!Strings::IsNumber(player_value) || !Strings::IsNumber(bucket_value)) {
+				break;
+			}
+
+			if (std::stoll(player_value) <= std::stoll(bucket_value)) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketLesserThan:
+		{
+			if (!Strings::IsNumber(player_value) || !Strings::IsNumber(bucket_value)) {
+				break;
+			}
+
+			if (std::stoll(player_value) >= std::stoll(bucket_value)) {
+				break;
+			}
+
+			passes = true;
+
+			break;
+		}
+		case BucketComparison::BucketIsAny:
+		{
+			bucket_checks = Strings::Split(bucket_value, "|");
+			if (bucket_checks.empty()) {
+				break;
+			}
+
+			if (std::find(bucket_checks.begin(), bucket_checks.end(), player_value) != bucket_checks.end()) {
+				found = true;
+			}
+
+			if (!found) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketIsNotAny:
+		{
+			bucket_checks = Strings::Split(bucket_value, "|");
+			if (bucket_checks.empty()) {
+				break;
+			}
+
+			if (std::find(bucket_checks.begin(), bucket_checks.end(), player_value) != bucket_checks.end()) {
+				found = true;
+			}
+
+			if (found) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketIsBetween:
+		{
+			bucket_checks = Strings::Split(bucket_value, "|");
+			if (bucket_checks.empty()) {
+				break;
+			}
+
+			if (
+				!Strings::IsNumber(player_value) ||
+				!Strings::IsNumber(bucket_checks[0]) ||
+				!Strings::IsNumber(bucket_checks[1])
+			) {
+				break;
+			}
+
+			if (
+				!EQ::ValueWithin(
+					std::stoll(player_value),
+					std::stoll(bucket_checks[0]),
+					std::stoll(bucket_checks[1])
+				)
+			) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+		case BucketComparison::BucketIsNotBetween:
+		{
+			bucket_checks = Strings::Split(bucket_value, "|");
+			if (bucket_checks.empty()) {
+				break;
+			}
+
+			if (
+				!Strings::IsNumber(player_value) ||
+				!Strings::IsNumber(bucket_checks[0]) ||
+				!Strings::IsNumber(bucket_checks[1])
+			) {
+				break;
+			}
+
+			if (
+				EQ::ValueWithin(
+					std::stoll(player_value),
+					std::stoll(bucket_checks[0]),
+					std::stoll(bucket_checks[1])
+				)
+			) {
+				break;
+			}
+
+			passes = true;
+			break;
+		}
+	}
+
+	return passes;
 }

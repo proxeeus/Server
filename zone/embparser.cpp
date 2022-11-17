@@ -161,6 +161,8 @@ const char *QuestEventSubroutines[_LargestEventID] = {
 	"EVENT_MERCHANT_SELL",
 	"EVENT_INSPECT",
 	"EVENT_TASK_BEFORE_UPDATE",
+	"EVENT_AA_BUY",
+	"EVENT_AA_GAIN"
 };
 
 PerlembParser::PerlembParser() : perl(nullptr)
@@ -807,6 +809,22 @@ void PerlembParser::ExportVar(const char *pkgprefix, const char *varname, const 
 	}
 }
 
+
+void PerlembParser::ExportVar(const char* pkgprefix, const char* varname, const char* classname, void* value)
+{
+	if (!perl) {
+		return;
+	}
+
+	// todo: try/catch shouldn't be necessary here (called perl apis don't throw)
+	try {
+		perl->setptr(std::string(pkgprefix).append("::").append(varname).c_str(), classname, value);
+	}
+	catch (std::string e) {
+		AddError(fmt::format("Error exporting Perl variable [{}]", e));
+	}
+}
+
 int PerlembParser::SendCommands(
 	const char *pkgprefix,
 	const char *event,
@@ -1348,6 +1366,10 @@ void PerlembParser::ExportEventVariables(
 						temp_var_name = var_name;
 						temp_var_name += "_attuned";
 						ExportVar(package_name.c_str(), temp_var_name.c_str(), inst->IsAttuned());
+
+						temp_var_name = var_name;
+						temp_var_name += "_inst";
+						ExportVar(package_name.c_str(), temp_var_name.c_str(), "QuestItem", inst);
 					}
 					else {
 						ExportVar(package_name.c_str(), var_name.c_str(), 0);
@@ -1358,6 +1380,10 @@ void PerlembParser::ExportEventVariables(
 
 						temp_var_name = var_name;
 						temp_var_name += "_attuned";
+						ExportVar(package_name.c_str(), temp_var_name.c_str(), 0);
+
+						temp_var_name = var_name;
+						temp_var_name += "_inst";
 						ExportVar(package_name.c_str(), temp_var_name.c_str(), 0);
 					}
 				}
@@ -1433,7 +1459,11 @@ void PerlembParser::ExportEventVariables(
 		case EVENT_ZONE: {
 			Seperator sep(data);
 			ExportVar(package_name.c_str(), "from_zone_id", sep.arg[0]);
-			ExportVar(package_name.c_str(), "target_zone_id", sep.arg[1]);
+			ExportVar(package_name.c_str(), "from_instance_id", sep.arg[1]);
+			ExportVar(package_name.c_str(), "from_instance_version", sep.arg[2]);
+			ExportVar(package_name.c_str(), "target_zone_id", sep.arg[3]);
+			ExportVar(package_name.c_str(), "target_instance_id", sep.arg[4]);
+			ExportVar(package_name.c_str(), "target_instance_version", sep.arg[5]);
 			break;
 		}
 
@@ -1597,6 +1627,7 @@ void PerlembParser::ExportEventVariables(
 			break;
 		}
 
+		case EVENT_DEATH_ZONE:
 		case EVENT_DEATH:
 		case EVENT_DEATH_COMPLETE: {
 			Seperator sep(data);
@@ -1604,6 +1635,26 @@ void PerlembParser::ExportEventVariables(
 			ExportVar(package_name.c_str(), "killer_damage", sep.arg[1]);
 			ExportVar(package_name.c_str(), "killer_spell", sep.arg[2]);
 			ExportVar(package_name.c_str(), "killer_skill", sep.arg[3]);
+			if (extra_pointers && extra_pointers->size() >= 1)
+			{
+				Corpse* corpse = std::any_cast<Corpse*>(extra_pointers->at(0));
+				if (corpse)
+				{
+					ExportVar(package_name.c_str(), "killed_corpse_id", corpse->GetID());
+				}
+			}
+			if (extra_pointers && extra_pointers->size() >= 2)
+			{
+				NPC* killed = std::any_cast<NPC*>(extra_pointers->at(1));
+				if (killed)
+				{
+					ExportVar(package_name.c_str(), "killed_npc_id", killed->GetNPCTypeID());
+					ExportVar(package_name.c_str(), "killed_x", killed->GetX());
+					ExportVar(package_name.c_str(), "killed_y", killed->GetY());
+					ExportVar(package_name.c_str(), "killed_z", killed->GetZ());
+					ExportVar(package_name.c_str(), "killed_h", killed->GetHeading());
+				}
+			}
 			break;
 		}
 		case EVENT_DROP_ITEM: {
@@ -1615,22 +1666,8 @@ void PerlembParser::ExportEventVariables(
 			break;
 		}
 		case EVENT_SPAWN_ZONE: {
-			Seperator sep(data);
-			ExportVar(package_name.c_str(), "spawned_entity_id", sep.arg[0]);
-			ExportVar(package_name.c_str(), "spawned_npc_id", sep.arg[1]);
-			break;
-		}
-		case EVENT_DEATH_ZONE: {
-			Seperator sep(data);
-			ExportVar(package_name.c_str(), "killer_id", sep.arg[0]);
-			ExportVar(package_name.c_str(), "killer_damage", sep.arg[1]);
-			ExportVar(package_name.c_str(), "killer_spell", sep.arg[2]);
-			ExportVar(package_name.c_str(), "killer_skill", sep.arg[3]);
-			ExportVar(package_name.c_str(), "killed_npc_id", sep.arg[4]);
-			ExportVar(package_name.c_str(), "killed_x", sep.arg[5]);
-			ExportVar(package_name.c_str(), "killed_y", sep.arg[6]);
-			ExportVar(package_name.c_str(), "killed_z", sep.arg[7]);
-			ExportVar(package_name.c_str(), "killed_h", sep.arg[8]);
+			ExportVar(package_name.c_str(), "spawned_entity_id", mob->GetID());
+			ExportVar(package_name.c_str(), "spawned_npc_id", mob->GetNPCTypeID());
 			break;
 		}
 		case EVENT_USE_SKILL: {
@@ -1734,6 +1771,20 @@ void PerlembParser::ExportEventVariables(
 			ExportVar(package_name.c_str(), "item_id", sep.arg[2]);
 			ExportVar(package_name.c_str(), "item_quantity", sep.arg[3]);
 			ExportVar(package_name.c_str(), "item_cost", sep.arg[4]);
+			break;
+		}
+
+		case EVENT_AA_BUY: {
+			Seperator sep(data);
+			ExportVar(package_name.c_str(), "aa_cost", sep.arg[0]);
+			ExportVar(package_name.c_str(), "aa_id", sep.arg[1]);
+			ExportVar(package_name.c_str(), "aa_previous_id", sep.arg[2]);
+			ExportVar(package_name.c_str(), "aa_next_id", sep.arg[3]);
+			break;
+		}
+
+		case EVENT_AA_GAIN: {
+			ExportVar(package_name.c_str(), "aa_gained", data);
 			break;
 		}
 

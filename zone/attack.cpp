@@ -1903,6 +1903,7 @@ bool Client::Death(Mob* killerMob, int64 damage, uint16 spell, EQ::skills::Skill
 	}
 
 	bool LeftCorpse = false;
+	Corpse* new_corpse = nullptr;
 
 	// now we apply the exp loss, unmem their spells, and make a corpse
 	// unless they're a GM (or less than lvl 10
@@ -1938,7 +1939,7 @@ bool Client::Death(Mob* killerMob, int64 damage, uint16 spell, EQ::skills::Skill
 		if ((RuleB(Character, LeaveCorpses) && GetLevel() >= RuleI(Character, DeathItemLossLevel)) || RuleB(Character, LeaveNakedCorpses))
 		{
 			// creating the corpse takes the cash/items off the player too
-			auto new_corpse = new Corpse(this, exploss);
+			new_corpse = new Corpse(this, exploss);
 
 			std::string tmp;
 			database.GetVariable("ServerType", tmp);
@@ -2038,7 +2039,8 @@ bool Client::Death(Mob* killerMob, int64 damage, uint16 spell, EQ::skills::Skill
 		QServ->PlayerLogEvent(Player_Log_Deaths, CharacterID(), event_desc);
 	}
 
-	parse->EventPlayer(EVENT_DEATH_COMPLETE, this, export_string, 0);
+	std::vector<std::any> args = { new_corpse };
+	parse->EventPlayer(EVENT_DEATH_COMPLETE, this, export_string, 0, &args);
 	return true;
 }
 //SYNC WITH: tune.cpp, mob.h TuneNPCAttack
@@ -2318,52 +2320,37 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	LogCombat("Fatal blow dealt by [{}] with [{}] damage, spell [{}], skill [{}]",
 		((killer_mob) ? (killer_mob->GetName()) : ("[nullptr]")), damage, spell, attack_skill);
 
-	Mob *oos = nullptr;
-	if (killer_mob) {
-		oos = killer_mob->GetOwnerOrSelf();
-		std::string export_string = fmt::format(
-			"{} {} {} {}",
-			killer_mob->GetID(),
-			damage,
-			spell,
-			static_cast<int>(attack_skill)
-		);
-		if (parse->EventNPC(EVENT_DEATH, this, oos, export_string, 0) != 0) {
-			if (GetHP() < 0) {
-				SetHP(0);
-			}
-			return false;
-		}
+	Mob* oos = killer_mob ? killer_mob->GetOwnerOrSelf() : nullptr;
 
-		if ((killer_mob->IsClient() || killer_mob->IsBot()) && (spell != SPELL_UNKNOWN) && damage > 0) {
-			char val1[20] = { 0 };
+	std::string export_string = fmt::format(
+		"{} {} {} {}",
+		killer_mob ? killer_mob->GetID() : 0,
+		damage,
+		spell,
+		static_cast<int>(attack_skill)
+	);
 
-			entity_list.MessageCloseString(
-				this, /* Sender */
-				false, /* Skip Sender */
-				RuleI(Range, DamageMessages),
-				Chat::NonMelee, /* 283 */
-				HIT_NON_MELEE, /* %1 hit %2 for %3 points of non-melee damage. */
-				killer_mob->GetCleanName(), /* Message1 */
-				GetCleanName(), /* Message2 */
-				ConvertArray(damage, val1) /* Message3 */
-			);
+	// todo: multiple attacks causes this to fire multiple times (DoAttackRounds, DoMain/OffHandAttackRounds, DoRiposte, spells?)
+	if (parse->EventNPC(EVENT_DEATH, this, oos, export_string, 0) != 0) {
+		if (GetHP() < 0) {
+			SetHP(0);
 		}
+		return false;
 	}
-	else {
-		std::string export_string = fmt::format(
-			"{} {} {} {}",
-			0,
-			damage,
-			spell,
-			static_cast<int>(attack_skill)
+
+	if (killer_mob && (killer_mob->IsClient() || killer_mob->IsBot()) && (spell != SPELL_UNKNOWN) && damage > 0) {
+		char val1[20] = { 0 };
+
+		entity_list.MessageCloseString(
+			this, /* Sender */
+			false, /* Skip Sender */
+			RuleI(Range, DamageMessages),
+			Chat::NonMelee, /* 283 */
+			HIT_NON_MELEE, /* %1 hit %2 for %3 points of non-melee damage. */
+			killer_mob->GetCleanName(), /* Message1 */
+			GetCleanName(), /* Message2 */
+			ConvertArray(damage, val1) /* Message3 */
 		);
-		if (parse->EventNPC(EVENT_DEATH, this, nullptr, export_string, 0) != 0) {
-			if (GetHP() < 0) {
-				SetHP(0);
-			}
-			return false;
-		}
 	}
 
 	if (IsEngaged()) {
@@ -2621,6 +2608,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	bool    allow_merchant_corpse = RuleB(Merchant, AllowCorpse);
 	bool    is_merchant = (class_ == MERCHANT || class_ == ADVENTURE_MERCHANT || MerchantType != 0);
 
+	Corpse* corpse = nullptr;
+
 	if (!HasOwner() && !IsMerc() && !GetSwarmInfo() && (!is_merchant || allow_merchant_corpse) &&
 		((killer && (killer->IsClient() || (killer->HasOwner() && killer->GetUltimateOwner()->IsClient()) ||
 		(killer->IsNPC() && killer->CastToNPC()->GetSwarmInfo() && killer->CastToNPC()->GetSwarmInfo()->GetOwner() && killer->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
@@ -2639,7 +2628,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		entity_list.RemoveFromAutoXTargets(this);
 
 		uint32 emoteid = GetEmoteID();
-		auto corpse = new Corpse(this, &itemlist, GetNPCTypeID(), &NPCTypedata,
+		corpse = new Corpse(this, &itemlist, GetNPCTypeID(), &NPCTypedata,
 			level > 54 ? RuleI(NPC, MajorNPCCorpseDecayTimeMS)
 			: RuleI(NPC, MinorNPCCorpseDecayTimeMS));
 		entity_list.LimitRemoveNPC(this);
@@ -2756,35 +2745,13 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 	entity_list.UpdateFindableNPCState(this, true);
 
-	std::string export_string = fmt::format(
-		"{} {} {} {}",
-		killer_mob ? killer_mob->GetID() : 0,
-		damage,
-		spell,
-		static_cast<int>(attack_skill)
-	);
-	parse->EventNPC(EVENT_DEATH_COMPLETE, this, oos, export_string, 0);
+	std::vector<std::any> args = { corpse };
+	parse->EventNPC(EVENT_DEATH_COMPLETE, this, oos, export_string, 0, &args);
 	combat_record.Stop();
 
 	/* Zone controller process EVENT_DEATH_ZONE (Death events) */
-	if (RuleB(Zone, UseZoneController)) {
-		auto controller = entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID);
-		if (controller && GetNPCTypeID() != ZONE_CONTROLLER_NPC_ID) {
-			export_string = fmt::format(
-				"{} {} {} {} {} {:.2f} {:.2f} {:.2f} {:.2f}",
-				killer_mob ? killer_mob->GetID() : 0,
-				damage,
-				spell,
-				static_cast<int>(attack_skill),
-				GetNPCTypeID(),
-				GetX(),
-				GetY(),
-				GetZ(),
-				GetHeading()
-			);
-			parse->EventNPC(EVENT_DEATH_ZONE, controller, nullptr, export_string, 0);
-		}
-	}
+	args.push_back(this);
+	DispatchZoneControllerEvent(EVENT_DEATH_ZONE, oos, export_string, 0, &args);
 
 	return true;
 }
