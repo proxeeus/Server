@@ -908,6 +908,8 @@ public:
 	int GetSpentAA() { return m_pp.aapoints_spent; }
 	uint32 GetRequiredAAExperience();
 
+	bool SendGMCommand(std::string message, bool ignore_status = false);
+
 	//old AA methods that we still use
 	void ResetAA();
 	void RefundAA();
@@ -1406,7 +1408,7 @@ public:
 	void SuspendMinion(int value);
 	void Doppelganger(uint16 spell_id, Mob *target, const char *name_override, int pet_count, int pet_duration);
 	void NotifyNewTitlesAvailable();
-	void Signal(uint32 data);
+	void Signal(int signal_id);
 	Mob *GetBindSightTarget() { return bind_sight_target; }
 	void SetBindSightTarget(Mob *n) { bind_sight_target = n; }
 	const uint16 GetBoatID() const { return controlling_boat_id; }
@@ -1529,7 +1531,8 @@ public:
 	const char* GetRacePlural(Client* client);
 	const char* GetClassPlural(Client* client);
 	void SendWebLink(const char* website);
-	void SendMarqueeMessage(uint32 type, uint32 priority, uint32 fade_in, uint32 fade_out, uint32 duration, std::string msg);
+	void SendMarqueeMessage(uint32 type, std::string message, uint32 duration = 3000);
+	void SendMarqueeMessage(uint32 type, uint32 priority, uint32 fade_in, uint32 fade_out, uint32 duration, std::string message);
 	void SendSpellAnim(uint16 targetid, uint16 spell_id);
 
 	void DuplicateLoreMessage(uint32 ItemID);
@@ -2027,6 +2030,13 @@ public:
 
 	bool GetBotPrecombat() { return m_bot_precombat; }
 	void SetBotPrecombat(bool flag = true) { m_bot_precombat = flag; }
+
+	int GetBotRequiredLevel(uint8 class_id = 0);
+	uint32 GetBotCreationLimit(uint8 class_id = 0);
+	int GetBotSpawnLimit(uint8 class_id = 0);
+	void SetBotCreationLimit(uint32 new_creation_limit, uint8 class_id = 0);
+	void SetBotRequiredLevel(int new_required_level, uint8 class_id = 0);
+	void SetBotSpawnLimit(int new_spawn_limit, uint8 class_id = 0);
 
 private:
 	bool bot_owner_options[_booCount];

@@ -364,7 +364,7 @@ public:
 	uint32 GetMoney(uint8 type, uint8 subtype);
 	void OpenLFGuildWindow();
 	void NotifyNewTitlesAvailable();
-	void Signal(uint32 id);
+	void Signal(int signal_id);
 	void AddAlternateCurrencyValue(uint32 currency, int amount);
 	void SetAlternateCurrencyValue(uint32 currency, int amount);
 	int GetAlternateCurrencyValue(uint32 currency);
@@ -388,7 +388,9 @@ public:
 	void SetHunger(int in_hunger);
 	void SetThirst(int in_thirst);
 	void SetConsumption(int in_hunger, int in_thirst);
-	void SendMarqueeMessage(uint32 type, uint32 priority, uint32 fade_in, uint32 fade_out, uint32 duration, std::string msg);
+	void SendMarqueeMessage(uint32 type, std::string message);
+	void SendMarqueeMessage(uint32 type, std::string message, uint32 duration);
+	void SendMarqueeMessage(uint32 type, uint32 priority, uint32 fade_in, uint32 fade_out, uint32 duration, std::string message);
 	void SendColoredText(uint32 type, std::string msg);
 	void PlayMP3(std::string file);
 	void QuestReward(Lua_Mob target);
@@ -446,6 +448,26 @@ public:
 
 	void SetClientMaxLevel(uint8 max_level);
 	uint8 GetClientMaxLevel();
+
+	bool SendGMCommand(std::string message);
+	bool SendGMCommand(std::string message, bool ignore_status);
+
+#ifdef BOTS
+
+	int GetBotRequiredLevel();
+	int GetBotRequiredLevel(uint8 class_id);
+	uint32 GetBotCreationLimit();
+	uint32 GetBotCreationLimit(uint8 class_id);
+	int GetBotSpawnLimit();
+	int GetBotSpawnLimit(uint8 class_id);
+	void SetBotRequiredLevel(int new_required_level);
+	void SetBotRequiredLevel(int new_required_level, uint8 class_id);
+	void SetBotCreationLimit(uint32 new_creation_limit);
+	void SetBotCreationLimit(uint32 new_creation_limit, uint8 class_id);
+	void SetBotSpawnLimit(int new_spawn_limit);
+	void SetBotSpawnLimit(int new_spawn_limit, uint8 class_id);
+
+#endif
 
 	void DialogueWindow(std::string markdown);
 
