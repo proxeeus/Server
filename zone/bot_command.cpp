@@ -7198,22 +7198,6 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 		return;
 	}
 
-	if (RuleB(Bots, QuestableSpawnLimit) && !c->GetGM()) {
-		int allowed_bot_count = 0;
-		if (!database.botdb.LoadQuestableSpawnCount(c->CharacterID(), allowed_bot_count)) {
-			c->Message(Chat::Red, "Failed to load questable spawn count.");
-			return;
-		}
-		if (!allowed_bot_count) {
-			c->Message(Chat::Red, "You are not currently allowed any spawned bots");
-			return;
-		}
-		if (spawned_bot_count >= allowed_bot_count) {
-			c->Message(Chat::Red, "You have reached your current limit of %i spawned bots", allowed_bot_count);
-			return;
-		}
-	}
-
 	std::string bot_name = clean_name;
 
 	uint32 bot_id = 0;
