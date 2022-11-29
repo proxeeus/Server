@@ -2923,7 +2923,7 @@ void EntityList::ScanCloseMobs(
 	for (auto &e : mob_list) {
 		auto mob = e.second;
 
-		if (!mob->IsNPC() && !mob->IsClient()) {
+		if (!mob->IsNPC() && !mob->IsClient() && !mob->IsBot() && !mob->IsMerc()) {
 			continue;
 		}
 
@@ -5176,7 +5176,8 @@ std::vector<Bot *> EntityList::GetBotListByCharacterID(uint32 character_id, uint
 	for (const auto& b : bot_list) {
 		if (
 			b->GetOwner() &&
-			b->GetBotOwnerCharacterID() == character_id
+			b->GetBotOwnerCharacterID() == character_id &&
+			(!class_id || b->GetClass() == class_id)
 		) {
 			client_bot_list.push_back(b);
 		}
@@ -5185,7 +5186,7 @@ std::vector<Bot *> EntityList::GetBotListByCharacterID(uint32 character_id, uint
 	return client_bot_list;
 }
 
-std::vector<Bot *> EntityList::GetBotListByClientName(std::string client_name)
+std::vector<Bot *> EntityList::GetBotListByClientName(std::string client_name, uint8 class_id)
 {
 	std::vector<Bot *> client_bot_list;
 
@@ -5196,7 +5197,8 @@ std::vector<Bot *> EntityList::GetBotListByClientName(std::string client_name)
 	for (const auto& b : bot_list) {
 		if (
 			b->GetOwner() &&
-			Strings::ToLower(b->GetOwner()->GetCleanName()) == Strings::ToLower(client_name)
+			Strings::ToLower(b->GetOwner()->GetCleanName()) == Strings::ToLower(client_name) &&
+			(!class_id || b->GetClass() == class_id)
 		) {
 			client_bot_list.push_back(b);
 		}
@@ -5828,9 +5830,13 @@ int EntityList::MovePlayerCorpsesToGraveyard(bool force_move_from_instance)
 }
 
 void EntityList::DespawnGridNodes(int32 grid_id) {
-	for (auto mob_iterator : mob_list) {
-		Mob *mob = mob_iterator.second;
-		if (mob->IsNPC() && mob->GetRace() == 2254 && mob->EntityVariableExists("grid_id") && atoi(mob->GetEntityVariable("grid_id")) == grid_id) {
+	for (auto m : mob_list) {
+		Mob *mob = m.second;
+		if (
+			mob->IsNPC() &&
+			mob->GetRace() == 2254 &&
+			mob->EntityVariableExists("grid_id") &&
+			std::stoi(mob->GetEntityVariable("grid_id")) == grid_id) {
 			mob->Depop();
 		}
 	}
@@ -5859,9 +5865,9 @@ void EntityList::Marquee(
 	}
 }
 
-std::vector<Mob*> EntityList::GetFilteredEntityList(Mob* sender, uint32 distance, uint8 filter_type)
+std::vector<Mob*> EntityList::GetFilteredEntityList(Mob* sender, uint32 distance, EntityFilterType filter_type)
 {
-	std::vector<Mob *> l;
+	std::vector<Mob*> l;
 	if (!sender) {
 		return l;
 	}
@@ -5888,9 +5894,9 @@ std::vector<Mob*> EntityList::GetFilteredEntityList(Mob* sender, uint32 distance
 		}
 
 		if (
-			(filter_type == EntityFilterTypes::Bots && !m.second->IsBot()) ||
-			(filter_type == EntityFilterTypes::Clients && !m.second->IsClient()) ||
-			(filter_type == EntityFilterTypes::NPCs && !m.second->IsNPC())
+			(filter_type == EntityFilterType::Bots && !m.second->IsBot()) ||
+			(filter_type == EntityFilterType::Clients && !m.second->IsClient()) ||
+			(filter_type == EntityFilterType::NPCs && !m.second->IsNPC())
 		) {
 			continue;
 		}
@@ -5901,8 +5907,13 @@ std::vector<Mob*> EntityList::GetFilteredEntityList(Mob* sender, uint32 distance
 	return l;
 }
 
-void EntityList::DamageArea(Mob* sender, int64 damage, uint32 distance, uint8 filter_type, bool is_percentage)
-{
+void EntityList::DamageArea(
+	Mob* sender,
+	int64 damage,
+	uint32 distance,
+	EntityFilterType filter_type,
+	bool is_percentage
+) {
 	if (!sender) {
 		return;
 	}

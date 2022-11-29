@@ -307,7 +307,7 @@ public:
 	void DoEnduranceRegen();	//This Regenerates endurance
 	void DoEnduranceUpkeep();	//does the endurance upkeep
 
-	bool AI_AddBotSpells(uint32 iDBSpellsID);
+	bool AI_AddBotSpells(uint32 bot_spell_id);
 	void AddSpellToBotList(
 		int16 iPriority,
 		uint16 iSpellID,
@@ -470,6 +470,7 @@ public:
 	//static void UpdateRaidCastingRoles(const Raid* raid, bool disband = false);
 
 	bool IsBotCaster() { return IsCasterClass(GetClass()); }
+	bool IsBotHybrid() { return IsHybridClass(GetClass()); }
 	bool IsBotINTCaster() { return IsINTCasterClass(GetClass()); }
 	bool IsBotWISCaster() { return IsWISCasterClass(GetClass()); }
 	bool IsBotSpellFighter() { return IsSpellFighterClass(GetClass()); }
@@ -557,6 +558,9 @@ public:
 	inline InspectMessage_Struct& GetInspectMessage() { return _botInspectMessage; }
 	inline const InspectMessage_Struct& GetInspectMessage() const { return _botInspectMessage; }
 
+	// "Quest API" Methods
+	bool HasBotSpellEntry(uint16 spellid);
+
 	// "SET" Class Methods
 	void SetBotSpellID(uint32 newSpellID);
 	virtual void SetSpawnStatus(bool spawnStatus) { _spawnStatus = spawnStatus; }
@@ -592,6 +596,18 @@ public:
 
 	int GetExpansionBitmask();
 	void SetExpansionBitmask(int expansion_bitmask, bool save = true);
+
+	void ListBotSpells();
+
+	std::string GetLevelString(uint8 min_level, uint8 max_level);
+	std::string GetHPString(int8 min_hp, int8 max_hp);
+
+	bool AddBotSpellSetting(uint16 spell_id, BotSpellSetting* bs);
+	bool DeleteBotSpellSetting(uint16 spell_id);
+	BotSpellSetting* GetBotSpellSetting(uint16 spell_id);
+	void ListBotSpellSettings();
+	void LoadBotSpellSettings();
+	bool UpdateBotSpellSetting(uint16 spell_id, BotSpellSetting* bs);
 
 	static void SpawnBotGroupByName(Client* c, std::string botgroup_name, uint32 leader_id);
 
@@ -657,6 +673,7 @@ public:
 		uint32 augment_six = 0
 	);
 	uint32 CountBotItem(uint32 item_id);
+	std::map<uint16, uint32> GetBotItemSlots();
 	uint32 GetBotItemBySlot(uint16 slot_id);
 	bool HasBotItem(uint32 item_id);
 	void RemoveBotItem(uint32 item_id);
@@ -762,6 +779,9 @@ private:
 
 	BotCastingRoles m_CastingRoles;
 	std::map<std::string,std::string> bot_data_buckets;
+	std::map<std::string,std::string> bot_owner_data_buckets;
+
+	std::map<uint16, BotSpellSetting> bot_spell_settings;
 
 	std::shared_ptr<HealRotation> m_member_of_heal_rotation;
 

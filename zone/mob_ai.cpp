@@ -2992,7 +2992,7 @@ void NPC::AISpellsList(Client *c)
 				c->Message(
 					Chat::White,
 					fmt::format(
-						"Spell {} | Resist Adjust : {}",
+						"Spell {} | Resist Adjust: {}",
 						spell_slot,
 						ai_spell.resist_adjust
 					).c_str()

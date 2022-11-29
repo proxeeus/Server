@@ -1,11 +1,11 @@
-#ifndef EQEMU_CHARACTER_PEQZONE_FLAGS_REPOSITORY_H
-#define EQEMU_CHARACTER_PEQZONE_FLAGS_REPOSITORY_H
+#ifndef EQEMU_BOT_SPELL_SETTINGS_REPOSITORY_H
+#define EQEMU_BOT_SPELL_SETTINGS_REPOSITORY_H
 
 #include "../database.h"
 #include "../strings.h"
-#include "base/base_character_peqzone_flags_repository.h"
+#include "base/base_bot_spell_settings_repository.h"
 
-class CharacterPeqzoneFlagsRepository: public BaseCharacterPeqzoneFlagsRepository {
+class BotSpellSettingsRepository: public BaseBotSpellSettingsRepository {
 public:
 
     /**
@@ -32,10 +32,10 @@ public:
      *
      * Example custom methods in a repository
      *
-     * CharacterPeqzoneFlagsRepository::GetByZoneAndVersion(int zone_id, int zone_version)
-     * CharacterPeqzoneFlagsRepository::GetWhereNeverExpires()
-     * CharacterPeqzoneFlagsRepository::GetWhereXAndY()
-     * CharacterPeqzoneFlagsRepository::DeleteWhereXAndY()
+     * BotSpellSettingsRepository::GetByZoneAndVersion(int zone_id, int zone_version)
+     * BotSpellSettingsRepository::GetWhereNeverExpires()
+     * BotSpellSettingsRepository::GetWhereXAndY()
+     * BotSpellSettingsRepository::DeleteWhereXAndY()
      *
      * Most of the above could be covered by base methods, but if you as a developer
      * find yourself re-using logic for other parts of the code, its best to just make a
@@ -44,19 +44,34 @@ public:
      */
 
 	// Custom extended repository methods here
-	static int DeleteFlag(Database& db, uint32 character_id, uint32 zone_id)
-	{
+
+	static bool UpdateSpellSetting(
+		Database& db,
+		const BotSpellSettings &e
+	) {
+		std::vector<std::string> v;
+
+		auto columns = Columns();
+
+		v.push_back(columns[3] + " = " + std::to_string(e.priority));
+		v.push_back(columns[4] + " = " + std::to_string(e.min_level));
+		v.push_back(columns[5] + " = " + std::to_string(e.max_level));
+		v.push_back(columns[6] + " = " + std::to_string(e.min_hp));
+		v.push_back(columns[7] + " = " + std::to_string(e.max_hp));
+		v.push_back(columns[8] + " = " + std::to_string(e.is_enabled));
+
 		auto results = db.QueryDatabase(
 			fmt::format(
-				"DELETE FROM {} WHERE id = {} AND zone_id = {}",
+				"UPDATE {} SET {} WHERE `bot_id` = {} AND `spell_id` = {}",
 				TableName(),
-				character_id,
-				zone_id
+				Strings::Implode(", ", v),
+				e.bot_id,
+				e.spell_id
 			)
 		);
 
-		return (results.Success() ? results.RowsAffected() : 0);
+		return (results.Success() ? true : false);
 	}
 };
 
-#endif //EQEMU_CHARACTER_PEQZONE_FLAGS_REPOSITORY_H
+#endif //EQEMU_BOT_SPELL_SETTINGS_REPOSITORY_H
