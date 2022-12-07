@@ -1938,6 +1938,11 @@ void Perl_Mob_SetSlotTint(Mob* self, uint8 material_slot, uint8 red_tint, uint8 
 	self->SetSlotTint(material_slot, red_tint, green_tint, blue_tint);
 }
 
+void Perl_Mob_WearChange(Mob* self, uint8 material_slot, uint16 texture) // @categories Script Utility
+{
+	self->WearChange(material_slot, texture);
+}
+
 void Perl_Mob_WearChange(Mob* self, uint8 material_slot, uint16 texture, uint32 color) // @categories Script Utility
 {
 	self->WearChange(material_slot, texture, color);
@@ -2636,6 +2641,16 @@ perl::array Perl_Mob_GetHateListNPCs(Mob* self, uint32 distance)
 	return result;
 }
 
+bool Perl_Mob_ClearEntityVariables(Mob* self) // @categories Script Utility
+{
+	return self->ClearEntityVariables();
+}
+
+bool Perl_Mob_DeleteEntityVariable(Mob* self, std::string variable_name) // @categories Script Utility
+{
+	return self->DeleteEntityVariable(variable_name);
+}
+
 bool Perl_Mob_EntityVariableExists(Mob* self, std::string variable_name) // @categories Script Utility
 {
 	return self->EntityVariableExists(variable_name);
@@ -2806,6 +2821,7 @@ void perl_register_mob()
 	package.add("CheckLoS", &Perl_Mob_CheckLoS);
 	package.add("CheckLoSToLoc", (bool(*)(Mob*, float, float, float))&Perl_Mob_CheckLoSToLoc);
 	package.add("CheckLoSToLoc", (bool(*)(Mob*, float, float, float, float))&Perl_Mob_CheckLoSToLoc);
+	package.add("ClearEntityVariables", &Perl_Mob_ClearEntityVariables);
 	package.add("ClearFeignMemory", &Perl_Mob_ClearFeignMemory);
 	package.add("ClearSpecialAbilities", &Perl_Mob_ClearSpecialAbilities);
 	package.add("CloneAppearance", (void(*)(Mob*, Mob*))&Perl_Mob_CloneAppearance);
@@ -2853,6 +2869,7 @@ void perl_register_mob()
 	package.add("DamageHateListPercentage", (void(*)(Mob*, int64, uint32))&Perl_Mob_DamageHateListPercentage);
 	package.add("DelGlobal", &Perl_Mob_DelGlobal);
 	package.add("DeleteBucket", &Perl_Mob_DeleteBucket);
+	package.add("DeleteEntityVariable", &Perl_Mob_DeleteEntityVariable);
 	package.add("Depop", (void(*)(Mob*))&Perl_Mob_Depop);
 	package.add("Depop", (void(*)(Mob*, bool))&Perl_Mob_Depop);
 	package.add("DivineAura", &Perl_Mob_DivineAura);
@@ -3279,6 +3296,7 @@ void perl_register_mob()
 	package.add("TypesTempPet", (void(*)(Mob*, uint32, const char*, uint32, bool, Mob*))&Perl_Mob_TypesTempPet);
 	package.add("TypesTempPet", (void(*)(Mob*, uint32, const char*, uint32, bool, Mob*, bool))&Perl_Mob_TypesTempPet);
 	package.add("WalkTo", &Perl_Mob_WalkTo);
+	package.add("WearChange", (void(*)(Mob*, uint8, uint16))&Perl_Mob_WearChange);
 	package.add("WearChange", (void(*)(Mob*, uint8, uint16, uint32))&Perl_Mob_WearChange);
 	package.add("WearChange", (void(*)(Mob*, uint8, uint16, uint32, uint32))&Perl_Mob_WearChange);
 	package.add("WipeHateList", &Perl_Mob_WipeHateList);

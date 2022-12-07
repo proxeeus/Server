@@ -2952,7 +2952,7 @@ void EntityList::ScanCloseMobs(
 		}
 	}
 
-	LogAIScanClose(
+	LogAIScanCloseModerate(
 		"[{}] Scanning Close List | list_size [{}] moving [{}]",
 		scanning_mob->GetCleanName(),
 		close_mobs.size(),
@@ -5215,7 +5215,7 @@ void EntityList::SignalAllBotsByOwnerCharacterID(uint32 character_id, int signal
 	}
 
 	for (const auto& b : client_bot_list) {
-		b->SignalBot(signal_id);
+		b->Signal(signal_id);
 	}
 }
 
@@ -5223,7 +5223,7 @@ void EntityList::SignalBotByBotID(uint32 bot_id, int signal_id)
 {
 	auto b = GetBotByBotID(bot_id);
 	if (b) {
-		b->SignalBot(signal_id);
+		b->Signal(signal_id);
 	}
 }
 
@@ -5231,7 +5231,7 @@ void EntityList::SignalBotByBotName(std::string bot_name, int signal_id)
 {
 	auto b = GetBotByBotName(bot_name);
 	if (b) {
-		b->SignalBot(signal_id);
+		b->Signal(signal_id);
 	}
 }
 #endif

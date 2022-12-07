@@ -158,6 +158,8 @@ public:
 	void RemoveAISpellEffect(int spell_effect_id);
 	bool HasAISpellEffect(int spell_effect_id);
 	float GetNPCStat(std::string stat);
+	void SendPayload(int payload_id);
+	void SendPayload(int payload_id, std::string payload_value);
 };
 
 #endif

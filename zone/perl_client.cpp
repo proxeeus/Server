@@ -2732,6 +2732,26 @@ perl::array Perl_Client_GetZoneFlags(Client* self)
 	return a;
 }
 
+void Perl_Client_SendPayload(Client* self, int payload_id) // @categories Script Utility
+{
+	self->SendPayload(payload_id);
+}
+
+void Perl_Client_SendPayload(Client* self, int payload_id, std::string payload_value) // @categories Script Utility
+{
+	self->SendPayload(payload_id, payload_value);
+}
+
+void Perl_Client_Signal(Client* self, int signal_id)
+{
+	self->Signal(signal_id);
+}
+
+std::string Perl_Client_GetGuildPublicNote(Client* self)
+{
+	return self->GetGuildPublicNote();
+}
+
 #ifdef BOTS
 
 int Perl_Client_GetBotRequiredLevel(Client* self)
@@ -2981,6 +3001,7 @@ void perl_register_client()
 	package.add("GetGMStatus", &Perl_Client_GetGMStatus);
 	package.add("GetGroup", &Perl_Client_GetGroup);
 	package.add("GetGroupPoints", &Perl_Client_GetGroupPoints);
+	package.add("GetGuildPublicNote", &Perl_Client_GetGuildPublicNote);
 	package.add("GetHorseId", &Perl_Client_GetHorseId);
 	package.add("GetHealAmount", &Perl_Client_GetHealAmount);
 	package.add("GetHunger", &Perl_Client_GetHunger);
@@ -3168,6 +3189,8 @@ void perl_register_client()
 	package.add("SendMarqueeMessage", (void(*)(Client*, uint32, std::string, uint32))&Perl_Client_SendMarqueeMessage);
 	package.add("SendMarqueeMessage", (void(*)(Client*, uint32, uint32, uint32, uint32, uint32, std::string))&Perl_Client_SendMarqueeMessage);
 	package.add("SendOPTranslocateConfirm", &Perl_Client_SendOPTranslocateConfirm);
+	package.add("SendPayload", (void(*)(Client*, int))&Perl_Client_SendPayload);
+	package.add("SendPayload", (void(*)(Client*, int, std::string))&Perl_Client_SendPayload);
 	package.add("SendPEQZoneFlagInfo", &Perl_Client_SendPEQZoneFlagInfo);
 	package.add("SendSound", &Perl_Client_SendSound);
 	package.add("SendSpellAnim", &Perl_Client_SendSpellAnim);
@@ -3270,6 +3293,7 @@ void perl_register_client()
 	package.add("SetTitleSuffix", (void(*)(Client*, std::string))&Perl_Client_SetTitleSuffix);
 	package.add("SetTitleSuffix", (void(*)(Client*, std::string, bool))&Perl_Client_SetTitleSuffix);
 	package.add("SetZoneFlag", &Perl_Client_SetZoneFlag);
+	package.add("Signal", &Perl_Client_Signal);
 	package.add("SilentMessage", &Perl_Client_SilentMessage);
 	package.add("Sit", &Perl_Client_Sit);
 	package.add("SlotConvert2", &Perl_Client_SlotConvert2);

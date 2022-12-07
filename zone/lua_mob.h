@@ -46,7 +46,7 @@ public:
 	bool BehindMob(Lua_Mob other, float x, float y);
 	void SetLevel(int level);
 	void SetLevel(int level, bool command);
-	void SendWearChange(int material_slot);
+	void SendWearChange(uint8 material_slot);
 	bool IsMoving();
 	bool IsFeared();
 	bool IsBlind();
@@ -301,11 +301,15 @@ public:
 	bool SetAA(int rank_id, int new_value, int charges);
 	bool DivineAura();
 	void SetOOCRegen(int64 new_ooc_regen);
+	bool ClearEntityVariables();
+	bool DeleteEntityVariable(std::string variable_name);
 	std::string GetEntityVariable(std::string variable_name);
 	luabind::object GetEntityVariables(lua_State* L);
 	void SetEntityVariable(std::string variable_name, std::string variable_value);
 	bool EntityVariableExists(std::string variable_name);
 	void Signal(int signal_id);
+	void SendPayload(int payload_id);
+	void SendPayload(int payload_id, std::string payload_value);
 	bool CombatRange(Lua_Mob other);
 	void DoSpecialAttackDamage(Lua_Mob other, int skill, int max_damage);
 	void DoSpecialAttackDamage(Lua_Mob other, int skill, int max_damage, int min_damage);
@@ -377,7 +381,9 @@ public:
 	void TarGlobal(const char *varname, const char *value, const char *duration, int npc_id, int char_id, int zone_id);
 	void DelGlobal(const char *varname);
 	void SetSlotTint(int material_slot, int red_tint, int green_tint, int blue_tint);
-	void WearChange(int material_slot, int texture, uint32 color);
+	void WearChange(uint8 material_slot, uint16 texture);
+	void WearChange(uint8 material_slot, uint16 texture, uint32 color);
+	void WearChange(uint8 material_slot, uint16 texture, uint32 color, uint32 heros_forge_model);
 	void DoKnockback(Lua_Mob caster, uint32 push_back, uint32 push_up);
 	void AddNimbusEffect(int effect_id);
 	void RemoveNimbusEffect(int effect_id);

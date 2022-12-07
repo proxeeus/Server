@@ -1438,6 +1438,7 @@ public:
 	void Doppelganger(uint16 spell_id, Mob *target, const char *name_override, int pet_count, int pet_duration);
 	void NotifyNewTitlesAvailable();
 	void Signal(int signal_id);
+	void SendPayload(int payload_id, std::string payload_value = std::string());
 	Mob *GetBindSightTarget() { return bind_sight_target; }
 	void SetBindSightTarget(Mob *n) { bind_sight_target = n; }
 	const uint16 GetBoatID() const { return controlling_boat_id; }
@@ -1666,6 +1667,8 @@ public:
 	Timer m_list_task_timers_rate_limit = {};
 
 	std::map<std::string,std::string> GetMerchantDataBuckets();
+
+	std::string GetGuildPublicNote();
 
 protected:
 	friend class Mob;

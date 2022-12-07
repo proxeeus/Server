@@ -59,21 +59,6 @@ struct AISpells_Struct {
 	int8	max_hp; // >0 won't cast if HP is above
 };
 
-struct BotSpells_Struct {
-	uint32		type;			// 0 = never, must be one (and only one) of the defined values
-	int16		spellid;			// <= 0 = no spell
-	int16		manacost;		// -1 = use spdat, -2 = no cast time
-	uint32		time_cancast;	// when we can cast this spell next
-	int32		recast_delay;
-	int16		priority;
-	int16		resist_adjust;
-	int16		min_hp;			// >0 won't cast if HP is below
-	int16		max_hp;			// >0 won't cast if HP is above
-	std::string	bucket_name;
-	std::string	bucket_value;
-	uint8		bucket_comparison;
-};
-
 struct AISpellsEffects_Struct {
 	uint16	spelleffectid;
 	int32	base_value;
@@ -277,6 +262,7 @@ public:
 	void	PetOnSpawn(NewSpawn_Struct* ns);
 
 	void	SignalNPC(int _signal_id);
+	void	SendPayload(int payload_id, std::string payload_value = std::string());
 
 	inline int32 GetNPCFactionID() const
 	{ return npc_faction_id; }
@@ -336,8 +322,9 @@ public:
 
 	bool MeetsLootDropLevelRequirements(LootDropEntries_Struct loot_drop, bool verbose=false);
 
+	void CheckSignal();
+
 	virtual void DoClassAttacks(Mob *target);
-	void	CheckSignal();
 	inline bool IsNotTargetableWithHotkey() const { return no_target_hotkey; }
 	int64 GetNPCHPRegen() const { return hp_regen + itembonuses.HPRegen + spellbonuses.HPRegen; }
 	inline const char* GetAmmoIDfile() const { return ammo_idfile; }
@@ -593,7 +580,6 @@ public:
 
 	uint32*	pDontCastBefore_casting_spell;
 	std::vector<AISpells_Struct> AIspells;
-	std::vector<BotSpells_Struct> AIBot_spells; //Will eventually be moved to Bot Class once Bots are no longer reliant on NPC constructor
 	bool HasAISpell;
 	virtual bool AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes, bool bInnates = false);
 	virtual bool AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgainBefore = 0);

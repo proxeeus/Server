@@ -297,7 +297,7 @@ public:
 	virtual void SendTextureWC(uint8 slot, uint16 texture, uint32 hero_forge_model = 0, uint32 elite_material = 0, uint32 unknown06 = 0, uint32 unknown18 = 0);
 	virtual void SendWearChange(uint8 material_slot, Client *one_client = nullptr);
 	virtual void SetSlotTint(uint8 material_slot, uint8 red_tint, uint8 green_tint, uint8 blue_tint);
-	virtual void WearChange(uint8 material_slot, uint16 texture, uint32 color, uint32 hero_forge_model = 0);
+	virtual void WearChange(uint8 material_slot, uint16 texture, uint32 color = 0, uint32 hero_forge_model = 0);
 
 	void ChangeSize(float in_size, bool bNoRestriction = false);
 	void DoAnim(const int animation_id, int animation_speed = 0, bool ackreq = true, eqFilterType filter = FilterNone);
@@ -1133,6 +1133,8 @@ public:
 	virtual void AI_ShutDown();
 	virtual void AI_Process();
 
+	bool ClearEntityVariables();
+	bool DeleteEntityVariable(std::string variable_name);
 	std::string GetEntityVariable(std::string variable_name);
 	std::vector<std::string> GetEntityVariables();
 	void SetEntityVariable(std::string variable_name, std::string variable_value);
