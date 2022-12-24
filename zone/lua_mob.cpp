@@ -243,24 +243,24 @@ void Lua_Mob::SetHP(int64 hp) {
 	self->SetHP(hp);
 }
 
-void Lua_Mob::DoAnim(int anim_num) {
+void Lua_Mob::DoAnim(int animation_id) {
 	Lua_Safe_Call_Void();
-	self->DoAnim(anim_num);
+	self->DoAnim(animation_id);
 }
 
-void Lua_Mob::DoAnim(int anim_num, int type) {
+void Lua_Mob::DoAnim(int animation_id, int animation_speed) {
 	Lua_Safe_Call_Void();
-	self->DoAnim(anim_num, type);
+	self->DoAnim(animation_id, animation_speed);
 }
 
-void Lua_Mob::DoAnim(int anim_num, int type, bool ackreq) {
+void Lua_Mob::DoAnim(int animation_id, int animation_speed, bool ackreq) {
 	Lua_Safe_Call_Void();
-	self->DoAnim(anim_num, type, ackreq);
+	self->DoAnim(animation_id, animation_speed, ackreq);
 }
 
-void Lua_Mob::DoAnim(int anim_num, int type, bool ackreq, int filter) {
+void Lua_Mob::DoAnim(int animation_id, int animation_speed, bool ackreq, int filter) {
 	Lua_Safe_Call_Void();
-	self->DoAnim(anim_num, type, ackreq, static_cast<eqFilterType>(filter));
+	self->DoAnim(animation_id, animation_speed, ackreq, static_cast<eqFilterType>(filter));
 }
 
 void Lua_Mob::ChangeSize(double in_size) {
@@ -2761,6 +2761,11 @@ void Lua_Mob::SendPayload(int payload_id, std::string payload_value) {
 	}
 }
 
+void Lua_Mob::CopyHateList(Lua_Mob to) {
+	Lua_Safe_Call_Void();
+	self->CopyHateList(to);
+}
+
 #ifdef BOTS
 void Lua_Mob::DamageAreaBots(int64 damage) {
 	Lua_Safe_Call_Void();
@@ -2912,6 +2917,7 @@ luabind::scope lua_register_mob() {
 	.def("CloneAppearance", (void(Lua_Mob::*)(Lua_Mob))&Lua_Mob::CloneAppearance)
 	.def("CloneAppearance", (void(Lua_Mob::*)(Lua_Mob,bool))&Lua_Mob::CloneAppearance)
 	.def("CombatRange", (bool(Lua_Mob::*)(Lua_Mob))&Lua_Mob::CombatRange)
+	.def("CopyHateList", (void(Lua_Mob::*)(Lua_Mob))&Lua_Mob::CopyHateList)
 	.def("Damage", (void(Lua_Mob::*)(Lua_Mob,int64,int,int))&Lua_Mob::Damage)
 	.def("Damage", (void(Lua_Mob::*)(Lua_Mob,int64,int,int,bool))&Lua_Mob::Damage)
 	.def("Damage", (void(Lua_Mob::*)(Lua_Mob,int64,int,int,bool,int))&Lua_Mob::Damage)

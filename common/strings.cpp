@@ -192,7 +192,7 @@ std::string Strings::Escape(const std::string &s)
 bool Strings::IsNumber(const std::string &s)
 {
 	try {
-		auto r = stod(s);
+		auto r = stoi(s);
 		return true;
 	}
 	catch (std::exception &) {
@@ -200,6 +200,16 @@ bool Strings::IsNumber(const std::string &s)
 	}
 }
 
+bool Strings::IsFloat(const std::string &s)
+{
+	try {
+		auto r = stof(s);
+		return true;
+	}
+	catch (std::exception &) {
+		return false;
+	}
+}
 
 std::string Strings::Join(const std::vector<std::string> &ar, const std::string &delim)
 {
@@ -685,34 +695,71 @@ uint32 Strings::TimeToSeconds(std::string time_string)
 		return 0;
 	}
 
-	uint32 duration = 0;
+	time_string = Strings::ToLower(time_string);
 
-	std::transform(time_string.begin(), time_string.end(), time_string.begin(), ::tolower);
+	if (time_string == "f") {
+		return 0;
+	}
 
 	std::string time_unit = time_string;
-	time_unit.erase(remove_if(time_unit.begin(), time_unit.end(), [](char c) { return !isdigit(c); }), time_unit.end());
+
+	time_unit.erase(
+		remove_if(
+			time_unit.begin(),
+			time_unit.end(),
+			[](char c) {
+				return !isdigit(c);
+			}
+		),
+		time_unit.end()
+	);
 
 	auto unit = std::stoul(time_unit);
+	uint32 duration = 0;
 
-	if (time_string.find('s') != std::string::npos) {
+	if (Strings::Contains(time_string, "s")) {
 		duration = unit;
-	}
-
-	if (time_string.find('m') != std::string::npos) {
+	} else if (Strings::Contains(time_string, "m")) {
 		duration = unit * 60;
-	}
-
-	if (time_string.find('h') != std::string::npos) {
+	} else if (Strings::Contains(time_string, "h")) {
 		duration = unit * 3600;
-	}
-
-	if (time_string.find('d') != std::string::npos) {
+	} else if (Strings::Contains(time_string, "d")) {
 		duration = unit * 86400;
-	}
-
-	if (time_string.find('y') != std::string::npos) {
+	} else if (Strings::Contains(time_string, "y")) {
 		duration = unit * 31556926;
 	}
 
 	return duration;
+}
+
+bool Strings::ToBool(std::string bool_string)
+{
+	if (
+		Strings::Contains(bool_string, "true") ||
+		Strings::Contains(bool_string, "y") ||
+		Strings::Contains(bool_string, "yes") ||
+		Strings::Contains(bool_string, "on") ||
+		Strings::Contains(bool_string, "enable") ||
+		Strings::Contains(bool_string, "enabled") ||
+		(Strings::IsNumber(bool_string) && std::stoi(bool_string))
+	) {
+		return true;
+	}
+
+	return false;
+}
+
+// returns a random string of specified length
+std::string Strings::Random(size_t length)
+{
+	auto        randchar = []() -> char {
+		const char   charset[] = "0123456789"
+								 "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+								 "abcdefghijklmnopqrstuvwxyz";
+		const size_t max_index = (sizeof(charset) - 1);
+		return charset[static_cast<size_t>(std::rand()) % max_index];
+	};
+	std::string str(length, 0);
+	std::generate_n(str.begin(), length, randchar);
+	return str;
 }

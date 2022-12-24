@@ -1931,6 +1931,21 @@ void Perl_Client_MovePCDynamicZone(Client* self, perl::scalar zone, int zone_ver
 	self->MovePCDynamicZone(zone_id, zone_version, msg_if_invalid);
 }
 
+void Perl_Client_Fling(Client* self, float target_x, float target_y, float target_z)
+{
+	self->Fling(0, target_x, target_y, target_z, false, false, true);
+}
+
+void Perl_Client_Fling(Client* self, float target_x, float target_y, float target_z, bool ignore_los)
+{
+	self->Fling(0, target_x, target_y, target_z, ignore_los, false, true);
+}
+
+void Perl_Client_Fling(Client* self, float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls)
+{
+	self->Fling(0, target_x, target_y, target_z, ignore_los, clip_through_walls, true);
+}
+
 void Perl_Client_Fling(Client* self, float value, float target_x, float target_y, float target_z)
 {
 	self->Fling(value, target_x, target_y, target_z);
@@ -1941,9 +1956,9 @@ void Perl_Client_Fling(Client* self, float value, float target_x, float target_y
 	self->Fling(value, target_x, target_y, target_z, ignore_los);
 }
 
-void Perl_Client_Fling(Client* self, float value, float target_x, float target_y, float target_z, bool ignore_los, bool clipping)
+void Perl_Client_Fling(Client* self, float value, float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls)
 {
-	self->Fling(value, target_x, target_y, target_z, ignore_los, clipping);
+	self->Fling(value, target_x, target_y, target_z, ignore_los, clip_through_walls);
 }
 
 bool Perl_Client_HasDisciplineLearned(Client* self, uint16 spell_id)
@@ -2752,6 +2767,11 @@ std::string Perl_Client_GetGuildPublicNote(Client* self)
 	return self->GetGuildPublicNote();
 }
 
+void Perl_Client_MaxSkills(Client* self)
+{
+	self->MaxSkills();
+}
+
 #ifdef BOTS
 
 int Perl_Client_GetBotRequiredLevel(Client* self)
@@ -2914,6 +2934,9 @@ void perl_register_client()
 	package.add("FindEmptyMemSlot", &Perl_Client_FindEmptyMemSlot);
 	package.add("FindMemmedSpellBySlot", &Perl_Client_FindMemmedSpellBySlot);
 	package.add("FindMemmedSpellBySpellID", &Perl_Client_FindMemmedSpellBySpellID);
+	package.add("Fling", (void(*)(Client*, float, float, float))&Perl_Client_Fling);
+	package.add("Fling", (void(*)(Client*, float, float, float, bool))&Perl_Client_Fling);
+	package.add("Fling", (void(*)(Client*, float, float, float, bool, bool))&Perl_Client_Fling);
 	package.add("Fling", (void(*)(Client*, float, float, float, float))&Perl_Client_Fling);
 	package.add("Fling", (void(*)(Client*, float, float, float, float, bool))&Perl_Client_Fling);
 	package.add("Fling", (void(*)(Client*, float, float, float, float, bool, bool))&Perl_Client_Fling);
@@ -3108,6 +3131,7 @@ void perl_register_client()
 	package.add("MaxSkill", (int(*)(Client*, uint16))&Perl_Client_MaxSkill);
 	package.add("MaxSkill", (int(*)(Client*, uint16, uint16))&Perl_Client_MaxSkill);
 	package.add("MaxSkill", (int(*)(Client*, uint16, uint16, uint16))&Perl_Client_MaxSkill);
+	package.add("MaxSkills", &Perl_Client_MaxSkills);
 	package.add("MemSpell", (void(*)(Client*, uint16, int))&Perl_Client_MemSpell);
 	package.add("MemSpell", (void(*)(Client*, uint16, int, bool))&Perl_Client_MemSpell);
 	package.add("MemmedCount", &Perl_Client_MemmedCount);

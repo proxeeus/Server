@@ -2617,7 +2617,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	}
 
 	LogSpells(
-		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
+		"[Mob::SendIllusionPacket] Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
 		race,
 		gender,
 		texture,
@@ -4289,7 +4289,7 @@ void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on,
 	if(!IsValidSpell(spell_id)) { // Check for a valid spell otherwise it will crash through the function
 		if(IsClient()){
 			Message(0, "Invalid spell proc %u", spell_id);
-			LogSpells("Player [{}], Weapon Procced invalid spell [{}]", GetName(), spell_id);
+			LogSpells("[Mob::ExecWeaponProc] Player [{}] Weapon Procced invalid spell [{}]", GetName(), spell_id);
 		}
 		return;
 	}
@@ -6409,37 +6409,44 @@ void Mob::ClearSpecialAbilities() {
 void Mob::ProcessSpecialAbilities(const std::string &str) {
 	ClearSpecialAbilities();
 
-	std::vector<std::string> sp = Strings::Split(str, '^');
-	for(auto iter = sp.begin(); iter != sp.end(); ++iter) {
-		std::vector<std::string> sub_sp = Strings::Split((*iter), ',');
-		if(sub_sp.size() >= 2) {
-			int ability = std::stoi(sub_sp[0]);
+	const auto& sp = Strings::Split(str, '^');
+	for (const auto& s : sp) {
+		const auto& sub_sp = Strings::Split(s, ',');
+		if (
+			sub_sp.size() >= 2 &&
+			Strings::IsNumber(sub_sp[0]) &&
+			Strings::IsNumber(sub_sp[1])
+		) {
+			int ability_id = std::stoi(sub_sp[0]);
 			int value = std::stoi(sub_sp[1]);
 
-			SetSpecialAbility(ability, value);
-			switch(ability) {
-			case SPECATK_QUAD:
-				if(value > 0) {
-					SetSpecialAbility(SPECATK_TRIPLE, 1);
-				}
-				break;
-			case DESTRUCTIBLE_OBJECT:
-				if(value == 0) {
-					SetDestructibleObject(false);
-				} else {
-					SetDestructibleObject(true);
-				}
-				break;
-			default:
-				break;
+			SetSpecialAbility(ability_id, value);
+
+			switch (ability_id) {
+				case SPECATK_QUAD:
+					if (value > 0) {
+						SetSpecialAbility(SPECATK_TRIPLE, 1);
+					}
+					break;
+				case DESTRUCTIBLE_OBJECT:
+					if (value == 0) {
+						SetDestructibleObject(false);
+					} else {
+						SetDestructibleObject(true);
+					}
+					break;
+				default:
+					break;
 			}
 
-			for(size_t i = 2, p = 0; i < sub_sp.size(); ++i, ++p) {
-				if(p >= MAX_SPECIAL_ATTACK_PARAMS) {
+			for (size_t i = 2, param_id = 0; i < sub_sp.size(); ++i, ++param_id) {
+				if (param_id >= MAX_SPECIAL_ATTACK_PARAMS) {
 					break;
 				}
 
-				SetSpecialAbilityParam(ability, p, std::stoi(sub_sp[i]));
+				if (Strings::IsNumber(sub_sp[i])) {
+					SetSpecialAbilityParam(ability_id, param_id, std::stoi(sub_sp[i]));
+				}
 			}
 		}
 	}
@@ -7175,5 +7182,17 @@ void Mob::CloneAppearance(Mob* other, bool clone_name)
 
 	if (clone_name) {
 		TempName(other->GetCleanName());
+	}
+}
+
+void Mob::CopyHateList(Mob* to) {
+	if (hate_list.IsHateListEmpty() || !to || to->IsClient()) {
+		return;
+	}
+
+	for (const auto& h : hate_list.GetHateList()) {
+		if (h->entity_on_hatelist) {
+			to->AddToHateList(h->entity_on_hatelist, h->stored_hate_amount, h->hatelist_damage);
+		}
 	}
 }
