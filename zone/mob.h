@@ -166,6 +166,7 @@ public:
 		uint16 in_usemodel,
 		bool in_always_aggros_foes,
 		int32 in_heroic_strikethrough,
+		bool keeps_sold_items,
 		int64 in_hp_regen_per_second = 0
 	);
 	virtual ~Mob();
@@ -443,7 +444,7 @@ public:
 	int32 RuneAbsorb(int64 damage, uint16 type);
 	bool FindBuff(uint16 spell_id);
 	uint16 FindBuffBySlot(int slot);
-	uint32 BuffCount();
+	uint32 BuffCount(bool is_beneficial = true, bool is_detrimental = true);
 	bool FindType(uint16 type, bool bOffensive = false, uint16 threshold = 100);
 	int16 GetBuffSlotFromType(uint16 type);
 	uint16 GetSpellIDFromSlot(uint8 slot);
@@ -656,6 +657,8 @@ public:
 	bool IsControllableBoat() const;
 	inline const bool AlwaysAggro() const { return always_aggro; }
 	inline int32 GetHeroicStrikethrough() const  { return heroic_strikethrough; }
+	inline const bool GetKeepsSoldItems() const { return keeps_sold_items; }
+	inline void SetKeepsSoldItems(bool in_keeps_sold_items)  { keeps_sold_items = in_keeps_sold_items; }
 
 	void CopyHateList(Mob* to);
 
@@ -1534,6 +1537,7 @@ protected:
 	bool no_target_hotkey;
 	bool rare_spawn;
 	int32 heroic_strikethrough;
+	bool keeps_sold_items;
 
 	uint32 m_PlayerState;
 	uint32 GetPlayerState() { return m_PlayerState; }

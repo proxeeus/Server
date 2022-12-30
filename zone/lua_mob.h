@@ -94,6 +94,8 @@ public:
 	bool FindBuff(int spell_id);
 	uint16 FindBuffBySlot(int slot);
 	uint32 BuffCount();
+	uint32 BuffCount(bool is_beneficial);
+	uint32 BuffCount(bool is_beneficial, bool is_detrimental);
 	bool FindType(int type);
 	bool FindType(int type, bool offensive);
 	bool FindType(int type, bool offensive, int threshold);
@@ -456,7 +458,6 @@ public:
 	Lua_StatBonuses GetAABonuses();
 	int16 GetMeleeDamageMod_SE(uint16 skill);
 	int16 GetMeleeMinDamageMod_SE(uint16 skill);
-	bool IsAttackAllowed(Lua_Mob target, bool isSpellAttack);
 	bool IsCasting();
 	int AttackAnimation(int Hand, Lua_ItemInst weapon);
 	int GetWeaponDamage(Lua_Mob against, Lua_ItemInst weapon);
@@ -523,6 +524,8 @@ public:
 	void DamageHateListNPCsPercentage(int64 damage);
 	void DamageHateListNPCsPercentage(int64 damage, uint32 distance);
 	void CopyHateList(Lua_Mob to);
+	bool IsAttackAllowed(Lua_Mob target);
+	bool IsAttackAllowed(Lua_Mob target, bool is_spell_attack);
 };
 
 #endif
