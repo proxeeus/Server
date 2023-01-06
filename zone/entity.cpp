@@ -4008,14 +4008,31 @@ void EntityList::ProcessMove(Client *c, const glm::vec3& location)
 
 	for (auto iter = events.begin(); iter != events.end(); ++iter) {
 		quest_proximity_event& evt = (*iter);
+
+		std::vector<std::any> args;
+		args.push_back(&evt.area_id);
+		args.push_back(&evt.area_type);
+
 		if (evt.npc) {
-			std::vector<std::any> args;
-			parse->EventNPC(evt.event_id, evt.npc, evt.client, "", 0, &args);
+			if (evt.event_id == EVENT_ENTER) {
+				parse->EventNPC(EVENT_ENTER, evt.npc, evt.client, "", 0);
+			} else if (evt.event_id == EVENT_EXIT) {
+				parse->EventNPC(EVENT_EXIT, evt.npc, evt.client, "", 0);
+			} else if (evt.event_id == EVENT_ENTER_AREA) {
+				parse->EventNPC(EVENT_ENTER_AREA, evt.npc, evt.client, "", 0, &args);
+			} else if (evt.event_id == EVENT_LEAVE_AREA) {
+				parse->EventNPC(EVENT_LEAVE_AREA, evt.npc, evt.client, "", 0, &args);
+			}
 		} else {
-			std::vector<std::any> args;
-			args.push_back(&evt.area_id);
-			args.push_back(&evt.area_type);
-			parse->EventPlayer(evt.event_id, evt.client, "", 0, &args);
+			if (evt.event_id == EVENT_ENTER) {
+				parse->EventPlayer(EVENT_ENTER, evt.client, "", 0);
+			} else if (evt.event_id == EVENT_EXIT) {
+				parse->EventPlayer(EVENT_EXIT, evt.client, "", 0);
+			} else if (evt.event_id == EVENT_ENTER_AREA) {
+				parse->EventPlayer(EVENT_ENTER_AREA, evt.client, "", 0, &args);
+			} else if (evt.event_id == EVENT_LEAVE_AREA) {
+				parse->EventPlayer(EVENT_LEAVE_AREA, evt.client, "", 0, &args);
+			}
 		}
 	}
 }
@@ -4068,10 +4085,20 @@ void EntityList::ProcessMove(NPC *n, float x, float y, float z) {
 
 	for (auto iter = events.begin(); iter != events.end(); ++iter) {
 		quest_proximity_event   &evt = (*iter);
+
 		std::vector<std::any> args;
 		args.push_back(&evt.area_id);
 		args.push_back(&evt.area_type);
-		parse->EventNPC(evt.event_id, evt.npc, evt.client, "", 0, &args);
+
+		if (evt.event_id == EVENT_ENTER) {
+			parse->EventNPC(EVENT_ENTER, evt.npc, evt.client, "", 0);
+		} else if (evt.event_id == EVENT_EXIT) {
+			parse->EventNPC(EVENT_EXIT, evt.npc, evt.client, "", 0);
+		} else if (evt.event_id == EVENT_ENTER_AREA) {
+			parse->EventNPC(EVENT_ENTER_AREA, evt.npc, evt.client, "", 0, &args);
+		} else if (evt.event_id == EVENT_LEAVE_AREA) {
+			parse->EventNPC(EVENT_LEAVE_AREA, evt.npc, evt.client, "", 0, &args);
+		}
 	}
 }
 
@@ -5836,7 +5863,8 @@ void EntityList::DespawnGridNodes(int32 grid_id) {
 			mob->IsNPC() &&
 			mob->GetRace() == 2254 &&
 			mob->EntityVariableExists("grid_id") &&
-			std::stoi(mob->GetEntityVariable("grid_id")) == grid_id) {
+			std::stoi(mob->GetEntityVariable("grid_id")) == grid_id)
+		{
 			mob->Depop();
 		}
 	}

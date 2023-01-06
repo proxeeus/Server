@@ -266,12 +266,12 @@ void Lua_Client::AddEXP(uint32 add_exp, int conlevel, bool resexp) {
 	self->AddEXP(add_exp, conlevel, resexp);
 }
 
-void Lua_Client::SetEXP(uint32 set_exp, uint32 set_aaxp) {
+void Lua_Client::SetEXP(uint64 set_exp, uint64 set_aaxp) {
 	Lua_Safe_Call_Void();
 	self->SetEXP(set_exp, set_aaxp);
 }
 
-void Lua_Client::SetEXP(uint32 set_exp, uint32 set_aaxp, bool resexp) {
+void Lua_Client::SetEXP(uint64 set_exp, uint64 set_aaxp, bool resexp) {
 	Lua_Safe_Call_Void();
 	self->SetEXP(set_exp, set_aaxp, resexp);
 }
@@ -2906,6 +2906,16 @@ luabind::object Lua_Client::GetAugmentIDsBySlotID(lua_State* L, int16 slot_id) {
 	return lua_table;
 }
 
+bool Lua_Client::IsEXPEnabled() {
+	Lua_Safe_Call_Bool();
+	return self->IsEXPEnabled();
+}
+
+void Lua_Client::SetEXPEnabled(bool is_exp_enabled) {
+	Lua_Safe_Call_Void();
+	self->SetEXPEnabled(is_exp_enabled);
+}
+
 #ifdef BOTS
 
 int Lua_Client::GetBotRequiredLevel()
@@ -3248,6 +3258,7 @@ luabind::scope lua_register_client() {
 	.def("IsCrouching", (bool(Lua_Client::*)(void))&Lua_Client::IsCrouching)
 	.def("IsDead", &Lua_Client::IsDead)
 	.def("IsDueling", (bool(Lua_Client::*)(void))&Lua_Client::IsDueling)
+	.def("IsEXPEnabled", (bool(Lua_Client::*)(void))&Lua_Client::IsEXPEnabled)
 	.def("IsGrouped", (bool(Lua_Client::*)(void))&Lua_Client::IsGrouped)
 	.def("IsLD", (bool(Lua_Client::*)(void))&Lua_Client::IsLD)
 	.def("IsMedding", (bool(Lua_Client::*)(void))&Lua_Client::IsMedding)
@@ -3407,8 +3418,9 @@ luabind::scope lua_register_client() {
 	.def("SetDeity", (void(Lua_Client::*)(int))&Lua_Client::SetDeity)
 	.def("SetDuelTarget", (void(Lua_Client::*)(int))&Lua_Client::SetDuelTarget)
 	.def("SetDueling", (void(Lua_Client::*)(bool))&Lua_Client::SetDueling)
-	.def("SetEXP", (void(Lua_Client::*)(uint32,uint32))&Lua_Client::SetEXP)
-	.def("SetEXP", (void(Lua_Client::*)(uint32,uint32,bool))&Lua_Client::SetEXP)
+	.def("SetEXP", (void(Lua_Client::*)(uint64,uint64))&Lua_Client::SetEXP)
+	.def("SetEXP", (void(Lua_Client::*)(uint64,uint64,bool))&Lua_Client::SetEXP)
+	.def("SetEXPEnabled", (void(Lua_Client::*)(bool))&Lua_Client::SetEXPEnabled)
 	.def("SetEXPModifier", (void(Lua_Client::*)(uint32,double))&Lua_Client::SetEXPModifier)
 	.def("SetEXPModifier", (void(Lua_Client::*)(uint32,double,int16))&Lua_Client::SetEXPModifier)
 	.def("SetEbonCrystals", (void(Lua_Client::*)(uint32))&Lua_Client::SetEbonCrystals)

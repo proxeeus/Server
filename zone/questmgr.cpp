@@ -3038,19 +3038,38 @@ uint32 QuestManager::MerchantCountItem(uint32 NPCid, uint32 itemid) {
 }
 
 // Item Link for use in Variables - "my $example_link = quest::varlink(item_id);"
-const char* QuestManager::varlink(char* perltext, int item_id) {
+std::string QuestManager::varlink(
+	uint32 item_id,
+	int16 charges,
+	uint32 aug1,
+	uint32 aug2,
+	uint32 aug3,
+	uint32 aug4,
+	uint32 aug5,
+	uint32 aug6,
+	bool attuned
+) {
 	QuestManagerCurrentQuestVars();
-	const EQ::ItemData* item = database.GetItem(item_id);
-	if (!item)
+	const auto *item = database.CreateItem(
+		item_id,
+		charges,
+		aug1,
+		aug2,
+		aug3,
+		aug4,
+		aug5,
+		aug6,
+		attuned
+	);
+	if (!item) {
 		return "INVALID ITEM ID IN VARLINK";
+	}
 
 	EQ::SayLinkEngine linker;
-	linker.SetLinkType(EQ::saylink::SayLinkItemData);
-	linker.SetItemData(item);
+	linker.SetLinkType(EQ::saylink::SayLinkItemInst);
+	linker.SetItemInst(item);
 
-	strcpy(perltext, linker.GenerateLink().c_str());
-
-	return perltext;
+	return linker.GenerateLink();
 }
 
 std::string QuestManager::getitemname(uint32 item_id) {
@@ -3748,9 +3767,9 @@ std::string QuestManager::getinventoryslotname(int16 slot_id) {
 	return EQ::invslot::GetInvPossessionsSlotName(slot_id);
 }
 
-int QuestManager::getitemstat(uint32 item_id, std::string stat_identifier) {
+const int QuestManager::getitemstat(uint32 item_id, std::string stat_identifier) {
 	QuestManagerCurrentQuestVars();
-	return EQ::InventoryProfile::GetItemStatValue(item_id, stat_identifier.c_str());
+	return EQ::InventoryProfile::GetItemStatValue(item_id, stat_identifier);
 }
 
 int QuestManager::getspellstat(uint32 spell_id, std::string stat_identifier, uint8 slot) {
@@ -4060,4 +4079,39 @@ void QuestManager::marquee(uint32 type, uint32 priority, uint32 fade_in, uint32 
 	}
 
 	initiator->SendMarqueeMessage(type, priority, fade_in, fade_out, duration, message);
+}
+
+bool QuestManager::DoAugmentSlotsMatch(uint32 item_one, uint32 item_two)
+{
+	const auto* inst_one = database.GetItem(item_one);
+	if (!inst_one) {
+		return false;
+	}
+
+	const auto* inst_two = database.GetItem(item_two);
+	if (!inst_two) {
+		return false;
+	}
+
+	for (auto i = EQ::invaug::SOCKET_BEGIN; i <= EQ::invaug::SOCKET_END; i++) {
+		if (inst_one->AugSlotType[i] != inst_two->AugSlotType[i]) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int8 QuestManager::DoesAugmentFit(EQ::ItemInstance* inst, uint32 augment_id)
+{
+	if (!inst) {
+		return INVALID_INDEX;
+	}
+
+	const auto* aug_inst = database.GetItem(augment_id);
+	if (!aug_inst) {
+		return INVALID_INDEX;
+	}
+
+	return inst->AvailableAugmentSlot(aug_inst->AugType);
 }

@@ -400,7 +400,7 @@ public:
 	bool SaveCharacterBandolier(uint32 character_id, uint8 bandolier_id, uint8 bandolier_slot, uint32 item_id, uint32 icon, const char* bandolier_name);
 	bool SaveCharacterBindPoint(uint32 character_id, const BindStruct &bind, uint32 bind_number);
 	bool SaveCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp);
-	bool SaveCharacterData(uint32 character_id, uint32 account_id, PlayerProfile_Struct* pp, ExtendedProfile_Struct* m_epp);
+	bool SaveCharacterData(Client* c, PlayerProfile_Struct* pp, ExtendedProfile_Struct* m_epp);
 	bool SaveCharacterDisc(uint32 character_id, uint32 slot_id, uint32 disc_id);
 	bool SaveCharacterLanguage(uint32 character_id, uint32 lang_id, uint32 value);
 	bool SaveCharacterLeadershipAA(uint32 character_id, PlayerProfile_Struct* pp);
@@ -571,12 +571,23 @@ public:
 
 	/* Doors   */
 	std::vector<DoorsRepository::Doors> LoadDoors(const std::string& zone_name, int16 version);
-	uint32	GetGuildEQID(uint32 guilddbid);
-	void	UpdateDoorGuildID(int doorid, int guild_id);
-	int32	GetDoorsCount(uint32* oMaxID, const char *zone_name, int16 version);
-	int32	GetDoorsCountPlusOne(const char *zone_name, int16 version);
-	int32	GetDoorsDBCountPlusOne(const char *zone_name, int16 version);
-	void	InsertDoor(uint32 did, uint16 ddoorid, const char* ddoor_name, const glm::vec4& position, uint8 dopentype, uint16 dguildid, uint32 dlockpick, uint32 dkeyitem, uint8 ddoor_param, uint8 dinvert, int dincline, uint16 dsize, bool ddisabletimer = false);
+	uint32 GetDoorsCountPlusOne();
+	int GetDoorsDBCountPlusOne(std::string zone_short_name, int16 version);
+	void InsertDoor(
+		uint32 database_id,
+		uint8 id,
+		std::string name,
+		const glm::vec4 &position,
+		uint8 open_type,
+		uint16 guild_id,
+		uint32 ockpick,
+		uint32 key_item_id,
+		uint8 door_param,
+		uint8 invert,
+		int incline,
+		uint16 size,
+		bool disable_timer = false
+	);
 
 	/* Blocked Spells   */
 	int32	GetBlockedSpellsCount(uint32 zoneid);
