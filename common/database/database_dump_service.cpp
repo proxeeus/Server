@@ -27,6 +27,7 @@
 #include "../eqemu_config.h"
 #include "../database_schema.h"
 #include "../file.h"
+#include "../process/process.h"
 
 #include <ctime>
 
@@ -39,38 +40,6 @@
 #endif
 
 #define DATABASE_DUMP_PATH "backups/"
-
-/**
- * @param cmd
- * @param return_result
- * @return
- */
-std::string DatabaseDumpService::execute(const std::string &cmd, bool return_result = true)
-{
-	const char *file_name = "db-exec-result.txt";
-
-	if (return_result) {
-#ifdef _WINDOWS
-		std::system((cmd + " > " + file_name + " 2>&1").c_str());
-#else
-		std::system((cmd + " > " + file_name).c_str());
-#endif
-	}
-	else {
-		std::system((cmd).c_str());
-	}
-
-	std::string result;
-
-	if (return_result) {
-		std::ifstream file(file_name);
-		result = {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
-		std::remove(file_name);
-
-	}
-
-	return result;
-}
 
 /**
  * @return bool
@@ -88,7 +57,7 @@ bool DatabaseDumpService::IsMySQLInstalled()
  */
 bool DatabaseDumpService::IsTarAvailable()
 {
-	std::string version_output = execute("tar --version");
+	std::string version_output = Process::execute("tar --version");
 
 	return version_output.find("GNU tar") != std::string::npos;
 }
@@ -99,7 +68,7 @@ bool DatabaseDumpService::IsTarAvailable()
  */
 bool DatabaseDumpService::Is7ZipAvailable()
 {
-	std::string version_output = execute("7z --help");
+	std::string version_output = Process::execute("7z --help");
 
 	return version_output.find("7-Zip") != std::string::npos;
 }
@@ -117,7 +86,7 @@ bool DatabaseDumpService::HasCompressionBinary()
  */
 std::string DatabaseDumpService::GetMySQLVersion()
 {
-	std::string version_output = execute("mysql --version");
+	std::string version_output = Process::execute("mysql --version");
 
 	return Strings::Trim(version_output);
 }
@@ -149,109 +118,53 @@ std::string DatabaseDumpService::GetBaseMySQLDumpCommand()
 	);
 }
 
-/**
- * @return
- */
 std::string DatabaseDumpService::GetPlayerTablesList()
 {
-	std::string              tables_list;
-	std::vector<std::string> tables = DatabaseSchema::GetPlayerTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetPlayerTables(), " ");
 }
 
-/**
- * @return
- */
 std::string DatabaseDumpService::GetBotTablesList()
 {
-	std::string              tables_list;
-	std::vector<std::string> tables = DatabaseSchema::GetBotTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetBotTables(), " ");
 }
 
-/**
- * @return
- */
+std::string DatabaseDumpService::GetMercTablesList()
+{
+	return Strings::Join(DatabaseSchema::GetMercTables(), " ");
+}
+
 std::string DatabaseDumpService::GetLoginTableList()
 {
-	std::string              tables_list;
-	std::vector<std::string> tables = DatabaseSchema::GetLoginTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetLoginTables(), " ");
 }
 
-/**
- * @return
- */
 std::string DatabaseDumpService::GetQueryServTables()
 {
-	std::string              tables_list;
-	std::vector<std::string> tables = DatabaseSchema::GetQueryServerTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetQueryServerTables(), " ");
 }
 
-/**
- * @return
- */
 std::string DatabaseDumpService::GetSystemTablesList()
 {
-	std::string tables_list;
+	auto system_tables = DatabaseSchema::GetServerTables();
+	auto version_tables = DatabaseSchema::GetVersionTables();
 
-	std::vector<std::string> tables = DatabaseSchema::GetServerTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
+	system_tables.insert(
+		std::end(system_tables),
+		std::begin(version_tables),
+		std::end(version_tables)
+	);
 
-	tables = DatabaseSchema::GetVersionTables();
-	for (const auto &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(system_tables, " ");
 }
-/**
- * @return
- */
+
 std::string DatabaseDumpService::GetStateTablesList()
 {
-	std::string tables_list;
-
-	std::vector<std::string> tables = DatabaseSchema::GetStateTables();
-	for (const auto &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetStateTables(), " ");
 }
 
-/**
- * @return
- */
 std::string DatabaseDumpService::GetContentTablesList()
 {
-	std::string tables_list;
-
-	std::vector<std::string> tables = DatabaseSchema::GetContentTables();
-	for (const auto          &table : tables) {
-		tables_list += table + " ";
-	}
-
-	return Strings::Trim(tables_list);
+	return Strings::Join(DatabaseSchema::GetContentTables(), " ");
 }
 
 /**
@@ -337,6 +250,11 @@ void DatabaseDumpService::Dump()
 			dump_descriptor += "-bots";
 		}
 
+		if (IsDumpMercTables()) {
+			tables_to_dump += GetMercTablesList() + " ";
+			dump_descriptor += "-mercs";
+		}
+
 		if (IsDumpSystemTables()) {
 			tables_to_dump += GetSystemTablesList() + " ";
 			dump_descriptor += "-system";
@@ -399,14 +317,14 @@ void DatabaseDumpService::Dump()
 		}
 	}
 	else {
-		std::string execution_result = execute(execute_command, IsDumpOutputToConsole());
-		if (!execution_result.empty()) {
+		std::string execution_result = Process::execute(execute_command);
+		if (!execution_result.empty() && IsDumpOutputToConsole()) {
 			std::cout << execution_result;
 		}
 	}
 
 	if (!tables_to_dump.empty()) {
-		LogInfo("Dumping Tables [{}]", tables_to_dump);
+		LogInfo("Dumping Tables [{}]", Strings::Trim(tables_to_dump));
 	}
 
 	LogInfo("Database dump created at [{}.sql]", GetDumpFileNameWithPath());
@@ -416,7 +334,7 @@ void DatabaseDumpService::Dump()
 			LogInfo("Compression requested... Compressing dump [{}.sql]", GetDumpFileNameWithPath());
 
 			if (IsTarAvailable()) {
-				execute(
+				Process::execute(
 					fmt::format(
 						"tar -zcvf {}.tar.gz -C {} {}.sql",
 						GetDumpFileNameWithPath(),
@@ -427,7 +345,7 @@ void DatabaseDumpService::Dump()
 				LogInfo("Compressed dump created at [{}.tar.gz]", GetDumpFileNameWithPath());
 			}
 			else if (Is7ZipAvailable()) {
-				execute(
+				Process::execute(
 					fmt::format(
 						"7z a -t7z {}.zip {}.sql",
 						GetDumpFileNameWithPath(),
@@ -606,4 +524,14 @@ bool DatabaseDumpService::IsDumpBotTables() const
 void DatabaseDumpService::SetDumpBotTables(bool dump_bot_tables)
 {
 	DatabaseDumpService::dump_bot_tables = dump_bot_tables;
+}
+
+bool DatabaseDumpService::IsDumpMercTables() const
+{
+	return dump_merc_tables;
+}
+
+void DatabaseDumpService::SetDumpMercTables(bool dump_merc_tables)
+{
+	DatabaseDumpService::dump_merc_tables = dump_merc_tables;
 }

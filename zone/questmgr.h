@@ -141,7 +141,7 @@ public:
 	void movepc(int zone_id, float x, float y, float z, float heading);
 	void gmmove(float x, float y, float z);
 	void movegrp(int zoneid, float x, float y, float z);
-	void doanim(int anim_id);
+	void doanim(int animation_id, int animation_speed = 1, bool ackreq = true, eqFilterType filter = FilterNone);
 	void addskill(int skill_id, int value);
 	void setlanguage(int skill_id, int value);
 	void setskill(int skill_id, int value);
@@ -282,7 +282,7 @@ public:
 	void MovePCInstance(int zone_id, int instance_id, const glm::vec4& position);
 	void FlagInstanceByGroupLeader(uint32 zone, int16 version);
 	void FlagInstanceByRaidLeader(uint32 zone, int16 version);
-	const char* varlink(char* perltext, int item_id);
+	std::string varlink(uint32 item_id, int16 charges = 0, uint32 aug1 = 0, uint32 aug2 = 0, uint32 aug3 = 0, uint32 aug4 = 0, uint32 aug5 = 0, uint32 aug6 = 0, bool attuned = false);
 	std::string saylink(char *saylink_text, bool silent, const char *link_name);
 	std::string getcharnamebyid(uint32 char_id);
 	uint32 getcharidbyname(const char* name);
@@ -314,7 +314,7 @@ public:
 	void CrossZoneMessage(uint8 update_type, int update_identifier, uint32 type, const char* message, const char* client_name = "");
 	void CrossZoneMove(uint8 update_type, uint8 update_subtype, int update_identifier, const char* zone_short_name, uint16 instance_id, const char* client_name = "");
 	void CrossZoneSetEntityVariable(uint8 update_type, int update_identifier, const char* variable_name, const char* variable_value, const char* client_name = "");
-	void CrossZoneSignal(uint8 update_type, int update_identifier, int signal, const char* client_name = "");
+	void CrossZoneSignal(uint8 update_type, int update_identifier, int signal_id, const char* client_name = "");
 	void CrossZoneSpell(uint8 update_type, uint8 update_subtype, int update_identifier, uint32 spell_id, const char* client_name = "");
 	void CrossZoneTaskUpdate(uint8 update_type, uint8 update_subtype, int update_identifier, uint32 task_identifier, int task_subidentifier = -1, int update_count = 1, bool enforce_level_requirement = false, const char* client_name = "");
 	void WorldWideDialogueWindow(const char* message, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
@@ -323,7 +323,7 @@ public:
 	void WorldWideMessage(uint32 type, const char* message, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
 	void WorldWideMove(uint8 update_type, const char* zone_short_name, uint16 instance_id = 0, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
 	void WorldWideSetEntityVariable(uint8 update_type, const char* variable_name, const char* variable_value, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
-	void WorldWideSignal(uint8 update_type, int signal, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
+	void WorldWideSignal(uint8 update_type, int signal_id, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
 	void WorldWideSpell(uint8 update_type, uint32 spell_id, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
 	void WorldWideTaskUpdate(uint8 update_type, uint32 task_identifier, int task_subidentifier = -1, int update_count = 1, bool enforce_level_requirement = false, uint8 min_status = AccountStatus::Player, uint8 max_status = AccountStatus::Player);
 	bool EnableRecipe(uint32 recipe_id);
@@ -338,7 +338,7 @@ public:
 	std::string getgendername(uint32 gender_id);
 	std::string getdeityname(uint32 deity_id);
 	std::string getinventoryslotname(int16 slot_id);
-	int getitemstat(uint32 item_id, std::string stat_identifier);
+	const int getitemstat(uint32 item_id, std::string stat_identifier);
 	int getspellstat(uint32 spell_id, std::string stat_identifier, uint8 slot = 0);
 	const SPDat_Spell_Struct *getspell(uint32 spell_id);
 	std::string getenvironmentaldamagename(uint8 damage_type);
@@ -346,11 +346,10 @@ public:
 	int GetRecipeMadeCount(uint32 recipe_id);
 	std::string GetRecipeName(uint32 recipe_id);
 	bool HasRecipeLearned(uint32 recipe_id);
+	bool DoAugmentSlotsMatch(uint32 item_one, uint32 item_two);
+	int8 DoesAugmentFit(EQ::ItemInstance* inst, uint32 augment_id, uint8 augment_slot = 255);
 
-#ifdef BOTS
 	Bot *GetBot() const;
-#endif
-
 	Client *GetInitiator() const;
 	NPC *GetNPC() const;
 	Mob *GetOwner() const;
@@ -360,14 +359,10 @@ public:
 	std::string GetEncounter() const;
 	inline bool ProximitySayInUse() { return HaveProximitySays; }
 
-#ifdef BOTS
-	int createbotcount(uint8 class_id = 0);
-	int spawnbotcount(uint8 class_id = 0);
+	int createbotcount(uint8 class_id = NO_CLASS);
+	int spawnbotcount(uint8 class_id = NO_CLASS);
 	bool botquest();
 	bool createBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender);
-	//Bot* createPlayerBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender);
-	//void addItemToPlayerBotInventory(uint32 botid, uint32 itemid, uint32 slot, uint32 charges);
-#endif
 
 
 private:

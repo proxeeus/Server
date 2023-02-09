@@ -28,9 +28,7 @@
 #include "worldserver.h"
 #include "zone.h"
 
-#ifdef BOTS
 #include "bot.h"
-#endif
 
 extern QueryServ* QServ;
 extern WorldServer worldserver;
@@ -43,10 +41,9 @@ extern Zone* zone;
 
 
 void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
-#ifdef BOTS
-	// This block is necessary to clean up any bot objects owned by a Client
-	Bot::ProcessClientZoneChange(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::ProcessClientZoneChange(this);
+	}
 
 	bZoning = true;
 	if (app->size != sizeof(ZoneChange_Struct)) {
@@ -195,7 +192,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	int16 min_status = AccountStatus::Player;
 	uint8 min_level  = 0;
 
-	LogInfo("[Handle_OP_ZoneChange] Loaded zone flag [{}]", zone_data->flag_needed);
+	LogInfo("Loaded zone flag [{}]", zone_data->flag_needed);
 
 	safe_x       = zone_data->safe_x;
 	safe_y       = zone_data->safe_y;
@@ -297,30 +294,14 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 			break;
 	};
 
-	//OK, now we should know where were going...
+	auto zoning_message = ZoningMessage::ZoneSuccess;
 
-	//Check some rules first.
-	int8 myerror = 1;		//1 is succes
-
-	//not sure when we would use ZONE_ERROR_NOTREADY
-
-	//enforce min status and level
-	if (!ignore_restrictions && (Admin() < min_status || GetLevel() < zone_data->min_level)) {
-		myerror = ZONE_ERROR_NOEXPERIENCE;
-	}
-
-	if (!ignore_restrictions && !zone_data->flag_needed.empty()) {
-		//the flag needed string is not empty, meaning a flag is required.
-		if (Admin() < minStatusToIgnoreZoneFlags && !HasZoneFlag(target_zone_id)) {
-			LogInfo(
-				"Client [{}] does not have the proper flag to enter [{}] ({})",
-				GetCleanName(),
-				ZoneName(target_zone_id),
-				target_zone_id
-			);
-			Message(Chat::Red, "You do not have the flag to enter %s.", target_zone_name);
-			myerror = ZONE_ERROR_NOEXPERIENCE;
-		}
+	// Check Minimum Status, Minimum Level, Maximum Level, and Zone Flag
+	if (
+		!ignore_restrictions &&
+		!CanEnterZone(ZoneName(target_zone_id), target_instance_version)
+	) {
+		zoning_message = ZoningMessage::ZoneNoExperience;
 	}
 
 	//TODO: ADVENTURE ENTRANCE CHECK
@@ -345,7 +326,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		);
 
 		if (!meets_zone_expansion_check) {
-			myerror = ZONE_ERROR_NOEXPANSION;
+			zoning_message = ZoningMessage::ZoneNoExpansion;
 		}
 	}
 
@@ -353,12 +334,11 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		LogInfo("[{}] Bypassing Expansion zone checks because GM status is set", GetCleanName());
 	}
 
-	if (myerror == 1) {
-		//we have successfully zoned
+	if (zoning_message == ZoningMessage::ZoneSuccess) {
 		DoZoneSuccess(zc, target_zone_id, target_instance_id, target_x, target_y, target_z, target_heading, ignore_restrictions);
 	} else {
 		LogError("Zoning [{}]: Rules prevent this char from zoning into [{}]", GetName(), target_zone_name);
-		SendZoneError(zc, myerror);
+		SendZoneError(zc, zoning_message);
 	}
 }
 
@@ -653,7 +633,7 @@ void Client::ZonePC(uint32 zoneID, uint32 instance_id, float x, float y, float z
 	}
 
 	LogInfo(
-		"[ZonePC] Client [{}] zone_id [{}] x [{}] y [{}] z [{}] heading [{}] ignorerestrictions [{}] zone_mode [{}]",
+		"Client [{}] zone_id [{}] x [{}] y [{}] z [{}] heading [{}] ignorerestrictions [{}] zone_mode [{}]",
 		GetCleanName(),
 		zoneID,
 		x,
@@ -1007,8 +987,12 @@ void Client::LoadZoneFlags() {
 	);
 	auto results = database.QueryDatabase(query);
 
-	if (!results.Success() || !results.RowCount()) {
+	if (!results.Success()) {
 		LogError("MySQL Error while trying to load zone flags for [{}]: [{}]", GetName(), results.ErrorMessage().c_str());
+		return;
+	}
+
+	if (!results.RowCount()) {
 		return;
 	}
 
@@ -1113,7 +1097,7 @@ void Client::ClearPEQZoneFlag(uint32 zone_id) {
 
 	peqzone_flags.erase(zone_id);
 
-	if (!CharacterPeqzoneFlagsRepository::DeleteFlag(content_db, CharacterID(), zone_id)) {
+	if (!CharacterPeqzoneFlagsRepository::DeleteFlag(database, CharacterID(), zone_id)) {
 		LogError("MySQL Error while trying to clear PEQZone flag for [{}]", GetName());
 	}
 }
@@ -1124,14 +1108,13 @@ bool Client::HasPEQZoneFlag(uint32 zone_id) const {
 
 void Client::LoadPEQZoneFlags() {
 	const auto l = CharacterPeqzoneFlagsRepository::GetWhere(
-		content_db,
+		database,
 		fmt::format(
 			"id = {}",
 			CharacterID()
 		)
 	);
-	if (l.empty() || !l[0].id){
-		LogError("MySQL Error while trying to load PEQZone flags for [{}].", GetName());
+	if (l.empty()) {
 		return;
 	}
 
@@ -1207,52 +1190,66 @@ void Client::SetPEQZoneFlag(uint32 zone_id) {
 	f.id = CharacterID();
 	f.zone_id = zone_id;
 
-	if (!CharacterPeqzoneFlagsRepository::InsertOne(content_db, f).id) {
+	if (!CharacterPeqzoneFlagsRepository::InsertOne(database, f).id) {
 		LogError("MySQL Error while trying to set zone flag for [{}]", GetName());
 	}
 }
 
-bool Client::CanBeInZone() {
+bool Client::CanEnterZone(const std::string& zone_short_name, int16 instance_version) {
 	//check some critial rules to see if this char needs to be booted from the zone
 	//only enforce rules here which are serious enough to warrant being kicked from
 	//the zone
 
 	if (Admin() >= RuleI(GM, MinStatusToZoneAnywhere)) {
-		return (true);
+		return true;
 	}
 
-	float safe_x, safe_y, safe_z, safe_heading;
-	int16 min_status = AccountStatus::Player;
-	uint8 min_level = 0;
-
 	auto z = GetZoneVersionWithFallback(
-		ZoneID(zone->GetShortName()),
-		zone->GetInstanceVersion()
+		zone_short_name.empty() ? ZoneID(zone->GetShortName()) : ZoneID(zone_short_name),
+		instance_version == -1 ? zone->GetInstanceVersion() : instance_version
 	);
+
 	if (!z) {
 		return false;
 	}
 
-	safe_x       = z->safe_x;
-	safe_y       = z->safe_y;
-	safe_z       = z->safe_z;
-	safe_heading = z->safe_heading;
-	min_status   = z->min_status;
-	min_level    = z->min_level;
-
-	if (GetLevel() < min_level) {
-		LogDebug("[CLIENT] Character does not meet min level requirement ([{}] < [{}])!", GetLevel(), min_level);
-		return (false);
-	}
-	if (Admin() < min_status) {
-		LogDebug("[CLIENT] Character does not meet min status requirement ([{}] < [{}])!", Admin(), min_status);
-		return (false);
+	if (GetLevel() < z->min_level) {
+		LogInfo(
+			"Character [{}] does not meet minimum level requirement ([{}] < [{}])!",
+			GetCleanName(),
+			GetLevel(),
+			z->min_level
+		);
+		return false;
 	}
 
-	if (!z->flag_needed.empty()) {
-		//the flag needed string is not empty, meaning a flag is required.
-		if (Admin() < minStatusToIgnoreZoneFlags && !HasZoneFlag(zone->GetZoneID())) {
-			LogInfo("Character [{}] does not have the flag to be in this zone [{}]!", GetCleanName(), z->flag_needed);
+	if (GetLevel() > z->max_level) {
+		LogInfo(
+			"Character [{}] does not meet maximum level requirement ([{}] > [{}])!",
+			GetCleanName(),
+			GetLevel(),
+			z->max_level
+		);
+		return false;
+	}
+
+	if (Admin() < z->min_status) {
+		LogInfo(
+			"Character [{}] does not meet minimum status requirement ([{}] < [{}])!",
+			GetCleanName(),
+			Admin(),
+			z->min_status
+		);
+		return false;
+	}
+
+	if (!z->flag_needed.empty() && Strings::IsNumber(z->flag_needed) && std::stoi(z->flag_needed) == 1) {
+		if (Admin() < minStatusToIgnoreZoneFlags && !HasZoneFlag(z->zoneidnumber)) {
+			LogInfo(
+				"Character [{}] does not have the flag to be in this zone [{}]!",
+				GetCleanName(),
+				z->flag_needed
+			);
 			return false;
 		}
 	}

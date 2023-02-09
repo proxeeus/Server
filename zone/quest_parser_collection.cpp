@@ -26,6 +26,7 @@
 #include "zone.h"
 #include "questmgr.h"
 #include "../common/path_manager.h"
+#include "../common/repositories/perl_event_export_settings_repository.h"
 
 #include <stdio.h>
 
@@ -36,11 +37,8 @@ QuestParserCollection::QuestParserCollection() {
 	_player_quest_status = QuestUnloaded;
 	_global_player_quest_status = QuestUnloaded;
 	_global_npc_quest_status = QuestUnloaded;
-
-#ifdef BOTS
 	_bot_quest_status = QuestUnloaded;
 	_global_bot_quest_status = QuestUnloaded;
-#endif
 }
 
 QuestParserCollection::~QuestParserCollection() {
@@ -84,11 +82,8 @@ void QuestParserCollection::ReloadQuests(bool reset_timers) {
 	_player_quest_status = QuestUnloaded;
 	_global_player_quest_status = QuestUnloaded;
 	_global_npc_quest_status = QuestUnloaded;
-
-#ifdef BOTS
 	_bot_quest_status = QuestUnloaded;
 	_global_bot_quest_status = QuestUnloaded;
-#endif
 
 	_spell_quest_status.clear();
 	_item_quest_status.clear();
@@ -108,8 +103,8 @@ void QuestParserCollection::RemoveEncounter(const std::string name) {
 	}
 }
 
-bool QuestParserCollection::HasQuestSub(uint32 npcid, QuestEventID evt, bool check_encounters) {
-	return HasQuestSubLocal(npcid, evt) || HasQuestSubGlobal(evt) || (check_encounters && NPCHasEncounterSub(npcid, evt));
+bool QuestParserCollection::HasQuestSub(uint32 npcid, QuestEventID evt) {
+	return HasQuestSubLocal(npcid, evt) || HasQuestSubGlobal(evt) || NPCHasEncounterSub(npcid, evt);
 }
 
 bool QuestParserCollection::NPCHasEncounterSub(uint32 npc_id, QuestEventID evt) {
@@ -167,8 +162,8 @@ bool QuestParserCollection::HasQuestSubGlobal(QuestEventID evt) {
 	return false;
 }
 
-bool QuestParserCollection::PlayerHasQuestSub(QuestEventID evt, bool check_encounters) {
-	return PlayerHasQuestSubLocal(evt) || PlayerHasQuestSubGlobal(evt) || (check_encounters && PlayerHasEncounterSub(evt));
+bool QuestParserCollection::PlayerHasQuestSub(QuestEventID evt) {
+	return PlayerHasQuestSubLocal(evt) || PlayerHasQuestSubGlobal(evt) || PlayerHasEncounterSub(evt);
 }
 
 bool QuestParserCollection::PlayerHasEncounterSub(QuestEventID evt) {
@@ -212,8 +207,8 @@ bool QuestParserCollection::SpellHasEncounterSub(uint32 spell_id, QuestEventID e
 	return HasEncounterSub(evt, package_name);
 }
 
-bool QuestParserCollection::SpellHasQuestSub(uint32 spell_id, QuestEventID evt, bool check_encounters) {
-	if (check_encounters && SpellHasEncounterSub(spell_id, evt)) {
+bool QuestParserCollection::SpellHasQuestSub(uint32 spell_id, QuestEventID evt) {
+	if (SpellHasEncounterSub(spell_id, evt)) {
 		return true;
 	}
 
@@ -246,11 +241,11 @@ bool QuestParserCollection::ItemHasEncounterSub(EQ::ItemInstance* item, QuestEve
 	return false;
 }
 
-bool QuestParserCollection::ItemHasQuestSub(EQ::ItemInstance *itm, QuestEventID evt, bool check_encounters) {
+bool QuestParserCollection::ItemHasQuestSub(EQ::ItemInstance *itm, QuestEventID evt) {
 	if (itm == nullptr)
 		return false;
 
-	if (check_encounters && ItemHasEncounterSub(itm, evt)) {
+	if (ItemHasEncounterSub(itm, evt)) {
 		return true;
 	}
 
@@ -1062,46 +1057,28 @@ int QuestParserCollection::DispatchEventSpell(
 	return ret;
 }
 
-void QuestParserCollection::LoadPerlEventExportSettings(PerlEventExportSettings* perl_event_export_settings) {
-
-	LogInfo("Loading Perl Event Export Settings...");
-
-	/* Write Defaults First (All Enabled) */
-	for (int i = 0; i < _LargestEventID; i++){
-		perl_event_export_settings[i].qglobals = 1;
-		perl_event_export_settings[i].mob = 1;
-		perl_event_export_settings[i].zone = 1;
-		perl_event_export_settings[i].item = 1;
-		perl_event_export_settings[i].event_variables = 1;
+void QuestParserCollection::LoadPerlEventExportSettings(PerlEventExportSettings *s)
+{
+	for (int i = 0; i < _LargestEventID; i++) {
+		s[i].qglobals        = 1;
+		s[i].mob             = 1;
+		s[i].zone            = 1;
+		s[i].item            = 1;
+		s[i].event_variables = 1;
 	}
 
-	std::string query =
-		"SELECT "
-		"event_id, "
-		"event_description, "
-		"export_qglobals, "
-		"export_mob, "
-		"export_zone, "
-		"export_item, "
-		"export_event "
-		"FROM "
-		"perl_event_export_settings "
-		"ORDER BY event_id";
-
-	int event_id = 0;
-	auto results = database.QueryDatabase(query);
-	for (auto row = results.begin(); row != results.end(); ++row) {
-		event_id = atoi(row[0]);
-		perl_event_export_settings[event_id].qglobals = atoi(row[2]);
-		perl_event_export_settings[event_id].mob = atoi(row[3]);
-		perl_event_export_settings[event_id].zone = atoi(row[4]);
-		perl_event_export_settings[event_id].item = atoi(row[5]);
-		perl_event_export_settings[event_id].event_variables = atoi(row[6]);
+	auto settings = PerlEventExportSettingsRepository::All(database);
+	for (auto &e: settings) {
+		s[e.event_id].qglobals        = e.export_qglobals;
+		s[e.event_id].mob             = e.export_mob;
+		s[e.event_id].zone            = e.export_zone;
+		s[e.event_id].item            = e.export_item;
+		s[e.event_id].event_variables = e.export_event;
 	}
 
+	LogInfo("Loaded [{}] Perl Event Export Settings", settings.size());
 }
 
-#ifdef BOTS
 int QuestParserCollection::DispatchEventBot(
 	QuestEventID evt,
 	Bot *bot,
@@ -1328,4 +1305,3 @@ QuestInterface *QuestParserCollection::GetQIByGlobalBotQuest(std::string &filena
 
 	return nullptr;
 }
-#endif

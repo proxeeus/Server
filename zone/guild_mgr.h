@@ -47,40 +47,15 @@ enum {	GuildBankDepositArea = 0, GuildBankMainArea = 1 };
 
 enum {	GuildBankBankerOnly = 0, GuildBankSingleMember = 1, GuildBankPublicIfUsable = 2, GuildBankPublic = 3 };
 
-class GuildApproval
-{
-public:
-	GuildApproval(const char* guildname,Client* owner,uint32 id);
-	~GuildApproval();
-	bool	ProcessApproval();
-	bool	AddMemberApproval(Client* addition);
-	uint32	GetID() { return refid; }
-	Client*	GetOwner() { return owner; }
-	void	GuildApproved();
-	void	ApprovedMembers(Client* requestee);
-private:
-	Timer* deletion_timer;
-	char guild[16];
-	Client* owner;
-	Client* members[6];
-	uint32 refid;
-};
-
 class ZoneGuildManager : public BaseGuildManager {
 public:
 	~ZoneGuildManager(void);
 
-	void	AddGuildApproval(const char* guildname, Client* owner);
-	void	AddMemberApproval(uint32 refid,Client* name);
-	void	ClearGuildsApproval();
-	GuildApproval* FindGuildByIDApproval(uint32 refid);
-	GuildApproval* FindGuildByOwnerApproval(Client* owner);
-	void	ProcessApproval();
-	uint32	GetFreeID() { return id+1; }
 	//called by worldserver when it receives a message from world.
 	void ProcessWorldPacket(ServerPacket *pack);
 
-	void ListGuilds(Client *c) const;
+	void ListGuilds(Client *c, std::string search_criteria = std::string()) const;
+	void ListGuilds(Client *c, uint32 guild_id = 0) const;
 	void DescribeGuild(Client *c, uint32 guild_id) const;
 
 
@@ -102,9 +77,7 @@ protected:
 	std::map<uint32, std::pair<uint32, uint8> > m_inviteQueue;	//map from char ID to guild,rank
 
 private:
-	LinkedList<GuildApproval*> list;
 	uint32 id;
-
 };
 
 

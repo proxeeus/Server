@@ -341,7 +341,7 @@ const EQ::ItemInstance* Object::GetItem(uint8 index) {
 void Object::PutItem(uint8 index, const EQ::ItemInstance* inst)
 {
 	if (index > 9) {
-		LogError("Object::PutItem: Invalid index specified ([{}])", index);
+		LogError("Invalid index specified ([{}])", index);
 		return;
 	}
 
@@ -477,7 +477,7 @@ void Object::RandomSpawn(bool send_packet) {
 		}
 	}
 
-	LogInfo("Object::RandomSpawn([{}]): [{}] ([{}], [{}], [{}])", m_data.object_name, m_inst->GetID(), m_data.x, m_data.y, m_data.z);
+	LogInfo("[{}] [{}] ([{}] [{}] [{}])", m_data.object_name, m_inst->GetID(), m_data.x, m_data.y, m_data.z);
 
 	respawn_timer.Disable();
 
@@ -507,9 +507,15 @@ bool Object::HandleClick(Client* sender, const ClickObject_Struct* click_object)
 					cursordelete = true;	// otherwise, we delete the new one
 			}
 
-			if (item->RecastDelay)
-				m_inst->SetRecastTimestamp(
-				    database.GetItemRecastTimestamp(sender->CharacterID(), item->RecastType));
+			if (item->RecastDelay) {
+				if (item->RecastType != RECAST_TYPE_UNLINKED_ITEM) {
+					m_inst->SetRecastTimestamp(
+						database.GetItemRecastTimestamp(sender->CharacterID(), item->RecastType));
+				} else {
+					m_inst->SetRecastTimestamp(
+						database.GetItemRecastTimestamp(sender->CharacterID(), item->ID));
+				}
+			}
 
 			std::string export_string = fmt::format("{}", item->ID);
 			std::vector<std::any> args;
@@ -534,6 +540,15 @@ bool Object::HandleClick(Client* sender, const ClickObject_Struct* click_object)
 			// Transfer item to client
 			sender->PutItemInInventory(EQ::invslot::slotCursor, *m_inst, false);
 			sender->SendItemPacket(EQ::invslot::slotCursor, m_inst, ItemPacketTrade);
+
+			// Could be an undiscovered ground_spawn
+			if (m_ground_spawn && (RuleB(Character, EnableDiscoveredItems)))
+			{
+				if (!sender->GetGM() && !sender->IsDiscovered(item->ID))
+				{
+					sender->DiscoverItem(item->ID);
+				}
+			}
 
 			if(cursordelete)	// delete the item if it's a duplicate lore. We have to do this because the client expects the item packet
 				sender->DeleteItemInInventory(EQ::invslot::slotCursor);
@@ -1057,14 +1072,34 @@ void Object::SetHeading(float heading)
 	safe_delete(app2);
 }
 
-void Object::SetEntityVariable(std::string variable_name, std::string variable_value)
+bool Object::ClearEntityVariables()
 {
-	o_EntityVariables[variable_name] = variable_value;
+	if (o_EntityVariables.empty()) {
+		return false;
+	}
+
+	o_EntityVariables.clear();
+	return true;
+}
+
+bool Object::DeleteEntityVariable(std::string variable_name)
+{
+	if (o_EntityVariables.empty() || variable_name.empty()) {
+		return false;
+	}
+
+	auto v = o_EntityVariables.find(variable_name);
+	if (v == o_EntityVariables.end()) {
+		return false;
+	}
+
+	o_EntityVariables.erase(v);
+	return true;
 }
 
 std::string Object::GetEntityVariable(std::string variable_name)
 {
-	if (variable_name.empty()) {
+	if (o_EntityVariables.empty() || variable_name.empty()) {
 		return std::string();
 	}
 
@@ -1092,7 +1127,7 @@ std::vector<std::string> Object::GetEntityVariables()
 
 bool Object::EntityVariableExists(std::string variable_name)
 {
-	if (variable_name.empty()) {
+	if (o_EntityVariables.empty() || variable_name.empty()) {
 		return false;
 	}
 
@@ -1102,4 +1137,13 @@ bool Object::EntityVariableExists(std::string variable_name)
 	}
 
 	return false;
+}
+
+void Object::SetEntityVariable(std::string variable_name, std::string variable_value)
+{
+	if (variable_name.empty()) {
+		return;
+	}
+
+	o_EntityVariables[variable_name] = variable_value;
 }

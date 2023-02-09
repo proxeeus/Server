@@ -16,8 +16,6 @@
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 */
 
-#ifdef BOTS
-
 #include "bot.h"
 #include "../common/data_verification.h"
 #include "../common/strings.h"
@@ -377,10 +375,10 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 					if (
 						!(
 							(
-								spells[selectedBotSpell.SpellId].target_type == ST_Target || 
-								spells[selectedBotSpell.SpellId].target_type == ST_Pet || 
+								spells[selectedBotSpell.SpellId].target_type == ST_Target ||
+								spells[selectedBotSpell.SpellId].target_type == ST_Pet ||
 								(tar == this && spells[selectedBotSpell.SpellId].target_type != ST_TargetsTarget) ||
-								spells[selectedBotSpell.SpellId].target_type == ST_Group || 
+								spells[selectedBotSpell.SpellId].target_type == ST_Group ||
 								spells[selectedBotSpell.SpellId].target_type == ST_GroupTeleport ||
 								(botClass == BARD && spells[selectedBotSpell.SpellId].target_type == ST_AEBard)
 							) &&
@@ -647,115 +645,140 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 		}
 		case SpellType_InCombatBuff: {
 			// Allow all classes to use InCombatBuffs
-			if (botClass != BARD) {
-				checked_los = true;
+			if (tar->DontBuffMeBefore() < Timer::GetCurrentTime()) {
+				std::list<BotSpell> buffSpellList = GetBotSpellsBySpellType(this, SpellType_InCombatBuff);
 
-				std::list<BotSpell> inCombatBuffList = GetBotSpellsBySpellType(this, SpellType_InCombatBuff);
-
-				for (std::list<BotSpell>::iterator itr = inCombatBuffList.begin(); itr != inCombatBuffList.end(); ++itr) {
+				for (std::list<BotSpell>::iterator itr = buffSpellList.begin(); itr != buffSpellList.end(); ++itr) {
 					BotSpell selectedBotSpell = *itr;
 
 					if (selectedBotSpell.SpellId == 0) {
 						continue;
 					}
+					// no buffs with illusions.. use #bot command to cast illusions
+					if (IsEffectInSpell(selectedBotSpell.SpellId, SE_Illusion) && tar != this) {
+						continue;
+					}
+					//no teleport spells use #bot command to cast teleports
+					if (IsEffectInSpell(selectedBotSpell.SpellId, SE_Teleport) || IsEffectInSpell(selectedBotSpell.SpellId, SE_Succor)) {
+						continue;
+					}
+					// can not cast buffs for your own pet only on another pet that isn't yours
+					if ((spells[selectedBotSpell.SpellId].target_type == ST_Pet) && (tar != GetPet())) {
+						continue;
+					}
 
-					if (CheckSpellRecastTimers(this, itr->SpellIndex))
-					{
-						if (!(!tar->IsImmuneToSpell(selectedBotSpell.SpellId, this) && (spells[selectedBotSpell.SpellId].buff_duration < 1 || tar->CanBuffStack(selectedBotSpell.SpellId, botLevel, true) >= 0))) {
+					//Conversion Spells
+					if (IsSelfConversionSpell(selectedBotSpell.SpellId)) {
+						if (GetManaRatio() > 90.0f || GetHPRatio() < 50.0f || GetHPRatio() < (GetManaRatio() + 10.0f)) {
+							break; //don't cast if low hp, lots of mana, or if mana is higher than hps
+						}
+					}
+
+					// Validate target
+					// TODO: Add ST_TargetsTarget support for Buffing.
+					if (
+						!(
+							(
+								spells[selectedBotSpell.SpellId].target_type == ST_Target ||
+								spells[selectedBotSpell.SpellId].target_type == ST_Pet ||
+								(tar == this && spells[selectedBotSpell.SpellId].target_type != ST_TargetsTarget) ||
+								spells[selectedBotSpell.SpellId].target_type == ST_Group ||
+								spells[selectedBotSpell.SpellId].target_type == ST_GroupTeleport ||
+								(botClass == BARD && spells[selectedBotSpell.SpellId].target_type == ST_AEBard)
+							) &&
+							!tar->IsImmuneToSpell(selectedBotSpell.SpellId, this) &&
+							tar->CanBuffStack(selectedBotSpell.SpellId, botLevel, true) >= 0
+						)
+					) {
+						continue;
+					}
+
+					// Put the zone levitate and movement check here since bots are able to bypass the client casting check
+					if (
+						(IsEffectInSpell(selectedBotSpell.SpellId, SE_Levitate) && !zone->CanLevitate()) ||
+						(IsEffectInSpell(selectedBotSpell.SpellId, SE_MovementSpeed) && !zone->CanCastOutdoor())
+					) {
+						if (botClass != BARD || !IsSpellUsableThisZoneType(selectedBotSpell.SpellId, zone->GetZoneType())) {
 							continue;
 						}
-						//short duration buffs or other buffs only to be cast during combat.
-						if (IsSelfConversionSpell(selectedBotSpell.SpellId)) {
-							if (GetManaRatio() > 90.0f || GetHPRatio() < 50.0f || GetHPRatio() < (GetManaRatio() + 10.0f)) {
-								break; //don't cast if low hp, lots of mana, or if mana is higher than hps
-							}
+					}
+
+					if (!IsGroupSpell(selectedBotSpell.SpellId)) {
+					//Only check archetype if spell is not a group spell
+						switch (tar->GetArchetype()) {
+							case ARCHETYPE_CASTER:
+								//TODO: probably more caster specific spell effects in here
+								if (
+									(
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_AttackSpeed) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_ATK) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_STR) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_ReverseDS) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_DamageShield)
+									) &&
+									spells[selectedBotSpell.SpellId].target_type != ST_Self
+								) {
+									continue;
+								}
+								break;
+							case ARCHETYPE_MELEE:
+								if (
+									(
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_IncreaseSpellHaste) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_ManaPool) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_CastingLevel) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_ManaRegen_v2) ||
+										IsEffectInSpell(selectedBotSpell.SpellId, SE_CurrentMana)
+									) &&
+									spells[selectedBotSpell.SpellId].target_type != ST_Self
+								) {
+									continue;
+								}
+								break;
+							case ARCHETYPE_HYBRID:
+								//Hybrids get all buffs
+							default:
+								break;
+						}
+					}
+					// TODO: Add TriggerSpell Support for Exchanter Runes
+					if (botClass == ENCHANTER && IsEffectInSpell(selectedBotSpell.SpellId, SE_Rune)) {
+						float manaRatioToCast = 75.0f;
+
+						switch(GetBotStance()) {
+						case EQ::constants::stanceEfficient:
+							manaRatioToCast = 90.0f;
+							break;
+						case EQ::constants::stanceBalanced:
+						case EQ::constants::stanceAggressive:
+							manaRatioToCast = 75.0f;
+							break;
+						case EQ::constants::stanceReactive:
+						case EQ::constants::stanceBurn:
+						case EQ::constants::stanceBurnAE:
+							manaRatioToCast = 50.0f;
+							break;
+						default:
+							manaRatioToCast = 75.0f;
+							break;
 						}
 
-						castedSpell = AIDoSpellCast(selectedBotSpell.SpellIndex, tar, selectedBotSpell.ManaCost);
+						//If we're at specified mana % or below, don't rune as enchanter
+						if (GetManaRatio() <= manaRatioToCast) {
+							break;
+						}
+					}
+
+					if (CheckSpellRecastTimers(this, itr->SpellIndex)) {
+						uint32 TempDontBuffMeBefore = tar->DontBuffMeBefore();
+						castedSpell = AIDoSpellCast(selectedBotSpell.SpellIndex, tar, selectedBotSpell.ManaCost, &TempDontBuffMeBefore);
+
+						if (TempDontBuffMeBefore != tar->DontBuffMeBefore())
+							tar->SetDontBuffMeBefore(TempDontBuffMeBefore);
 					}
 
 					if (castedSpell) {
 						break;
-					}
-				}
-			}
-			else if (botClass == BARD) {
-				if (tar->DontBuffMeBefore() < Timer::GetCurrentTime()) {
-					std::list<BotSpell> inCombatBuffList = GetBotSpellsBySpellType(this, SpellType_InCombatBuff);
-
-					for(std::list<BotSpell>::iterator itr = inCombatBuffList.begin(); itr != inCombatBuffList.end(); ++itr) {
-						BotSpell selectedBotSpell = *itr;
-
-						if (selectedBotSpell.SpellId == 0)
-							continue;
-
-						if (CheckSpellRecastTimers(this, itr->SpellIndex)) {
-							uint32 TempDontBuffMeBefore = tar->DontBuffMeBefore();
-
-							// no buffs with illusions.. use #bot command to cast illusions
-							if (IsEffectInSpell(selectedBotSpell.SpellId, SE_Illusion) && tar != this)
-								continue;
-
-							//no teleport spells use #bot command to cast teleports
-							if (IsEffectInSpell(selectedBotSpell.SpellId, SE_Teleport) || IsEffectInSpell(selectedBotSpell.SpellId, SE_Succor))
-								continue;
-
-							// can not cast buffs for your own pet only on another pet that isn't yours
-							if ((spells[selectedBotSpell.SpellId].target_type == ST_Pet) && (tar != GetPet()))
-								continue;
-
-							// Validate target
-
-							if (!((spells[selectedBotSpell.SpellId].target_type == ST_Target || spells[selectedBotSpell.SpellId].target_type == ST_Pet || tar == this ||
-								spells[selectedBotSpell.SpellId].target_type == ST_Group || spells[selectedBotSpell.SpellId].target_type == ST_GroupTeleport ||
-								(botClass == BARD && spells[selectedBotSpell.SpellId].target_type == ST_AEBard))
-								&& !tar->IsImmuneToSpell(selectedBotSpell.SpellId, this)
-								&& (tar->CanBuffStack(selectedBotSpell.SpellId, botLevel, true) >= 0))) {
-									continue;
-							}
-
-							// Put the zone levitate and movement check here since bots are able to bypass the client casting check
-							if ((IsEffectInSpell(selectedBotSpell.SpellId, SE_Levitate) && !zone->CanLevitate())
-								|| (IsEffectInSpell(selectedBotSpell.SpellId, SE_MovementSpeed) && !zone->CanCastOutdoor())) {
-									if (!IsSpellUsableThisZoneType(selectedBotSpell.SpellId, zone->GetZoneType())) {
-										continue;
-									}
-							}
-
-							if (!IsGroupSpell(selectedBotSpell.SpellId)) {
-								//Only check archetype if song is not a group spell
-								switch(tar->GetArchetype()) {
-									case ARCHETYPE_CASTER:
-										//TODO: probably more caster specific spell effects in here
-										if (IsEffectInSpell(selectedBotSpell.SpellId, SE_AttackSpeed) || IsEffectInSpell(selectedBotSpell.SpellId, SE_ATK) ||
-											IsEffectInSpell(selectedBotSpell.SpellId, SE_STR) || IsEffectInSpell(selectedBotSpell.SpellId, SE_ReverseDS))
-										{
-											continue;
-										}
-										break;
-									case ARCHETYPE_MELEE:
-										if (IsEffectInSpell(selectedBotSpell.SpellId, SE_IncreaseSpellHaste) || IsEffectInSpell(selectedBotSpell.SpellId, SE_ManaPool) ||
-											IsEffectInSpell(selectedBotSpell.SpellId, SE_CastingLevel) || IsEffectInSpell(selectedBotSpell.SpellId, SE_ManaRegen_v2) ||
-											IsEffectInSpell(selectedBotSpell.SpellId, SE_CurrentMana))
-										{
-											continue;
-										}
-										break;
-									case ARCHETYPE_HYBRID:
-										//Hybrids get all buffs
-									default:
-										break;
-								}
-							}
-
-							castedSpell = AIDoSpellCast(selectedBotSpell.SpellIndex, tar, selectedBotSpell.ManaCost, &TempDontBuffMeBefore);
-
-							if (TempDontBuffMeBefore != tar->DontBuffMeBefore())
-								tar->SetDontBuffMeBefore(TempDontBuffMeBefore);
-						}
-
-						if (castedSpell)
-							break;
 					}
 				}
 			}
@@ -1161,15 +1184,29 @@ bool Bot::AIDoSpellCast(uint8 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 	} else
 		dist2 = DistanceSquared(m_Position, tar->GetPosition());
 
-	if (((((spells[AIBot_spells[i].spellid].target_type==ST_GroupTeleport && AIBot_spells[i].type==2)
-				|| spells[AIBot_spells[i].spellid].target_type==ST_AECaster
-				|| spells[AIBot_spells[i].spellid].target_type==ST_Group
-				|| spells[AIBot_spells[i].spellid].target_type==ST_AEBard)
-				&& dist2 <= spells[AIBot_spells[i].spellid].aoe_range*spells[AIBot_spells[i].spellid].aoe_range)
-				|| dist2 <= GetActSpellRange(AIBot_spells[i].spellid, spells[AIBot_spells[i].spellid].range)*GetActSpellRange(AIBot_spells[i].spellid, spells[AIBot_spells[i].spellid].range)) && (mana_cost <= GetMana() || GetMana() == GetMaxMana()))
-	{
+	if (
+		(
+			(
+				(
+					(spells[AIBot_spells[i].spellid].target_type==ST_GroupTeleport && AIBot_spells[i].type == SpellType_Heal) ||
+					spells[AIBot_spells[i].spellid].target_type ==ST_AECaster ||
+					spells[AIBot_spells[i].spellid].target_type ==ST_Group ||
+					spells[AIBot_spells[i].spellid].target_type ==ST_AEBard ||
+					(
+						tar == this && spells[AIBot_spells[i].spellid].target_type != ST_TargetsTarget
+					)
+				) &&
+				dist2 <= spells[AIBot_spells[i].spellid].aoe_range*spells[AIBot_spells[i].spellid].aoe_range
+			) ||
+			dist2 <= GetActSpellRange(AIBot_spells[i].spellid, spells[AIBot_spells[i].spellid].range)*GetActSpellRange(AIBot_spells[i].spellid, spells[AIBot_spells[i].spellid].range)
+		) &&
+		(
+			mana_cost <= GetMana() ||
+			GetMana() == GetMaxMana()
+		)
+	) {
 		casting_spell_AIindex = i;
-		LogAIDetail("Bot::AIDoSpellCast: spellid = [{}], tar = [{}], mana = [{}], Name: [{}]", AIBot_spells[i].spellid, tar->GetName(), mana_cost, spells[AIBot_spells[i].spellid].name);
+		LogAI("spellid [{}] tar [{}] mana [{}] Name [{}]", AIBot_spells[i].spellid, tar->GetName(), mana_cost, spells[AIBot_spells[i].spellid].name);
 		result = Mob::CastSpell(AIBot_spells[i].spellid, tar->GetID(), EQ::spells::CastingSlot::Gem2, spells[AIBot_spells[i].spellid].cast_time, AIBot_spells[i].manacost == -2 ? 0 : mana_cost, oDontDoAgainBefore, -1, -1, 0, &(AIBot_spells[i].resist_adjust));
 
 		if (IsCasting() && IsSitting())
@@ -1209,7 +1246,7 @@ bool Bot::AI_PursueCastCheck() {
 
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
 
-		LogAI("Bot Engaged (pursuing) autocast check triggered. Trying to cast offensive spells");
+		LogAIDetail("Bot Engaged (pursuing) autocast check triggered. Trying to cast offensive spells");
 
 		if (!AICastSpell(GetTarget(), 100, SpellType_Snare)) {
 			if (!AICastSpell(GetTarget(), 100, SpellType_Lifetap)) {
@@ -1236,9 +1273,7 @@ bool Bot::AI_IdleCastCheck() {
 	bool result = false;
 
 	if (AIautocastspell_timer->Check(false)) {
-#if BotAI_DEBUG_Spells >= 25
-		LogAI("Bot Non-Engaged autocast check triggered: [{}]", GetCleanName());
-#endif
+		LogAIDetail("Bot Non-Engaged autocast check triggered: [{}]", GetCleanName());
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
 
 		bool pre_combat = false;
@@ -1393,14 +1428,14 @@ bool Bot::AI_EngagedCastCheck() {
 		EQ::constants::StanceType botStance = GetBotStance();
 		bool mayGetAggro = HasOrMayGetAggro();
 
-		LogAI("Engaged autocast check triggered (BOTS). Trying to cast healing spells then maybe offensive spells");
+		LogAIDetail("Engaged autocast check triggered (BOTS). Trying to cast healing spells then maybe offensive spells");
 
 		if (botClass == CLERIC) {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 					if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+							if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 								if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 									//AIautocastspell_timer->Start(RandomTimer(100, 250), false);		// Do not give healer classes a lot of time off or your tank's die
 									failedToCast = true;
@@ -1416,7 +1451,7 @@ bool Bot::AI_EngagedCastCheck() {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 					if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+							if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 										//AIautocastspell_timer->Start(RandomTimer(100, 250), false);		// Do not give healer classes a lot of time off or your tank's die
@@ -1435,7 +1470,7 @@ bool Bot::AI_EngagedCastCheck() {
 					if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 						if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
 							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-								if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+								if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 									if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 										if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 											if (!AICastSpell(GetPet(), GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
@@ -1454,7 +1489,7 @@ bool Bot::AI_EngagedCastCheck() {
 		else if (botClass == RANGER) {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
-					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+					if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 							if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 								if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
@@ -1472,7 +1507,7 @@ bool Bot::AI_EngagedCastCheck() {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 						if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Pet), SpellType_Pet)) {
 							if (!AICastSpell(GetPet(), GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
-								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+								if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 									if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 										if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 											if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
@@ -1490,7 +1525,7 @@ bool Bot::AI_EngagedCastCheck() {
 		else if (botClass == WIZARD) {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+					if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 						if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 							failedToCast = true;
 						}
@@ -1500,7 +1535,7 @@ bool Bot::AI_EngagedCastCheck() {
 		}
 		else if (botClass == PALADIN) {
 			if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
-				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+				if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 						if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_Heal), BotAISpellRange, SpellType_Heal)) {
 							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1513,7 +1548,7 @@ bool Bot::AI_EngagedCastCheck() {
 		}
 		else if (botClass == SHADOWKNIGHT) {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Lifetap), SpellType_Lifetap)) {
-				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+				if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1527,7 +1562,7 @@ bool Bot::AI_EngagedCastCheck() {
 		else if (botClass == MAGICIAN) {
 			if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Pet), SpellType_Pet)) {
 				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+					if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 						if (!AICastSpell(GetPet(), GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 							if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 								failedToCast = true;
@@ -1542,7 +1577,7 @@ bool Bot::AI_EngagedCastCheck() {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Pet), SpellType_Pet)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Lifetap), SpellType_Lifetap)) {
-							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+							if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetPet(), GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 										if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1561,7 +1596,7 @@ bool Bot::AI_EngagedCastCheck() {
 				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Slow), SpellType_Slow)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+							if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 								if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetTarget(), mayGetAggro?0:GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
 										failedToCast = true;
@@ -1579,7 +1614,7 @@ bool Bot::AI_EngagedCastCheck() {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Slow), SpellType_Slow)) {
 						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 							if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuffSong), SpellType_InCombatBuffSong)) {
-								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+								if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 									if (!AICastSpell(GetTarget(), mayGetAggro ? 0 : GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {// Bards will use their dot songs
 										if (!AICastSpell(GetTarget(), mayGetAggro ? 0 : GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {// Bards will use their nuke songs
 											failedToCast = true;
@@ -1596,7 +1631,7 @@ bool Bot::AI_EngagedCastCheck() {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+						if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 							if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuffSong), SpellType_InCombatBuffSong)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1613,7 +1648,7 @@ bool Bot::AI_EngagedCastCheck() {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+						if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 							if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuffSong), SpellType_InCombatBuffSong)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1630,7 +1665,7 @@ bool Bot::AI_EngagedCastCheck() {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {
 				if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
-						if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+						if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 							if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuffSong), SpellType_InCombatBuffSong)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
@@ -1645,7 +1680,7 @@ bool Bot::AI_EngagedCastCheck() {
 		}
 		else if (botClass == WARRIOR) {
 			if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
-				if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_InCombatBuff), SpellType_InCombatBuff)) {
+				if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 					if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Debuff), SpellType_Debuff)) {
 						if (!AICastSpell(this, GetChanceToCastBySpellType(SpellType_InCombatBuffSong), SpellType_InCombatBuffSong)) {
 							if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
@@ -1718,13 +1753,10 @@ bool Bot::AIHealRotation(Mob* tar, bool useFastHeals) {
 		}
 	}
 
-#if BotAI_DEBUG_Spells >= 10
-	LogAI("Bot::AIHealRotation: heal spellid = [{}], fastheals = [{}], casterlevel = [{}]",
+	LogAIDetail("heal spellid [{}] fastheals [{}] casterlevel [{}]",
 		botSpell.SpellId, ((useFastHeals) ? ('T') : ('F')), GetLevel());
-#endif
-#if BotAI_DEBUG_Spells >= 25
-	LogAI("Bot::AIHealRotation: target = [{}], current_time = [{}], donthealmebefore = [{}]", tar->GetCleanName(), Timer::GetCurrentTime(), tar->DontHealMeBefore());
-#endif
+
+	LogAIDetail("target [{}] current_time [{}] donthealmebefore [{}]", tar->GetCleanName(), Timer::GetCurrentTime(), tar->DontHealMeBefore());
 
 	// If there is still no spell id, then there isn't going to be one so we are done
 	if (botSpell.SpellId == 0)
@@ -1771,7 +1803,7 @@ std::list<BotSpell> Bot::GetBotSpellsForSpellEffect(Bot* botCaster, int spellEff
 				continue;
 			}
 
-			if (IsEffectInSpell(botSpellList[i].spellid, spellEffect)) {
+			if (IsEffectInSpell(botSpellList[i].spellid, spellEffect) || GetTriggerSpellID(botSpellList[i].spellid, spellEffect)) {
 				BotSpell botSpell;
 				botSpell.SpellId = botSpellList[i].spellid;
 				botSpell.SpellIndex = i;
@@ -1803,7 +1835,7 @@ std::list<BotSpell> Bot::GetBotSpellsForSpellEffectAndTargetType(Bot* botCaster,
 				continue;
 			}
 
-			if (IsEffectInSpell(botSpellList[i].spellid, spellEffect)) {
+			if (IsEffectInSpell(botSpellList[i].spellid, spellEffect) || GetTriggerSpellID(botSpellList[i].spellid, spellEffect)) {
 				if (spells[botSpellList[i].spellid].target_type == targetType) {
 					BotSpell botSpell;
 					botSpell.SpellId = botSpellList[i].spellid;
@@ -2889,6 +2921,7 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	// ok, this function should load the list, and the parent list then shove them into the struct and sort
 	npc_spells_id = bot_spell_id;
 	AIBot_spells.clear();
+	AIBot_spells_enforced.clear();
 	if (!bot_spell_id) {
 		AIautocastspell_timer->Disable();
 		return false;
@@ -2903,7 +2936,7 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	auto* parentlist = content_db.GetBotSpells(spell_list->parent_list);
 
 	auto debug_msg = fmt::format(
-		"Loading NPCSpells onto {}: dbspellsid={}, level={}",
+		"Loading Bot spells onto {}: dbspellsid={}, level={}",
 		GetName(),
 		bot_spell_id,
 		GetLevel()
@@ -2912,45 +2945,23 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	if (spell_list) {
 		debug_msg.append(
 			fmt::format(
-				" (found, {}), parentlist={}",
-				spell_list->entries.size(),
-				spell_list->parent_list
+				" (found, {})",
+				spell_list->entries.size()
 			)
 		);
 
-		if (spell_list->parent_list) {
-			if (parentlist) {
-				debug_msg.append(
-					fmt::format(
-						" (found, {})",
-						parentlist->entries.size()
-					)
-				);
-			} else {
-				debug_msg.append(" (not found)");
-			}
-		}
-	} else {
-		debug_msg.append(" (not found)");
-	}
-
-	LogAIDetail("[{}]", debug_msg);
-
-	if (parentlist) {
-		for (const auto &iter : parentlist->entries) {
-			LogAI("([{}]) [{}]", iter.spellid, spells[iter.spellid].name);
-		}
-	}
-
-	LogAIModerate("fin (parent list)");
-
-	if (spell_list) {
+		LogAI("[{}]", debug_msg);
 		for (const auto &iter : spell_list->entries) {
 			LogAIDetail("([{}]) [{}]", iter.spellid, spells[iter.spellid].name);
 		}
 	}
+	else
+	{
+		debug_msg.append(" (not found)");
+		LogAI("[{}]", debug_msg);
+	}
 
-	LogAIModerate("fin (spell list)");
+	LogAI("fin (spell list)");
 
 	uint16 attack_proc_spell = -1;
 	int8 proc_chance = 3;
@@ -3008,14 +3019,6 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 						continue;
 					}
 
-					if (bs->min_level > 0 && GetLevel() < bs->min_level) {
-						continue;
-					}
-
-					if (bs->max_level > 0 && GetLevel() > bs->max_level) {
-						continue;
-					}
-
 					AddSpellToBotList(
 						bs->priority,
 						e.spellid,
@@ -3023,6 +3026,8 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 						e.manacost,
 						e.recast_delay,
 						e.resist_adjust,
+						e.minlevel,
+						e.maxlevel,
 						bs->min_hp,
 						bs->max_hp,
 						e.bucket_name,
@@ -3032,19 +3037,39 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 					continue;
 				}
 
-				AddSpellToBotList(
-					e.priority,
-					e.spellid,
-					e.type,
-					e.manacost,
-					e.recast_delay,
-					e.resist_adjust,
-					e.min_hp,
-					e.max_hp,
-					e.bucket_name,
-					e.bucket_value,
-					e.bucket_comparison
-				);
+				if (!GetBotEnforceSpellSetting()) {
+					AddSpellToBotList(
+						e.priority,
+						e.spellid,
+						e.type,
+						e.manacost,
+						e.recast_delay,
+						e.resist_adjust,
+						e.minlevel,
+						e.maxlevel,
+						e.min_hp,
+						e.max_hp,
+						e.bucket_name,
+						e.bucket_value,
+						e.bucket_comparison
+					);
+				} else {
+					AddSpellToBotEnforceList(
+						e.priority,
+						e.spellid,
+						e.type,
+						e.manacost,
+						e.recast_delay,
+						e.resist_adjust,
+						e.minlevel,
+						e.maxlevel,
+						e.min_hp,
+						e.max_hp,
+						e.bucket_name,
+						e.bucket_value,
+						e.bucket_comparison
+					);
+				}
 			}
 		}
 	}
@@ -3107,14 +3132,6 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 					continue;
 				}
 
-				if (bs->min_level > 0 && GetLevel() < bs->min_level) {
-					continue;
-				}
-
-				if (bs->max_level > 0 && GetLevel() > bs->max_level) {
-					continue;
-				}
-
 				AddSpellToBotList(
 					bs->priority,
 					e.spellid,
@@ -3122,6 +3139,8 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 					e.manacost,
 					e.recast_delay,
 					e.resist_adjust,
+					e.minlevel,
+					e.maxlevel,
 					bs->min_hp,
 					bs->max_hp,
 					e.bucket_name,
@@ -3131,19 +3150,39 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 				continue;
 			}
 
-			AddSpellToBotList(
-				e.priority,
-				e.spellid,
-				e.type,
-				e.manacost,
-				e.recast_delay,
-				e.resist_adjust,
-				e.min_hp,
-				e.max_hp,
-				e.bucket_name,
-				e.bucket_value,
-				e.bucket_comparison
-			);
+			if (!GetBotEnforceSpellSetting()) {
+				AddSpellToBotList(
+					e.priority,
+					e.spellid,
+					e.type,
+					e.manacost,
+					e.recast_delay,
+					e.resist_adjust,
+					e.minlevel,
+					e.maxlevel,
+					e.min_hp,
+					e.max_hp,
+					e.bucket_name,
+					e.bucket_value,
+					e.bucket_comparison
+				);
+			} else {
+				AddSpellToBotEnforceList(
+					e.priority,
+					e.spellid,
+					e.type,
+					e.manacost,
+					e.recast_delay,
+					e.resist_adjust,
+					e.minlevel,
+					e.maxlevel,
+					e.min_hp,
+					e.max_hp,
+					e.bucket_name,
+					e.bucket_value,
+					e.bucket_comparison
+				);
+			}
 		}
 	}
 
@@ -3250,38 +3289,37 @@ DBbotspells_Struct* ZoneDatabase::GetBotSpells(uint32 bot_spell_id)
 				bot_spell_id
 			)
 		);
-		if (bse.empty()) {
-			return nullptr;
-		}
 
-		for (const auto& e : bse) {
-			DBbotspells_entries_Struct entry;
-			entry.spellid = e.spellid;
-			entry.type = e.type;
-			entry.minlevel = e.minlevel;
-			entry.maxlevel = e.maxlevel;
-			entry.manacost = e.manacost;
-			entry.recast_delay = e.recast_delay;
-			entry.priority = e.priority;
-			entry.min_hp = e.min_hp;
-			entry.max_hp = e.max_hp;
-			entry.resist_adjust = e.resist_adjust;
-			entry.bucket_name = e.bucket_name;
-			entry.bucket_value = e.bucket_value;
-			entry.bucket_comparison = e.bucket_comparison;
-
-			// some spell types don't make much since to be priority 0, so fix that
-			if (!(entry.type & SPELL_TYPES_INNATE) && entry.priority == 0) {
-				entry.priority = 1;
-			}
-
-			if (e.resist_adjust) {
+		if (!bse.empty()) {
+			for (const auto& e : bse) {
+				DBbotspells_entries_Struct entry;
+				entry.spellid = e.spellid;
+				entry.type = e.type;
+				entry.minlevel = e.minlevel;
+				entry.maxlevel = e.maxlevel;
+				entry.manacost = e.manacost;
+				entry.recast_delay = e.recast_delay;
+				entry.priority = e.priority;
+				entry.min_hp = e.min_hp;
+				entry.max_hp = e.max_hp;
 				entry.resist_adjust = e.resist_adjust;
-			} else if (IsValidSpell(e.spellid)) {
-				entry.resist_adjust = spells[e.spellid].resist_difficulty;
-			}
+				entry.bucket_name = e.bucket_name;
+				entry.bucket_value = e.bucket_value;
+				entry.bucket_comparison = e.bucket_comparison;
 
-			spell_set.entries.push_back(entry);
+				// some spell types don't make much since to be priority 0, so fix that
+				if (!(entry.type & SPELL_TYPES_INNATE) && entry.priority == 0) {
+					entry.priority = 1;
+				}
+
+				if (e.resist_adjust) {
+					entry.resist_adjust = e.resist_adjust;
+				} else if (IsValidSpell(e.spellid)) {
+					entry.resist_adjust = spells[e.spellid].resist_difficulty;
+				}
+
+				spell_set.entries.push_back(entry);
+			}
 		}
 
 		bot_spells_cache.insert(std::make_pair(bot_spell_id, spell_set));
@@ -3300,6 +3338,8 @@ void Bot::AddSpellToBotList(
 	int16 iManaCost,
 	int32 iRecastDelay,
 	int16 iResistAdjust,
+	uint8 min_level,
+	uint8 max_level,
 	int8 min_hp,
 	int8 max_hp,
 	std::string bucket_name,
@@ -3320,6 +3360,8 @@ void Bot::AddSpellToBotList(
 	t.recast_delay = iRecastDelay;
 	t.time_cancast = 0;
 	t.resist_adjust = iResistAdjust;
+	t.minlevel = min_level;
+	t.maxlevel = maxlevel;
 	t.min_hp = min_hp;
 	t.max_hp = max_hp;
 	t.bucket_name = bucket_name;
@@ -3332,6 +3374,47 @@ void Bot::AddSpellToBotList(
 	if (AIBot_spells.empty()) {
 		AIautocastspell_timer->Start(RandomTimer(0, 300), false);
 	}
+}
+
+// adds spells to the list ^spells that are returned if ^enforce is enabled
+void Bot::AddSpellToBotEnforceList(
+	int16 iPriority,
+	uint16 iSpellID,
+	uint32 iType,
+	int16 iManaCost,
+	int32 iRecastDelay,
+	int16 iResistAdjust,
+	uint8 min_level,
+	uint8 max_level,
+	int8 min_hp,
+	int8 max_hp,
+	std::string bucket_name,
+	std::string bucket_value,
+	uint8 bucket_comparison
+) {
+	if (!IsValidSpell(iSpellID)) {
+		return;
+	}
+
+	HasAISpell = true;
+	BotSpells_Struct t;
+
+	t.priority = iPriority;
+	t.spellid = iSpellID;
+	t.type = iType;
+	t.manacost = iManaCost;
+	t.recast_delay = iRecastDelay;
+	t.time_cancast = 0;
+	t.resist_adjust = iResistAdjust;
+	t.minlevel = min_level;
+	t.maxlevel = maxlevel;
+	t.min_hp = min_hp;
+	t.max_hp = max_hp;
+	t.bucket_name = bucket_name;
+	t.bucket_value = bucket_value;
+	t.bucket_comparison = bucket_comparison;
+
+	AIBot_spells_enforced.push_back(t);
 }
 
 //this gets called from InterruptSpell() for failure or SpellFinished() for success
@@ -3363,7 +3446,6 @@ void Bot::AI_Bot_Event_SpellCastFinished(bool iCastSucceeded, uint16 slot) {
 }
 
 bool Bot::HasBotSpellEntry(uint16 spellid) {
-	
 	auto* spell_list = content_db.GetBotSpells(GetBotSpellID());
 
 	if (!spell_list) {
@@ -3379,5 +3461,3 @@ bool Bot::HasBotSpellEntry(uint16 spellid) {
 
 	return false;
 }
-
-#endif

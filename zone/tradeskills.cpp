@@ -140,6 +140,18 @@ void Object::HandleAugmentation(Client* user, const AugmentItem_Struct* in_augme
 
 				args.assign(1, tobe_auged);
 				parse->EventItem(EVENT_AUGMENT_INSERT, user, aug, nullptr, "", slot, &args);
+
+				args.push_back(aug);
+
+				const auto export_string = fmt::format(
+					"{} {} {} {}",
+					tobe_auged->GetID(),
+					-1,
+					aug->GetID(),
+					slot
+				);
+
+				parse->EventPlayer(EVENT_AUGMENT_INSERT_CLIENT, user, export_string, 0, &args);
 			}
 
 			item_one_to_push = tobe_auged->Clone();
@@ -228,7 +240,7 @@ void Object::HandleCombine(Client* user, const NewCombine_Struct* in_combine, Ob
 	}
 
 	LogTradeskills(
-		"[HandleCombine] container_slot [{}] guildtribute_slot [{}]",
+		"container_slot [{}] guildtribute_slot [{}]",
 		in_combine->container_slot,
 		in_combine->guildtribute_slot
 	);
@@ -314,7 +326,7 @@ void Object::HandleCombine(Client* user, const NewCombine_Struct* in_combine, Ob
 		safe_delete(outapp);
 
 		LogTradeskills(
-			"[HandleCombine] inst_item [{}] container_item [{}]",
+			"inst_item [{}] container_item [{}]",
 			inst->GetItem()->ID,
 			container->GetItem()->ID
 		);
@@ -323,7 +335,7 @@ void Object::HandleCombine(Client* user, const NewCombine_Struct* in_combine, Ob
 	}
 
 	if (container->GetItem() && container->GetItem()->BagType == EQ::item::BagTypeDetransformationmold) {
-		LogTradeskillsDetail("[HandleCombine] Check 1");
+		LogTradeskillsDetail("Check 1");
 
 		const EQ::ItemInstance* inst = container->GetItem(0);
 		if (inst && inst->GetOrnamentationIcon() && inst->GetOrnamentationIcon()) {
@@ -353,7 +365,7 @@ void Object::HandleCombine(Client* user, const NewCombine_Struct* in_combine, Ob
 
 	if (!content_db.GetTradeRecipe(container, c_type, some_id, user->CharacterID(), &spec)) {
 
-		LogTradeskillsDetail("[HandleCombine] Check 2");
+		LogTradeskillsDetail("Check 2");
 
 		user->MessageString(Chat::Emote,TRADESKILL_NOCOMBINE);
 		auto outapp = new EQApplicationPacket(OP_TradeSkillCombine, 0);
@@ -370,7 +382,7 @@ void Object::HandleCombine(Client* user, const NewCombine_Struct* in_combine, Ob
 	// bit 6 (0x20): unlisted recipe flag
 	if ((spec.must_learn & 0xF) == 1 && !spec.has_learnt) {
 
-		LogTradeskillsDetail("[HandleCombine] Check 3");
+		LogTradeskillsDetail("Check 3");
 
 		// Made up message for the client. Just giving a DNC is the other option.
 		user->Message(Chat::LightBlue, "You need to learn how to combine these first.");
@@ -947,37 +959,37 @@ bool Client::TradeskillExecute(DBTradeskillRecipe_Struct *spec) {
 	// Remember: skillup_modifier is (float). Lower is better
 	switch(spec->tradeskill) {
 	case EQ::skills::SkillFletching:
-		skillup_modifier = RuleI(Character, TradeskillUpFletching);
+		skillup_modifier = RuleR(Character, TradeskillUpFletching);
 		break;
 	case EQ::skills::SkillAlchemy:
-		skillup_modifier = RuleI(Character, TradeskillUpAlchemy);
+		skillup_modifier = RuleR(Character, TradeskillUpAlchemy);
 		break;
 	case EQ::skills::SkillJewelryMaking:
-		skillup_modifier = RuleI(Character, TradeskillUpJewelcrafting);
+		skillup_modifier = RuleR(Character, TradeskillUpJewelcrafting);
 		break;
 	case EQ::skills::SkillPottery:
-		skillup_modifier = RuleI(Character, TradeskillUpPottery);
+		skillup_modifier = RuleR(Character, TradeskillUpPottery);
 		break;
 	case EQ::skills::SkillBaking:
-		skillup_modifier = RuleI(Character, TradeskillUpBaking);
+		skillup_modifier = RuleR(Character, TradeskillUpBaking);
 		break;
 	case EQ::skills::SkillBrewing:
-		skillup_modifier = RuleI(Character, TradeskillUpBrewing);
+		skillup_modifier = RuleR(Character, TradeskillUpBrewing);
 		break;
 	case EQ::skills::SkillBlacksmithing:
-		skillup_modifier = RuleI(Character, TradeskillUpBlacksmithing);
+		skillup_modifier = RuleR(Character, TradeskillUpBlacksmithing);
 		break;
 	case EQ::skills::SkillResearch:
-		skillup_modifier = RuleI(Character, TradeskillUpResearch);
+		skillup_modifier = RuleR(Character, TradeskillUpResearch);
 		break;
 	case EQ::skills::SkillMakePoison:
-		skillup_modifier = RuleI(Character, TradeskillUpMakePoison);
+		skillup_modifier = RuleR(Character, TradeskillUpMakePoison);
 		break;
 	case EQ::skills::SkillTinkering:
-		skillup_modifier = RuleI(Character, TradeskillUpTinkering);
+		skillup_modifier = RuleR(Character, TradeskillUpTinkering);
 		break;
 	case EQ::skills::SkillTailoring:
-		skillup_modifier = RuleI(Character, TradeskillUpTailoring);
+		skillup_modifier = RuleR(Character, TradeskillUpTailoring);
 		break;
 	default:
 		skillup_modifier = 2;
@@ -1201,9 +1213,9 @@ void Client::CheckIncreaseTradeskill(int16 bonusstat, int16 stat_modifier, float
 			NotifyNewTitlesAvailable();
 	}
 
-	LogTradeskills("[CheckIncreaseTradeskill] skillup_modifier: [{}] , success_modifier: [{}] , stat modifier: [{}]", skillup_modifier , success_modifier , stat_modifier);
-	LogTradeskills("[CheckIncreaseTradeskill] Stage1 chance was: [{}] percent", chance_stage1);
-	LogTradeskills("[CheckIncreaseTradeskill] Stage2 chance was: [{}] percent. 0 percent means stage1 failed", chance_stage2);
+	LogTradeskills("skillup_modifier: [{}] , success_modifier: [{}] , stat modifier: [{}]", skillup_modifier , success_modifier , stat_modifier);
+	LogTradeskills("Stage1 chance was: [{}] percent", chance_stage1);
+	LogTradeskills("Stage2 chance was: [{}] percent. 0 percent means stage1 failed", chance_stage2);
 }
 
 bool ZoneDatabase::GetTradeRecipe(
@@ -1215,7 +1227,7 @@ bool ZoneDatabase::GetTradeRecipe(
 )
 {
 	if (container == nullptr) {
-		LogTradeskills("[GetTradeRecipe] Container null");
+		LogTradeskills("Container null");
 		return false;
 	}
 
@@ -1234,7 +1246,7 @@ bool ZoneDatabase::GetTradeRecipe(
 	uint32      count = 0;
 	uint32      sum   = 0;
 	for (uint8  i     = 0; i < 10; i++) { // <watch> TODO: need to determine if this is bound to world/item container size
-		LogTradeskills("[GetTradeRecipe] Fetching item [{}]", i);
+		LogTradeskills("Fetching item [{}]", i);
 
 		const EQ::ItemInstance *inst = container->GetItem(i);
 		if (!inst) {
@@ -1243,7 +1255,7 @@ bool ZoneDatabase::GetTradeRecipe(
 
 		const EQ::ItemData *item = database.GetItem(inst->GetItem()->ID);
 		if (!item) {
-			LogTradeskills("[GetTradeRecipe] item [{}] not found!", inst->GetItem()->ID);
+			LogTradeskills("item [{}] not found!", inst->GetItem()->ID);
 			continue;
 		}
 
@@ -1259,7 +1271,7 @@ bool ZoneDatabase::GetTradeRecipe(
 		count++;
 
 		LogTradeskills(
-			"[GetTradeRecipe] Item in container index [{}] item [{}] found [{}]",
+			"Item in container index [{}] item [{}] found [{}]",
 			i,
 			item->ID,
 			count
@@ -1403,7 +1415,7 @@ bool ZoneDatabase::GetTradeRecipe(
 			}
 
 			LogTradeskills(
-				"[GetTradeRecipe] Component count loop [{}] item [{}] recipe component_count [{}]",
+				"Component count loop [{}] item [{}] recipe component_count [{}]",
 				component_count,
 				item->ID,
 				atoi(row[1])
@@ -1493,7 +1505,7 @@ bool ZoneDatabase::GetTradeRecipe(
 	);
 
 	if (!r.empty() && r[0].recipe_id) { //If this exists we learned it
-		LogTradeskills("[GetTradeRecipe] made_count [{}]", r[0].madecount);
+		LogTradeskills("made_count [{}]", r[0].madecount);
 
 		spec->has_learnt = true;
 		spec->madecount  = (uint32) r[0].madecount;
@@ -1600,7 +1612,7 @@ void Client::LearnRecipe(uint32 recipe_id)
 	}
 
 	LogTradeskills(
-		"[LearnRecipe] recipe_id [{}] name [{}] learned [{}]",
+		"recipe_id [{}] name [{}] learned [{}]",
 		recipe_id,
 		tradeskill_recipe.name,
 		results.RowCount()

@@ -27,9 +27,6 @@
 
 extern WorldServer worldserver;
 
-// message string 8312 added in September 08 2020 Test patch (used by both dz and shared tasks)
-const char* const CREATE_NOT_ALL_ADDED       = "Not all players in your {} were added to the {}. The {} can take a maximum of {} players, and your {} has {}.";
-
 DynamicZone::DynamicZone(
 	uint32_t zone_id, uint32_t version, uint32_t duration, DynamicZoneType type)
 {
@@ -148,6 +145,7 @@ void DynamicZone::CacheAllFromDatabase()
 		zone->dynamic_zone_cache.emplace(dz_id, std::move(dz));
 	}
 
+	LogInfo("Loaded [{}] dynamic zone(s)", Strings::Commify(zone->dynamic_zone_cache.size()));
 	LogDynamicZones("Caching [{}] dynamic zone(s) took [{}s]", zone->dynamic_zone_cache.size(), bench.elapsed());
 }
 
@@ -243,7 +241,7 @@ void DynamicZone::HandleWorldMessage(ServerPacket* pack)
 				auto expedition = Expedition::FindCachedExpeditionByDynamicZoneID(dz->GetID());
 				if (expedition)
 				{
-					LogExpeditionsModerate("Deleting expedition [{}] from zone cache", expedition->GetID());
+					LogExpeditionsDetail("Deleting expedition [{}] from zone cache", expedition->GetID());
 					zone->expedition_cache.erase(expedition->GetID());
 				}
 			}

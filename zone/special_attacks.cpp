@@ -112,13 +112,18 @@ int Mob::GetBaseSkillDamage(EQ::skills::SkillType skill, Mob *target)
 			auto *inst = CastToClient()->GetInv().GetItem(EQ::invslot::slotPrimary);
 			if (inst && inst->GetItem() && inst->GetItem()->ItemType == EQ::item::ItemType1HPiercing) {
 				base = inst->GetItemBackstabDamage(true);
-				if (!inst->GetItemBackstabDamage())
+				if (!inst->GetItemBackstabDamage()) {
 					base += inst->GetItemWeaponDamage(true);
+				}
+
 				if (target) {
-					if (inst->GetItemElementalFlag(true) && inst->GetItemElementalDamage(true))
+					if (inst->GetItemElementalFlag(true) && inst->GetItemElementalDamage(true) && !RuleB(Combat, BackstabIgnoresElemental)) {
 						base += target->ResistElementalWeaponDmg(inst);
-					if (inst->GetItemBaneDamageBody(true) || inst->GetItemBaneDamageRace(true))
+					}
+
+					if ((inst->GetItemBaneDamageBody(true) || inst->GetItemBaneDamageRace(true)) && !RuleB(Combat, BackstabIgnoresBane)) {
 						base += target->CheckBaneDamage(inst);
+					}
 				}
 			}
 		} else if (IsNPC()) {
@@ -1318,7 +1323,7 @@ void Client::ThrowingAttack(Mob* other, bool CanDoubleAttack) { //old was 51
 
 	const EQ::ItemData* item = RangeWeapon->GetItem();
 	if (item->ItemType != EQ::item::ItemTypeLargeThrowing && item->ItemType != EQ::item::ItemTypeSmallThrowing) {
-		LogCombat("Ranged attack canceled. Ranged item [{}] is not a throwing weapon. type [{}]", item->ItemType);
+		LogCombat("Ranged attack canceled. Ranged item [{}] is not a throwing weapon. type [{}]", item->ID, item->ItemType);
 		Message(0, "Error: Rangeweapon: GetItem(%i)==0, you have nothing useful to throw!", GetItemIDAt(EQ::invslot::slotRange));
 		return;
 	}

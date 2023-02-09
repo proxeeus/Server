@@ -92,8 +92,8 @@ public:
 	void AddEXP(uint32 add_exp);
 	void AddEXP(uint32 add_exp, int conlevel);
 	void AddEXP(uint32 add_exp, int conlevel, bool resexp);
-	void SetEXP(uint32 set_exp, uint32 set_aaxp);
-	void SetEXP(uint32 set_exp, uint32 set_aaxp, bool resexp);
+	void SetEXP(uint64 set_exp, uint64 set_aaxp);
+	void SetEXP(uint64 set_exp, uint64 set_aaxp, bool resexp);
 	void SetBindPoint();
 	void SetBindPoint(int to_zone);
 	void SetBindPoint(int to_zone, int to_instance);
@@ -451,50 +451,53 @@ public:
 	void UpdateAdmin(bool from_database);
 	luabind::object GetPEQZoneFlags(lua_State* L);
 	luabind::object GetZoneFlags(lua_State* L);
+	void SendPayload(int payload_id);
+	void SendPayload(int payload_id, std::string payload_value);
+	std::string GetGuildPublicNote();
+	void MaxSkills();
+	luabind::object GetAugmentIDsBySlotID(lua_State* L, int16 slot_id);
+	bool IsEXPEnabled();
+	void SetEXPEnabled(bool is_exp_enabled);
+	uint64 CalcEXP(uint8 consider_level);
+	uint64 CalcEXP(uint8 consider_level, bool ignore_modifiers);
+	bool CanEnterZone(std::string zone_short_name);
+	bool CanEnterZone(std::string zone_short_name, int16 instance_version);
+	void SendPath(Lua_Mob target);
+	void ResetItemCooldown(uint32 item_id);
+	void SetItemCooldown(uint32 item_id, uint32 in_time);
+	uint32 GetItemCooldown(uint32 item_id);
 
 	void ApplySpell(int spell_id);
 	void ApplySpell(int spell_id, int duration);
 	void ApplySpell(int spell_id, int duration, bool allow_pets);
-#ifdef BOTS
 	void ApplySpell(int spell_id, int duration, bool allow_pets, bool allow_bots);
-#endif
 
 	void ApplySpellGroup(int spell_id);
 	void ApplySpellGroup(int spell_id, int duration);
 	void ApplySpellGroup(int spell_id, int duration, bool allow_pets);
-#ifdef BOTS
 	void ApplySpellGroup(int spell_id, int duration, bool allow_pets, bool allow_bots);
-#endif
 
 	void ApplySpellRaid(int spell_id);
 	void ApplySpellRaid(int spell_id, int duration);
 	void ApplySpellRaid(int spell_id, int duration, bool allow_pets);
 	void ApplySpellRaid(int spell_id, int duration, bool allow_pets, bool is_raid_group_only);
-#ifdef BOTS
 	void ApplySpellRaid(int spell_id, int duration, bool allow_pets, bool is_raid_group_only, bool allow_bots);
-#endif
 
 	void SetSpellDuration(int spell_id);
 	void SetSpellDuration(int spell_id, int duration);
 	void SetSpellDuration(int spell_id, int duration, bool allow_pets);
-#ifdef BOTS
 	void SetSpellDuration(int spell_id, int duration, bool allow_pets, bool allow_bots);
-#endif
 
 	void SetSpellDurationGroup(int spell_id);
 	void SetSpellDurationGroup(int spell_id, int duration);
 	void SetSpellDurationGroup(int spell_id, int duration, bool allow_pets);
-#ifdef BOTS
 	void SetSpellDurationGroup(int spell_id, int duration, bool allow_pets, bool allow_bots);
-#endif
 
 	void SetSpellDurationRaid(int spell_id);
 	void SetSpellDurationRaid(int spell_id, int duration);
 	void SetSpellDurationRaid(int spell_id, int duration, bool allow_pets);
 	void SetSpellDurationRaid(int spell_id, int duration, bool allow_pets, bool is_raid_group_only);
-#ifdef BOTS
 	void SetSpellDurationRaid(int spell_id, int duration, bool allow_pets, bool is_raid_group_only, bool allow_bots);
-#endif
 
 
 	int GetEnvironmentDamageModifier();
@@ -513,8 +516,6 @@ public:
 	bool SendGMCommand(std::string message);
 	bool SendGMCommand(std::string message, bool ignore_status);
 
-#ifdef BOTS
-
 	int GetBotRequiredLevel();
 	int GetBotRequiredLevel(uint8 class_id);
 	uint32 GetBotCreationLimit();
@@ -527,8 +528,8 @@ public:
 	void SetBotCreationLimit(uint32 new_creation_limit, uint8 class_id);
 	void SetBotSpawnLimit(int new_spawn_limit);
 	void SetBotSpawnLimit(int new_spawn_limit, uint8 class_id);
-
-#endif
+	void CampAllBots();
+	void CampAllBots(uint8 class_id);
 
 	void DialogueWindow(std::string markdown);
 
@@ -555,9 +556,12 @@ public:
 	void            MovePCDynamicZone(std::string zone_name, int zone_version);
 	void            MovePCDynamicZone(std::string zone_name, int zone_version, bool msg_if_invalid);
 	void            CreateTaskDynamicZone(int task_id, luabind::object dz_table);
+	void            Fling(float target_x, float target_y, float target_z);
+	void            Fling(float target_x, float target_y, float target_z, bool ignore_los);
+	void            Fling(float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls);
 	void            Fling(float value, float target_x, float target_y, float target_z);
 	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los);
-	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clipping);
+	void            Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls);
 };
 
 #endif

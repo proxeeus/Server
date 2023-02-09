@@ -22,7 +22,6 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include <stdio.h>
 #include <iomanip>
 #include <stdarg.h>
-#include <limits.h>
 
 #ifdef _WINDOWS
 #include <process.h>
@@ -54,11 +53,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "worldserver.h"
 #include "zone.h"
 #include "zone_config.h"
-#include "zone_reload.h"
 #include "../common/shared_tasks.h"
 #include "shared_task_zone_messaging.h"
 #include "dialogue_window.h"
-#include "queryserv.h"
+#include "bot_command.h"
 
 extern EntityList entity_list;
 extern Zone* zone;
@@ -204,11 +202,11 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		ServerConnectInfo* sci = (ServerConnectInfo*)pack->pBuffer;
 
 		if (sci->port == 0) {
-			LogCritical("World did not have a port to assign from this server, the port range was not large enough.");
+			LogError("World did not have a port to assign from this server, the port range was not large enough.");
 			Shutdown();
 		}
 		else {
-			LogInfo("World assigned Port: [{}] for this zone", sci->port);
+			LogInfo("World assigned Port [{}] for this zone", sci->port);
 			ZoneConfig::SetZonePort(sci->port);
 
 			LogSys.SetDiscordHandler(&Zone::DiscordWebhookMessageHandler);
@@ -362,7 +360,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			ZoneChange_Struct* zc2 = (ZoneChange_Struct*)outapp->pBuffer;
 
 			if (ztz->response <= 0) {
-				zc2->success = ZONE_ERROR_NOTREADY;
+				zc2->success = ZoningMessage::ZoneNotReady;
 				entity->CastToMob()->SetZone(ztz->current_zone_id, ztz->current_instance_id);
 				entity->CastToClient()->SetZoning(false);
 				entity->CastToClient()->SetLockSavePosition(false);
@@ -669,7 +667,13 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	}
 	case ServerOP_KickPlayer: {
 		ServerKickPlayer_Struct* skp = (ServerKickPlayer_Struct*)pack->pBuffer;
-		Client* client = entity_list.GetClientByName(skp->name);
+		Client* client;
+		if (strlen(skp->name)) {
+			client = entity_list.GetClientByName(skp->name);
+		} else if (skp->account_id) {
+			client = entity_list.GetClientByAccID(skp->account_id);
+		}
+
 		if (client) {
 			if (skp->adminrank >= client->Admin()) {
 				client->WorldKick();
@@ -864,7 +868,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 				//pendingrezexp is the amount of XP on the corpse. Setting it to a value >= 0
 				//also serves to inform Client::OPRezzAnswer to expect a packet.
 				client->SetPendingRezzData(srs->exp, srs->dbid, srs->rez.spellid, srs->rez.corpse_name);
-				LogSpells("OP_RezzRequest in zone [{}] for [{}], spellid:[{}]",
+				LogSpells("[WorldServer::HandleMessage] OP_RezzRequest in zone [{}] for [{}] spellid [{}]",
 					zone->GetShortName(), client->GetName(), srs->rez.spellid);
 				auto outapp = new EQApplicationPacket(OP_RezzRequest,
 					sizeof(Resurrect_Struct));
@@ -879,10 +883,10 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			// to the zone that the corpse is in.
 			Corpse* corpse = entity_list.GetCorpseByName(srs->rez.corpse_name);
 			if (corpse && corpse->IsCorpse()) {
-				LogSpells("OP_RezzComplete received in zone [{}] for corpse [{}]",
+				LogSpells("[WorldServer::HandleMessage] OP_RezzComplete received in zone [{}] for corpse [{}]",
 					zone->GetShortName(), srs->rez.corpse_name);
 
-				LogSpells("Found corpse. Marking corpse as rezzed if needed");
+				LogSpells("[WorldServer::HandleMessage] Found corpse. Marking corpse as rezzed if needed");
 				// I don't know why Rezzed is not set to true in CompleteRezz().
 				if (!IsEffectInSpell(srs->rez.spellid, SE_SummonToCorpse)) {
 					corpse->IsRezzed(true);
@@ -1900,6 +1904,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		if (zone && zone->IsLoaded()) {
 			zone->SendReloadMessage("Alternate Advancement Data");
 			zone->LoadAlternateAdvancement();
+			entity_list.SendAlternateAdvancementStats();
 		}
 		break;
 	}
@@ -1923,22 +1928,15 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	{
 		zone->SendReloadMessage("Commands");
 		command_init();
+		if (RuleB(Bots, Enabled) && database.DoesTableExist("bot_command_settings")) {
+			bot_command_init();
+		}
 		break;
 	}
 	case ServerOP_ReloadContentFlags:
 	{
 		zone->SendReloadMessage("Content Flags");
 		content_service.SetExpansionContext()->ReloadContentFlags();
-		break;
-	}
-	case ServerOP_ReloadDoors:
-	{
-		if (zone && zone->IsLoaded()) {
-			zone->SendReloadMessage("Doors");
-			entity_list.RemoveAllDoors();
-			zone->LoadZoneDoors();
-			entity_list.RespawnAllDoors();
-		}
 		break;
 	}
 	case ServerOP_ReloadDzTemplates:
@@ -1950,24 +1948,18 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
-	case ServerOP_ReloadGroundSpawns:
-	{
-		if (zone && zone->IsLoaded()) {
-			zone->SendReloadMessage("Ground Spawns");
-			zone->LoadGroundSpawns();
-		}
-		break;
-	}
 	case ServerOP_ReloadLevelEXPMods:
 	{
-		zone->SendReloadMessage("Level Based Experience Modifiers");
-		zone->LoadLevelEXPMods();
+		if (zone && zone->IsLoaded()) {
+			zone->SendReloadMessage("Level Based Experience Modifiers");
+			zone->LoadLevelEXPMods();
+		}
 		break;
 	}
 	case ServerOP_ReloadLogs:
 	{
-		zone->SendReloadMessage("Log Settings");
-		LogSys.LoadLogDatabaseSettings();
+			zone->SendReloadMessage("Log Settings");
+			LogSys.LoadLogDatabaseSettings();
 		break;
 	}
 	case ServerOP_ReloadMerchants: {
@@ -1985,15 +1977,6 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
-	case ServerOP_ReloadObjects:
-	{
-		if (zone && zone->IsLoaded()) {
-			zone->SendReloadMessage("Objects");
-			entity_list.RemoveAllObjects();
-			zone->LoadZoneObjects();
-		}
-		break;
-	}
 	case ServerOP_ReloadPerlExportSettings:
 	{
 		zone->SendReloadMessage("Perl Event Export Settings");
@@ -2006,6 +1989,9 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		RuleManager::Instance()->LoadRules(&database, RuleManager::Instance()->GetActiveRuleset(), true);
 		break;
 	}
+	case ServerOP_ReloadDoors:
+	case ServerOP_ReloadGroundSpawns:
+	case ServerOP_ReloadObjects:
 	case ServerOP_ReloadStaticZoneData: {
 		if (zone && zone->IsLoaded()) {
 			zone->SendReloadMessage("Static Zone Data");
@@ -2614,12 +2600,12 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		CZSignal_Struct* CZS = (CZSignal_Struct*) pack->pBuffer;
 		uint8 update_type = CZS->update_type;
 		int update_identifier = CZS->update_identifier;
-		int signal = CZS->signal;
+		int signal_id = CZS->signal_id;
 		const char* client_name = CZS->client_name;
 		if (update_type == CZUpdateType_Character) {
 			auto client = entity_list.GetClientByCharID(update_identifier);
 			if (client) {
-				client->Signal(signal);
+				client->Signal(signal_id);
 			}
 		} else if (update_type == CZUpdateType_Group) {
 			auto client_group = entity_list.GetGroupByID(update_identifier);
@@ -2627,7 +2613,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 				for (int member_index = 0; member_index < MAX_GROUP_MEMBERS; member_index++) {
 					if (client_group->members[member_index] && client_group->members[member_index]->IsClient()) {
 						auto group_member = client_group->members[member_index]->CastToClient();
-						group_member->Signal(signal);
+						group_member->Signal(signal_id);
 					}
 				}
 			}
@@ -2637,31 +2623,31 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 				for (int member_index = 0; member_index < MAX_RAID_MEMBERS; member_index++) {
 					if (client_raid->members[member_index].member && client_raid->members[member_index].member->IsClient()) {
 						auto raid_member = client_raid->members[member_index].member->CastToClient();
-						raid_member->Signal(signal);
+						raid_member->Signal(signal_id);
 					}
 				}
 			}
 		} else if (update_type == CZUpdateType_Guild) {
 			for (auto &client: entity_list.GetClientList()) {
 				if (client.second->GuildID() > 0 && client.second->GuildID() == update_identifier) {
-					client.second->Signal(signal);
+					client.second->Signal(signal_id);
 				}
 			}
 		} else if (update_type == CZUpdateType_Expedition) {
 			for (auto &client: entity_list.GetClientList()) {
 				if (client.second->GetExpedition() && client.second->GetExpedition()->GetID() == update_identifier) {
-					client.second->Signal(signal);
+					client.second->Signal(signal_id);
 				}
 			}
 		} else if (update_type == CZUpdateType_ClientName) {
 			auto client = entity_list.GetClientByName(client_name);
 			if (client) {
-				client->Signal(signal);
+				client->Signal(signal_id);
 			}
 		} else if (update_type == CZUpdateType_NPC) {
 			auto npc = entity_list.GetNPCByNPCTypeID(update_identifier);
 			if (npc) {
-				npc->SignalNPC(signal);
+				npc->SignalNPC(signal_id);
 			}
 		}
 		break;
@@ -3083,18 +3069,18 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	{
 		WWSignal_Struct* WWS = (WWSignal_Struct*) pack->pBuffer;
 		uint8 update_type = WWS->update_type;
-		uint32 signal = WWS->signal;
+		int signal_id = WWS->signal_id;
 		uint8 min_status = WWS->min_status;
 		uint8 max_status = WWS->max_status;
 		if (update_type == WWSignalUpdateType_Character) {
 			for (auto &client : entity_list.GetClientList()) {
 				if (client.second->Admin() >= min_status && (client.second->Admin() <= max_status || max_status == AccountStatus::Player)) {
-					client.second->Signal(signal);
+					client.second->Signal(signal_id);
 				}
 			}
 		} else if (update_type == WWSignalUpdateType_NPC) {
 			for (auto &npc : entity_list.GetNPCList()) {
-				npc.second->SignalNPC(signal);
+				npc.second->SignalNPC(signal_id);
 			}
 		}
 		break;
@@ -3297,7 +3283,7 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		break;
 	}
 	default: {
-		LogInfo("[HandleMessage] Unknown ZS Opcode [{}] size [{}]", (int)pack->opcode, pack->size);
+		LogInfo("Unknown ZS Opcode [{}] size [{}]", (int)pack->opcode, pack->size);
 		break;
 	}
 	}
@@ -3442,7 +3428,7 @@ bool WorldServer::SendVoiceMacro(Client* From, uint32 Type, char* Target, uint32
 
 bool WorldServer::RezzPlayer(EQApplicationPacket* rpack, uint32 rezzexp, uint32 dbid, uint16 opcode)
 {
-	LogSpells("WorldServer::RezzPlayer rezzexp is [{}] (0 is normal for RezzComplete", rezzexp);
+	LogSpells("rezzexp is [{}] (0 is normal for RezzComplete", rezzexp);
 	auto pack = new ServerPacket(ServerOP_RezzPlayer, sizeof(RezzPlayer_Struct));
 	RezzPlayer_Struct* sem = (RezzPlayer_Struct*)pack->pBuffer;
 	sem->rezzopcode = opcode;

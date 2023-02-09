@@ -30,9 +30,7 @@
 #include "zonedb.h"
 #include "../common/zone_store.h"
 
-#ifdef BOTS
 #include "bot.h"
-#endif
 
 /**
  * Stores internal representation of mob texture by material slot
@@ -45,7 +43,7 @@
 void Mob::SetMobTextureProfile(uint8 material_slot, uint16 texture, uint32 color, uint32 hero_forge_model)
 {
 	Log(Logs::Detail, Logs::MobAppearance,
-		"Mob::SetMobTextureProfile [%s] material_slot: %u texture: %u color: %u hero_forge_model: %u",
+		"[%s] material_slot: %u texture: %u color: %u hero_forge_model: %u",
 		GetCleanName(),
 		material_slot,
 		texture,
@@ -214,7 +212,7 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 	int32 texture_profile_material = GetTextureProfileMaterial(material_slot);
 
 	Log(Logs::Detail, Logs::MobAppearance,
-		"Mob::GetEquipmentMaterial [%s] material_slot: %u texture_profile_material: %i",
+		"[%s] material_slot: %u texture_profile_material: %i",
 		clean_name,
 		material_slot,
 		texture_profile_material
@@ -240,7 +238,7 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 				if (inst) {
 					if (inst->GetOrnamentationAug(ornamentation_augment_type)) {
 						item = inst->GetOrnamentationAug(ornamentation_augment_type)->GetItem();
-						if (item && strlen(item->IDFile) > 2) {
+						if (item && strlen(item->IDFile) > 2 && Strings::IsNumber(&item->IDFile[2])) {
 							equipment_material = std::stoi(&item->IDFile[2]);
 						}
 					} else if (inst->GetOrnamentationIDFile()) {
@@ -249,7 +247,7 @@ int32 Mob::GetEquipmentMaterial(uint8 material_slot) const
 				}
 			}
 
-			if (equipment_material == 0 && strlen(item->IDFile) > 2) {
+			if (!equipment_material && strlen(item->IDFile) > 2 && Strings::IsNumber(&item->IDFile[2])) {
 				equipment_material = std::stoi(&item->IDFile[2]);
 			}
 		}
@@ -400,7 +398,7 @@ void Mob::SendArmorAppearance(Client *one_client)
 	 * The other packets work for primary/secondary.
 	 */
 
-	LogMobAppearance("[SendArmorAppearance] [{}]", GetCleanName());
+	LogMobAppearance("[{}]", GetCleanName());
 
 	if (IsPlayerRace(race)) {
 		if (!IsClient()) {
@@ -429,7 +427,7 @@ void Mob::SendWearChange(uint8 material_slot, Client *one_client)
 	auto packet       = new EQApplicationPacket(OP_WearChange, sizeof(WearChange_Struct));
 	auto *wear_change = (WearChange_Struct *) packet->pBuffer;
 
-	Log(Logs::Detail, Logs::MobAppearance, "Mob::SendWearChange [%s]",
+	Log(Logs::Detail, Logs::MobAppearance, "[%s]",
 		GetCleanName()
 	);
 
@@ -438,7 +436,6 @@ void Mob::SendWearChange(uint8 material_slot, Client *one_client)
 	wear_change->elite_material   = IsEliteMaterialItem(material_slot);
 	wear_change->hero_forge_model = static_cast<uint32>(GetHerosForgeModel(material_slot));
 
-#ifdef BOTS
 	if (IsBot()) {
 		auto item_inst = CastToBot()->GetBotItem(EQ::InventoryProfile::CalcSlotFromMaterial(material_slot));
 		if (item_inst)
@@ -449,9 +446,6 @@ void Mob::SendWearChange(uint8 material_slot, Client *one_client)
 	else {
 		wear_change->color.Color = GetEquipmentColor(material_slot);
 	}
-#else
-	wear_change->color.Color = GetEquipmentColor(material_slot);
-#endif
 
 	wear_change->wear_slot_id = material_slot;
 

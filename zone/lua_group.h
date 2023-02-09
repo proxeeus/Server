@@ -7,6 +7,7 @@
 class Group;
 class Lua_Mob;
 class Lua_Client;
+class Lua_Bot;
 
 namespace luabind {
 	struct scope;
@@ -30,7 +31,7 @@ public:
 	bool IsGroupMember(const char* name);
 	bool IsGroupMember(Lua_Mob c);
 	void CastGroupSpell(Lua_Mob caster, int spell_id);
-	void SplitExp(uint32 exp, Lua_Mob other);
+	void SplitExp(uint64 exp, Lua_Mob other);
 	void GroupMessage(Lua_Mob sender, const char* message);
 	void GroupMessage(Lua_Mob sender, int language, const char* message);
 	uint32 GetTotalGroupDamage(Lua_Mob other);

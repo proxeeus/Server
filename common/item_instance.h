@@ -101,8 +101,8 @@ namespace EQ
 		//
 		bool IsAugmentable() const;
 		bool AvailableWearSlot(uint32 aug_wear_slots) const;
-		int8 AvailableAugmentSlot(int32 augtype) const;
-		bool IsAugmentSlotAvailable(int32 augtype, uint8 slot) const;
+		int8 AvailableAugmentSlot(int32 augment_type) const;
+		bool IsAugmentSlotAvailable(int32 augment_type, uint8 slot) const;
 		inline int32 GetAugmentType() const { return ((m_item) ? m_item->AugType : 0); }
 
 		inline bool IsExpendable() const { return ((m_item) ? ((m_item->Click.Type == item::ItemEffectExpendable) || (m_item->ItemType == item::ItemTypePotion)) : false); }
@@ -127,8 +127,8 @@ namespace EQ
 		//
 		// Augments
 		//
-		ItemInstance* GetAugment(uint8 slot) const;
-		uint32 GetAugmentItemID(uint8 slot) const;
+		ItemInstance* GetAugment(uint8 augment_index) const;
+		uint32 GetAugmentItemID(uint8 augment_index) const;
 		void PutAugment(uint8 slot, const ItemInstance& inst);
 		void PutAugment(SharedDatabase *db, uint8 slot, uint32 item_id);
 		void DeleteAugment(uint8 slot);

@@ -189,19 +189,70 @@ uint8 *ZoneGuildManager::MakeGuildMembers(uint32 guild_id, const char *prefix_na
 	return(retbuffer);
 }
 
-void ZoneGuildManager::ListGuilds(Client *c) const {
+void ZoneGuildManager::ListGuilds(Client *c, uint32 guild_id) const {
 	if (m_guilds.size()) {
+		const auto& g = m_guilds.find(guild_id);
+		if (g == m_guilds.end()) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Guild ID {} does not exist or is invalid.",
+					guild_id
+				).c_str()
+			);
+			return;
+		}
+
+		const auto leader_name = database.GetCharNameByID(g->second->leader_char_id);
 		c->Message(
 			Chat::White,
 			fmt::format(
-				"Listing {} Guild{}.",
-				m_guilds.size(),
-				m_guilds.size() != 1 ? "s" : ""
+				"Guild {} | {}Name: {}",
+				g->first,
+				(
+					!leader_name.empty() ?
+					fmt::format(
+						"Leader: {} ({}) ",
+						leader_name,
+						g->second->leader_char_id
+					) :
+					""
+				),
+				g->second->name
 			).c_str()
 		);
+	} else {
+		c->Message(Chat::White, "There are no Guilds to list.");
+	}
+}
+
+void ZoneGuildManager::ListGuilds(Client *c, std::string search_criteria) const {
+	if (m_guilds.size()) {
+		if (search_criteria.empty()) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"Listing {} Guild{}.",
+					m_guilds.size(),
+					m_guilds.size() != 1 ? "s" : ""
+				).c_str()
+			);
+		}
+
+		auto found_count = 0;
 
 		for (const auto& guild : m_guilds) {
-			auto leader_name = database.GetCharNameByID(guild.second->leader_char_id);
+			if (
+				!search_criteria.empty() &&
+				!Strings::Contains(
+					Strings::ToLower(guild.second->name),
+					Strings::ToLower(search_criteria)
+				)
+			) {
+				continue;
+			}
+
+			const auto leader_name = database.GetCharNameByID(guild.second->leader_char_id);
 			c->Message(
 				Chat::White,
 				fmt::format(
@@ -219,7 +270,26 @@ void ZoneGuildManager::ListGuilds(Client *c) const {
 					guild.second->name
 				).c_str()
 			);
+
+			found_count++;
 		}
+
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Found {} Guild{}{}.",
+				found_count,
+				found_count != 1 ? "s" : "",
+				(
+					!search_criteria.empty() ?
+					fmt::format(
+						" matching '{}'",
+						search_criteria
+					) :
+					""
+				)
+			).c_str()
+		);
 	} else {
 		c->Message(Chat::White, "There are no Guilds to list.");
 	}
@@ -582,77 +652,9 @@ void ZoneGuildManager::RequestOnlineGuildMembers(uint32 FromID, uint32 GuildID)
 	safe_delete(pack);
 }
 
-void ZoneGuildManager::ProcessApproval()
-{
-	LinkedListIterator<GuildApproval*> iterator(list);
-
-	iterator.Reset();
-	while(iterator.MoreElements())
-	{
-		if(!iterator.GetData()->ProcessApproval())
-			iterator.RemoveCurrent();
-		iterator.Advance();
-	}
-}
-
-void ZoneGuildManager::AddGuildApproval(const char* guildname,Client* owner)
-{
-	auto tmp = new GuildApproval(guildname, owner, GetFreeID());
-	list.Insert(tmp);
-}
-
-void ZoneGuildManager::AddMemberApproval(uint32 refid,Client* name)
-{
-	GuildApproval* tmp = FindGuildByIDApproval(refid);
-	if(tmp != 0)
-	{
-		if(!tmp->AddMemberApproval(name))
-			name->Message(Chat::White,"Unable to add to list.");
-		else
-		{
-			name->Message(Chat::White,"Added to list.");
-		}
-	}
-	else
-		name->Message(Chat::White,"Unable to find guild reference id.");
-}
-
 ZoneGuildManager::~ZoneGuildManager()
 {
 	ClearGuilds();
-}
-
-void ZoneGuildManager::ClearGuildsApproval()
-{
-	list.Clear();
-}
-
-GuildApproval* ZoneGuildManager::FindGuildByIDApproval(uint32 refid)
-{
-	LinkedListIterator<GuildApproval*> iterator(list);
-
-	iterator.Reset();
-	while(iterator.MoreElements())
-	{
-		if(iterator.GetData()->GetID() == refid)
-			return iterator.GetData();
-		iterator.Advance();
-	}
-	return 0;
-}
-
-GuildApproval* ZoneGuildManager::FindGuildByOwnerApproval(Client* owner)
-{
-	LinkedListIterator<GuildApproval*> iterator(list);
-
-	iterator.Reset();
-	while(iterator.MoreElements())
-	{
-		if(iterator.GetData()->GetOwner() == owner)
-			return iterator.GetData();
-		iterator.Advance();
-	}
-	return 0;
 }
 
 GuildBankManager::~GuildBankManager()
@@ -1454,154 +1456,3 @@ bool GuildBankManager::AllowedToWithdraw(uint32 GuildID, uint16 Area, uint16 Slo
 
 	return false;
 }
-
-/*================== GUILD APPROVAL ========================*/
-
-bool GuildApproval::ProcessApproval()
-{
-	if(owner && owner->GuildID() != 0)
-	{
-		owner->Message(Chat::NPCQuestSay,"You are already in a guild! Guild request deleted.");
-		return false;
-	}
-	if(deletion_timer->Check() || !owner)
-	{
-		if(owner)
-			owner->Message(Chat::White,"You took too long! Your guild request has been deleted.");
-		return false;
-	}
-
-	return true;
-}
-
-GuildApproval::GuildApproval(const char* guildname, Client* owner,uint32 id)
-{
-	std::string founders;
-	database.GetVariable("GuildCreation", founders);
-	uint8 tmp = atoi(founders.c_str());
-	deletion_timer = new Timer(1800000);
-	strcpy(guild,guildname);
-	owner = owner;
-	refid = id;
-	if(owner)
-		owner->Message(Chat::White,"You can now start getting your guild approved, tell your %i members to #guildapprove %i, you have 30 minutes to create your guild.",tmp,GetID());
-	for(int i=0;i<tmp;i++)
-		members[i] = 0;
-}
-
-GuildApproval::~GuildApproval()
-{
-	safe_delete(deletion_timer);
-}
-
-bool GuildApproval::AddMemberApproval(Client* addition)
-{
-	std::string founders;
-	database.GetVariable("GuildCreation", founders);
-	uint8 tmp = atoi(founders.c_str());
-	for(int i=0;i<tmp;i++)
-	{
-		if(members[i] && members[i] == addition)
-			return false;
-	}
-
-	for(int i=0;i<tmp;i++)
-	{
-		if(!members[i])
-		{
-			members[i] = addition;
-			int z=0;
-			for(int i=0;i<tmp;i++)
-			{
-				if(members[i])
-					z++;
-			}
-			if(z==tmp)
-				GuildApproved();
-
-			return true;
-		}
-	}
-	return false;
-}
-
-void GuildApproval::ApprovedMembers(Client* requestee)
-{
-	std::string founders;
-	database.GetVariable("GuildCreation", founders);
-	uint8 tmp = atoi(founders.c_str());
-	for(int i=0;i<tmp;i++)
-	{
-		if(members[i])
-			requestee->Message(Chat::White,"%i: %s",i,members[i]->GetName());
-	}
-}
-
-void GuildApproval::GuildApproved()
-{
-	char petitext[PBUFFER] = "A new guild was founded! Guildname: ";
-	char gmembers[MBUFFER] = " ";
-
-	if(!owner)
-		return;
-	std::string founders;
-	database.GetVariable("GuildCreation", founders);
-	uint8 tmp = atoi(founders.c_str());
-	uint32 tmpeq = guild_mgr.CreateGuild(guild, owner->CharacterID());
-	guild_mgr.SetGuild(owner->CharacterID(),tmpeq,2);
-	owner->SendAppearancePacket(AT_GuildID,true,false);
-	for(int i=0;i<tmp;i++)
-	{
-		if(members[i])
-			{
-			owner->Message(Chat::White, "%s",members[i]->GetName());
-			owner->Message(Chat::White, "%i",members[i]->CharacterID());
-			guild_mgr.SetGuild(members[i]->CharacterID(),tmpeq,0);
-			size_t len = MBUFFER - strlen(gmembers)+1;
-			strncat(gmembers," ",len);
-			strncat(gmembers,members[i]->GetName(),len);
-			}
-	}
-	size_t len = PBUFFER - strlen(petitext)+1;
-	strncat(petitext,guild,len);
-	strncat(petitext," Leader: ",len);
-	strncat(petitext,owner->CastToClient()->GetName(),len);
-	strncat(petitext," Members:",len);
-	strncat(petitext,gmembers,len);
-	auto pet = new Petition(owner->CastToClient()->CharacterID());
-	pet->SetAName(owner->CastToClient()->AccountName());
-	pet->SetClass(owner->CastToClient()->GetClass());
-	pet->SetLevel(owner->CastToClient()->GetLevel());
-	pet->SetCName(owner->CastToClient()->GetName());
-	pet->SetRace(owner->CastToClient()->GetRace());
-	pet->SetLastGM("");
-	pet->SetCName(owner->CastToClient()->GetName()); //aza77 is this really 2 times needed ??
-	pet->SetPetitionText(petitext);
-	pet->SetZone(zone->GetZoneID());
-	pet->SetUrgency(0);
-	petition_list.AddPetition(pet);
-	database.InsertPetitionToDB(pet);
-	petition_list.UpdateGMQueue();
-	petition_list.UpdateZoneListQueue();
-	worldserver.SendEmoteMessage(
-		0,
-		0,
-		AccountStatus::QuestTroupe,
-		Chat::Yellow,
-		fmt::format(
-			"{} has made a petition. ID: {}",
-			owner->CastToClient()->GetName(),
-			pet->GetID()
-		).c_str()
-	);
-	auto pack = new ServerPacket;
-	pack->opcode = ServerOP_RefreshGuild;
-	pack->size = tmp;
-	pack->pBuffer = new uchar[pack->size];
-	memcpy(pack->pBuffer, &tmpeq, 4);
-	worldserver.SendPacket(pack);
-	safe_delete(pack);
-	owner->Message(Chat::White, "Your guild was created.");
-	owner = 0;
-}
-

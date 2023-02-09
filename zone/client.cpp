@@ -50,9 +50,7 @@ extern volatile bool RunLoops;
 #include "petitions.h"
 #include "command.h"
 #include "water_map.h"
-#ifdef BOTS
 #include "bot_command.h"
-#endif
 #include "string_ids.h"
 
 #include "guild_mgr.h"
@@ -82,63 +80,64 @@ char entirecommand[255];
 
 void UpdateWindowTitle(char* iNewTitle);
 
-Client::Client(EQStreamInterface* ieqs)
-: Mob("No name",	// name
-	"",	// lastname
-	0,	// cur_hp
-	0,	// max_hp
-	0,	// gender
-	0,	// race
-	0,	// class
-	BT_Humanoid,	// bodytype
-	0,	// deity
-	0,	// level
-	0,	// npctypeid
-	0,	// size
-	0.7,	// runspeed
-	glm::vec4(),
-	0,	// light - verified for client innate_light value
-	0xFF,	// texture
-	0xFF,	// helmtexture
-	0,	// ac
-	0,	// atk
-	0,	// str
-	0,	// sta
-	0,	// dex
-	0,	// agi
-	0,	// int
-	0,	// wis
-	0,	// cha
-	0,	// Luclin Hair Colour
-	0,	// Luclin Beard Color
-	0,	// Luclin Eye1
-	0,	// Luclin Eye2
-	0,	// Luclin Hair Style
-	0,	// Luclin Face
-	0,	// Luclin Beard
-	0,	// Drakkin Heritage
-	0,	// Drakkin Tattoo
-	0,	// Drakkin Details
-	EQ::TintProfile(),	// Armor Tint
-	0xff,	// AA Title
-	0,	// see_invis
-	0,	// see_invis_undead
-	0,
-	0,
-	0,
-	0,
-	0,	// qglobal
-	0,	// maxlevel
-	0,	// scalerate
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	0,
-	false
-	),
+Client::Client(EQStreamInterface *ieqs) : Mob(
+	"No name", // in_name
+	"", // in_lastname
+	0, // in_cur_hp
+	0, // in_max_hp
+	0, // in_gender
+	0, // in_race
+	0, // in_class
+	BT_Humanoid, // in_bodytype
+	0, // in_deity
+	0, // in_level
+	0, // in_npctype_id
+	0.0f, // in_size
+	0.7f, // in_runspeed
+	glm::vec4(), // position
+	0, // in_light
+	0xFF, // in_texture
+	0xFF, // in_helmtexture
+	0, // in_ac
+	0, // in_atk
+	0, // in_str
+	0, // in_sta
+	0, // in_dex
+	0, // in_agi
+	0, // in_int
+	0, // in_wis
+	0, // in_cha
+	0, // in_haircolor
+	0, // in_beardcolor
+	0, // in_eyecolor1
+	0, // in_eyecolor2
+	0, // in_hairstyle
+	0, // in_luclinface
+	0, // in_beard
+	0, // in_drakkin_heritage
+	0, // in_drakkin_tattoo
+	0, // in_drakkin_details
+	EQ::TintProfile(), // in_armor_tint
+	0xff, // in_aa_title
+	0, // in_see_invis
+	0, // in_see_invis_undead
+	0, // in_see_hide
+	0, // in_see_improved_hide
+	0, // in_hp_regen
+	0, // in_mana_regen
+	0, // in_qglobal
+	0, // in_maxlevel
+	0, // in_scalerate
+	0, // in_armtexture
+	0, // in_bracertexture
+	0, // in_handtexture
+	0, // in_legtexture
+	0, // in_feettexture
+	0, // in_usemodel
+	false, // in_always_aggros_foes
+	0, // in_heroic_strikethrough
+	false // in_keeps_sold_items
+),
   hpupdate_timer(2000),
   camp_timer(29000),
   process_timer(100),
@@ -368,7 +367,6 @@ Client::Client(EQStreamInterface* ieqs)
 	SetDisplayMobInfoWindow(true);
 	SetDevToolsEnabled(true);
 
-#ifdef BOTS
 	bot_owner_options[booDeathMarquee] = false;
 	bot_owner_options[booStatsUpdate] = false;
 	bot_owner_options[booSpawnMessageSay] = false;
@@ -381,7 +379,6 @@ Client::Client(EQStreamInterface* ieqs)
 
 	SetBotPulling(false);
 	SetBotPrecombat(false);
-#endif
 
 	AI_Init();
 }
@@ -389,9 +386,10 @@ Client::Client(EQStreamInterface* ieqs)
 Client::~Client() {
 	mMovementManager->RemoveClient(this);
 
-#ifdef BOTS
-	Bot::ProcessBotOwnerRefDelete(this);
-#endif
+	if (RuleB(Bots, Enabled)) {
+		Bot::ProcessBotOwnerRefDelete(this);
+	}
+
 	if(IsInAGuild())
 		guild_mgr.SendGuildMemberUpdateToWorld(GetName(), GuildID(), 0, time(nullptr));
 
@@ -645,16 +643,22 @@ bool Client::Save(uint8 iCommitNow) {
 
 	m_pp.guildrank = guildrank;
 
-	/* Mana and HP */
-	if (GetHP() <= 0) {
+	if (dead && GetHP() <= 0) {
 		m_pp.cur_hp = GetMaxHP();
-	}
-	else {
-		m_pp.cur_hp = GetHP();
-	}
+		m_pp.mana   = current_mana;
+		if (RuleB(Character, FullManaOnDeath)) {
+			m_pp.mana = GetMaxMana();
+		}
 
-	m_pp.mana = current_mana;
-	m_pp.endurance = current_endurance;
+		m_pp.endurance = current_endurance;
+		if (RuleB(Character, FullEndurOnDeath)) {
+			m_pp.endurance = GetMaxEndurance();
+		}
+	} else { 	// Otherwise, no changes.
+		m_pp.cur_hp    = GetHP();
+		m_pp.mana      = current_mana;
+		m_pp.endurance = current_endurance;
+	}
 
 	/* Save Character Currency */
 	database.SaveCharacterCurrency(CharacterID(), &m_pp);
@@ -731,7 +735,7 @@ bool Client::Save(uint8 iCommitNow) {
 		}
 	}
 
-	database.SaveCharacterData(CharacterID(), AccountID(), &m_pp, &m_epp); /* Save Character Data */
+	database.SaveCharacterData(this, &m_pp, &m_epp); /* Save Character Data */
 
 	return true;
 }
@@ -1141,30 +1145,32 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			break;
 		}
 
-#ifdef BOTS
 		if (message[0] == BOT_COMMAND_CHAR) {
-			if (bot_command_dispatch(this, message) == -2) {
-				if (parse->PlayerHasQuestSub(EVENT_BOT_COMMAND)) {
-					int i = parse->EventPlayer(EVENT_BOT_COMMAND, this, message, 0);
-					if (i == 0 && !RuleB(Chat, SuppressCommandErrors)) {
-						Message(Chat::Red, "Bot command '%s' not recognized.", message);
+			if (RuleB(Bots, Enabled)) {
+				if (bot_command_dispatch(this, message) == -2) {
+					if (parse->PlayerHasQuestSub(EVENT_BOT_COMMAND)) {
+						int i = parse->EventPlayer(EVENT_BOT_COMMAND, this, message, 0);
+						if (i == 0 && !RuleB(Chat, SuppressCommandErrors)) {
+							Message(Chat::Red, "Bot command '%s' not recognized.", message);
+						}
+					}
+					else if (parse->PlayerHasQuestSub(EVENT_SAY)) {
+						int i = parse->EventPlayer(EVENT_SAY, this, message, 0);
+						if (i == 0 && !RuleB(Chat, SuppressCommandErrors)) {
+							Message(Chat::Red, "Bot command '%s' not recognized.", message);
+						}
+					}
+					else {
+						if (!RuleB(Chat, SuppressCommandErrors)) {
+							Message(Chat::Red, "Bot command '%s' not recognized.", message);
+						}
 					}
 				}
-				else if (parse->PlayerHasQuestSub(EVENT_SAY)) {
-					int i = parse->EventPlayer(EVENT_SAY, this, message, 0);
-					if (i == 0 && !RuleB(Chat, SuppressCommandErrors)) {
-						Message(Chat::Red, "Bot command '%s' not recognized.", message);
-					}
-				}
-				else {
-					if (!RuleB(Chat, SuppressCommandErrors)) {
-						Message(Chat::Red, "Bot command '%s' not recognized.", message);
-					}
-				}
+			} else {
+				Message(Chat::Red, "Bots are disabled on this server.");
 			}
 			break;
 		}
-#endif
 
 		if (EQ::ProfanityManager::IsCensorshipActive()) {
 			EQ::ProfanityManager::RedactMessage(message);
@@ -1216,20 +1222,15 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			}
 
 		}
-
-#ifdef BOTS
-	else if (GetTarget() && GetTarget()->IsBot() && !IsInvisible(GetTarget())) {
-		if (DistanceNoZ(m_Position, GetTarget()->GetPosition()) <= RuleI(Range, Say)) {
-			if (GetTarget()->IsEngaged()) {
-				parse->EventBot(EVENT_AGGRO_SAY, GetTarget()->CastToBot(), this, message, language);
-			} else {
-				parse->EventBot(EVENT_SAY, GetTarget()->CastToBot(), this, message, language);
+		else if (GetTarget() && GetTarget()->IsBot() && !IsInvisible(GetTarget())) {
+			if (DistanceNoZ(m_Position, GetTarget()->GetPosition()) <= RuleI(Range, Say)) {
+				if (GetTarget()->IsEngaged()) {
+					parse->EventBot(EVENT_AGGRO_SAY, GetTarget()->CastToBot(), this, message, language);
+				} else {
+					parse->EventBot(EVENT_SAY, GetTarget()->CastToBot(), this, message, language);
+				}
 			}
 		}
-	}
-#endif
-
-
 		break;
 	}
 	case ChatChannel_UCSRelay:
@@ -3602,336 +3603,6 @@ float Client::CalcPriceMod(Mob* other, bool reverse)
 	return chaformula; //Returns 1.10, expensive stuff!
 }
 
-//neat idea from winter's roar, not implemented
-void Client::Insight(uint32 t_id)
-{
-	Mob* who = entity_list.GetMob(t_id);
-	if (!who)
-		return;
-	if (!who->IsNPC())
-	{
-		Message(0,"This ability can only be used on NPCs.");
-		return;
-	}
-	if (Distance(static_cast<glm::vec3>(m_Position), static_cast<glm::vec3>(who->GetPosition())) > 200)
-	{
-		Message(0,"You must get closer to your target!");
-		return;
-	}
-	if (!CheckLosFN(who))
-	{
-		Message(0,"You must be able to see your target!");
-		return;
-	}
-	char hitpoints[64];
-	char resists[320];
-	char dmg[64];
-	memset(hitpoints,0,sizeof(hitpoints));
-	memset(resists,0,sizeof(resists));
-	memset(dmg,0,sizeof(dmg));
-	//Start with HP blah
-	int avg_hp = GetLevelHP(who->GetLevel());
-	int cur_hp = who->GetHP();
-	if (cur_hp == avg_hp)
-	{
-		strn0cpy(hitpoints,"averagely tough",32);
-	}
-	else if (cur_hp >= avg_hp*5)
-	{
-		strn0cpy(hitpoints,"extremely tough",32);
-	}
-	else if (cur_hp >= avg_hp*4)
-	{
-		strn0cpy(hitpoints,"exceptionally tough",32);
-	}
-	else if (cur_hp >= avg_hp*3)
-	{
-		strn0cpy(hitpoints,"very tough",32);
-	}
-	else if (cur_hp >= avg_hp*2)
-	{
-		strn0cpy(hitpoints,"quite tough",32);
-	}
-	else if (cur_hp >= avg_hp*1.25)
-	{
-		strn0cpy(hitpoints,"rather tough",32);
-	}
-	else if (cur_hp > avg_hp)
-	{
-		strn0cpy(hitpoints,"slightly tough",32);
-	}
-	else if (cur_hp <= avg_hp*0.20)
-	{
-		strn0cpy(hitpoints,"extremely frail",32);
-	}
-	else if (cur_hp <= avg_hp*0.25)
-	{
-		strn0cpy(hitpoints,"exceptionally frail",32);
-	}
-	else if (cur_hp <= avg_hp*0.33)
-	{
-		strn0cpy(hitpoints,"very frail",32);
-	}
-	else if (cur_hp <= avg_hp*0.50)
-	{
-		strn0cpy(hitpoints,"quite frail",32);
-	}
-	else if (cur_hp <= avg_hp*0.75)
-	{
-		strn0cpy(hitpoints,"rather frail",32);
-	}
-	else if (cur_hp < avg_hp)
-	{
-		strn0cpy(hitpoints,"slightly frail",32);
-	}
-
-	int avg_dmg = who->CastToNPC()->GetMaxDamage(who->GetLevel());
-	int cur_dmg = who->CastToNPC()->GetMaxDMG();
-	if (cur_dmg == avg_dmg)
-	{
-		strn0cpy(dmg,"averagely strong",32);
-	}
-	else if (cur_dmg >= avg_dmg*4)
-	{
-		strn0cpy(dmg,"extremely strong",32);
-	}
-	else if (cur_dmg >= avg_dmg*3)
-	{
-		strn0cpy(dmg,"exceptionally strong",32);
-	}
-	else if (cur_dmg >= avg_dmg*2)
-	{
-		strn0cpy(dmg,"very strong",32);
-	}
-	else if (cur_dmg >= avg_dmg*1.25)
-	{
-		strn0cpy(dmg,"quite strong",32);
-	}
-	else if (cur_dmg >= avg_dmg*1.10)
-	{
-		strn0cpy(dmg,"rather strong",32);
-	}
-	else if (cur_dmg > avg_dmg)
-	{
-		strn0cpy(dmg,"slightly strong",32);
-	}
-	else if (cur_dmg <= avg_dmg*0.20)
-	{
-		strn0cpy(dmg,"extremely weak",32);
-	}
-	else if (cur_dmg <= avg_dmg*0.25)
-	{
-		strn0cpy(dmg,"exceptionally weak",32);
-	}
-	else if (cur_dmg <= avg_dmg*0.33)
-	{
-		strn0cpy(dmg,"very weak",32);
-	}
-	else if (cur_dmg <= avg_dmg*0.50)
-	{
-		strn0cpy(dmg,"quite weak",32);
-	}
-	else if (cur_dmg <= avg_dmg*0.75)
-	{
-		strn0cpy(dmg,"rather weak",32);
-	}
-	else if (cur_dmg < avg_dmg)
-	{
-		strn0cpy(dmg,"slightly weak",32);
-	}
-
-	//Resists
-	int res;
-	int i = 1;
-
-	//MR
-	res = who->GetResist(i);
-	i++;
-	if (res >= 1000)
-	{
-		strcat(resists,"immune");
-	}
-	else if (res >= 500)
-	{
-		strcat(resists,"practically immune");
-	}
-	else if (res >= 250)
-	{
-		strcat(resists,"exceptionally resistant");
-	}
-	else if (res >= 150)
-	{
-		strcat(resists,"very resistant");
-	}
-	else if (res >= 100)
-	{
-		strcat(resists,"fairly resistant");
-	}
-	else if (res >= 50)
-	{
-		strcat(resists,"averagely resistant");
-	}
-	else if (res >= 25)
-	{
-		strcat(resists,"weakly resistant");
-	}
-	else
-	{
-		strcat(resists,"barely resistant");
-	}
-	strcat(resists," to magic, ");
-
-	//FR
-	res = who->GetResist(i);
-	i++;
-	if (res >= 1000)
-	{
-		strcat(resists,"immune");
-	}
-	else if (res >= 500)
-	{
-		strcat(resists,"practically immune");
-	}
-	else if (res >= 250)
-	{
-		strcat(resists,"exceptionally resistant");
-	}
-	else if (res >= 150)
-	{
-		strcat(resists,"very resistant");
-	}
-	else if (res >= 100)
-	{
-		strcat(resists,"fairly resistant");
-	}
-	else if (res >= 50)
-	{
-		strcat(resists,"averagely resistant");
-	}
-	else if (res >= 25)
-	{
-		strcat(resists,"weakly resistant");
-	}
-	else
-	{
-		strcat(resists,"barely resistant");
-	}
-	strcat(resists," to fire, ");
-
-	//CR
-	res = who->GetResist(i);
-	i++;
-	if (res >= 1000)
-	{
-		strcat(resists,"immune");
-	}
-	else if (res >= 500)
-	{
-		strcat(resists,"practically immune");
-	}
-	else if (res >= 250)
-	{
-		strcat(resists,"exceptionally resistant");
-	}
-	else if (res >= 150)
-	{
-		strcat(resists,"very resistant");
-	}
-	else if (res >= 100)
-	{
-		strcat(resists,"fairly resistant");
-	}
-	else if (res >= 50)
-	{
-		strcat(resists,"averagely resistant");
-	}
-	else if (res >= 25)
-	{
-		strcat(resists,"weakly resistant");
-	}
-	else
-	{
-		strcat(resists,"barely resistant");
-	}
-	strcat(resists," to cold, ");
-
-	//PR
-	res = who->GetResist(i);
-	i++;
-	if (res >= 1000)
-	{
-		strcat(resists,"immune");
-	}
-	else if (res >= 500)
-	{
-		strcat(resists,"practically immune");
-	}
-	else if (res >= 250)
-	{
-		strcat(resists,"exceptionally resistant");
-	}
-	else if (res >= 150)
-	{
-		strcat(resists,"very resistant");
-	}
-	else if (res >= 100)
-	{
-		strcat(resists,"fairly resistant");
-	}
-	else if (res >= 50)
-	{
-		strcat(resists,"averagely resistant");
-	}
-	else if (res >= 25)
-	{
-		strcat(resists,"weakly resistant");
-	}
-	else
-	{
-		strcat(resists,"barely resistant");
-	}
-	strcat(resists," to poison, and ");
-
-	//MR
-	res = who->GetResist(i);
-	i++;
-	if (res >= 1000)
-	{
-		strcat(resists,"immune");
-	}
-	else if (res >= 500)
-	{
-		strcat(resists,"practically immune");
-	}
-	else if (res >= 250)
-	{
-		strcat(resists,"exceptionally resistant");
-	}
-	else if (res >= 150)
-	{
-		strcat(resists,"very resistant");
-	}
-	else if (res >= 100)
-	{
-		strcat(resists,"fairly resistant");
-	}
-	else if (res >= 50)
-	{
-		strcat(resists,"averagely resistant");
-	}
-	else if (res >= 25)
-	{
-		strcat(resists,"weakly resistant");
-	}
-	else
-	{
-		strcat(resists,"barely resistant");
-	}
-	strcat(resists," to disease.");
-
-	Message(0,"Your target is a level %i %s. It appears %s and %s for its level. It seems %s",who->GetLevel(),GetClassIDName(who->GetClass(),1),dmg,hitpoints,resists);
-}
-
 void Client::GetGroupAAs(GroupLeadershipAA_Struct *into) const {
 	memcpy(into, &m_pp.leader_abilities.group, sizeof(GroupLeadershipAA_Struct));
 }
@@ -4427,7 +4098,7 @@ void Client::UpdateLFP() {
 
 	for(unsigned int i=0; i<MAX_GROUP_MEMBERS; i++) {
 		LFPMembers[i].Name[0] = '\0';
-		LFPMembers[i].Class = 0;
+		LFPMembers[i].Class = NO_CLASS;
 		LFPMembers[i].Level = 0;
 		LFPMembers[i].Zone = 0;
 	}
@@ -5507,6 +5178,12 @@ void Client::Signal(int signal_id)
 {
 	const auto export_string = fmt::format("{}", signal_id);
 	parse->EventPlayer(EVENT_SIGNAL, this, export_string, 0);
+}
+
+void Client::SendPayload(int payload_id, std::string payload_value)
+{
+	const auto export_string = fmt::format("{} {}", payload_id, payload_value);
+	parse->EventPlayer(EVENT_PAYLOAD, this, export_string, 0);
 }
 
 void Client::SendRewards()
@@ -7145,7 +6822,7 @@ void Client::SendStatsWindow(Client* client, bool use_window)
 		client->Message(Chat::White, " Mana: %i/%i  Mana Regen: %i/%i", GetMana(), GetMaxMana(), CalcManaRegen(), CalcManaRegenCap());
 	client->Message(Chat::White, " End.: %i/%i  End. Regen: %i/%i",GetEndurance(), GetMaxEndurance(), CalcEnduranceRegen(), CalcEnduranceRegenCap());
 	client->Message(Chat::White, " ATK: %i  Worn/Spell ATK %i/%i  Server Side ATK: %i", GetTotalATK(), RuleI(Character, ItemATKCap), GetATKBonus(), GetATK());
-	client->Message(Chat::White, " Haste: %i / %i (Item: %i + Spell: %i + Over: %i)", GetHaste(), RuleI(Character, HasteCap), itembonuses.haste, spellbonuses.haste + spellbonuses.hastetype2, spellbonuses.hastetype3 + ExtraHaste);
+	client->Message(Chat::White, " Haste: %i / %i (Item: %i + Spell: %i + Over: %i) Run speed: %i", GetHaste(), RuleI(Character, HasteCap), itembonuses.haste, spellbonuses.haste + spellbonuses.hastetype2, spellbonuses.hastetype3 + ExtraHaste, GetRunspeed());
 	client->Message(Chat::White, " STR: %i  STA: %i  DEX: %i  AGI: %i  INT: %i  WIS: %i  CHA: %i", GetSTR(), GetSTA(), GetDEX(), GetAGI(), GetINT(), GetWIS(), GetCHA());
 	client->Message(Chat::White, " hSTR: %i  hSTA: %i  hDEX: %i  hAGI: %i  hINT: %i  hWIS: %i  hCHA: %i", GetHeroicSTR(), GetHeroicSTA(), GetHeroicDEX(), GetHeroicAGI(), GetHeroicINT(), GetHeroicWIS(), GetHeroicCHA());
 	client->Message(Chat::White, " MR: %i  PR: %i  FR: %i  CR: %i  DR: %i Corruption: %i PhR: %i", GetMR(), GetPR(), GetFR(), GetCR(), GetDR(), GetCorrup(), GetPhR());
@@ -7948,13 +7625,9 @@ void Client::GarbleMessage(char *message, uint8 variance)
 	int delimiter_count = 0;
 
 	// Don't garble # commands
-	if (message[0] == COMMAND_CHAR)
+	if (message[0] == COMMAND_CHAR || message[0] == BOT_COMMAND_CHAR) {
 		return;
-
-#ifdef BOTS
-	if (message[0] == BOT_COMMAND_CHAR)
-		return;
-#endif
+	}
 
 	for (size_t i = 0; i < strlen(message); i++) {
 		// Client expects hex values inside of a text link body
@@ -9466,6 +9139,25 @@ void Client::SetDevToolsEnabled(bool in_dev_tools_enabled)
 	Client::dev_tools_enabled = in_dev_tools_enabled;
 }
 
+bool Client::IsEXPEnabled() const {
+	return m_exp_enabled;
+}
+
+void Client::SetEXPEnabled(bool is_exp_enabled)
+{
+	auto c = CharacterDataRepository::FindOne(database, CharacterID());
+
+	c.exp_enabled = is_exp_enabled;
+
+	auto updated = CharacterDataRepository::UpdateOne(database, c);
+
+	if (!updated) {
+		return;
+	}
+
+	m_exp_enabled = is_exp_enabled;
+}
+
 /**
  * @param model_id
  */
@@ -10495,25 +10187,41 @@ void Client::MovePCDynamicZone(const std::string& zone_name, int zone_version, b
 	MovePCDynamicZone(zone_id, zone_version, msg_if_invalid);
 }
 
-void Client::Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clipping) {
+void Client::Fling(float value, float target_x, float target_y, float target_z, bool ignore_los, bool clip_through_walls, bool calculate_speed) {
 	BuffFadeByEffect(SE_Levitate);
 	if (CheckLosFN(target_x, target_y, target_z, 6.0f) || ignore_los) {
-		auto outapp_fling = new EQApplicationPacket(OP_Fling, sizeof(fling_struct));
-		fling_struct* flingTo = (fling_struct*)outapp_fling->pBuffer;
-		if(clipping)
-			flingTo->collision = 0;
-		else
-			flingTo->collision = -1;
+		auto p = new EQApplicationPacket(OP_Fling, sizeof(fling_struct));
+		auto* f = (fling_struct*) p->pBuffer;
 
-		flingTo->travel_time = -1;
-		flingTo->unk3 = 1;
-		flingTo->disable_fall_damage = 1;
-		flingTo->speed_z = value;
-		flingTo->new_y = target_y;
-		flingTo->new_x = target_x;
-		flingTo->new_z = target_z;
-		outapp_fling->priority = 6;
-		FastQueuePacket(&outapp_fling);
+		if (!calculate_speed) {
+			f->speed_z = value;
+		} else {
+			auto speed = 1.0f;
+			const auto distance = CalculateDistance(target_x, target_y, target_z);
+
+			auto z_diff = target_z - GetZ();
+			if (z_diff != 0.0f) {
+				speed += std::abs(z_diff) / 12.0f;
+			}
+
+			speed += distance / 200.0f;
+
+			speed++;
+
+			speed = std::abs(speed);
+
+			f->speed_z = speed;
+		}
+
+		f->collision = clip_through_walls ? 0 : -1;
+		f->travel_time = -1;
+		f->unk3 = 1;
+		f->disable_fall_damage = 1;
+		f->new_y = target_y;
+		f->new_x = target_x;
+		f->new_z = target_z;
+		p->priority = 6;
+		FastQueuePacket(&p);
 	}
 }
 
@@ -10751,8 +10459,8 @@ int Client::CountItem(uint32 item_id)
 		{ EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END },
 		{ EQ::invbag::SHARED_BANK_BAGS_BEGIN, EQ::invbag::SHARED_BANK_BAGS_END },
 	};
-	const size_t size = sizeof(slots) / sizeof(slots[0]);
-	for (int slot_index = 0; slot_index < size; ++slot_index) {
+	const size_t slot_index_count = sizeof(slots) / sizeof(slots[0]);
+	for (int slot_index = 0; slot_index < slot_index_count; ++slot_index) {
 		for (int slot_id = slots[slot_index][0]; slot_id <= slots[slot_index][1]; ++slot_id) {
 			item = GetInv().GetItem(slot_id);
 			if (item && item->GetID() == item_id) {
@@ -10762,6 +10470,133 @@ int Client::CountItem(uint32 item_id)
 	}
 
 	return quantity;
+}
+
+void Client::ResetItemCooldown(uint32 item_id)
+{
+	EQ::ItemInstance *item = nullptr;
+	const EQ::ItemData* item_d = database.GetItem(item_id);
+	if (!item_d) {
+		return;
+	}
+	int recast_type = item_d->RecastType;
+	bool found_item = false; 
+	
+	static const int16 slots[][2] = {
+		{ EQ::invslot::POSSESSIONS_BEGIN, EQ::invslot::POSSESSIONS_END },
+		{ EQ::invbag::GENERAL_BAGS_BEGIN, EQ::invbag::GENERAL_BAGS_END },
+		{ EQ::invbag::CURSOR_BAG_BEGIN, EQ::invbag::CURSOR_BAG_END},
+		{ EQ::invslot::BANK_BEGIN, EQ::invslot::BANK_END },
+		{ EQ::invbag::BANK_BAGS_BEGIN, EQ::invbag::BANK_BAGS_END },
+		{ EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END },
+		{ EQ::invbag::SHARED_BANK_BAGS_BEGIN, EQ::invbag::SHARED_BANK_BAGS_END },
+	};
+	const size_t slot_index_count = sizeof(slots) / sizeof(slots[0]);
+	for (int slot_index = 0; slot_index < slot_index_count; ++slot_index) {
+		for (int slot_id = slots[slot_index][0]; slot_id <= slots[slot_index][1]; ++slot_id) {
+			item = GetInv().GetItem(slot_id);
+			if (item) {
+				item_d = item->GetItem();
+				if (item_d && item->GetID() == item_id || (item_d->RecastType != RECAST_TYPE_UNLINKED_ITEM && item_d->RecastType == recast_type)) {	
+					item->SetRecastTimestamp(0);
+					DeleteItemRecastTimer(item_d->ID);
+					SendItemPacket(slot_id, item, ItemPacketCharmUpdate);
+					found_item = true;
+				}
+			}
+		}
+	}
+	if (!found_item) {
+		DeleteItemRecastTimer(item_id); //We didn't find the item but we still want to remove the timer
+	}
+}
+
+void Client::SetItemCooldown(uint32 item_id, bool use_saved_timer, uint32 in_seconds)
+{
+	EQ::ItemInstance *item = nullptr;
+	const EQ::ItemData* item_d = database.GetItem(item_id);
+	if (!item_d) {
+		return;
+	}
+	int recast_type = item_d->RecastType;
+	auto timestamps = database.GetItemRecastTimestamps(CharacterID());
+	uint32 total_time = 0;
+	uint32 current_time = static_cast<uint32>(std::time(nullptr));
+	uint32 final_time = 0;
+	const auto timer_type = item_d->RecastType != RECAST_TYPE_UNLINKED_ITEM ? item_d->RecastType : item_id;
+	const int timer_id = recast_type != RECAST_TYPE_UNLINKED_ITEM ? (pTimerItemStart + recast_type) : (pTimerNegativeItemReuse * item_id);
+	
+	if (use_saved_timer) {
+		if (item_d->RecastType != RECAST_TYPE_UNLINKED_ITEM) {
+			total_time = timestamps.count(item_d->RecastType) ? timestamps.at(item_d->RecastType) : 0;
+		} else {
+			total_time = timestamps.count(item_id) ? timestamps.at(item_id) : 0;
+		}
+	} else {
+		total_time = current_time + in_seconds;
+	}
+	
+	if (total_time > current_time) {
+		final_time = total_time - current_time;
+	}
+	
+	static const int16 slots[][2] = {
+		{ EQ::invslot::POSSESSIONS_BEGIN, EQ::invslot::POSSESSIONS_END },
+		{ EQ::invbag::GENERAL_BAGS_BEGIN, EQ::invbag::GENERAL_BAGS_END },
+		{ EQ::invbag::CURSOR_BAG_BEGIN, EQ::invbag::CURSOR_BAG_END},
+		{ EQ::invslot::BANK_BEGIN, EQ::invslot::BANK_END },
+		{ EQ::invbag::BANK_BAGS_BEGIN, EQ::invbag::BANK_BAGS_END },
+		{ EQ::invslot::SHARED_BANK_BEGIN, EQ::invslot::SHARED_BANK_END },
+		{ EQ::invbag::SHARED_BANK_BAGS_BEGIN, EQ::invbag::SHARED_BANK_BAGS_END },
+	};
+	const size_t slot_index_count = sizeof(slots) / sizeof(slots[0]);
+	for (int slot_index = 0; slot_index < slot_index_count; ++slot_index) {
+		for (int slot_id = slots[slot_index][0]; slot_id <= slots[slot_index][1]; ++slot_id) {
+			item = GetInv().GetItem(slot_id);
+			if (item) {
+				item_d = item->GetItem();
+				if (item_d && item->GetID() == item_id || (item_d->RecastType != RECAST_TYPE_UNLINKED_ITEM && item_d->RecastType == recast_type)) {
+					item->SetRecastTimestamp(total_time);
+					SendItemPacket(slot_id, item, ItemPacketCharmUpdate);
+				}
+			}
+		}
+	}
+	
+	//Start timers and update in database only when timer is changed
+	if (!use_saved_timer) {
+		GetPTimers().Clear(&database, timer_id);
+		GetPTimers().Start((timer_id), in_seconds);
+		database.UpdateItemRecast(
+			CharacterID(),
+			timer_type,
+			GetPTimers().Get(timer_id)->GetReadyTimestamp()
+		);
+	}
+	SendItemRecastTimer(recast_type, final_time, true);
+}
+
+uint32 Client::GetItemCooldown(uint32 item_id)
+{
+	const EQ::ItemData* item_d = database.GetItem(item_id);
+	if (!item_d) {
+		return 0;
+	}
+	
+	int recast_type = item_d->RecastType;
+	auto timestamps = database.GetItemRecastTimestamps(CharacterID());
+	const auto timer_type = recast_type != RECAST_TYPE_UNLINKED_ITEM ? recast_type : item_id;
+	uint32 total_time = 0;
+	uint32 current_time = static_cast<uint32>(std::time(nullptr));
+	uint32 final_time = 0;
+	
+	total_time = timestamps.count(timer_type) ? timestamps.at(timer_type) : 0;
+	
+	if (total_time > current_time) {
+		final_time = total_time - current_time;
+	}
+
+	return final_time;
 }
 
 void Client::RemoveItem(uint32 item_id, uint32 quantity)
@@ -10777,8 +10612,8 @@ void Client::RemoveItem(uint32 item_id, uint32 quantity)
 		{ EQ::invbag::SHARED_BANK_BAGS_BEGIN, EQ::invbag::SHARED_BANK_BAGS_END },
 	};
 	int16 removed_count = 0;
-	const size_t size = sizeof(slots) / sizeof(slots[0]);
-	for (int slot_index = 0; slot_index < size; ++slot_index) {
+	const size_t slot_index_count = sizeof(slots) / sizeof(slots[0]);
+	for (int slot_index = 0; slot_index < slot_index_count; ++slot_index) {
 		for (int slot_id = slots[slot_index][0]; slot_id <= slots[slot_index][1]; ++slot_id) {
 			if (removed_count == quantity) {
 				break;
@@ -11828,7 +11663,7 @@ bool Client::SendGMCommand(std::string message, bool ignore_status) {
 void Client::RegisterBug(BugReport_Struct* r) {
 	if (!r) {
 		return;
-	};
+	}
 
 	auto b = BugReportsRepository::NewEntity();
 
@@ -11907,14 +11742,12 @@ std::vector<Mob*> Client::GetApplySpellList(
 						l.push_back(m->GetPet());
 					}
 
-#ifdef BOTS
 					if (allow_bots) {
 						const auto& sbl = entity_list.GetBotListByCharacterID(m->CharacterID());
 						for (const auto& b : sbl) {
 							l.push_back(b);
 						}
 					}
-#endif
 				}
 			}
 		}
@@ -11930,14 +11763,12 @@ std::vector<Mob*> Client::GetApplySpellList(
 						l.push_back(m->GetPet());
 					}
 
-#ifdef BOTS
 					if (allow_bots) {
 						const auto& sbl = entity_list.GetBotListByCharacterID(m->CastToClient()->CharacterID());
 						for (const auto& b : sbl) {
 							l.push_back(b);
 						}
 					}
-#endif
 				}
 			}
 		}
@@ -11948,14 +11779,12 @@ std::vector<Mob*> Client::GetApplySpellList(
 			l.push_back(GetPet());
 		}
 
-#ifdef BOTS
 		if (allow_bots) {
 			const auto& sbl = entity_list.GetBotListByCharacterID(CharacterID());
 			for (const auto& b : sbl) {
 				l.push_back(b);
 			}
 		}
-#endif
 	}
 
 	return l;
@@ -11989,4 +11818,158 @@ void Client::SetSpellDuration(
 	for (const auto& m : l) {
 		m->SetBuffDuration(spell_id, duration);
 	}
+}
+
+std::string Client::GetGuildPublicNote()
+{
+	if (!IsInAGuild()) {
+		return std::string();
+	}
+
+	CharGuildInfo gci;
+	if (!guild_mgr.GetCharInfo(character_id, gci)) {
+		return std::string();
+	}
+
+	return gci.public_note;
+}
+
+void Client::MaxSkills()
+{
+	for (const auto &s : EQ::skills::GetSkillTypeMap()) {
+		auto current_skill_value = (
+			EQ::skills::IsSpecializedSkill(s.first) ?
+			MAX_SPECIALIZED_SKILL :
+			content_db.GetSkillCap(GetClass(), s.first, GetLevel())
+		);
+
+		if (GetSkill(s.first) < current_skill_value) {
+			SetSkill(s.first, current_skill_value);
+		}
+	}
+}
+
+void Client::SendPath(Mob* target)
+{
+	if (!target) {
+		EQApplicationPacket outapp(OP_FindPersonReply, 0);
+		QueuePacket(&outapp);
+		return;
+	}
+
+
+	if (
+		!RuleB(Pathing, Find) &&
+		RuleB(Bazaar, EnableWarpToTrader) &&
+		target->IsClient() &&
+		(
+			target->CastToClient()->Trader ||
+			target->CastToClient()->Buyer
+		)
+	) {
+		Message(
+			Chat::Yellow,
+			fmt::format(
+				"Moving you to Trader {}.",
+				target->GetName()
+			).c_str()
+		);
+		MovePC(
+			zone->GetZoneID(),
+			zone->GetInstanceID(),
+			target->GetX(),
+			target->GetY(),
+			target->GetZ(),
+			0.0f
+		);
+		return;
+	}
+
+	std::vector<FindPerson_Point> points;
+
+	if (!RuleB(Pathing, Find) || !zone->pathing) {
+		points.clear();
+		FindPerson_Point a;
+		FindPerson_Point b;
+
+		a.x = GetX();
+		a.y = GetY();
+		a.z = GetZ();
+		b.x = target->GetX();
+		b.y = target->GetY();
+		b.z = target->GetZ();
+
+		points.push_back(a);
+		points.push_back(b);
+	} else {
+		glm::vec3 path_start(
+			GetX(),
+			GetY(),
+			GetZ() + (GetSize() < 6.0 ? 6 : GetSize()) * HEAD_POSITION
+		);
+
+		glm::vec3 path_end(
+			target->GetX(),
+			target->GetY(),
+			target->GetZ() + (target->GetSize() < 6.0 ? 6 : target->GetSize()) * HEAD_POSITION
+		);
+
+		bool partial = false;
+		bool stuck = false;
+		auto path_list = zone->pathing->FindRoute(path_start, path_end, partial, stuck);
+
+		if (path_list.empty() || partial) {
+			EQApplicationPacket outapp(OP_FindPersonReply, 0);
+			QueuePacket(&outapp);
+			return;
+		}
+
+		// Live appears to send the points in this order:
+		// Final destination.
+		// Current Position.
+		// rest of the points.
+		FindPerson_Point p;
+
+		int point_number = 0;
+
+		bool leads_to_teleporter = false;
+
+		auto v = path_list.back();
+
+		p.x = v.pos.x;
+		p.y = v.pos.y;
+		p.z = v.pos.z;
+		points.push_back(p);
+
+		p.x = GetX();
+		p.y = GetY();
+		p.z = GetZ();
+		points.push_back(p);
+
+		for (const auto& n : path_list) {
+			if (n.teleport) {
+				leads_to_teleporter = true;
+				break;
+			}
+
+			glm::vec3 v = n.pos;
+			p.x = v.x;
+			p.y = v.y;
+			p.z = v.z;
+
+			points.push_back(p);
+
+			++point_number;
+		}
+
+		if (!leads_to_teleporter) {
+			p.x = target->GetX();
+			p.y = target->GetY();
+			p.z = target->GetZ();
+
+			points.push_back(p);
+		}
+	}
+
+	SendPathPacket(points);
 }

@@ -26,6 +26,7 @@
 #define SPELLBOOK_UNKNOWN 0xFFFFFFFF		//player profile spells are 32 bit
 
 //some spell IDs which will prolly change, but are needed
+#define SPELL_COMPLETE_HEAL 13
 #define SPELL_LIFEBURN 2755
 #define SPELL_LEECH_TOUCH 2766
 #define SPELL_LAY_ON_HANDS 87
@@ -894,7 +895,7 @@ typedef enum {
 #define SE_SpellDamageShield			157	// implemented, @DS, causes non-melee damage on caster of a spell, base: Amt DS (negative), limit: none, max: unknown (same as base but +)
 #define SE_Reflect						158 // implemented, @SpellMisc, reflect casted detrimental spell back at caster, base: chance pct, limit: resist modifier (positive value reduces resists), max: pct of base dmg mod (50=50pct of base)
 #define SE_AllStats						159	// implemented
-//#define SE_MakeDrunk					160 // *not implemented - Effect works entirely client side (Should check against tolerance)
+#define SE_MakeDrunk					160 // *not implemented - Effect works entirely client side (Should check against tolerance)
 #define SE_MitigateSpellDamage			161	// implemented, @Runes, mitigate incoming spell damage by percentage until rune fades, base: percent mitigation, limit: max dmg absorbed per hit, max: rune amt, Note: If placed on item or AA, will provide stackable percent mitigation.
 #define SE_MitigateMeleeDamage			162	// implemented - rune with max value
 #define SE_NegateAttacks				163	// implemented
@@ -927,7 +928,7 @@ typedef enum {
 #define SE_EndurancePool				190	// implemented
 #define SE_Amnesia						191	// implemented - Silence vs Melee Effect
 #define SE_Hate							192	// implemented - Instant and hate over time.
-#define SE_SkillAttack					193	// implemented,  
+#define SE_SkillAttack					193	// implemented,
 #define SE_FadingMemories				194	// implemented, @Aggro, Remove from hate lists and make invisible. Can set max level of NPCs that can be affected. base: success chance, limit: max level (ROF2), max: max level (modern client), Note: Support for max level requires Rule (Spells, UseFadingMemoriesMaxLevel) to be true. If used from limit field, then it set as the level, ie. max level of 75 would use limit value of 75. If set from max field, max level 75 would use max value of 1075, if you want to set it so it checks a level range above the spell target then for it to only work on mobs 5 levels or below you set max value to 5.
 #define SE_StunResist					195	// implemented
 #define SE_StrikeThrough				196	// implemented
@@ -1311,7 +1312,7 @@ struct SPDat_Spell_Struct
 											// If it is a number between 1-4 it means components[number] is a focus and not to expend it
 											// If it is a valid itemid it means this item is a focus as well
 											// -- NOEXPENDREAGENT1 ... NOEXPENDREAGENT4
-/* 070 */	uint16 formula[EFFECT_COUNT]; // Spell's value formula -- LEVELAFFECT1MOD ... LEVELAFFECT12MOD
+/* 070 */	uint32 formula[EFFECT_COUNT]; // Spell's value formula -- LEVELAFFECT1MOD ... LEVELAFFECT12MOD
 /* 082 */	//int LightType; // probaly another effecttype flag -- LIGHTTYPE
 /* 083 */	int8 good_effect; //0=detrimental, 1=Beneficial, 2=Beneficial, Group Only -- BENEFICIAL
 /* 084 */	int activated; // probably another effecttype flag -- ACTIVATED
@@ -1480,6 +1481,7 @@ bool IsGroupSpell(uint16 spell_id);
 bool IsTGBCompatibleSpell(uint16 spell_id);
 bool IsBardSong(uint16 spell_id);
 bool IsEffectInSpell(uint16 spellid, int effect);
+uint16 GetTriggerSpellID(uint16 spell_id, uint32 effect);
 bool IsBlankSpellEffect(uint16 spellid, int effect_index);
 bool IsValidSpell(uint32 spellid);
 bool IsSummonSpell(uint16 spellid);

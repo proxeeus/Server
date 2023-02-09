@@ -44,9 +44,10 @@
 #include <tuple>
 #include <type_traits>
 
+#include <fmt/format.h>
+
 #ifndef _WIN32
 // this doesn't appear to affect linux-based systems..need feedback for _WIN64
-#include <fmt/format.h>
 
 #endif
 
@@ -86,6 +87,7 @@ public:
 	static bool Contains(std::vector<std::string> container, std::string element);
 	static bool Contains(const std::string& subject, const std::string& search);
 	static bool IsNumber(const std::string &s);
+	static bool IsFloat(const std::string &s);
 	static const std::string ToLower(std::string s);
 	static const std::string ToUpper(std::string s);
 	static const std::string UcFirst(std::string s);
@@ -93,6 +95,12 @@ public:
 	static std::string &RTrim(std::string &str, const std::string &chars = "\t\n\v\f\r ");
 	static std::string &Trim(std::string &str, const std::string &chars = "\t\n\v\f\r ");
 	static std::string Commify(const std::string &number);
+	static std::string Commify(uint16 number) { return Strings::Commify(std::to_string(number)); };
+	static std::string Commify(uint32 number) { return Strings::Commify(std::to_string(number)); };
+	static std::string Commify(uint64 number) { return Strings::Commify(std::to_string(number)); };
+	static std::string Commify(int16 number) { return Strings::Commify(std::to_string(number)); };
+	static std::string Commify(int32 number) { return Strings::Commify(std::to_string(number)); };
+	static std::string Commify(int64 number) { return Strings::Commify(std::to_string(number)); };
 	static std::string ConvertToDigit(int n, std::string suffix);
 	static std::string Escape(const std::string &s);
 	static std::string GetBetween(const std::string &s, std::string start_delim, std::string stop_delim);
@@ -110,6 +118,9 @@ public:
 	static std::vector<std::string> Wrap(std::vector<std::string> &src, std::string character);
 	static void FindReplace(std::string &string_subject, const std::string &search_string, const std::string &replace_string);
 	static uint32 TimeToSeconds(std::string time_string);
+	static bool ToBool(std::string bool_string);
+	static inline bool EqualFold(const std::string &string_one, const std::string &string_two) { return strcasecmp(string_one.c_str(), string_two.c_str()) == 0; }
+	static std::string Random(size_t length);
 
 	template<typename T>
 	static std::string

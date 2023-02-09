@@ -1,4 +1,4 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.12)
 
 SET(common_sources
     base_packet.cpp
@@ -64,6 +64,7 @@ SET(common_sources
     path_manager.cpp
     perl_eqdb.cpp
     perl_eqdb_res.cpp
+    process/process.cpp
     proc_launcher.cpp
     profanity_manager.cpp
     ptimer.cpp
@@ -181,6 +182,8 @@ SET(repositories
     repositories/base/base_char_create_combinations_repository.h
     repositories/base/base_char_create_point_allocations_repository.h
     repositories/base/base_char_recipe_list_repository.h
+    repositories/base/base_chatchannels_repository.h
+    repositories/base/base_chatchannel_reserved_names_repository.h
     repositories/base/base_completed_shared_tasks_repository.h
     repositories/base/base_completed_shared_task_activity_state_repository.h
     repositories/base/base_completed_shared_task_members_repository.h
@@ -357,6 +360,8 @@ SET(repositories
     repositories/char_create_combinations_repository.h
     repositories/char_create_point_allocations_repository.h
     repositories/char_recipe_list_repository.h
+    repositories/chatchannels_repository.h
+    repositories/chatchannel_reserved_names_repository.h
     repositories/completed_shared_tasks_repository.h
     repositories/completed_shared_task_activity_state_repository.h
     repositories/completed_shared_task_members_repository.h
@@ -568,6 +573,7 @@ SET(common_headers
     packet_functions.h
     path_manager.cpp
     platform.h
+    process/process.h
     proc_launcher.h
     profanity_manager.h
     profiler.h
@@ -650,6 +656,7 @@ SET(common_headers
     patches/uf_limits.h
     patches/uf_ops.h
     patches/uf_structs.h
+    termcolor/rang.hpp
     stacktrace/backward.hpp
     StackWalker/StackWalker.h
     util/memory_stream.h

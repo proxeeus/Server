@@ -594,11 +594,6 @@ void Perl_NPC_RecalculateSkills(NPC* self) // @categories Skills and Recipes
 	self->RecalculateSkills();
 }
 
-void Perl_NPC_ScaleNPC(NPC* self, uint8 npc_level)
-{
-	return self->ScaleNPC(npc_level);
-}
-
 bool Perl_NPC_IsRaidTarget(NPC* self)
 {
 	return self->IsRaidTarget();
@@ -670,6 +665,96 @@ void Perl_NPC_ReloadSpells(NPC* self)
 	self->ReloadSpells();
 }
 
+void Perl_NPC_SendPayload(NPC* self, int payload_id) // @categories Script Utility
+{
+	self->SendPayload(payload_id);
+}
+
+void Perl_NPC_SendPayload(NPC* self, int payload_id, std::string payload_value) // @categories Script Utility
+{
+	self->SendPayload(payload_id, payload_value);
+}
+
+bool Perl_NPC_GetKeepsSoldItems(NPC* self)
+{
+	return self->GetKeepsSoldItems();
+}
+
+void Perl_NPC_SetKeepsSoldItems(NPC* self, bool keeps_sold_items)
+{
+	self->SetKeepsSoldItems(keeps_sold_items);
+}
+
+bool Perl_NPC_IsLDoNTrapped(NPC* self)
+{
+	return self->IsLDoNTrapped();
+}
+
+void Perl_NPC_SetLDoNTrapped(NPC* self, bool is_trapped)
+{
+	self->SetLDoNTrapped(is_trapped);
+}
+
+uint8 Perl_NPC_GetLDoNTrapType(NPC* self)
+{
+	return self->GetLDoNTrapType();
+}
+
+void Perl_NPC_SetLDoNTrapType(NPC* self, uint8 trap_type)
+{
+	self->SetLDoNTrapType(trap_type);
+}
+
+uint16 Perl_NPC_GetLDoNTrapSpellID(NPC* self)
+{
+	return self->GetLDoNTrapSpellID();
+}
+
+void Perl_NPC_SetLDoNTrapSpellID(NPC* self, uint16 spell_id)
+{
+	self->SetLDoNTrapSpellID(spell_id);
+}
+
+bool Perl_NPC_IsLDoNLocked(NPC* self)
+{
+	return self->IsLDoNLocked();
+}
+
+void Perl_NPC_SetLDoNLocked(NPC* self, bool is_locked)
+{
+	self->SetLDoNLocked(is_locked);
+}
+
+uint16 Perl_NPC_GetLDoNLockedSkill(NPC* self)
+{
+	return self->GetLDoNLockedSkill();
+}
+
+void Perl_NPC_SetLDoNLockedSkill(NPC* self, uint16 skill_value)
+{
+	self->SetLDoNLockedSkill(skill_value);
+}
+
+bool Perl_NPC_IsLDoNTrapDetected(NPC* self)
+{
+	return self->IsLDoNTrapDetected();
+}
+
+void Perl_NPC_SetLDoNTrapDetected(NPC* self, bool is_detected)
+{
+	self->SetLDoNTrapDetected(is_detected);
+}
+
+void Perl_NPC_ScaleNPC(NPC* self, uint8 npc_level)
+{
+	return self->ScaleNPC(npc_level);
+}
+
+void Perl_NPC_ScaleNPC(NPC* self, uint8 npc_level, bool override_special_abilities)
+{
+	return self->ScaleNPC(npc_level, override_special_abilities);
+}
+
 void perl_register_npc()
 {
 	perl::interpreter perl(PERL_GET_THX);
@@ -721,6 +806,10 @@ void perl_register_npc()
 	package.add("GetGuardPointZ", &Perl_NPC_GetGuardPointZ);
 	package.add("GetHealScale", &Perl_NPC_GetHealScale);
 	package.add("GetItemIDBySlot", &Perl_NPC_GetItemIDBySlot);
+	package.add("GetKeepsSoldItems", &Perl_NPC_GetKeepsSoldItems);
+	package.add("GetLDoNLockedSkill", &Perl_NPC_GetLDoNLockedSkill);
+	package.add("GetLDoNTrapType", &Perl_NPC_GetLDoNTrapType);
+	package.add("GetLDoNTrapSpellID", &Perl_NPC_GetLDoNTrapSpellID);
 	package.add("GetLootList", &Perl_NPC_GetLootList);
 	package.add("GetLoottableID", &Perl_NPC_GetLoottableID);
 	package.add("GetMaxDMG", &Perl_NPC_GetMaxDMG);
@@ -756,6 +845,9 @@ void perl_register_npc()
 	package.add("HasItem", &Perl_NPC_HasItem);
 	package.add("IsAnimal", &Perl_NPC_IsAnimal);
 	package.add("IsGuarding", &Perl_NPC_IsGuarding);
+	package.add("IsLDoNLocked", &Perl_NPC_IsLDoNLocked);
+	package.add("IsLDoNTrapped", &Perl_NPC_IsLDoNTrapped);
+	package.add("IsLDoNTrapDetected", &Perl_NPC_IsLDoNTrapDetected);;
 	package.add("IsOnHatelist", &Perl_NPC_IsOnHatelist);
 	package.add("IsRaidTarget", &Perl_NPC_IsRaidTarget);
 	package.add("IsRareSpawn", &Perl_NPC_IsRareSpawn);
@@ -785,8 +877,18 @@ void perl_register_npc()
 	package.add("SaveGuardSpot", (void(*)(NPC*))&Perl_NPC_SaveGuardSpot);
 	package.add("SaveGuardSpot", (void(*)(NPC*, bool))&Perl_NPC_SaveGuardSpot);
 	package.add("SaveGuardSpot", (void(*)(NPC*, float, float, float, float))&Perl_NPC_SaveGuardSpot);
-	package.add("ScaleNPC", &Perl_NPC_ScaleNPC);
+	package.add("ScaleNPC", (void(*)(NPC*, uint8))&Perl_NPC_ScaleNPC);
+	package.add("ScaleNPC", (void(*)(NPC*, uint8, bool))&Perl_NPC_ScaleNPC);
+	package.add("SendPayload", (void(*)(NPC*, int))&Perl_NPC_SendPayload);
+	package.add("SendPayload", (void(*)(NPC*, int, std::string))&Perl_NPC_SendPayload);
 	package.add("SetCopper", &Perl_NPC_SetCopper);
+	package.add("SetKeepsSoldItems", &Perl_NPC_SetKeepsSoldItems);
+	package.add("SetLDoNLocked", &Perl_NPC_SetLDoNLocked);
+	package.add("SetLDoNLockedSkill", &Perl_NPC_SetLDoNLockedSkill);
+	package.add("SetLDoNTrapped", &Perl_NPC_SetLDoNTrapped);
+	package.add("SetLDoNTrapDetected", &Perl_NPC_SetLDoNTrapDetected);
+	package.add("SetLDoNTrapSpellID", &Perl_NPC_SetLDoNTrapSpellID);
+	package.add("SetLDoNTrapType", &Perl_NPC_SetLDoNTrapType);
 	package.add("SetGold", &Perl_NPC_SetGold);
 	package.add("SetGrid", &Perl_NPC_SetGrid);
 	package.add("SetNPCFactionID", &Perl_NPC_SetNPCFactionID);

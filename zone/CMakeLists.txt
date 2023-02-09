@@ -1,4 +1,4 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.2)
+CMAKE_MINIMUM_REQUIRED(VERSION 3.12)
 
 SET(zone_sources
     aa.cpp
@@ -169,7 +169,6 @@ SET(zone_headers
     aggromanager.h
     api_service.h
     aura.h
-    basic_functions.h
     beacon.h
     bot.h
     bot_command.h
@@ -233,7 +232,6 @@ SET(zone_headers
     lua_stat_bonuses.h
     map.h
     masterentity.h
-    maxskill.h
     message.h
     merc.h
     mob.h

@@ -332,30 +332,53 @@ bool EQ::ItemInstance::AvailableWearSlot(uint32 aug_wear_slots) const {
 	return (index <= EQ::invslot::EQUIPMENT_END);
 }
 
-int8 EQ::ItemInstance::AvailableAugmentSlot(int32 augtype) const
+int8 EQ::ItemInstance::AvailableAugmentSlot(int32 augment_type) const
 {
-	if (!m_item || !m_item->IsClassCommon())
+	if (!m_item || !m_item->IsClassCommon()) {
 		return INVALID_INDEX;
-
-	int index = invaug::SOCKET_BEGIN;
-	for (; index <= invaug::SOCKET_END; ++index) {
-		if (GetItem(index)) { continue; }
-		if (augtype == -1 || (m_item->AugSlotType[index] && ((1 << (m_item->AugSlotType[index] - 1)) & augtype)))
-			break;
 	}
 
-	return (index <= invaug::SOCKET_END) ? index : INVALID_INDEX;
+	auto i = invaug::SOCKET_BEGIN;
+	for (; i <= invaug::SOCKET_END; ++i) {
+		if (GetItem(i)) {
+			continue;
+		}
+
+		if (
+			augment_type == -1 ||
+			(
+				m_item->AugSlotType[i] &&
+				((1 << (m_item->AugSlotType[i] - 1)) & augment_type)
+			)
+		) {
+			break;
+		}
+	}
+
+	return (i <= invaug::SOCKET_END) ? i : INVALID_INDEX;
 }
 
-bool EQ::ItemInstance::IsAugmentSlotAvailable(int32 augtype, uint8 slot) const
+bool EQ::ItemInstance::IsAugmentSlotAvailable(int32 augment_type, uint8 slot) const
 {
-	if (!m_item || !m_item->IsClassCommon())
-		 return false;
+	if (!m_item || !m_item->IsClassCommon()) {
+		return false;
+	}
 
-	if ((!GetItem(slot) && m_item->AugSlotVisible[slot]) && augtype == -1 || (m_item->AugSlotType[slot] && ((1 << (m_item->AugSlotType[slot] - 1)) & augtype))) {
+	if (
+		(
+			!GetItem(slot) &&
+			m_item->AugSlotVisible[slot]
+		) &&
+		augment_type == -1 ||
+		(
+			m_item->AugSlotType[slot] &&
+			((1 << (m_item->AugSlotType[slot] - 1)) & augment_type)
+		)
+	) {
 		return true;
 	}
-		return false;
+
+	return false;
 }
 
 // Retrieve item inside container
@@ -523,10 +546,11 @@ bool EQ::ItemInstance::IsNoneEmptyContainer()
 }
 
 // Retrieve augment inside item
-EQ::ItemInstance* EQ::ItemInstance::GetAugment(uint8 slot) const
+EQ::ItemInstance* EQ::ItemInstance::GetAugment(uint8 augment_index) const
 {
-	if (m_item && m_item->IsClassCommon())
-		return GetItem(slot);
+	if (m_item && m_item->IsClassCommon()) {
+		return GetItem(augment_index);
+	}
 
 	return nullptr;
 }
@@ -652,12 +676,13 @@ bool EQ::ItemInstance::CanTransform(const ItemData *ItemToTry, const ItemData *C
 	return false;
 }
 
-uint32 EQ::ItemInstance::GetAugmentItemID(uint8 slot) const
+uint32 EQ::ItemInstance::GetAugmentItemID(uint8 augment_index) const
 {
-	if (!m_item || !m_item->IsClassCommon())
+	if (!m_item || !m_item->IsClassCommon()) {
 		return 0;
+	}
 
-	return GetItemID(slot);
+	return GetItemID(augment_index);
 }
 
 // Add an augment to the item
@@ -1238,7 +1263,7 @@ int EQ::ItemInstance::GetItemBaneDamageBody(bool augments) const
 
 int EQ::ItemInstance::GetItemBaneDamageRace(bool augments) const
 {
-	int race = 0;
+	int race = RACE_DOUG_0;
 	const auto item = GetItem();
 	if (item) {
 		race = item->BaneDmgRace;

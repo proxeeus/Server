@@ -32,6 +32,8 @@ void ListModifyNPCStatMap(Client *c);
 std::map<std::string, std::string> GetModifyNPCStatMap();
 std::string GetModifyNPCStatDescription(std::string stat);
 void SendNPCEditSubCommands(Client *c);
+void SendRuleSubCommands(Client *c);
+void SendGuildSubCommands(Client *c);
 
 // Commands
 void command_acceptrules(Client *c, const Seperator *sep);
@@ -81,11 +83,13 @@ void command_emptyinventory(Client *c, const Seperator *sep);
 void command_enablerecipe(Client *c, const Seperator *sep);
 void command_endurance(Client *c, const Seperator *sep);
 void command_equipitem(Client *c, const Seperator *sep);
+void command_exptoggle(Client *c, const Seperator *sep);
 void command_faction(Client *c, const Seperator *sep);
 void command_faction_association(Client *c, const Seperator *sep);
 void command_feature(Client *c, const Seperator *sep);
 void command_findaa(Client *c, const Seperator *sep);
 void command_findaliases(Client *c, const Seperator *sep);
+void command_findcharacter(Client *c, const Seperator *sep);
 void command_findclass(Client *c, const Seperator *sep);
 void command_findfaction(Client *c, const Seperator *sep);
 void command_findnpctype(Client *c, const Seperator *sep);
@@ -118,9 +122,6 @@ void command_godmode(Client* c, const Seperator *sep);
 void command_goto(Client *c, const Seperator *sep);
 void command_grid(Client *c, const Seperator *sep);
 void command_guild(Client *c, const Seperator *sep);
-void command_guildapprove(Client *c, const Seperator *sep);
-void command_guildcreate(Client *c, const Seperator *sep);
-void command_guildlist(Client *c, const Seperator *sep);
 void command_haste(Client *c, const Seperator *sep);
 void command_hatelist(Client *c, const Seperator *sep);
 void command_heal(Client *c, const Seperator *sep);
@@ -230,6 +231,7 @@ void command_setaapts(Client *c, const Seperator *sep);
 void command_setaaxp(Client *c, const Seperator *sep);
 void command_setaltcurrency(Client *c, const Seperator *sep);
 void command_setanim(Client *c, const Seperator *sep);
+void command_setanon(Client *c, const Seperator *sep);
 void command_setcrystals(Client *c, const Seperator *sep);
 void command_setendurance(Client *c, const Seperator *sep);
 void command_setfaction(Client *c, const Seperator *sep);
@@ -268,6 +270,7 @@ void command_summon(Client *c, const Seperator *sep);
 void command_summonburiedplayercorpse(Client *c, const Seperator *sep);
 void command_summonitem(Client *c, const Seperator *sep);
 void command_suspend(Client *c, const Seperator *sep);
+void command_suspendmulti(Client *c, const Seperator *sep);
 void command_task(Client *c, const Seperator *sep);
 void command_tempname(Client *c, const Seperator *sep);
 void command_petname(Client *c, const Seperator *sep);
@@ -281,7 +284,6 @@ void command_traindisc(Client *c, const Seperator *sep);
 void command_trapinfo(Client *c, const Seperator *sep);
 void command_tune(Client *c, const Seperator *sep);
 void command_undye(Client *c, const Seperator *sep);
-void command_undyeme(Client *c, const Seperator *sep);
 void command_unfreeze(Client *c, const Seperator *sep);
 void command_unlock(Client *c, const Seperator *sep);
 void command_unmemspell(Client *c, const Seperator *sep);
@@ -323,9 +325,7 @@ void command_zsky(Client *c, const Seperator *sep);
 void command_zstats(Client *c, const Seperator *sep);
 void command_zunderworld(Client *c, const Seperator *sep);
 
-#ifdef BOTS
 #include "bot.h"
 void command_bot(Client*c, const Seperator *sep);
-#endif
 
 #endif

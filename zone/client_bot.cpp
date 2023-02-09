@@ -1,5 +1,4 @@
-#ifdef BOTS
-
+#include "bot.h"
 #include "client.h"
 
 bool Client::GetBotOption(BotOwnerOption boo) const {
@@ -156,4 +155,7 @@ void Client::SetBotSpawnLimit(int new_spawn_limit, uint8 class_id)
 	SetBucket(bucket_name, std::to_string(new_spawn_limit));
 }
 
-#endif
+void Client::CampAllBots(uint8 class_id)
+{
+	Bot::BotOrderCampAll(this, class_id);
+}

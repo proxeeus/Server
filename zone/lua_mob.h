@@ -9,9 +9,7 @@ struct Lua_HateList;
 class Lua_Item;
 class Lua_ItemInst;
 class Lua_StatBonuses;
-#ifdef BOTS
 class Lua_Bot;
-#endif
 class Lua_NPC;
 class Lua_Client;
 
@@ -46,7 +44,7 @@ public:
 	bool BehindMob(Lua_Mob other, float x, float y);
 	void SetLevel(int level);
 	void SetLevel(int level, bool command);
-	void SendWearChange(int material_slot);
+	void SendWearChange(uint8 material_slot);
 	bool IsMoving();
 	bool IsFeared();
 	bool IsBlind();
@@ -70,10 +68,10 @@ public:
 	uint32 GetLevelCon(int other);
 	uint32 GetLevelCon(int my, int other);
 	void SetHP(int64 hp);
-	void DoAnim(int anim_num);
-	void DoAnim(int anim_num, int type);
-	void DoAnim(int anim_num, int type, bool ackreq);
-	void DoAnim(int anim_num, int type, bool ackreq, int filter);
+	void DoAnim(int animation_id);
+	void DoAnim(int animation_id, int animation_speed);
+	void DoAnim(int animation_id, int animation_speed, bool ackreq);
+	void DoAnim(int animation_id, int animation_speed, bool ackreq, int filter);
 	void ChangeSize(double in_size);
 	void ChangeSize(double in_size, bool no_restriction);
 	bool RandomizeFeatures();
@@ -94,6 +92,8 @@ public:
 	bool FindBuff(int spell_id);
 	uint16 FindBuffBySlot(int slot);
 	uint32 BuffCount();
+	uint32 BuffCount(bool is_beneficial);
+	uint32 BuffCount(bool is_beneficial, bool is_detrimental);
 	bool FindType(int type);
 	bool FindType(int type, bool offensive);
 	bool FindType(int type, bool offensive, int threshold);
@@ -211,10 +211,8 @@ public:
 	uint16 GetOwnerID();
 	Lua_Mob GetUltimateOwner();
 	Lua_HateList GetHateList();
-#ifdef BOTS
 	Lua_HateList GetHateListBots();
 	Lua_HateList GetHateListBots(uint32 distance);
-#endif
 	Lua_HateList GetHateListClients();
 	Lua_HateList GetHateListClients(uint32 distance);
 	Lua_HateList GetHateListNPCs();
@@ -225,9 +223,7 @@ public:
 	Lua_Mob GetHateTop();
 	Lua_Mob GetHateDamageTop(Lua_Mob other);
 	Lua_Mob GetHateRandom();
-#ifdef BOTS
 	Lua_Bot GetHateRandomBot();
-#endif
 	Lua_Client GetHateRandomClient();
 	Lua_NPC GetHateRandomNPC();
 	Lua_Mob GetHateClosest();
@@ -301,11 +297,15 @@ public:
 	bool SetAA(int rank_id, int new_value, int charges);
 	bool DivineAura();
 	void SetOOCRegen(int64 new_ooc_regen);
+	bool ClearEntityVariables();
+	bool DeleteEntityVariable(std::string variable_name);
 	std::string GetEntityVariable(std::string variable_name);
 	luabind::object GetEntityVariables(lua_State* L);
 	void SetEntityVariable(std::string variable_name, std::string variable_value);
 	bool EntityVariableExists(std::string variable_name);
 	void Signal(int signal_id);
+	void SendPayload(int payload_id);
+	void SendPayload(int payload_id, std::string payload_value);
 	bool CombatRange(Lua_Mob other);
 	void DoSpecialAttackDamage(Lua_Mob other, int skill, int max_damage);
 	void DoSpecialAttackDamage(Lua_Mob other, int skill, int max_damage, int min_damage);
@@ -377,7 +377,9 @@ public:
 	void TarGlobal(const char *varname, const char *value, const char *duration, int npc_id, int char_id, int zone_id);
 	void DelGlobal(const char *varname);
 	void SetSlotTint(int material_slot, int red_tint, int green_tint, int blue_tint);
-	void WearChange(int material_slot, int texture, uint32 color);
+	void WearChange(uint8 material_slot, uint16 texture);
+	void WearChange(uint8 material_slot, uint16 texture, uint32 color);
+	void WearChange(uint8 material_slot, uint16 texture, uint32 color, uint32 heros_forge_model);
 	void DoKnockback(Lua_Mob caster, uint32 push_back, uint32 push_up);
 	void AddNimbusEffect(int effect_id);
 	void RemoveNimbusEffect(int effect_id);
@@ -444,13 +446,12 @@ public:
 	bool IsAmnesiad();
 	int32 GetMeleeMitigation();
 	int GetWeaponDamageBonus(Lua_Item weapon, bool offhand);
-	int GetItemStat(uint32 itemid, const char* identifier);
+	const int GetItemStat(uint32 item_id, std::string identifier);
 	Lua_StatBonuses GetItemBonuses();
 	Lua_StatBonuses GetSpellBonuses();
 	Lua_StatBonuses GetAABonuses();
 	int16 GetMeleeDamageMod_SE(uint16 skill);
 	int16 GetMeleeMinDamageMod_SE(uint16 skill);
-	bool IsAttackAllowed(Lua_Mob target, bool isSpellAttack);
 	bool IsCasting();
 	int AttackAnimation(int Hand, Lua_ItemInst weapon);
 	int GetWeaponDamage(Lua_Mob against, Lua_ItemInst weapon);
@@ -484,12 +485,10 @@ public:
 	void DamageArea(int64 damage, uint32 distance);
 	void DamageAreaPercentage(int64 damage);
 	void DamageAreaPercentage(int64 damage, uint32 distance);
-#ifdef BOTS
 	void DamageAreaBots(int64 damage);
 	void DamageAreaBots(int64 damage, uint32 distance);
 	void DamageAreaBotsPercentage(int64 damage);
 	void DamageAreaBotsPercentage(int64 damage, uint32 distance);
-#endif
 	void DamageAreaClients(int64 damage);
 	void DamageAreaClients(int64 damage, uint32 distance);
 	void DamageAreaClientsPercentage(int64 damage);
@@ -502,12 +501,10 @@ public:
 	void DamageHateList(int64 damage, uint32 distance);
 	void DamageHateListPercentage(int64 damage);
 	void DamageHateListPercentage(int64 damage, uint32 distance);
-#ifdef BOTS
 	void DamageHateListBots(int64 damage);
 	void DamageHateListBots(int64 damage, uint32 distance);
 	void DamageHateListBotsPercentage(int64 damage);
 	void DamageHateListBotsPercentage(int64 damage, uint32 distance);
-#endif
 	void DamageHateListClients(int64 damage);
 	void DamageHateListClients(int64 damage, uint32 distance);
 	void DamageHateListClientsPercentage(int64 damage);
@@ -516,6 +513,9 @@ public:
 	void DamageHateListNPCs(int64 damage, uint32 distance);
 	void DamageHateListNPCsPercentage(int64 damage);
 	void DamageHateListNPCsPercentage(int64 damage, uint32 distance);
+	void CopyHateList(Lua_Mob to);
+	bool IsAttackAllowed(Lua_Mob target);
+	bool IsAttackAllowed(Lua_Mob target, bool is_spell_attack);
 };
 
 #endif

@@ -872,6 +872,9 @@ void Client::BulkSendMerchantInventory(int merchant_id, int npcid) {
 			continue;
 		}
 
+		if (!EQ::ValueWithin(Admin(), static_cast<int16>(ml.min_status), static_cast<int16>(ml.max_status))) {
+			continue;
+		}
 
 		int32 faction_id = npc ? npc->GetPrimaryFaction() : 0;
 		int32 faction_level = (
@@ -1016,7 +1019,7 @@ void Client::OPRezzAnswer(uint32 Action, uint32 SpellID, uint16 ZoneID, uint16 I
 		// Mark the corpse as rezzed in the database, just in case the corpse has buried, or the zone the
 		// corpse is in has shutdown since the rez spell was cast.
 		database.MarkCorpseAsRezzed(PendingRezzDBID);
-		LogSpells("Player [{}] got a [{}] Rezz, spellid [{}] in zone[{}], instance id [{}]",
+		LogSpells("Player [{}] got a [{}] Rezz spellid [{}] in zone[{}] instance id [{}]",
 				name, (uint16)spells[SpellID].base_value[0],
 				SpellID, ZoneID, InstanceID);
 
@@ -1083,72 +1086,86 @@ void Client::OPTGB(const EQApplicationPacket *app)
 
 void Client::OPMemorizeSpell(const EQApplicationPacket* app)
 {
-	if(app->size != sizeof(MemorizeSpell_Struct))
-	{
-		LogError("Wrong size on OP_MemorizeSpell. Got: [{}], Expected: [{}]", app->size, sizeof(MemorizeSpell_Struct));
+	if (app->size != sizeof(MemorizeSpell_Struct)) {
+		LogError(
+			"Wrong size on OP_MemorizeSpell. Got: [{}] Expected: [{}]",
+			app->size,
+			sizeof(MemorizeSpell_Struct)
+		);
 		DumpPacket(app);
 		return;
 	}
 
-	const MemorizeSpell_Struct* memspell = (const MemorizeSpell_Struct*) app->pBuffer;
+	const auto* m = (MemorizeSpell_Struct*) app->pBuffer;
 
-	if(!IsValidSpell(memspell->spell_id))
-	{
-		Message(Chat::Red, "Unexpected error: spell id out of range");
+	if (!IsValidSpell(m->spell_id)) {
+		Message(
+			Chat::Red,
+			fmt::format(
+				"Spell ID {} does not exist or is invalid.",
+				m->spell_id
+			).c_str()
+		);
 		return;
 	}
 
-	if
-	(
-		GetClass() > 16 ||
-		GetLevel() < spells[memspell->spell_id].classes[GetClass()-1]
-	)
-	{
-		char val1[20]={0};
-		MessageString(Chat::Red,SPELL_LEVEL_TO_LOW,ConvertArray(spells[memspell->spell_id].classes[GetClass()-1],val1),spells[memspell->spell_id].name);
-		//Message(Chat::Red, "Unexpected error: Class cant use this spell at your level!");
+	if (
+		m->scribing != memSpellForget &&
+		(
+			!EQ::ValueWithin(GetClass(), PLAYER_CLASS_WARRIOR, PLAYER_CLASS_BERSERKER) ||
+			GetLevel() < spells[m->spell_id].classes[GetClass() - 1]
+		)
+	) {
+		MessageString(
+			Chat::Red,
+			SPELL_LEVEL_TO_LOW,
+			std::to_string(spells[m->spell_id].classes[GetClass() - 1]).c_str(),
+			spells[m->spell_id].name
+		);
 		return;
 	}
 
-	switch(memspell->scribing)
-	{
-		case memSpellScribing:	{	// scribing spell to book
-			const EQ::ItemInstance* inst = m_inv[EQ::invslot::slotCursor];
+	switch (m->scribing) {
+		case memSpellScribing: {
+			const auto* inst = m_inv[EQ::invslot::slotCursor];
 
-			if (inst && inst->IsClassCommon())
-			{
-				const EQ::ItemData* item = inst->GetItem();
+			if (inst && inst->IsClassCommon()) {
+				const auto* item = inst->GetItem();
 
-				if (RuleB(Character, RestrictSpellScribing) && !item->IsEquipable(GetRace(), GetClass())) {
+				if (
+					RuleB(Character, RestrictSpellScribing) &&
+					!item->IsEquipable(GetRace(), GetClass())
+				) {
 					MessageString(Chat::Red, CANNOT_USE_ITEM);
 					break;
 				}
 
-				if(item && item->Scroll.Effect == (int32)(memspell->spell_id))
-				{
-					ScribeSpell(memspell->spell_id, memspell->slot);
+				if (item && item->Scroll.Effect == static_cast<int32>(m->spell_id)) {
+					ScribeSpell(m->spell_id, m->slot);
 					DeleteItemInInventory(EQ::invslot::slotCursor, 1, true);
+				} else {
+					Message(Chat::Red, "Scribing spell: Item Instance exists but item does not or spell ids do not match.");
 				}
-				else
-					Message(0,"Scribing spell: inst exists but item does not or spell ids do not match.");
-			}
-			else
-				Message(0,"Scribing a spell without an inst on your cursor?");
-			break;
-		}
-		case memSpellMemorize:	{	// memming spell
-			if(HasSpellScribed(memspell->spell_id))
-			{
-				MemSpell(memspell->spell_id, memspell->slot);
-			}
-			else
-			{
-				database.SetMQDetectionFlag(AccountName(), GetName(), "OP_MemorizeSpell but we don't have this spell scribed...", zone->GetShortName());
+			} else {
+				Message(Chat::Red, "Scribing a spell without an Item Instance on your cursor?");
 			}
 			break;
 		}
-		case memSpellForget:	{	// unmemming spell
-			UnmemSpell(memspell->slot);
+		case memSpellMemorize: {
+			if (HasSpellScribed(m->spell_id)) {
+				MemSpell(m->spell_id, m->slot);
+			} else {
+				database.SetMQDetectionFlag(
+					AccountName(),
+					GetName(),
+					"OP_MemorizeSpell but we don't have this spell scribed...",
+					zone->GetShortName()
+				);
+			}
+			break;
+		}
+		case memSpellForget: {
+			UnmemSpell(m->slot);
 			break;
 		}
 	}
@@ -1837,7 +1854,7 @@ void Client::DoStaminaHungerUpdate()
 	auto outapp = new EQApplicationPacket(OP_Stamina, sizeof(Stamina_Struct));
 	Stamina_Struct *sta = (Stamina_Struct *)outapp->pBuffer;
 
-	LogFood("Client::DoStaminaHungerUpdate() hunger_level: [{}] thirst_level: [{}] before loss", m_pp.hunger_level, m_pp.thirst_level);
+	LogFood("hunger_level: [{}] thirst_level: [{}] before loss", m_pp.hunger_level, m_pp.thirst_level);
 
 	if (zone->GetZoneID() != 151 && !GetGM()) {
 		int loss = RuleI(Character, FoodLossPerUpdate);
@@ -1858,7 +1875,7 @@ void Client::DoStaminaHungerUpdate()
 		sta->water = 6000;
 	}
 
-	LogFood("Client::DoStaminaHungerUpdate() Current hunger_level: [{}] = ([{}] minutes left) thirst_level: [{}] = ([{}] minutes left) - after loss",
+	LogFood("Current hunger_level: [{}] = ([{}] minutes left) thirst_level: [{}] = ([{}] minutes left) - after loss",
 	    m_pp.hunger_level, m_pp.hunger_level, m_pp.thirst_level, m_pp.thirst_level);
 
 	FastQueuePacket(&outapp);

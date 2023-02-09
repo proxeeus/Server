@@ -15,6 +15,7 @@
 #include "../../database.h"
 #include "../../strings.h"
 #include <ctime>
+{{ADDITIONAL_INCLUDES}}
 
 class Base{{TABLE_NAME_CLASS}}Repository {
 public:
@@ -104,8 +105,9 @@ public:
 	{
 		auto results = db.QueryDatabase(
 			fmt::format(
-				"{} WHERE id = {} LIMIT 1",
+				"{} WHERE {} = {} LIMIT 1",
 				BaseSelect(),
+				PrimaryKey(),
 				{{TABLE_NAME_VAR}}_id
 			)
 		);

@@ -636,13 +636,6 @@ void ConsoleZoneBootup(
 		tmpname[0] = '*';
 		strcpy(&tmpname[1], connection->UserName().c_str());
 
-		Log(Logs::Detail,
-			Logs::WorldServer,
-			"Console ZoneBootup: %s, %s, %s",
-			tmpname,
-			args[1].c_str(),
-			args[0].c_str());
-
 		if (args.size() > 2) {
 			zoneserver_list.SOPZoneBootup(
 				tmpname,
@@ -901,7 +894,7 @@ void ConsoleSignalCharByName(
 	int update_identifier = 0;
 	CZS->update_type = update_type;
 	CZS->update_identifier = update_identifier;
-	CZS->signal = atoi(args[1].c_str());
+	CZS->signal_id = atoi(args[1].c_str());
 	strn0cpy(CZS->client_name, (char *) args[0].c_str(), 64);
 	zoneserver_list.SendPacket(pack);
 	safe_delete(pack);

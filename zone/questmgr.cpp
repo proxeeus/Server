@@ -45,9 +45,7 @@
 #include <limits.h>
 #include <list>
 
-#ifdef BOTS
 #include "bot.h"
-#endif
 
 extern QueryServ* QServ;
 extern Zone* zone;
@@ -98,11 +96,9 @@ void QuestManager::Process() {
 					//this is inheriently unsafe if we ever make it so more than npc/client start timers
 					parse->EventPlayer(EVENT_TIMER, cur->mob->CastToClient(), cur->name, 0);
 				}
-#ifdef BOTS
 				else if (cur->mob->IsBot()) {
 					parse->EventBot(EVENT_TIMER, cur->mob->CastToBot(), nullptr, cur->name, 0);
 				}
-#endif
 
 				//we MUST reset our iterator since the quest could have removed/added any
 				//number of timers... worst case we have to check a bunch of timers twice
@@ -881,12 +877,10 @@ void QuestManager::depop_withtimer(int npc_type) {
 }
 
 void QuestManager::depopall(int npc_type) {
-	QuestManagerCurrentQuestVars();
-	if(owner && owner->IsNPC() && (npc_type > 0)) {
+	if (npc_type) {
 		entity_list.DepopAll(npc_type);
-	}
-	else {
-		LogQuests("QuestManager::depopall called with nullptr owner, non-NPC owner, or invalid NPC Type ID. Probably syntax error in quest file");
+	} else {
+		LogQuests("QuestManager::depopall called with nullptr owner, non-NPC owner, or invalid NPC Type ID. Probably syntax error in quest file.");
 	}
 }
 
@@ -1248,9 +1242,9 @@ void QuestManager::movegrp(int zoneid, float x, float y, float z) {
 	}
 }
 
-void QuestManager::doanim(int anim_id) {
+void QuestManager::doanim(int animation_id, int animation_speed, bool ackreq, eqFilterType filter) {
 	QuestManagerCurrentQuestVars();
-	owner->DoAnim(anim_id);
+	owner->DoAnim(animation_id, animation_speed, ackreq, filter);
 }
 
 void QuestManager::addskill(int skill_id, int value) {
@@ -2251,8 +2245,6 @@ void QuestManager::popup(const char *title, const char *text, uint32 popupid, ui
 		initiator->SendPopupToClient(title, text, popupid, buttons, Duration);
 }
 
-#ifdef BOTS
-
 int QuestManager::createbotcount(uint8 class_id) {
 	QuestManagerCurrentQuestVars();
 	if (initiator) {
@@ -2440,136 +2432,23 @@ bool QuestManager::createBot(const char *name, const char *lastname, uint8 level
 						new_bot->GetBotID()
 					).c_str()
 				);
+
+				const auto export_string = fmt::format(
+					"{} {} {} {} {}",
+					name,
+					new_bot->GetBotID(),
+					race,
+					botclass,
+					gender
+				);
+
+				parse->EventPlayer(EVENT_BOT_CREATE, initiator, export_string, 0);
 				return true;
 			}
 		}
 	}
 	return false;
 }
-
-//Bot* QuestManager::createPlayerBot(const char *name, const char *lastname, uint8 level, uint16 race, uint8 botclass, uint8 gender)
-//{
-//	QuestManagerCurrentQuestVars();
-//	uint32 MaxBotCreate = RuleI(Bots, CreationLimit);
-//
-//	//if (initiator /*&& initiator->IsClient()*/)
-//
-//	//{
-//		//if (Bot::SpawnedBotCount(initiator->CharacterID()) >= MaxBotCreate)
-//		//{
-//		//	initiator->Say("You have the maximum number of bots allowed.");
-//		//	return nullptr;
-//		//}
-//
-//		std::string test_name = name;
-//		bool available_flag = false;
-//		if (!botdb.QueryNameAvailablity(test_name, available_flag)) {
-//			//initiator->Say( "%s for '%s'", BotDatabase::fail::QueryNameAvailablity(), (char*)name);
-//			return nullptr;
-//		}
-//		if (!available_flag) {
-//			//initiator->Say( "The name %s is already being used or is invalid. Please choose a different name.", (char*)name);
-//			return nullptr;
-//		}
-//		
-//		NPCType DefaultNPCTypeStruct = Bot::CreateDefaultNPCTypeStructForBot(name, lastname, level, race, botclass, gender);
-//		Bot* NewBot = new Bot(DefaultNPCTypeStruct, initiator); // initiator is null
-//
-//		
-//		if (NewBot)
-//		{
-//			if (!NewBot->IsValidRaceClassCombo()) {
-//				//initiator->Say( "That Race/Class combination cannot be created.");
-//				return nullptr;
-//			}
-//
-//			if (!NewBot->IsValidName()) {
-//				//initiator->Say( "%s has invalid characters. You can use only the A-Z, a-z and _ characters in a bot name.", NewBot->GetCleanName());
-//				return nullptr;
-//			}
-//
-//			// Now that all validation is complete, we can save our newly created bot
-//			if (!NewBot->Save())
-//			{
-//				//initiator->Say( "Unable to save %s as a bot.", NewBot->GetCleanName());
-//			}
-//			else
-//			{
-//				//initiator->Say( "%s saved as bot %u.", NewBot->GetCleanName(), NewBot->GetBotID());
-//				return NewBot;
-//			}
-//		}
-//	//}
-//	return nullptr;
-//}
-//
-//void QuestManager::addItemToPlayerBotInventory(uint32 botid, uint32 itemid, uint32 slot, uint32 charges) {
-//	if (!botid) return;
-//
-//	std::string query = StringFormat(
-//		"INSERT INTO `bot_inventories` ("
-//		"`bot_id`,"
-//		" `slot_id`,"
-//		" `item_id`,"
-//		" `inst_charges`,"
-//		" `inst_color`,"
-//		" `inst_no_drop`,"
-//		" `inst_custom_data`,"
-//		" `ornament_icon`,"
-//		" `ornament_id_file`,"
-//		" `ornament_hero_model`,"
-//		" `augment_1`,"
-//		" `augment_2`,"
-//		" `augment_3`,"
-//		" `augment_4`,"
-//		" `augment_5`,"
-//		" `augment_6`"
-//		")"
-//		" VALUES ("
-//		"'%lu',"			/* bot_id */
-//		" '%lu',"			/* slot_id */
-//		" '%lu',"			/* item_id */
-//		" '%lu',"			/* inst_charges */
-//		" '%lu',"			/* inst_color */
-//		" '%lu',"			/* inst_no_drop */
-//		" '%s',"			/* inst_custom_data */
-//		" '%lu',"			/* ornament_icon */
-//		" '%lu',"			/* ornament_id_file */
-//		" '%lu',"			/* ornament_hero_model */
-//		" '%lu',"			/* augment_1 */
-//		" '%lu',"			/* augment_2 */
-//		" '%lu',"			/* augment_3 */
-//		" '%lu',"			/* augment_4 */
-//		" '%lu',"			/* augment_5 */
-//		" '%lu'"			/* augment_6 */
-//		")",
-//		(unsigned long)botid,
-//		(unsigned long)slot,
-//		(unsigned long)itemid,
-//		(unsigned long)charges,
-//		(unsigned long)0,	// Hardcode 0 and see.
-//		(unsigned long)1,
-//		"",
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0,
-//		(unsigned long)0
-//	);
-//
-//	auto results = database.QueryDatabase(query);
-//	if (!results.Success()) {
-//		//DeleteItemBySlot(bot_inst->GetBotID(), slot_id); TODO: see later.
-//		return ;
-//	}
-//
-//	return ;
-//}
-#endif //BOTS
 
 void QuestManager::taskselector(const std::vector<int>& tasks, bool ignore_cooldown) {
 	QuestManagerCurrentQuestVars();
@@ -3040,19 +2919,38 @@ uint32 QuestManager::MerchantCountItem(uint32 NPCid, uint32 itemid) {
 }
 
 // Item Link for use in Variables - "my $example_link = quest::varlink(item_id);"
-const char* QuestManager::varlink(char* perltext, int item_id) {
+std::string QuestManager::varlink(
+	uint32 item_id,
+	int16 charges,
+	uint32 aug1,
+	uint32 aug2,
+	uint32 aug3,
+	uint32 aug4,
+	uint32 aug5,
+	uint32 aug6,
+	bool attuned
+) {
 	QuestManagerCurrentQuestVars();
-	const EQ::ItemData* item = database.GetItem(item_id);
-	if (!item)
+	const auto *item = database.CreateItem(
+		item_id,
+		charges,
+		aug1,
+		aug2,
+		aug3,
+		aug4,
+		aug5,
+		aug6,
+		attuned
+	);
+	if (!item) {
 		return "INVALID ITEM ID IN VARLINK";
+	}
 
 	EQ::SayLinkEngine linker;
-	linker.SetLinkType(EQ::saylink::SayLinkItemData);
-	linker.SetItemData(item);
+	linker.SetLinkType(EQ::saylink::SayLinkItemInst);
+	linker.SetItemInst(item);
 
-	strcpy(perltext, linker.GenerateLink().c_str());
-
-	return perltext;
+	return linker.GenerateLink();
 }
 
 std::string QuestManager::getitemname(uint32 item_id) {
@@ -3479,7 +3377,7 @@ void QuestManager::voicetell(const char *str, int macronum, int racenum, int gen
 			safe_delete(outapp);
 		}
 		else
-			LogQuests("QuestManager::voicetell from [{}]. Client [{}] not found", owner->GetName(), str);
+			LogQuests("from [{}]. Client [{}] not found", owner->GetName(), str);
 	}
 }
 
@@ -3572,7 +3470,6 @@ NPC *QuestManager::GetNPC() const {
 	return nullptr;
 }
 
-#ifdef BOTS
 Bot *QuestManager::GetBot() const {
 	if (!quests_running_.empty()) {
 		running_quest e = quests_running_.top();
@@ -3581,7 +3478,6 @@ Bot *QuestManager::GetBot() const {
 
 	return nullptr;
 }
-#endif
 
 Mob *QuestManager::GetOwner() const {
 	if(!quests_running_.empty()) {
@@ -3750,9 +3646,9 @@ std::string QuestManager::getinventoryslotname(int16 slot_id) {
 	return EQ::invslot::GetInvPossessionsSlotName(slot_id);
 }
 
-int QuestManager::getitemstat(uint32 item_id, std::string stat_identifier) {
+const int QuestManager::getitemstat(uint32 item_id, std::string stat_identifier) {
 	QuestManagerCurrentQuestVars();
-	return EQ::InventoryProfile::GetItemStatValue(item_id, stat_identifier.c_str());
+	return EQ::InventoryProfile::GetItemStatValue(item_id, stat_identifier);
 }
 
 int QuestManager::getspellstat(uint32 spell_id, std::string stat_identifier, uint8 slot) {
@@ -3837,12 +3733,12 @@ void QuestManager::CrossZoneSetEntityVariable(uint8 update_type, int update_iden
 	safe_delete(pack);
 }
 
-void QuestManager::CrossZoneSignal(uint8 update_type, int update_identifier, int signal, const char* client_name) {
+void QuestManager::CrossZoneSignal(uint8 update_type, int update_identifier, int signal_id, const char* client_name) {
 	auto pack = new ServerPacket(ServerOP_CZSignal, sizeof(CZSignal_Struct));
 	CZSignal_Struct* CZS = (CZSignal_Struct*)pack->pBuffer;
 	CZS->update_type = update_type;
 	CZS->update_identifier = update_identifier;
-	CZS->signal = signal;
+	CZS->signal_id = signal_id;
 	strn0cpy(CZS->client_name, client_name, 64);
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
@@ -3947,11 +3843,11 @@ void QuestManager::WorldWideSetEntityVariable(uint8 update_type, const char* var
 	safe_delete(pack);
 }
 
-void QuestManager::WorldWideSignal(uint8 update_type, int signal, uint8 min_status, uint8 max_status) {
+void QuestManager::WorldWideSignal(uint8 update_type, int signal_id, uint8 min_status, uint8 max_status) {
 	auto pack = new ServerPacket(ServerOP_WWSignal, sizeof(WWSignal_Struct));
 	WWSignal_Struct* WWS = (WWSignal_Struct*)pack->pBuffer;
 	WWS->update_type = update_type;
-	WWS->signal = signal;
+	WWS->signal_id = signal_id;
 	WWS->min_status = min_status;
 	WWS->max_status = max_status;
 	worldserver.SendPacket(pack);
@@ -4062,4 +3958,43 @@ void QuestManager::marquee(uint32 type, uint32 priority, uint32 fade_in, uint32 
 	}
 
 	initiator->SendMarqueeMessage(type, priority, fade_in, fade_out, duration, message);
+}
+
+bool QuestManager::DoAugmentSlotsMatch(uint32 item_one, uint32 item_two)
+{
+	const auto* inst_one = database.GetItem(item_one);
+	if (!inst_one) {
+		return false;
+	}
+
+	const auto* inst_two = database.GetItem(item_two);
+	if (!inst_two) {
+		return false;
+	}
+
+	for (auto i = EQ::invaug::SOCKET_BEGIN; i <= EQ::invaug::SOCKET_END; i++) {
+		if (inst_one->AugSlotType[i] != inst_two->AugSlotType[i]) {
+			return false;
+		}
+	}
+
+	return true;
+}
+
+int8 QuestManager::DoesAugmentFit(EQ::ItemInstance* inst, uint32 augment_id, uint8 augment_slot)
+{
+	if (!inst) {
+		return INVALID_INDEX;
+	}
+
+	const auto* aug_inst = database.GetItem(augment_id);
+	if (!aug_inst) {
+		return INVALID_INDEX;
+	}
+
+	if (augment_slot != 255) {
+		return !inst->IsAugmentSlotAvailable(aug_inst->AugType, augment_slot) ? INVALID_INDEX : augment_slot;
+	}
+
+	return inst->AvailableAugmentSlot(aug_inst->AugType);
 }

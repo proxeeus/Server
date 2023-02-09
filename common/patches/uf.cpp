@@ -33,6 +33,8 @@
 #include "uf_structs.h"
 #include "../rulesys.h"
 #include "../path_manager.h"
+#include "../classes.h"
+#include "../races.h"
 
 #include <iostream>
 #include <sstream>
@@ -577,7 +579,7 @@ namespace UF
 
 	ENCODE(OP_DeleteCharge)
 	{
-		Log(Logs::Moderate, Logs::Netcode, "UF::ENCODE(OP_DeleteCharge)");
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_DeleteCharge)");
 
 		ENCODE_FORWARD(OP_MoveItem);
 	}
@@ -1347,7 +1349,7 @@ namespace UF
 		ENCODE_LENGTH_EXACT(LootingItem_Struct);
 		SETUP_DIRECT_ENCODE(LootingItem_Struct, structs::LootingItem_Struct);
 
-		Log(Logs::Moderate, Logs::Netcode, "UF::ENCODE(OP_LootItem)");
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_LootItem)");
 
 		OUT(lootee);
 		OUT(looter);
@@ -1500,7 +1502,7 @@ namespace UF
 		ENCODE_LENGTH_EXACT(MoveItem_Struct);
 		SETUP_DIRECT_ENCODE(MoveItem_Struct, structs::MoveItem_Struct);
 
-		Log(Logs::Moderate, Logs::Netcode, "UF::ENCODE(OP_MoveItem)");
+		Log(Logs::Detail, Logs::Netcode, "UF::ENCODE(OP_MoveItem)");
 
 		eq->from_slot = ServerToUFSlot(emu->from_slot);
 		eq->to_slot = ServerToUFSlot(emu->to_slot);
@@ -2716,7 +2718,7 @@ namespace UF
 			if (strlen(emu->suffix))
 				PacketSize += strlen(emu->suffix) + 1;
 
-			if (emu->DestructibleObject || emu->class_ == 62)
+			if (emu->DestructibleObject || emu->class_ == LDON_TREASURE)
 			{
 				if (emu->DestructibleObject)
 					PacketSize = PacketSize - 4;	// No bodytype
@@ -2737,7 +2739,9 @@ namespace UF
 			}
 
 			float SpawnSize = emu->size;
-			if (!((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522)))
+			if (!((emu->NPC == 0) || (emu->race <= RACE_GNOME_12) || (emu->race == RACE_IKSAR_128) ||
+					(emu->race == RACE_VAH_SHIR_130) || (emu->race == RACE_FROGLOK_330) || (emu->race == RACE_DRAKKIN_522))
+				)
 			{
 				PacketSize -= (sizeof(structs::Texture_Struct) * EQ::textures::materialCount);
 
@@ -2803,18 +2807,20 @@ namespace UF
 
 			uint8 OtherData = 0;
 
-			if (emu->class_ == 62) //Ldon chest
+			if (emu->class_ == LDON_TREASURE) //Ldon chest
+			{
 				OtherData = OtherData | 0x01;
+			}
 
-			if (strlen(emu->title))
+			if (strlen(emu->title)) {
 				OtherData = OtherData | 0x04;
-
-			if (strlen(emu->suffix))
+			}
+			if (strlen(emu->suffix)) {
 				OtherData = OtherData | 0x08;
-
-			if (emu->DestructibleObject)
+			}
+			if (emu->DestructibleObject) {
 				OtherData = OtherData | 0xd1;	// Live has 0xe1 for OtherData
-
+			}
 			VARSTRUCT_ENCODE_TYPE(uint8, Buffer, OtherData);
 
 			if (emu->DestructibleObject)
@@ -2827,7 +2833,7 @@ namespace UF
 			}
 			VARSTRUCT_ENCODE_TYPE(float, Buffer, 0);	// unknown4
 
-			if (emu->DestructibleObject || emu->class_ == 62)
+			if (emu->DestructibleObject || emu->class_ == LDON_TREASURE)
 			{
 				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleModel);
 				VARSTRUCT_ENCODE_STRING(Buffer, emu->DestructibleName2);
@@ -2936,7 +2942,9 @@ namespace UF
 
 			Buffer += sizeof(structs::Spawn_Struct_Position);
 
-			if ((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522))
+			if ((emu->NPC == 0) || (emu->race <= RACE_GNOME_12) || (emu->race == RACE_IKSAR_128) ||
+					(emu->race == RACE_VAH_SHIR_130) || (emu->race == RACE_FROGLOK_330) || (emu->race == RACE_DRAKKIN_522)
+				)
 			{
 				for (k = EQ::textures::textureBegin; k < EQ::textures::materialCount; ++k)
 				{
@@ -2970,7 +2978,9 @@ namespace UF
 				VARSTRUCT_ENCODE_TYPE(uint32, Buffer, 0);
 			}
 
-			if ((emu->NPC == 0) || (emu->race <= 12) || (emu->race == 128) || (emu->race == 130) || (emu->race == 330) || (emu->race == 522))
+			if ((emu->NPC == 0) || (emu->race <= RACE_GNOME_12) || (emu->race == RACE_IKSAR_128) ||
+					(emu->race == RACE_VAH_SHIR_130) || (emu->race == RACE_FROGLOK_330) || (emu->race == RACE_DRAKKIN_522)
+				)
 			{
 				structs::Texture_Struct *Equipment = (structs::Texture_Struct *)Buffer;
 
@@ -3574,7 +3584,7 @@ namespace UF
 		DECODE_LENGTH_EXACT(structs::LootingItem_Struct);
 		SETUP_DIRECT_DECODE(LootingItem_Struct, structs::LootingItem_Struct);
 
-		Log(Logs::Moderate, Logs::Netcode, "UF::DECODE(OP_LootItem)");
+		Log(Logs::Detail, Logs::Netcode, "UF::DECODE(OP_LootItem)");
 
 		IN(lootee);
 		IN(looter);
@@ -3589,7 +3599,7 @@ namespace UF
 		DECODE_LENGTH_EXACT(structs::MoveItem_Struct);
 		SETUP_DIRECT_DECODE(MoveItem_Struct, structs::MoveItem_Struct);
 
-		Log(Logs::Moderate, Logs::Netcode, "UF::DECODE(OP_MoveItem)");
+		Log(Logs::Detail, Logs::Netcode, "UF::DECODE(OP_MoveItem)");
 
 		emu->from_slot = UFToServerSlot(eq->from_slot);
 		emu->to_slot = UFToServerSlot(eq->to_slot);

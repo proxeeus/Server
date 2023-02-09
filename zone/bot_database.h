@@ -20,7 +20,6 @@
 #ifndef BOT_DATABASE_H
 #define BOT_DATABASE_H
 
-#ifdef BOTS
 
 #include <list>
 #include <map>
@@ -55,6 +54,7 @@ public:
 
 	bool LoadOwnerID(const std::string& bot_name, uint32& owner_id);
 	bool LoadOwnerID(const uint32 bot_id, uint32& owner_id);
+	uint32 GetOwnerID(const uint32 bot_id);
 	bool LoadBotID(const uint32 owner_id, const std::string& bot_name, uint32& bot_id);
 	bool LoadBotID(const uint32 owner_id, const std::string& bot_name, uint32& bot_id, uint8& bot_class_id);
 
@@ -77,10 +77,6 @@ public:
 	bool SaveTimers(Bot* bot_inst);
 	bool DeleteTimers(const uint32 bot_id);
 
-	bool LoadGuildMembership(const uint32 bot_id, uint32& guild_id, uint8& guild_rank, std::string& guild_name);
-	bool SaveGuildMembership(const uint32 bot_id, const uint32 guild_id, const uint8 guild_rank);
-	bool DeleteGuildMembership(const uint32 bot_id);
-
 
 	/* Bot inventory functions   */
 	bool QueryInventoryCount(const uint32 bot_id, uint32& item_count);
@@ -99,6 +95,7 @@ public:
 	bool SaveEquipmentColor(const uint32 bot_id, const int16 slot_id, const uint32 rgb);
 
 	bool SaveExpansionBitmask(const uint32 bot_id, const int expansion_bitmask);
+	bool SaveEnforceSpellSetting(const uint32 bot_id, const bool enforce_spell_setting);
 
 
 	/* Bot pet functions   */
@@ -143,6 +140,8 @@ public:
 
 	bool SaveStopMeleeLevel(const uint32 owner_id, const uint32 bot_id, const uint8 sml_value);
 
+	bool SaveBotArcherSetting(const uint32 bot_id, const bool bot_archer_setting);
+
 	bool LoadOwnerOptions(Client *owner);
 	bool SaveOwnerOption(const uint32 owner_id, size_t type, const bool flag);
 	bool SaveOwnerOption(const uint32 owner_id, const std::pair<size_t, size_t> type, const std::pair<bool, bool> flag);
@@ -165,10 +164,10 @@ public:
 	bool AddMemberToBotGroup(const uint32 leader_id, const uint32 member_id);
 	bool RemoveMemberFromBotGroup(const uint32 member_id);
 
-	bool LoadBotGroupIDForLoadBotGroup(const uint32 owner_id, const std::string& botgroup_name, uint32& botgroup_id);
+	bool LoadBotGroupIDForLoadBotGroup(const uint32 owner_id, std::string_view botgroup_name, uint32& botgroup_id);
 	bool LoadBotGroup(const std::string& botgroup_name, std::map<uint32, std::list<uint32>>& member_list);
 
-	bool LoadBotGroupsListByOwnerID(const uint32 owner_id, std::list<std::pair<std::string, std::string>>& botgroups_list);
+	bool LoadBotGroupsListByOwnerID(const uint32 owner_id, std::list<std::pair<std::string, uint32>>& botgroups_list);
 
 
 	/* Bot group functions   */
@@ -191,6 +190,7 @@ public:
 
 	/* Bot miscellaneous functions   */
 	uint8 GetSpellCastingChance(uint8 spell_type_index, uint8 class_index, uint8 stance_index, uint8 conditional_index);
+	std::string GetBotNameByID(const uint32 bot_id); 
 
 	uint16 GetRaceClassBitmask(uint16 bot_race);
 
@@ -211,9 +211,6 @@ public:
 		static const char* LoadTimers();
 		static const char* SaveTimers();
 		static const char* DeleteTimers();
-		static const char* LoadGuildMembership();
-		static const char* SaveGuildMembership();
-		static const char* DeleteGuildMembership();
 
 		/* fail::Bot inventory functions   */
 		static const char* QueryInventoryCount();
@@ -284,6 +281,7 @@ public:
 		static const char* DeleteAllHealRotations();
 
 		/* fail::Bot miscellaneous functions   */
+		static const char* GetBotNameByID();
 	};
 
 	private:
@@ -291,5 +289,3 @@ public:
 };
 
 #endif
-
-#endif // BOTS

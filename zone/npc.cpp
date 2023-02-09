@@ -43,9 +43,7 @@
 #include "water_map.h"
 #include "npc_scale_manager.h"
 
-#ifdef BOTS
 #include "bot.h"
-#endif
 
 #include <cctype>
 #include <stdio.h>
@@ -66,63 +64,64 @@ extern EntityList entity_list;
 
 NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &position, GravityBehavior iflymode, bool IsCorpse)
 	: Mob(
-	npc_type_data->name,
-	npc_type_data->lastname,
-	npc_type_data->max_hp,
-	npc_type_data->max_hp,
-	npc_type_data->gender,
-	npc_type_data->race,
-	npc_type_data->class_,
-	(bodyType) npc_type_data->bodytype,
-	npc_type_data->deity,
-	npc_type_data->level,
-	npc_type_data->npc_id,
-	npc_type_data->size,
-	npc_type_data->runspeed,
-	position,
-	npc_type_data->light, // innate_light
-	npc_type_data->texture,
-	npc_type_data->helmtexture,
-	npc_type_data->AC,
-	npc_type_data->ATK,
-	npc_type_data->STR,
-	npc_type_data->STA,
-	npc_type_data->DEX,
-	npc_type_data->AGI,
-	npc_type_data->INT,
-	npc_type_data->WIS,
-	npc_type_data->CHA,
-	npc_type_data->haircolor,
-	npc_type_data->beardcolor,
-	npc_type_data->eyecolor1,
-	npc_type_data->eyecolor2,
-	npc_type_data->hairstyle,
-	npc_type_data->luclinface,
-	npc_type_data->beard,
-	npc_type_data->drakkin_heritage,
-	npc_type_data->drakkin_tattoo,
-	npc_type_data->drakkin_details,
-	npc_type_data->armor_tint,
-	0,
-	npc_type_data->see_invis,            // pass see_invis/see_ivu flags to mob constructor
-	npc_type_data->see_invis_undead,
-	npc_type_data->see_hide,
-	npc_type_data->see_improved_hide,
-	npc_type_data->hp_regen,
-	npc_type_data->mana_regen,
-	npc_type_data->qglobal,
-	npc_type_data->maxlevel,
-	npc_type_data->scalerate,
-	npc_type_data->armtexture,
-	npc_type_data->bracertexture,
-	npc_type_data->handtexture,
-	npc_type_data->legtexture,
-	npc_type_data->feettexture,
-	npc_type_data->use_model,
-	npc_type_data->always_aggro,
-	npc_type_data->hp_regen_per_second,
-	npc_type_data->heroic_strikethrough
-),
+		  npc_type_data->name,
+		  npc_type_data->lastname,
+		  npc_type_data->max_hp,
+		  npc_type_data->max_hp,
+		  npc_type_data->gender,
+		  npc_type_data->race,
+		  npc_type_data->class_,
+		  (bodyType) npc_type_data->bodytype,
+		  npc_type_data->deity,
+		  npc_type_data->level,
+		  npc_type_data->npc_id,
+		  npc_type_data->size,
+		  npc_type_data->runspeed,
+		  position,
+		  npc_type_data->light, // innate_light
+		  npc_type_data->texture,
+		  npc_type_data->helmtexture,
+		  npc_type_data->AC,
+		  npc_type_data->ATK,
+		  npc_type_data->STR,
+		  npc_type_data->STA,
+		  npc_type_data->DEX,
+		  npc_type_data->AGI,
+		  npc_type_data->INT,
+		  npc_type_data->WIS,
+		  npc_type_data->CHA,
+		  npc_type_data->haircolor,
+		  npc_type_data->beardcolor,
+		  npc_type_data->eyecolor1,
+		  npc_type_data->eyecolor2,
+		  npc_type_data->hairstyle,
+		  npc_type_data->luclinface,
+		  npc_type_data->beard,
+		  npc_type_data->drakkin_heritage,
+		  npc_type_data->drakkin_tattoo,
+		  npc_type_data->drakkin_details,
+		  npc_type_data->armor_tint,
+		  0,
+		  npc_type_data->see_invis,            // pass see_invis/see_ivu flags to mob constructor
+		  npc_type_data->see_invis_undead,
+		  npc_type_data->see_hide,
+		  npc_type_data->see_improved_hide,
+		  npc_type_data->hp_regen,
+		  npc_type_data->mana_regen,
+		  npc_type_data->qglobal,
+		  npc_type_data->maxlevel,
+		  npc_type_data->scalerate,
+		  npc_type_data->armtexture,
+		  npc_type_data->bracertexture,
+		  npc_type_data->handtexture,
+		  npc_type_data->legtexture,
+		  npc_type_data->feettexture,
+		  npc_type_data->use_model,
+		  npc_type_data->always_aggro,
+		  npc_type_data->heroic_strikethrough,
+		  npc_type_data->keeps_sold_items,
+		  npc_type_data->hp_regen_per_second
+	  ),
 	  attacked_timer(CombatEventTimer_expire),
 	  swarm_timer(100),
 	  classattack_timer(1000),
@@ -210,12 +209,13 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 		LevelScale();
 	}
 
-	base_damage      = round((max_dmg - min_dmg) / 1.9);
-	min_damage       = min_dmg - round(base_damage / 10.0);
-	accuracy_rating  = npc_type_data->accuracy_rating;
-	avoidance_rating = npc_type_data->avoidance_rating;
-	ATK              = npc_type_data->ATK;
+	base_damage          = round((max_dmg - min_dmg) / 1.9);
+	min_damage           = min_dmg - round(base_damage / 10.0);
+	accuracy_rating      = npc_type_data->accuracy_rating;
+	avoidance_rating     = npc_type_data->avoidance_rating;
+	ATK                  = npc_type_data->ATK;
 	heroic_strikethrough = npc_type_data->heroic_strikethrough;
+	keeps_sold_items     = npc_type_data->keeps_sold_items;
 
 	// used for when switch back to charm
 	default_ac               = npc_type_data->AC;
@@ -318,11 +318,9 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 	if (!EQ::ValueWithin(npc_type_data->npc_spells_id, EQ::constants::BotSpellIDs::Warrior, EQ::constants::BotSpellIDs::Berserker)) {
 		AI_Init();
 		AI_Start();
-#ifdef BOTS
 	} else {
 		CastToBot()->AI_Bot_Init();
 		CastToBot()->AI_Bot_Start();
-#endif
 	}
 
 	d_melee_texture1 = npc_type_data->d_melee_texture1;
@@ -373,16 +371,16 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 		}
 	}
 
-	ldon_trapped       = false;
-	ldon_trap_type     = 0;
-	ldon_spell_id      = 0;
-	ldon_locked        = false;
-	ldon_locked_skill  = 0;
-	ldon_trap_detected = false;
+	SetLDoNTrapped(false);
+	SetLDoNTrapType(0);
+	SetLDoNTrapSpellID(0);
+	SetLDoNLocked(false);
+	SetLDoNLockedSkill(0);
+	SetLDoNTrapDetected(false);
 
 	if (npc_type_data->trap_template > 0) {
 		std::map<uint32, std::list<LDoNTrapTemplate *> >::iterator trap_ent_iter;
-		std::list<LDoNTrapTemplate *>                              trap_list;
+		std::list<LDoNTrapTemplate *> trap_list;
 
 		trap_ent_iter = zone->ldon_trap_entry_list.find(npc_type_data->trap_template);
 		if (trap_ent_iter != zone->ldon_trap_entry_list.end()) {
@@ -392,26 +390,25 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 				std::advance(trap_list_iter, zone->random.Int(0, trap_list.size() - 1));
 				LDoNTrapTemplate *trap_template = (*trap_list_iter);
 				if (trap_template) {
-					if ((uint8) trap_template->spell_id > 0) {
-						ldon_trapped  = true;
-						ldon_spell_id = trap_template->spell_id;
-					}
-					else {
-						ldon_trapped  = false;
-						ldon_spell_id = 0;
+					if (trap_template->spell_id > 0) {
+						SetLDoNTrapped(true);
+						SetLDoNTrapSpellID(trap_template->spell_id);
+					} else {
+						SetLDoNTrapped(false);
+						SetLDoNTrapSpellID(0);
 					}
 
-					ldon_trap_type     = (uint8) trap_template->type;
+					SetLDoNTrapType(static_cast<uint8>(trap_template->type));
+
 					if (trap_template->locked > 0) {
-						ldon_locked       = true;
-						ldon_locked_skill = trap_template->skill;
-					}
-					else {
-						ldon_locked       = false;
-						ldon_locked_skill = 0;
+						SetLDoNLocked(true);
+						SetLDoNLockedSkill(trap_template->skill);
+					} else {
+						SetLDoNLocked(false);
+						SetLDoNLockedSkill(0);
 					}
 
-					ldon_trap_detected = 0;
+					SetLDoNTrapDetected(false);
 				}
 			}
 		}
@@ -1119,14 +1116,23 @@ void NPC::UpdateEquipmentLight()
 	m_Light.Level[EQ::lightsource::LightEquipment] = EQ::lightsource::TypeToLevel(m_Light.Type[EQ::lightsource::LightEquipment]);
 }
 
-void NPC::Depop(bool StartSpawnTimer) {
-	uint32 emoteid = GetEmoteID();
-	if(emoteid != 0)
-		DoNPCEmote(EQ::constants::EmoteEventTypes::OnDespawn,emoteid);
+void NPC::Depop(bool start_spawn_timer) {
+	const auto emote_id = GetEmoteID();
+	if (emote_id) {
+		DoNPCEmote(EQ::constants::EmoteEventTypes::OnDespawn, emoteid);
+	}
+
+	if (IsNPC()) {
+		parse->EventNPC(EVENT_DESPAWN, this, nullptr, "", 0);
+		DispatchZoneControllerEvent(EVENT_DESPAWN_ZONE, this, "", 0, nullptr);
+	} else if (IsBot()) {
+		parse->EventBot(EVENT_DESPAWN, CastToBot(), nullptr, "", 0);
+		DispatchZoneControllerEvent(EVENT_DESPAWN_ZONE, this, "", 0, nullptr);
+	}
+
 	p_depop = true;
-	if (respawn2)
-	{
-		if (StartSpawnTimer) {
+	if (respawn2) {
+		if (start_spawn_timer) {
 			respawn2->DeathReset();
 		} else {
 			respawn2->Depop();
@@ -1800,7 +1806,7 @@ int32 NPC::GetEquipmentMaterial(uint8 material_slot) const
 {
 	int32 texture_profile_material = GetTextureProfileMaterial(material_slot);
 
-	Log(Logs::Detail, Logs::MobAppearance, "NPC::GetEquipmentMaterial [%s] material_slot: %u",
+	Log(Logs::Detail, Logs::MobAppearance, "[%s] material_slot: %u",
 		clean_name,
 		material_slot
 	);
@@ -2700,6 +2706,10 @@ void NPC::ModifyNPCStat(std::string stat, std::string value)
 		heroic_strikethrough = atoi(value.c_str());
 		return;
 	}
+	else if (stat_lower == "keeps_sold_items") {
+		SetKeepsSoldItems(Strings::ToBool(value));
+		return;
+	}
 }
 
 float NPC::GetNPCStat(std::string stat)
@@ -2840,6 +2850,9 @@ float NPC::GetNPCStat(std::string stat)
 	}
 	else if (stat_lower == "heroic_strikethrough") {
 		return heroic_strikethrough;
+	}
+	else if (stat_lower == "keeps_sold_items") {
+		return keeps_sold_items;
 	}
 	//default values
 	else if (stat_lower == "default_ac") {
@@ -2983,13 +2996,13 @@ uint32 NPC::GetSpawnPointID() const
 
 void NPC::NPCSlotTexture(uint8 slot, uint16 texture)
 {
-	if (slot == 7) {
+	if (slot == EQ::invslot::slotNeck) {
 		d_melee_texture1 = texture;
 	}
-	else if (slot == 8) {
+	else if (slot == EQ::invslot::slotBack) {
 		d_melee_texture2 = texture;
 	}
-	else if (slot < 6) {
+	else if (slot < EQ::invslot::slotShoulders) {
 		// Reserved for texturing individual armor slots
 	}
 }
@@ -3066,6 +3079,12 @@ int64 NPC::CalcMaxMana()
 void NPC::SignalNPC(int _signal_id)
 {
 	signal_q.push_back(_signal_id);
+}
+
+void NPC::SendPayload(int payload_id, std::string payload_value)
+{
+	const auto export_string = fmt::format("{} {}", payload_id, payload_value);
+	parse->EventNPC(EVENT_PAYLOAD, this, nullptr, export_string, 0);
 }
 
 NPC_Emote_Struct* NPC::GetNPCEmote(uint32 emoteid, uint8 event_) {
@@ -3703,7 +3722,7 @@ void NPC::ReloadSpells() {
 	AI_AddNPCSpellsEffects(GetNPCSpellsEffectsID());
 }
 
-void NPC::ScaleNPC(uint8 npc_level) {
+void NPC::ScaleNPC(uint8 npc_level, bool always_scale, bool override_special_abilities) {
 	if (GetLevel() != npc_level) {
 		SetLevel(npc_level);
 		RecalculateSkills();
@@ -3711,7 +3730,7 @@ void NPC::ScaleNPC(uint8 npc_level) {
 	}
 
 	npc_scale_manager->ResetNPCScaling(this);
-	npc_scale_manager->ScaleNPC(this);
+	npc_scale_manager->ScaleNPC(this, always_scale, override_special_abilities);
 }
 
 bool NPC::IsGuard()
@@ -3794,19 +3813,4 @@ int NPC::GetRolledItemCount(uint32 item_id)
 	}
 
 	return rolled_count;
-}
-
-int NPC::DispatchZoneControllerEvent(QuestEventID evt, Mob* init,
-	const std::string& data, uint32 extra, std::vector<std::any>* pointers)
-{
-	int ret = 0;
-	if (RuleB(Zone, UseZoneController) && GetNPCTypeID() != ZONE_CONTROLLER_NPC_ID)
-	{
-		auto controller = entity_list.GetNPCByNPCTypeID(ZONE_CONTROLLER_NPC_ID);
-		if (controller)
-		{
-			ret = parse->EventNPC(evt, controller, init, data, extra, pointers);
-		}
-	}
-	return ret;
 }

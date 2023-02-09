@@ -142,7 +142,6 @@ public:
 	bool HasRoamBox();
 	void RecalculateSkills();
 	void ReloadSpells();
-	void ScaleNPC(uint8 npc_level);
 	bool IsRaidTarget();
 	bool IsRareSpawn();
 	void ChangeLastName(std::string last_name);
@@ -158,6 +157,24 @@ public:
 	void RemoveAISpellEffect(int spell_effect_id);
 	bool HasAISpellEffect(int spell_effect_id);
 	float GetNPCStat(std::string stat);
+	void SendPayload(int payload_id);
+	void SendPayload(int payload_id, std::string payload_value);
+	bool GetKeepsSoldItems();
+	void SetKeepsSoldItems(bool keeps_sold_items);
+	bool IsLDoNTrapped();
+	void SetLDoNTrapped(bool is_trapped);
+	uint8 GetLDoNTrapType();
+	void SetLDoNTrapType(uint8 trap_type);
+	uint16 GetLDoNTrapSpellID();
+	void SetLDoNTrapSpellID(uint16 spell_id);
+	bool IsLDoNLocked();
+	void SetLDoNLocked(bool is_locked);
+	uint16 GetLDoNLockedSkill();
+	void SetLDoNLockedSkill(uint16 skill_value);
+	bool IsLDoNTrapDetected();
+	void SetLDoNTrapDetected(bool is_detected);
+	void ScaleNPC(uint8 npc_level);
+	void ScaleNPC(uint8 npc_level, bool override_special_abilities);
 };
 
 #endif
