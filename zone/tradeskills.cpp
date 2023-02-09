@@ -36,6 +36,7 @@
 #include "../common/repositories/char_recipe_list_repository.h"
 #include "../common/zone_store.h"
 #include "../common/repositories/tradeskill_recipe_repository.h"
+#include "../common/repositories/tradeskill_recipe_entries_repository.h"
 
 extern QueryServ* QServ;
 
@@ -59,7 +60,7 @@ void Object::HandleAugmentation(Client* user, const AugmentItem_Struct* in_augme
 		inst = user_inv.GetItem(in_augment->container_slot);
 		if (inst) {
 			const EQ::ItemData* item = inst->GetItem();
-			if (item && inst->IsType(EQ::item::ItemClassBag) && item->BagType == EQ::item::BagTypeAugmentationSealer) { // We have found an appropriate inventory augmentation sealer
+			if (item && inst->IsType(EQ::item::ItemClassBag) && (item->BagType == EQ::item::BagTypeAugmentationSealer || item->BagType == RuleI(Inventory, AlternateAugmentationSealer))) { // We have found an appropriate inventory augmentation sealer
 				container = inst;
 
 				// Verify that no more than two items are in container to guarantee no inadvertant wipes.
@@ -1632,6 +1633,86 @@ void Client::LearnRecipe(uint32 recipe_id)
 			CharacterID()
 		)
 	);
+}
+
+std::vector<uint32> ZoneDatabase::GetRecipeComponentItemIDs(RecipeCountType count_type, uint32 recipe_id)
+{
+	std::vector<uint32> l;
+
+	const auto& tr = TradeskillRecipeRepository::FindOne(content_db, recipe_id);
+	if (!tr.id) {
+		return l;
+	}
+
+	std::string c;
+	switch (count_type) {
+		case RecipeCountType::Success:
+			c = "successcount";
+			break;
+		case RecipeCountType::Fail:
+			c = "failcount";
+			break;
+		case RecipeCountType::Component:
+			c = "componentcount";
+			break;
+		case RecipeCountType::Salvage:
+			c = "salvagecount";
+			break;
+		case RecipeCountType::Container:
+			c = "iscontainer";
+			break;
+	}
+
+	const auto& tre = TradeskillRecipeEntriesRepository::GetWhere(
+		content_db,
+		fmt::format(
+			"recipe_id = {} AND {} >= 1 ORDER BY id ASC",
+			recipe_id,
+			c
+		)
+	);
+	if (tre.empty()) {
+		return l;
+	}
+
+	for (const auto& e : tre) {
+		l.emplace_back(e.item_id);
+	}
+
+	return l;
+}
+
+int8 ZoneDatabase::GetRecipeComponentCount(RecipeCountType count_type, uint32 recipe_id, uint32 item_id)
+{
+	const auto& tr = TradeskillRecipeRepository::FindOne(content_db, recipe_id);
+	if (!tr.id) {
+		return -1;
+	}
+
+	const auto& tre = TradeskillRecipeEntriesRepository::GetWhere(
+		content_db,
+		fmt::format(
+			"recipe_id = {} AND item_id = {} ORDER BY id ASC LIMIT 1",
+			recipe_id,
+			item_id
+		)
+	);
+	if (tre.empty()) {
+		return -1;
+	}
+
+	switch (count_type) {
+		case RecipeCountType::Success:
+			return tre[0].successcount;
+		case RecipeCountType::Fail:
+			return tre[0].failcount;
+		case RecipeCountType::Component:
+			return tre[0].componentcount;
+		case RecipeCountType::Salvage:
+			return tre[0].salvagecount;
+		default:
+			return -1;
+	}
 }
 
 bool Client::CanIncreaseTradeskill(EQ::skills::SkillType tradeskill) {
