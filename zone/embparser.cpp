@@ -1602,6 +1602,9 @@ void PerlembParser::ExportEventVariables(
 		case EVENT_CLICK_DOOR: {
 			ExportVar(package_name.c_str(), "doorid", data);
 			ExportVar(package_name.c_str(), "version", zone->GetInstanceVersion());
+			if (extra_pointers && extra_pointers->size() == 1) {
+				ExportVar(package_name.c_str(), "door", "Doors", std::any_cast<Doors*>(extra_pointers->at(0)));
+			}
 			break;
 		}
 
@@ -1724,6 +1727,7 @@ void PerlembParser::ExportEventVariables(
 					ExportVar(package_name.c_str(), "item_id", item->GetID());
 					ExportVar(package_name.c_str(), "item_name", item->GetItem()->Name);
 					ExportVar(package_name.c_str(), "spell_id", item->GetItem()->Click.Effect);
+					ExportVar(package_name.c_str(), "item", "QuestItem", item);
 				}
 			}
 			break;
@@ -1780,11 +1784,17 @@ void PerlembParser::ExportEventVariables(
 		case EVENT_CLICK_OBJECT: {
 			ExportVar(package_name.c_str(), "objectid", data);
 			ExportVar(package_name.c_str(), "clicker_id", extradata);
+			if (extra_pointers && extra_pointers->size() == 1) {
+				ExportVar(package_name.c_str(), "object", "Object", std::any_cast<Object*>(extra_pointers->at(0)));
+			}
 			break;
 		}
 
 		case EVENT_DISCOVER_ITEM: {
 			ExportVar(package_name.c_str(), "itemid", extradata);
+			if (extra_pointers && extra_pointers->size() == 1) {
+				ExportVar(package_name.c_str(), "item", "QuestItem", std::any_cast<EQ::ItemInstance*>(extra_pointers->at(0)));
+			}
 			break;
 		}
 
@@ -1918,6 +1928,9 @@ void PerlembParser::ExportEventVariables(
 			ExportVar(package_name.c_str(), "item_id", extradata);
 			ExportVar(package_name.c_str(), "item_quantity", sep.arg[0]);
 			ExportVar(package_name.c_str(), "slot_id", sep.arg[1]);
+			if (extra_pointers && extra_pointers->size() == 1) {
+				ExportVar(package_name.c_str(), "item", "QuestItem", std::any_cast<EQ::ItemInstance*>(extra_pointers->at(0)));
+			}
 			break;
 		}
 
@@ -1927,6 +1940,9 @@ void PerlembParser::ExportEventVariables(
 			ExportVar(package_name.c_str(), "item_id", extradata);
 			ExportVar(package_name.c_str(), "item_quantity", sep.arg[0]);
 			ExportVar(package_name.c_str(), "slot_id", sep.arg[1]);
+			if (extra_pointers && extra_pointers->size() == 1) {
+				ExportVar(package_name.c_str(), "item", "QuestItem", std::any_cast<EQ::ItemInstance*>(extra_pointers->at(0)));
+			}
 			break;
 		}
 
