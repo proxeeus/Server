@@ -3807,6 +3807,11 @@ int8 lua_get_recipe_success_count(uint32 recipe_id, uint32 item_id)
 	return content_db.GetRecipeComponentCount(RecipeCountType::Success, recipe_id, item_id);
 }
 
+void lua_send_player_handin_event()
+{
+	quest_manager.SendPlayerHandinEvent();
+}
+
 #define LuaCreateNPCParse(name, c_type, default_value) do { \
 	cur = table[#name]; \
 	if(luabind::type(cur) != LUA_TNIL) { \
@@ -4354,6 +4359,7 @@ luabind::scope lua_register_general() {
 		luabind::def("get_recipe_fail_count", (int8(*)(uint32,uint32))&lua_get_recipe_fail_count),
 		luabind::def("get_recipe_salvage_count", (int8(*)(uint32,uint32))&lua_get_recipe_salvage_count),
 		luabind::def("get_recipe_success_count", (int8(*)(uint32,uint32))&lua_get_recipe_success_count),
+		luabind::def("send_player_handin_event", (void(*)(void))&lua_send_player_handin_event),
 		/*
 			Cross Zone
 		*/
@@ -4753,7 +4759,9 @@ luabind::scope lua_register_events() {
 			luabind::value("inspect", static_cast<int>(EVENT_INSPECT)),
 			luabind::value("task_before_update", static_cast<int>(EVENT_TASK_BEFORE_UPDATE)),
 			luabind::value("aa_buy", static_cast<int>(EVENT_AA_BUY)),
-			luabind::value("aa_gain", static_cast<int>(EVENT_AA_GAIN)),
+			luabind::value("aa_gained", static_cast<int>(EVENT_AA_GAIN)),
+			luabind::value("aa_exp_gained", static_cast<int>(EVENT_AA_EXP_GAIN)),
+			luabind::value("exp_gain", static_cast<int>(EVENT_EXP_GAIN)),
 			luabind::value("payload", static_cast<int>(EVENT_PAYLOAD)),
 			luabind::value("level_down", static_cast<int>(EVENT_LEVEL_DOWN)),
 			luabind::value("gm_command", static_cast<int>(EVENT_GM_COMMAND)),
@@ -4767,7 +4775,9 @@ luabind::scope lua_register_events() {
 			luabind::value("damage_given", static_cast<int>(EVENT_DAMAGE_GIVEN)),
 			luabind::value("damage_taken", static_cast<int>(EVENT_DAMAGE_TAKEN)),
 			luabind::value("item_click_client", static_cast<int>(EVENT_ITEM_CLICK_CLIENT)),
-			luabind::value("item_click_cast_client", static_cast<int>(EVENT_ITEM_CLICK_CAST_CLIENT))
+			luabind::value("item_click_cast_client", static_cast<int>(EVENT_ITEM_CLICK_CAST_CLIENT)),
+			luabind::value("destroy_item_client", static_cast<int>(EVENT_DESTROY_ITEM_CLIENT)),
+			luabind::value("drop_item_client", static_cast<int>(EVENT_DROP_ITEM_CLIENT))
 		)];
 }
 

@@ -77,6 +77,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 #include "../common/strings.h"
 #include "../common/data_verification.h"
 #include "../common/misc_functions.h"
+#include "../common/events/player_event_logs.h"
 
 #include "data_bucket.h"
 #include "quest_parser_collection.h"
@@ -237,25 +238,44 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		}
 	}
 
-	std::string export_string = fmt::format(
-		"{} {} {}",
-		spell_id,
-		GetID(),
-		GetCasterLevel(spell_id)
-	);
 	if (IsClient()) {
-		if (parse->EventPlayer(EVENT_CAST_BEGIN, CastToClient(), export_string, 0) != 0) {
-			if (IsDiscipline(spell_id)) {
-				CastToClient()->SendDisciplineTimer(spells[spell_id].timer_id, 0);
-			} else {
-				CastToClient()->SendSpellBarEnable(spell_id);
+		if (parse->PlayerHasQuestSub(EVENT_CAST_BEGIN)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				GetCasterLevel(spell_id)
+			);
+			if (parse->EventPlayer(EVENT_CAST_BEGIN, CastToClient(), export_string, 0) != 0) {
+				if (IsDiscipline(spell_id)) {
+					CastToClient()->SendDisciplineTimer(spells[spell_id].timer_id, 0);
+				}
+				else {
+					CastToClient()->SendSpellBarEnable(spell_id);
+				}
+				return false;
 			}
-			return false;
 		}
 	} else if (IsNPC()) {
-		parse->EventNPC(EVENT_CAST_BEGIN, CastToNPC(), nullptr, export_string, 0);
+		if (parse->HasQuestSub(GetNPCTypeID(), EVENT_CAST_BEGIN)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				GetCasterLevel(spell_id)
+			);
+			parse->EventNPC(EVENT_CAST_BEGIN, CastToNPC(), nullptr, export_string, 0);
+		}
 	} else if (IsBot()) {
-		parse->EventBot(EVENT_CAST_BEGIN, CastToBot(), nullptr, export_string, 0);
+		if (parse->BotHasQuestSub(EVENT_CAST_BEGIN)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				GetCasterLevel(spell_id)
+			);
+			parse->EventBot(EVENT_CAST_BEGIN, CastToBot(), nullptr, export_string, 0);
+		}
 	}
 
 	//To prevent NPC ghosting when spells are cast from scripts
@@ -457,8 +477,6 @@ bool Mob::DoCastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		CastedSpellFinished(spell_id, target_id, slot, mana_cost, item_slot, resist_adjust); //
 		return(true);
 	}
-
-	cast_time = mod_cast_time(cast_time);
 
 	// ok we know it has a cast time so we can start the timer now
 	spellend_timer.Start(cast_time);
@@ -1620,7 +1638,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 		return;
 	}
 
-	if(IsClient()) {
+	if(IsOfClientBotMerc()) {
 		TrySympatheticProc(target, spell_id);
 	}
 
@@ -1636,18 +1654,25 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 	// at this point the spell has successfully been cast
 	//
 
-	std::string export_string = fmt::format(
+	const auto& export_string = fmt::format(
 		"{} {} {}",
 		spell_id,
 		GetID(),
 		GetCasterLevel(spell_id)
 	);
+
 	if (IsClient()) {
-		parse->EventPlayer(EVENT_CAST, CastToClient(), export_string, 0);
+		if (parse->PlayerHasQuestSub(EVENT_CAST)) {
+			parse->EventPlayer(EVENT_CAST, CastToClient(), export_string, 0);
+		}
 	} else if (IsNPC()) {
-		parse->EventNPC(EVENT_CAST, CastToNPC(), nullptr, export_string, 0);
+		if (parse->HasQuestSub(GetNPCTypeID(), EVENT_CAST)) {
+			parse->EventNPC(EVENT_CAST, CastToNPC(), nullptr, export_string, 0);
+		}
 	} else if (IsBot()) {
-		parse->EventBot(EVENT_CAST, CastToBot(), nullptr, export_string, 0);
+		if (parse->BotHasQuestSub(EVENT_CAST)) {
+			parse->EventBot(EVENT_CAST, CastToBot(), nullptr, export_string, 0);
+		}
 	}
 
 	if(bard_song_mode)
@@ -2794,9 +2819,6 @@ int Mob::CalcBuffDuration(Mob *caster, Mob *target, uint16 spell_id, int32 caste
 		res = 10000; // ~16h override
 	}
 
-
-	res = mod_buff_duration(res, caster, target, spell_id);
-
 	LogSpells("Spell [{}]: Casting level [{}], formula [{}], base_duration [{}]: result [{}]",
 		spell_id, castlevel, formula, duration, res);
 
@@ -2920,9 +2942,6 @@ int Mob::CheckStackConflict(uint16 spellid1, int caster_level1, uint16 spellid2,
 			return -1;
 		}
 	}
-
-	int modval = mod_spell_stack(spellid1, caster_level1, caster1, spellid2, caster_level2, caster2);
-	if(modval < 2) { return(modval); }
 
 	/*
 	One of these is a bard song and one isn't and they're both beneficial so they should stack.
@@ -3640,23 +3659,37 @@ bool Mob::SpellOnTarget(
 		(spellOwner->IsClient() ? FilterPCSpells : FilterNPCSpells) /* EQ Filter Type: (8 or 9) */
 	);
 
-	/* Send the EVENT_CAST_ON event */
-	const auto export_string = fmt::format(
-		"{} {} {}",
-		spell_id,
-		GetID(),
-		caster_level
-	);
-
 	if (spelltar->IsNPC()) {
-		parse->EventNPC(EVENT_CAST_ON, spelltar->CastToNPC(), this, export_string, 0);
+		if (parse->HasQuestSub(spelltar->GetNPCTypeID(), EVENT_CAST_ON)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				caster_level
+			);
+			parse->EventNPC(EVENT_CAST_ON, spelltar->CastToNPC(), this, export_string, 0);
+		}
 	} else if (spelltar->IsClient()) {
-		parse->EventPlayer(EVENT_CAST_ON, spelltar->CastToClient(), export_string, 0);
+		if (parse->PlayerHasQuestSub(EVENT_CAST_ON)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				caster_level
+			);
+			parse->EventPlayer(EVENT_CAST_ON, spelltar->CastToClient(), export_string, 0);
+		}
 	} else if (spelltar->IsBot()) {
-		parse->EventBot(EVENT_CAST_ON, spelltar->CastToBot(), this, export_string, 0);
+		if (parse->BotHasQuestSub(EVENT_CAST_ON)) {
+			const auto& export_string = fmt::format(
+				"{} {} {}",
+				spell_id,
+				GetID(),
+				caster_level
+			);
+			parse->EventBot(EVENT_CAST_ON, spelltar->CastToBot(), this, export_string, 0);
+		}
 	}
-
-	mod_spell_cast(spell_id, spelltar, reflect_effectiveness, use_resist_adjust, resist_adjust, isproc);
 
 	if (!DoCastingChecksOnTarget(false, spell_id, spelltar)) {
 		safe_delete(action_packet);
@@ -5026,8 +5059,6 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 	resist_chance += resist_modifier;
 	resist_chance += target_resist;
 
-	resist_chance = mod_spell_resist(resist_chance, level_mod, resist_modifier, target_resist, resist_type, spell_id, caster);
-
 	//Do our min and max resist checks.
 	if(resist_chance > spells[spell_id].max_resist && spells[spell_id].max_resist != 0)
 	{
@@ -5851,8 +5882,7 @@ uint16 Mob::GetSpellIDFromSlot(uint8 slot)
 bool Mob::FindType(uint16 type, bool bOffensive, uint16 threshold) {
 	int buff_count = GetMaxTotalSlots();
 	for (int i = 0; i < buff_count; i++) {
-		if (buffs[i].spellid != SPELL_UNKNOWN) {
-
+		if (IsValidSpell(buffs[i].spellid)) {
 			for (int j = 0; j < EFFECT_COUNT; j++) {
 				// adjustments necessary for offensive npc casting behavior
 				if (bOffensive) {
@@ -6916,10 +6946,13 @@ bool Mob::CheckItemRaceClassDietyRestrictionsOnCast(uint32 inventory_slot) {
 	if (itm && itm->GetItem()->Classes != 65535) {
 		if ((itm->GetItem()->Click.Type == EQ::item::ItemEffectEquipClick) && !(itm->GetItem()->Classes & bitmask)) {
 			if (CastToClient()->ClientVersion() < EQ::versions::ClientVersion::SoF) {
-				// They are casting a spell from an item that requires equipping but shouldn't let them equip it
-				LogError("HACKER: [{}] (account: [{}]) attempted to click an equip-only effect on item [{}] (id: [{}]) which they shouldn't be able to equip!",
-					CastToClient()->GetCleanName(), CastToClient()->AccountName(), itm->GetItem()->Name, itm->GetItem()->ID);
-				database.SetHackerFlag(CastToClient()->AccountName(), CastToClient()->GetCleanName(), "Clicking equip-only item with an invalid class");
+				std::string message = fmt::format(
+					"Attempted to click an equip-only effect on item_name [{}] item_id [{}] which they shouldn't be able to equip!",
+					itm->GetItem()->Name,
+					itm->GetItem()->ID
+				);
+
+				RecordPlayerEventLogWithClient(CastToClient(), PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 			}
 			else {
 				MessageString(Chat::Red, MUST_EQUIP_ITEM);
@@ -6928,10 +6961,13 @@ bool Mob::CheckItemRaceClassDietyRestrictionsOnCast(uint32 inventory_slot) {
 		}
 		if ((itm->GetItem()->Click.Type == EQ::item::ItemEffectClick2) && !(itm->GetItem()->Classes & bitmask)) {
 			if (CastToClient()->ClientVersion() < EQ::versions::ClientVersion::SoF) {
-				// They are casting a spell from an item that they don't meet the race/class requirements to cast
-				LogError("HACKER: [{}] (account: [{}]) attempted to click a race/class restricted effect on item [{}] (id: [{}]) which they shouldn't be able to click!",
-					CastToClient()->GetCleanName(), CastToClient()->AccountName(), itm->GetItem()->Name, itm->GetItem()->ID);
-				database.SetHackerFlag(CastToClient()->AccountName(), CastToClient()->GetCleanName(), "Clicking race/class restricted item with an invalid class");
+				std::string message = fmt::format(
+					"Attempted to click a race/class restricted effect on item_name [{}] item_id [{}] which they shouldn't be able to click!",
+					itm->GetItem()->Name,
+					itm->GetItem()->ID
+				);
+
+				RecordPlayerEventLogWithClient(CastToClient(), PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 			}
 			else {
 				if (CastToClient()->ClientVersion() >= EQ::versions::ClientVersion::RoF)
@@ -6949,9 +6985,13 @@ bool Mob::CheckItemRaceClassDietyRestrictionsOnCast(uint32 inventory_slot) {
 	}
 	if (itm && (itm->GetItem()->Click.Type == EQ::item::ItemEffectEquipClick) && inventory_slot > EQ::invslot::EQUIPMENT_END) {
 		if (CastToClient()->ClientVersion() < EQ::versions::ClientVersion::SoF) {
-			// They are attempting to cast a must equip clicky without having it equipped
-			LogError("HACKER: [{}] (account: [{}]) attempted to click an equip-only effect on item [{}] (id: [{}]) without equiping it!", CastToClient()->GetCleanName(), CastToClient()->AccountName(), itm->GetItem()->Name, itm->GetItem()->ID);
-			database.SetHackerFlag(CastToClient()->AccountName(), CastToClient()->GetCleanName(), "Clicking equip-only item without equiping it");
+			std::string message = fmt::format(
+				"Attempted to click an equip-only effect on item_name [{}] item_id [{}] without equipping it!",
+				itm->GetItem()->Name,
+				itm->GetItem()->ID
+			);
+
+			RecordPlayerEventLogWithClient(CastToClient(), PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 		}
 		else {
 			MessageString(Chat::Red, MUST_EQUIP_ITEM);
@@ -6977,8 +7017,8 @@ void Mob::SetHP(int64 hp)
 		return;
 	}
 
-	if (combat_record.InCombat()) {
-		combat_record.ProcessHPEvent(hp, current_hp);
+	if (m_combat_record.InCombat()) {
+		m_combat_record.ProcessHPEvent(hp, current_hp);
 	}
 
 	current_hp = hp;
@@ -6986,8 +7026,8 @@ void Mob::SetHP(int64 hp)
 
 void Mob::DrawDebugCoordinateNode(std::string node_name, const glm::vec4 vec)
 {
-	NPC* node = nullptr;
-	for (const auto& n : entity_list.GetNPCList()) {
+	NPC             *node = nullptr;
+	for (const auto &n: entity_list.GetNPCList()) {
 		if (n.second->GetCleanName() == node_name) {
 			node = n.second;
 			break;
@@ -6996,4 +7036,9 @@ void Mob::DrawDebugCoordinateNode(std::string node_name, const glm::vec4 vec)
 	if (!node) {
 		node = NPC::SpawnNodeNPC(node_name, "", GetPosition());
 	}
+}
+
+const CombatRecord &Mob::GetCombatRecord() const
+{
+	return m_combat_record;
 }
