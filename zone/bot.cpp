@@ -4699,17 +4699,17 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 	struct ClientTrade {
 		ItemInstance* trade_item_instance;
 		int16 from_client_slot;
-		int16 to_bot_slot;
+		int16 to_bot_slot = invslot::SLOT_INVALID;
 
-		ClientTrade(ItemInstance* item, int16 from) : trade_item_instance(item), from_client_slot(from), to_bot_slot(invslot::SLOT_INVALID) { }
+		ClientTrade(ItemInstance* item, int16 from) : trade_item_instance(item), from_client_slot(from) { }
 	};
 
 	struct ClientReturn {
-		const ItemInstance* return_item_instance;
+		ItemInstance* return_item_instance;
 		int16 from_bot_slot;
-		int16 to_client_slot;
+		int16 to_client_slot = invslot::SLOT_INVALID;
 
-		ClientReturn(const ItemInstance* item, int16 from) : return_item_instance(item), from_bot_slot(from), to_client_slot(invslot::SLOT_INVALID) { }
+		ClientReturn(ItemInstance* item, int16 from) : return_item_instance(item), from_bot_slot(from) { }
 	};
 
 	static const int16 bot_equip_order[invslot::EQUIPMENT_COUNT] = {
@@ -4989,7 +4989,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 					if (trade_instance->GetItem()->IsType2HWeapon()) {
 						if (!melee_secondary) {
 							melee_2h_weapon = true;
-							auto equipped_secondary_weapon = m_inv[invslot::slotSecondary];
+							auto equipped_secondary_weapon = GetBotItem(invslot::slotSecondary);
 							if (equipped_secondary_weapon) {
 								client_return.push_back(ClientReturn(equipped_secondary_weapon, invslot::slotSecondary));
 							}
@@ -5005,7 +5005,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 							!trade_instance->IsWeapon()
 						) {
 							melee_secondary = true;
-							auto equipped_primary_weapon = m_inv[invslot::slotPrimary];
+							auto equipped_primary_weapon = GetBotItem(invslot::slotPrimary);
 							if (equipped_primary_weapon && equipped_primary_weapon->GetItem()->IsType2HWeapon()) {
 								client_return.push_back(ClientReturn(equipped_primary_weapon, invslot::slotPrimary));
 							}
@@ -5020,7 +5020,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				trade_iterator.to_bot_slot = index;
 
 				if (m_inv[index]) {
-					client_return.push_back(ClientReturn(m_inv[index], index));
+					client_return.push_back(ClientReturn(GetBotItem(index), index));
 				}
 
 				break;
@@ -5154,9 +5154,8 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 			client->DeleteItemInInventory(return_iterator.from_bot_slot);
 		} else { // successful trade returns
 			auto return_instance = m_inv.PopItem(return_iterator.from_bot_slot);
-			//if (*return_instance != *return_iterator.return_item_instance) {
+
 			//	// TODO: add logging
-			//}
 
 			if (!database.botdb.DeleteItemBySlot(GetBotID(), return_iterator.from_bot_slot)) {
 				OwnerMessage(
