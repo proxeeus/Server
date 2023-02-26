@@ -104,6 +104,7 @@ Mob::Mob(
 	attack_dw_timer(2000),
 	ranged_timer(2000),
 	hp_regen_per_second_timer(1000),
+	m_z_clip_check_timer(1000),
 	tic_timer(6000),
 	mana_timer(2000),
 	spellend_timer(0),
@@ -4314,7 +4315,7 @@ void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on,
 		twinproc = true;
 	}
 
-	if (IsBeneficialSpell(spell_id) && (!IsNPC() || (IsNPC() && CastToNPC()->GetInnateProcSpellID() != spell_id))) { // NPC innate procs don't take this path ever
+	if (IsBeneficialSpell(spell_id) && (!IsNPC() || (IsNPC() && CastToNPC()->GetInnateProcSpellID() != spell_id)) && spells[spell_id].target_type != ST_TargetsTarget) { // NPC innate procs don't take this path ever
 		SpellFinished(spell_id, this, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].resist_difficulty, true, level_override);
 		if (twinproc) {
 			SpellFinished(spell_id, this, EQ::spells::CastingSlot::Item, 0, -1, spells[spell_id].resist_difficulty, true, level_override);
@@ -4330,7 +4331,11 @@ void Mob::ExecWeaponProc(const EQ::ItemInstance *inst, uint16 spell_id, Mob *on,
 }
 
 uint32 Mob::GetZoneID() const {
-	return(zone->GetZoneID());
+	return zone->GetZoneID();
+}
+
+uint16 Mob::GetInstanceVersion() const {
+	return zone->GetInstanceVersion();
 }
 
 int Mob::GetHaste()

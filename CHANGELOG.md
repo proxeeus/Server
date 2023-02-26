@@ -1,3 +1,97 @@
+## [22.4.4] - 02/24/2023 
+
+### Bots
+
+* Add Caster Range Command, and IsValidSpellRange Checks ([#2942](https://github.com/EQEmu/Server/pull/2942)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-23
+* Cleanup BotDatabase::LoadBuffs ([#2981](https://github.com/EQEmu/Server/pull/2981)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-24
+* Verify Bots Group Integrity on join ([#2980](https://github.com/EQEmu/Server/pull/2980)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-23
+
+### Commands
+
+* Cleanup #peekinv Command ([#2969](https://github.com/EQEmu/Server/pull/2969)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-23
+
+### Doors
+
+* Fix doors triggering invalid zone fetches of dest_zone of "none" ([#2985](https://github.com/EQEmu/Server/pull/2985)) ([Akkadius](https://github.com/Akkadius)) 2023-02-24
+
+### Fixes
+
+* Adjust database manifest to include .sql extension  ([Akkadius](https://github.com/Akkadius)) 2023-02-25
+* Correct Mend reuse time and add reduction support. ([#2972](https://github.com/EQEmu/Server/pull/2972)) ([nytmyr](https://github.com/nytmyr)) 2023-02-23
+* Fix Beneficial Target of Target procs ([#2987](https://github.com/EQEmu/Server/pull/2987)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-24
+* Fix for undefined MySQL library behavior. ([#2834](https://github.com/EQEmu/Server/pull/2834)) ([KimLS](https://github.com/KimLS)) 2023-02-25
+
+### Pathing
+
+* Improve roambox logic ([#2983](https://github.com/EQEmu/Server/pull/2983)) ([Akkadius](https://github.com/Akkadius)) 2023-02-24
+* More z-clip improvements, Wurm and Spectral Iksar race adjustments ([#2988](https://github.com/EQEmu/Server/pull/2988)) ([Akkadius](https://github.com/Akkadius)) 2023-02-25
+* Smoother pathing z-correction ([#2982](https://github.com/EQEmu/Server/pull/2982)) ([Akkadius](https://github.com/Akkadius)) 2023-02-24
+
+### Player Events
+
+* Add QS processing, mutex tweaks ([#2984](https://github.com/EQEmu/Server/pull/2984)) ([Akkadius](https://github.com/Akkadius)) 2023-02-25
+
+### Quest API
+
+* Add IsAutoAttackEnabled() to Perl/Lua ([#2979](https://github.com/EQEmu/Server/pull/2979)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-23
+* Add IsAutoFireEnabled() to Perl/Lua ([#2978](https://github.com/EQEmu/Server/pull/2978)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-23
+* Fix EVENT_TIMER crash when entity is no longer available ([#2986](https://github.com/EQEmu/Server/pull/2986)) ([Akkadius](https://github.com/Akkadius)) 2023-02-24
+
+### Scaling
+
+* Add support for zone ID and instance version to NPC Scaling ([#2968](https://github.com/EQEmu/Server/pull/2968)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-25
+
+### Tradeskills
+
+* Fix for Lore Conflict ([#2977](https://github.com/EQEmu/Server/pull/2977)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-24
+
+## [22.4.3] - 02/21/2023 
+
+### Bots
+
+* Change HasBotItem(item_id) to return slot_id instead of bool. ([#2966](https://github.com/EQEmu/Server/pull/2966)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-19
+* Change SaveTimers to Replace instead of Insert. ([#2951](https://github.com/EQEmu/Server/pull/2951)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-18
+* Fix output of ^spells while ^Enforcespellsettings is enabled ([#2959](https://github.com/EQEmu/Server/pull/2959)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-18
+
+### Crash
+
+* Fix crash with EVENT_UNEQUIP_ITEM_BOT ([#2973](https://github.com/EQEmu/Server/pull/2973)) ([Aeadoin](https://github.com/Aeadoin)) 2023-02-20
+* Fix world crash in player event processing ([#2960](https://github.com/EQEmu/Server/pull/2960)) ([Akkadius](https://github.com/Akkadius)) 2023-02-18
+
+### Database
+
+* Address deadlock in player events ([#2974](https://github.com/EQEmu/Server/pull/2974)) ([Akkadius](https://github.com/Akkadius)) 2023-02-21
+
+### Fixes
+
+* Fix MIR LDoN Theme Items on LDoN Merchants ([#2971](https://github.com/EQEmu/Server/pull/2971)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-20
+* Fix OOCMute not functioning ([#2970](https://github.com/EQEmu/Server/pull/2970)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-20
+
+### Pathing
+
+* Improvements to z-clipping, z-recovery and z-calculations ([#2975](https://github.com/EQEmu/Server/pull/2975)) ([Akkadius](https://github.com/Akkadius)) 2023-02-21
+
+### Pets
+
+* Client Pet summoned by NPC should not change guard location. ([#2967](https://github.com/EQEmu/Server/pull/2967)) ([noudess](https://github.com/noudess)) 2023-02-19
+
+### Player Events
+
+* Create new event ITEM_CREATION ([#2944](https://github.com/EQEmu/Server/pull/2944)) ([Akkadius](https://github.com/Akkadius)) 2023-02-18
+
+### Quest API
+
+* Add client->SignalClient() overload to Perl ([#2963](https://github.com/EQEmu/Server/pull/2963)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-19
+* Fix Perl SetSimpleRoamBox Overloads ([#2961](https://github.com/EQEmu/Server/pull/2961)) ([Kinglykrab](https://github.com/Kinglykrab)) 2023-02-19
+
+### Reload API
+
+* Add world handlers for certain opcodes ([#2958](https://github.com/EQEmu/Server/pull/2958)) ([Akkadius](https://github.com/Akkadius)) 2023-02-18
+
+### SQL
+
+* Add date to optional Drakkin Guktan Faction Update ([#2965](https://github.com/EQEmu/Server/pull/2965)) ([joligario](https://github.com/joligario)) 2023-02-19
+
 ## [22.4.2] - 02/18/2023 
 
 ### Content
