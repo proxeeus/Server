@@ -404,16 +404,16 @@ void NPC::AI_Init()
 	AIautocastspell_timer.reset(nullptr);
 	casting_spell_AIindex = static_cast<uint8>(AIspells.size());
 
-	roambox_max_x = 0;
-	roambox_max_y = 0;
-	roambox_min_x = 0;
-	roambox_min_y = 0;
-	roambox_distance = 0;
-	roambox_destination_x = 0;
-	roambox_destination_y = 0;
-	roambox_destination_z = 0;
-	roambox_min_delay = 2500;
-	roambox_delay = 2500;
+	m_roambox.max_x = 0;
+	m_roambox.max_y = 0;
+	m_roambox.min_x = 0;
+	m_roambox.min_y = 0;
+	m_roambox.distance = 0;
+	m_roambox.dest_x = 0;
+	m_roambox.dest_y = 0;
+	m_roambox.dest_z = 0;
+	m_roambox.min_delay = 2500;
+	m_roambox.delay = 2500;
 }
 
 void Client::AI_Init()
@@ -1587,7 +1587,7 @@ void NPC::AI_DoMovement() {
 	/**
 	 * Roambox logic sets precedence
 	 */
-	if (roambox_distance > 0) {
+	if (m_roambox.distance > 0) {
 
 		// Check if we're already moving to a WP
 		// If so, if we're not moving we have arrived and need to set delay
@@ -1618,11 +1618,11 @@ void NPC::AI_DoMovement() {
 
 		// Set a new destination
 		if (!IsMoving() && time_until_can_move < Timer::GetCurrentTime()) {
-			auto move_x = static_cast<float>(zone->random.Real(-roambox_distance, roambox_distance));
-			auto move_y = static_cast<float>(zone->random.Real(-roambox_distance, roambox_distance));
+			auto move_x = static_cast<float>(zone->random.Real(-m_roambox.distance, m_roambox.distance));
+			auto move_y = static_cast<float>(zone->random.Real(-m_roambox.distance, m_roambox.distance));
 
-			roambox_destination_x = EQ::Clamp((GetX() + move_x), roambox_min_x, roambox_max_x);
-			roambox_destination_y = EQ::Clamp((GetY() + move_y), roambox_min_y, roambox_max_y);
+			m_roambox.dest_x = EQ::Clamp((GetX() + move_x), m_roambox.min_x, m_roambox.max_x);
+			m_roambox.dest_y = EQ::Clamp((GetY() + move_y), m_roambox.min_y, m_roambox.max_y);
 
 			/**
 			 * If our roambox was configured with large distances, chances of hitting the min or max end of
@@ -1630,12 +1630,12 @@ void NPC::AI_DoMovement() {
 			 * either lower the roambox distance or the code will do a simple random between min - max when it
 			 * hits the min or max of the clamp
 			 */
-			if (roambox_destination_x == roambox_min_x || roambox_destination_x == roambox_max_x) {
-				roambox_destination_x = static_cast<float>(zone->random.Real(roambox_min_x, roambox_max_x));
+			if (m_roambox.dest_x == m_roambox.min_x || m_roambox.dest_x == m_roambox.max_x) {
+				m_roambox.dest_x = static_cast<float>(zone->random.Real(m_roambox.min_x, m_roambox.max_x));
 			}
 
-			if (roambox_destination_y == roambox_min_y || roambox_destination_y == roambox_max_y) {
-				roambox_destination_y = static_cast<float>(zone->random.Real(roambox_min_y, roambox_max_y));
+			if (m_roambox.dest_y == m_roambox.min_y || m_roambox.dest_y == m_roambox.max_y) {
+				m_roambox.dest_y = static_cast<float>(zone->random.Real(m_roambox.min_y, m_roambox.max_y));
 			}
 
 			/**
@@ -1643,20 +1643,20 @@ void NPC::AI_DoMovement() {
 			 * if the roam box was sloppily configured
 			 */
 			if (!GetWasSpawnedInWater()) {
-				roambox_destination_z = GetGroundZ(roambox_destination_x, roambox_destination_y);
+				m_roambox.dest_z = GetGroundZ(m_roambox.dest_x, m_roambox.dest_y);
 				if (zone->HasMap() && zone->HasWaterMap()) {
 					auto position = glm::vec3(
-						roambox_destination_x,
-						roambox_destination_y,
-						roambox_destination_z
+						m_roambox.dest_x,
+						m_roambox.dest_y,
+						m_roambox.dest_z
 					);
 
 					/**
 					 * If someone brought us into water when we naturally wouldn't path there, return to spawn
 					 */
 					if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
-						roambox_destination_x = m_SpawnPoint.x;
-						roambox_destination_y = m_SpawnPoint.y;
+						m_roambox.dest_x = m_SpawnPoint.x;
+						m_roambox.dest_y = m_SpawnPoint.y;
 					}
 
 					if (zone->watermap->InLiquid(position)) {
@@ -1667,38 +1667,38 @@ void NPC::AI_DoMovement() {
 				}
 			}
 			else { // Mob was in water, make sure new spot is in water also
-				roambox_destination_z = m_Position.z;
+				m_roambox.dest_z = m_Position.z;
 				auto position = glm::vec3(
-					roambox_destination_x,
-					roambox_destination_y,
+					m_roambox.dest_x,
+					m_roambox.dest_y,
 					m_Position.z + 15
 				);
 				if (zone->HasWaterMap() && !zone->watermap->InLiquid(position)) {
-					roambox_destination_x = m_SpawnPoint.x;
-					roambox_destination_y = m_SpawnPoint.y;
-					roambox_destination_z = m_SpawnPoint.z;
+					m_roambox.dest_x = m_SpawnPoint.x;
+					m_roambox.dest_y = m_SpawnPoint.y;
+					m_roambox.dest_z = m_SpawnPoint.z;
 				}
 			}
 
 			LogNPCRoamBox("[{}] | Pathing to [{}] [{}] [{}]", GetCleanName(),
-				roambox_destination_x, roambox_destination_y,
-				roambox_destination_z);
+				m_roambox.dest_x, m_roambox.dest_y,
+				m_roambox.dest_z);
 
 			LogNPCRoamBox(
 				"NPC ({}) distance [{}] X (min/max) [{} / {}] Y (min/max) [{} / {}] | Dest x/y/z [{} / {} / {}]",
 				GetCleanName(),
-				roambox_distance,
-				roambox_min_x,
-				roambox_max_x,
-				roambox_min_y,
-				roambox_max_y,
-				roambox_destination_x,
-				roambox_destination_y,
-				roambox_destination_z
+				m_roambox.distance,
+				m_roambox.min_x,
+				m_roambox.max_x,
+				m_roambox.min_y,
+				m_roambox.max_y,
+				m_roambox.dest_x,
+				m_roambox.dest_y,
+				m_roambox.dest_z
 			);
 
 			SetCurrentWP(EQ::WaypointStatus::RoamBoxPauseInProgress);
-			NavigateTo(roambox_destination_x, roambox_destination_y, roambox_destination_z);
+			NavigateTo(m_roambox.dest_x, m_roambox.dest_y, m_roambox.dest_z);
 		}
 
 		return;
