@@ -516,6 +516,7 @@ public:
 	void CopyHateList(Lua_Mob to);
 	bool IsAttackAllowed(Lua_Mob target);
 	bool IsAttackAllowed(Lua_Mob target, bool is_spell_attack);
+	float GetDefaultRaceSize();
 };
 
 #endif
