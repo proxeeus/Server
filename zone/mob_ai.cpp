@@ -1642,43 +1642,21 @@ void NPC::AI_DoMovement() {
 			 * If mob was not spawned in water, let's not randomly roam them into water
 			 * if the roam box was sloppily configured
 			 */
-			if (!RuleB(Pathing, DisableWaterRoamBoxLogic))
-			{
-				if (!this->GetWasSpawnedInWater()) {
-					if (zone->HasMap() && zone->HasWaterMap()) {
-						auto position = glm::vec3(
-							roambox_destination_x,
-							roambox_destination_y,
-							(m_Position.z - 15)
-						);
-						/**
-						 * If someone brought us into water when we naturally wouldn't path there, return to spawn
-						 */
-						if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
-							roambox_destination_x = m_SpawnPoint.x;
-							roambox_destination_y = m_SpawnPoint.y;
-						}
-
-						if (zone->watermap->InLiquid(position)) {
-							Log(Logs::Detail,
-								Logs::NPCRoamBox, "%s | My destination is in water and I don't belong there!",
-								this->GetCleanName());
-
-							return;
-						}
-					}
-				}
-				else { // Mob was in water, make sure new spot is in water also
-					roambox_destination_z = m_Position.z;
+			if (!GetWasSpawnedInWater()) {
+				roambox_destination_z = GetGroundZ(roambox_destination_x, roambox_destination_y);
+				if (zone->HasMap() && zone->HasWaterMap()) {
 					auto position = glm::vec3(
 						roambox_destination_x,
 						roambox_destination_y,
 						roambox_destination_z
 					);
-					if (!zone->watermap->InLiquid(position)) {
+
+					/**
+					 * If someone brought us into water when we naturally wouldn't path there, return to spawn
+					 */
+					if (zone->watermap->InLiquid(position) && zone->watermap->InLiquid(m_Position)) {
 						roambox_destination_x = m_SpawnPoint.x;
 						roambox_destination_y = m_SpawnPoint.y;
-						roambox_destination_z = m_SpawnPoint.z;
 					}
 
 					if (zone->watermap->InLiquid(position)) {
@@ -1686,6 +1664,19 @@ void NPC::AI_DoMovement() {
 
 						return;
 					}
+				}
+			}
+			else { // Mob was in water, make sure new spot is in water also
+				roambox_destination_z = m_Position.z;
+				auto position = glm::vec3(
+					roambox_destination_x,
+					roambox_destination_y,
+					m_Position.z + 15
+				);
+				if (zone->HasWaterMap() && !zone->watermap->InLiquid(position)) {
+					roambox_destination_x = m_SpawnPoint.x;
+					roambox_destination_y = m_SpawnPoint.y;
+					roambox_destination_z = m_SpawnPoint.z;
 				}
 			}
 
