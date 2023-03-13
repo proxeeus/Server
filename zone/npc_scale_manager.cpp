@@ -137,9 +137,9 @@ void NpcScaleManager::ScaleNPC(
 	}
 
 	if (always_scale || npc->GetMinDMG() == 0) {
-		int min_dmg = scale_data.min_dmg;
+		int64 min_dmg = scale_data.min_dmg;
 		if (RuleB(Combat, UseNPCDamageClassLevelMods)) {
-			int32 class_level_damage_mod = GetClassLevelDamageMod(npc->GetLevel(), npc->GetClass());
+			uint32 class_level_damage_mod = GetClassLevelDamageMod(npc->GetLevel(), npc->GetClass());
 			min_dmg = (min_dmg * class_level_damage_mod) / 220;
 
 			LogNPCScaling("ClassLevelDamageMod::min_dmg base: [{}] calc: [{}]", scale_data.min_dmg, min_dmg);
@@ -149,9 +149,9 @@ void NpcScaleManager::ScaleNPC(
 	}
 
 	if (always_scale || npc->GetMaxDMG() == 0) {
-		int max_dmg = scale_data.max_dmg;
+		int64 max_dmg = scale_data.max_dmg;
 		if (RuleB(Combat, UseNPCDamageClassLevelMods)) {
-			int32 class_level_damage_mod = GetClassLevelDamageMod(npc->GetLevel(), npc->GetClass());
+			uint32 class_level_damage_mod = GetClassLevelDamageMod(npc->GetLevel(), npc->GetClass());
 			max_dmg = (scale_data.max_dmg * class_level_damage_mod) / 220;
 
 			LogNPCScaling("ClassLevelDamageMod::max_dmg base: [{}] calc: [{}]", scale_data.max_dmg, max_dmg);
@@ -164,16 +164,24 @@ void NpcScaleManager::ScaleNPC(
 		npc->ModifyNPCStat("hp_regen", std::to_string(scale_data.hp_regen_rate));
 	}
 
+	if (always_scale || (npc->GetHPRegenPerSecond() == 0 && is_auto_scaled)) {
+		npc->ModifyNPCStat("hp_regen_per_second", std::to_string(scale_data.hp_regen_per_second));
+	}
+
 	if (always_scale || npc->GetAttackDelay() == 0) {
 		npc->ModifyNPCStat("attack_delay", std::to_string(scale_data.attack_delay));
 	}
 
 	if (always_scale || npc->GetSpellScale() == 0) {
-		npc->ModifyNPCStat("spell_scale", std::to_string(scale_data.spell_scale));
+		npc->ModifyNPCStat("spellscale", std::to_string(scale_data.spell_scale));
 	}
 
 	if (always_scale || npc->GetHealScale() == 0) {
-		npc->ModifyNPCStat("heal_scale", std::to_string(scale_data.heal_scale));
+		npc->ModifyNPCStat("healscale", std::to_string(scale_data.heal_scale));
+	}
+
+	if (always_scale || npc->GetAvoidanceRating() == 0) {
+		npc->ModifyNPCStat("avoidance", std::to_string(scale_data.avoidance));
 	}
 
 	if (always_scale || npc->GetHeroicStrikethrough() == 0) {
@@ -253,9 +261,11 @@ bool NpcScaleManager::LoadScaleData()
 		scale_data.min_dmg              = s.min_dmg;
 		scale_data.max_dmg              = s.max_dmg;
 		scale_data.hp_regen_rate        = s.hp_regen_rate;
+		scale_data.hp_regen_per_second  = s.hp_regen_per_second;
 		scale_data.attack_delay         = s.attack_delay;
 		scale_data.spell_scale          = s.spell_scale;
 		scale_data.heal_scale           = s.heal_scale;
+		scale_data.avoidance            = s.avoidance;
 		scale_data.heroic_strikethrough = s.heroic_strikethrough;
 
 		if (!s.special_abilities.empty()) {
@@ -300,7 +310,7 @@ bool NpcScaleManager::LoadScaleData()
 					)
 				);
 			}
-		} else if (!has_multiple_zones && has_multiple_versions) {
+		} else if (!has_multiple_zones) {
 			scale_data.zone_id = Strings::ToUnsignedInt(s.zone_id_list);
 
 			const auto versions = Strings::Split(s.instance_version_list, "|");
@@ -320,7 +330,7 @@ bool NpcScaleManager::LoadScaleData()
 					)
 				);
 			}
-		} else if (has_multiple_zones && has_multiple_versions) {
+		} else {
 			const auto zones    = Strings::Split(s.zone_id_list, "|");
 			const auto versions = Strings::Split(s.instance_version_list, "|");
 
@@ -409,7 +419,7 @@ NpcScaleManager::global_npc_scale NpcScaleManager::GetGlobalScaleDataForTypeLeve
  */
 uint32 NpcScaleManager::GetClassLevelDamageMod(uint32 level, uint32 npc_class)
 {
-	uint32 multiplier = 0;
+	uint32 multiplier;
 
 	switch (npc_class) {
 		case WARRIOR: {
@@ -569,9 +579,8 @@ int8 NpcScaleManager::GetNPCScalingType(NPC *&npc)
  */
 std::string NpcScaleManager::GetNPCScalingTypeName(NPC *&npc)
 {
-	int8 scaling_type = GetNPCScalingType(npc);
 
-	if (scaling_type == 1) {
+	if (int8 scaling_type = GetNPCScalingType(npc); scaling_type == 1) {
 		return "Named";
 	}
 
@@ -664,9 +673,11 @@ bool NpcScaleManager::ApplyGlobalBaseScalingToNPCStatically(NPC *&npc)
 		n.mindmg               = g.min_dmg;
 		n.maxdmg               = g.max_dmg;
 		n.hp_regen_rate        = g.hp_regen_rate;
+		n.hp_regen_per_second  = g.hp_regen_per_second;
 		n.attack_delay         = g.attack_delay;
 		n.spellscale           = static_cast<float>(g.spell_scale);
 		n.healscale            = static_cast<float>(g.heal_scale);
+		n.Avoidance            = g.avoidance;
 		n.heroic_strikethrough = g.heroic_strikethrough;
 		n.special_abilities    = g.special_abilities;
 
@@ -730,9 +741,11 @@ bool NpcScaleManager::ApplyGlobalBaseScalingToNPCDynamically(NPC *&npc)
 		n.mindmg               = 0;
 		n.maxdmg               = 0;
 		n.hp_regen_rate        = 0;
+		n.hp_regen_per_second  = 0;
 		n.attack_delay         = 0;
 		n.spellscale           = 0;
 		n.healscale            = 0;
+		n.Avoidance	           = 0;
 		n.heroic_strikethrough = 0;
 		n.special_abilities    = "";
 

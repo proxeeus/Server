@@ -327,7 +327,7 @@ public:
 	int32 GetActSpellCost(uint16 spell_id, int32 cost);
 	virtual int32 GetActSpellDuration(uint16 spell_id, int32 duration);
 	int32 GetActSpellCasttime(uint16 spell_id, int32 casttime);
-	virtual int64 GetActReflectedSpellDamage(int32 spell_id, int64 value, int effectiveness);
+	virtual int64 GetActReflectedSpellDamage(uint16 spell_id, int64 value, int effectiveness);
 	float ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use_resist_override = false,
 		int resist_override = 0, bool CharismaCheck = false, bool CharmTick = false, bool IsRoot = false,
 		int level_override = -1);
@@ -1385,6 +1385,7 @@ public:
 	int64 DoDamageCaps(int64 base_damage);
 
 	int64 GetHPRegen() const;
+	int64 GetHPRegenPerSecond() const;
 	int64 GetManaRegen() const;
 
 	bool CanOpenDoors() const;
