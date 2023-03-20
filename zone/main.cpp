@@ -84,6 +84,7 @@ volatile bool RunLoops = true;
 #include <pthread_np.h>
 #endif
 extern volatile bool is_zone_loaded;
+extern bool Critical = false;
 
 #include "zone_event_scheduler.h"
 #include "../common/file.h"

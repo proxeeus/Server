@@ -406,7 +406,6 @@ Mob::Mob(
 	stunned        = false;
 	silenced       = false;
 	amnesiad       = false;
-	inWater        = false;
 
 	shield_timer.Disable();
 	m_shield_target_id = 0;
@@ -523,7 +522,7 @@ Mob::Mob(
 }
 
 Mob::~Mob()
-{ 
+{
 	quest_manager.stopalltimers(this);
 
 	mMovementManager->RemoveMob(this);
@@ -1216,7 +1215,7 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	ns->spawn.class_	= class_;
 	ns->spawn.gender	= gender;
 	ns->spawn.level		= level;
-	ns->spawn.PlayerState	= m_PlayerState;
+	ns->spawn.PlayerState	= GetPlayerState();
 	ns->spawn.deity		= deity;
 	ns->spawn.animation	= 0;
 	ns->spawn.findable	= findable?1:0;
@@ -2587,7 +2586,12 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	is->drakkin_details = drakkin_details;
 	is->size = size;
 
-	entity_list.QueueClients(this, outapp);
+	if (!target) {
+		entity_list.QueueClients(this, outapp);
+	} else {
+		target->QueuePacket(outapp, false);
+	}
+
 	safe_delete(outapp);
 
 	/* Refresh armor and tints after send illusion packet */
@@ -2598,7 +2602,7 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 	}
 
 	LogSpells(
-		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}]",
+		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}] Target [{}]",
 		race,
 		gender,
 		texture,
@@ -2612,7 +2616,8 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		drakkin_heritage,
 		drakkin_tattoo,
 		drakkin_details,
-		size
+		size,
+		target ? target->GetCleanName() : "No Target"
 	);
 }
 
@@ -4119,7 +4124,7 @@ void Mob::QuestJournalledSay(Client *QuestInitiator, const char *str, Journal::O
 
 const char *Mob::GetCleanName()
 {
-	if (!strlen(clean_name)) {
+	if (!strlen(clean_name)) { 
 		CleanMobName(GetName(), clean_name);
 	}
 

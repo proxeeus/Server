@@ -327,9 +327,8 @@ Corpse::Corpse(Client* client, int32 in_rezexp) : Mob (
 
 	consented_guild_id = client->AutoConsentGuildEnabled() ? client->GuildID() : 0;
 
-	is_corpse_changed		= true;
-	rez_experience			= in_rezexp;
-	can_corpse_be_rezzed			= true;
+	is_corpse_changed	 = true;
+	rez_experience		 = in_rezexp;
 	is_player_corpse	= true;
 	is_player_bot_corpse = false;
 	is_locked			= false;
