@@ -2411,184 +2411,131 @@ void Mob::GMMove(const glm::vec4& position) {
 	}
 }
 
-void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, uint8 in_helmtexture, uint8 in_haircolor, uint8 in_beardcolor, uint8 in_eyecolor1, uint8 in_eyecolor2, uint8 in_hairstyle, uint8 in_luclinface, uint8 in_beard, uint8 in_aa_title, uint32 in_drakkin_heritage, uint32 in_drakkin_tattoo, uint32 in_drakkin_details, float in_size, bool send_appearance_effects) {
+void Mob::SendIllusionPacket(
+	uint16 in_race,
+	uint8 in_gender,
+	uint8 in_texture,
+	uint8 in_helmtexture,
+	uint8 in_haircolor,
+	uint8 in_beardcolor,
+	uint8 in_eyecolor1,
+	uint8 in_eyecolor2,
+	uint8 in_hairstyle,
+	uint8 in_luclinface,
+	uint8 in_beard,
+	uint8 in_aa_title,
+	uint32 in_drakkin_heritage,
+	uint32 in_drakkin_tattoo,
+	uint32 in_drakkin_details,
+	float in_size,
+	bool send_appearance_effects,
+	Client* target
+)
+{
+	uint8  new_texture = in_texture;
+	uint8  new_helmtexture = in_helmtexture;
+	uint8  new_haircolor;
+	uint8  new_beardcolor;
+	uint8  new_eyecolor1;
+	uint8  new_eyecolor2;
+	uint8  new_hairstyle;
+	uint8  new_luclinface;
+	uint8  new_beard;
+	uint8  new_aa_title;
+	uint32 new_drakkin_heritage;
+	uint32 new_drakkin_tattoo;
+	uint32 new_drakkin_details;
 
-	uint16 BaseRace = GetBaseRace();
-
-	if (in_race == 0)
-	{
-		race = BaseRace;
-		if (in_gender == 0xFF)
-			gender = GetBaseGender();
-		else
-			gender = in_gender;
+	race = in_race;
+	if (race == 0) {
+		race = use_model ? use_model : GetBaseRace();
 	}
 
-	else
-	{
-		race = in_race;
-		if (in_gender == 0xFF)
-			gender = GetDefaultGender(race, gender);
-		else
-			gender = in_gender;
+	if (in_gender != 0xFF) {
+		gender = in_gender;
+	}
+	else {
+		gender = in_race ? GetDefaultGender(race, gender) : GetBaseGender();
 	}
 
-
-	if (in_texture == 0xFF)
-	{
-		if (IsPlayerRace(in_race))
-			texture = 0xFF;
-		else
-			texture = GetTexture();
-	}
-	else
-	{
-		texture = in_texture;
+	if (in_texture == 0xFF && !IsPlayerRace(race)) {
+		new_texture = GetTexture();
 	}
 
-
-	if (in_helmtexture == 0xFF)
-	{
-		if (IsPlayerRace(in_race))
-			helmtexture = 0xFF;
-		else if (in_texture != 0xFF)
-			helmtexture = in_texture;
-		else
-			helmtexture = GetHelmTexture();
-	}
-	else
-	{
-		helmtexture = in_helmtexture;
+	if (in_helmtexture == 0xFF && !IsPlayerRace(race)) {
+		new_helmtexture = GetHelmTexture();
 	}
 
-	if (in_haircolor == 0xFF)
-		haircolor = GetHairColor();
-	else
-		haircolor = in_haircolor;
-
-	if (in_beardcolor == 0xFF)
-		beardcolor = GetBeardColor();
-	else
-		beardcolor = in_beardcolor;
-
-	if (in_eyecolor1 == 0xFF)
-		eyecolor1 = GetEyeColor1();
-	else
-		eyecolor1 = in_eyecolor1;
-
-	if (in_eyecolor2 == 0xFF)
-		eyecolor2 = GetEyeColor2();
-	else
-		eyecolor2 = in_eyecolor2;
-
-	if (in_hairstyle == 0xFF)
-		hairstyle = GetHairStyle();
-	else
-		hairstyle = in_hairstyle;
-
-	if (in_luclinface == 0xFF)
-		luclinface = GetLuclinFace();
-	else
-		luclinface = in_luclinface;
-
-	if (in_beard == 0xFF)
-		beard = GetBeard();
-	else
-		beard = in_beard;
-
-	aa_title = in_aa_title;
-
-	if (in_drakkin_heritage == 0xFFFFFFFF)
-		drakkin_heritage = GetDrakkinHeritage();
-	else
-		drakkin_heritage = in_drakkin_heritage;
-
-	if (in_drakkin_tattoo == 0xFFFFFFFF)
-		drakkin_tattoo = GetDrakkinTattoo();
-	else
-		drakkin_tattoo = in_drakkin_tattoo;
-
-	if (in_drakkin_details == 0xFFFFFFFF)
-		drakkin_details = GetDrakkinDetails();
-	else
-		drakkin_details = in_drakkin_details;
-
-	if (in_size <= 0.0f)
-		size = GetSize();
-	else
-		size = in_size;
+	new_haircolor = (in_haircolor == 0xFF) ? GetHairColor() : in_haircolor;
+	new_beardcolor = (in_beardcolor == 0xFF) ? GetBeardColor() : in_beardcolor;
+	new_eyecolor1 = (in_eyecolor1 == 0xFF) ? GetEyeColor1() : in_eyecolor1;
+	new_eyecolor2 = (in_eyecolor2 == 0xFF) ? GetEyeColor2() : in_eyecolor2;
+	new_hairstyle = (in_hairstyle == 0xFF) ? GetHairStyle() : in_hairstyle;
+	new_luclinface = (in_luclinface == 0xFF) ? GetLuclinFace() : in_luclinface;
+	new_beard = (in_beard == 0xFF) ? GetBeard() : in_beard;
+	new_drakkin_heritage = (in_drakkin_heritage == 0xFFFFFFFF) ? GetDrakkinHeritage() : in_drakkin_heritage;
+	new_drakkin_tattoo = (in_drakkin_tattoo == 0xFFFFFFFF) ? GetDrakkinTattoo() : in_drakkin_tattoo;
+	new_drakkin_details = (in_drakkin_details == 0xFFFFFFFF) ? GetDrakkinDetails() : in_drakkin_details;
+	new_aa_title = in_aa_title;
 
 	// Reset features to Base from the Player Profile
-	if (IsClient() && in_race == 0)
-	{
+	if (IsClient() && in_race == 0) {
 		race = CastToClient()->GetBaseRace();
 		gender = CastToClient()->GetBaseGender();
-		texture = 0xFF;
-		helmtexture = 0xFF;
-		haircolor = CastToClient()->GetBaseHairColor();
-		beardcolor = CastToClient()->GetBaseBeardColor();
-		eyecolor1 = CastToClient()->GetBaseEyeColor();
-		eyecolor2 = CastToClient()->GetBaseEyeColor();
-		hairstyle = CastToClient()->GetBaseHairStyle();
-		luclinface = CastToClient()->GetBaseFace();
-		beard	= CastToClient()->GetBaseBeard();
-		aa_title = 0xFF;
-		drakkin_heritage = CastToClient()->GetBaseHeritage();
-		drakkin_tattoo = CastToClient()->GetBaseTattoo();
-		drakkin_details = CastToClient()->GetBaseDetails();
-		switch(race){
-			case OGRE:
-				size = 9;
-				break;
-			case TROLL:
-				size = 8;
-				break;
-			case VAHSHIR:
-			case BARBARIAN:
-				size = 7;
-				break;
-			case HALF_ELF:
-			case WOOD_ELF:
-			case DARK_ELF:
-			case FROGLOK:
-				size = 5;
-				break;
-			case DWARF:
-				size = 4;
-				break;
-			case HALFLING:
-			case GNOME:
-				size = 3;
-				break;
-			default:
-				size = 6;
-				break;
-		}
+		new_texture = texture = 0xFF;
+		new_helmtexture = helmtexture = 0xFF;
+		new_haircolor = haircolor = CastToClient()->GetBaseHairColor();
+		new_beardcolor = beardcolor = CastToClient()->GetBaseBeardColor();
+		new_eyecolor1 = eyecolor1 = CastToClient()->GetBaseEyeColor();
+		new_eyecolor2 = eyecolor2 = CastToClient()->GetBaseEyeColor();
+		new_hairstyle = hairstyle = CastToClient()->GetBaseHairStyle();
+		new_luclinface = luclinface = CastToClient()->GetBaseFace();
+		new_beard = beard = CastToClient()->GetBaseBeard();
+		new_aa_title = aa_title = 0xFF;
+		new_drakkin_heritage = drakkin_heritage = CastToClient()->GetBaseHeritage();
+		new_drakkin_tattoo = drakkin_tattoo = CastToClient()->GetBaseTattoo();
+		new_drakkin_details = drakkin_details = CastToClient()->GetBaseDetails();
 	}
 
-	auto outapp = new EQApplicationPacket(OP_Illusion, sizeof(Illusion_Struct));
-	Illusion_Struct* is = (Illusion_Struct*) outapp->pBuffer;
+	// update internal values for mob
+	size = (in_size <= 0.0f) ? GetRaceGenderDefaultHeight(race, gender) : in_size;
+	texture = new_texture;
+	helmtexture = new_helmtexture;
+	haircolor = new_haircolor;
+	beardcolor = new_beardcolor;
+	eyecolor1 = new_eyecolor1;
+	eyecolor2 = new_eyecolor2;
+	hairstyle = new_hairstyle;
+	luclinface = new_luclinface;
+	beard = new_beard;
+	drakkin_heritage = new_drakkin_heritage;
+	drakkin_tattoo = new_drakkin_tattoo;
+	drakkin_details = new_drakkin_details;
+
+	auto            outapp = new EQApplicationPacket(OP_Illusion, sizeof(Illusion_Struct));
+	Illusion_Struct* is = (Illusion_Struct*)outapp->pBuffer;
 	is->spawnid = GetID();
 	strcpy(is->charname, GetCleanName());
 	is->race = race;
 	is->gender = gender;
-	is->texture = texture;
-	is->helmtexture = helmtexture;
-	is->haircolor = haircolor;
-	is->beardcolor = beardcolor;
-	is->beard = beard;
-	is->eyecolor1 = eyecolor1;
-	is->eyecolor2 = eyecolor2;
-	is->hairstyle = hairstyle;
-	is->face = luclinface;
-	is->drakkin_heritage = drakkin_heritage;
-	is->drakkin_tattoo = drakkin_tattoo;
-	is->drakkin_details = drakkin_details;
+	is->texture = new_texture;
+	is->helmtexture = new_helmtexture;
+	is->haircolor = new_haircolor;
+	is->beardcolor = new_beardcolor;
+	is->beard = new_beard;
+	is->eyecolor1 = new_eyecolor1;
+	is->eyecolor2 = new_eyecolor2;
+	is->hairstyle = new_hairstyle;
+	is->face = new_luclinface;
+	is->drakkin_heritage = new_drakkin_heritage;
+	is->drakkin_tattoo = new_drakkin_tattoo;
+	is->drakkin_details = new_drakkin_details;
 	is->size = size;
 
 	if (!target) {
 		entity_list.QueueClients(this, outapp);
-	} else {
+	}
+	else {
 		target->QueuePacket(outapp, false);
 	}
 
@@ -2605,17 +2552,17 @@ void Mob::SendIllusionPacket(uint16 in_race, uint8 in_gender, uint8 in_texture, 
 		"Illusion: Race [{}] Gender [{}] Texture [{}] HelmTexture [{}] HairColor [{}] BeardColor [{}] EyeColor1 [{}] EyeColor2 [{}] HairStyle [{}] Face [{}] DrakkinHeritage [{}] DrakkinTattoo [{}] DrakkinDetails [{}] Size [{}] Target [{}]",
 		race,
 		gender,
-		texture,
-		helmtexture,
-		haircolor,
-		beardcolor,
-		eyecolor1,
-		eyecolor2,
-		hairstyle,
-		luclinface,
-		drakkin_heritage,
-		drakkin_tattoo,
-		drakkin_details,
+		new_texture,
+		new_helmtexture,
+		new_haircolor,
+		new_beardcolor,
+		new_eyecolor1,
+		new_eyecolor2,
+		new_hairstyle,
+		new_luclinface,
+		new_drakkin_heritage,
+		new_drakkin_tattoo,
+		new_drakkin_details,
 		size,
 		target ? target->GetCleanName() : "No Target"
 	);

@@ -1809,7 +1809,7 @@ void Bot::BotRangedAttack(Mob* other) {
 	if (rangedItem)
 		RangeWeapon = rangedItem->GetItem();
 		
-	}
+	
 	if (!RangeWeapon)
 	{
 		other->Say("I need some kind of ranged weaponry!");
@@ -5262,9 +5262,6 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 				break;;
 			}
 		}
-		default:
-			break;
-		}
 	}
 
 	if (!ca_time) {
@@ -8694,14 +8691,6 @@ std::string Bot::CreateSayLink(Client* c, const char* message, const char* name)
 	return saylink;
 }
 
-void Bot::StopMoving()
-{
-	//SetCombatJitterFlag(false);
-	//m_combat_jitter_timer.Start(zone->random.Int(BOT_COMBAT_JITTER_INTERVAL_MIN, BOT_COMBAT_JITTER_INTERVAL_MAX));
-
-	Mob::StopMoving();
-}
-
 void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	if (in_feigned)
 	{
@@ -8714,7 +8703,7 @@ void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	feigned = in_feigned;
 }
 
-void Bot::SpawnBotGroupByName(Client* c, std::string botgroup_name, uint32 leader_id)
+void Bot::SpawnBotGroupByName(Client* c, const std::string& botgroup_name, uint32 leader_id)
 {
 	auto leader = Bot::LoadBot(leader_id);
 	if (!leader) {
