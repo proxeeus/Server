@@ -1556,16 +1556,18 @@ void EntityList::RemoveFromAutoXTargets(Mob *mob)
 
 void EntityList::RefreshAutoXTargets(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
 		Mob *m = it->second;
 		++it;
 
-		if (!m || m->GetHP() <= 0)
+		if (!m || m->GetHP() <= 0) {
 			continue;
+		}
 
 		if ((m->CheckAggro(c) || m->IsOnFeignMemory(c)) && !c->IsXTarget(m)) {
 			c->AddAutoXTarget(m, false); // we only call this before a bulk, so lets not send right away
@@ -1577,19 +1579,22 @@ void EntityList::RefreshAutoXTargets(Client *c)
 
 void EntityList::RefreshClientXTargets(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
 		Client *c2 = it->second;
 		++it;
 
-		if (!c2)
+		if (!c2) {
 			continue;
+		}
 
-		if (c2->IsClientXTarget(c))
+		if (c2->IsClientXTarget(c)) {
 			c2->UpdateClientXTarget(c);
+		}
 	}
 }
 
@@ -2223,7 +2228,7 @@ Raid* EntityList::GetRaidByBotName(const char* name)
 	std::list<RaidMember> rm;
 	auto GetMembersWithNames = [&rm](Raid const* r) -> std::list<RaidMember> {
 		for (const auto& m : r->members) {
-			if (strlen(m.membername) > 0)
+			if (strlen(m.member_name) > 0)
 				rm.push_back(m);
 		}
 		return rm;
@@ -2231,7 +2236,7 @@ Raid* EntityList::GetRaidByBotName(const char* name)
 
 	for (const auto& r : raid_list) {
 		for (const auto& m : GetMembersWithNames(r)) {
-			if (strcmp(m.membername, name) == 0) {
+			if (strcmp(m.member_name, name) == 0) {
 				return r;
 			}
 		}
@@ -2244,7 +2249,7 @@ Raid* EntityList::GetRaidByBot(const Bot* bot)
 	std::list<RaidMember> rm;
 	auto GetMembersWhoAreBots = [&rm](Raid* r) -> std::list<RaidMember> {
 		for (auto const& m : r->members) {
-			if (m.IsBot) {
+			if (m.is_bot) {
 				rm.push_back(m);
 			}
 		}
@@ -4891,8 +4896,9 @@ void EntityList::SendZoneAppearance(Client *c)
 
 void EntityList::SendNimbusEffects(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
@@ -4919,8 +4925,9 @@ void EntityList::SendNimbusEffects(Client *c)
 
 void EntityList::SendUntargetable(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
@@ -4931,8 +4938,9 @@ void EntityList::SendUntargetable(Client *c)
 				++it;
 				continue;
 			}
-			if (!cur->IsTargetable())
+			if (!cur->IsTargetable()) {
 				cur->SendTargetable(false, c);
+			}
 		}
 		++it;
 	}
@@ -4940,8 +4948,9 @@ void EntityList::SendUntargetable(Client *c)
 
 void EntityList::SendAppearanceEffects(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto it = mob_list.begin();
 	while (it != mob_list.end()) {
@@ -5430,8 +5439,9 @@ void EntityList::DeleteQGlobal(std::string name, uint32 npcID, uint32 charID, ui
 
 void EntityList::SendFindableNPCList(Client *c)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	auto outapp = new EQApplicationPacket(OP_SendFindableNPCs, sizeof(FindableNPC_Struct));
 
@@ -5497,8 +5507,9 @@ void EntityList::UpdateFindableNPCState(NPC *n, bool Remove)
 
 void EntityList::HideCorpses(Client *c, uint8 CurrentMode, uint8 NewMode)
 {
-	if (!c)
+	if (!c) {
 		return;
+	}
 
 	if (NewMode == HideCorpseNone) {
 		SendZoneCorpses(c);
@@ -5510,8 +5521,9 @@ void EntityList::HideCorpses(Client *c, uint8 CurrentMode, uint8 NewMode)
 	if (NewMode == HideCorpseAllButGroup) {
 		g = c->GetGroup();
 
-		if (!g)
+		if (!g) {
 			NewMode = HideCorpseAll;
+		}
 	}
 
 	auto it = corpse_list.begin();
