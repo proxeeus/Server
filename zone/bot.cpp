@@ -1813,7 +1813,9 @@ void Bot::BotRangedAttack(Mob* other) {
 	if (ammoItem)
 		Ammo = ammoItem->GetItem();
 
-	if (!RangeWeapon || !Ammo)
+	// Proxeeus: there used to be an "|| !Ammo" in the below check but I removed it to
+	// restore ^rpull functionality
+	if (!RangeWeapon)
 		return;
 
 	if (RangeWeapon->ItemType == 7) // Throwing

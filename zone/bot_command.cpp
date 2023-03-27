@@ -3475,7 +3475,7 @@ void bot_command_rpull(Client *c, const Seperator *sep)
 
 	auto target_mob = ActionableTarget::VerifyEnemy(c, BCEnum::TT_Single);
 	if (!target_mob) {
-		c->Message(Chat::Red, "Your current target is not attackable");
+		c->Message(Chat::Red, "Your current target is not attackable.");
 		return;
 	}
 
