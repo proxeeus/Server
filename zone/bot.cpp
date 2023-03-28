@@ -1115,7 +1115,7 @@ void Bot::GenerateAppearance() {
 
 uint16 Bot::GetPrimarySkillValue() {
 	EQ::skills::SkillType skill = EQ::skills::HIGHEST_SKILL; //because nullptr == 0, which is 1H Slashing, & we want it to return 0 from GetSkill
-	if (bool equiped = m_inv.GetItem(EQ::invslot::slotPrimary); !equiped) {
+	if (bool equipped = m_inv.GetItem(EQ::invslot::slotPrimary); !equipped) {
 		skill = EQ::skills::SkillHandtoHand;
 	} else {
 		uint8 type = m_inv.GetItem(EQ::invslot::slotPrimary)->GetItem()->ItemType; //is this the best way to do this?
@@ -2826,18 +2826,15 @@ void Bot::CalcMeleeDistances(const Mob* tar, const EQ::ItemInstance* const& p_it
 
 bool Bot::IsValidTarget(Client* bot_owner, Client* leash_owner, float lo_distance, float leash_distance, bool bo_alt_combat, Mob* tar, float tar_distance) {
 
-	if (HOLDING ||
-		!tar->IsNPC() ||
-		tar->IsMezzed() ||
-		lo_distance > leash_distance ||
-		tar_distance > leash_distance ||
-		(!GetAttackingFlag() && !CheckLosFN(tar) && !leash_owner->CheckLosFN(tar)) || // This is suppose to keep bots from attacking things behind walls
-		!IsAttackAllowed(tar) ||
-		(bo_alt_combat &&
-			(!GetAttackingFlag() && NOT_PULLING_BOT && !leash_owner->AutoAttackEnabled() && !tar->GetHateAmount(this) && !tar->GetHateAmount(leash_owner))
-		)
-	)
-	{
+	if (!tar || !bot_owner || !leash_owner) {
+		return false;
+	}
+
+	bool valid_target_state = HOLDING || !tar->IsNPC() || tar->IsMezzed() || lo_distance > leash_distance || tar_distance > leash_distance;
+	bool valid_target       = !GetAttackingFlag() && !CheckLosFN(tar) && !leash_owner->CheckLosFN(tar);
+	bool valid_bo_target    = !GetAttackingFlag() && NOT_PULLING_BOT && !leash_owner->AutoAttackEnabled() && !tar->GetHateAmount(this) && !tar->GetHateAmount(leash_owner);
+
+	if (valid_target_state || valid_target || !IsAttackAllowed(tar) || (bo_alt_combat && valid_bo_target)) {
 		// Normally, we wouldn't want to do this without class checks..but, too many issues can arise if we let enchanter animation pets run rampant
 		if (HasPet()) {
 			GetPet()->RemoveFromHateList(tar);
@@ -4961,7 +4958,7 @@ int Bot::GetBaseSkillDamage(EQ::skills::SkillType skill, Mob *target)
 		float skill_bonus = skill_level / 10.0f;
 		float ac_bonus = 0.0f;
 		const EQ::ItemInstance *inst = nullptr;
-		if (HasShieldEquiped())
+		if (HasShieldEquipped())
 			inst = GetBotItem(EQ::invslot::slotSecondary);
 		else if (HasTwoHanderEquipped())
 			inst = GetBotItem(EQ::invslot::slotPrimary);
