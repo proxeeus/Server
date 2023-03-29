@@ -5065,6 +5065,12 @@ void Bot::TryBackstab(Mob *other, int ReuseTime) {
 			bCanFrontalBS = true;
 	}
 
+	//
+	// Always Frontbackstab for rogue bots
+	// Remove this once bots are able to position themselves at the back of the mob
+	bCanFrontalBS = true;
+	//
+	//
 	if (bIsBehind || bCanFrontalBS) {
 		int chance = (10 + (GetDEX() / 10) + (itembonuses.HeroicDEX / 10));
 		if (level >= 60 && other->GetLevel() <= 45 && !other->CastToNPC()->IsEngaged() && other->GetHP()<= 32000 && other->IsNPC() && zone->random.Real(0, 99) < chance) {
