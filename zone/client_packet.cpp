@@ -607,28 +607,8 @@ void Client::CompleteConnect()
 		if (raid) {
 			SetRaidGrouped(true);
 			raid->LearnMembers();
-			std::list<BotsAvailableList> bots_list;
-			database.botdb.LoadBotsList(this->CharacterID(), bots_list);
-			std::vector<RaidMember> r_members = raid->GetMembers();
-			for (const RaidMember& iter : r_members) {
-				if (iter.member_name) {
-					for (const BotsAvailableList& b_iter : bots_list)
-					{
-						if (strcmp(iter.member_name, b_iter.Name) == 0)
-						{
-							char buffer[71] = "^spawn ";
-							strcat(buffer, iter.member_name);
-							bot_command_real_dispatch(this, buffer);
-							Bot* b = entity_list.GetBotByBotName(iter.member_name);
-							if (b)
-							{
-								b->SetRaidGrouped(true);
-								b->p_raid_instance = raid;
-								//b->SetFollowID(this->GetID());
-							}
-						}
-					}
-				}
+			if (RuleB(Bots, Enabled)) {
+				SpawnRaidBotsOnConnect(raid);
 			}
 			raid->VerifyRaid();
 			raid->GetRaidDetails();
@@ -867,7 +847,7 @@ void Client::CompleteConnect()
 	CalcItemScale();
 	DoItemEnterZone();
 
-	if (zone->GetZoneID() == RuleI(World, GuildBankZoneID) && GuildBanks)
+	if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 		GuildBanks->SendGuildBank(this);
 
 	if (ClientVersion() >= EQ::versions::ClientVersion::SoD)
@@ -1426,7 +1406,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 			}
 		}
 		m_pp.guildrank = rank;
-		if (zone->GetZoneID() == RuleI(World, GuildBankZoneID))
+		if (zone->GetZoneID() == Zones::GUILDHALL)
 			GuildBanker = (guild_mgr.IsGuildLeader(GuildID(), CharacterID()) || guild_mgr.GetBankerFlag(CharacterID()));
 	}
 	m_pp.guildbanker = GuildBanker;
@@ -7446,7 +7426,7 @@ void Client::Handle_OP_GuildBank(const EQApplicationPacket *app)
 	if (!GuildBanks)
 		return;
 
-	if ((int)zone->GetZoneID() != RuleI(World, GuildBankZoneID))
+	if (zone->GetZoneID() != Zones::GUILDHALL)
 	{
 		Message(Chat::Red, "The Guild Bank is not available in this zone.");
 
@@ -7796,7 +7776,7 @@ void Client::Handle_OP_GuildCreate(const EQApplicationPacket *app)
 		{
 			Message(Chat::Yellow, "You are now the leader of %s", GuildName);
 
-			if (zone->GetZoneID() == RuleI(World, GuildBankZoneID) && GuildBanks)
+			if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 				GuildBanks->SendGuildBank(this);
 			SendGuildRanks();
 		}
@@ -8126,7 +8106,7 @@ void Client::Handle_OP_GuildInviteAccept(const EQApplicationPacket *app)
 				Message(Chat::Red, "There was an error during the invite, DB may now be inconsistent.");
 				return;
 			}
-			if (zone->GetZoneID() == RuleI(World, GuildBankZoneID) && GuildBanks)
+			if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 				GuildBanks->SendGuildBank(this);
 		}
 	}

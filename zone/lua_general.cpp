@@ -1021,7 +1021,7 @@ luabind::adl::object lua_get_instance_ids(lua_State* L, std::string zone_name) {
 
 	auto instance_ids = quest_manager.GetInstanceIDs(zone_name);
 	for (int i = 0; i < instance_ids.size(); i++) {
-		ret[i] = instance_ids[i];
+		ret[i + 1] = instance_ids[i];
 	}
 
 	return ret;
@@ -1032,7 +1032,7 @@ luabind::adl::object lua_get_instance_ids_by_char_id(lua_State* L, std::string z
 
 	auto instance_ids = quest_manager.GetInstanceIDs(zone_name, character_id);
 	for (int i = 0; i < instance_ids.size(); i++) {
-		ret[i] = instance_ids[i];
+		ret[i + 1] = instance_ids[i];
 	}
 
 	return ret;
@@ -4205,7 +4205,7 @@ luabind::scope lua_register_general() {
 		luabind::def("get_instance_id", &lua_get_instance_id),
 		luabind::def("get_instance_id_by_char_id", &lua_get_instance_id_by_char_id),
 		luabind::def("get_instance_ids", &lua_get_instance_ids),
-		luabind::def("get_instance_ids_by_char_id", &lua_get_instance_id_by_char_id),
+		luabind::def("get_instance_ids_by_char_id", &lua_get_instance_ids_by_char_id),
 		luabind::def("get_instance_timer", &lua_get_instance_timer),
 		luabind::def("get_instance_timer_by_id", &lua_get_instance_timer_by_id),
 		luabind::def("get_instance_version_by_id", &lua_get_instance_version_by_id),
