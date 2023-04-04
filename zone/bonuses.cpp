@@ -1505,12 +1505,14 @@ void Mob::ApplyAABonuses(const AA::Rank &rank, StatBonuses *newbon)
 
 		case SE_SpellEffectResistChance: {
 			for (int e = 0; e < MAX_RESISTABLE_EFFECTS * 2; e += 2) {
-				if (newbon->SEResist[e + 1] && (newbon->SEResist[e] == limit_value) &&
-				    (newbon->SEResist[e + 1] < base_value)) {
-					newbon->SEResist[e] = limit_value; // Spell Effect ID
-					newbon->SEResist[e + 1] = base_value; // Resist Chance
-					break;
-				} else if (!newbon->SEResist[e + 1]) {
+				if (
+					!newbon->SEResist[e + 1] ||
+					(
+						newbon->SEResist[e + 1] &&
+						newbon->SEResist[e] == limit_value &&
+						newbon->SEResist[e + 1] < base_value
+					)
+				) {
 					newbon->SEResist[e] = limit_value; // Spell Effect ID
 					newbon->SEResist[e + 1] = base_value; // Resist Chance
 					break;
@@ -3492,14 +3494,16 @@ void Mob::ApplySpellsBonuses(uint16 spell_id, uint8 casterlevel, StatBonuses *ne
 			{
 				for(int e = 0; e < MAX_RESISTABLE_EFFECTS*2; e+=2)
 				{
-					if(new_bonus->SEResist[e+1] && (new_bonus->SEResist[e] == limit_value) && (new_bonus->SEResist[e+1] < effect_value)){
-						new_bonus->SEResist[e] = limit_value; //Spell Effect ID
-						new_bonus->SEResist[e+1] = effect_value; //Resist Chance
-						break;
-					}
-					else if (!new_bonus->SEResist[e+1]){
-						new_bonus->SEResist[e] = limit_value; //Spell Effect ID
-						new_bonus->SEResist[e+1] = effect_value; //Resist Chance
+					if (
+						!new_bonus->SEResist[e + 1] ||
+						(
+							new_bonus->SEResist[e + 1] &&
+							new_bonus->SEResist[e] == limit_value &&
+							new_bonus->SEResist[e + 1] < effect_value
+						)
+					) {
+						new_bonus->SEResist[e]     = limit_value; //Spell Effect ID
+						new_bonus->SEResist[e + 1] = effect_value; //Resist Chance
 						break;
 					}
 				}
@@ -5043,20 +5047,27 @@ void Mob::NegateSpellEffectBonuses(uint16 spell_id)
 
 				case SE_ProcOnKillShot:
 				{
-					for (int e = 0; e < MAX_SPELL_TRIGGER * 3; e = 3)
+					for (int e = 0; e < MAX_SPELL_TRIGGER * 3; e += 3)
 					{
-						if (negate_spellbonus) { spellbonuses.SpellOnKill[e] = effect_value; }
-						if (negate_spellbonus) { spellbonuses.SpellOnKill[e + 1] = effect_value; }
-						if (negate_spellbonus) { spellbonuses.SpellOnKill[e + 2] = effect_value; }
+						if (negate_spellbonus) {
+							spellbonuses.SpellOnKill[e] = effect_value;
+							spellbonuses.SpellOnKill[e + 1] = effect_value;
+							spellbonuses.SpellOnKill[e + 2] = effect_value;
+						}
 
-						if (negate_aabonus) { aabonuses.SpellOnKill[e] = effect_value; }
-						if (negate_aabonus) { aabonuses.SpellOnKill[e + 1] = effect_value; }
-						if (negate_aabonus) { aabonuses.SpellOnKill[e + 2] = effect_value; }
+						if (negate_aabonus) {
+							aabonuses.SpellOnKill[e] = effect_value;
+							aabonuses.SpellOnKill[e + 1] = effect_value;
+							aabonuses.SpellOnKill[e + 2] = effect_value;
+						}
 
-						if (negate_itembonus) { itembonuses.SpellOnKill[e] = effect_value; }
-						if (negate_itembonus) { itembonuses.SpellOnKill[e + 1] = effect_value; }
-						if (negate_itembonus) { itembonuses.SpellOnKill[e + 2] = effect_value; }
+						if (negate_itembonus) {
+							itembonuses.SpellOnKill[e] = effect_value;
+							itembonuses.SpellOnKill[e + 1] = effect_value;
+							itembonuses.SpellOnKill[e + 2] = effect_value;
+						}
 					}
+
 					break;
 				}
 

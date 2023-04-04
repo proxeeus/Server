@@ -217,9 +217,6 @@ void Mob::TypesTemporaryPets(uint32 typesid, Mob *targ, const char *name_overrid
 	int summon_count = 0;
 	summon_count = pet.count;
 
-	if(summon_count > MAX_SWARM_PETS)
-		summon_count = MAX_SWARM_PETS;
-
 	static const glm::vec2 swarmPetLocations[MAX_SWARM_PETS] = {
 		glm::vec2(5, 5), glm::vec2(-5, 5), glm::vec2(5, -5), glm::vec2(-5, -5),
 		glm::vec2(10, 10), glm::vec2(-10, 10), glm::vec2(10, -10), glm::vec2(-10, -10),
@@ -288,7 +285,7 @@ void Mob::TypesTemporaryPets(uint32 typesid, Mob *targ, const char *name_overrid
 	delete made_npc;
 }
 
-void Mob::WakeTheDead(uint16 spell_id, Corpse *corpse_to_use, Mob *target, uint32 duration) {
+void Mob::WakeTheDead(uint16 spell_id, Corpse *corpse_to_use, Mob *tar, uint32 duration) {
 
 	/*
 		SPA 299 Wake The Dead, 'animateDead' should be temp pet, always spawns 1 pet from corpse, max value is duration
@@ -452,7 +449,6 @@ void Mob::WakeTheDead(uint16 spell_id, Corpse *corpse_to_use, Mob *target, uint3
 		break;
 	}
 
-	made_npc->loottable_id = 0;
 	made_npc->merchanttype = 0;
 	made_npc->d_melee_texture1 = 0;
 	made_npc->d_melee_texture2 = 0;
@@ -493,8 +489,8 @@ void Mob::WakeTheDead(uint16 spell_id, Corpse *corpse_to_use, Mob *target, uint3
 		swarm_pet_npc->GetSwarmInfo()->owner_id = GetID();
 
 		//give the pets somebody to "love"
-		if (target != nullptr) {
-			swarm_pet_npc->AddToHateList(target, 10000, 1000);
+		if (tar != nullptr) {
+			swarm_pet_npc->AddToHateList(tar, 10000, 1000);
 			swarm_pet_npc->GetSwarmInfo()->target = 0;
 		}
 
@@ -507,8 +503,8 @@ void Mob::WakeTheDead(uint16 spell_id, Corpse *corpse_to_use, Mob *target, uint3
 	}
 
 	//the target of these swarm pets will take offense to being cast on...
-	if (target != nullptr)
-		target->AddToHateList(this, 1, 0);
+	if (tar != nullptr)
+		tar->AddToHateList(this, 1, 0);
 
 	// The other pointers we make are handled elsewhere.
 	delete made_npc;
