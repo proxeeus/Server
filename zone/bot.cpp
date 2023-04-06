@@ -1504,7 +1504,7 @@ bool Bot::LoadPet()
 	}
 
 	MakePet(pet_spell_id, spells[pet_spell_id].teleport_zone, pet_name.c_str());
-	if (!GetPet() || !GetPet()->IsNPC()) {
+	if (!GetPet()->IsNPC()) {
 		DeletePet();
 		return false;
 	}
@@ -2504,6 +2504,10 @@ bool Bot::TrySecondaryWeaponAttacks(Mob* tar, const EQ::ItemInstance* s_item) {
 				s_itemdata = s_item->GetItem();
 			}
 
+			if (!s_itemdata) {
+				return false;
+			}
+
 			bool use_fist = true;
 			if (s_itemdata) {
 				use_fist = false;
@@ -2523,10 +2527,10 @@ bool Bot::TrySecondaryWeaponAttacks(Mob* tar, const EQ::ItemInstance* s_item) {
 				if (random < DualWieldProbability) { // Max 78% for DW chance
 					Attack(tar, EQ::invslot::slotSecondary);	// Single attack with offhand
 
-					if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+					if (GetAppearance() == eaDead) { return false; }
 					TryCombatProcs(s_item, tar, EQ::invslot::slotSecondary);
 
-					if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+					if (GetAppearance() == eaDead) { return false; }
 					if (CanThisClassDoubleAttack() && CheckBotDoubleAttack() && tar->GetHP() > -10) {
 						Attack(tar, EQ::invslot::slotSecondary);	// Single attack with offhand
 					}
@@ -2544,33 +2548,33 @@ bool Bot::TryPrimaryWeaponAttacks(Mob* tar, const EQ::ItemInstance* p_item) {
 
 		Attack(tar, EQ::invslot::slotPrimary);
 
-		if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+		if (GetAppearance() == eaDead) { return false; }
 		TriggerDefensiveProcs(tar, EQ::invslot::slotPrimary, false);
 
-		if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+		if (GetAppearance() == eaDead) { return false; }
 		TryCombatProcs(p_item, tar, EQ::invslot::slotPrimary);
 
-		if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+		if (GetAppearance() == eaDead) { return false; }
 		if (CanThisClassDoubleAttack()) {
 
 			if (CheckBotDoubleAttack()) {
 				Attack(tar, EQ::invslot::slotPrimary, true);
 			}
 
-			if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+			if (GetAppearance() == eaDead) { return false; }
 			if (GetSpecialAbility(SPECATK_TRIPLE) && CheckBotDoubleAttack(true)) {
 
 				Attack(tar, EQ::invslot::slotPrimary, true);
 			}
 
-			if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+			if (GetAppearance() == eaDead) { return false; }
 			// quad attack, does this belong here??
 			if (GetSpecialAbility(SPECATK_QUAD) && CheckBotDoubleAttack(true)) {
 				Attack(tar, EQ::invslot::slotPrimary, true);
 			}
 		}
 
-		if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+		if (GetAppearance() == eaDead) { return false; }
 		// Live AA - Flurry, Rapid Strikes ect (Flurry does not require Triple Attack).
 		if (int32 flurrychance = (aabonuses.FlurryChance + spellbonuses.FlurryChance + itembonuses.FlurryChance)) {
 
@@ -2579,12 +2583,12 @@ bool Bot::TryPrimaryWeaponAttacks(Mob* tar, const EQ::ItemInstance* p_item) {
 				MessageString(Chat::NPCFlurry, YOU_FLURRY);
 				Attack(tar, EQ::invslot::slotPrimary, false);
 
-				if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+				if (GetAppearance() == eaDead) { return false; }
 				Attack(tar, EQ::invslot::slotPrimary, false);
 			}
 		}
 
-		if (!GetTarget() || GetAppearance() == eaDead) { return false; }
+		if (GetAppearance() == eaDead) { return false; }
 		auto ExtraAttackChanceBonus =
 			(spellbonuses.ExtraAttackChance[0] + itembonuses.ExtraAttackChance[0] +
 			 aabonuses.ExtraAttackChance[0]);
@@ -3757,6 +3761,10 @@ void Bot::BotRemoveEquipItem(uint16 slot_id)
 
 void Bot::BotTradeAddItem(const EQ::ItemInstance* inst, uint16 slot_id, std::string* error_message, bool save_to_database)
 {
+	if (!inst) {
+		return;
+	}
+
 	if (save_to_database) {
 		if (!database.botdb.SaveItemBySlot(this, slot_id, inst)) {
 			*error_message = BotDatabase::fail::SaveItemBySlot();
@@ -4717,8 +4725,13 @@ return true;
 }
 
 void Bot::Damage(Mob *from, int64 damage, uint16 spell_id, EQ::skills::SkillType attack_skill, bool avoidable, int8 buffslot, bool iBuffTic, eSpecialAttacks special) {
-	if (spell_id == 0)
+	if (!from) {
+		return;
+	}
+
+	if (spell_id == 0) {
 		spell_id = SPELL_UNKNOWN;
+	}
 
 	//handle EVENT_ATTACK. Resets after we have not been attacked for 12 seconds
 	if (attacked_timer.Check()) {
@@ -5166,7 +5179,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 		}
 	}
 
-	if (taunting && target && target->IsNPC() && taunt_time) {
+	if (taunting && target->IsNPC() && taunt_time) {
 		if (GetTarget() && GetTarget()->GetHateTop() && GetTarget()->GetHateTop() != this) {
 			if (GetTarget()->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId)) {
 				BotGroupSay(this, "Taunting %s", target->playerbot_temp_name);
@@ -5246,7 +5259,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	float HasteModifier = (GetHaste() * 0.01f);
 	uint16 skill_to_use = -1;
 	int bot_level = GetLevel();
-	int reuse = (TauntReuseTime * 1000);
+	int reuse = (TauntReuseTime * 1000); // Same as Bash and Kick
 	bool did_attack = false;
 	switch (GetClass()) {
 		case WARRIOR:
@@ -5310,7 +5323,6 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 			if (GetWeaponDamage(target, GetBotItem(EQ::invslot::slotSecondary)) <= 0 && GetWeaponDamage(target, GetBotItem(EQ::invslot::slotShoulders)) <= 0)
 				dmg = DMG_INVULNERABLE;
 
-			reuse = (BashReuseTime * 1000);
 			DoSpecialAttackDamage(target, EQ::skills::SkillBash, dmg, 0, -1, reuse);
 			did_attack = true;
 		}
@@ -5337,7 +5349,6 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 			if (GetWeaponDamage(target, GetBotItem(EQ::invslot::slotFeet)) <= 0)
 				dmg = DMG_INVULNERABLE;
 
-			reuse = (KickReuseTime * 1000);
 			DoSpecialAttackDamage(target, EQ::skills::SkillKick, dmg, 0, -1, reuse);
 			did_attack = true;
 		}
@@ -6803,8 +6814,6 @@ void Bot::UpdateGroupCastingRoles(const Group* group, bool disband)
 
 	Mob* healer = nullptr;
 	Mob* slower = nullptr;
-	Mob* nuker = nullptr;
-	Mob* doter = nullptr;
 
 	for (auto iter : group->members) {
 		if (!iter)
@@ -6920,10 +6929,6 @@ void Bot::UpdateGroupCastingRoles(const Group* group, bool disband)
 		healer->CastToBot()->SetGroupHealer();
 	if (slower && slower->IsBot())
 		slower->CastToBot()->SetGroupSlower();
-	if (nuker && nuker->IsBot())
-		nuker->CastToBot()->SetGroupNuker();
-	if (doter && doter->IsBot())
-		doter->CastToBot()->SetGroupDoter();
 }
 
 Bot* Bot::GetBotByBotClientOwnerAndBotName(Client* c, const std::string& botName) {
@@ -7017,7 +7022,7 @@ void Bot::ProcessClientZoneChange(Client* botOwner) {
 				else if (tempBot->HasGroup()) {
 					Group* g = tempBot->GetGroup();
 					if (g && g->IsGroupMember(botOwner)) {
-						if (botOwner && botOwner->IsClient()) {
+						if (botOwner->IsClient()) {
 							// Modified to not only zone bots if you're the leader.
 							// Also zone bots of the non-leader when they change zone.
 							if (tempBot->GetBotOwnerCharacterID() == botOwner->CharacterID() && g->IsGroupMember(botOwner))
