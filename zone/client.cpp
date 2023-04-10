@@ -8058,9 +8058,9 @@ void Client::SendFactionMessage(int32 tmpvalue, int32 faction_id, int32 faction_
 		MessageString(Chat::White, FACTION_BETTER, name);
 	} else if (tmpvalue < 0 && !RuleB(Client, UseLiveFactionMessage)) {
 		MessageString(Chat::White, FACTION_WORSE, name);
-	else if (RuleB(Client, UseLiveFactionMessage))
+	} else if (RuleB(Client, UseLiveFactionMessage)) {
 		Message(Chat::White, "Your faction standing with %s has been adjusted by %i.", name, tmpvalue); //New Live faction message (14261)
-
+	}
 	return;
 }
 
