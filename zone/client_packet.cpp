@@ -6999,7 +6999,7 @@ void Client::Handle_OP_GroupDisband(const EQApplicationPacket *app)
 		//we have a raid.. see if we're in a raid group
 		uint32 grp = raid->GetGroup(memberToDisband->GetName());
 		bool wasGrpLdr = raid->members[raid->GetPlayerIndex(memberToDisband->GetName())].is_group_leader;
-		if (grp < 12) {
+		if (grp < MAX_RAID_GROUPS) {
 			if (wasGrpLdr) {
 				raid->SetGroupLeader(memberToDisband->GetName(), false);
 				for (int x = 0; x < MAX_RAID_MEMBERS; x++) {
@@ -8613,47 +8613,51 @@ void Client::Handle_OP_Illusion(const EQApplicationPacket *app)
 
 void Client::Handle_OP_InspectAnswer(const EQApplicationPacket *app)
 {
-
 	if (app->size != sizeof(InspectResponse_Struct)) {
 		LogError("Wrong size: OP_InspectAnswer, size=[{}], expected [{}]", app->size, sizeof(InspectResponse_Struct));
 		return;
 	}
 
 	//Fills the app sent from client.
-	EQApplicationPacket* outapp = app->Copy();
-	InspectResponse_Struct* insr = (InspectResponse_Struct*)outapp->pBuffer;
-	Mob* tmp = entity_list.GetMob(insr->TargetID);
-	const EQ::ItemData* item = nullptr;
+	auto               outapp = app->Copy();
+	auto               insr   = (InspectResponse_Struct *) outapp->pBuffer;
+	auto               tmp    = entity_list.GetMob(insr->TargetID);
+	const EQ::ItemData *item  = nullptr;
 
-	int ornamentationAugtype = RuleI(Character, OrnamentationAugmentType);
-	for (int16 L = EQ::invslot::EQUIPMENT_BEGIN; L <= EQ::invslot::EQUIPMENT_END; L++) {
-		const EQ::ItemInstance* inst = GetInv().GetItem(L);
+	for (int16 L                    = EQ::invslot::EQUIPMENT_BEGIN; L <= EQ::invslot::EQUIPMENT_END; L++) {
+		const auto inst = GetInv().GetItem(L);
 		item = inst ? inst->GetItem() : nullptr;
 
 		if (item) {
 			strcpy(insr->itemnames[L], item->Name);
-			if (inst && inst->GetOrnamentationAug(ornamentationAugtype)) {
-				const EQ::ItemData *aug_item = inst->GetOrnamentationAug(ornamentationAugtype)->GetItem();
-				insr->itemicons[L] = aug_item->Icon;
-			}
-			else if (inst->GetOrnamentationIcon()) {
-				insr->itemicons[L] = inst->GetOrnamentationIcon();
-			}
-			else {
+			if (inst) {
+				const auto augment = inst->GetOrnamentationAugment();
+
+				if (augment) {
+					insr->itemicons[L] = augment->GetItem()->Icon;
+				} else if (inst->GetOrnamentationIcon()) {
+					insr->itemicons[L] = inst->GetOrnamentationIcon();
+				}
+			} else {
 				insr->itemicons[L] = item->Icon;
 			}
+		} else {
+			insr->itemicons[L] = 0xFFFFFFFF;
 		}
-		else { insr->itemicons[L] = 0xFFFFFFFF; }
 	}
 
-	InspectMessage_Struct* newmessage = (InspectMessage_Struct*)insr->text;
-	InspectMessage_Struct& playermessage = GetInspectMessage();
-	memcpy(&playermessage, newmessage, sizeof(InspectMessage_Struct));
-	database.SaveCharacterInspectMessage(CharacterID(), &playermessage);
+	auto message         = (InspectMessage_Struct *) insr->text;
+	auto inspect_message = GetInspectMessage();
 
-	if (tmp != 0 && tmp->IsClient()) { tmp->CastToClient()->QueuePacket(outapp); } // Send answer to requester
+	memcpy(&inspect_message, message, sizeof(InspectMessage_Struct));
+	database.SaveCharacterInspectMessage(CharacterID(), &inspect_message);
 
-	return;
+	if (
+		tmp &&
+		tmp->IsClient()
+	) {
+		tmp->CastToClient()->QueuePacket(outapp);
+	} // Send answer to requester
 }
 
 void Client::Handle_OP_InspectMessageUpdate(const EQApplicationPacket *app)
