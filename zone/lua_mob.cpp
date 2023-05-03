@@ -2889,6 +2889,16 @@ float Lua_Mob::GetDefaultRaceSize() {
 	return self->GetDefaultRaceSize();
 }
 
+float Lua_Mob::GetDefaultRaceSize(int race_id) {
+	Lua_Safe_Call_Real();
+	return self->GetDefaultRaceSize(race_id);
+}
+
+float Lua_Mob::GetDefaultRaceSize(int race_id, int gender_id) {
+	Lua_Safe_Call_Real();
+	return self->GetDefaultRaceSize(race_id, gender_id);
+}
+
 float Lua_Mob::GetActSpellRange(uint16 spell_id, float range) {
 	Lua_Safe_Call_Real();
 	return self->GetActSpellRange(spell_id, range);
@@ -3012,6 +3022,11 @@ luabind::object Lua_Mob::GetBuffSpellIDs(lua_State* L) {
 	}
 
 	return t;
+}
+
+bool Lua_Mob::HasSpellEffect(int effect_id) {
+	Lua_Safe_Call_Bool();
+	return self->HasSpellEffect(effect_id);
 }
 
 luabind::scope lua_register_mob() {
@@ -3226,7 +3241,9 @@ luabind::scope lua_register_mob() {
 	.def("GetDEX", &Lua_Mob::GetDEX)
 	.def("GetDR", &Lua_Mob::GetDR)
 	.def("GetDamageAmount", (uint32(Lua_Mob::*)(Lua_Mob))&Lua_Mob::GetDamageAmount)
-	.def("GetDefaultRaceSize", &Lua_Mob::GetDefaultRaceSize)
+	.def("GetDefaultRaceSize", (float(Lua_Mob::*)(void))&Lua_Mob::GetDefaultRaceSize)
+	.def("GetDefaultRaceSize", (float(Lua_Mob::*)(int))&Lua_Mob::GetDefaultRaceSize)
+	.def("GetDefaultRaceSize", (float(Lua_Mob::*)(int,int))&Lua_Mob::GetDefaultRaceSize)
 	.def("GetDeity", &Lua_Mob::GetDeity)
 	.def("GetDisplayAC", &Lua_Mob::GetDisplayAC)
 	.def("GetDrakkinDetails", &Lua_Mob::GetDrakkinDetails)
@@ -3352,6 +3369,7 @@ luabind::scope lua_register_mob() {
 	.def("HasPet", (bool(Lua_Mob::*)(void))&Lua_Mob::HasPet)
 	.def("HasProcs", &Lua_Mob::HasProcs)
 	.def("HasShieldEquipped", (bool(Lua_Mob::*)(void))&Lua_Mob::HasShieldEquipped)
+	.def("HasSpellEffect", &Lua_Mob::HasSpellEffect)
 	.def("HasTimer", &Lua_Mob::HasTimer)
 	.def("HasTwoHandBluntEquipped", (bool(Lua_Mob::*)(void))&Lua_Mob::HasTwoHandBluntEquipped)
 	.def("HasTwoHanderEquipped", (bool(Lua_Mob::*)(void))&Lua_Mob::HasTwoHanderEquipped)

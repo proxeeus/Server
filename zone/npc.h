@@ -583,7 +583,6 @@ public:
 	uint32	npc_spells_id;
 	uint8	casting_spell_AIindex;
 
-	uint32*	pDontCastBefore_casting_spell;
 	std::vector<AISpells_Struct> AIspells;
 	bool HasAISpell;
 	virtual bool AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes, bool bInnates = false);

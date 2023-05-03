@@ -519,6 +519,8 @@ public:
 	bool IsFindable();
 	bool IsTrackable();
 	float GetDefaultRaceSize();
+	float GetDefaultRaceSize(int race_id);
+	float GetDefaultRaceSize(int race_id, int gender_id);
 	int64 GetActDoTDamage(uint16 spell_id, int64 value, Lua_Mob target);
 	int64 GetActDoTDamage(uint16 spell_id, int64 value, Lua_Mob target, bool from_buff_tic);
 	int64 GetActReflectedSpellDamage(uint16 spell_id, int64 value, int effectiveness);
@@ -542,6 +544,7 @@ public:
 	void StopAllTimers();
 	void StopTimer(const char* timer_name);
 	luabind::object GetBuffSpellIDs(lua_State* L);
+	bool HasSpellEffect(int effect_id);
 };
 
 #endif

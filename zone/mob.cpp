@@ -6299,20 +6299,20 @@ FACTION_VALUE Mob::GetSpecialFactionCon(Mob* iOther) {
 
 bool Mob::HasSpellEffect(int effect_id)
 {
-	int i;
+	const auto buff_count = GetMaxTotalSlots();
+	for (int i = 0; i < buff_count; i++) {
+		const auto spell_id = buffs[i].spellid;
 
-	int buff_count = GetMaxTotalSlots();
-	for(i = 0; i < buff_count; i++)
-	{
-		if (!IsValidSpell(buffs[i].spellid)) {
+		if (!IsValidSpell(spell_id)) {
 			continue;
 		}
 
-		if (IsEffectInSpell(buffs[i].spellid, effect_id)) {
-			return(1);
+		if (IsEffectInSpell(spell_id, effect_id)) {
+			return true;
 		}
 	}
-	return(0);
+
+	return false;
 }
 
 int Mob::GetSpecialAbility(int ability)
@@ -6796,8 +6796,11 @@ void Mob::CommonBreakInvisible()
 	CancelSneakHide();
 }
 
-float Mob::GetDefaultRaceSize() const {
-	return GetRaceGenderDefaultHeight(race, gender);
+float Mob::GetDefaultRaceSize(int race_id, int gender_id) const {
+	return GetRaceGenderDefaultHeight(
+		race_id > 0 ? race_id : race,
+		gender_id >= 0 ? gender_id : gender
+	);
 }
 
 bool Mob::ShieldAbility(uint32 target_id, int shielder_max_distance, int shield_duration, int shield_target_mitigation, int shielder_mitigation, bool use_aa, bool can_shield_npc)
