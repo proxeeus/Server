@@ -967,6 +967,8 @@ public:
 	void DropItem(int16 slot_id, bool recurse = true);
 	void DropItemQS(EQ::ItemInstance* inst, bool pickup);
 
+	bool IsAugmentRestricted(uint8 item_type, uint32 augment_restriction);
+
 	int GetItemLinkHash(const EQ::ItemInstance* inst); // move to ItemData..or make use of the pre-calculated database field
 
 	void SendItemLink(const EQ::ItemInstance* inst, bool sendtoall=false);
@@ -2036,6 +2038,13 @@ private:
 	bool CanTradeFVNoDropItem();
 	void SendMobPositions();
 	void PlayerTradeEventLog(Trade *t, Trade *t2);
+
+	// full and partial mail key cache
+	std::string m_mail_key_full;
+	std::string m_mail_key;
+public:
+	const std::string &GetMailKeyFull() const;
+	const std::string &GetMailKey() const;
 };
 
 #endif
