@@ -1454,7 +1454,8 @@ bot_command_add("depart", "Orders a bot to open a magical doorway to a specified
 		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
 		bot_command_add("drink", "Orders a bot to summon drinks", 0, bot_command_summon_drink) ||
 		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) ||
-		bot_command_add("ultravision", "Orders a bot to cast an ultravision spell", 0, bot_command_ultravision)	) {
+		bot_command_add("ultravision", "Orders a bot to cast an ultravision spell", 0, bot_command_ultravision) ||
+		bot_command_add("memblur", "Orders an Enchanter bot to cast Memory Blur on your target.", 0, bot_command_memblur)) {
 		bot_command_deinit();
 		return -1;
 	}
@@ -10715,4 +10716,51 @@ void bot_command_stats(Client *bot_owner, const Seperator* sep)
 	//bot_owner->Message(15, "Level: %i HP: %i AC: %i Mana: %i STR: %i STA: %i DEX: %i AGI: %i INT: %i WIS: %i CHA: %i", bot_owner->GetTarget()->GetLevel(), bot_owner->GetTarget()->GetMaxHP(), bot_owner->GetTarget()->GetAC(), bot_owner->GetTarget()->GetMaxMana(), bot_owner->GetTarget()->GetSTR(), bot_owner->GetTarget()->GetSTA(), bot_owner->GetTarget()->GetDEX(), bot_owner->GetTarget()->GetAGI(), bot_owner->GetTarget()->GetINT(), bot_owner->GetTarget()->GetWIS(), bot_owner->GetTarget()->GetCHA());
 	//bot_owner->Message(15, "Resists-- Magic: %i, Poison: %i, Fire: %i, Cold: %i, Disease: %i, Corruption: %i.", bot_owner->GetTarget()->GetMR(), bot_owner->GetTarget()->GetPR(), bot_owner->GetTarget()->GetFR(), bot_owner->GetTarget()->GetCR(), bot_owner->GetTarget()->GetDR(), bot_owner->GetTarget()->GetCorrup());
 	bot_owner->GetTarget()->CastToBot()->CalcBotStats(true);
+}
+
+void bot_command_memblur(Client *bot_owner, const Seperator* sep)
+{
+	//bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Levitation];
+	//if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Levitation) || helper_command_alias_fail(c, "bot_command_levitation", sep->arg[0], "levitation"))
+	//	return;
+	//if (helper_is_help_or_usage(sep->arg[1])) {
+	//	c->Message(Chat::Cyan, "usage: (<friendly_target>) %s", sep->arg[0]);
+	//	helper_send_usage_required_bots(c, BCEnum::SpT_Levitation);
+	//	return;
+	//}
+
+	if (helper_command_alias_fail(bot_owner, "bot_command_memblur", sep->arg[0], "memblur"))
+		return;
+	if (helper_is_help_or_usage(sep->arg[1])) {
+		bot_owner->Message(Chat::Cyan, "usage: <enemy_target> %s", sep->arg[0]);
+		return;
+	}
+
+	if (!bot_owner->GetTarget())
+	{
+		bot_owner->Message(Chat::White, "You need a valid target.");
+		return;
+	}
+
+	Bot* my_bot = nullptr;
+	std::list<Bot*> sbl;
+	MyBots::PopulateSBL_BySpawnedBots(bot_owner, sbl);
+
+	bool cast_success = false;
+
+	auto target_mob = ActionableTarget::VerifyEnemy(bot_owner, BCEnum::TT_Single);
+	if (!target_mob)
+		return;
+
+	my_bot = ActionableBots::AsSpawned_ByMinLevelAndClass(bot_owner, sbl, 12, ENCHANTER);
+
+	if (!my_bot)
+	{
+		bot_owner->Message(Chat::Red, "No currently spawned bots are available to cast Memory Blur.");
+		return;
+	}
+
+	cast_success = helper_cast_standard_spell(my_bot, target_mob, 301);
+
+	helper_no_available_bots(bot_owner, my_bot);
 }
