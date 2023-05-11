@@ -134,7 +134,7 @@ Bot::Bot(uint32 botID, uint32 botOwnerCharacterID, uint32 botSpellsID, double to
 	m_inv.SetGMInventory(false); // bot expansions are not currently implemented (defaults to static)
 
 	_guildRank = 0;
-	_guildId = 0;
+	_guildId = database.botdb.LoadBotGuild(botID);
 	_lastTotalPlayTime = totalPlayTime;
 	_startTotalPlayTime = time(&_startTotalPlayTime);
 	_lastZoneId = lastZoneId;
@@ -1425,6 +1425,18 @@ bool Bot::DeleteBot()
 			fmt::format(
 				"{} '{}'",
 				BotDatabase::fail::DeleteBot(),
+				GetCleanName()
+			).c_str()
+		);
+		return false;
+	}
+
+	if (!database.botdb.DeleteBotGuild(GetBotID())) {
+		bot_owner->Message(
+			Chat::White,
+			fmt::format(
+				"{} '{}'",
+				BotDatabase::fail::DeleteBotGuild(),
 				GetCleanName()
 			).c_str()
 		);

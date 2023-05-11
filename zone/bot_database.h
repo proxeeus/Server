@@ -168,6 +168,9 @@ public:
 
 	uint16 GetRaceClassBitmask(uint16 bot_race);
 
+	int LoadBotGuild(const uint32 bot_id);
+	bool DeleteBotGuild(const uint32 bot_id);
+
 	class fail {
 	public:
 		/* fail::Bot functions   */
@@ -240,6 +243,7 @@ public:
 
 		/* fail::Bot miscellaneous functions   */
 		static const char* GetBotNameByID();
+		static const char* DeleteBotGuild();
 	};
 
 	private:

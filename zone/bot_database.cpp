@@ -2721,3 +2721,36 @@ const char* BotDatabase::fail::DeleteAllHealRotations() { return "Failed to dele
 /* fail::Bot miscellaneous functions   */
 const char* BotDatabase::fail::GetBotNameByID() { return "Failed to get bot name by bot ID"; }
 const char* BotDatabase::fail::LoadGroupedBotsByGroupID() { return "Failed to load grouped bots by group ID."; }
+const char* BotDatabase::fail::DeleteBotGuild() { return "Failed to delete guild."; }
+
+int BotDatabase::LoadBotGuild(uint32 bot_id)
+{
+	if (!bot_id >= 1)
+		return false;
+
+	int guild_id = 0;
+	query = StringFormat("SELECT `guild_id` FROM `bot_guilds` WHERE `bot_id` = '%u' LIMIT 1", bot_id);
+	auto results = database.QueryDatabase(query);
+	if (!results.Success())
+		return 0;
+	if (!results.RowCount())
+		return 0;
+
+	auto row = results.begin();
+	guild_id = Strings::ToInt(row[0]);
+
+	return guild_id;
+}
+
+bool BotDatabase::DeleteBotGuild(uint32 bot_id)
+{
+	if (!bot_id)
+		return false;
+
+	query = StringFormat("DELETE FROM `bot_guilds` WHERE `bot_id` = '%u'", bot_id);
+	auto results = database.QueryDatabase(query);
+	if (!results.Success())
+		return false;
+
+	return true;
+}
