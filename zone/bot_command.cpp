@@ -1455,7 +1455,9 @@ bot_command_add("depart", "Orders a bot to open a magical doorway to a specified
 		bot_command_add("drink", "Orders a bot to summon drinks", 0, bot_command_summon_drink) ||
 		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) ||
 		bot_command_add("ultravision", "Orders a bot to cast an ultravision spell", 0, bot_command_ultravision) ||
-		bot_command_add("memblur", "Orders an Enchanter bot to cast Memory Blur on your target.", 0, bot_command_memblur)) {
+		bot_command_add("memblur", "Orders an Enchanter bot to cast Memory Blur on your target.", 0, bot_command_memblur) ||
+		bot_command_add("guildinvite", "Invites a Bot to your guild (purely cosmetic).", 0, bot_command_guildinvite) || 
+		bot_command_add("guildremove", "Kicks a Bot from your guild (purely cosmetic).", 0, bot_command_guildremove)) {
 		bot_command_deinit();
 		return -1;
 	}
@@ -10720,15 +10722,6 @@ void bot_command_stats(Client *bot_owner, const Seperator* sep)
 
 void bot_command_memblur(Client *bot_owner, const Seperator* sep)
 {
-	//bcst_list* local_list = &bot_command_spells[BCEnum::SpT_Levitation];
-	//if (helper_spell_list_fail(c, local_list, BCEnum::SpT_Levitation) || helper_command_alias_fail(c, "bot_command_levitation", sep->arg[0], "levitation"))
-	//	return;
-	//if (helper_is_help_or_usage(sep->arg[1])) {
-	//	c->Message(Chat::Cyan, "usage: (<friendly_target>) %s", sep->arg[0]);
-	//	helper_send_usage_required_bots(c, BCEnum::SpT_Levitation);
-	//	return;
-	//}
-
 	if (helper_command_alias_fail(bot_owner, "bot_command_memblur", sep->arg[0], "memblur"))
 		return;
 	if (helper_is_help_or_usage(sep->arg[1])) {
@@ -10763,4 +10756,51 @@ void bot_command_memblur(Client *bot_owner, const Seperator* sep)
 	cast_success = helper_cast_standard_spell(my_bot, target_mob, 301);
 
 	helper_no_available_bots(bot_owner, my_bot);
+}
+
+void bot_command_guildinvite(Client* bot_owner, const Seperator* sep)
+{
+	if (helper_command_alias_fail(bot_owner, "bot_command_guildinvite", sep->arg[0], "guildinvite"))
+		return;
+
+	if (!bot_owner->IsInAGuild())
+	{
+		bot_owner->Message(Chat::White, "You need to belong to a guild.");
+		return;
+	}
+
+	if (!bot_owner->GetTarget())
+	{
+		bot_owner->Message(Chat::White, "You need a valid target.");
+		return;
+	}
+
+	auto my_bot = ActionableBots::AsTarget_ByBot(bot_owner);
+	if (!my_bot) 
+	{
+		bot_owner->Message(Chat::White, "You must target a bot that you own to use this command.");
+		return;
+	}
+
+	auto query = StringFormat("select * from bot_guilds where bot_id=%i", my_bot->GetBotID());
+	auto results = database.QueryDatabase(query);
+	if (results.RowCount() > 0)
+	{
+		bot_owner->Message(Chat::White, "This Bot already belongs to a guild.");
+		return;
+	}
+	auto insertQuery = StringFormat("insert into bot_guilds (bot_id, guild_id) values ('%u', '%u')", my_bot->GetBotID(), bot_owner->GuildID());
+
+	auto insertResult = database.QueryDatabase(insertQuery);
+	if (!insertResult.Success())
+	{
+		bot_owner->Message(Chat::Red, "Cannot invite this Bot to your guild.");
+		return;
+	}
+	bot_owner->Message(Chat::White, "Successfully invited your Bot to your guild.");
+}
+
+void bot_command_guildremove(Client* bot_owner, const Seperator* sep)
+{
+
 }

@@ -692,4 +692,8 @@ void helper_send_available_subcommands(Client *bot_owner, const char* command_si
 void helper_send_usage_required_bots(Client *bot_owner, BCEnum::SpType spell_type, uint8 bot_class = NO_CLASS);
 bool helper_spell_check_fail(STBaseEntry* local_entry);
 bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::SpType spell_type);
+
+// bot misc
+void bot_command_guildinvite(Client* bot_owner, const Seperator *sep);
+void bot_command_guildremove(Client* bot_owner, const Seperator *sep);
 #endif
