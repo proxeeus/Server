@@ -5132,6 +5132,11 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	bool ma_time = monkattack_timer.Check(false);
 	bool ka_time = knightattack_timer.Check(false);
 
+	if (!BehindMob(target) && GetClass() == ROGUE)
+	{
+		RunTo(target->GetX() -10, target->GetY() - 10, target->GetZ());
+	}
+
 	if (taunt_time) {
 
 		// Bots without this skill shouldn't be 'checking' on this timer..let's just disable it and avoid the extra IsAttackAllowed() checks
