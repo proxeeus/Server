@@ -2213,6 +2213,25 @@ void Bot::AI_Process()
 				}
 			}
 
+			//
+			// Proxeeus: experimental code to try & get non-tanking bots to go automatically at the back of the current
+			// target (to prevent ripostes and stuff).
+			// Requirements:
+			// - not being behind the target
+			// - be a melee
+			// - not be the first on the hate-list (ie: not tanking)
+			//
+			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == ROGUE || GetClass() == RANGER || GetClass() == MONK ||
+				GetClass() == BARD || GetClass() == PALADIN || GetClass() == SHADOWKNIGHT || GetClass() == WARRIOR) && ( this != tar->GetHateTop()))
+			{
+				GMMove(tar->GetPosition());
+				TryMoveAlong(10.0, 256.0);
+				return;
+			}
+			//
+			//
+			//
+
 			if (!IsBotNonSpellFighter() && AI_EngagedCastCheck()) {
 				return;
 			}
@@ -5057,7 +5076,7 @@ void Bot::TryBackstab(Mob *other, int ReuseTime) {
 	//
 	// Always Frontbackstab for rogue bots
 	// Remove this once bots are able to position themselves at the back of the mob
-	bCanFrontalBS = true;
+	// bCanFrontalBS = true;
 	//
 	//
 	if (bIsBehind || bCanFrontalBS) {
@@ -5131,11 +5150,6 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	bool ca_time = classattack_timer.Check(false);
 	bool ma_time = monkattack_timer.Check(false);
 	bool ka_time = knightattack_timer.Check(false);
-
-	if (!BehindMob(target) && GetClass() == ROGUE)
-	{
-		RunTo(target->GetX() -10, target->GetY() - 10, target->GetZ());
-	}
 
 	if (taunt_time) {
 
