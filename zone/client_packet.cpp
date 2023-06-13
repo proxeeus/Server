@@ -656,7 +656,7 @@ void Client::CompleteConnect()
 
 		const SPDat_Spell_Struct &spell = spells[buffs[j1].spellid];
 
-		int NimbusEffect = GetNimbusEffect(buffs[j1].spellid);
+		int NimbusEffect = GetSpellNimbusEffect(buffs[j1].spellid);
 		if (NimbusEffect) {
 			if (!IsNimbusEffectActive(NimbusEffect))
 				SendSpellEffect(NimbusEffect, 500, 0, 1, 3000, true);
@@ -721,17 +721,17 @@ void Client::CompleteConnect()
 			case SE_AddMeleeProc:
 			case SE_WeaponProc:
 			{
-				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel, GetProcLimitTimer(buffs[j1].spellid, ProcType::MELEE_PROC));
+				AddProcToWeapon(GetProcID(buffs[j1].spellid, x1), false, 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, buffs[j1].casterlevel, GetSpellProcLimitTimer(buffs[j1].spellid, ProcType::MELEE_PROC));
 				break;
 			}
 			case SE_DefensiveProc:
 			{
-				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, ProcType::DEFENSIVE_PROC));
+				AddDefensiveProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetSpellProcLimitTimer(buffs[j1].spellid, ProcType::DEFENSIVE_PROC));
 				break;
 			}
 			case SE_RangedProc:
 			{
-				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetProcLimitTimer(buffs[j1].spellid, ProcType::RANGED_PROC));
+				AddRangedProc(GetProcID(buffs[j1].spellid, x1), 100 + spells[buffs[j1].spellid].limit_value[x1], buffs[j1].spellid, GetSpellProcLimitTimer(buffs[j1].spellid, ProcType::RANGED_PROC));
 				break;
 			}
 			}
@@ -6471,27 +6471,28 @@ void Client::Handle_OP_GMFind(const EQApplicationPacket *app)
 		RecordPlayerEventLog(PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = "Used /find"});
 		return;
 	}
-	if (app->size != sizeof(GMSummon_Struct)) {
-		LogError("Wrong size: OP_GMFind, size=[{}], expected [{}]", app->size, sizeof(GMSummon_Struct));
+
+	if (app->size != sizeof(GMFind_Struct)) {
+		LogError("Wrong size: OP_GMFind, size=[{}], expected [{}]", app->size, sizeof(GMFind_Struct));
 		return;
 	}
+
 	//Break down incoming
-	GMSummon_Struct* request = (GMSummon_Struct*)app->pBuffer;
+	auto* request = (GMFind_Struct*) app->pBuffer;
 	//Create a new outgoing
-	auto outapp = new EQApplicationPacket(OP_GMFind, sizeof(GMSummon_Struct));
-	GMSummon_Struct* foundplayer = (GMSummon_Struct*)outapp->pBuffer;
+	auto outapp = new EQApplicationPacket(OP_GMFind, sizeof(GMFind_Struct));
+	auto* foundplayer = (GMFind_Struct*) outapp->pBuffer;
 	//Copy the constants
 	strcpy(foundplayer->charname, request->charname);
 	strcpy(foundplayer->gmname, request->gmname);
 	//Check if the NPC exits intrazone...
-	Mob* gt = entity_list.GetMob(request->charname);
-	if (gt != 0) {
+	auto* gt = entity_list.GetMob(request->charname);
+	if (gt) {
 		foundplayer->success = 1;
-		foundplayer->x = (int32)gt->GetX();
-		foundplayer->y = (int32)gt->GetY();
-
-		foundplayer->z = (int32)gt->GetZ();
-		foundplayer->zoneID = zone->GetZoneID();
+		foundplayer->x       = gt->GetX();
+		foundplayer->y       = gt->GetY();
+		foundplayer->z       = gt->GetZ();
+		foundplayer->zoneID  = zone->GetZoneID();
 	}
 	//Send the packet...
 	FastQueuePacket(&outapp);
@@ -9232,7 +9233,7 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 						return;
 					}
 					if (i == 0) {
-						if (!IsCastWhileInvis(item->Click.Effect)) {
+						if (!IsCastWhileInvisibleSpell(item->Click.Effect)) {
 							CommonBreakInvisible(); // client can't do this for us :(
 						}
 						if (GetClass() == BARD){
@@ -9304,7 +9305,7 @@ void Client::Handle_OP_ItemVerifyRequest(const EQApplicationPacket *app)
 					}
 
 					if (i == 0) {
-						if (!IsCastWhileInvis(augitem->Click.Effect)) {
+						if (!IsCastWhileInvisibleSpell(augitem->Click.Effect)) {
 							CommonBreakInvisible(); // client can't do this for us :(
 						}
 						if (GetClass() == BARD) {
@@ -14419,11 +14420,6 @@ void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
 		return;
 	}
 
-	if (GetTarget())
-	{
-		GetTarget()->IsTargeted(-1);
-	}
-
 	// Locate and cache new target
 	ClientTarget_Struct* ct = (ClientTarget_Struct*)app->pBuffer;
 	pClientSideTarget = ct->new_target;
@@ -14432,6 +14428,11 @@ void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
 		Mob *nt = entity_list.GetMob(ct->new_target);
 		if (nt)
 		{
+			if (GetTarget())
+			{
+				GetTarget()->IsTargeted(-1);
+			}
+
 			SetTarget(nt);
 			bool inspect_buffs = false;
 			// rank 1 gives you ability to see NPC buffs in target window (SoD+)
@@ -14460,21 +14461,7 @@ void Client::Handle_OP_TargetCommand(const EQApplicationPacket *app)
 		}
 		else
 		{
-			SetTarget(nullptr);
-			SetHoTT(0);
-			UpdateXTargetType(TargetsTarget, nullptr);
-
-			Group *g = GetGroup();
-
-			if (g && g->HasRole(this, RoleAssist))
-				g->SetGroupAssistTarget(0);
-
-			if (g && g->HasRole(this, RoleTank))
-				g->SetGroupTankTarget(0);
-
-			if (g && g->HasRole(this, RolePuller))
-				g->SetGroupPullerTarget(0);
-
+			MessageString(Chat::Red, DONT_SEE_TARGET);
 			return;
 		}
 	}

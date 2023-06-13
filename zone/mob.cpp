@@ -2493,16 +2493,20 @@ void Mob::SendIllusionPacket(
 	}
 
 	// update internal values for mob
-	size = (in_size <= 0.0f) ? GetRaceGenderDefaultHeight(race, gender) : in_size;
-	texture = new_texture;
-	helmtexture = new_helmtexture;
-	haircolor = new_haircolor;
-	beardcolor = new_beardcolor;
-	eyecolor1 = new_eyecolor1;
-	eyecolor2 = new_eyecolor2;
-	hairstyle = new_hairstyle;
-	luclinface = new_luclinface;
-	beard = new_beard;
+	size             = (in_size <= 0.0f) ? GetRaceGenderDefaultHeight(race, gender) : in_size;
+	if (new_texture != 0xFF) {
+		texture          = new_texture;
+	}
+	if (new_helmtexture != 0xFF) {
+		helmtexture      = new_helmtexture;
+	}
+	haircolor        = new_haircolor;
+	beardcolor       = new_beardcolor;
+	eyecolor1        = new_eyecolor1;
+	eyecolor2        = new_eyecolor2;
+	hairstyle        = new_hairstyle;
+	luclinface       = new_luclinface;
+	beard            = new_beard;
 	drakkin_heritage = new_drakkin_heritage;
 	drakkin_tattoo = new_drakkin_tattoo;
 	drakkin_details = new_drakkin_details;
@@ -4463,7 +4467,7 @@ int Mob::CountDispellableBuffs()
 		if(buffs[x].counters)
 			continue;
 
-		if(spells[buffs[x].spellid].good_effect == 0)
+		if(spells[buffs[x].spellid].good_effect == DETRIMENTAL_EFFECT)
 			continue;
 
 		if(IsValidSpell(buffs[x].spellid) && spells[buffs[x].spellid].buff_duration_formula != DF_Permanent) {

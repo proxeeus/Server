@@ -832,14 +832,6 @@ void NPC::AddCash(uint16 in_copper, uint16 in_silver, uint16 in_gold, uint16 in_
 		platinum = 0;
 }
 
-void NPC::AddCash()
-{
-	copper   = zone->random.Int(1, 100);
-	silver   = zone->random.Int(1, 50);
-	gold     = zone->random.Int(1, 10);
-	platinum = zone->random.Int(1, 5);
-}
-
 void NPC::RemoveCash() {
 	copper = 0;
 	silver = 0;
@@ -1203,7 +1195,7 @@ bool NPC::DatabaseCastAccepted(int spell_id) {
 			break;
 		}
 		default:
-			if(spells[spell_id].good_effect == 1 && !(spells[spell_id].buff_duration == 0 && GetHPRatio() == 100) && !IsEngaged())
+			if(spells[spell_id].good_effect == BENEFICIAL_EFFECT && !(spells[spell_id].buff_duration == 0 && GetHPRatio() == 100) && !IsEngaged())
 				return true;
 			return false;
 		}
