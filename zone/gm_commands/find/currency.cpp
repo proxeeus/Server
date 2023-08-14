@@ -2,7 +2,7 @@
 
 void FindCurrency(Client *c, const Seperator *sep)
 {
-	const auto can_summon_items = c->Admin() >= GetCommandStatus(c, "summonitem");
+	const auto can_summon_items = c->Admin() >= GetCommandStatus("summonitem");
 
 	if (sep->IsNumber(2)) {
 		const auto item_id     = Strings::ToUnsignedInt(sep->arg[2]);
@@ -13,7 +13,7 @@ void FindCurrency(Client *c, const Seperator *sep)
 				Chat::White,
 				fmt::format(
 					"There is no currency with an item ID of {}.",
-					Strings::Commify(item_id)
+					item_id
 				).c_str()
 			);
 
@@ -26,7 +26,7 @@ void FindCurrency(Client *c, const Seperator *sep)
 				Chat::White,
 				fmt::format(
 					"Item ID {} does not exist.",
-					Strings::Commify(item_id)
+					item_id
 				).c_str()
 			);
 

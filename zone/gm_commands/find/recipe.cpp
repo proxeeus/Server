@@ -4,7 +4,7 @@
 
 void FindRecipe(Client *c, const Seperator *sep)
 {
-	const auto can_view_recipes = c->Admin() >= GetCommandStatus(c, "viewrecipe");
+	const auto can_view_recipes = c->Admin() >= GetCommandStatus("viewrecipe");
 
 	if (sep->IsNumber(2)) {
 		const auto recipe_id = static_cast<uint16>(Strings::ToUnsignedInt(sep->arg[2]));
@@ -19,7 +19,7 @@ void FindRecipe(Client *c, const Seperator *sep)
 				Chat::White,
 				fmt::format(
 					"Recipe ID {} could not be found.",
-					Strings::Commify(recipe_id)
+					recipe_id
 				).c_str()
 			);
 			return;
@@ -29,7 +29,7 @@ void FindRecipe(Client *c, const Seperator *sep)
 			Chat::White,
 			fmt::format(
 				"Recipe {} | {}{}",
-				Strings::Commify(recipe_id),
+				recipe_id,
 				l[0].name,
 				(
 					can_view_recipes ?

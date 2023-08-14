@@ -7,7 +7,7 @@ void FindTask(Client *c, const Seperator *sep)
 		return;
 	}
 
-	const auto can_assign_tasks = c->Admin() >= GetCommandStatus(c, "task");
+	const auto can_assign_tasks = c->Admin() >= GetCommandStatus("task");
 
 	if (sep->IsNumber(2)) {
 		const auto  task_id   = Strings::ToUnsignedInt(sep->arg[2]);
@@ -18,7 +18,7 @@ void FindTask(Client *c, const Seperator *sep)
 				Chat::White,
 				fmt::format(
 					"Task ID {} was not found.",
-					Strings::Commify(task_id)
+					task_id
 				).c_str()
 			);
 
@@ -29,7 +29,7 @@ void FindTask(Client *c, const Seperator *sep)
 			Chat::White,
 			fmt::format(
 				"Task {} | {}",
-				Strings::Commify(task_id),
+				task_id,
 				task_name
 			).c_str()
 		);
@@ -52,7 +52,7 @@ void FindTask(Client *c, const Seperator *sep)
 			Chat::White,
 			fmt::format(
 				"Task {} | {}{}",
-				Strings::Commify(t.first),
+				t.first,
 				task_name,
 				(
 					can_assign_tasks ?

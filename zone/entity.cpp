@@ -674,6 +674,8 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 	npc_list.emplace(std::pair<uint16, NPC *>(npc->GetID(), npc));
 	mob_list.emplace(std::pair<uint16, Mob *>(npc->GetID(), npc));
 
+	entity_list.ScanCloseMobs(npc->close_mobs, npc, true);
+
 	if (parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_SPAWN)) {
 		parse->EventNPC(EVENT_SPAWN, npc, nullptr, "", 0);
 	}
@@ -692,7 +694,7 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 			QueueClients(npc, app);
 			npc->SendArmorAppearance();
 			npc->SetAppearance(npc->GetGuardPointAnim(),false);
-			npc->SendIllusionPacket(npc->GetRace(), npc->GetGender(), npc->GetTexture(), npc->GetHelmTexture(), npc->GetHairColor(), npc->GetBeardColor(), npc->GetEyeColor1(), npc->GetEyeColor2(), npc->GetHairStyle(), npc->GetLuclinFace(), npc->GetBeard(), npc->aa_title, npc->GetDrakkinHeritage(), npc->GetDrakkinTattoo(), npc->GetDrakkinDetails(), npc->GetSize());
+
 			if (!npc->IsTargetable())
 			{
 				npc->SendTargetable(false);
@@ -713,8 +715,6 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 	}
 
 	npc->SendPositionToClients();
-
-	entity_list.ScanCloseMobs(npc->close_mobs, npc, true);
 
 	if (parse->HasQuestSub(ZONE_CONTROLLER_NPC_ID, EVENT_SPAWN_ZONE)) {
 		npc->DispatchZoneControllerEvent(EVENT_SPAWN_ZONE, npc, "", 0, nullptr);
@@ -2238,6 +2238,18 @@ Raid* EntityList::GetRaidByBot(const Bot* bot)
 	for (const auto& r : raid_list) {
 		for (const auto& m : GetMembersWhoAreBots(r)) {
 			if (m.member->CastToBot() == bot) {
+				return r;
+			}
+		}
+	}
+	return nullptr;
+}
+
+Raid* EntityList::GetRaidByName(const char* name)
+{
+	for (const auto& r : raid_list) {
+		for (const auto& m : r->members) {
+			if (Strings::EqualFold(m.member_name, name)) {
 				return r;
 			}
 		}

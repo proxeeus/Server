@@ -1066,42 +1066,42 @@ void Perl__processmobswhilezoneempty(bool on)
 	quest_manager.processmobswhilezoneempty(on);
 }
 
-void Perl__npcrace(int race_id)
+void Perl__npcrace(uint16 race_id)
 {
 	quest_manager.npcrace(race_id);
 }
 
-void Perl__npcgender(int gender_id)
+void Perl__npcgender(uint8 gender_id)
 {
 	quest_manager.npcgender(gender_id);
 }
 
-void Perl__npcsize(int size)
+void Perl__npcsize(float size)
 {
 	quest_manager.npcsize(size);
 }
 
-void Perl__npctexture(int texture_id)
+void Perl__npctexture(uint8 texture_id)
 {
 	quest_manager.npctexture(texture_id);
 }
 
-void Perl__playerrace(int race_id)
+void Perl__playerrace(uint16 race_id)
 {
 	quest_manager.playerrace(race_id);
 }
 
-void Perl__playergender(int gender_id)
+void Perl__playergender(uint8 gender_id)
 {
 	quest_manager.playergender(gender_id);
 }
 
-void Perl__playersize(int newsize)
+void Perl__playersize(float size)
 {
-	quest_manager.playersize(newsize);
+	quest_manager.playersize(size);
 }
 
-void Perl__playertexture(int texture_id)
+void Perl__playertexture(uint8 texture_id)
 {
 	quest_manager.playertexture(texture_id);
 }
@@ -2334,17 +2334,17 @@ void Perl__removetitle(int title_set)
 	quest_manager.removetitle(title_set);
 }
 
-void Perl__wearchange(uint8 slot, uint16 texture_id)
+void Perl__wearchange(uint8 slot, uint32 texture_id)
 {
 	quest_manager.wearchange(slot, texture_id);
 }
 
-void Perl__wearchange(uint8 slot, uint16 texture_id, uint32 hero_forge_model_id)
+void Perl__wearchange(uint8 slot, uint32 texture_id, uint32 hero_forge_model_id)
 {
 	quest_manager.wearchange(slot, texture_id, hero_forge_model_id);
 }
 
-void Perl__wearchange(uint8 slot, uint16 texture_id, uint32 hero_forge_model_id, uint32 elite_material_id)
+void Perl__wearchange(uint8 slot, uint32 texture_id, uint32 hero_forge_model_id, uint32 elite_material_id)
 {
 	quest_manager.wearchange(slot, texture_id, hero_forge_model_id, elite_material_id);
 }
@@ -6233,9 +6233,9 @@ void perl_register_quest()
 	package.add("varlink", (std::string(*)(uint32, int16, uint32, uint32, uint32, uint32, uint32, uint32, bool))&Perl__varlink);
 	package.add("voicetell", &Perl__voicetell);
 	package.add("we", &Perl__we);
-	package.add("wearchange", (void(*)(uint8, uint16))&Perl__wearchange);
-	package.add("wearchange", (void(*)(uint8, uint16, uint32))&Perl__wearchange);
-	package.add("wearchange", (void(*)(uint8, uint16, uint32, uint32))&Perl__wearchange);
+	package.add("wearchange", (void(*)(uint8, uint32))&Perl__wearchange);
+	package.add("wearchange", (void(*)(uint8, uint32, uint32))&Perl__wearchange);
+	package.add("wearchange", (void(*)(uint8, uint32, uint32, uint32))&Perl__wearchange);
 	package.add("whisper", &Perl__whisper);
 	package.add("write", &Perl__write);
 	package.add("ze", &Perl__ze);

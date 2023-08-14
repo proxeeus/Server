@@ -1548,6 +1548,16 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		r->SendRaidMOTD();
 		break;
 	}
+	case ServerOP_RaidNote: {
+		auto snote = (ServerRaidNote_Struct*)pack->pBuffer;
+		if (snote->rid > 0) {
+			Raid* r = entity_list.GetRaidByID(snote->rid);
+			if (r) {
+				r->SendRaidNotes();
+			}
+		}
+		break;
+	}
 	case ServerOP_SpawnPlayerCorpse: {
 		SpawnPlayerCorpse_Struct* s = (SpawnPlayerCorpse_Struct*)pack->pBuffer;
 		Corpse* NewCorpse = database.LoadCharacterCorpse(s->player_corpse_id);
@@ -1992,6 +2002,12 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	{
 		zone->SendReloadMessage("Rules");
 		RuleManager::Instance()->LoadRules(&database, RuleManager::Instance()->GetActiveRuleset(), true);
+		break;
+	}
+	case ServerOP_ReloadDataBucketsCache:
+	{
+		zone->SendReloadMessage("Data buckets cache");
+		DataBucket::ClearCache();
 		break;
 	}
 	case ServerOP_ReloadDoors:
@@ -3317,6 +3333,11 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	case ServerOP_SharedTaskFailed:
 	{
 		SharedTaskZoneMessaging::HandleWorldMessage(pack);
+		break;
+	}
+	case ServerOP_DataBucketCacheUpdate:
+	{
+		DataBucket::HandleWorldMessage(pack);
 		break;
 	}
 	default: {

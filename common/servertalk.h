@@ -113,6 +113,7 @@
 #define ServerOP_GroupFollowAck		0x0111
 #define ServerOP_GroupCancelInvite	0x0112
 #define ServerOP_RaidMOTD			0x0113
+#define ServerOP_RaidNote           0x0114
 
 #define ServerOP_InstanceUpdateTime			0x014F
 #define ServerOP_AdventureRequest			0x0150
@@ -248,6 +249,7 @@
 #define ServerOP_ReloadZonePoints 0x4122
 #define ServerOP_ReloadDzTemplates 0x4123
 #define ServerOP_ReloadZoneData 0x4124
+#define ServerOP_ReloadDataBucketsCache 0x4125
 
 #define ServerOP_CZDialogueWindow 0x4500
 #define ServerOP_CZLDoNUpdate 0x4501
@@ -284,6 +286,8 @@
 
 // player events
 #define ServerOP_PlayerEvent 0x5100
+
+#define ServerOP_DataBucketCacheUpdate 0x5200
 
 enum {
 	CZUpdateType_Character,
@@ -1075,6 +1079,10 @@ struct ServerRaidMOTD_Struct {
 	char motd[0];
 };
 
+struct ServerRaidNote_Struct {
+	uint32 rid;
+};
+
 struct ServerLFGMatchesRequest_Struct {
 	uint32	FromID;
 	uint8	QuerierLevel;
@@ -1811,6 +1819,11 @@ struct ServerDzCreateSerialized_Struct {
 };
 
 struct ServerSendPlayerEvent_Struct {
+	uint32_t cereal_size;
+	char cereal_data[0];
+};
+
+struct ServerDataBucketCacheUpdate_Struct {
 	uint32_t cereal_size;
 	char cereal_data[0];
 };

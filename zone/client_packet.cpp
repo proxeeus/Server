@@ -62,6 +62,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/repositories/account_repository.h"
 
 #include "../common/events/player_event_logs.h"
+#include "../common/repositories/character_stats_record_repository.h"
 
 extern QueryServ* QServ;
 extern Zone* zone;
@@ -328,6 +329,8 @@ void MapOpcodes()
 	ConnectedOpcodes[OP_PVPLeaderBoardRequest] = &Client::Handle_OP_PVPLeaderBoardRequest;
 	ConnectedOpcodes[OP_QueryUCSServerStatus] = &Client::Handle_OP_QueryUCSServerStatus;
 	ConnectedOpcodes[OP_RaidInvite] = &Client::Handle_OP_RaidCommand;
+	ConnectedOpcodes[OP_RaidDelegateAbility] = &Client::Handle_OP_RaidDelegateAbility;
+	ConnectedOpcodes[OP_RaidClearNPCMarks] = &Client::Handle_OP_RaidClearNPCMarks;
 	ConnectedOpcodes[OP_RandomReq] = &Client::Handle_OP_RandomReq;
 	ConnectedOpcodes[OP_ReadBook] = &Client::Handle_OP_ReadBook;
 	ConnectedOpcodes[OP_RecipeAutoCombine] = &Client::Handle_OP_RecipeAutoCombine;
@@ -607,7 +610,6 @@ void Client::CompleteConnect()
 			but not important for now.
 			*/
 			raid->SendRaidCreate(this);
-			raid->SendMakeLeaderPacketTo(raid->leadername, this);
 			raid->SendRaidAdd(GetName(), this);
 			raid->SendBulkRaid(this);
 			raid->SendGroupUpdate(this);
@@ -616,6 +618,7 @@ void Client::CompleteConnect()
 				raid->UpdateRaidAAs();
 				raid->SendAllRaidLeadershipAA();
 			}
+			raid->SendMakeLeaderPacketTo(raid->leadername, this);
 			uint32 grpID = raid->GetGroup(GetName());
 			if (grpID < 12) {
 				raid->SendRaidGroupRemove(GetName(), grpID);
@@ -636,6 +639,8 @@ void Client::CompleteConnect()
 				raid->SendRaidLockTo(this);
 
 			raid->SendHPManaEndPacketsTo(this);
+			raid->SendAssistTarget(this);
+			raid->SendMarkTargets(this);
 		}
 	}
 	else {
@@ -910,6 +915,8 @@ void Client::CompleteConnect()
 	}
 
 	heroforge_wearchange_timer.Start(250);
+
+	RecordStats();
 
 	// enforce some rules..
 	if (!CanEnterZone()) {
@@ -3043,8 +3050,22 @@ void Client::Handle_OP_AssistGroup(const EQApplicationPacket *app)
 		LogDebug("Size mismatch in OP_AssistGroup expected [{}] got [{}]", sizeof(EntityId_Struct), app->size);
 		return;
 	}
-	QueuePacket(app);
-	return;
+
+	EntityId_Struct* eid = (EntityId_Struct*)app->pBuffer;
+	Entity* entity = entity_list.GetID(eid->entity_id);
+
+	if (entity && entity->IsMob()) {
+		Mob* new_target = entity->CastToMob();
+		if (new_target && (GetGM() ||
+			Distance(m_Position, new_target->GetPosition()) <= TARGETING_RANGE)) {
+			cheat_manager.SetExemptStatus(Assist, true);
+			EQApplicationPacket* outapp = new EQApplicationPacket(OP_Assist, sizeof(EntityId_Struct));
+			eid = (EntityId_Struct*)outapp->pBuffer;
+			eid->entity_id = new_target->GetID();
+			FastQueuePacket(&outapp);
+			safe_delete(outapp);
+		}
+	}
 }
 
 void Client::Handle_OP_AugmentInfo(const EQApplicationPacket *app)
@@ -5206,12 +5227,12 @@ void Client::Handle_OP_ConsiderCorpse(const EQApplicationPacket *app)
 
 	uint32 decay_time = t->GetDecayTime();
 	if (decay_time) {
-		auto time_string = Strings::SecondsToTime(decay_time, true);
+		const std::string& time_string = Strings::SecondsToTime(decay_time, true);
 		Message(
 			Chat::NPCQuestSay,
 			fmt::format(
 				"This corpse will decay in {}.",
-				time_string
+				Strings::ToLower(time_string)
 			).c_str()
 		);
 
@@ -5850,6 +5871,31 @@ void Client::Handle_OP_DoGroupLeadershipAbility(const EQApplicationPacket *app)
 		break;
 	}
 
+	case RaidLeadershipAbility_MainAssist:
+	{
+		//This is not needed as it executes from opcode 0x2b33 which is sent
+		//with this opcode.
+		//if (GetTarget())
+		//{
+		//	Raid* r = GetRaid();
+		//	if (r)
+		//	{
+		//		r->DelegateAbility(GetTarget()->CastToClient()->GetName());
+		//	}
+		//}
+		break;
+	}
+	case RaidLeadershipAbility_MarkNPC:
+	{
+		if (GetTarget() && GetTarget()->IsMob()) {
+			Raid* r = GetRaid();
+			if (r) {
+				r->RaidMarkNPC(this, dglas->Parameter);
+			}
+		}
+		break;
+
+	}
 	default:
 		LogDebug("Got unhandled OP_DoGroupLeadershipAbility Ability: [{}] Parameter: [{}]", dglas->Ability, dglas->Parameter);
 		break;
@@ -11934,6 +11980,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 							if (raid->IsLocked()) {
 								raid->SendRaidLockTo(c);
 							}
+							raid->SendAssistTarget(c);
+							raid->SendMarkTargets(c);
 						}
 					}
 					group->JoinRaidXTarget(raid);
@@ -11948,6 +11996,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 					if (raid->IsLocked()) {
 						raid->SendRaidLockTo(this);
 					}
+					raid->SendAssistTarget(this);
+					raid->SendMarkTargets(this);
 				}
 			}
 			else
@@ -11988,6 +12038,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 									if (raid->IsLocked()) {
 										raid->SendRaidLockTo(c);
 									}
+									raid->SendAssistTarget(c);
+									raid->SendMarkTargets(c);
 								}
 								else {
 									Client* c = nullptr;
@@ -12004,6 +12056,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 									if (raid->IsLocked()) {
 										raid->SendRaidLockTo(c);
 									}
+									raid->SendAssistTarget(c);
+									raid->SendMarkTargets(c);
 								}
 							}
 						}
@@ -12043,6 +12097,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 								if (raid->IsLocked()) {
 									raid->SendRaidLockTo(c);
 								}
+								raid->SendAssistTarget(c);
+								raid->SendMarkTargets(c);
 							}
 							else
 							{
@@ -12060,6 +12116,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 								if (raid->IsLocked()) {
 									raid->SendRaidLockTo(c);
 								}
+								raid->SendAssistTarget(c);
+								raid->SendMarkTargets(c);
 							}
 						}
 					}
@@ -12100,6 +12158,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 									if (raid->IsLocked()) {
 										raid->SendRaidLockTo(c);
 									}
+									raid->SendAssistTarget(c);
+									raid->SendMarkTargets(c);
 								}
 								else
 								{
@@ -12116,6 +12176,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 									if (raid->IsLocked()) {
 										raid->SendRaidLockTo(c);
 									}
+									raid->SendAssistTarget(c);
+									raid->SendMarkTargets(c);
 								}
 							}
 						}
@@ -12129,6 +12191,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 						if (raid->IsLocked()) {
 							raid->SendRaidLockTo(this);
 						}
+						raid->SendAssistTarget(this);
+						raid->SendMarkTargets(this);
 					}
 					else { // neither has a group
 						raid = new Raid(player_sending_invite);
@@ -12143,6 +12207,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 						if (raid->IsLocked()) {
 							raid->SendRaidLockTo(this);
 						}
+						raid->SendAssistTarget(this);
+						raid->SendMarkTargets(this);
 					}
 				}
 			}
@@ -12165,6 +12231,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 				//Does not camp the Bots, just removes from the raid
 				if (c_to_disband) {
 					uint32 i = raid->GetPlayerIndex(raid_command_packet->leader_name);
+					raid->RemoveRaidDelegates(raid_command_packet->leader_name);
+					raid->SendRemoveAllRaidXTargets(raid_command_packet->leader_name);
 					raid->SetNewRaidLeader(i);
 					raid->HandleBotGroupDisband(c_to_disband->CharacterID());
 					raid->HandleOfflineBots(c_to_disband->CharacterID());
@@ -12180,11 +12248,13 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 
 					if (gid < 12 && (raid->IsGroupLeader(b_to_disband->GetName()) || raid->GroupCount(gid) < 2)) {
 						uint32 owner_id = b_to_disband->CastToBot()->GetOwner()->CastToClient()->CharacterID();
+						raid->RemoveRaidDelegates(raid_command_packet->leader_name);
+						raid->UpdateRaidXTargets();
 						raid->HandleBotGroupDisband(owner_id, gid);
-
 					} else if (b_to_disband && raid->IsRaidMember(b_to_disband->GetName())) {
+						raid->RemoveRaidDelegates(raid_command_packet->leader_name);
+						raid->UpdateRaidXTargets();
 						Bot::RemoveBotFromRaid(b_to_disband);
-
 					} else if (gid < 12 && raid->GetGroupLeader(gid) && raid->GetGroupLeader(gid)->IsBot()) {
 						c_doing_disband->Message(
 							Chat::Yellow,
@@ -12215,6 +12285,8 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 				}
 			}
 			raid->SetNewRaidLeader(i);
+			raid->RemoveRaidDelegates(raid_command_packet->leader_name);
+			raid->UpdateRaidXTargets();
 			raid->RemoveMember(raid_command_packet->leader_name);
 			Client* c = entity_list.GetClientByName(raid_command_packet->leader_name);
 			if (c) {
@@ -12268,9 +12340,9 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 										if (client_to_update) {
 											raid->SendRaidRemove(raid->members[x].member_name, client_to_update);
 											raid->SendRaidCreate(client_to_update);
-											raid->SendMakeLeaderPacketTo(raid->leadername, client_to_update);
 											raid->SendRaidAdd(raid->members[x].member_name, client_to_update);
 											raid->SendBulkRaid(client_to_update);
+											raid->SendMakeLeaderPacketTo(raid->leadername, client_to_update);
 											if (raid->IsLocked()) {
 												raid->SendRaidLockTo(client_to_update);
 											}
@@ -12318,9 +12390,9 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 					raid->GroupUpdate(raid_command_packet->parameter);
 
 					/* If our old was a group send update there too */
-					if (old_group < 12)
+					if (old_group < 12) {
 						raid->GroupUpdate(old_group);
-
+					}
 				}
 			}
 			/* Move player to ungrouped bank */
@@ -12381,7 +12453,7 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 				}
 
 				raid->GroupUpdate(oldgrp);
-			}
+}
 		}
 
 		Client* client_moved = entity_list.GetClientByName(raid_command_packet->leader_name);
@@ -12479,7 +12551,18 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 		raid->SendRaidMOTDToWorld();
 		break;
 	}
+	case RaidCommandSetNote:
+	{
 
+		Raid* raid = entity_list.GetRaidByClient(this);
+		if (!raid) {
+			break;
+		}
+
+		raid->SaveRaidNote(raid_command_packet->leader_name, raid_command_packet->note);
+		raid->SendRaidNotesToWorld();
+		break;
+	}
 	default: {
 		Message(Chat::Red, "Raid command (%d) NYI", raid_command_packet->action);
 		break;
@@ -15799,14 +15882,87 @@ void Client::Handle_OP_XTargetRequest(const EQApplicationPacket *app)
 	case RaidAssist1:
 	case RaidAssist2:
 	case RaidAssist3:
+	{
+		struct AssistType {
+			XTargetType type;
+			int32       assist_slot;
+		};
+
+		std::vector<AssistType> assist_types = {
+			{ RaidAssist1, MAIN_ASSIST_1_SLOT },
+			{ RaidAssist2, MAIN_ASSIST_2_SLOT },
+			{ RaidAssist3, MAIN_ASSIST_3_SLOT }
+		};
+
+		for (auto& t : assist_types) {
+			if (t.type == Type) {
+				Raid* r = GetRaid();
+				if (r) {
+					Client* ma = entity_list.GetClientByName(r->main_assister_pcs[t.assist_slot]);
+					if (ma) {
+						UpdateXTargetType(t.type, ma, ma->GetName());
+					}
+				}
+			}
+		}
+		break;
+	}
+
 	case RaidAssist1Target:
 	case RaidAssist2Target:
 	case RaidAssist3Target:
+	{
+		struct AssistType {
+			XTargetType type;
+			int32       assist_slot;
+		};
+
+		std::vector<AssistType> assist_types = {
+			{ RaidAssist1Target, MAIN_ASSIST_1_SLOT },
+			{ RaidAssist2Target, MAIN_ASSIST_2_SLOT },
+			{ RaidAssist3Target, MAIN_ASSIST_3_SLOT }
+		};
+
+		for (auto& t : assist_types) {
+			if (t.type == Type) {
+				Raid* r = GetRaid();
+				if (r) {
+					Client* ma = entity_list.GetClientByName(r->main_assister_pcs[t.assist_slot]);
+					if (ma && ma->GetTarget()) {
+						UpdateXTargetType(t.type, ma->GetTarget(), ma->GetTarget()->GetName());
+					}
+				}
+			}
+		}
+		break;
+	}
+
 	case RaidMarkTarget1:
 	case RaidMarkTarget2:
 	case RaidMarkTarget3:
 	{
-		// Not implemented yet.
+		struct AssistType {
+			XTargetType type;
+			int32       assist_slot;
+		};
+
+		std::vector<AssistType> assist_types = {
+			{ RaidMarkTarget1, MAIN_MARKER_1_SLOT },
+			{ RaidMarkTarget2, MAIN_MARKER_2_SLOT },
+			{ RaidMarkTarget3, MAIN_MARKER_3_SLOT }
+		};
+
+		for (auto& t : assist_types) {
+			if (t.type == Type) {
+				Raid* r = GetRaid();
+				if (r) {
+					auto mm = entity_list.GetNPCByID(r->marked_npcs[t.assist_slot].entity_id);
+					if (mm) {
+						UpdateXTargetType(t.type, mm->CastToMob(), mm->CastToMob()->GetName());
+					}
+				}
+			}
+		}
 		break;
 	}
 
@@ -16188,5 +16344,142 @@ void Client::RecordKilledNPCEvent(NPC *n)
 			};
 			RecordPlayerEventLog(c.event, e);
 		}
+	}
+}
+
+void Client::Handle_OP_RaidDelegateAbility(const EQApplicationPacket *app)
+{
+	if (app->size != sizeof(DelegateAbility_Struct)) {
+		LogDebug(
+			"Size mismatch in OP_RaidDelegateAbility expected [{}] got [{}]",
+			sizeof(DelegateAbility_Struct),
+			app->size
+		);
+		DumpPacket(app);
+		return;
+	}
+
+	DelegateAbility_Struct *das = (DelegateAbility_Struct *) app->pBuffer;
+
+	switch (das->DelegateAbility) {
+		case RaidDelegateMainAssist: {
+			auto r = GetRaid();
+			if (r) {
+				r->DelegateAbilityAssist(this, das->Name);
+			}
+			break;
+		}
+		case RaidDelegateMainMarker: {
+			auto r = GetRaid();
+			if (r) {
+				r->DelegateAbilityMark(this, das->Name);
+			}
+			break;
+		}
+		default:
+			LogDebug("RaidDelegateAbility default case");
+			break;
+	}
+}
+
+void Client::Handle_OP_RaidClearNPCMarks(const EQApplicationPacket* app)
+{
+	if (app->size != 0) {
+		LogDebug("Size mismatch in OP_RaidClearNPCMark expected [{}] got [{}]", 0, app->size);
+		DumpPacket(app);
+		return;
+	}
+
+	auto r = GetRaid();
+	if (r) {
+		r->RaidClearNPCMarks(this);
+	}
+}
+
+void Client::RecordStats()
+{
+	auto r = CharacterStatsRecordRepository::FindOne(
+		database,
+		CharacterID()
+	);
+
+	r.status                   = Admin();
+	r.name                     = GetCleanName();
+	r.aa_points                = GetAAPoints() + GetSpentAA();
+	r.level                    = GetLevel();
+	r.class_                   = GetBaseClass();
+	r.race                     = GetBaseRace();
+	r.hp                       = GetMaxHP() - GetSpellBonuses().HP;
+	r.mana                     = GetMaxMana() - GetSpellBonuses().Mana;
+	r.endurance                = GetMaxEndurance() - GetSpellBonuses().Endurance;
+	r.ac                       = GetDisplayAC() - GetSpellBonuses().AC;
+	r.strength                 = GetSTR() - GetSpellBonuses().STR;
+	r.stamina                  = GetSTA() - GetSpellBonuses().STA;
+	r.dexterity                = GetDEX() - GetSpellBonuses().DEX;
+	r.agility                  = GetAGI() - GetSpellBonuses().AGI;
+	r.intelligence             = GetINT() - GetSpellBonuses().INT;
+	r.wisdom                   = GetWIS() - GetSpellBonuses().WIS;
+	r.charisma                 = GetCHA() - GetSpellBonuses().CHA;
+	r.magic_resist             = GetMR() - GetSpellBonuses().MR;
+	r.fire_resist              = GetFR() - GetSpellBonuses().FR;
+	r.cold_resist              = GetCR() - GetSpellBonuses().CR;
+	r.poison_resist            = GetPR() - GetSpellBonuses().PR;
+	r.disease_resist           = GetDR() - GetSpellBonuses().DR;
+	r.corruption_resist        = GetCorrup() - GetSpellBonuses().Corrup;
+	r.heroic_strength          = GetHeroicSTR() - GetSpellBonuses().HeroicSTR;
+	r.heroic_stamina           = GetHeroicSTA() - GetSpellBonuses().HeroicSTA;
+	r.heroic_dexterity         = GetHeroicDEX() - GetSpellBonuses().HeroicDEX;
+	r.heroic_agility           = GetHeroicAGI() - GetSpellBonuses().HeroicAGI;
+	r.heroic_intelligence      = GetHeroicINT() - GetSpellBonuses().HeroicINT;
+	r.heroic_wisdom            = GetHeroicWIS() - GetSpellBonuses().HeroicWIS;
+	r.heroic_charisma          = GetHeroicCHA() - GetSpellBonuses().HeroicCHA;
+	r.heroic_magic_resist      = GetHeroicMR() - GetSpellBonuses().HeroicMR;
+	r.heroic_fire_resist       = GetHeroicFR() - GetSpellBonuses().HeroicFR;
+	r.heroic_cold_resist       = GetHeroicCR() - GetSpellBonuses().HeroicCR;
+	r.heroic_poison_resist     = GetHeroicPR() - GetSpellBonuses().HeroicPR;
+	r.heroic_disease_resist    = GetHeroicDR() - GetSpellBonuses().HeroicDR;
+	r.heroic_corruption_resist = GetHeroicCorrup() - GetSpellBonuses().HeroicCorrup;
+	r.haste                    = GetHaste();
+	r.accuracy                 = GetAccuracy() - GetSpellBonuses().Accuracy[EQ::skills::HIGHEST_SKILL + 1];
+	r.attack                   = GetTotalATK() - GetSpellBonuses().ATK;
+	r.avoidance                = GetAvoidance() - GetSpellBonuses().AvoidMeleeChance;
+	r.clairvoyance             = GetClair() - GetSpellBonuses().Clairvoyance;
+	r.combat_effects           = GetCombatEffects() - GetSpellBonuses().ProcChance;
+	r.damage_shield_mitigation = GetDSMit() - GetSpellBonuses().DSMitigation;
+	r.damage_shield            = GetDS() - GetSpellBonuses().DamageShield;
+	r.dot_shielding            = GetDoTShield() - GetSpellBonuses().DoTShielding;
+	r.hp_regen                 = GetHPRegen() - GetSpellBonuses().HPRegen;
+	r.mana_regen               = GetManaRegen() - GetSpellBonuses().ManaRegen;
+	r.endurance_regen          = GetEnduranceRegen() - GetSpellBonuses().EnduranceRegen;
+	r.shielding                = GetShielding() - GetSpellBonuses().MeleeMitigation;
+	r.spell_damage             = GetSpellDmg() - GetSpellBonuses().SpellDmg;
+	r.spell_shielding          = GetSpellShield() - GetSpellBonuses().SpellShield;
+	r.strikethrough            = GetStrikeThrough() - GetSpellBonuses().StrikeThrough;
+	r.stun_resist              = GetStunResist() - GetSpellBonuses().StunResist;
+	r.backstab                 = 0;
+	r.wind                     = GetWindMod();
+	r.brass                    = GetBrassMod();
+	r.string                   = GetStringMod();
+	r.percussion               = GetPercMod();
+	r.singing                  = GetSingMod();
+	r.baking                   = GetSkill(EQ::skills::SkillType::SkillBaking);
+	r.alchemy                  = GetSkill(EQ::skills::SkillType::SkillAlchemy);
+	r.jewelry                  = GetSkill(EQ::skills::SkillType::SkillJewelryMaking);
+	r.tailoring                = GetSkill(EQ::skills::SkillType::SkillTailoring);
+	r.blacksmithing            = GetSkill(EQ::skills::SkillType::SkillBlacksmithing);
+	r.fletching                = GetSkill(EQ::skills::SkillType::SkillFletching);
+	r.brewing                  = GetSkill(EQ::skills::SkillType::SkillBrewing);
+	r.fishing                  = GetSkill(EQ::skills::SkillType::SkillFishing);
+	r.pottery                  = GetSkill(EQ::skills::SkillType::SkillPottery);
+	r.alcohol                  = GetSkill(EQ::skills::SkillType::SkillAlcoholTolerance);
+	r.tinkering                = GetSkill(EQ::skills::SkillType::SkillTinkering);
+	r.updated_at               = std::time(nullptr);
+
+	if (r.character_id > 0) {
+		CharacterStatsRecordRepository::UpdateOne(database, r);
+	} else {
+		r.character_id = CharacterID();
+		r.created_at = std::time(nullptr);
+		CharacterStatsRecordRepository::InsertOne(database, r);
 	}
 }

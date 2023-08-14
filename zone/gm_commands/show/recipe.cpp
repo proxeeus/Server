@@ -6,7 +6,7 @@
 void ShowRecipe(Client *c, const Seperator *sep)
 {
 	if (!sep->IsNumber(2)) {
-		c->Message(Chat::White, "Command Syntax: #show recipe [Recipe ID]");
+		c->Message(Chat::White, "Usage: #show recipe [Recipe ID]");
 		return;
 	}
 
@@ -27,7 +27,7 @@ void ShowRecipe(Client *c, const Seperator *sep)
 			Chat::White,
 			fmt::format(
 				"Recipe ID {} has no entries or could not be found.",
-				Strings::Commify(recipe_id)
+				recipe_id
 			).c_str()
 		);
 		return;
@@ -37,13 +37,13 @@ void ShowRecipe(Client *c, const Seperator *sep)
 		Chat::White,
 		fmt::format(
 			"Recipe {} | {}",
-			Strings::Commify(recipe_id),
+			recipe_id,
 			r[0].name
 		).c_str()
 	);
 
 	uint32 entry_number = 1;
-	const bool can_summon_items = c->Admin() >= GetCommandStatus(c, "summonitem");
+	const bool can_summon_items = c->Admin() >= GetCommandStatus("summonitem");
 
 	for (const auto& e : re) {
 		c->Message(

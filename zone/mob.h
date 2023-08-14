@@ -69,6 +69,28 @@ enum class eSpecialAttacks : int {
 	ChaoticStab
 };
 
+struct AppearanceStruct {
+	uint8  aa_title         = UINT8_MAX;
+	uint8  beard            = UINT8_MAX;
+	uint8  beard_color      = UINT8_MAX;
+	uint32 drakkin_details  = UINT32_MAX;
+	uint32 drakkin_heritage = UINT32_MAX;
+	uint32 drakkin_tattoo   = UINT32_MAX;
+	uint8  eye_color_one    = UINT8_MAX;
+	uint8  eye_color_two    = UINT8_MAX;
+	uint8  face             = UINT8_MAX;
+	uint8  gender_id        = UINT8_MAX;
+	uint8  hair             = UINT8_MAX;
+	uint8  hair_color       = UINT8_MAX;
+	uint8  helmet_texture   = UINT8_MAX;
+	uint16 race_id          = RACE_DOUG_0;
+	bool   send_effects     = true;
+	float  size             = -1.0f;
+	Client *target          = nullptr;
+	uint8  texture          = UINT8_MAX;
+};
+
+class DataBucketKey;
 class Mob : public Entity {
 public:
 	char playerbot_temp_name[64];
@@ -291,15 +313,15 @@ public:
 
 	EQ::skills::SkillType AttackAnimation(int Hand, const EQ::ItemInstance* weapon, EQ::skills::SkillType skillinuse = EQ::skills::Skill1HBlunt);
 
-	int32 GetTextureProfileMaterial(uint8 material_slot) const;
-	int32 GetTextureProfileColor(uint8 material_slot) const;
-	int32 GetTextureProfileHeroForgeModel(uint8 material_slot) const;
+	uint32 GetTextureProfileMaterial(uint8 material_slot) const;
+	uint32 GetTextureProfileColor(uint8 material_slot) const;
+	uint32 GetTextureProfileHeroForgeModel(uint8 material_slot) const;
 
 	virtual void SendArmorAppearance(Client *one_client = nullptr);
-	virtual void SendTextureWC(uint8 slot, uint16 texture, uint32 hero_forge_model = 0, uint32 elite_material = 0, uint32 unknown06 = 0, uint32 unknown18 = 0);
+	virtual void SendTextureWC(uint8 slot, uint32 texture, uint32 hero_forge_model = 0, uint32 elite_material = 0, uint32 unknown06 = 0, uint32 unknown18 = 0);
 	virtual void SendWearChange(uint8 material_slot, Client *one_client = nullptr);
 	virtual void SetSlotTint(uint8 material_slot, uint8 red_tint, uint8 green_tint, uint8 blue_tint);
-	virtual void WearChange(uint8 material_slot, uint16 texture, uint32 color = 0, uint32 hero_forge_model = 0);
+	virtual void WearChange(uint8 material_slot, uint32 texture, uint32 color = 0, uint32 hero_forge_model = 0);
 
 	void ChangeSize(float in_size, bool bNoRestriction = false);
 	void DoAnim(const int animation_id, int animation_speed = 0, bool ackreq = true, eqFilterType filter = FilterNone);
@@ -309,7 +331,7 @@ public:
 	void SendLevelAppearance();
 	void SendStunAppearance();
 	void SendTargetable(bool on, Client *specific_target = nullptr);
-	void SetMobTextureProfile(uint8 material_slot, uint16 texture, uint32 color = 0, uint32 hero_forge_model = 0);
+	void SetMobTextureProfile(uint8 material_slot, uint32 texture, uint32 color = 0, uint32 hero_forge_model = 0);
 
 	//Spell
 	void SendSpellEffect(uint32 effect_id, uint32 duration, uint32 finish_delay, bool zone_wide,
@@ -504,9 +526,9 @@ public:
 	virtual uint8 ConvertItemTypeToSkillID(uint8 item_type);
 	virtual uint16 GetSkill(EQ::skills::SkillType skill_num) const { return 0; }
 	virtual uint32 GetEquippedItemFromTextureSlot(uint8 material_slot) const { return(0); }
-	virtual int32 GetEquipmentMaterial(uint8 material_slot) const;
+	virtual uint32 GetEquipmentMaterial(uint8 material_slot) const;
 	virtual uint8 GetEquipmentType(uint8 material_slot) const;
-	virtual int32 GetHerosForgeModel(uint8 material_slot) const;
+	virtual uint32 GetHerosForgeModel(uint8 material_slot) const;
 	virtual uint32 GetEquipmentColor(uint8 material_slot) const;
 	virtual uint32 IsEliteMaterialItem(uint8 material_slot) const;
 	bool CanClassEquipItem(uint32 item_id);
@@ -891,26 +913,7 @@ public:
 
 	int64 CalcFocusEffect(focusType type, uint16 focus_id, uint16 spell_id, bool best_focus=false, uint16 casterid = 0, Mob *caster = nullptr);
 	uint8 IsFocusEffect(uint16 spellid, int effect_index, bool AA=false,uint32 aa_effect=0);
-	void SendIllusionPacket(
-		uint16 in_race,
-		uint8 in_gender = 0xFF,
-		uint8 in_texture = 0xFF,
-		uint8 in_helmtexture = 0xFF,
-		uint8 in_haircolor = 0xFF,
-		uint8 in_beardcolor = 0xFF,
-		uint8 in_eyecolor1 = 0xFF,
-		uint8 in_eyecolor2 = 0xFF,
-		uint8 in_hairstyle = 0xFF,
-		uint8 in_luclinface = 0xFF,
-		uint8 in_beard = 0xFF,
-		uint8 in_aa_title = 0xFF,
-		uint32 in_drakkin_heritage = 0xFFFFFFFF,
-		uint32 in_drakkin_tattoo = 0xFFFFFFFF,
-		uint32 in_drakkin_details = 0xFFFFFFFF,
-		float in_size = -1.0f,
-		bool send_appearance_effects = true,
-		Client* target = nullptr
-	);
+	void SendIllusionPacket(const AppearanceStruct& a);
 	void CloneAppearance(Mob* other, bool clone_name = false);
 	void SetFaceAppearance(const FaceChange_Struct& face, bool skip_sender = false);
 	bool RandomizeFeatures(bool send_illusion = true, bool set_variables = true);
@@ -1402,6 +1405,7 @@ public:
 	int64 GetHPRegen() const;
 	int64 GetHPRegenPerSecond() const;
 	int64 GetManaRegen() const;
+	int64 GetEnduranceRegen() const;
 
 	bool CanOpenDoors() const;
 	void SetCanOpenDoors(bool can_open);
@@ -1410,15 +1414,14 @@ public:
 	/// this cures timing issues cuz dead animation isn't done but server side feigning is?
 	inline bool GetFeigned() const { return(feigned); }
 
-	std::vector<DataBucketCache> m_data_bucket_cache;
-
 	// Data Bucket Methods
 	void DeleteBucket(std::string bucket_name);
 	std::string GetBucket(std::string bucket_name);
 	std::string GetBucketExpires(std::string bucket_name);
-	std::string GetBucketKey();
 	std::string GetBucketRemaining(std::string bucket_name);
 	void SetBucket(std::string bucket_name, std::string bucket_value, std::string expiration = "");
+
+	uint32 GetMobTypeIdentifier();
 
 	// Heroic Stat Benefits
 	float CheckHeroicBonusesDataBuckets(std::string bucket_name);
@@ -1445,6 +1448,8 @@ public:
 	void DrawDebugCoordinateNode(std::string node_name, const glm::vec4 vec);
 
 	void CalcHeroicBonuses(StatBonuses* newbon);
+
+	DataBucketKey GetScopedBucketKeys();
 
 protected:
 	void CommonDamage(Mob* other, int64 &damage, const uint16 spell_id, const EQ::skills::SkillType attack_skill, bool &avoidable, const int8 buffslot, const bool iBuffTic, eSpecialAttacks specal = eSpecialAttacks::None);
@@ -1867,6 +1872,7 @@ private:
 	void SetHeroicWisBonuses(StatBonuses* n);
 
 	void DoSpellInterrupt(uint16 spell_id, int32 mana_cost, int my_curmana);
+	void HandleDoorOpen();
 };
 
 #endif

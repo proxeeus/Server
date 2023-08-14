@@ -350,7 +350,7 @@ public:
 	int					GetClosestWaypoint(const glm::vec3& location);
 
 	uint32				GetEquippedItemFromTextureSlot(uint8 material_slot) const;	// returns item id
-	int32				GetEquipmentMaterial(uint8 material_slot) const;
+	uint32				GetEquipmentMaterial(uint8 material_slot) const;
 
 	void				NextGuardPosition();
 	void				SaveGuardSpot(bool ClearGuardSpot = false);
@@ -443,6 +443,7 @@ public:
 	const bool HasPrivateCorpse() const { return NPCTypedata_ours ? NPCTypedata_ours->private_corpse : NPCTypedata->private_corpse; }
 
 	virtual const bool IsUnderwaterOnly() const { return m_is_underwater_only; }
+	virtual const bool IsQuestNPC() const { return m_is_quest_npc; }
 	const char* GetRawNPCTypeName() const { return NPCTypedata_ours ? NPCTypedata_ours->name : NPCTypedata->name; }
 
 	virtual int GetKillExpMod() const { return NPCTypedata_ours ? NPCTypedata_ours->exp_mod : NPCTypedata->exp_mod; }
@@ -452,7 +453,7 @@ public:
 
 	bool GetDepop() { return p_depop; }
 
-	void NPCSlotTexture(uint8 slot, uint16 texture);	// Sets new material values for slots
+	void NPCSlotTexture(uint8 slot, uint32 texture);	// Sets new material values for slots
 
 	uint32 GetAdventureTemplate() const { return adventure_template_id; }
 	void AddSpellToNPCList(int16 iPriority, uint16 iSpellID, uint32 iType, int16 iManaCost, int32 iRecastDelay, int16 iResistAdjust, int8 min_hp, int8 max_hp);
@@ -541,6 +542,10 @@ public:
 
 	static LootDropEntries_Struct NewLootDropEntry();
 	bool HasRoamBox();
+
+	bool CanPathTo(float x, float y, float z);
+
+protected:
 
 	void HandleRoambox();
 
@@ -647,9 +652,9 @@ public:
 	uint32	equipment[EQ::invslot::EQUIPMENT_COUNT];	//this is an array of item IDs
 
 	uint32	herosforgemodel;			//this is the Hero Forge Armor Model (i.e 63 or 84 or 203)
-	uint16	d_melee_texture1;
+	uint32	d_melee_texture1;
 	//this is an item Material value
-	uint16	d_melee_texture2;			//this is an item Material value (offhand)
+	uint32	d_melee_texture2;			//this is an item Material value (offhand)
 	const char*	ammo_idfile;			//this determines projectile graphic "IT###" (see item field 'idfile')
 	uint8	prim_melee_type;			//Sets the Primary Weapon attack message and animation
 	uint8	sec_melee_type;				//Sets the Secondary Weapon attack message and animation
@@ -667,6 +672,7 @@ public:
 	uint32 adventure_template_id;
 
 	bool m_is_underwater_only = false;
+	bool m_is_quest_npc = false;
 
 	//mercenary stuff
 	std::list<MercType> mercTypeList;

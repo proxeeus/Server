@@ -1183,7 +1183,7 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 			client->Message(
 				Chat::Yellow,
 				fmt::format(
-					"This corpse Contains {}.",
+					"This corpse contains {}.",
 					Strings::Money(
 						GetPlatinum(),
 						GetGold(),
@@ -1193,7 +1193,7 @@ void Corpse::MakeLootRequestPackets(Client* client, const EQApplicationPacket* a
 				).c_str()
 			);
 		} else {
-			client->Message(Chat::Yellow, "This corpse Contains no money.");
+			client->Message(Chat::Yellow, "This corpse contains no money.");
 		}
 
 		auto outapp = new EQApplicationPacket(OP_MoneyOnCorpse, sizeof(moneyOnCorpseStruct));

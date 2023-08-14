@@ -687,7 +687,7 @@ bool ZoneDatabase::LoadCharacterData(uint32 character_id, PlayerProfile_Struct* 
 		pp->ldon_points_ruj = Strings::ToInt(row[r]); r++;								 // "ldon_points_ruj,           "
 		pp->ldon_points_tak = Strings::ToInt(row[r]); r++;								 // "ldon_points_tak,           "
 		pp->ldon_points_available = Strings::ToInt(row[r]); r++;							 // "ldon_points_available,     "
-		pp->tribute_time_remaining = Strings::ToInt(row[r]); r++;							 // "tribute_time_remaining,    "
+		pp->tribute_time_remaining = Strings::ToUnsignedInt(row[r]); r++;					 // "tribute_time_remaining,    "
 		pp->showhelm = Strings::ToInt(row[r]); r++;										 // "show_helm,                 "
 		pp->career_tribute_points = Strings::ToInt(row[r]); r++;							 // "career_tribute_points,     "
 		pp->tribute_points = Strings::ToInt(row[r]); r++;									 // "tribute_points,            "
@@ -1927,6 +1927,8 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 		);
 	}
 
+	std::vector<uint32> npc_ids;
+
 	for (NpcTypesRepository::NpcTypes &n : NpcTypesRepository::GetWhere((Database &) content_db, filter)) {
 		NPCType *t;
 		t = new NPCType;
@@ -1989,6 +1991,7 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 		t->ranged_type     = n.ranged_type;
 		t->runspeed        = n.runspeed;
 		t->findable        = n.findable != 0;
+		t->is_quest_npc    = n.isquest != 0;
 		t->trackable       = n.trackable != 0;
 		t->hp_regen        = n.hp_regen_rate;
 		t->mana_regen      = n.mana_regen_rate;
@@ -2137,7 +2140,14 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 
 		zone->npctable[t->npc_id] = t;
 		npc = t;
+
+		// If NPC ID is not in npc_ids, add to vector
+		if (!std::count(npc_ids.begin(), npc_ids.end(), t->npc_id)) {
+			npc_ids.emplace_back(t->npc_id);
+		}
 	}
+
+	DataBucket::BulkLoadEntities(DataBucketLoadType::NPC, npc_ids);
 
 	return npc;
 }
@@ -2269,8 +2279,8 @@ const NPCType* ZoneDatabase::GetMercType(uint32 id, uint16 raceid, uint32 client
 		else
 			tmpNPCType->special_abilities[0] = '\0';
 
-		tmpNPCType->d_melee_texture1 = Strings::ToInt(row[28]);
-		tmpNPCType->d_melee_texture2 = Strings::ToInt(row[29]);
+		tmpNPCType->d_melee_texture1 = Strings::ToUnsignedInt(row[28]);
+		tmpNPCType->d_melee_texture2 = Strings::ToUnsignedInt(row[29]);
 		tmpNPCType->prim_melee_type = Strings::ToInt(row[30]);
 		tmpNPCType->sec_melee_type = Strings::ToInt(row[31]);
 		tmpNPCType->runspeed = Strings::ToFloat(row[32]);
@@ -3303,7 +3313,8 @@ void ZoneDatabase::SavePetInfo(Client *client)
 
 		// build pet buffs into struct
 		int pet_buff_count = 0;
-		int max_slots = RuleI(Spells, MaxTotalSlotsPET);
+		// Guard against setting the maximum pet slots above the client allowed maximum.
+		int max_slots = RuleI(Spells, MaxTotalSlotsPET) > PET_BUFF_COUNT ? PET_BUFF_COUNT : RuleI(Spells, MaxTotalSlotsPET);
 
 		// count pet buffs
 		for (int index = 0; index < max_slots; index++) {

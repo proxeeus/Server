@@ -1554,24 +1554,46 @@ void Lua_Mob::SetFlyMode(int in) {
 	self->SetFlyMode(static_cast<GravityBehavior>(in));
 }
 
-void Lua_Mob::SetTexture(int in) {
+void Lua_Mob::SetTexture(uint8 texture) {
 	Lua_Safe_Call_Void();
-	self->SendIllusionPacket(self->GetRace(), 0xFF, in);
+	self->SendIllusionPacket(
+		AppearanceStruct{
+			.race_id = self->GetRace(),
+			.texture = texture
+		}
+	);
 }
 
-void Lua_Mob::SetRace(int in) {
+void Lua_Mob::SetRace(uint16 race_id) {
 	Lua_Safe_Call_Void();
-	self->SendIllusionPacket(in);
+	self->SendIllusionPacket(
+		AppearanceStruct{
+			.race_id = race_id
+		}
+	);
 }
 
-void Lua_Mob::SetGender(int in) {
+void Lua_Mob::SetGender(uint8 gender_id) {
 	Lua_Safe_Call_Void();
-	self->SendIllusionPacket(self->GetRace(), in);
+	self->SendIllusionPacket(
+		AppearanceStruct{
+			.gender_id = gender_id,
+			.race_id = self->GetRace(),
+		}
+	);
 }
 
 void Lua_Mob::SendPlayerBotIllusion(int race, int gender, int face, float size) {
 	Lua_Safe_Call_Void();
-	self->SendIllusionPacket(race, gender, 0, 0, 0, 0, 0, 0, 0, face, 0, 0, 0, 0, 0, size);
+	//self->SendIllusionPacket(race, gender, 0, 0, 0, 0, 0, 0, 0, face, 0, 0, 0, 0, 0, size);
+	self->SendIllusionPacket(
+		AppearanceStruct{
+			.face = (uint8)face,
+			.gender_id = (uint8)gender,
+			.race_id = (uint16)race,
+			.size = size
+		}
+	);
 }
 
 void Lua_Mob::SetSpellsID(int id) {
@@ -1749,24 +1771,26 @@ void Lua_Mob::SendIllusionPacket(luabind::adl::object illusion) {
 	}
 
 	self->SendIllusionPacket(
-		race,
-		gender,
-		texture,
-		helmtexture,
-		haircolor,
-		beardcolor,
-		eyecolor1,
-		eyecolor2,
-		hairstyle,
-		luclinface,
-		beard,
-		aa_title,
-		drakkin_heritage,
-		drakkin_tattoo,
-		drakkin_details,
-		size,
-		send_appearance_effects,
-		target
+		AppearanceStruct{
+			.aa_title = aa_title,
+			.beard = beard,
+			.beard_color = beardcolor,
+			.drakkin_details = drakkin_details,
+			.drakkin_heritage = drakkin_heritage,
+			.drakkin_tattoo = drakkin_tattoo,
+			.eye_color_one = eyecolor1,
+			.eye_color_two = eyecolor2,
+			.face = luclinface,
+			.gender_id = gender,
+			.hair = hairstyle,
+			.hair_color = haircolor,
+			.helmet_texture = helmtexture,
+			.race_id = race,
+			.send_effects = send_appearance_effects,
+			.size = size,
+			.target = target,
+			.texture = texture,
+		}
 	);
 }
 
@@ -1911,17 +1935,17 @@ void Lua_Mob::SetSlotTint(int material_slot, int red_tint, int green_tint, int b
 	self->SetSlotTint(material_slot, red_tint, green_tint, blue_tint);
 }
 
-void Lua_Mob::WearChange(uint8 material_slot, uint16 texture) {
+void Lua_Mob::WearChange(uint8 material_slot, uint32 texture) {
 	Lua_Safe_Call_Void();
 	self->WearChange(material_slot, texture);
 }
 
-void Lua_Mob::WearChange(uint8 material_slot, uint16 texture, uint32 color) {
+void Lua_Mob::WearChange(uint8 material_slot, uint32 texture, uint32 color) {
 	Lua_Safe_Call_Void();
 	self->WearChange(material_slot, texture, color);
 }
 
-void Lua_Mob::WearChange(uint8 material_slot, uint16 texture, uint32 color, uint32 heros_forge_model) {
+void Lua_Mob::WearChange(uint8 material_slot, uint32 texture, uint32 color, uint32 heros_forge_model) {
 	Lua_Safe_Call_Void();
 	self->WearChange(material_slot, texture, color, heros_forge_model);
 }
@@ -2362,7 +2386,7 @@ std::string Lua_Mob::GetBucketExpires(std::string bucket_name)
 std::string Lua_Mob::GetBucketKey()
 {
 	Lua_Safe_Call_String();
-	return self->GetBucketKey();
+	return {};
 }
 
 std::string Lua_Mob::GetBucketRemaining(std::string bucket_name)
@@ -3141,6 +3165,18 @@ std::string Lua_Mob::GetRacePlural()
 	return self->GetRacePlural();
 }
 
+bool Lua_Mob::IsTemporaryPet()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsTempPet();
+}
+
+uint32 Lua_Mob::GetMobTypeIdentifier()
+{
+	Lua_Safe_Call_Int();
+	return self->GetMobTypeIdentifier();
+}
+
 luabind::scope lua_register_mob() {
 	return luabind::class_<Lua_Mob, Lua_Entity>("Mob")
 	.def(luabind::constructor<>())
@@ -3437,6 +3473,7 @@ luabind::scope lua_register_mob() {
 	.def("GetMeleeDamageMod_SE", &Lua_Mob::GetMeleeDamageMod_SE)
 	.def("GetMeleeMinDamageMod_SE", &Lua_Mob::GetMeleeMinDamageMod_SE)
 	.def("GetMeleeMitigation", (int32(Lua_Mob::*)(void))&Lua_Mob::GetMeleeMitigation)
+	.def("GetMobTypeIdentifier", (uint32(Lua_Mob::*)(void))&Lua_Mob::GetMobTypeIdentifier)
 	.def("GetModSkillDmgTaken", (int(Lua_Mob::*)(int))&Lua_Mob::GetModSkillDmgTaken)
 	.def("GetModVulnerability", (int(Lua_Mob::*)(int))&Lua_Mob::GetModVulnerability)
 	.def("GetNPCTypeID", &Lua_Mob::GetNPCTypeID)
@@ -3532,6 +3569,7 @@ luabind::scope lua_register_mob() {
 	.def("IsStunned", (bool(Lua_Mob::*)(void))&Lua_Mob::IsStunned)
 	.def("IsTargetable", (bool(Lua_Mob::*)(void))&Lua_Mob::IsTargetable)
 	.def("IsTargeted", &Lua_Mob::IsTargeted)
+	.def("IsTemporaryPet", &Lua_Mob::IsTemporaryPet)
 	.def("IsTrackable", (bool(Lua_Mob::*)(void))&Lua_Mob::IsTrackable)
 	.def("IsWarriorClass", &Lua_Mob::IsWarriorClass)
 	.def("Kill", (void(Lua_Mob::*)(void))&Lua_Mob::Kill)
@@ -3607,7 +3645,7 @@ luabind::scope lua_register_mob() {
 	.def("SetExtraHaste", (void(Lua_Mob::*)(int))&Lua_Mob::SetExtraHaste)
 	.def("SetFlurryChance", (void(Lua_Mob::*)(int))&Lua_Mob::SetFlurryChance)
 	.def("SetFlyMode", (void(Lua_Mob::*)(int))&Lua_Mob::SetFlyMode)
-	.def("SetGender", (void(Lua_Mob::*)(int))&Lua_Mob::SetGender)
+	.def("SetGender", (void(Lua_Mob::*)(uint8))&Lua_Mob::SetGender)
 	.def("SetGlobal", (void(Lua_Mob::*)(const char*,const char*,int,const char*))&Lua_Mob::SetGlobal)
 	.def("SetGlobal", (void(Lua_Mob::*)(const char*,const char*,int,const char*,Lua_Mob))&Lua_Mob::SetGlobal)
 	.def("SetHP", &Lua_Mob::SetHP)
@@ -3624,7 +3662,7 @@ luabind::scope lua_register_mob() {
 	.def("SetPet", &Lua_Mob::SetPet)
 	.def("SetPetOrder", (void(Lua_Mob::*)(int))&Lua_Mob::SetPetOrder)
 	.def("SetPseudoRoot", (void(Lua_Mob::*)(bool))&Lua_Mob::SetPseudoRoot)
-	.def("SetRace", (void(Lua_Mob::*)(int))&Lua_Mob::SetRace)
+	.def("SetRace", (void(Lua_Mob::*)(uint16))&Lua_Mob::SetRace)
 	.def("SetRunning", (void(Lua_Mob::*)(bool))&Lua_Mob::SetRunning)
 	.def("SetSlotTint", (void(Lua_Mob::*)(int,int,int,int))&Lua_Mob::SetSlotTint)
 	.def("SetSpellsID", (void(Lua_Mob::*)(int))&Lua_Mob::SetSpellsID)
@@ -3632,7 +3670,7 @@ luabind::scope lua_register_mob() {
 	.def("SetSpecialAbilityParam", (void(Lua_Mob::*)(int,int,int))&Lua_Mob::SetSpecialAbilityParam)
 	.def("SetTarget", &Lua_Mob::SetTarget)
 	.def("SetTargetable", (void(Lua_Mob::*)(bool))&Lua_Mob::SetTargetable)
-	.def("SetTexture", (void(Lua_Mob::*)(int))&Lua_Mob::SetTexture)
+	.def("SetTexture", (void(Lua_Mob::*)(uint8))&Lua_Mob::SetTexture)
 	.def("SetTimer", &Lua_Mob::SetTimer)
 	.def("SetTimerMS", &Lua_Mob::SetTimerMS)
 	.def("StopAllTimers", &Lua_Mob::StopAllTimers)
@@ -3659,9 +3697,9 @@ luabind::scope lua_register_mob() {
 	.def("TryMoveAlong", (void(Lua_Mob::*)(float,float,bool))&Lua_Mob::TryMoveAlong)
 	.def("UnStun", (void(Lua_Mob::*)(void))&Lua_Mob::UnStun)
 	.def("WalkTo", (void(Lua_Mob::*)(double, double, double))&Lua_Mob::WalkTo)
-	.def("WearChange", (void(Lua_Mob::*)(uint8,uint16))&Lua_Mob::WearChange)
-	.def("WearChange", (void(Lua_Mob::*)(uint8,uint16,uint32))&Lua_Mob::WearChange)
-	.def("WearChange", (void(Lua_Mob::*)(uint8,uint16,uint32,uint32))&Lua_Mob::WearChange)
+	.def("WearChange", (void(Lua_Mob::*)(uint8,uint32))&Lua_Mob::WearChange)
+	.def("WearChange", (void(Lua_Mob::*)(uint8,uint32,uint32))&Lua_Mob::WearChange)
+	.def("WearChange", (void(Lua_Mob::*)(uint8,uint32,uint32,uint32))&Lua_Mob::WearChange)
 	.def("WipeHateList", (void(Lua_Mob::*)(void))&Lua_Mob::WipeHateList);
 }
 
