@@ -2765,6 +2765,7 @@ bool Perl__IsContentFlagEnabled(std::string flag_name)
 void Perl__SetContentFlag(std::string flag_name, bool enabled)
 {
 	content_service.SetContentFlag(flag_name, enabled);
+	zone->ReloadContentFlags();
 }
 
 Expedition* Perl__get_expedition()

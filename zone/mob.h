@@ -250,7 +250,7 @@ public:
 	inline int GetMitigationAC() { return mitigation_ac; }
 	void MeleeMitigation(Mob *attacker, DamageHitInfo &hit, ExtraAttackOptions *opts = nullptr);
 	double RollD20(int offense, int mitigation); // CALL THIS FROM THE DEFENDER
-	bool CombatRange(Mob* other, float fixed_size_mod = 1.0, bool aeRampage = false);
+	bool CombatRange(Mob* other, float fixed_size_mod = 1.0, bool aeRampage = false, ExtraAttackOptions *opts = nullptr);
 	virtual inline bool IsBerserk() { return false; } // only clients
 	void RogueEvade(Mob *other);
 	void CommonOutgoingHitSuccess(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *opts = nullptr);
@@ -458,7 +458,7 @@ public:
 	virtual uint32 GetLastBuffSlot(bool disc, bool song);
 	virtual void InitializeBuffSlots() { buffs = nullptr; }
 	virtual void UninitializeBuffSlots() { }
-	EQApplicationPacket *MakeBuffsPacket(bool for_target = true);
+	EQApplicationPacket *MakeBuffsPacket(bool for_target = true, bool clear_buffs = false);
 	void SendBuffsToClient(Client *c);
 	inline Buffs_Struct* GetBuffs() { return buffs; }
 	void DoGravityEffect();

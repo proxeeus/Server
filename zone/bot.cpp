@@ -5535,10 +5535,10 @@ void Bot::ProcessBotOwnerRefDelete(Mob* botOwner) {
 int64 Bot::CalcMaxMana() {
 	switch(GetCasterClass()) {
 		case 'I':
-			max_mana = (GenerateBaseManaPoints() + itembonuses.Mana + spellbonuses.Mana + GroupLeadershipAAManaEnhancement());
+			max_mana = (GenerateBaseManaPoints() + itembonuses.Mana + spellbonuses.Mana + aabonuses.Mana + GroupLeadershipAAManaEnhancement());
 			max_mana += itembonuses.heroic_max_mana;
 		case 'W': {
-			max_mana = (GenerateBaseManaPoints() + itembonuses.Mana + spellbonuses.Mana + GroupLeadershipAAManaEnhancement());
+			max_mana = (GenerateBaseManaPoints() + itembonuses.Mana + spellbonuses.Mana + aabonuses.Mana + GroupLeadershipAAManaEnhancement());
 			max_mana += itembonuses.heroic_max_mana;
 			break;
 		}
@@ -8329,6 +8329,7 @@ bool Bot::CheckDataBucket(std::string bucket_name, const std::string& bucket_val
 		if (b.value.empty() && GetBotOwner()) {
 			// fetch from owner
 			k = GetBotOwner()->GetScopedBucketKeys();
+			k.key = bucket_name;
 
 			b = DataBucket::GetData(k);
 			if (b.value.empty()) {

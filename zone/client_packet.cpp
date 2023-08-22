@@ -1445,12 +1445,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	if (m_pp.ldon_points_tak < 0 || m_pp.ldon_points_tak > 2000000000) { m_pp.ldon_points_tak = 0; }
 	if (m_pp.ldon_points_available < 0 || m_pp.ldon_points_available > 2000000000) { m_pp.ldon_points_available = 0; }
 
-	if (RuleB(World, UseClientBasedExpansionSettings)) {
-		m_pp.expansions = EQ::expansions::ConvertClientVersionToExpansionsMask(ClientVersion());
-	}
-	else {
-		m_pp.expansions = (RuleI(World, ExpansionSettings) & EQ::expansions::ConvertClientVersionToExpansionsMask(ClientVersion()));
-	}
+	ReloadExpansionProfileSetting();
 
 	if (!database.LoadAlternateAdvancement(this)) {
 		LogError("Error loading AA points for [{}]", GetName());
@@ -2141,7 +2136,7 @@ void Client::Handle_OP_AdventureMerchantRequest(const EQApplicationPacket *app)
 	const EQ::ItemData *item = nullptr;
 	std::list<MerchantList> merlist = zone->merchanttable[merchantid];
 	std::list<MerchantList>::const_iterator itr;
-	for (itr = merlist.begin(); itr != merlist.end() && count<255; ++itr) {
+	for (itr = merlist.begin(); itr != merlist.end(); ++itr) {
 		const MerchantList &ml = *itr;
 		if (GetLevel() < ml.level_required) {
 			continue;
@@ -16481,5 +16476,15 @@ void Client::RecordStats()
 		r.character_id = CharacterID();
 		r.created_at = std::time(nullptr);
 		CharacterStatsRecordRepository::InsertOne(database, r);
+	}
+}
+
+void Client::ReloadExpansionProfileSetting()
+{
+	if (RuleB(World, UseClientBasedExpansionSettings)) {
+		m_pp.expansions = EQ::expansions::ConvertClientVersionToExpansionsMask(ClientVersion());
+	}
+	else {
+		m_pp.expansions = RuleI(World, ExpansionSettings);
 	}
 }
