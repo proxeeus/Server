@@ -7107,7 +7107,7 @@ void Bot::CalcBotStats(bool showtext) {
 		monkattack_timer.Start(1000);
 	}
 
-	LoadAAs();
+	//LoadAAs();
 	GenerateSpecialAttacks();
 
 	if (showtext) {
@@ -8371,7 +8371,7 @@ void Bot::SetExpansionBitmask(int expansion_bitmask, bool save)
 		}
 	}
 
-	LoadAAs();
+	//LoadAAs();
 }
 
 void Bot::SetBotEnforceSpellSetting(bool enforce_spell_settings, bool save)
