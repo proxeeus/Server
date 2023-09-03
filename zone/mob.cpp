@@ -3581,6 +3581,13 @@ void Mob::SendIllusionPacket(const AppearanceStruct& a)
 		new_size             = CastToClient()->GetSize();
 		new_texture          = UINT8_MAX;
 	}
+	// Special check to avoid Plate Chest texture upon PlayerBot spawn
+	if (IsNPC() && CastToNPC()->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))
+	{
+		new_texture = 0;
+	}
+	
+
 
 	beard            = new_beard;
 	beardcolor       = new_beard_color;
