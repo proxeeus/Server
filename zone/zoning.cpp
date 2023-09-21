@@ -56,10 +56,10 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 	auto* zc = (ZoneChange_Struct*)app->pBuffer;
 
 	LogZoning(
-		"Client [{}] zoning to [{}] ({}) instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}] zone_mode [{}] ({})",
+		"Client [{}] char_name [{}] zoning to [{}] ({}) instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}] zone_mode [{}] ({})",
 		GetCleanName(),
 		zc->char_name,
-		ZoneName(zc->zoneID),
+		ZoneName(zc->zoneID) ? ZoneName(zc->zoneID) : "Unknown",
 		zc->zoneID,
 		zc->instanceID,
 		zc->x,
@@ -68,7 +68,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 		zc->zone_reason,
 		zc->success,
 		GetZoneModeString(zone_mode),
-		zone_mode
+		int(zone_mode)
 	);
 
 	uint16 target_zone_id = 0;
@@ -152,7 +152,7 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 			"Client [{}] attempting zone to instance_id [{}] zone [{}] ({})",
 			GetCleanName(),
 			target_instance_id,
-			ZoneName(target_zone_id),
+			ZoneName(target_zone_id) ? ZoneName(target_zone_id) : "Unknown",
 			target_zone_id
 		);
 
@@ -388,7 +388,7 @@ void Client::SendZoneCancel(ZoneChange_Struct *zc) {
 		"(zs) Client [{}] char_name [{}] zoning to [{}] ({}) cancelled instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}]",
 		GetCleanName(),
 		zc->char_name,
-		ZoneName(zc2->zoneID),
+		ZoneName(zc2->zoneID) ? ZoneName(zc2->zoneID) : "Unknown",
 		zc->zoneID,
 		zc->instanceID,
 		zc->x,
@@ -408,7 +408,7 @@ void Client::SendZoneCancel(ZoneChange_Struct *zc) {
 		"(zc2) Client [{}] char_name [{}] zoning to [{}] ({}) cancelled instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}]",
 		GetCleanName(),
 		zc2->char_name,
-		ZoneName(zc2->zoneID),
+		ZoneName(zc2->zoneID) ? ZoneName(zc2->zoneID) : "Unknown",
 		zc2->zoneID,
 		zc2->instanceID,
 		zc2->x,
@@ -443,7 +443,7 @@ void Client::SendZoneError(ZoneChange_Struct *zc, int8 err)
 		"Client [{}] char_name [{}] zoning to [{}] ({}) (error) instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}]",
 		GetCleanName(),
 		zc2->char_name,
-		ZoneName(zc2->zoneID),
+		ZoneName(zc2->zoneID) ? ZoneName(zc2->zoneID) : "Unknown",
 		zc2->zoneID,
 		zc2->instanceID,
 		zc2->x,
@@ -493,7 +493,7 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 		"Client [{}] char_name [{}] zoning to [{}] ({}) instance_id [{}] x [{}] y [{}] z [{}] zone_reason [{}] success [{}]",
 		GetCleanName(),
 		zc->char_name,
-		ZoneName(zone_id),
+		ZoneName(zone_id) ? ZoneName(zone_id) : "Unknown",
 		zone_id,
 		instance_id,
 		dest_x,
@@ -575,32 +575,41 @@ void Client::MovePC(uint32 zoneID, uint32 instanceID, float x, float y, float z,
 }
 
 void Client::MoveZone(const char *zone_short_name, const glm::vec4 &location) {
-	ProcessMovePC(ZoneID(zone_short_name), 0, location.x, location.y, location.z, location.w, 3, ZoneToSafeCoords);
+	const bool use_coordinates = (
+		location.x != 0.0f ||
+		location.y != 0.0f ||
+		location.z != 0.0f ||
+		location.w != 0.0f
+	);
+
+	const ZoneMode zone_type = use_coordinates ? ZoneSolicited : ZoneToSafeCoords;
+
+	ProcessMovePC(ZoneID(zone_short_name), 0, location.x, location.y, location.z, location.w, 3, zone_type);
 }
 
 void Client::MoveZoneGroup(const char *zone_short_name, const glm::vec4 &location) {
-	if (!GetGroup()) {
+	Group* g = GetGroup();
+	if (!g) {
 		MoveZone(zone_short_name, location);
 	} else {
-		auto client_group = GetGroup();
-		for (int member_index = 0; member_index < MAX_GROUP_MEMBERS; member_index++) {
-			if (client_group->members[member_index] && client_group->members[member_index]->IsClient()) {
-				auto group_member = client_group->members[member_index]->CastToClient();
-				group_member->MoveZone(zone_short_name, location);
+		for (const auto& gm : g->members) {
+			if (gm && gm->IsClient()) {
+				Client* c = gm->CastToClient();
+				c->MoveZone(zone_short_name, location);
 			}
 		}
 	}
 }
 
 void Client::MoveZoneRaid(const char *zone_short_name, const glm::vec4 &location) {
-	if (!GetRaid()) {
+	Raid* r = GetRaid();
+	if (!r) {
 		MoveZone(zone_short_name, location);
 	} else {
-		auto client_raid = GetRaid();
-		for (int member_index = 0; member_index < MAX_RAID_MEMBERS; member_index++) {
-			if (client_raid->members[member_index].member && client_raid->members[member_index].member->IsClient()) {
-				auto raid_member = client_raid->members[member_index].member->CastToClient();
-				raid_member->MoveZone(zone_short_name, location);
+		for (const auto& rm : r->members) {
+			if (rm.member && rm.member->IsClient()) {
+				Client* c = rm.member->CastToClient();
+				c->MoveZone(zone_short_name, location);
 			}
 		}
 	}
@@ -611,32 +620,41 @@ void Client::MoveZoneInstance(uint16 instance_id, const glm::vec4 &location) {
 		database.AddClientToInstance(instance_id, CharacterID());
 	}
 
-	ProcessMovePC(database.GetInstanceZoneID(instance_id), instance_id, location.x, location.y, location.z, location.w, 3, ZoneToSafeCoords);
+	const bool use_coordinates = (
+		location.x != 0.0f ||
+		location.y != 0.0f ||
+		location.z != 0.0f ||
+		location.w != 0.0f
+	);
+
+	const ZoneMode zone_type = use_coordinates ? ZoneSolicited : ZoneToSafeCoords;
+
+	ProcessMovePC(database.GetInstanceZoneID(instance_id), instance_id, location.x, location.y, location.z, location.w, 3, zone_type);
 }
 
 void Client::MoveZoneInstanceGroup(uint16 instance_id, const glm::vec4 &location) {
-	if (!GetGroup()) {
+	Group* g = GetGroup();
+	if (!g) {
 		MoveZoneInstance(instance_id, location);
 	} else {
-		auto client_group = GetGroup();
-		for (int member_index = 0; member_index < MAX_GROUP_MEMBERS; member_index++) {
-			if (client_group->members[member_index] && client_group->members[member_index]->IsClient()) {
-				auto group_member = client_group->members[member_index]->CastToClient();
-				group_member->MoveZoneInstance(instance_id, location);
+		for (const auto& gm : g->members) {
+			if (gm && gm->IsClient()) {
+				Client* c = gm->CastToClient();
+				c->MoveZoneInstance(instance_id, location);
 			}
 		}
 	}
 }
 
 void Client::MoveZoneInstanceRaid(uint16 instance_id, const glm::vec4 &location) {
-	if (!GetRaid()) {
+	Raid* r = GetRaid();
+	if (!r) {
 		MoveZoneInstance(instance_id, location);
 	} else {
-		auto client_raid = GetRaid();
-		for (int member_index = 0; member_index < MAX_RAID_MEMBERS; member_index++) {
-			if (client_raid->members[member_index].member && client_raid->members[member_index].member->IsClient()) {
-				auto raid_member = client_raid->members[member_index].member->CastToClient();
-				raid_member->MoveZoneInstance(instance_id, location);
+		for (const auto& rm : r->members) {
+			if (rm.member && rm.member->IsClient()) {
+				Client* c = rm.member->CastToClient();
+				c->MoveZoneInstance(instance_id, location);
 			}
 		}
 	}

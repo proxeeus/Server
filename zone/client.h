@@ -905,6 +905,9 @@ public:
 	int GetAAPoints() { return m_pp.aapoints; }
 	int GetSpentAA() { return m_pp.aapoints_spent; }
 	uint32 GetRequiredAAExperience();
+	void AutoGrantAAPoints();
+	void GrantAllAAPoints();
+	bool HasAlreadyPurchasedRank(AA::Rank* rank);
 
 	bool SendGMCommand(std::string message, bool ignore_status = false);
 
@@ -920,6 +923,7 @@ public:
 	void ApplySpell(
 		int spell_id,
 		int duration = 0,
+		int level = -1,
 		ApplySpellType apply_type = ApplySpellType::Solo,
 		bool allow_pets = false,
 		bool is_raid_group_only = true,
@@ -929,6 +933,7 @@ public:
 	void SetSpellDuration(
 		int spell_id,
 		int duration = 0,
+		int level = -1,
 		ApplySpellType apply_type = ApplySpellType::Solo,
 		bool allow_pets = false,
 		bool is_raid_group_only = true,
@@ -1662,7 +1667,7 @@ protected:
 	bool client_data_loaded;
 
 
-	void FinishAlternateAdvancementPurchase(AA::Rank *rank, bool ignore_cost);
+	void FinishAlternateAdvancementPurchase(AA::Rank *rank, bool ignore_cost, bool send_message_and_save);
 
 	Mob* bind_sight_target;
 

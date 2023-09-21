@@ -8727,6 +8727,7 @@ std::vector<Mob*> Bot::GetApplySpellList(
 void Bot::ApplySpell(
 	int spell_id,
 	int duration,
+	int level,
 	ApplySpellType apply_type,
 	bool allow_pets,
 	bool is_raid_group_only
@@ -8734,13 +8735,14 @@ void Bot::ApplySpell(
 	const auto& l = GetApplySpellList(apply_type, allow_pets, is_raid_group_only);
 
 	for (const auto& m : l) {
-		m->ApplySpellBuff(spell_id, duration);
+		m->ApplySpellBuff(spell_id, duration, level);
 	}
 }
 
 void Bot::SetSpellDuration(
 	int spell_id,
 	int duration,
+	int level,
 	ApplySpellType apply_type,
 	bool allow_pets,
 	bool is_raid_group_only
@@ -8748,7 +8750,7 @@ void Bot::SetSpellDuration(
 	const auto& l = GetApplySpellList(apply_type, allow_pets, is_raid_group_only);
 
 	for (const auto& m : l) {
-		m->SetBuffDuration(spell_id, duration);
+		m->SetBuffDuration(spell_id, duration, level);
 	}
 }
 

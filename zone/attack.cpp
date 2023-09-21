@@ -1741,7 +1741,8 @@ bool Client::Death(Mob* killerMob, int64 damage, uint16 spell, EQ::skills::Skill
 			static_cast<int>(attack_skill)
 		);
 
-		if (parse->EventPlayer(EVENT_DEATH, this, export_string, 0) != 0) {
+		std::vector<std::any> args = { CastToMob() };
+		if (parse->EventPlayer(EVENT_DEATH, this, export_string, 0, &args) != 0) {
 			if (GetHP() < 0) {
 				SetHP(0);
 			}
@@ -2388,7 +2389,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 				static_cast<int>(attack_skill)
 			);
 
-			if (parse->EventNPC(EVENT_DEATH, this, oos, export_string, 0) != 0) {
+			std::vector<std::any> args = { CastToMob() };
+			if (parse->EventNPC(EVENT_DEATH, this, oos, export_string, 0, &args) != 0) {
 				if (GetHP() < 0) {
 					SetHP(0);
 				}
@@ -2405,7 +2407,9 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 				spell,
 				static_cast<int>(attack_skill)
 			);
-			if (parse->EventBot(EVENT_DEATH, CastToBot(), oos, export_string, 0) != 0) {
+
+			std::vector<std::any> args = { CastToMob() };
+			if (parse->EventBot(EVENT_DEATH, CastToBot(), oos, export_string, 0, &args) != 0) {
 				if (GetHP() < 0) {
 					SetHP(0);
 				}
@@ -4257,7 +4261,7 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		//this was done to simplify the code here (since we can only effectively skip one mob on queue)
 		eqFilterType filter;
 		Mob* skip = attacker;
-		if (attacker && attacker->GetOwnerID()) {
+		if (attacker && attacker->GetOwner()) {
 			//attacker is a pet, let pet owners see their pet's damage
 			Mob* owner = attacker->GetOwner();
 			if (owner && owner->IsClient()) {
@@ -4570,8 +4574,8 @@ float Mob::GetDefensiveProcChances(float &ProcBonus, float &ProcChance, uint16 h
 }
 
 // argument 'weapon' not used
-void Mob::TryDefensiveProc(Mob *on, uint16 hand) {
-
+void Mob::TryDefensiveProc(Mob *on, uint16 hand)
+{
 	if (!on) {
 		SetTarget(nullptr);
 		LogError("A null Mob object was passed to Mob::TryDefensiveProc for evaluation!");
@@ -4583,23 +4587,26 @@ void Mob::TryDefensiveProc(Mob *on, uint16 hand) {
 	}
 
 	if (!on->HasDied() && on->GetHP() > 0) {
-
-		float ProcChance, ProcBonus;
-		on->GetDefensiveProcChances(ProcBonus, ProcChance, hand, this);
+		float proc_chance, proc_bonus;
+		on->GetDefensiveProcChances(proc_bonus, proc_chance, hand, this);
 
 		if (hand == EQ::invslot::slotSecondary) {
-			ProcChance /= 2;
+			proc_chance /= 2;
 		}
 
-		int level_penalty = 0;
-		int level_diff = GetLevel() - on->GetLevel();
-		if (level_diff > 6) {//10% penalty per level if > 6 levels over target.
-			level_penalty = (level_diff - 6) * 10;
+		int level_penalty     = 0;
+		int level_diff        = GetLevel() - on->GetLevel();
+		int penalty_level_gap = RuleI(Spells, DefensiveProcPenaltyLevelGap);
+		if (
+			penalty_level_gap >= 0 &&
+			level_diff > penalty_level_gap
+		) {//10% penalty per level if > penalty_level_gap levels over target.
+			level_penalty = (level_diff - penalty_level_gap) * RuleR(Spells, DefensiveProcPenaltyLevelGapModifier);
 		}
 
-		ProcChance -= ProcChance*level_penalty / 100;
+		proc_chance -= proc_chance * level_penalty / 100;
 
-		if (ProcChance < 0) {
+		if (proc_chance < 0) {
 			return;
 		}
 
@@ -4607,7 +4614,7 @@ void Mob::TryDefensiveProc(Mob *on, uint16 hand) {
 		for (int i = 0; i < MAX_PROCS; i++) {
 			if (IsValidSpell(DefensiveProcs[i].spellID)) {
 				if (!IsProcLimitTimerActive(DefensiveProcs[i].base_spellID, DefensiveProcs[i].proc_reuse_time, ProcType::DEFENSIVE_PROC)) {
-					float chance = ProcChance * (static_cast<float>(DefensiveProcs[i].chance) / 100.0f);
+					float chance = proc_chance * (static_cast<float>(DefensiveProcs[i].chance) / 100.0f);
 					if (zone->random.Roll(chance)) {
 						ExecWeaponProc(nullptr, DefensiveProcs[i].spellID, on);
 						CheckNumHitsRemaining(NumHit::DefensiveSpellProcs, 0, DefensiveProcs[i].base_spellID);
@@ -4620,14 +4627,14 @@ void Mob::TryDefensiveProc(Mob *on, uint16 hand) {
 		//AA Procs
 		if (IsOfClientBot()) {
 			for (int i = 0; i < MAX_AA_PROCS; i += 4) {
-				int32 aa_rank_id = aabonuses.DefensiveProc[i + +SBIndex::COMBAT_PROC_ORIGIN_ID];
-				int32 aa_spell_id = aabonuses.DefensiveProc[i + SBIndex::COMBAT_PROC_SPELL_ID];
-				int32 aa_proc_chance = 100 + aabonuses.DefensiveProc[i + SBIndex::COMBAT_PROC_RATE_MOD];
+				int32  aa_rank_id          = aabonuses.DefensiveProc[i + +SBIndex::COMBAT_PROC_ORIGIN_ID];
+				int32  aa_spell_id         = aabonuses.DefensiveProc[i + SBIndex::COMBAT_PROC_SPELL_ID];
+				int32  aa_proc_chance      = 100 + aabonuses.DefensiveProc[i + SBIndex::COMBAT_PROC_RATE_MOD];
 				uint32 aa_proc_reuse_timer = aabonuses.DefensiveProc[i + SBIndex::COMBAT_PROC_REUSE_TIMER];
 
 				if (aa_rank_id) {
 					if (!IsProcLimitTimerActive(-aa_rank_id, aa_proc_reuse_timer, ProcType::DEFENSIVE_PROC)) {
-						float chance = ProcChance * (static_cast<float>(aa_proc_chance) / 100.0f);
+						float chance = proc_chance * (static_cast<float>(aa_proc_chance) / 100.0f);
 						if (zone->random.Roll(chance) && IsValidSpell(aa_spell_id)) {
 							ExecWeaponProc(nullptr, aa_spell_id, on);
 							SetProcLimitTimer(-aa_rank_id, aa_proc_reuse_timer, ProcType::DEFENSIVE_PROC);

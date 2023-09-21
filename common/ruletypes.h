@@ -455,6 +455,8 @@ RULE_INT(Spells, ResurrectionEffectBlock, 2, "0 = allow overwrites/rule disabled
 RULE_BOOL(Spells, WaterMatchRequiredForLoS, true, "Enable/Disable the requirement of both the attacker/victim being both in or out of water for spells LoS to pass.")
 RULE_INT(Spells, WizardCritMinimumRandomRatio, 20, "The minimum value for the random range which Wizards and Caster DPS Mercs innately have for spell crit ratio. Set to 20 for vanilla values.")
 RULE_INT(Spells, WizardCritMaximumRandomRatio, 70, "The maximum value for the random range which Wizards and Caster DPS Mercs innately have for spell crit ratio. Set to 70 for vanilla values.")
+RULE_INT(Spells, DefensiveProcPenaltyLevelGap, 6, "Defensive Proc Penalty Level Gap where procs start losing their proc rate at RuleR(Spells, DefensiveProcPenaltyModifier)% per level difference")
+RULE_REAL(Spells, DefensiveProcPenaltyLevelGapModifier, 10.0f, "Defensive Proc Penalty Level Gap Modifier where procs start losing their proc rate at defined % after RuleI(Spells, DefensiveProcLevelGap) level difference")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)
@@ -839,6 +841,7 @@ RULE_CATEGORY_END()
 RULE_CATEGORY(Expansion)
 RULE_INT(Expansion, CurrentExpansion, -1, "The current expansion enabled for the server [-1 = ALL, 0 = Classic, 1 = Kunark etc.]")
 RULE_BOOL(Expansion, UseCurrentExpansionAAOnly, false, "When true will only load AA ranks that match CurrentExpansion rule")
+RULE_INT(Expansion, AutoGrantAAExpansion, -1, "Expansion to auto grant AAs up to, [-1 = Disabled, 0 = Classic, 1 = Kunark etc.]")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Instances)

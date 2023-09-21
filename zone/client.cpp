@@ -2224,25 +2224,13 @@ void Client::ReadBook(BookRequest_Struct *book) {
 
 
 		if (ClientVersion() >= EQ::versions::ClientVersion::SoF) {
-			// Find out what slot the book was read from.
 			// SoF+ need to look up book type for the output message.
-			int16	read_from_slot;
-
-			if (book->subslot >= 0) {
-				uint16 offset;
-				offset = (book->invslot-23) * 10;	// How many packs to skip.
-				read_from_slot = 251 + offset + book->subslot;
-			}
-			else {
-				read_from_slot = book->invslot -1;
-			}
-
 			const EQ::ItemInstance *inst = nullptr;
 
-			if (read_from_slot <= EQ::invbag::GENERAL_BAGS_END)
-				{
-				inst = m_inv[read_from_slot];
-				}
+			if (book->invslot <= EQ::invbag::GENERAL_BAGS_END)
+			{
+				inst = m_inv[book->invslot];
+			}
 
 			if(inst)
 				out->type = inst->GetItem()->Book;
@@ -2253,6 +2241,9 @@ void Client::ReadBook(BookRequest_Struct *book) {
 			out->type = book->type;
 		}
 		out->invslot = book->invslot;
+		out->target_id = book->target_id;
+		out->can_cast = 0; // todo: implement
+		out->can_scribe = 0; // todo: implement
 
 		memcpy(out->booktext, booktxt2.c_str(), length);
 
@@ -11097,8 +11088,6 @@ void Client::SetTrackingID(uint32 entity_id)
 	}
 
 	TrackingID = entity_id;
-
-	MessageString(Chat::Skills, TRACKING_BEGIN, m->GetCleanName());
 }
 
 int Client::GetRecipeMadeCount(uint32 recipe_id)
@@ -11297,6 +11286,7 @@ std::vector<Mob*> Client::GetApplySpellList(
 void Client::ApplySpell(
 	int spell_id,
 	int duration,
+	int level,
 	ApplySpellType apply_type,
 	bool allow_pets,
 	bool is_raid_group_only,
@@ -11305,13 +11295,14 @@ void Client::ApplySpell(
 	const auto& l = GetApplySpellList(apply_type, allow_pets, is_raid_group_only, allow_bots);
 
 	for (const auto& m : l) {
-		m->ApplySpellBuff(spell_id, duration);
+		m->ApplySpellBuff(spell_id, duration, level);
 	}
 }
 
 void Client::SetSpellDuration(
 	int spell_id,
 	int duration,
+	int level,
 	ApplySpellType apply_type,
 	bool allow_pets,
 	bool is_raid_group_only,
@@ -11320,7 +11311,7 @@ void Client::SetSpellDuration(
 	const auto& l = GetApplySpellList(apply_type, allow_pets, is_raid_group_only, allow_bots);
 
 	for (const auto& m : l) {
-		m->SetBuffDuration(spell_id, duration);
+		m->SetBuffDuration(spell_id, duration, level);
 	}
 }
 

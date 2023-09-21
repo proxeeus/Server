@@ -2266,7 +2266,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 				if((spell_id != 6882) && (spell_id != 6884)) // Chaotic Jester/Steadfast Servant
 				{
 					char pet_name[64];
-					snprintf(pet_name, sizeof(pet_name), "%s`s pet", caster->GetCleanName());
+					snprintf(pet_name, sizeof(pet_name), "%s`s_pet", caster->GetCleanName());
 					caster->TemporaryPets(spell_id, this, pet_name);
 				}
 				else
@@ -2443,7 +2443,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			{
 				if(caster && caster->IsClient()) {
 					char pet_name[64];
-					snprintf(pet_name, sizeof(pet_name), "%s`s doppelganger", caster->GetCleanName());
+					snprintf(pet_name, sizeof(pet_name), "%s`s_doppelganger", caster->GetCleanName());
 					int pet_count = spells[spell_id].base_value[i];
 					int pet_duration = spells[spell_id].max_value[i];
 					caster->CastToClient()->Doppelganger(spell_id, this, pet_name, pet_count, pet_duration);
@@ -10378,7 +10378,7 @@ bool Mob::HasPersistDeathIllusion(int32 spell_id) {
 	return false;
 }
 
-void Mob::SetBuffDuration(int spell_id, int duration) {
+void Mob::SetBuffDuration(int spell_id, int duration, int level) {
 
 	/*
 		Will refresh the buff with specified spell_id to the specified duration
@@ -10402,22 +10402,20 @@ void Mob::SetBuffDuration(int spell_id, int duration) {
 
 	int buff_count = GetMaxTotalSlots();
 	for (int slot = 0; slot < buff_count; slot++) {
-
 		if (!adjust_all_buffs) {
 			if (IsValidSpell(buffs[slot].spellid) && buffs[slot].spellid == spell_id) {
-				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, -1, duration, true);
+				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, level, duration, true);
 				return;
 			}
-		}
-		else {
+		} else {
 			if (IsValidSpell(buffs[slot].spellid)) {
-				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, -1, duration, true);
+				SpellOnTarget(buffs[slot].spellid, this, 0, false, 0, false, level, duration, true);
 			}
 		}
 	}
 }
 
-void Mob::ApplySpellBuff(int spell_id, int duration)
+void Mob::ApplySpellBuff(int spell_id, int duration, int level)
 {
 	/*
 		Used for quest command to apply a new buff with custom duration.
@@ -10435,7 +10433,7 @@ void Mob::ApplySpellBuff(int spell_id, int duration)
 		duration = PERMANENT_BUFF_DURATION;
 	}
 
-	SpellOnTarget(spell_id, this, 0, false, 0, false, -1, duration);
+	SpellOnTarget(spell_id, this, 0, false, 0, false, level, duration);
 }
 
 int Mob::GetBuffStatValueBySpell(int32 spell_id, const char* stat_identifier)

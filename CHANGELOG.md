@@ -1,3 +1,131 @@
+## [22.26.2] - 09/18/2023
+
+### Fixes
+
+* Fix an issue with schema versioning for the AA update
+
+## [22.26.1] - 09/17/2023
+
+### Fixes
+
+* Add Validation to #find, #set, and #show args ([#3598](https://github.com/EQEmu/Server/pull/3598)) @Kinglykrab 2023-09-17
+
+## [22.26.0] - 09/17/2023
+
+### Bug
+
+* Additional Wild Ramp param was causing an overflow it appears at least on local testing. ([#3589](https://github.com/EQEmu/Server/pull/3589)) @fryguy503 2023-09-11
+
+### Commands
+
+* npc_edit faction and #setfaction duplicate and incorrect. ([#3577](https://github.com/EQEmu/Server/pull/3577)) @noudess 2023-09-03
+
+### Feature
+
+* Add Defensive Proc Rules for Level Gap Penalty ([#3580](https://github.com/EQEmu/Server/pull/3580)) @Kinglykrab 2023-09-17
+* Add opcodes for Cast and Scribe book buttons ([#3578](https://github.com/EQEmu/Server/pull/3578)) @hgtw 2023-09-17
+* Cleanup Group Split Money Logic ([#3583](https://github.com/EQEmu/Server/pull/3583)) @crdunwel 2023-09-17
+
+### Fixes
+
+* AA System Fixes ([#3572](https://github.com/EQEmu/Server/pull/3572)) @KimLS 2023-09-17
+* Check for Song Skill Increase on Bard Pulse ([#3586](https://github.com/EQEmu/Server/pull/3586)) @crdunwel 2023-09-17
+* Fix #set faction/#setfaction Command ([#3575](https://github.com/EQEmu/Server/pull/3575)) @Kinglykrab 2023-09-02
+* Fix Killed XYZH support in EVENT_DEATH in Perl. ([#3591](https://github.com/EQEmu/Server/pull/3591)) @Kinglykrab 2023-09-17
+* Fix entity ID on death with #castspell ([#3592](https://github.com/EQEmu/Server/pull/3592)) @Kinglykrab 2023-09-17
+* Zoning logging edge case safety  @Akkadius 2023-08-29
+
+### Logging
+
+* Add logging to track down Wild Ramp issue ([#3588](https://github.com/EQEmu/Server/pull/3588)) @fryguy503 2023-09-11
+
+### Messages
+
+* Remove duplicate message on tracking begin ([#3574](https://github.com/EQEmu/Server/pull/3574)) @noudess 2023-09-11
+* Swarm pet normal damage messages were missing ([#3594](https://github.com/EQEmu/Server/pull/3594)) @noudess 2023-09-17
+
+### Quest API
+
+* Add ApplySpell() and SetBuffDuration() overloads to Perl/Lua ([#3576](https://github.com/EQEmu/Server/pull/3576)) @Kinglykrab 2023-09-17
+* Add XYZ/XYZH Overloads to Cross Zone Move Methods ([#3581](https://github.com/EQEmu/Server/pull/3581)) @Kinglykrab 2023-09-17
+
+## [22.25.0] - 08/28/2023
+
+### Bots
+
+* Add Support for Mana Pool AA Bonuses. ([#3571](https://github.com/EQEmu/Server/pull/3571)) @Aeadoin 2023-08-21
+* Remove In-Game Command References to Bot Groups ([#3545](https://github.com/EQEmu/Server/pull/3545)) @Aeadoin 2023-08-13
+
+### Bug
+
+* Escape item name in trader audit. ([#3540](https://github.com/EQEmu/Server/pull/3540)) @fryguy503 2023-08-13
+
+### CMake
+
+* Add cmake option to re-enable MSVC warnings ([#3537](https://github.com/EQEmu/Server/pull/3537)) @hgtw 2023-08-13
+* Define perlbind option for all targets ([#3538](https://github.com/EQEmu/Server/pull/3538)) @hgtw 2023-08-13
+
+### Charm
+
+* Fix to update target windows on charm on/off ([#3549](https://github.com/EQEmu/Server/pull/3549)) @noudess 2023-08-20
+
+### Combat Messages
+
+* Fix issue where pet proc damage was not showing up ([#3551](https://github.com/EQEmu/Server/pull/3551)) @noudess 2023-08-24
+
+### Database
+
+* Change primary key entry to NOT NULL ([#3559](https://github.com/EQEmu/Server/pull/3559)) @joligario 2023-08-20
+* Extend dumper CLI utility to export static instance data ([#3562](https://github.com/EQEmu/Server/pull/3562)) @Akkadius 2023-08-20
+
+### Expansions
+
+* Expansion settings tweaks ([#3556](https://github.com/EQEmu/Server/pull/3556)) @Akkadius 2023-08-20
+
+### Feature
+
+* Add adjustability for AERampage Range. ([#3548](https://github.com/EQEmu/Server/pull/3548)) @fryguy503 2023-08-20
+* Change #reload zone to reload zone headers globally. ([#3557](https://github.com/EQEmu/Server/pull/3557)) @Kinglykrab 2023-08-20
+* Change money type to all lower case as EQ live money shares and split has it that way. ([#3550](https://github.com/EQEmu/Server/pull/3550)) @regneq 2023-08-18
+
+### Fixes
+
+* Add character_stats_record to player tables  @Akkadius 2023-08-11
+* Bots no longer drop group on death, and raid fixes. ([#3542](https://github.com/EQEmu/Server/pull/3542)) @Aeadoin 2023-08-13
+* Bots will now load AAs properly when spawned. ([#3544](https://github.com/EQEmu/Server/pull/3544)) @Aeadoin 2023-08-13
+* Clearing target window on CHARM wear off had a side effect ([#3570](https://github.com/EQEmu/Server/pull/3570)) @noudess 2023-08-21
+* Fix #motd/#set motd Command ([#3558](https://github.com/EQEmu/Server/pull/3558)) @Kinglykrab 2023-08-20
+* Fix Bot::CheckDataBucket to work with Owner Buckets. ([#3552](https://github.com/EQEmu/Server/pull/3552)) @Aeadoin 2023-08-18
+* Fix to zoning logging exception  @Akkadius 2023-08-29
+* Instance GetUnusedInstanceID crash fox  @Akkadius 2023-08-21
+* Minor adjustment to formula calc position to fix modifier bug. ([#3565](https://github.com/EQEmu/Server/pull/3565)) @Valorith 2023-08-21
+
+### Instances
+
+* Honor reserved instances ([#3563](https://github.com/EQEmu/Server/pull/3563)) @joligario 2023-08-21
+* Refine id selection ([#3568](https://github.com/EQEmu/Server/pull/3568)) @joligario 2023-08-29
+
+### Logging
+
+* Add detailed zoning logging ([#3555](https://github.com/EQEmu/Server/pull/3555)) @Akkadius 2023-08-20
+
+### Quest API
+
+* Reload content flags globally when a content flag is set ([#3564](https://github.com/EQEmu/Server/pull/3564)) @Akkadius 2023-08-21
+
+### Rules
+
+* Add FinalRaidExpMultiplier Rule ([#3554](https://github.com/EQEmu/Server/pull/3554)) @Valorith 2023-08-20
+* Add a rule to adjust the randomization range for Wizard\Caster Merc innate critical ratio. ([#3543](https://github.com/EQEmu/Server/pull/3543)) @catapultam-habeo 2023-08-13
+* Add rule to restrict hand in of quest items to quest flagged NPCs. ([#3536](https://github.com/EQEmu/Server/pull/3536)) @Valorith 2023-08-13
+* Add rule to toggle pets accepting quest items ([#3533](https://github.com/EQEmu/Server/pull/3533)) @Valorith 2023-08-06
+* Also reload rules in world when #reload rules invoked ([#3566](https://github.com/EQEmu/Server/pull/3566)) @Akkadius 2023-08-21
+* Correct explanation of Bots:ManaRegen ([#3569](https://github.com/EQEmu/Server/pull/3569)) @Aeadoin 2023-08-21
+
+### Spawns
+
+* Fixes a rarer issue where spawn2 is not being properly content filtered  @Akkadius 2023-08-13
+
 ## [22.24.0] - 08/05/2023
 
 ### Character
