@@ -157,7 +157,7 @@ void NPC::ResumeWandering()
 		}
 		else
 		{
-			LogError("NPC not paused - can't resume wandering: [{}]", (unsigned long)GetNPCTypeID());
+			LogPathing("NPC not paused - can't resume wandering: [{}]", (unsigned long)GetNPCTypeID());
 			return;
 		}
 
@@ -173,7 +173,7 @@ void NPC::ResumeWandering()
 	}
 	else
 	{
-		LogError("NPC not on grid - can't resume wandering: [{}]", (unsigned long)GetNPCTypeID());
+		LogPathing("NPC not on grid - can't resume wandering: [{}]", (unsigned long)GetNPCTypeID());
 	}
 	return;
 }
@@ -195,8 +195,7 @@ void NPC::PauseWandering(int pausetime)
 		}
 	}
 	else {
-		if(GetNPCTypeID() != RuleI(PlayerBots, PlayerBotId))	// Avoid useless logging for PlayerBots (those appear when roamers are hailed)
-			LogError("NPC not on grid - can't pause wandering: [{}]", (unsigned long)GetNPCTypeID());
+		LogPathing("NPC not on grid - can't pause wandering: [{}]", (unsigned long)GetNPCTypeID());
 	}
 	return;
 }

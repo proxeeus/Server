@@ -362,6 +362,11 @@ bool Perl_Mob_FindBuff(Mob* self, uint16 spell_id) // @categories Spells and Dis
 	return self->FindBuff(spell_id);
 }
 
+bool Perl_Mob_FindBuff(Mob* self, uint16 spell_id, uint16 caster_id) // @categories Spells and Disciplines, Script Utility
+{
+	return self->FindBuff(spell_id, caster_id);
+}
+
 int Perl_Mob_FindBuffBySlot(Mob* self, int slot) // @categories Spells and Disciplines, Script Utility
 {
 	return self->FindBuffBySlot(slot);
@@ -1897,13 +1902,7 @@ void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 tex
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -1915,14 +1914,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -1935,15 +1927,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -1957,16 +1941,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -1981,17 +1956,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2007,18 +1972,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2035,19 +1989,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color,
-	uint32 drakkin_heritage
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color, uint32 drakkin_heritage) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2065,20 +2007,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color,
-	uint32 drakkin_heritage,
-	uint32 drakkin_tattoo
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color, uint32 drakkin_heritage, uint32 drakkin_tattoo) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2097,21 +2026,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color,
-	uint32 drakkin_heritage,
-	uint32 drakkin_tattoo,
-	uint32 drakkin_details
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color, uint32 drakkin_heritage, uint32 drakkin_tattoo, uint32 drakkin_details) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2131,22 +2046,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color,
-	uint32 drakkin_heritage,
-	uint32 drakkin_tattoo,
-	uint32 drakkin_details,
-	float size
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color, uint32 drakkin_heritage, uint32 drakkin_tattoo, uint32 drakkin_details, float size) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -2167,23 +2067,7 @@ void Perl_Mob_SendIllusion(
 	);
 }
 
-void Perl_Mob_SendIllusion(
-	Mob *self,
-	uint16 race_id,
-	uint8 gender_id,
-	uint8 texture,
-	uint8 helmet_texture,
-	uint8 face,
-	uint8 hair,
-	uint8 hair_color,
-	uint8 beard,
-	uint8 beard_color,
-	uint32 drakkin_heritage,
-	uint32 drakkin_tattoo,
-	uint32 drakkin_details,
-	float size,
-	Client *target
-) // @categories Script Utility
+void Perl_Mob_SendIllusion(Mob *self, uint16 race_id, uint8 gender_id, uint8 texture, uint8 helmet_texture, uint8 face, uint8 hair, uint8 hair_color, uint8 beard, uint8 beard_color, uint32 drakkin_heritage, uint32 drakkin_tattoo, uint32 drakkin_details, float size, Client *target) // @categories Script Utility
 {
 	self->SendIllusionPacket(
 		AppearanceStruct{
@@ -3570,7 +3454,8 @@ void perl_register_mob()
 	package.add("EntityVariableExists", &Perl_Mob_EntityVariableExists);
 	package.add("FaceTarget", (void(*)(Mob*))&Perl_Mob_FaceTarget);
 	package.add("FaceTarget", (void(*)(Mob*, Mob*))&Perl_Mob_FaceTarget);
-	package.add("FindBuff", &Perl_Mob_FindBuff);
+	package.add("FindBuff", (bool(*)(Mob*, uint16))&Perl_Mob_FindBuff);
+	package.add("FindBuff", (bool(*)(Mob*, uint16, uint16))&Perl_Mob_FindBuff);
 	package.add("FindBuffBySlot", &Perl_Mob_FindBuffBySlot);
 	package.add("FindGroundZ", (float(*)(Mob*, float, float))&Perl_Mob_FindGroundZ);
 	package.add("FindGroundZ", (float(*)(Mob*, float, float, float))&Perl_Mob_FindGroundZ);

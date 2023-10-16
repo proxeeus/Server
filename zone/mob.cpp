@@ -3471,10 +3471,10 @@ void Mob::ShowBuffs(Client* c) {
 	);
 
 	for (auto i = 0; i < GetMaxTotalSlots(); i++) {
-		const auto spell_id              = buffs[i].spellid;
-		const auto buff_duration_formula = spells[spell_id].buff_duration_formula;
+		const auto spell_id = buffs[i].spellid;
 		if (IsValidSpell(spell_id)) {
-			const auto is_permanent = (
+			const auto buff_duration_formula = spells[spell_id].buff_duration_formula;
+			const auto is_permanent          = (
 				buff_duration_formula == DF_Aura ||
 				buff_duration_formula == DF_Permanent
 			);
@@ -5193,7 +5193,7 @@ std::string Mob::GetTargetDescription(Mob* target, uint8 description_type, uint1
 	auto d = fmt::format(
 		"{}",
 		(
-			this == target ?
+			target && this == target ?
 			self_return :
 			fmt::format(
 				"{} ({})",

@@ -315,9 +315,14 @@ void Lua_Mob::SetInvisible(int state) {
 	self->SetInvisible(state);
 }
 
-bool Lua_Mob::FindBuff(int spell_id) {
+bool Lua_Mob::FindBuff(uint16 spell_id) {
 	Lua_Safe_Call_Bool();
 	return self->FindBuff(spell_id);
+}
+
+bool Lua_Mob::FindBuff(uint16 spell_id, uint16 caster_id) {
+	Lua_Safe_Call_Bool();
+	return self->FindBuff(spell_id, caster_id);
 }
 
 uint16 Lua_Mob::FindBuffBySlot(int slot) {
@@ -873,7 +878,13 @@ bool Lua_Mob::CastSpell(int spell_id, int target_id) {
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot) {
 	Lua_Safe_Call_Bool();
-	return self->CastSpell(spell_id, target_id, static_cast<EQ::spells::CastingSlot>(slot));
+
+	int cast_slot = 0;
+	if (slot >= 0 || slot <= 23 || slot == 255) {
+		cast_slot = slot;
+	}
+
+	return self->CastSpell(spell_id, target_id, static_cast<EQ::spells::CastingSlot>(cast_slot));
 }
 
 bool Lua_Mob::CastSpell(int spell_id, int target_id, int slot, int cast_time) {
@@ -3346,7 +3357,8 @@ luabind::scope lua_register_mob() {
 	.def("Emote", &Lua_Mob::Emote)
 	.def("EntityVariableExists", &Lua_Mob::EntityVariableExists)
 	.def("FaceTarget", (void(Lua_Mob::*)(Lua_Mob))&Lua_Mob::FaceTarget)
-	.def("FindBuff", &Lua_Mob::FindBuff)
+	.def("FindBuff", (bool(Lua_Mob::*)(uint16))&Lua_Mob::FindBuff)
+	.def("FindBuff", (bool(Lua_Mob::*)(uint16,uint16))&Lua_Mob::FindBuff)
 	.def("FindBuffBySlot", (uint16(Lua_Mob::*)(int))&Lua_Mob::FindBuffBySlot)
 	.def("FindGroundZ", (double(Lua_Mob::*)(double,double))&Lua_Mob::FindGroundZ)
 	.def("FindGroundZ", (double(Lua_Mob::*)(double,double,double))&Lua_Mob::FindGroundZ)
@@ -3770,7 +3782,9 @@ luabind::scope lua_register_special_abilities() {
 				luabind::value("immune_aggro_client", static_cast<int>(IMMUNE_AGGRO_CLIENT)),
 				luabind::value("immune_aggro_npc", static_cast<int>(IMMUNE_AGGRO_NPC)),
 				luabind::value("modify_avoid_damage", static_cast<int>(MODIFY_AVOID_DAMAGE)),
-				luabind::value("immune_open", static_cast<int>(IMMUNE_OPEN))
+				luabind::value("immune_open", static_cast<int>(IMMUNE_OPEN)),
+				luabind::value("immune_assassinate", static_cast<int>(IMMUNE_ASSASSINATE)),
+				luabind::value("immune_headshot", static_cast<int>(IMMUNE_HEADSHOT))
 		)];
 }
 

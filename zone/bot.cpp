@@ -468,6 +468,14 @@ Bot::~Bot() {
 	}
 
 	entity_list.RemoveBot(GetID());
+
+	if (GetGroup()) {
+		GetGroup()->MemberZoned(this);
+	}
+
+	if (GetRaid()) {
+		GetRaid()->MemberZoned(CastToClient());
+	}
 }
 
 void Bot::SetBotID(uint32 botID) {
@@ -646,7 +654,7 @@ NPCType *Bot::FillNPCTypeStruct(
 	n->current_hp = hp;
 	n->max_hp = hp;
 	n->size = size;
-	n->runspeed = 0.7f;
+	n->runspeed = 1.25f;
 	n->gender = gender;
 	n->race = botRace;
 	n->class_ = botClass;
@@ -2341,10 +2349,10 @@ void Bot::AI_Process()
 // OK TO IDLE
 
 		// Ok to idle
-		if (TryIdleChecks(fm_distance)) {
+		if (TryNonCombatMovementChecks(bot_owner, follow_mob, Goal)) {
 			return;
 		}
-		if (TryNonCombatMovementChecks(bot_owner, follow_mob, Goal)) {
+		if (TryIdleChecks(fm_distance)) {
 			return;
 		}
 		if (TryBardMovementCasts()) {
@@ -2377,23 +2385,11 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > GetFollowDistance())) {
 
 			if (!IsRooted()) {
-
 				if (rest_timer.Enabled()) {
 					rest_timer.Disable();
 				}
 
-				bool running = true;
-
-				if (destination_distance < GetFollowDistance() + BOT_FOLLOW_DISTANCE_WALK) {
-					running = false;
-				}
-
-				if (running) {
-					RunTo(Goal.x, Goal.y, Goal.z);
-				}
-				else {
-					WalkTo(Goal.x, Goal.y, Goal.z);
-				}
+				RunTo(Goal.x, Goal.y, Goal.z);
 
 				return true;
 			}
