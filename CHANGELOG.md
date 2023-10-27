@@ -1,3 +1,74 @@
+## [22.30.2] - 10/26/2023
+
+### Fixes
+
+Revert Perl regression in #3648 causing scripts to not reliably initialize on zone bootup. @Akkadius 2023-10-26
+
+## [22.30.1] - 10/24/2023
+
+### Fixes
+
+* Fix empty InsertMany in bot starting items. ([#3653](https://github.com/EQEmu/Server/pull/3653)) @Kinglykrab 2023-10-24
+
+## [22.30.0] - 10/23/2023
+
+### API
+
+* Implement Zone Sidecar ([#3635](https://github.com/EQEmu/Server/pull/3635)) @Akkadius 2023-10-24
+
+### Commands
+
+* Move #suspend from content database ([#3651](https://github.com/EQEmu/Server/pull/3651)) @joligario 2023-10-24
+
+### Fixes
+
+* Fix Bot Starting Items SQL ([#3649](https://github.com/EQEmu/Server/pull/3649)) @Kinglykrab 2023-10-23
+
+### Perl
+
+* Implement eqemu-perl for Linux ([#3652](https://github.com/EQEmu/Server/pull/3652)) @Akkadius 2023-10-24
+* Reload perl quests on zone bootup ([#3648](https://github.com/EQEmu/Server/pull/3648)) @hgtw 2023-10-24
+
+### Pets
+
+* Disallow effect of alliance line when cast on pets. ([#3650](https://github.com/EQEmu/Server/pull/3650)) @noudess 2023-10-24
+
+## [22.29.1] - 10/21/2023
+
+### DB
+
+* Fix manifest for blocked spells ([#3646](https://github.com/EQEmu/Server/pull/3646)) @joligario 2023-10-21
+
+### Fixes
+
+* Fix issue with subcommand settings not working ([#3643](https://github.com/EQEmu/Server/pull/3643)) @Kinglykrab 2023-10-21
+* Hotfix command without hotfix name ([#3644](https://github.com/EQEmu/Server/pull/3644)) @joligario 2023-10-21
+* Verifying mail keys when none exist ([#3645](https://github.com/EQEmu/Server/pull/3645)) @joligario 2023-10-21
+
+## [22.29.0] - 10/20/2023
+
+### Feature
+
+* Add Expansion and Content Flag support to Blocked Spells ([#3638](https://github.com/EQEmu/Server/pull/3638)) @Kinglykrab 2023-10-20
+
+### Fixes
+
+* Fix crash when checking Bot Group/Raid membership ([#3641](https://github.com/EQEmu/Server/pull/3641)) @Aeadoin 2023-10-20
+
+### Perl
+
+* Static linker fix on Linux ([#3642](https://github.com/EQEmu/Server/pull/3642)) @Akkadius 2023-10-20
+
+### Rules
+
+* Add rule to configure max number of procs per round Combat:MaxProcs ([#3640](https://github.com/EQEmu/Server/pull/3640)) @Akkadius 2023-10-20
+
+## [22.28.1] - 10/20/2023
+
+### Build
+
+* Perl Linux build fix
+
 ## [22.28.0] - 10/15/2023
 
 ### Bots

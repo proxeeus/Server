@@ -440,13 +440,13 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 {
 	Seperator sep(message.c_str(), ' ', 10, 100, true); // "three word argument" should be considered 1 arg
 
-	std::string cstr(sep.arg[0] + 1);
+	std::string command(sep.arg[0] + 1);
 
-	if (commandlist.count(cstr) != 1) {
+	if (commandlist.count(command) != 1) {
 		return -2;
 	}
 
-	auto cur = commandlist[cstr];
+	const CommandRecord* current_command = commandlist[command];
 
 	bool is_subcommand            = false;
 	bool can_use_subcommand       = false;
@@ -454,11 +454,11 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 
 	const auto arguments = sep.argnum;
 
-	if (arguments >= 2) {
+	if (arguments) {
 		const std::string& sub_command = sep.arg[1];
 
 		for (const auto &e : command_subsettings) {
-			if (e.sub_command == sub_command) {
+			if (e.parent_command == command && e.sub_command == sub_command) {
 				can_use_subcommand       = c->Admin() >= static_cast<int16>(e.access_level);
 				is_subcommand            = true;
 				found_subcommand_setting = true;
@@ -468,7 +468,7 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 
 		if (!found_subcommand_setting) {
 			for (const auto &e: command_subsettings) {
-				if (e.sub_command == sub_command) {
+				if (e.parent_command == command && e.sub_command == sub_command) {
 					can_use_subcommand = c->Admin() >= static_cast<int16>(e.access_level);
 					is_subcommand      = true;
 					break;
@@ -478,7 +478,7 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 	}
 
 	if (!ignore_status) {
-		if (!is_subcommand && c->Admin() < cur->admin) {
+		if (!is_subcommand && c->Admin() < current_command->admin) {
 			c->Message(Chat::White, "Your status is not high enough to use this command.");
 			return -1;
 		}
@@ -500,7 +500,7 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 		QServ->PlayerLogEvent(Player_Log_Issued_Commands, c->CharacterID(), event_desc);
 	}
 
-	if (cur->admin >= COMMANDS_LOGGING_MIN_STATUS) {
+	if (current_command->admin >= COMMANDS_LOGGING_MIN_STATUS) {
 		LogCommands(
 			"[{}] ([{}]) used command: [{}] (target=[{}])",
 			c->GetName(),
@@ -510,8 +510,8 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 		);
 	}
 
-	if (!cur->function) {
-		LogError("Command [{}] has a null function", cstr);
+	if (!current_command->function) {
+		LogError("Command [{}] has a null function", command);
 		return -1;
 	}
 
@@ -528,7 +528,7 @@ int command_realdispatch(Client *c, std::string message, bool ignore_status)
 		RecordPlayerEventLogWithClient(c, PlayerEvent::GM_COMMAND, e);
 	}
 
-	cur->function(c, &sep);	// Dispatch C++ Command
+	current_command->function(c, &sep);	// Dispatch C++ Command
 
 	return 0;
 }
@@ -668,7 +668,7 @@ void command_hotfix(Client *c, const Seperator *sep)
 				hotfix_command = fmt::format("\"{}\" -hotfix={}", shared_memory_path, hotfix_name);
 			}
 			else {
-				hotfix_command = fmt::format("\"{}\"", shared_memory_path, hotfix_name);
+				hotfix_command = fmt::format("\"{}\"", shared_memory_path);
 			}
 
 			LogInfo("Running hotfix command [{}]", hotfix_command);
