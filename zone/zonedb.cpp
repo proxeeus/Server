@@ -21,6 +21,7 @@
 #include "../common/repositories/character_pet_info_repository.h"
 #include "../common/repositories/character_buffs_repository.h"
 #include "../common/repositories/criteria/content_filter_criteria.h"
+#include "../common/repositories/spawn2_disabled_repository.h"
 
 #include <ctime>
 #include <iostream>
@@ -171,10 +172,26 @@ uint32 ZoneDatabase::GetSpawnTimeLeft(uint32 id, uint16 instance_id)
 
 }
 
-void ZoneDatabase::UpdateSpawn2Status(uint32 id, uint8 new_status)
+void ZoneDatabase::UpdateSpawn2Status(uint32 id, uint8 new_status, uint32 instance_id)
 {
-	std::string query = StringFormat("UPDATE spawn2 SET enabled = %i WHERE id = %lu", new_status, (unsigned long)id);
-	QueryDatabase(query);
+	auto spawns = Spawn2DisabledRepository::GetWhere(
+		*this,
+		fmt::format("spawn2_id = {} and instance_id = {}", id, instance_id)
+	);
+	if (!spawns.empty()) {
+		auto spawn = spawns[0];
+		// 1 = enabled 0 = disabled
+		spawn.disabled    = new_status ? 0 : 1;
+		spawn.instance_id = instance_id;
+		Spawn2DisabledRepository::UpdateOne(*this, spawn);
+		return;
+	}
+
+	auto spawn = Spawn2DisabledRepository::NewEntity();
+	spawn.spawn2_id   = id;
+	spawn.instance_id = instance_id;
+	spawn.disabled    = new_status ? 0 : 1;
+	Spawn2DisabledRepository::InsertOne(*this, spawn);
 }
 
 bool ZoneDatabase::SetSpecialAttkFlag(uint8 id, const char* flag) {
@@ -2850,7 +2867,7 @@ uint8 ZoneDatabase::RaidGroupCount(uint32 raidid, uint32 groupid) {
 int64 ZoneDatabase::GetBlockedSpellsCount(uint32 zone_id)
 {
 	return BlockedSpellsRepository::Count(
-		database,
+		*this,
 		fmt::format(
 			"zoneid = {} {}",
 			zone_id,
@@ -2864,7 +2881,7 @@ bool ZoneDatabase::LoadBlockedSpells(int64 blocked_spells_count, ZoneSpellsBlock
 	LogInfo("Loading Blocked Spells from database for {} ({}).", zone_store.GetZoneName(zone_id, true), zone_id);
 
 	const auto& l = BlockedSpellsRepository::GetWhere(
-		database,
+		*this,
 		fmt::format(
 			"zoneid = {} {} ORDER BY id ASC",
 			zone_id,

@@ -360,22 +360,25 @@ Mob *QuestManager::spawn_from_spawn2(uint32 spawn2_id)
 
 void QuestManager::enable_spawn2(uint32 spawn2_id)
 {
-	database.UpdateSpawn2Status(spawn2_id, 1);
+	database.UpdateSpawn2Status(spawn2_id, 1, zone->GetInstanceID());
 	auto pack = new ServerPacket(ServerOP_SpawnStatusChange, sizeof(ServerSpawnStatusChange_Struct));
-	ServerSpawnStatusChange_Struct* ssc = (ServerSpawnStatusChange_Struct*) pack->pBuffer;
-	ssc->id = spawn2_id;
-	ssc->new_status = 1;
+	auto *ssc = (ServerSpawnStatusChange_Struct *) pack->pBuffer;
+	ssc->id          = spawn2_id;
+	ssc->new_status  = true;
+	ssc->instance_id = zone->GetInstanceID();
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
 }
 
 void QuestManager::disable_spawn2(uint32 spawn2_id)
 {
-	database.UpdateSpawn2Status(spawn2_id, 0);
+	database.UpdateSpawn2Status(spawn2_id, 0, zone->GetInstanceID());
 	auto pack = new ServerPacket(ServerOP_SpawnStatusChange, sizeof(ServerSpawnStatusChange_Struct));
-	ServerSpawnStatusChange_Struct* ssc = (ServerSpawnStatusChange_Struct*) pack->pBuffer;
-	ssc->id = spawn2_id;
-	ssc->new_status = 0;
+	auto *ssc = (ServerSpawnStatusChange_Struct *) pack->pBuffer;
+	ssc->id          = spawn2_id;
+	ssc->new_status  = false;
+	ssc->instance_id = zone->GetInstanceID();
+
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
 }
@@ -3207,8 +3210,29 @@ std::string QuestManager::varlink(
 
 	return linker.GenerateLink();
 }
+
+std::string QuestManager::getitemcomment(uint32 item_id) {
+	const auto* item_data = database.GetItem(item_id);
+	if (!item_data) {
+		return "INVALID ITEM ID IN GETITEMCOMMENT";
+	}
+
+	std::string item_comment = item_data->Comment;
+	return item_comment;
+}
+
+std::string QuestManager::getitemlore(uint32 item_id) {
+	const auto* item_data = database.GetItem(item_id);
+	if (!item_data) {
+		return "INVALID ITEM ID IN GETITEMLORE";
+	}
+
+	std::string item_lore = item_data->Lore;
+	return item_lore;
+}
+
 std::string QuestManager::getitemname(uint32 item_id) {
-	const EQ::ItemData* item_data = database.GetItem(item_id);
+	const auto* item_data = database.GetItem(item_id);
 	if (!item_data) {
 		return "INVALID ITEM ID IN GETITEMNAME";
 	}
