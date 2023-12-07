@@ -520,6 +520,7 @@ Mob::Mob(
 
 	is_boat = IsBoat();
 
+	current_alliance_faction = -1;
 }
 
 Mob::~Mob()
@@ -3604,10 +3605,17 @@ void Mob::SendIllusionPacket(const AppearanceStruct& a)
 	gender           = new_gender;
 	hairstyle        = new_hair;
 	haircolor        = new_hair_color;
-	helmtexture      = new_helmet_texture;
 	race             = new_race;
 	size             = new_size;
-	texture          = new_texture;
+
+	// These two should not be modified in base data - it kills db texture
+	// when illusion is only for RandomizeFeatures...
+	if (new_helmet_texture != UINT8_MAX) {
+		helmtexture      = new_helmet_texture;
+	}
+	if (new_texture != UINT8_MAX) {
+		texture          = new_texture;
+	}
 
 	auto outapp = new EQApplicationPacket(OP_Illusion, sizeof(Illusion_Struct));
 	auto is     = (Illusion_Struct *) outapp->pBuffer;
@@ -4917,16 +4925,14 @@ bool Mob::RemoveFromHateList(Mob* mob)
 	return bFound;
 }
 
-void Mob::WipeHateList()
-{
-	if(IsEngaged())
-	{
-		hate_list.WipeHateList();
-		AI_Event_NoLongerEngaged();
-	}
-	else
-	{
-		hate_list.WipeHateList();
+void Mob::WipeHateList(bool npc_only) {
+	if (IsEngaged()) {
+		hate_list.WipeHateList(npc_only);
+		if (hate_list.IsHateListEmpty()) {
+			AI_Event_NoLongerEngaged();
+		}
+	} else {
+		hate_list.WipeHateList(npc_only);
 	}
 }
 
@@ -5389,7 +5395,7 @@ int Mob::GetHaste()
 		h += spellbonuses.hastetype2 > 10 ? 10 : spellbonuses.hastetype2;
 
 	// 26+ no cap, 1-25 10
-	if (level > 25) // 26+
+	if (level > 25 || (IsClient() && RuleB(Character, IgnoreLevelBasedHasteCaps))) // 26+
 		h += itembonuses.haste;
 	else // 1-25
 		h += itembonuses.haste > 10 ? 10 : itembonuses.haste;
@@ -5411,7 +5417,7 @@ int Mob::GetHaste()
 		h = cap;
 
 	// 51+ 25 (despite there being higher spells...), 1-50 10
-	if (level > 50) { // 51+
+	if (level > 50 || (IsClient() && RuleB(Character, IgnoreLevelBasedHasteCaps))) { // 51+
 		cap = RuleI(Character, Hastev3Cap);
 		if (spellbonuses.hastetype3 > cap) {
 			h += cap;
@@ -7200,24 +7206,10 @@ int8 Mob::GetDecayEffectValue(uint16 spell_id, uint16 spelleffect) {
 	return effect_value;
 }
 
-// Faction Mods for Alliance type spells
+// Faction Mods for Alliance type spells (only 1 ever active)
 void Mob::AddFactionBonus(uint32 pFactionID,int32 bonus) {
-	std::map <uint32, int32> :: const_iterator faction_bonus;
-	typedef std::pair <uint32, int32> NewFactionBonus;
-
-	faction_bonus = faction_bonuses.find(pFactionID);
-	if(faction_bonus == faction_bonuses.end())
-	{
-		faction_bonuses.emplace(NewFactionBonus(pFactionID,bonus));
-	}
-	else
-	{
-		if(faction_bonus->second<bonus)
-		{
-			faction_bonuses.erase(pFactionID);
-			faction_bonuses.emplace(NewFactionBonus(pFactionID,bonus));
-		}
-	}
+	current_alliance_faction = pFactionID;
+	current_alliance_mod = bonus;
 }
 
 // Faction Mods from items
@@ -7241,11 +7233,9 @@ void Mob::AddItemFactionBonus(uint32 pFactionID,int32 bonus) {
 }
 
 int32 Mob::GetFactionBonus(uint32 pFactionID) {
-	std::map <uint32, int32> :: const_iterator faction_bonus;
-	faction_bonus = faction_bonuses.find(pFactionID);
-	if(faction_bonus != faction_bonuses.end())
+	if(current_alliance_faction == pFactionID)
 	{
-		return (*faction_bonus).second;
+		return current_alliance_mod;
 	}
 	return 0;
 }

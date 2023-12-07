@@ -42,27 +42,34 @@ HateList::~HateList()
 {
 }
 
-void HateList::WipeHateList()
-{
+void HateList::WipeHateList(bool npc_only) {
 	auto iterator = list.begin();
+	while (iterator != list.end()) {
+		Mob *m = (*iterator)->entity_on_hatelist;
+		if (
+			m &&
+			(
+				m->IsOfClientBotMerc() ||
+				(m->IsPet() && m->GetOwner() && m->GetOwner()->IsOfClientBotMerc())
+			) &&
+			npc_only
+		) {
+			iterator++;
+		} else {
+			if (m) {
+				if (parse->HasQuestSub(hate_owner->GetNPCTypeID(), EVENT_HATE_LIST)) {
+					parse->EventNPC(EVENT_HATE_LIST, hate_owner->CastToNPC(), m, "0", 0);
+				}
 
-	while (iterator != list.end())
-	{
-		Mob* m = (*iterator)->entity_on_hatelist;
-		if (m)
-		{
-			if (parse->HasQuestSub(hate_owner->GetNPCTypeID(), EVENT_HATE_LIST)) {
-				parse->EventNPC(EVENT_HATE_LIST, hate_owner->CastToNPC(), m, "0", 0);
-			}
+				if (m->IsClient()) {
+					m->CastToClient()->DecrementAggroCount();
+					m->CastToClient()->RemoveXTarget(hate_owner, true);
+				}
 
-			if (m->IsClient()) {
-				m->CastToClient()->DecrementAggroCount();
-				m->CastToClient()->RemoveXTarget(hate_owner, true);
+				delete (*iterator);
+				iterator = list.erase(iterator);
 			}
 		}
-		delete (*iterator);
-		iterator = list.erase(iterator);
-
 	}
 }
 
@@ -734,7 +741,7 @@ int HateList::AreaRampage(Mob *caster, Mob *target, int count, ExtraAttackOption
 			caster->CombatRange(h->entity_on_hatelist, 1.0, true, opts)) {
 			id_list.push_back(h->entity_on_hatelist->GetID());
 		}
-		
+
 		if (count != -1 && id_list.size() > count) {
 			break;
 		}

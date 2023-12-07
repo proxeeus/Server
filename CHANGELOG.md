@@ -1,3 +1,71 @@
+## [22.34.2] - 11/23/2023
+
+### Admin
+
+* Update date in changelog ([#3698](https://github.com/EQEmu/Server/pull/3698)) @joligario 2023-11-19
+
+### Code
+
+* Fix typo in #giveitem ([#3704](https://github.com/EQEmu/Server/pull/3704)) @Kinglykrab 2023-11-22
+
+### Fixes
+
+* Add "IgnoreLevelBasedHasteCaps" rule to GetHaste() ([#3705](https://github.com/EQEmu/Server/pull/3705)) @jcr4990 2023-11-23
+* Fix bots/Mercenaries being removed from hatelist ([#3708](https://github.com/EQEmu/Server/pull/3708)) @Kinglykrab 2023-11-23
+* Fix some spell types failing IsValidSpellRange check ([#3707](https://github.com/EQEmu/Server/pull/3707)) @nytmyr 2023-11-23
+
+### Loginserver
+
+* Update ticket login table structure ([#3703](https://github.com/EQEmu/Server/pull/3703)) @KimLS 2023-11-22
+
+## [22.34.1] - 11/20/2023
+
+### EQTime
+
+Hotfix for world not spamming save messages by setting to detail level logging @Akkadius 2023-11-20 
+
+## [22.34.0] - 11/19/2023
+
+### Bots
+
+* Add ownerraid, byclass and byrace actionables and fix group-based arguments for raids. ([#3680](https://github.com/EQEmu/Server/pull/3680)) @nytmyr 2023-11-19
+
+### Code
+
+* Cleanup #giveitem and #summonitem ([#3692](https://github.com/EQEmu/Server/pull/3692)) @Kinglykrab 2023-11-19
+* Cleanup #show currencies Command ([#3693](https://github.com/EQEmu/Server/pull/3693)) @Kinglykrab 2023-11-19
+
+### Commands
+
+* Add #show aa_points Command ([#3695](https://github.com/EQEmu/Server/pull/3695)) @Kinglykrab 2023-11-19
+
+### Database
+
+* Pull pet power from content database ([#3689](https://github.com/EQEmu/Server/pull/3689)) @joligario 2023-11-18
+
+### GM Commands
+
+* Add `#takeplatinum` ([#3690](https://github.com/EQEmu/Server/pull/3690)) @joligario 2023-11-19
+* Remove duplicate comment ([#3691](https://github.com/EQEmu/Server/pull/3691)) @joligario 2023-11-19
+
+### Illusions
+
+* RandomizeFeastures erased texture. ([#3686](https://github.com/EQEmu/Server/pull/3686)) @noudess 2023-11-12
+
+### Spawn
+
+* (imported from takp) Added min_time and max_time to spawnentry. This will prevent a NPC from… ([#3685](https://github.com/EQEmu/Server/pull/3685)) @regneq 2023-11-18
+
+## [22.33.0] - 11/11/2023
+
+### Feature
+
+* Add Comment to Item Data/Quest API ([#3669](https://github.com/EQEmu/Server/pull/3669)) @Kinglykrab 2023-11-07
+
+### Spawn2
+
+* Fix edge case with instances not copying disabled spawn state ([#3688](https://github.com/EQEmu/Server/pull/3688)) @Akkadius 2023-11-12
+
 ## [22.32.1] - 11/6/2023
 
 ### Hotfix
@@ -20,6 +88,7 @@
 * Fix Perl__worldwideremovetask package ([#3670](https://github.com/EQEmu/Server/pull/3670)) @Kinglykrab 2023-11-04
 * Revert " Fix Killed XYZH support in EVENT_DEATH in Perl. " (#3682) ([#3591](https://github.com/EQEmu/Server/pull/3591)) @fryguy503 2023-11-06
 CRASH
+
 ### GCC
 
 * Compatibility fix for GCC 13 ([#3677](https://github.com/EQEmu/Server/pull/3677)) @joligario 2023-11-05

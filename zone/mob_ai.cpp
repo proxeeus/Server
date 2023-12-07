@@ -1062,6 +1062,15 @@ void Mob::AI_Process() {
 			SetTarget(hate_list.GetClosestEntOnHateList(this));
 		else {
 			if (AI_target_check_timer->Check()) {
+				if (
+					IsNPC() &&
+					!CastToNPC()->GetSwarmInfo() &&
+					(!IsPet() || (HasOwner() && GetOwner()->IsNPC())) &&
+					!CastToNPC()->WillAggroNPCs()
+				) {
+					WipeHateList(true); // wipe NPCs from hate list to prevent faction war
+				}
+
 				if (IsFocused()) {
 					if (!target) {
 						SetTarget(hate_list.GetEntWithMostHateOnList(this));
@@ -1289,7 +1298,7 @@ void Mob::AI_Process() {
 							if (cur > 0) {
 								opts.range_percent = cur;
 							}
-							
+
 							AreaRampage(&opts);
 							specialed = true;
 						}
