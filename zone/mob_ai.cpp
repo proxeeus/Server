@@ -448,7 +448,7 @@ void Mob::AI_Start(uint32 iMoveDelay) {
 		hate_list_cleanup_timer.Disable();
 	}
 
-	if (CastToNPC()->WillAggroNPCs())
+	if (CastToNPC()->GetNPCAggro())
 		AI_scan_area_timer = std::make_unique<Timer>(RandomTimer(RuleI(NPC, NPCToNPCAggroTimerMin), RuleI(NPC, NPCToNPCAggroTimerMax)));
 
 	AI_check_signal_timer = std::make_unique<Timer>(AI_check_signal_timer_delay);
@@ -769,7 +769,7 @@ void Client::AI_Process()
 		{
 			if(AI_target_check_timer->Check())
 			{
-				SetTarget(hate_list.GetEntWithMostHateOnList(this));
+				SetTarget(hate_list.GetMobWithMostHateOnList(this));
 			}
 		}
 
@@ -1066,19 +1066,19 @@ void Mob::AI_Process() {
 					IsNPC() &&
 					!CastToNPC()->GetSwarmInfo() &&
 					(!IsPet() || (HasOwner() && GetOwner()->IsNPC())) &&
-					!CastToNPC()->WillAggroNPCs()
+					!CastToNPC()->GetNPCAggro()
 				) {
 					WipeHateList(true); // wipe NPCs from hate list to prevent faction war
 				}
 
 				if (IsFocused()) {
 					if (!target) {
-						SetTarget(hate_list.GetEntWithMostHateOnList(this));
+						SetTarget(hate_list.GetMobWithMostHateOnList(this));
 					}
 				}
 				else {
 					if (!ImprovedTaunt())
-						SetTarget(hate_list.GetEntWithMostHateOnList(this));
+						SetTarget(hate_list.GetMobWithMostHateOnList(this));
 				}
 
 			}
@@ -1330,7 +1330,7 @@ void Mob::AI_Process() {
 				// Now pursue
 				// TODO: Check here for another person on hate list with close hate value
 				if (AI_PursueCastCheck()) {
-					if (IsCasting() && GetClass() != BARD) {
+					if (IsCasting() && GetClass() != Class::Bard) {
 						StopNavigation();
 						FaceTarget();
 					}
@@ -1382,11 +1382,11 @@ void Mob::AI_Process() {
 			}
 		}
 		if (AI_IdleCastCheck()) {
-			if (IsCasting() && GetClass() != BARD) {
+			if (IsCasting() && GetClass() != Class::Bard) {
 				StopNavigation();
 			}
 		}
-		else if (zone->CanDoCombat() && CastToNPC()->WillAggroNPCs() && AI_scan_area_timer->Check()) {
+		else if (zone->CanDoCombat() && CastToNPC()->GetNPCAggro() && AI_scan_area_timer->Check()) {
 
 			/**
 			 * NPC to NPC aggro (npc_aggro flag set)
@@ -1981,7 +1981,7 @@ void Mob::AI_Event_Engaged(Mob *attacker, bool yell_for_help)
 
 					auto emote_id = GetEmoteID();
 					if (emote_id) {
-						CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::EnterCombat, emoteid);
+						CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::EnterCombat, emoteid, attacker);
 					}
 
 					std::string mob_name = GetCleanName();

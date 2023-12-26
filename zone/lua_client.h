@@ -377,8 +377,8 @@ public:
 	void NotifyNewTitlesAvailable();
 	void Signal(int signal_id);
 	void AddAlternateCurrencyValue(uint32 currency, int amount);
-	void SetAlternateCurrencyValue(uint32 currency, int amount);
-	int GetAlternateCurrencyValue(uint32 currency);
+	void SetAlternateCurrencyValue(uint32 currency, uint32 amount);
+	uint32 GetAlternateCurrencyValue(uint32 currency);
 	void SendWebLink(const char *site);
 	bool HasSpellScribed(int spell_id);
 	void ClearAccountFlag(const std::string& flag);
@@ -483,6 +483,11 @@ public:
 	void SetBucket(std::string bucket_name, std::string bucket_value, std::string expiration);
 	void GrantAllAAPoints();
 	void GrantAllAAPoints(uint8 unlock_level);
+	void AddEbonCrystals(uint32 amount);
+	void AddRadiantCrystals(uint32 amount);
+	void RemoveEbonCrystals(uint32 amount);
+	void RemoveRadiantCrystals(uint32 amount);
+	void SummonItemIntoInventory(luabind::object item_table);
 
 	void ApplySpell(int spell_id);
 	void ApplySpell(int spell_id, int duration);

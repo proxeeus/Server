@@ -4919,9 +4919,9 @@ void EntityList::ZoneWho(Client *c, Who_All_Struct *Who)
 				FormatMSGID = 5024; // 5024 %T1[ANONYMOUS] %2 %3
 			else if (ClientEntry->GetAnon() == 2)
 				FormatMSGID = 5023; // 5023 %T1[ANONYMOUS] %2 %3 %4
-			uint32 PlayerClass = NO_CLASS;
+			uint32 PlayerClass = Class::None;
 			uint32 PlayerLevel = 0;
-			uint32 PlayerRace = RACE_DOUG_0;
+			uint32 PlayerRace = Race::Doug;
 			uint32 ZoneMSGID = 0xFFFFFFFF;
 
 			if (ClientEntry->GetAnon()==0) {
@@ -4996,7 +4996,7 @@ uint32 EntityList::CheckNPCsClose(Mob *center)
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
 		NPC *cur = it->second;
-		if (!cur || cur == center || cur->IsPet() || cur->GetClass() == LDON_TREASURE ||
+		if (!cur || cur == center || cur->IsPet() || cur->GetClass() == Class::LDoNTreasure ||
 				cur->GetBodyType() == BT_NoTarget || cur->GetBodyType() == BT_Special) {
 			++it;
 			continue;
@@ -5356,7 +5356,7 @@ void EntityList::AddLootToNPCS(uint32 item_id, uint32 count)
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
 		if (!it->second->IsPet()
-				&& it->second->GetClass() != LDON_TREASURE
+				&& it->second->GetClass() != Class::LDoNTreasure
 				&& it->second->GetBodyType() != BT_NoTarget
 				&& it->second->GetBodyType() != BT_NoTarget2
 				&& it->second->GetBodyType() != BT_Special)
@@ -5377,7 +5377,7 @@ void EntityList::AddLootToNPCS(uint32 item_id, uint32 count)
 	it = npc_list.begin();
 	while (it != npc_list.end()) {
 		if (!it->second->IsPet()
-				&& it->second->GetClass() != LDON_TREASURE
+				&& it->second->GetClass() != Class::LDoNTreasure
 				&& it->second->GetBodyType() != BT_NoTarget
 				&& it->second->GetBodyType() != BT_NoTarget2
 				&& it->second->GetBodyType() != BT_Special)
@@ -5430,7 +5430,7 @@ NPC *EntityList::GetClosestBanker(Mob *sender, uint32 &distance)
 
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
-		if (it->second->GetClass() == BANKER) {
+		if (it->second->GetClass() == Class::Banker) {
 			uint32 nd = ((it->second->GetY() - sender->GetY()) * (it->second->GetY() - sender->GetY())) +
 				((it->second->GetX() - sender->GetX()) * (it->second->GetX() - sender->GetX()));
 			if (nd < distance){
@@ -5751,7 +5751,7 @@ void EntityList::DespawnGridNodes(int32 grid_id) {
 		Mob *mob = m.second;
 		if (
 			mob->IsNPC() &&
-			mob->GetRace() == RACE_NODE_2254 &&
+			mob->GetRace() == Race::Node &&
 			mob->EntityVariableExists("grid_id") &&
 			Strings::ToInt(mob->GetEntityVariable("grid_id")) == grid_id)
 		{

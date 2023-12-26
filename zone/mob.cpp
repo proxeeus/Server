@@ -988,33 +988,33 @@ int64 Mob::GetSpellHPBonuses() {
 char Mob::GetCasterClass() const {
 	switch(class_)
 	{
-	case CLERIC:
-	case PALADIN:
-	case RANGER:
-	case DRUID:
-	case SHAMAN:
-	case BEASTLORD:
-	case CLERICGM:
-	case PALADINGM:
-	case RANGERGM:
-	case DRUIDGM:
-	case SHAMANGM:
-	case BEASTLORDGM:
+	case Class::Cleric:
+	case Class::Paladin:
+	case Class::Ranger:
+	case Class::Druid:
+	case Class::Shaman:
+	case Class::Beastlord:
+	case Class::ClericGM:
+	case Class::PaladinGM:
+	case Class::RangerGM:
+	case Class::DruidGM:
+	case Class::ShamanGM:
+	case Class::BeastlordGM:
 		return 'W';
 		break;
 
-	case SHADOWKNIGHT:
-	case BARD:
-	case NECROMANCER:
-	case WIZARD:
-	case MAGICIAN:
-	case ENCHANTER:
-	case SHADOWKNIGHTGM:
-	case BARDGM:
-	case NECROMANCERGM:
-	case WIZARDGM:
-	case MAGICIANGM:
-	case ENCHANTERGM:
+	case Class::ShadowKnight:
+	case Class::Bard:
+	case Class::Necromancer:
+	case Class::Wizard:
+	case Class::Magician:
+	case Class::Enchanter:
+	case Class::ShadowKnightGM:
+	case Class::BardGM:
+	case Class::NecromancerGM:
+	case Class::WizardGM:
+	case Class::MagicianGM:
+	case Class::EnchanterGM:
 		return 'I';
 		break;
 
@@ -1027,42 +1027,42 @@ char Mob::GetCasterClass() const {
 uint8 Mob::GetArchetype() const {
 	switch(class_)
 	{
-	case PALADIN:
-	case RANGER:
-	case SHADOWKNIGHT:
-	case BARD:
-	case BEASTLORD:
-	case PALADINGM:
-	case RANGERGM:
-	case SHADOWKNIGHTGM:
-	case BARDGM:
-	case BEASTLORDGM:
+	case Class::Paladin:
+	case Class::Ranger:
+	case Class::ShadowKnight:
+	case Class::Bard:
+	case Class::Beastlord:
+	case Class::PaladinGM:
+	case Class::RangerGM:
+	case Class::ShadowKnightGM:
+	case Class::BardGM:
+	case Class::BeastlordGM:
 		return ARCHETYPE_HYBRID;
 		break;
-	case CLERIC:
-	case DRUID:
-	case SHAMAN:
-	case NECROMANCER:
-	case WIZARD:
-	case MAGICIAN:
-	case ENCHANTER:
-	case CLERICGM:
-	case DRUIDGM:
-	case SHAMANGM:
-	case NECROMANCERGM:
-	case WIZARDGM:
-	case MAGICIANGM:
-	case ENCHANTERGM:
+	case Class::Cleric:
+	case Class::Druid:
+	case Class::Shaman:
+	case Class::Necromancer:
+	case Class::Wizard:
+	case Class::Magician:
+	case Class::Enchanter:
+	case Class::ClericGM:
+	case Class::DruidGM:
+	case Class::ShamanGM:
+	case Class::NecromancerGM:
+	case Class::WizardGM:
+	case Class::MagicianGM:
+	case Class::EnchanterGM:
 		return ARCHETYPE_CASTER;
 		break;
-	case WARRIOR:
-	case MONK:
-	case ROGUE:
-	case BERSERKER:
-	case WARRIORGM:
-	case MONKGM:
-	case ROGUEGM:
-	case BERSERKERGM:
+	case Class::Warrior:
+	case Class::Monk:
+	case Class::Rogue:
+	case Class::Berserker:
+	case Class::WarriorGM:
+	case Class::MonkGM:
+	case Class::RogueGM:
+	case Class::BerserkerGM:
 		return ARCHETYPE_MELEE;
 		break;
 	default:
@@ -1074,73 +1074,73 @@ uint8 Mob::GetArchetype() const {
 void Mob::SetSpawnLastNameByClass(NewSpawn_Struct* ns)
 {
 	switch (ns->spawn.class_) {
-		case TRIBUTE_MASTER:
+		case Class::TributeMaster:
 			strcpy(ns->spawn.lastName, "Tribute Master");
 			break;
-		case GUILD_TRIBUTE_MASTER:
+		case Class::GuildTributeMaster:
 			strcpy(ns->spawn.lastName, "Guild Tribute Master");
 			break;
-		case GUILD_BANKER:
+		case Class::GuildBanker:
 			strcpy(ns->spawn.lastName, "Guild Banker");
 			break;
-		case ADVENTURE_RECRUITER:
+		case Class::AdventureRecruiter:
 			strcpy(ns->spawn.lastName, "Adventure Recruiter");
 			break;
-		case ADVENTURE_MERCHANT:
+		case Class::AdventureMerchant:
 			strcpy(ns->spawn.lastName, "Adventure Merchant");
 			break;
-		case BANKER:
+		case Class::Banker:
 			strcpy(ns->spawn.lastName, "Banker");
 			break;
-		case WARRIORGM:
+		case Class::WarriorGM:
 			strcpy(ns->spawn.lastName, "Warrior Guildmaster");
 			break;
-		case CLERICGM:
+		case Class::ClericGM:
 			strcpy(ns->spawn.lastName, "Cleric Guildmaster");
 			break;
-		case PALADINGM:
+		case Class::PaladinGM:
 			strcpy(ns->spawn.lastName, "Paladin Guildmaster");
 			break;
-		case RANGERGM:
+		case Class::RangerGM:
 			strcpy(ns->spawn.lastName, "Ranger Guildmaster");
 			break;
-		case SHADOWKNIGHTGM:
+		case Class::ShadowKnightGM:
 			strcpy(ns->spawn.lastName, "Shadow Knight Guildmaster");
 			break;
-		case DRUIDGM:
+		case Class::DruidGM:
 			strcpy(ns->spawn.lastName, "Druid Guildmaster");
 			break;
-		case MONKGM:
+		case Class::MonkGM:
 			strcpy(ns->spawn.lastName, "Monk Guildmaster");
 			break;
-		case BARDGM:
+		case Class::BardGM:
 			strcpy(ns->spawn.lastName, "Bard Guildmaster");
 			break;
-		case ROGUEGM:
+		case Class::RogueGM:
 			strcpy(ns->spawn.lastName, "Rogue Guildmaster");
 			break;
-		case SHAMANGM:
+		case Class::ShamanGM:
 			strcpy(ns->spawn.lastName, "Shaman Guildmaster");
 			break;
-		case NECROMANCERGM:
+		case Class::NecromancerGM:
 			strcpy(ns->spawn.lastName, "Necromancer Guildmaster");
 			break;
-		case WIZARDGM:
+		case Class::WizardGM:
 			strcpy(ns->spawn.lastName, "Wizard Guildmaster");
 			break;
-		case MAGICIANGM:
+		case Class::MagicianGM:
 			strcpy(ns->spawn.lastName, "Magician Guildmaster");
 			break;
-		case ENCHANTERGM:
+		case Class::EnchanterGM:
 			strcpy(ns->spawn.lastName, "Enchanter Guildmaster");
 			break;
-		case BEASTLORDGM:
+		case Class::BeastlordGM:
 			strcpy(ns->spawn.lastName, "Beastlord Guildmaster");
 			break;
-		case BERSERKERGM:
+		case Class::BerserkerGM:
 			strcpy(ns->spawn.lastName, "Berserker Guildmaster");
 			break;
-		case MERCENARY_MASTER:
+		case Class::MercenaryLiaison:
 			strcpy(ns->spawn.lastName, "Mercenary Liaison");
 			break;
 		default:
@@ -1357,8 +1357,8 @@ void Mob::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 	}
 
 	if (RuleB(Character, AllowCrossClassTrainers) && ForWho) {
-		if (ns->spawn.class_ >= WARRIORGM && ns->spawn.class_ <= BERSERKERGM) {
-			int trainer_class = WARRIORGM + (ForWho->GetClass() - 1);
+		if (ns->spawn.class_ >= Class::WarriorGM && ns->spawn.class_ <= Class::BerserkerGM) {
+			int trainer_class = Class::WarriorGM + (ForWho->GetClass() - 1);
 			ns->spawn.class_ = trainer_class;
 		}
 	}
@@ -2129,7 +2129,7 @@ void Mob::SendStatsWindow(Client* c, bool use_window)
 
 	std::string bard_info;
 
-	if (GetClass() == BARD) {
+	if (GetClass() == Class::Bard) {
 		const auto brass_mod  = IsBot() ? CastToBot()->GetBrassMod() : CastToClient()->GetBrassMod();
 		const auto perc_mod   = IsBot() ? CastToBot()->GetPercMod() : CastToClient()->GetPercMod();
 		const auto sing_mod   = IsBot() ? CastToBot()->GetSingMod() : CastToClient()->GetSingMod();
@@ -2430,7 +2430,7 @@ void Mob::SendStatsWindow(Client* c, bool use_window)
 	}
 
 	// Bard Modifiers
-	if (GetClass() == BARD) {
+	if (GetClass() == Class::Bard) {
 		final_string += bard_info + DialogueWindow::Break(1);
 	}
 
@@ -2699,7 +2699,7 @@ void Mob::SendStatsWindow(Client* c, bool use_window)
 		);
 	}
 
-	if (GetClass() == BARD) {
+	if (GetClass() == Class::Bard) {
 		const auto brass_mod  = IsBot() ? CastToBot()->GetBrassMod() : CastToClient()->GetBrassMod();
 		const auto perc_mod   = IsBot() ? CastToBot()->GetPercMod() : CastToClient()->GetPercMod();
 		const auto sing_mod   = IsBot() ? CastToBot()->GetSingMod() : CastToClient()->GetSingMod();
@@ -2878,7 +2878,7 @@ void Mob::ShowStats(Client* c)
 		);
 
 		// Drakkin Features
-		if (t->GetRace() == RACE_DRAKKIN_522) {
+		if (t->GetRace() == Race::Drakkin) {
 			c->Message(
 				Chat::White,
 				fmt::format(
@@ -3522,14 +3522,14 @@ void Mob::GMMove(float x, float y, float z, float heading, bool save_guard_spot)
 	}
 }
 
-void Mob::GMMove(const glm::vec4& position) {
+void Mob::GMMove(const glm::vec4 &position, bool save_guard_spot) {
 	m_Position.x = position.x;
 	m_Position.y = position.y;
 	m_Position.z = position.z;
 	SetHeading(position.w);
 	mMovementManager->SendCommandToClients(this, 0.0, 0.0, 0.0, 0.0, 0, ClientRangeAny);
 
-	if (IsNPC()) {
+	if (IsNPC() && save_guard_spot) {
 		CastToNPC()->SaveGuardSpot(position);
 	}
 }
@@ -3537,7 +3537,7 @@ void Mob::GMMove(const glm::vec4& position) {
 void Mob::SendIllusionPacket(const AppearanceStruct& a)
 {
 	uint16 new_race = (
-		a.race_id != RACE_DOUG_0 ?
+		a.race_id != Race::Doug ?
 		a.race_id :
 		(use_model ? use_model : GetBaseRace())
 	);
@@ -3569,7 +3569,7 @@ void Mob::SendIllusionPacket(const AppearanceStruct& a)
 	uint32 new_drakkin_tattoo   = a.drakkin_tattoo == UINT32_MAX ? GetDrakkinTattoo() : a.drakkin_tattoo;
 
 	// Reset features to Base from the Player Profile
-	if (IsClient() && a.race_id == RACE_DOUG_0) {
+	if (IsClient() && a.race_id == Race::Doug) {
 		new_beard            = CastToClient()->GetBaseBeard();
 		new_beard_color      = CastToClient()->GetBaseBeardColor();
 		new_drakkin_details  = CastToClient()->GetBaseDetails();
@@ -3937,48 +3937,48 @@ uint16 Mob::GetFactionRace() {
 uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 	if (
 		IsPlayerRace(in_race) ||
-		in_race == RACE_BROWNIE_15 ||
-		in_race == RACE_KERRAN_23 ||
-		in_race == RACE_LION_50 ||
-		in_race == RACE_DRACNID_57 ||
-		in_race == RACE_ZOMBIE_70 ||
-		in_race == RACE_QEYNOS_CITIZEN_71 ||
-		in_race == RACE_RIVERVALE_CITIZEN_81 ||
-		in_race == RACE_HALAS_CITIZEN_90 ||
-		in_race == RACE_GROBB_CITIZEN_92 ||
-		in_race == RACE_OGGOK_CITIZEN_93 ||
-		in_race == RACE_KALADIM_CITIZEN_94 ||
-		in_race == RACE_ELF_VAMPIRE_98 ||
-		in_race == RACE_FELGUARD_106 ||
-		in_race == RACE_FAYGUARD_112 ||
-		in_race == RACE_ERUDITE_GHOST_118 ||
-		in_race == RACE_IKSAR_CITIZEN_139 ||
-		in_race == RACE_SHADE_224 ||
-		in_race == RACE_TROLL_CREW_MEMBER_331 ||
-		in_race == RACE_PIRATE_DECKHAND_332 ||
-		in_race == RACE_GNOME_PIRATE_338 ||
-		in_race == RACE_DARK_ELF_PIRATE_339 ||
-		in_race == RACE_OGRE_PIRATE_340 ||
-		in_race == RACE_HUMAN_PIRATE_341 ||
-		in_race == RACE_ERUDITE_PIRATE_342 ||
-		in_race == RACE_UNDEAD_PIRATE_344 ||
-		in_race == RACE_KNIGHT_OF_HATE_351 ||
-		in_race == RACE_WARLOCK_OF_HATE_352 ||
-		in_race == RACE_UNDEAD_VAMPIRE_359 ||
-		in_race == RACE_VAMPIRE_360 ||
-		in_race == RACE_SAND_ELF_364 ||
-		in_race == RACE_TAELOSIAN_NATIVE_385 ||
-		in_race == RACE_TAELOSIAN_EVOKER_386 ||
-		in_race == RACE_DRACHNID_461 ||
-		in_race == RACE_ZOMBIE_471 ||
-		in_race == RACE_ELDDAR_489 ||
-		in_race == RACE_VAMPIRE_497 ||
-		in_race == RACE_KERRAN_562 ||
-		in_race == RACE_BROWNIE_568 ||
-		in_race == RACE_HUMAN_566 ||
-		in_race == RACE_ELVEN_GHOST_587 ||
-		in_race == RACE_HUMAN_GHOST_588 ||
-		in_race == RACE_COLDAIN_645
+		in_race == Race::Brownie ||
+		in_race == Race::Kerran ||
+		in_race == Race::Lion ||
+		in_race == Race::Drachnid ||
+		in_race == Race::Zombie ||
+		in_race == Race::QeynosCitizen ||
+		in_race == Race::RivervaleCitizen ||
+		in_race == Race::HalasCitizen ||
+		in_race == Race::GrobbCitizen ||
+		in_race == Race::OggokCitizen ||
+		in_race == Race::KaladimCitizen ||
+		in_race == Race::ElfVampire ||
+		in_race == Race::Felguard ||
+		in_race == Race::Fayguard ||
+		in_race == Race::EruditeGhost ||
+		in_race == Race::IksarCitizen ||
+		in_race == Race::Shade ||
+		in_race == Race::TrollCrewMember ||
+		in_race == Race::PirateDeckhand ||
+		in_race == Race::GnomePirate ||
+		in_race == Race::DarkElfPirate ||
+		in_race == Race::OgrePirate ||
+		in_race == Race::HumanPirate ||
+		in_race == Race::EruditePirate ||
+		in_race == Race::TrollZombie ||
+		in_race == Race::KnightOfHate ||
+		in_race == Race::ArcanistOfHate ||
+		in_race == Race::UndeadVampire ||
+		in_race == Race::Vampire3 ||
+		in_race == Race::SandElf ||
+		in_race == Race::Nihil ||
+		in_race == Race::Trusik ||
+		in_race == Race::Drachnid2 ||
+		in_race == Race::Zombie2 ||
+		in_race == Race::Elddar ||
+		in_race == Race::Vampire4 ||
+		in_race == Race::Kerran2 ||
+		in_race == Race::Brownie2 ||
+		in_race == Race::Human2 ||
+		in_race == Race::ElvenGhost ||
+		in_race == Race::HumanGhost ||
+		in_race == Race::Coldain2
 	) {
 		if (in_gender >= 2) { // Male default for PC Races
 			return 0;
@@ -3986,33 +3986,33 @@ uint8 Mob::GetDefaultGender(uint16 in_race, uint8 in_gender) {
 			return in_gender;
 		}
 	} else if (
-		in_race == RACE_FREEPORT_GUARD_44 ||
-		in_race == RACE_MIMIC_52 ||
-		in_race == RACE_HUMAN_BEGGAR_55 ||
-		in_race == RACE_VAMPIRE_65 ||
-		in_race == RACE_HIGHPASS_CITIZEN_67 ||
-		in_race == RACE_NERIAK_CITIZEN_77 ||
-		in_race == RACE_ERUDITE_CITIZEN_78 ||
-		in_race == RACE_CLOCKWORK_GNOME_88 ||
-		in_race == RACE_DWARF_GHOST_117 ||
-		in_race == RACE_SPECTRAL_IKSAR_147 ||
-		in_race == RACE_INVISIBLE_MAN_127 ||
-		in_race == RACE_VAMPYRE_208 ||
-		in_race == RACE_RECUSO_237 ||
-		in_race == RACE_BROKEN_SKULL_PIRATE_333 ||
-		in_race == RACE_INVISIBLE_MAN_OF_ZOMM_600 ||
-		in_race == RACE_OGRE_NPC_MALE_624 ||
-		in_race == RACE_BEEFEATER_667 ||
-		in_race == RACE_ERUDITE_678
+		in_race == Race::FreeportGuard ||
+		in_race == Race::Mimic ||
+		in_race == Race::HumanBeggar ||
+		in_race == Race::Vampire ||
+		in_race == Race::HighpassCitizen ||
+		in_race == Race::NeriakCitizen ||
+		in_race == Race::EruditeCitizen ||
+		in_race == Race::ClockworkGnome ||
+		in_race == Race::DwarfGhost ||
+		in_race == Race::IksarSpirit ||
+		in_race == Race::InvisibleMan ||
+		in_race == Race::Vampire2 ||
+		in_race == Race::Recuso ||
+		in_race == Race::BrokenSkullPirate ||
+		in_race == Race::InvisibleManOfZomm ||
+		in_race == Race::Ogre2 ||
+		in_race == Race::RoyalGuard ||
+		in_race == Race::Erudite2
 	) { // Male only races
 		return 0;
 	} else if (
-		in_race == RACE_FAIRY_25 ||
-		in_race == RACE_PIXIE_56 ||
-		in_race == RACE_BANSHEE_487 ||
-		in_race == RACE_BANSHEE_488 ||
-		in_race == RACE_AYONAE_RO_498 ||
-		in_race == RACE_SULLON_ZEK_499
+		in_race == Race::Fairy ||
+		in_race == Race::Pixie ||
+		in_race == Race::Banshee2 ||
+		in_race == Race::Banshee3 ||
+		in_race == Race::AyonaeRo ||
+		in_race == Race::SullonZek
 	) { // Female only races
 		return 1;
 	} else { // Neutral default for NPC Races
@@ -4553,7 +4553,7 @@ bool Mob::CanThisClassDualWield(void) const {
 
 		// Dual-Wielding Empty Fists
 		if(!pinst && !sinst)
-			if(class_ != MONK && class_ != MONKGM && class_ != BEASTLORD && class_ != BEASTLORDGM)
+			if(class_ != Class::Monk && class_ != Class::MonkGM && class_ != Class::Beastlord && class_ != Class::BeastlordGM)
 				return false;
 
 		return true;
@@ -4600,24 +4600,24 @@ bool Mob::IsWarriorClass(void) const
 {
 	switch(GetClass())
 	{
-	case WARRIOR:
-	case WARRIORGM:
-	case ROGUE:
-	case ROGUEGM:
-	case MONK:
-	case MONKGM:
-	case PALADIN:
-	case PALADINGM:
-	case SHADOWKNIGHT:
-	case SHADOWKNIGHTGM:
-	case RANGER:
-	case RANGERGM:
-	case BEASTLORD:
-	case BEASTLORDGM:
-	case BERSERKER:
-	case BERSERKERGM:
-	case BARD:
-	case BARDGM:
+	case Class::Warrior:
+	case Class::WarriorGM:
+	case Class::Rogue:
+	case Class::RogueGM:
+	case Class::Monk:
+	case Class::MonkGM:
+	case Class::Paladin:
+	case Class::PaladinGM:
+	case Class::ShadowKnight:
+	case Class::ShadowKnightGM:
+	case Class::Ranger:
+	case Class::RangerGM:
+	case Class::Beastlord:
+	case Class::BeastlordGM:
+	case Class::Berserker:
+	case Class::BerserkerGM:
+	case Class::Bard:
+	case Class::BardGM:
 		{
 			return true;
 		}
@@ -4919,7 +4919,7 @@ bool Mob::RemoveFromHateList(Mob* mob)
 	}
 	if(GetTarget() == mob)
 	{
-		SetTarget(hate_list.GetEntWithMostHateOnList(this));
+		SetTarget(hate_list.GetMobWithMostHateOnList(this));
 	}
 
 	return bFound;
@@ -5264,7 +5264,7 @@ int32 Mob::GetActSpellCasttime(uint16 spell_id, int32 casttime)
 	int32 cast_reducer_no_limit = GetFocusEffect(focusFcCastTimeMod2, spell_id);
 
 	if (level > 50 && casttime >= 3000 && !spells[spell_id].good_effect &&
-	    (GetClass() == RANGER || GetClass() == SHADOWKNIGHT || GetClass() == PALADIN || GetClass() == BEASTLORD)) {
+	    (GetClass() == Class::Ranger || GetClass() == Class::ShadowKnight || GetClass() == Class::Paladin || GetClass() == Class::Beastlord)) {
 		int level_mod = std::min(15, GetLevel() - 50);
 		cast_reducer += level_mod * 3;
 	}
@@ -6946,22 +6946,22 @@ void Mob::RemoveAllNimbusEffects()
 bool Mob::IsBoat() const {
 
 	return (
-		race == RACE_SHIP_72 ||
-		race == RACE_LAUNCH_73 ||
-		race == RACE_GHOST_SHIP_114 ||
-		race == RACE_SHIP_404 ||
-		race == RACE_MERCHANT_SHIP_550 ||
-		race == RACE_PIRATE_SHIP_551 ||
-		race == RACE_GHOST_SHIP_552 ||
-		race == RACE_BOAT_533
+		race == Race::Ship ||
+		race == Race::Launch ||
+		race == Race::GhostShip ||
+		race == Race::DiscordShip ||
+		race == Race::MerchantShip ||
+		race == Race::PirateShip ||
+		race == Race::GhostShip2 ||
+		race == Race::Boat2
 	);
 }
 
 bool Mob::IsControllableBoat() const {
 
 	return (
-		race == RACE_BOAT_141 ||
-		race == RACE_ROWBOAT_502
+		race == Race::Boat ||
+		race == Race::Rowboat
 	);
 }
 
@@ -7599,29 +7599,23 @@ int32 Mob::GetSpellStat(uint32 spell_id, const char *identifier, uint8 slot)
 
 bool Mob::CanClassEquipItem(uint32 item_id)
 {
-	const EQ::ItemData* itm = nullptr;
-	itm = database.GetItem(item_id);
-
-	if (!itm) {
+	const auto *item = database.GetItem(item_id);
+	if (!item) {
 		return false;
 	}
 
-	auto item_classes = itm->Classes;
-	if(item_classes == PLAYER_CLASS_ALL_MASK) {
+	const uint16 item_classes = item->Classes;
+	if (item_classes == Class::ALL_CLASSES_BITMASK) {
 		return true;
 	}
 
-	auto class_id = GetClass();
-	if (class_id > BERSERKER) {
+	const uint8 class_id = GetClass();
+	if (!IsPlayerClass(class_id)) {
 		return false;
 	}
 
-	int class_bitmask = GetPlayerClassBit(class_id);
-	if(!(item_classes & class_bitmask)) {
-		return false;
-	} else {
-		return true;
-	}
+	const uint16 class_bitmask = GetPlayerClassBit(class_id);
+	return (item_classes & class_bitmask);
 }
 
 bool Mob::CanRaceEquipItem(uint32 item_id)
@@ -8303,37 +8297,37 @@ int Mob::DispatchZoneControllerEvent(
 std::string Mob::GetRacePlural()
 {
 	switch (GetBaseRace()) {
-		case RACE_HUMAN_1:
+		case Race::Human:
 			return "Humans";
-		case RACE_BARBARIAN_2:
+		case Race::Barbarian:
 			return "Barbarians";
-		case RACE_ERUDITE_3:
+		case Race::Erudite:
 			return "Erudites";
-		case RACE_WOOD_ELF_4:
+		case Race::WoodElf:
 			return "Wood Elves";
-		case RACE_HIGH_ELF_5:
+		case Race::HighElf:
 			return "High Elves";
-		case RACE_DARK_ELF_6:
+		case Race::DarkElf:
 			return "Dark Elves";
-		case RACE_HALF_ELF_7:
+		case Race::HalfElf:
 			return "Half Elves";
-		case RACE_DWARF_8:
+		case Race::Dwarf:
 			return "Dwarves";
-		case RACE_TROLL_9:
+		case Race::Troll:
 			return "Trolls";
-		case RACE_OGRE_10:
+		case Race::Ogre:
 			return "Ogres";
-		case RACE_HALFLING_11:
+		case Race::Halfling:
 			return "Halflings";
-		case RACE_GNOME_12:
+		case Race::Gnome:
 			return "Gnomes";
-		case RACE_IKSAR_128:
+		case Race::Iksar:
 			return "Iksar";
-		case RACE_VAH_SHIR_130:
+		case Race::VahShir:
 			return "Vah Shir";
-		case RACE_FROGLOK_330:
+		case Race::Froglok2:
 			return "Frogloks";
-		case RACE_DRAKKIN_522:
+		case Race::Drakkin:
 			return "Drakkin";
 		default:
 			return "Races";
@@ -8343,37 +8337,37 @@ std::string Mob::GetRacePlural()
 std::string Mob::GetClassPlural()
 {
 	switch (GetClass()) {
-		case WARRIOR:
+		case Class::Warrior:
 			return "Warriors";
-		case CLERIC:
+		case Class::Cleric:
 			return "Clerics";
-		case PALADIN:
+		case Class::Paladin:
 			return "Paladins";
-		case RANGER:
+		case Class::Ranger:
 			return "Rangers";
-		case SHADOWKNIGHT:
-			return "Shadowknights";
-		case DRUID:
+		case Class::ShadowKnight:
+			return fmt::format("{}s", shadow_knight_class_name);
+		case Class::Druid:
 			return "Druids";
-		case MONK:
+		case Class::Monk:
 			return "Monks";
-		case BARD:
+		case Class::Bard:
 			return "Bards";
-		case ROGUE:
+		case Class::Rogue:
 			return "Rogues";
-		case SHAMAN:
+		case Class::Shaman:
 			return "Shamans";
-		case NECROMANCER:
+		case Class::Necromancer:
 			return "Necromancers";
-		case WIZARD:
+		case Class::Wizard:
 			return "Wizards";
-		case MAGICIAN:
+		case Class::Magician:
 			return "Magicians";
-		case ENCHANTER:
+		case Class::Enchanter:
 			return "Enchanters";
-		case BEASTLORD:
+		case Class::Beastlord:
 			return "Beastlords";
-		case BERSERKER:
+		case Class::Berserker:
 			return "Berserkers";
 		default:
 			return "Classes";

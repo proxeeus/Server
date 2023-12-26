@@ -65,6 +65,7 @@ extern volatile bool RunLoops;
 #include "../common/repositories/character_disciplines_repository.h"
 #include "../common/repositories/character_data_repository.h"
 #include "../common/repositories/discovered_items_repository.h"
+#include "../common/repositories/keyring_repository.h"
 #include "../common/events/player_events.h"
 #include "../common/events/player_event_logs.h"
 #include "dialogue_window.h"
@@ -1410,126 +1411,163 @@ void Client::SetMaxHP() {
 	Save();
 }
 
-bool Client::UpdateLDoNPoints(uint32 theme_id, int points) {
-
-/* make sure total stays in sync with individual buckets
-	m_pp.ldon_points_available = m_pp.ldon_points_guk
-		+m_pp.ldon_points_mir
-		+m_pp.ldon_points_mmc
-		+m_pp.ldon_points_ruj
-		+m_pp.ldon_points_tak; */
-
-	if(points < 0) {
-		if(m_pp.ldon_points_available < (0 - points))
+bool Client::UpdateLDoNPoints(uint32 theme_id, int points)
+{
+	if (points < 0) {
+		if (m_pp.ldon_points_available < (0 - points)) {
 			return false;
+		}
 	}
+
+	bool is_loss = false;
 
 	switch (theme_id) {
 		case LDoNThemes::Unused: { // No theme, so distribute evenly across all
 			int split_points = (points / 5);
+
 			int guk_points = (split_points + (points % 5));
 			int mir_points = split_points;
 			int mmc_points = split_points;
 			int ruj_points = split_points;
 			int tak_points = split_points;
+
 			split_points = 0;
-			if(points < 0) {
-				if(m_pp.ldon_points_available < (0 - points)) {
+
+			if (points < 0) {
+				if (m_pp.ldon_points_available < (0 - points)) {
 					return false;
 				}
 
-				if(m_pp.ldon_points_guk < (0 - guk_points)) {
+				is_loss = true;
+
+				if (m_pp.ldon_points_guk < (0 - guk_points)) {
 					mir_points += (guk_points + m_pp.ldon_points_guk);
 					guk_points = (0 - m_pp.ldon_points_guk);
 				}
 
-				if(m_pp.ldon_points_mir < (0 - mir_points)) {
+				if (m_pp.ldon_points_mir < (0 - mir_points)) {
 					mmc_points += (mir_points + m_pp.ldon_points_mir);
 					mir_points = (0 - m_pp.ldon_points_mir);
 				}
 
-				if(m_pp.ldon_points_mmc < (0 - mmc_points)) {
+				if (m_pp.ldon_points_mmc < (0 - mmc_points)) {
 					ruj_points += (mmc_points + m_pp.ldon_points_mmc);
 					mmc_points = (0 - m_pp.ldon_points_mmc);
 				}
 
-				if(m_pp.ldon_points_ruj < (0 - ruj_points)) {
+				if (m_pp.ldon_points_ruj < (0 - ruj_points)) {
 					tak_points += (ruj_points + m_pp.ldon_points_ruj);
 					ruj_points = (0 - m_pp.ldon_points_ruj);
 				}
 
-				if(m_pp.ldon_points_tak < (0 - tak_points)) {
+				if (m_pp.ldon_points_tak < (0 - tak_points)) {
 					split_points = (tak_points + m_pp.ldon_points_tak);
-					tak_points = (0 - m_pp.ldon_points_tak);
+					tak_points   = (0 - m_pp.ldon_points_tak);
 				}
 			}
+
 			m_pp.ldon_points_guk += guk_points;
 			m_pp.ldon_points_mir += mir_points;
 			m_pp.ldon_points_mmc += mmc_points;
 			m_pp.ldon_points_ruj += ruj_points;
 			m_pp.ldon_points_tak += tak_points;
+
 			points -= split_points;
+
 			if (split_points != 0) { // if anything left, recursively loop thru again
-				UpdateLDoNPoints(0, split_points);
+				UpdateLDoNPoints(LDoNThemes::Unused, split_points);
 			}
+
 			break;
 		}
-		case LDoNThemes::GUK:	{
-			if(points < 0) {
-				if(m_pp.ldon_points_guk < (0 - points)) {
+		case LDoNThemes::GUK: {
+			if (points < 0) {
+				if (m_pp.ldon_points_guk < (0 - points)) {
 					return false;
 				}
+
+				is_loss = true;
 			}
+
 			m_pp.ldon_points_guk += points;
 			break;
 		}
 		case LDoNThemes::MIR: {
-			if(points < 0) {
-				if(m_pp.ldon_points_mir < (0 - points)) {
+			if (points < 0) {
+				if (m_pp.ldon_points_mir < (0 - points)) {
 					return false;
 				}
+
+				is_loss = true;
 			}
+
 			m_pp.ldon_points_mir += points;
 			break;
 		}
 		case LDoNThemes::MMC: {
-			if(points < 0) {
-				if(m_pp.ldon_points_mmc < (0 - points)) {
+			if (points < 0) {
+				if (m_pp.ldon_points_mmc < (0 - points)) {
 					return false;
 				}
+
+				is_loss = true;
 			}
+
 			m_pp.ldon_points_mmc += points;
 			break;
 		}
 		case LDoNThemes::RUJ: {
-			if(points < 0) {
-				if(m_pp.ldon_points_ruj < (0 - points)) {
+			if (points < 0) {
+				if (m_pp.ldon_points_ruj < (0 - points)) {
 					return false;
 				}
+
+				is_loss = true;
 			}
+
 			m_pp.ldon_points_ruj += points;
 			break;
 		}
 		case LDoNThemes::TAK: {
-			if(points < 0) {
-				if(m_pp.ldon_points_tak < (0 - points)) {
+			if (points < 0) {
+				if (m_pp.ldon_points_tak < (0 - points)) {
 					return false;
 				}
+
+				is_loss = true;
 			}
+
 			m_pp.ldon_points_tak += points;
 			break;
 		}
 	}
+
 	m_pp.ldon_points_available += points;
+
+	QuestEventID event_id = is_loss ? EVENT_LDON_POINTS_LOSS : EVENT_LDON_POINTS_GAIN;
+
+	if (parse->PlayerHasQuestSub(event_id)) {
+		const std::string &export_string = fmt::format(
+			"{} {}",
+			theme_id,
+			std::abs(points)
+		);
+
+		parse->EventPlayer(event_id, this, export_string, 0);
+	}
+
 	auto outapp = new EQApplicationPacket(OP_AdventurePointsUpdate, sizeof(AdventurePoints_Update_Struct));
-	AdventurePoints_Update_Struct* apus = (AdventurePoints_Update_Struct*)outapp->pBuffer;
+	auto *apus = (AdventurePoints_Update_Struct *) outapp->pBuffer;
+
 	apus->ldon_available_points = m_pp.ldon_points_available;
-	apus->ldon_guk_points = m_pp.ldon_points_guk;
-	apus->ldon_mirugal_points = m_pp.ldon_points_mir;
+	apus->ldon_guk_points       = m_pp.ldon_points_guk;
+	apus->ldon_mirugal_points   = m_pp.ldon_points_mir;
 	apus->ldon_mistmoore_points = m_pp.ldon_points_mmc;
 	apus->ldon_rujarkian_points = m_pp.ldon_points_ruj;
-	apus->ldon_takish_points = m_pp.ldon_points_tak;
+	apus->ldon_takish_points    = m_pp.ldon_points_tak;
+
 	outapp->priority = 6;
+
 	QueuePacket(outapp);
 	safe_delete(outapp);
 	return true;
@@ -2096,7 +2134,7 @@ void Client::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 
 bool Client::MonkEpicEquipped() const
 {
-	if (GetClass() == MONK)
+	if (GetClass() == Class::Monk)
 	{
 		auto inst = GetInv().GetItem(11); // 11: hands, 12 Primary
 		if (inst && inst->GetItem()->ID == 10652)
@@ -2688,7 +2726,7 @@ bool Client::HasSkill(EQ::skills::SkillType skill_id) const {
 }
 
 bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == BERSERKER && skill_id == EQ::skills::Skill1HPiercing)
+	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skill_id == EQ::skills::Skill1HPiercing)
 		skill_id = EQ::skills::Skill2HPiercing;
 
 	return(content_db.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)) > 0);
@@ -2696,7 +2734,7 @@ bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const {
 }
 
 uint16 Client::MaxSkill(EQ::skills::SkillType skillid, uint16 class_, uint16 level) const {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == BERSERKER && skillid == EQ::skills::Skill1HPiercing)
+	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skillid == EQ::skills::Skill1HPiercing)
 		skillid = EQ::skills::Skill2HPiercing;
 
 	return(content_db.GetSkillCap(class_, skillid, level));
@@ -2704,7 +2742,7 @@ uint16 Client::MaxSkill(EQ::skills::SkillType skillid, uint16 class_, uint16 lev
 
 uint8 Client::SkillTrainLevel(EQ::skills::SkillType skillid, uint16 class_)
 {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == BERSERKER && skillid == EQ::skills::Skill1HPiercing)
+	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skillid == EQ::skills::Skill1HPiercing)
 		skillid = EQ::skills::Skill2HPiercing;
 
 	return(content_db.GetTrainLevel(class_, skillid, RuleI(Character, MaxLevel)));
@@ -3040,7 +3078,7 @@ bool Client::BindWound(Mob *bindmob, bool start, bool fail)
 
 						int max_percent = 50 + maxHPBonus;
 
-						if (GetClass() == MONK && GetSkill(EQ::skills::SkillBindWound) > 200) {
+						if (GetClass() == Class::Monk && GetSkill(EQ::skills::SkillBindWound) > 200) {
 							max_percent = 70 + maxHPBonus;
 						}
 
@@ -3089,9 +3127,9 @@ bool Client::BindWound(Mob *bindmob, bool start, bool fail)
 					else {
 						int percent_base = 50;
 						if (GetRawSkill(EQ::skills::SkillBindWound) > 200) {
-							if ((GetClass() == MONK) || (GetClass() == BEASTLORD))
+							if ((GetClass() == Class::Monk) || (GetClass() == Class::Beastlord))
 								percent_base = 70;
-							else if ((GetLevel() > 50) && ((GetClass() == WARRIOR) || (GetClass() == ROGUE) || (GetClass() == CLERIC)))
+							else if ((GetLevel() > 50) && ((GetClass() == Class::Warrior) || (GetClass() == Class::Rogue) || (GetClass() == Class::Cleric)))
 								percent_base = 70;
 						}
 
@@ -4100,54 +4138,87 @@ void Client::SendWindow(
 
 void Client::KeyRingLoad()
 {
-	std::string query = StringFormat("SELECT item_id FROM keyring "
-									"WHERE char_id = '%i' ORDER BY item_id", character_id);
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
+	const auto &l = KeyringRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {} ORDER BY `item_id`",
+			character_id
+		)
+	);
+
+	if (l.empty()) {
 		return;
 	}
 
-	for (auto row = results.begin(); row != results.end(); ++row)
-		keyring.push_back(Strings::ToInt(row[0]));
 
+	for (const auto &e : l) {
+		keyring.emplace_back(e.item_id);
+	}
 }
 
 void Client::KeyRingAdd(uint32 item_id)
 {
-	if(0==item_id)
-		return;
-
-	bool found = KeyRingCheck(item_id);
-	if (found)
-		return;
-
-	std::string query = StringFormat("INSERT INTO keyring(char_id, item_id) VALUES(%i, %i)", character_id, item_id);
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
+	if (!item_id) {
 		return;
 	}
 
-	Message(Chat::LightBlue,"Added to keyring.");
+	const bool found = KeyRingCheck(item_id);
+	if (found) {
+		return;
+	}
 
-	keyring.push_back(item_id);
+	auto e = KeyringRepository::NewEntity();
+
+	e.char_id = CharacterID();
+	e.item_id = item_id;
+
+	e = KeyringRepository::InsertOne(database, e);
+
+	if (!e.id) {
+		return;
+	}
+
+	keyring.emplace_back(item_id);
+
+	if (!RuleB(World, UseItemLinksForKeyRing)) {
+		Message(Chat::LightBlue, "Added to keyring.");
+		return;
+	}
+
+	const std::string &item_link = database.CreateItemLink(item_id);
+
+	Message(
+		Chat::LightBlue,
+		fmt::format(
+			"Added {} to keyring.",
+			item_link
+		).c_str()
+	);
 }
 
 bool Client::KeyRingCheck(uint32 item_id)
 {
-	for (auto iter = keyring.begin(); iter != keyring.end(); ++iter) {
-		if(*iter == item_id)
+	for (const auto &e : keyring) {
+		if (e == item_id) {
 			return true;
+		}
 	}
+
 	return false;
 }
 
 void Client::KeyRingList()
 {
-	Message(Chat::LightBlue,"Keys on Keyring:");
+	Message(Chat::LightBlue, "Keys on Keyring:");
+
 	const EQ::ItemData *item = nullptr;
-	for (auto iter = keyring.begin(); iter != keyring.end(); ++iter) {
-		if ((item = database.GetItem(*iter))!=nullptr) {
-			Message(Chat::LightBlue,item->Name);
+
+	for (const auto &e : keyring) {
+		item = database.GetItem(e);
+		if (item) {
+			const std::string &item_string = RuleB(World, UseItemLinksForKeyRing) ? database.CreateItemLink(e) : item->Name;
+
+			Message(Chat::LightBlue, item_string.c_str());
 		}
 	}
 }
@@ -4211,7 +4282,7 @@ void Client::UpdateLFP() {
 
 	for(unsigned int i=0; i<MAX_GROUP_MEMBERS; i++) {
 		LFPMembers[i].Name[0] = '\0';
-		LFPMembers[i].Class = NO_CLASS;
+		LFPMembers[i].Class = Class::None;
 		LFPMembers[i].Level = 0;
 		LFPMembers[i].Zone = 0;
 	}
@@ -4828,7 +4899,7 @@ void Client::HandleLDoNOpen(NPC *target)
 {
 	if(target)
 	{
-		if(target->GetClass() != LDON_TREASURE)
+		if(target->GetClass() != Class::LDoNTreasure)
 		{
 			LogDebug("[{}] tried to open [{}] but [{}] was not a treasure chest",
 				GetName(), target->GetName(), target->GetName());
@@ -4897,7 +4968,7 @@ void Client::HandleLDoNOpen(NPC *target)
 
 void Client::HandleLDoNSenseTraps(NPC *target, uint16 skill, uint8 type)
 {
-	if(target && target->GetClass() == LDON_TREASURE)
+	if(target && target->GetClass() == Class::LDoNTreasure)
 	{
 		if(target->IsLDoNTrapped())
 		{
@@ -4940,7 +5011,7 @@ void Client::HandleLDoNDisarm(NPC *target, uint16 skill, uint8 type)
 {
 	if(target)
 	{
-		if(target->GetClass() == LDON_TREASURE)
+		if(target->GetClass() == Class::LDoNTreasure)
 		{
 			if(!target->IsLDoNTrapped())
 			{
@@ -4990,7 +5061,7 @@ void Client::HandleLDoNPickLock(NPC *target, uint16 skill, uint8 type)
 {
 	if(target)
 	{
-		if(target->GetClass() == LDON_TREASURE)
+		if(target->GetClass() == Class::LDoNTreasure)
 		{
 			if(target->IsLDoNTrapped())
 			{
@@ -5669,26 +5740,89 @@ void Client::AddPVPPoints(uint32 Points)
 	SendPVPStats();
 }
 
-void Client::AddCrystals(uint32 radiant, uint32 ebon)
-{
-	m_pp.currentRadCrystals += radiant;
-	m_pp.careerRadCrystals += radiant;
-	m_pp.currentEbonCrystals += ebon;
-	m_pp.careerEbonCrystals += ebon;
+void Client::AddEbonCrystals(uint32 amount, bool is_reclaim) {
+	m_pp.currentEbonCrystals += amount;
+	m_pp.careerEbonCrystals += amount;
 
 	SaveCurrency();
-
 	SendCrystalCounts();
 
-	// newer clients handle message client side (older clients likely used eqstr 5967 and 5968, this matches live)
-	if (radiant > 0)
-	{
-		MessageString(Chat::Yellow, YOU_RECEIVE, fmt::format("{} Radiant Crystals", radiant).c_str());
-	}
+	MessageString(
+		Chat::Yellow,
+		YOU_RECEIVE,
+		fmt::format(
+			"{} {}",
+			amount,
+			database.CreateItemLink(RuleI(Zone, EbonCrystalItemID))
+		).c_str()
+	);
 
-	if (ebon > 0)
-	{
-		MessageString(Chat::Yellow, YOU_RECEIVE, fmt::format("{} Ebon Crystals", ebon).c_str());
+	if (parse->PlayerHasQuestSub(EVENT_CRYSTAL_GAIN)) {
+		const std::string &export_string = fmt::format(
+			"{} 0 {}",
+			amount,
+			is_reclaim ? 1 : 0
+		);
+		parse->EventPlayer(EVENT_CRYSTAL_GAIN, this, export_string, 0);
+	}
+}
+
+void Client::AddRadiantCrystals(uint32 amount, bool is_reclaim) {
+	m_pp.currentRadCrystals += amount;
+	m_pp.careerRadCrystals += amount;
+
+	SaveCurrency();
+	SendCrystalCounts();
+
+	MessageString(
+		Chat::Yellow,
+		YOU_RECEIVE,
+		fmt::format(
+			"{} {}",
+			amount,
+			database.CreateItemLink(RuleI(Zone, RadiantCrystalItemID))
+		).c_str()
+	);
+
+	if (parse->PlayerHasQuestSub(EVENT_CRYSTAL_GAIN)) {
+		const std::string &export_string = fmt::format(
+			"0 {} {}",
+			amount,
+			is_reclaim ? 1 : 0
+		);
+		parse->EventPlayer(EVENT_CRYSTAL_GAIN, this, export_string, 0);
+	}
+}
+
+void Client::RemoveEbonCrystals(uint32 amount, bool is_reclaim) {
+	m_pp.currentEbonCrystals -= amount;
+
+	SaveCurrency();
+	SendCrystalCounts();
+
+	if (parse->PlayerHasQuestSub(EVENT_CRYSTAL_LOSS)) {
+		const std::string &export_string = fmt::format(
+			"{} 0 {}",
+			amount,
+			is_reclaim ? 1 : 0
+		);
+		parse->EventPlayer(EVENT_CRYSTAL_LOSS, this, export_string, 0);
+	}
+}
+
+void Client::RemoveRadiantCrystals(uint32 amount, bool is_reclaim) {
+	m_pp.currentRadCrystals -= amount;
+
+	SaveCurrency();
+	SendCrystalCounts();
+
+	if (parse->PlayerHasQuestSub(EVENT_CRYSTAL_LOSS)) {
+		const std::string &export_string = fmt::format(
+			"0 {} {}",
+			amount,
+			is_reclaim ? 1 : 0
+		);
+		parse->EventPlayer(EVENT_CRYSTAL_LOSS, this, export_string, 0);
 	}
 }
 
@@ -6051,7 +6185,7 @@ void Client::CheckEmoteHail(NPC* n, const char* message)
 
 	const auto emote_id = n->GetEmoteID();
 	if (emote_id) {
-		n->DoNPCEmote(EQ::constants::EmoteEventTypes::Hailed, emote_id);
+		n->DoNPCEmote(EQ::constants::EmoteEventTypes::Hailed, emote_id, this);
 	}
 }
 
@@ -6433,11 +6567,10 @@ void Client::SetAlternateCurrencyValue(uint32 currency_id, uint32 new_amount)
 	SendAlternateCurrencyValue(currency_id);
 }
 
-int Client::AddAlternateCurrencyValue(uint32 currency_id, int32 amount, int8 method)
+int Client::AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_scripted)
 {
-
 	/* Added via Quest, rest of the logging methods may be done inline due to information available in that area of the code */
-	if (method == 1){
+	if (is_scripted) {
 		/* QS: PlayerLogAlternateCurrencyTransactions :: Cursor to Item Storage */
 		if (RuleB(QueryServ, PlayerLogAlternateCurrencyTransactions)){
 			std::string event_desc = StringFormat("Added via Quest :: Cursor to Item :: alt_currency_id:%i amount:%i in zoneid:%i instid:%i", currency_id, GetZoneID(), GetInstanceID());
@@ -6445,31 +6578,46 @@ int Client::AddAlternateCurrencyValue(uint32 currency_id, int32 amount, int8 met
 		}
 	}
 
-	if(amount == 0) {
+	if (!amount) {
 		return 0;
 	}
 
-	if(!alternate_currency_loaded) {
+	if (!alternate_currency_loaded) {
 		alternate_currency_queued_operations.push(std::make_pair(currency_id, amount));
 		return 0;
 	}
 
 	int new_value = 0;
 	auto iter = alternate_currency.find(currency_id);
-	if(iter == alternate_currency.end()) {
+	if (iter == alternate_currency.end()) {
 		new_value = amount;
 	} else {
 		new_value = (*iter).second + amount;
 	}
 
-	if(new_value < 0) {
+	if (new_value < 0) {
+		new_value = 0;
 		alternate_currency[currency_id] = 0;
 		database.UpdateAltCurrencyValue(CharacterID(), currency_id, 0);
 	} else {
 		alternate_currency[currency_id] = new_value;
 		database.UpdateAltCurrencyValue(CharacterID(), currency_id, new_value);
 	}
+
 	SendAlternateCurrencyValue(currency_id);
+
+	QuestEventID event_id = amount > 0 ? EVENT_ALT_CURRENCY_GAIN : EVENT_ALT_CURRENCY_LOSS;
+
+	if (parse->PlayerHasQuestSub(event_id)) {
+		const std::string &export_string = fmt::format(
+			"{} {} {}",
+			currency_id,
+			std::abs(amount),
+			new_value
+		);
+
+		parse->EventPlayer(event_id, this, export_string, 0);
+	}
 
 	return new_value;
 }
@@ -8491,8 +8639,8 @@ void Client::InitInnates()
 	m_pp.InnateSkills[InnateInspect] = InnateEnabled;
 	m_pp.InnateSkills[InnateOpen] = InnateEnabled;
 
-	if (race >= RT_FROGLOK_3) {
-		if (race == RT_SKELETON_2 || race == RT_FROGLOK_3) {
+	if (race >= Race::Froglok2) {
+		if (race == Race::Skeleton2 || race == Race::Froglok2) {
 			m_pp.InnateSkills[InnateUltraVision] = InnateEnabled;
 		} else {
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
@@ -8500,75 +8648,75 @@ void Client::InitInnates()
 	}
 
 	switch (race) {
-		case RT_BARBARIAN:
-		case RT_BARBARIAN_2:
+		case Race::Barbarian:
+		case Race::HalasCitizen:
 			m_pp.InnateSkills[InnateSlam] = InnateEnabled;
 			break;
-		case RT_ERUDITE:
-		case RT_ERUDITE_2:
+		case Race::Erudite:
+		case Race::EruditeCitizen:
 			m_pp.InnateSkills[InnateLore] = InnateEnabled;
 			break;
-		case RT_WOOD_ELF:
-		case RT_GUARD_3:
+		case Race::WoodElf:
+		case Race::Fayguard:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_GNOME:
-		case RT_HIGH_ELF:
-		case RT_GUARD_2:
+		case Race::Gnome:
+		case Race::HighElf:
+		case Race::Felguard:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			m_pp.InnateSkills[InnateLore]        = InnateEnabled;
 			break;
-		case RT_TROLL:
-		case RT_TROLL_2:
+		case Race::Troll:
+		case Race::GrobbCitizen:
 			m_pp.InnateSkills[InnateRegen]       = InnateEnabled;
 			m_pp.InnateSkills[InnateSlam]        = InnateEnabled;
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_DWARF:
-		case RT_DWARF_2:
+		case Race::Dwarf:
+		case Race::KaladimCitizen:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_OGRE:
-		case RT_OGRE_2:
+		case Race::Ogre:
+		case Race::OggokCitizen:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			m_pp.InnateSkills[InnateSlam]        = InnateEnabled;
 			m_pp.InnateSkills[InnateNoBash]      = InnateEnabled;
 			m_pp.InnateSkills[InnateBashDoor]    = InnateEnabled;
 			break;
-		case RT_HALFLING:
-		case RT_HALFLING_2:
+		case Race::Halfling:
+		case Race::RivervaleCitizen:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_IKSAR:
+		case Race::Iksar:
 			m_pp.InnateSkills[InnateRegen]       = InnateEnabled;
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_VAH_SHIR:
+		case Race::VahShir:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
 			break;
-		case RT_DARK_ELF:
-		case RT_DARK_ELF_2:
-		case RT_VAMPIRE_2:
-		case RT_FROGLOK_2:
-		case RT_GHOST:
-		case RT_GHOUL:
-		case RT_SKELETON:
-		case RT_VAMPIRE:
-		case RT_WILL_O_WISP:
-		case RT_ZOMBIE:
-		case RT_SPECTRE:
-		case RT_GHOST_2:
-		case RT_GHOST_3:
-		case RT_DRAGON_2:
-		case RT_INNORUUK:
+		case Race::DarkElf:
+		case Race::NeriakCitizen:
+		case Race::ElfVampire:
+		case Race::FroglokGhoul:
+		case Race::Ghost:
+		case Race::Ghoul:
+		case Race::Skeleton:
+		case Race::Vampire:
+		case Race::Wisp:
+		case Race::Zombie:
+		case Race::Spectre:
+		case Race::DwarfGhost:
+		case Race::EruditeGhost:
+		case Race::DragonSkeleton:
+		case Race::Innoruuk:
 			m_pp.InnateSkills[InnateUltraVision] = InnateEnabled;
 			break;
-		case RT_HUMAN:
-		case RT_GUARD:
-		case RT_BEGGAR:
-		case RT_HUMAN_2:
-		case RT_HUMAN_3:
-		case RT_FROGLOK_3: // client does froglok weird, but this should work out fine
+		case Race::Human:
+		case Race::FreeportGuard:
+		case Race::HumanBeggar:
+		case Race::HighpassCitizen:
+		case Race::QeynosCitizen:
+		case Race::Froglok2: // client does froglok weird, but this should work out fine
 			break;
 		default:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
@@ -8576,20 +8724,20 @@ void Client::InitInnates()
 	}
 
 	switch (class_) {
-		case DRUID:
+		case Class::Druid:
 			m_pp.InnateSkills[InnateHarmony] = InnateEnabled;
 			break;
-		case BARD:
+		case Class::Bard:
 			m_pp.InnateSkills[InnateReveal] = InnateEnabled;
 			break;
-		case ROGUE:
+		case Class::Rogue:
 			m_pp.InnateSkills[InnateSurprise] = InnateEnabled;
 			m_pp.InnateSkills[InnateReveal]   = InnateEnabled;
 			break;
-		case RANGER:
+		case Class::Ranger:
 			m_pp.InnateSkills[InnateAwareness] = InnateEnabled;
 			break;
-		case MONK:
+		case Class::Monk:
 			m_pp.InnateSkills[InnateSurprise]  = InnateEnabled;
 			m_pp.InnateSkills[InnateAwareness] = InnateEnabled;
 		default:
@@ -9727,7 +9875,7 @@ std::vector<int> Client::GetLearnableDisciplines(uint8 min_level, uint8 max_leve
 			continue;
 		}
 
-		if (spells[spell_id].classes[WARRIOR] == 0) {
+		if (spells[spell_id].classes[Class::Warrior] == 0) {
 			continue;
 		}
 
@@ -9798,7 +9946,7 @@ std::vector<int> Client::GetScribeableSpells(uint8 min_level, uint8 max_level) {
 			continue;
 		}
 
-		if (spells[spell_id].classes[WARRIOR] == 0) {
+		if (spells[spell_id].classes[Class::Warrior] == 0) {
 			continue;
 		}
 
@@ -10667,37 +10815,37 @@ uint16 Client::LearnDisciplines(uint8 min_level, uint8 max_level)
 
 uint16 Client::GetClassTrackingDistanceMultiplier(uint16 class_) {
 	switch (class_) {
-	case WARRIOR:
+	case Class::Warrior:
 		return RuleI(Character, WarriorTrackingDistanceMultiplier);
-	case CLERIC:
+	case Class::Cleric:
 		return RuleI(Character, ClericTrackingDistanceMultiplier);
-	case PALADIN:
+	case Class::Paladin:
 		return RuleI(Character, PaladinTrackingDistanceMultiplier);
-	case RANGER:
+	case Class::Ranger:
 		return RuleI(Character, RangerTrackingDistanceMultiplier);
-	case SHADOWKNIGHT:
+	case Class::ShadowKnight:
 		return RuleI(Character, ShadowKnightTrackingDistanceMultiplier);
-	case DRUID:
+	case Class::Druid:
 		return RuleI(Character, DruidTrackingDistanceMultiplier);
-	case MONK:
+	case Class::Monk:
 		return RuleI(Character, MonkTrackingDistanceMultiplier);
-	case BARD:
+	case Class::Bard:
 		return RuleI(Character, BardTrackingDistanceMultiplier);
-	case ROGUE:
+	case Class::Rogue:
 		return RuleI(Character, RogueTrackingDistanceMultiplier);
-	case SHAMAN:
+	case Class::Shaman:
 		return RuleI(Character, ShamanTrackingDistanceMultiplier);
-	case NECROMANCER:
+	case Class::Necromancer:
 		return RuleI(Character, NecromancerTrackingDistanceMultiplier);
-	case WIZARD:
+	case Class::Wizard:
 		return RuleI(Character, WizardTrackingDistanceMultiplier);
-	case MAGICIAN:
+	case Class::Magician:
 		return RuleI(Character, MagicianTrackingDistanceMultiplier);
-	case ENCHANTER:
+	case Class::Enchanter:
 		return RuleI(Character, EnchanterTrackingDistanceMultiplier);
-	case BEASTLORD:
+	case Class::Beastlord:
 		return RuleI(Character, BeastlordTrackingDistanceMultiplier);
-	case BERSERKER:
+	case Class::Berserker:
 		return RuleI(Character, BerserkerTrackingDistanceMultiplier);
 	default:
 		return 0;

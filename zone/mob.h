@@ -83,7 +83,7 @@ struct AppearanceStruct {
 	uint8  hair             = UINT8_MAX;
 	uint8  hair_color       = UINT8_MAX;
 	uint8  helmet_texture   = UINT8_MAX;
-	uint16 race_id          = RACE_DOUG_0;
+	uint16 race_id          = Race::Doug;
 	bool   send_effects     = true;
 	float  size             = -1.0f;
 	Client *target          = nullptr;
@@ -717,7 +717,7 @@ public:
 	bool IsRunning() const { return m_is_running; }
 	void SetRunning(bool val) { m_is_running = val; }
 	virtual void GMMove(float x, float y, float z, float heading = 0.01, bool save_guard_spot = true);
-	virtual void GMMove(const glm::vec4 &position);
+	virtual void GMMove(const glm::vec4 &position, bool save_guard_spot = true);
 	void SetDelta(const glm::vec4& delta);
 	void MakeSpawnUpdateNoDelta(PlayerPositionUpdateServer_Struct* spu);
 	void MakeSpawnUpdate(PlayerPositionUpdateServer_Struct* spu);
@@ -751,14 +751,17 @@ public:
 	int64 GetHateAmount(Mob* tmob, bool is_dam = false) { return hate_list.GetEntHateAmount(tmob,is_dam);}
 	int64 GetDamageAmount(Mob* tmob) { return hate_list.GetEntHateAmount(tmob, true);}
 	int GetHateRatio(Mob *first, Mob *with) { return hate_list.GetHateRatio(first, with); }
-	Mob* GetHateTop() { return hate_list.GetEntWithMostHateOnList(this);}
-	Mob* GetSecondaryHate(Mob *skip) { return hate_list.GetEntWithMostHateOnList(this, skip); }
+	Mob* GetHateTop() { return hate_list.GetMobWithMostHateOnList(this);}
+	Bot* GetHateTopBot() { return hate_list.GetMobWithMostHateOnList(this, nullptr, false, EntityFilterType::Bots)->CastToBot();}
+	Client* GetHateTopClient() { return hate_list.GetMobWithMostHateOnList(this, nullptr, false, EntityFilterType::Clients)->CastToClient();}
+	NPC* GetHateTopNPC() { return hate_list.GetMobWithMostHateOnList(this, nullptr, false, EntityFilterType::NPCs)->CastToNPC();}
+	Mob* GetSecondaryHate(Mob *skip) { return hate_list.GetMobWithMostHateOnList(this, skip); }
 	Mob* GetHateDamageTop(Mob* other) { return hate_list.GetDamageTopOnHateList(other);}
-	Mob* GetHateRandom() { return hate_list.GetRandomEntOnHateList();}
-	Client* GetHateRandomClient() { return hate_list.GetRandomClientOnHateList(); }
-	NPC* GetHateRandomNPC() { return hate_list.GetRandomNPCOnHateList(); }
-	Bot* GetHateRandomBot() { return hate_list.GetRandomBotOnHateList(); }
-	Mob* GetHateMost() { return hate_list.GetEntWithMostHateOnList();}
+	Mob* GetHateRandom() { return hate_list.GetRandomMobOnHateList(); }
+	Bot* GetHateRandomBot() { return hate_list.GetRandomMobOnHateList(EntityFilterType::Bots)->CastToBot(); }
+	Client* GetHateRandomClient() { return hate_list.GetRandomMobOnHateList(EntityFilterType::Clients)->CastToClient(); }
+	NPC* GetHateRandomNPC() { return hate_list.GetRandomMobOnHateList(EntityFilterType::NPCs)->CastToNPC(); }
+	Mob* GetHateMost() { return hate_list.GetMobWithMostHateOnList();}
 	Mob* GetHateClosest(bool skip_mezzed = false) { return hate_list.GetClosestEntOnHateList(this, skip_mezzed); }
 	Bot* GetHateClosestBot(bool skip_mezzed = false) { return hate_list.GetClosestEntOnHateList(this, skip_mezzed, EntityFilterType::Bots)->CastToBot(); }
 	Client* GetHateClosestClient(bool skip_mezzed = false) { return hate_list.GetClosestEntOnHateList(this, skip_mezzed, EntityFilterType::Clients)->CastToClient(); }
@@ -1124,7 +1127,7 @@ public:
 
 	void DoSpecialAttackDamage(Mob *who, EQ::skills::SkillType skill, int base_damage, int min_damage = 0, int32 hate_override = -1, int ReuseTime = 10);
 	void DoThrowingAttackDmg(Mob* other, const EQ::ItemInstance* RangeWeapon = nullptr, const EQ::ItemData* AmmoItem = nullptr, int32 weapon_damage = 0, int16 chance_mod = 0, int16 focus = 0, int ReuseTime = 0, uint32 range_id = 0, int AmmoSlot = 0, float speed = 4.0f, bool DisableProcs = false);
-	void DoMeleeSkillAttackDmg(Mob* other, int32 weapon_damage, EQ::skills::SkillType skillinuse, int16 chance_mod = 0, int16 focus = 0, bool CanRiposte = false, int ReuseTime = 0);
+	void DoMeleeSkillAttackDmg(Mob* other, int32 weapon_damage, EQ::skills::SkillType skillinuse, int16 chance_mod = 0, int16 focus = 0, bool can_riposte = false, int ReuseTime = 0);
 	void DoArcheryAttackDmg(Mob* other, const EQ::ItemInstance* RangeWeapon = nullptr, const EQ::ItemInstance* Ammo = nullptr, int32 weapon_damage = 0, int16 chance_mod = 0, int16 focus = 0, int ReuseTime = 0, uint32 range_id = 0, uint32 ammo_id = 0, const EQ::ItemData *AmmoItem = nullptr, int AmmoSlot = 0, float speed = 4.0f, bool DisableProcs = false);
 	bool TryProjectileAttack(Mob* other, const EQ::ItemData *item, EQ::skills::SkillType skillInUse, uint64 weapon_dmg, const EQ::ItemInstance* RangeWeapon, const EQ::ItemInstance* Ammo, int AmmoSlot, float speed, bool DisableProcs = false);
 	void ProjectileAttack();

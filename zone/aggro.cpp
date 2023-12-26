@@ -46,7 +46,7 @@ void EntityList::DescribeAggro(Client *to_who, NPC *from_who, float d, bool verb
 	);
 
 	bool is_engaged = from_who->IsEngaged();
-	bool will_aggro_npcs = from_who->WillAggroNPCs();
+	bool will_aggro_npcs = from_who->GetNPCAggro();
 	if (is_engaged) {
 		Mob *top = from_who->GetHateTop();
 		to_who->Message(
@@ -678,7 +678,7 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 
 	if(!isSpellAttack)
 	{
-		if(GetClass() == LDON_TREASURE)
+		if(GetClass() == Class::LDoNTreasure)
 		{
 			return false;
 		}
@@ -990,14 +990,14 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 	float size_mod = GetSize();
 	float other_size_mod = other->GetSize();
 
-	if (GetRace() == RACE_LAVA_DRAGON_49 || GetRace() == RACE_WURM_158 || GetRace() == RACE_GHOST_DRAGON_196) { //For races with a fixed size
+	if (GetRace() == Race::LavaDragon || GetRace() == Race::Wurm || GetRace() == Race::GhostDragon) { //For races with a fixed size
 		size_mod = 60.0f;
 	}
 	else if (size_mod < 6.0) {
 		size_mod = 8.0f;
 	}
 
-	if (other->GetRace() == RACE_LAVA_DRAGON_49 || other->GetRace() == RACE_WURM_158 || other->GetRace() == RACE_GHOST_DRAGON_196) { //For races with a fixed size
+	if (other->GetRace() == Race::LavaDragon || other->GetRace() == Race::Wurm || other->GetRace() == Race::GhostDragon) { //For races with a fixed size
 		other_size_mod = 60.0f;
 	}
 	else if (other_size_mod < 6.0) {
@@ -1018,11 +1018,11 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 		size_mod *= size_mod * 4;
 	}
 
-	if (other->GetRace() == RACE_VELIOUS_DRAGON_184)		// Lord Vyemm and other velious dragons
+	if (other->GetRace() == Race::VeliousDragon)		// Lord Vyemm and other velious dragons
 	{
 		size_mod *= 1.75;
 	}
-	if (other->GetRace() == RACE_DRAGON_SKELETON_122)		// Dracoliche in Fear.  Skeletal Dragon
+	if (other->GetRace() == Race::DragonSkeleton)		// Dracoliche in Fear.  Skeletal Dragon
 	{
 		size_mod *= 2.25;
 	}
@@ -1077,10 +1077,10 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 			SetPseudoRoot(false);
 		}
 	}
-	
+
 	if (aeRampage) {
 		float aeramp_size = RuleR(Combat, AERampageMaxDistance);
-		
+
 		LogCombatDetail("AERampage: Default - aeramp_size = [{}] ", aeramp_size);
 
 		if (opts) {
@@ -1100,7 +1100,7 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 
 		LogCombatDetail("AE Rampage: ramp_range = [{}] -- (size_mod [{}] * aeramp_size [{}])", ramp_range, size_mod, aeramp_size);
 		LogCombatDetail("AE Rampage: _DistNoRoot [{}] <= ramp_range [{}]", _DistNoRoot, ramp_range);
-		
+
 		if (_DistNoRoot <= ramp_range) {
 			LogCombatDetail("AE Rampage: Combat Distance returned [true]");
 			return true;

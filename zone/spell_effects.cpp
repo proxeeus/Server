@@ -441,7 +441,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_CurrentMana:
 			{
 				// Bards don't get mana from effects, good or bad.
-				if(GetClass() == BARD)
+				if(GetClass() == Class::Bard)
 					break;
 				if(IsManaTapSpell(spell_id)) {
 					if(GetCasterClass() != 'N') {
@@ -478,7 +478,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			case SE_CurrentManaOnce:
 			{
 				// Bards don't get mana from effects, good or bad.
-				if(GetClass() == BARD)
+				if(GetClass() == Class::Bard)
 					break;
 #ifdef SPELL_EFFECT_SPAM
 				snprintf(effect_desc, _EDLEN, "Current Mana Once: %+i", effect_value);
@@ -3432,7 +3432,7 @@ int64 Mob::CalcSpellEffectValue(uint16 spell_id, int effect_id, int caster_level
 	*/
 
 	//This is checked from Mob::SpellEffects and applied to instant spells and runes.
-	if (caster && caster->GetClass() != BARD && caster->HasBaseEffectFocus()) {
+	if (caster && caster->GetClass() != Class::Bard && caster->HasBaseEffectFocus()) {
 
 		oval = effect_value;
 		int mod = caster->GetFocusEffect(focusFcBaseEffects, spell_id);
@@ -3445,7 +3445,7 @@ int64 Mob::CalcSpellEffectValue(uint16 spell_id, int effect_id, int caster_level
 	else if (caster_id && instrument_mod > 10) {
 
 		Mob* buff_caster = entity_list.GetMob(caster_id);//If targeted bard song needed to confirm caster is not bard.
-		if (buff_caster && buff_caster->GetClass() != BARD) {
+		if (buff_caster && buff_caster->GetClass() != Class::Bard) {
 			oval = effect_value;
 			effect_value = effect_value * static_cast<int>(instrument_mod) / 10;
 
@@ -3991,7 +3991,7 @@ void Mob::DoBuffTic(const Buffs_Struct &buff, int slot, Mob *caster)
 		case SE_Charm: {
 			if (!caster || !PassCharismaCheck(caster, buff.spellid)) {
 				BuffFadeByEffect(SE_Charm);
-				
+
 				// Remove from hate list of any NPC's hate list and remove all NPCs this hate list
 				if (IsNPC()) {
 					entity_list.RemoveFromHateLists(this);
@@ -7248,7 +7248,7 @@ bool Mob::PassLimitClass(uint32 Classes_, uint16 Class_)
 		return false;
 
 	Class_ += 1;
-	for (int CurrentClass = 1; CurrentClass <= PLAYER_CLASS_COUNT; ++CurrentClass){
+	for (int CurrentClass = 1; CurrentClass <= Class::PLAYER_CLASS_COUNT; ++CurrentClass){
 		if (Classes_ % 2 == 1){
 			if (CurrentClass == Class_)
 				return true;
@@ -7430,42 +7430,42 @@ bool Mob::PassCastRestriction(int value)
 
 		case IS_BIXIE:
 		case IS_BIXIE2:
-			if ((GetRace() == RT_BIXIE) ||(GetRace() == RT_BIXIE_2))
+			if ((GetRace() == Race::Bixie) ||(GetRace() == Race::Bixie2))
 				return true;
 			break;
 
 		case IS_HARPY:
-			if ((GetRace() == RT_HARPY) ||(GetRace() == RT_HARPY_2))
+			if ((GetRace() == Race::Harpy) ||(GetRace() == Race::Harpy2))
 				return true;
 			break;
 
 		case IS_GNOLL:
-			if ((GetRace() == RT_GNOLL) || (GetRace() == RT_GNOLL_2) || (GetRace() == RT_GNOLL_3))
+			if ((GetRace() == Race::Gnoll) || (GetRace() == Race::Gnoll2) || (GetRace() == Race::Gnoll3))
 				return true;
 			break;
 
 		case IS_SPORALI:
-			if ((GetRace() == RT_SPORALI) ||(GetRace() == RT_FUNGUSMAN))
+			if ((GetRace() == Race::Sporali) ||(GetRace() == Race::Fungusman))
 				return true;
 			break;
 
 		case IS_KOBOLD:
-			if ((GetRace() == RT_KOBOLD) ||(GetRace() == RT_KOBOLD_2))
+			if ((GetRace() == Race::Kobold) ||(GetRace() == Race::Kobold2))
 				return true;
 			break;
 
 		case IS_FROSTCRYPT_SHADE:
-			if (GetRace() == RT_GIANT_SHADE)
+			if (GetRace() == Race::GiantShade)
 				return true;
 			break;
 
 		case IS_DRAKKIN:
-			if (GetRace() == RT_DRAKKIN)
+			if (GetRace() == Race::Drakkin)
 				return true;
 			break;
 
 		case IS_UNDEAD_OR_VALDEHOLM_GIANT:
-			if (GetBodyType() == BT_Undead || GetRace() == RT_GIANT_12 || GetRace() == RT_GIANT_13)
+			if (GetBodyType() == BT_Undead || GetRace() == Race::Giant2 || GetRace() == Race::Giant3)
 				return true;
 			break;
 
@@ -7481,7 +7481,7 @@ bool Mob::PassCastRestriction(int value)
 
 		case IS_CLASS_WIZARD:
 		case IS_WIZARD_USED_ON_MAGE_FIRE_PET:
-			if (GetClass() == WIZARD)
+			if (GetClass() == Class::Wizard)
 				return true;
 			break;
 
@@ -7496,7 +7496,7 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_FAE_OR_PIXIE:
-			if ((GetRace() == RT_PIXIE) || (GetRace() == RT_FAY_DRAKE))
+			if ((GetRace() == Race::Pixie) || (GetRace() == Race::FayDrake))
 				return  true;
 			break;
 
@@ -7511,22 +7511,22 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLOCKWORK_AND_HP_LESS_THAN_45_PCT:
-			if ((GetRace() == RT_GNOMEWORK || GetRace() == RACE_CLOCKWORK_GNOME_88) && (GetHPRatio() < 45))
+			if ((GetRace() == Race::Gnomework || GetRace() == Race::ClockworkGnome) && (GetHPRatio() < 45))
 				return true;
 			break;
 
 		case IS_WISP_AND_HP_LESS_THAN_10_PCT:
-			if ((GetRace() == RT_WILL_O_WISP) && (GetHPRatio() < 10))
+			if ((GetRace() == Race::Wisp) && (GetHPRatio() < 10))
 				return true;
 			break;
 
 		case IS_CLASS_MELEE_THAT_CAN_BASH_OR_KICK_EXCEPT_BARD:
-			if ((GetClass() != BARD) && (GetClass() != ROGUE) && IsFighterClass(GetClass()))
+			if ((GetClass() != Class::Bard) && (GetClass() != Class::Rogue) && IsFighterClass(GetClass()))
 				return true;
 			break;
 
 		case IS_CLASS_PURE_MELEE:
-			if (GetClass() == ROGUE || GetClass() == WARRIOR || GetClass() == BERSERKER || GetClass() == MONK)
+			if (GetClass() == Class::Rogue || GetClass() == Class::Warrior || GetClass() == Class::Berserker || GetClass() == Class::Monk)
 				return true;
 			break;
 
@@ -7541,78 +7541,78 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLASS_WARRIOR:
-			if (GetClass() == WARRIOR)
+			if (GetClass() == Class::Warrior)
 				return true;
 			break;
 
 		case IS_CLASS_CLERIC:
-			if (GetClass() == CLERIC)
+			if (GetClass() == Class::Cleric)
 				return true;
 			break;
 
 		case IS_CLASS_PALADIN:
-			if (GetClass() == PALADIN)
+			if (GetClass() == Class::Paladin)
 				return true;
 			break;
 
 		case IS_CLASS_RANGER:
-			if (GetClass() == RANGER)
+			if (GetClass() == Class::Ranger)
 				return true;
 			break;
 
 		case IS_CLASS_SHADOWKNIGHT:
-			if (GetClass() == SHADOWKNIGHT)
+			if (GetClass() == Class::ShadowKnight)
 				return true;
 			break;
 
 		case IS_CLASS_DRUID:
-			if (GetClass() == DRUID)
+			if (GetClass() == Class::Druid)
 				return true;
 			break;
 
 		case IS_CLASS_MONK:
-			if (GetClass() == MONK)
+			if (GetClass() == Class::Monk)
 				return true;
 			break;
 
 		case IS_CLASS_BARD2:
 		case IS_CLASS_BARD:
-			if (GetClass() == BARD)
+			if (GetClass() == Class::Bard)
 				return true;
 			break;
 
 		case IS_CLASS_ROGUE:
-			if (GetClass() == ROGUE)
+			if (GetClass() == Class::Rogue)
 				return true;
 			break;
 
 		case IS_CLASS_SHAMAN:
-			if (GetClass() == SHAMAN)
+			if (GetClass() == Class::Shaman)
 				return true;
 			break;
 
 		case IS_CLASS_NECRO:
-			if (GetClass() == NECROMANCER)
+			if (GetClass() == Class::Necromancer)
 				return true;
 			break;
 
 		case IS_CLASS_MAGE:
-			if (GetClass() == MAGICIAN)
+			if (GetClass() == Class::Magician)
 				return true;
 			break;
 
 		case IS_CLASS_ENCHANTER:
-			if (GetClass() == ENCHANTER)
+			if (GetClass() == Class::Enchanter)
 				return true;
 			break;
 
 		case IS_CLASS_BEASTLORD:
-			if (GetClass() == BEASTLORD)
+			if (GetClass() == Class::Beastlord)
 				return true;
 			break;
 
 		case IS_CLASS_BERSERKER:
-			if (GetClass() == BERSERKER)
+			if (GetClass() == Class::Berserker)
 				return true;
 			break;
 
@@ -7622,7 +7622,7 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLASS_NOT_WAR_PAL_SK:
-			if ((GetClass() != WARRIOR) && (GetClass() != PALADIN) && (GetClass() != SHADOWKNIGHT))
+			if ((GetClass() != Class::Warrior) && (GetClass() != Class::Paladin) && (GetClass() != Class::ShadowKnight))
 				return true;
 			break;
 
@@ -7722,8 +7722,8 @@ bool Mob::PassCastRestriction(int value)
 		}
 
 		case IS_CLASS_CHAIN_OR_PLATE:
-			if ((GetClass() == WARRIOR) || (GetClass() == BARD) || (GetClass() == SHADOWKNIGHT) || (GetClass() == PALADIN) || (GetClass() == CLERIC)
-				|| (GetClass() == RANGER) || (GetClass() == SHAMAN) || (GetClass() == ROGUE) || (GetClass() == BERSERKER)) {
+			if ((GetClass() == Class::Warrior) || (GetClass() == Class::Bard) || (GetClass() == Class::ShadowKnight) || (GetClass() == Class::Paladin) || (GetClass() == Class::Cleric)
+				|| (GetClass() == Class::Ranger) || (GetClass() == Class::Shaman) || (GetClass() == Class::Rogue) || (GetClass() == Class::Berserker)) {
 				return true;
 			}
 			break;
@@ -7889,12 +7889,12 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_TREANT:
-			if (GetRace() == RT_TREANT || GetRace() == RT_TREANT_2 || GetRace() == RT_TREANT_3)
+			if (GetRace() == Race::Treant || GetRace() == Race::Treant2 || GetRace() == Race::Treant3)
 				return true;
 			break;
 
 		case IS_SCARECROW:
-			if (GetRace() == RT_SCARECROW || GetRace() == RT_SCARECROW_2)
+			if (GetRace() == Race::Scarecrow || GetRace() == Race::Scarecrow2)
 				return true;
 			break;
 
@@ -7914,7 +7914,7 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLASS_WARRIOR_CASTER_PRIEST:
-			if (IsCasterClass(GetClass()) || GetClass() == WARRIOR)
+			if (IsCasterClass(GetClass()) || GetClass() == Class::Warrior)
 				return true;
 			break;
 
@@ -8082,13 +8082,13 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLEINT_AND_MALE_DRUID_ENCHANTER_MAGICIAN_NECROANCER_SHAMAN_OR_WIZARD:
-			if (IsClient() && GetGender() == MALE && (IsCasterClass(GetClass()) && GetClass() != CLERIC))
+			if (IsClient() && GetGender() == MALE && (IsCasterClass(GetClass()) && GetClass() != Class::Cleric))
 				return true;
 			break;
 
 		case IS_CLIENT_AND_MALE_BEASTLORD_BERSERKER_MONK_RANGER_OR_ROGUE:
 			if (IsClient() && GetGender() == MALE &&
-				(GetClass() == BEASTLORD || GetClass() == BERSERKER || GetClass() == MONK || GetClass() == RANGER || GetClass() == ROGUE))
+				(GetClass() == Class::Beastlord || GetClass() == Class::Berserker || GetClass() == Class::Monk || GetClass() == Class::Ranger || GetClass() == Class::Rogue))
 				return true;
 			break;
 
@@ -8098,13 +8098,13 @@ bool Mob::PassCastRestriction(int value)
 			break;
 
 		case IS_CLIENT_AND_FEMALE_DRUID_ENCHANTER_MAGICIAN_NECROANCER_SHAMAN_OR_WIZARD:
-			if (IsClient() && GetGender() == FEMALE && (IsCasterClass(GetClass()) && GetClass() != CLERIC))
+			if (IsClient() && GetGender() == FEMALE && (IsCasterClass(GetClass()) && GetClass() != Class::Cleric))
 				return true;
 			break;
 
 		case IS_CLIENT_AND_FEMALE_BEASTLORD_BERSERKER_MONK_RANGER_OR_ROGUE:
 			if (IsClient() && GetGender() == FEMALE &&
-				(GetClass() == BEASTLORD || GetClass() == BERSERKER || GetClass() == MONK || GetClass() == RANGER || GetClass() == ROGUE))
+				(GetClass() == Class::Beastlord || GetClass() == Class::Berserker || GetClass() == Class::Monk || GetClass() == Class::Ranger || GetClass() == Class::Rogue))
 				return true;
 			break;
 
@@ -8177,7 +8177,7 @@ bool Mob::PassCastRestriction(int value)
 		}
 
 		case IS_NOT_CLASS_BARD:
-			if (GetClass() != BARD)
+			if (GetClass() != Class::Bard)
 				return true;
 			break;
 
@@ -10263,7 +10263,7 @@ void Mob::ApplySpellEffectIllusion(int32 spell_id, Mob *caster, int buffslot, in
 			gender_id
 		);
 
-		if (base != RACE_ELEMENTAL_75 && base != RACE_DRAKKIN_522) {
+		if (base != Race::Elemental && base != Race::Drakkin) {
 			if (max > 0) {
 				if (limit == 0) {
 					SendIllusionPacket(
@@ -10303,7 +10303,7 @@ void Mob::ApplySpellEffectIllusion(int32 spell_id, Mob *caster, int buffslot, in
 					}
 				);
 			}
-		} else if (base == RACE_ELEMENTAL_75){
+		} else if (base == Race::Elemental){
 			SendIllusionPacket(
 				AppearanceStruct{
 					.gender_id = static_cast<uint8>(gender_id),
@@ -10311,7 +10311,7 @@ void Mob::ApplySpellEffectIllusion(int32 spell_id, Mob *caster, int buffslot, in
 					.texture = static_cast<uint8>(limit),
 				}
 			);
-		} else if (base == RACE_DRAKKIN_522) {
+		} else if (base == Race::Drakkin) {
 			FaceChange_Struct f{
 				.haircolor = GetHairColor(),
 				.beardcolor = GetBeardColor(),
