@@ -1068,7 +1068,9 @@ void Mob::AI_Process() {
 					(!IsPet() || (HasOwner() && GetOwner()->IsNPC())) &&
 					!CastToNPC()->GetNPCAggro()
 				) {
-					WipeHateList(true); // wipe NPCs from hate list to prevent faction war
+					// Proxeeus: deactivating this since it breaks PlayerBots combat functionnality pretty hardcore
+					// haven't had an issue with faction wars in 6 years
+					//WipeHateList(true); // wipe NPCs from hate list to prevent faction war
 				}
 
 				if (IsFocused()) {
