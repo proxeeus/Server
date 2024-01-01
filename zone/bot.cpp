@@ -8897,8 +8897,8 @@ bool Bot::CheckSpawnConditions(Client* c) {
 
 	Raid* raid = entity_list.GetRaidByClient(c);
 	if (raid && raid->IsEngaged()) {
-		c->Message(Chat::White, "You cannot spawn bots while your raid is engaged.");
-		return false;
+		//c->Message(Chat::White, "You cannot spawn bots while your raid is engaged.");
+		//return false;
 	}
 
 	auto* owner_group = c->GetGroup();
@@ -8909,14 +8909,14 @@ bool Bot::CheckSpawnConditions(Client* c) {
 
 		for (auto member_iter : member_list) {
 			if (member_iter->IsEngaged() || member_iter->GetAggroCount() > 0) {
-				c->Message(Chat::White, "You cannot spawn bots while your group is engaged,");
-				return false;
+				//c->Message(Chat::White, "You cannot spawn bots while your group is engaged,");
+				//return false;
 			}
 		}
 	} else {
 		if (c->GetAggroCount() > 0) {
-			c->Message(Chat::White, "You cannot spawn bots while you are engaged,");
-			return false;
+			//c->Message(Chat::White, "You cannot spawn bots while you are engaged,");
+			//return false;
 		}
 	}
 

@@ -7803,16 +7803,17 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 				continue;
 			if (member_iter->qglobal) // what is this?? really should have had a message to describe failure... (can't spawn bots if you are assigned to a task/instance?)
 				return;
-			if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) && (member_iter->IsEngaged() || (member_iter->IsClient() && member_iter->CastToClient()->GetAggroCount()))) {
+			//if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) && (member_iter->IsEngaged() || (member_iter->IsClient() && member_iter->CastToClient()->GetAggroCount()))) {
+			if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) ) {
 				c->Message(Chat::Red, "You can't summon bots while you are engaged.");
 				return;
 			}
 		}
 	}
-	else if (c->GetAggroCount() > 0) {
-		c->Message(Chat::Red, "You can't spawn bots while you are engaged.");
-		return;
-	}
+	//else if (c->GetAggroCount() > 0) {
+	//	c->Message(Chat::Red, "You can't spawn bots while you are engaged.");
+	//	return;
+	//}
 
 	auto my_bot = Bot::LoadBot(bot_id);
 	if (!my_bot) {
