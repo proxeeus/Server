@@ -472,8 +472,8 @@ void Client::AI_Start(uint32 iMoveDelay) {
 		return;
 
 	pClientSideTarget = GetTarget() ? GetTarget()->GetID() : 0;
-	SendAppearancePacket(AT_Anim, ANIM_FREEZE);	// this freezes the client
-	SendAppearancePacket(AT_Linkdead, 1); // Sending LD packet so *LD* appears by the player name when charmed/feared -Kasai
+	SendAppearancePacket(AppearanceType::Animation, Animation::Freeze);	// this freezes the client
+	SendAppearancePacket(AppearanceType::Linkdead, 1); // Sending LD packet so *LD* appears by the player name when charmed/feared -Kasai
 	SetAttackTimer();
 	SetFeigned(false);
 }
@@ -537,8 +537,8 @@ void Client::AI_Stop() {
 	safe_delete(app);
 
 	SetTarget(entity_list.GetMob(pClientSideTarget));
-	SendAppearancePacket(AT_Anim, GetAppearanceValue(GetAppearance()));
-	SendAppearancePacket(AT_Linkdead, 0); // Removing LD packet so *LD* no longer appears by the player name when charmed/feared -Kasai
+	SendAppearancePacket(AppearanceType::Animation, GetAppearanceValue(GetAppearance()));
+	SendAppearancePacket(AppearanceType::Linkdead, 0); // Removing LD packet so *LD* no longer appears by the player name when charmed/feared -Kasai
 	if (!auto_attack) {
 		attack_timer.Disable();
 		attack_dw_timer.Disable();
@@ -778,6 +778,7 @@ void Client::AI_Process()
 
 		if (GetTarget()->IsCorpse()) {
 			RemoveFromHateList(this);
+			RemoveFromRampageList(this);
 			return;
 		}
 
@@ -1091,6 +1092,7 @@ void Mob::AI_Process() {
 
 		if (target->IsCorpse()) {
 			RemoveFromHateList(this);
+			RemoveFromRampageList(this);
 			return;
 		}
 
@@ -2245,6 +2247,32 @@ void Mob::ClearRampage()
 	RampageArray.clear();
 }
 
+void Mob::RemoveFromRampageList(Mob* mob, bool remove_feigned)
+{
+	if (!mob) {
+		return;
+	}
+
+	if (
+		IsNPC() &&
+		GetSpecialAbility(SPECATK_RAMPAGE) &&
+		(
+			remove_feigned  ||
+			mob->IsNPC() ||
+			(
+				mob->IsClient() &&
+				!mob->CastToClient()->GetFeigned()
+			)
+		)
+	) {
+		for (int i = 0; i < RampageArray.size(); i++) {
+			if (mob->GetID() == RampageArray[i]) {
+				RampageArray[i] = 0;
+			}
+		}
+	}
+}
+
 bool Mob::Rampage(ExtraAttackOptions *opts)
 {
 	int index_hit = 0;
@@ -2266,8 +2294,16 @@ bool Mob::Rampage(ExtraAttackOptions *opts)
 		// range is important
 		Mob *m_target = entity_list.GetMob(RampageArray[i]);
 		if (m_target) {
-			if (m_target == GetTarget())
+			if (m_target == GetTarget()) {
 				continue;
+			}
+			
+			if (m_target->IsCorpse()) {
+				LogAggroDetail("[{}] is on [{}]'s rampage list", m_target->GetCleanName(), GetCleanName());
+				RemoveFromRampageList(m_target, true);
+				continue;
+			}
+
 			if (DistanceSquaredNoZ(GetPosition(), m_target->GetPosition()) <= NPC_RAMPAGE_RANGE2) {
 				ProcessAttackRounds(m_target, opts);
 				index_hit++;

@@ -340,7 +340,7 @@ namespace BeastlordPetData {
 		uint16 race_id = WOLF;
 		uint8 texture = 0;
 		uint8 helm_texture = 0;
-		uint8 gender = NEUTER;
+		uint8 gender = Gender::Neuter;
 		float size_modifier = 1.0f;
 		uint8 face = 0;
 	};
@@ -401,7 +401,7 @@ public:
 	void UpdateBuyLine(uint32 CharID, uint32 BuySlot, uint32 Quantity);
 
 
-	void UpdateGMStatus(uint32 accID, int newStatus);
+	void UpdateGMStatus(uint32 account_id, int new_status);
 
 	/**
 	 ************************************************
@@ -423,12 +423,12 @@ public:
 	void DeleteItemRecast(uint32 char_id, uint32 recast_type);
 
 	bool DeleteCharacterAAs(uint32 character_id);
-	bool DeleteCharacterBandolier(uint32 character_id, uint32 band_id);
-	bool DeleteCharacterDisc(uint32 character_id, uint32 slot_id);
-	bool DeleteCharacterDye(uint32 character_id);
-	bool DeleteCharacterLeadershipAAs(uint32 character_id);
-	bool DeleteCharacterMemorizedSpell(uint32 character_id, uint32 spell_id, uint32 slot_id);
-	bool DeleteCharacterSpell(uint32 character_id, uint32 spell_id, uint32 slot_id);
+	bool DeleteCharacterBandolier(uint32 character_id, uint32 bandolier_id);
+	bool DeleteCharacterDiscipline(uint32 character_id, uint32 slot_id);
+	bool DeleteCharacterMaterialColor(uint32 character_id);
+	bool DeleteCharacterLeadershipAbilities(uint32 character_id);
+	bool DeleteCharacterMemorizedSpell(uint32 character_id, uint32 slot_id);
+	bool DeleteCharacterSpell(uint32 character_id, uint32 slot_id);
 
 	bool LoadCharacterBandolier(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterBindPoint(uint32 character_id, PlayerProfile_Struct* pp);
@@ -437,25 +437,26 @@ public:
 	bool LoadCharacterDisciplines(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterFactionValues(uint32 character_id, faction_map & val_list);
 	bool LoadCharacterLanguages(uint32 character_id, PlayerProfile_Struct* pp);
-	bool LoadCharacterLeadershipAA(uint32 character_id, PlayerProfile_Struct* pp);
+	bool LoadCharacterLeadershipAbilities(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterMaterialColor(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterMemmedSpells(uint32 character_id, PlayerProfile_Struct* pp);
-	bool LoadCharacterPotions(uint32 character_id, PlayerProfile_Struct* pp);
+	bool LoadCharacterPotionBelt(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterSkills(uint32 character_id, PlayerProfile_Struct* pp);
 	bool LoadCharacterSpellBook(uint32 character_id, PlayerProfile_Struct* pp);
 
-	bool SaveCharacterAA(uint32 character_id, uint32 aa_id, uint32 current_level, uint32 charges);
 	bool SaveCharacterBandolier(uint32 character_id, uint8 bandolier_id, uint8 bandolier_slot, uint32 item_id, uint32 icon, const char* bandolier_name);
 	bool SaveCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp);
 	bool SaveCharacterData(Client* c, PlayerProfile_Struct* pp, ExtendedProfile_Struct* m_epp);
-	bool SaveCharacterDisc(uint32 character_id, uint32 slot_id, uint32 disc_id);
+	bool SaveCharacterDiscipline(uint32 character_id, uint32 slot_id, uint32 disc_id);
 	bool SaveCharacterLanguage(uint32 character_id, uint32 lang_id, uint32 value);
-	bool SaveCharacterLeadershipAA(uint32 character_id, PlayerProfile_Struct* pp);
-	bool SaveCharacterMaterialColor(uint32 character_id, uint32 slot_id, uint32 color);
+	bool SaveCharacterLeadershipAbilities(uint32 character_id, PlayerProfile_Struct* pp);
+	bool SaveCharacterMaterialColor(uint32 character_id, uint8 slot_id, uint32 color);
 	bool SaveCharacterMemorizedSpell(uint32 character_id, uint32 spell_id, uint32 slot_id);
 	bool SaveCharacterPotionBelt(uint32 character_id, uint8 potion_id, uint32 item_id, uint32 icon);
 	bool SaveCharacterSkill(uint32 character_id, uint32 skill_id, uint32 value);
 	bool SaveCharacterSpell(uint32 character_id, uint32 spell_id, uint32 slot_id);
+
+	void ZeroPlayerProfileCurrency(PlayerProfile_Struct* pp);
 
 	double GetAAEXPModifier(uint32 character_id, uint32 zone_id, int16 instance_version = -1) const;
 	double GetEXPModifier(uint32 character_id, uint32 zone_id, int16 instance_version = -1) const;
@@ -463,7 +464,7 @@ public:
 	void SetEXPModifier(uint32 character_id, uint32 zone_id, double exp_modifier, int16 instance_version = -1);
 
 	/* Character Inventory  */
-	bool	NoRentExpired(const char* name);
+	bool	NoRentExpired(const std::string& name);
 	bool	SaveCharacterInvSnapshot(uint32 character_id);
 	int		CountCharacterInvSnapshots(uint32 character_id);
 	void	ClearCharacterInvSnapshots(uint32 character_id, bool from_now = false);
@@ -498,7 +499,7 @@ public:
 	uint32		GetFirstCorpseID(uint32 char_id);
 	uint32		GetCharacterCorpseCount(uint32 char_id);
 	uint32		GetCharacterCorpseID(uint32 char_id, uint8 corpse);
-	uint32		GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slotid);
+	uint32		GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id);
 	uint32		GetPlayerCorpseTimeLeft(uint8 corpse, uint8 type);
 	void        SendCharacterCorpseToNonInstance(uint32 corpse_db_id);
 
@@ -648,17 +649,13 @@ public:
 	void LoadAltCurrencyValues(uint32 char_id, std::map<uint32, uint32> &currency);
 	void UpdateAltCurrencyValue(uint32 char_id, uint32 currency_id, uint32 value);
 
-	/* Saylinks   */
-	uint32 LoadSaylinkID(const char* saylink_text, bool auto_insert = true);
-	uint32 SaveSaylinkID(const char* saylink_text);
-
 	/*
 		* Misc stuff.
 		* PLEASE DO NOT ADD TO THIS COLLECTION OF CRAP UNLESS YOUR METHOD
 		* REALLY HAS NO BETTER SECTION
 	*/
-	uint32	GetKarma(uint32 acct_id);
-	void	UpdateKarma(uint32 acct_id, uint32 amount);
+	uint32	GetKarma(uint32 account_id);
+	void	UpdateKarma(uint32 account_id, uint32 amount);
 
 	uint32 GetPlayerBotGuildId();
 	// bot database add-on to eliminate the need for a second database connection

@@ -1419,7 +1419,7 @@ void Mob::DoAttack(Mob *other, DamageHitInfo &hit, ExtraAttackOptions *opts, boo
 		if (other->CheckHitChance(this, hit)) {
 			if (IsNPC() && other->IsClient() && other->animation > 0 && GetLevel() >= 5 && BehindMob(other, GetX(), GetY())) {
 				// ~ 12% chance
-				if (zone->random.Roll(12)) {
+				if (zone->random.Roll(RuleI(Combat, StunChance))) {
 					int stun_resist2 = other->spellbonuses.FrontalStunResist + other->itembonuses.FrontalStunResist + other->aabonuses.FrontalStunResist;
 					int stun_resist = other->spellbonuses.StunResist + other->itembonuses.StunResist + other->aabonuses.StunResist;
 					if (zone->random.Roll(stun_resist2)) {
@@ -2119,6 +2119,7 @@ bool NPC::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 		}
 
 		RemoveFromHateList(other);
+		RemoveFromRampageList(other);
 		LogCombat("I am not allowed to attack [{}]", other->GetName());
 		return false;
 	}
@@ -2280,49 +2281,51 @@ bool NPC::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 		if (other->IsClient() && IsPet() && GetOwner()->IsClient()) {
 			//pets do half damage to clients in pvp
 			my_hit.damage_done /= 2;
-			if (my_hit.damage_done < 1)
+			if (my_hit.damage_done < 1) {
 				my_hit.damage_done = 1;
+			}
 		}
-	}
-	else {
+	} else {
 		my_hit.damage_done = DMG_INVULNERABLE;
 	}
 
 	if (GetHP() > 0 && !other->HasDied()) {
 		other->Damage(this, my_hit.damage_done, SPELL_UNKNOWN, my_hit.skill, true, -1, false, m_specialattacks); // Not avoidable client already had thier chance to Avoid
+	} else {
+		return false;
 	}
-	else
-		return false;
 
-	if (HasDied()) //killed by damage shield ect
+	if (HasDied()) { //killed by damage shield ect
 		return false;
+	}
 
 	MeleeLifeTap(my_hit.damage_done);
 
 	CommonBreakInvisibleFromCombat();
 
 	//I doubt this works...
-	if (!GetTarget())
+	if (!GetTarget()) {
 		return true; //We killed them
-
-	if (!bRiposte && !other->HasDied()) {
-		TryWeaponProc(nullptr, weapon, other, Hand);	//no weapon
-
-		if (!other->HasDied())
-			TrySpellProc(nullptr, weapon, other, Hand);
-
-		if (my_hit.damage_done > 0 && HasSkillProcSuccess() && !other->HasDied())
-			TrySkillProc(other, my_hit.skill, 0, true, Hand);
 	}
 
-	if (GetHP() > 0 && !other->HasDied())
+	bool has_hit = my_hit.damage_done > 0;
+	if (has_hit && !bRiposte && !other->HasDied()) {
+		TryWeaponProc(nullptr, weapon, other, Hand);
+
+		if (!other->HasDied()) {
+			TrySpellProc(nullptr, weapon, other, Hand);
+		}
+
+		if (HasSkillProcSuccess() && !other->HasDied()) {
+			TrySkillProc(other, my_hit.skill, 0, true, Hand);
+		}
+	}
+
+	if (GetHP() > 0 && !other->HasDied()) {
 		TriggerDefensiveProcs(other, Hand, true, my_hit.damage_done);
+	}
 
-	if (my_hit.damage_done > 0)
-		return true;
-
-	else
-		return false;
+	return has_hit;
 }
 
 void NPC::Damage(Mob* other, int64 damage, uint16 spell_id, EQ::skills::SkillType attack_skill, bool avoidable, int8 buffslot, bool iBuffTic, eSpecialAttacks special) {
@@ -2707,68 +2710,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 	Corpse* corpse = nullptr;
 
-	// Parse quests even if we're killed by an NPC
-	if (oos) {
-		if (IsNPC()) {
-			auto emote_id = GetEmoteID();
-			if (emote_id) {
-				DoNPCEmote(EQ::constants::EmoteEventTypes::OnDeath, emoteid, killer_mob);
-			}
-		}
-
-		if (oos->IsNPC()) {
-			if (parse->HasQuestSub(oos->GetNPCTypeID(), EVENT_NPC_SLAY)) {
-				parse->EventNPC(EVENT_NPC_SLAY, oos->CastToNPC(), this, "", 0);
-			}
-
-			auto emote_id = oos->GetEmoteID();
-			if (emote_id) {
-				oos->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::KilledNPC, emote_id, this);
-			}
-			if (killer_mob) {
-				killer_mob->TrySpellOnKill(killed_level, spell);
-			}
-		}
-	}
-
-	if (killer_mob && killer_mob->IsBot()) {
-		if (parse->BotHasQuestSub(EVENT_NPC_SLAY)) {
-			parse->EventBot(EVENT_NPC_SLAY, killer_mob->CastToBot(), this, "", 0);
-		}
-
-		killer_mob->TrySpellOnKill(killed_level, spell);
-	}
-
-	m_combat_record.Stop();
-	if (parse->HasQuestSub(GetNPCTypeID(), EVENT_DEATH_COMPLETE)) {
-		const auto& export_string = fmt::format(
-			"{} {} {} {}",
-			killer_mob ? killer_mob->GetID() : 0,
-			damage,
-			spell,
-			static_cast<int>(attack_skill)
-		);
-
-		std::vector<std::any> args = { corpse };
-
-		parse->EventNPC(EVENT_DEATH_COMPLETE, this, oos, export_string, 0, &args);
-	}
-
-	/* Zone controller process EVENT_DEATH_ZONE (Death events) */
-
-	if (parse->HasQuestSub(ZONE_CONTROLLER_NPC_ID, EVENT_DEATH_ZONE)) {
-		const auto& export_string = fmt::format(
-			"{} {} {} {}",
-			killer_mob ? killer_mob->GetID() : 0,
-			damage,
-			spell,
-			static_cast<int>(attack_skill)
-		);
-
-		std::vector<std::any> args = { corpse, this };
-
-		DispatchZoneControllerEvent(EVENT_DEATH_ZONE, oos, export_string, 0, &args);
-	}
+	const uint16 entity_id = GetID();
 
 	if (!HasOwner() && !IsMerc() && !GetSwarmInfo() && (!is_merchant || allow_merchant_corpse) &&
 		((killer && (killer->IsClient() || (killer->HasOwner() && killer->GetUltimateOwner()->IsClient()) ||
@@ -2881,6 +2823,39 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		entity_list.RemoveFromXTargets(this);
 	}
 
+
+	// Parse quests even if we're killed by an NPC
+	if (oos) {
+		if (IsNPC()) {
+			auto emote_id = GetEmoteID();
+			if (emote_id) {
+				DoNPCEmote(EQ::constants::EmoteEventTypes::OnDeath, emoteid, killer_mob);
+			}
+		}
+
+		if (oos->IsNPC()) {
+			if (parse->HasQuestSub(oos->GetNPCTypeID(), EVENT_NPC_SLAY)) {
+				parse->EventNPC(EVENT_NPC_SLAY, oos->CastToNPC(), this, "", 0);
+			}
+
+			auto emote_id = oos->GetEmoteID();
+			if (emote_id) {
+				oos->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::KilledNPC, emote_id, this);
+			}
+			if (killer_mob) {
+				killer_mob->TrySpellOnKill(killed_level, spell);
+			}
+		}
+	}
+
+	if (killer_mob && killer_mob->IsBot()) {
+		if (parse->BotHasQuestSub(EVENT_NPC_SLAY)) {
+			parse->EventBot(EVENT_NPC_SLAY, killer_mob->CastToBot(), this, "", 0);
+		}
+
+		killer_mob->TrySpellOnKill(killed_level, spell);
+	}
+
 	WipeHateList();
 	p_depop = true;
 
@@ -2888,6 +2863,39 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		killer_mob->SetTarget(nullptr); //via AE effects and such..
 
 	entity_list.UpdateFindableNPCState(this, true);
+
+	m_combat_record.Stop();
+
+	if (parse->HasQuestSub(GetNPCTypeID(), EVENT_DEATH_COMPLETE)) {
+		const auto& export_string = fmt::format(
+			"{} {} {} {} {}",
+			killer_mob ? killer_mob->GetID() : 0,
+			damage,
+			spell,
+			static_cast<int>(attack_skill),
+			entity_id
+		);
+
+		std::vector<std::any> args = { corpse };
+
+		parse->EventNPC(EVENT_DEATH_COMPLETE, this, oos, export_string, 0, &args);
+	}
+
+	// Zone controller process EVENT_DEATH_ZONE (Death events)
+	if (parse->HasQuestSub(ZONE_CONTROLLER_NPC_ID, EVENT_DEATH_ZONE)) {
+		const auto& export_string = fmt::format(
+			"{} {} {} {} {}",
+			killer_mob ? killer_mob->GetID() : 0,
+			damage,
+			spell,
+			static_cast<int>(attack_skill),
+			entity_id
+		);
+
+		std::vector<std::any> args = { corpse, this };
+
+		DispatchZoneControllerEvent(EVENT_DEATH_ZONE, oos, export_string, 0, &args);
+	}
 
 	return true;
 }
@@ -3728,6 +3736,7 @@ bool Client::CheckTripleAttack()
 		if (chance < 1)
 			return false;
 
+
 		int inc = aabonuses.TripleAttackChance + spellbonuses.TripleAttackChance + itembonuses.TripleAttackChance;
 		chance = static_cast<int>(chance * (1 + inc / 100.0f));
 		chance = (chance * 100) / (chance + 800);
@@ -3824,6 +3833,8 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 
 	if (damage > 0) {
 		//if there is some damage being done and theres an attacker involved
+		int previous_hp_ratio = GetHPRatio();
+
 		if (attacker) {
 			// if spell is lifetap add hp to the caster
 			if (IsValidSpell(spell_id) && IsLifetapSpell(spell_id)) {
@@ -3947,13 +3958,13 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 			TryTriggerThreshHold(damage, SE_TriggerSpellThreshold, attacker);
 		}
 
-		if (IsClient() && CastToClient()->sneaking) {
-			CastToClient()->sneaking = false;
-			SendAppearancePacket(AT_Sneak, 0);
+		if (IsClient()) {
+			CommonBreakInvisible();
 		}
+
 		if (attacker && attacker->IsClient() && attacker->CastToClient()->sneaking) {
 			attacker->CastToClient()->sneaking = false;
-			attacker->SendAppearancePacket(AT_Sneak, 0);
+			attacker->SendAppearancePacket(AppearanceType::Sneak, 0);
 		}
 
 		//final damage has been determined.
@@ -4068,8 +4079,9 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 			}
 		}
 		else {
-			if (GetHPRatio() < 16)
+			if (GetHPRatio() < 16 && previous_hp_ratio >= 16) {
 				TryDeathSave();
+			}
 		}
 
 		TryTriggerOnCastRequirement();
@@ -4217,8 +4229,9 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		}
 
 		//send an HP update if we are hurt
-		if (GetHP() < GetMaxHP())
+		if (GetHP() < GetMaxHP()) {
 			SendHPUpdate(); // the OP_Damage actually updates the client in these cases, so we skip the HP update for them
+		}
 	}	//end `if damage was done`
 
 		//send damage packet...
@@ -4226,22 +4239,28 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		auto outapp = new EQApplicationPacket(OP_Damage, sizeof(CombatDamage_Struct));
 		CombatDamage_Struct* a = (CombatDamage_Struct*)outapp->pBuffer;
 		a->target = GetID();
-		if (attacker == nullptr)
+
+		if (!attacker) {
 			a->source = 0;
-		else if (attacker->IsClient() && attacker->CastToClient()->GMHideMe())
+		} else if (attacker->IsClient() && attacker->CastToClient()->GMHideMe()) {
 			a->source = 0;
-		else
+		} else {
 			a->source = attacker->GetID();
+		}
+
 		a->type = (EQ::ValueWithin(skill_used, EQ::skills::Skill1HBlunt, EQ::skills::Skill2HPiercing)) ?
 				SkillDamageTypes[skill_used] : SkillDamageTypes[EQ::skills::SkillHandtoHand]; // was 0x1c
 		a->damage = damage;
 		a->spellid = spell_id;
-		if (special == eSpecialAttacks::AERampage)
+
+		if (special == eSpecialAttacks::AERampage) {
 			a->special = 1;
-		else if (special == eSpecialAttacks::Rampage)
+		} else if (special == eSpecialAttacks::Rampage) {
 			a->special = 2;
-		else
+		} else {
 			a->special = 0;
+		}
+
 		a->hit_heading = attacker ? attacker->GetHeading() : 0.0f;
 		if (RuleB(Combat, MeleePush) && damage > 0 && !IsRooted() &&
 			(IsBot() || IsClient() || zone->random.Roll(RuleI(Combat, MeleePushChance)))) {
@@ -5046,7 +5065,7 @@ void Mob::TryCriticalHit(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *
 				hit.damage_done = (hit.damage_done * SlayDmgBonus) / 100;
 
 				/* Female */
-				if (GetGender() == 1) {
+				if (GetGender() == Gender::Female) {
 					entity_list.FilteredMessageCloseString(
 						this, /* Sender */
 						false, /* Skip Sender */
@@ -5214,7 +5233,6 @@ void Mob::TryCriticalHit(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *
 bool Mob::TryFinishingBlow(Mob *defender, int64 &damage)
 {
 	float hp_limit = 10.0f;
-
 	auto fb_hp_limit = std::max(
 		{
 			aabonuses.FinishingBlowLvl[SBIndex::FINISHING_BLOW_LEVEL_HP_RATIO],
@@ -5226,28 +5244,36 @@ bool Mob::TryFinishingBlow(Mob *defender, int64 &damage)
 	if (fb_hp_limit) {
 		hp_limit = fb_hp_limit/10.0f;
 	}
-	if (defender && !defender->IsClient() && defender->GetHPRatio() < hp_limit) {
 
-		uint32 FB_Dmg =
+	if (defender && !defender->IsClient() && defender->GetHPRatio() < hp_limit) {
+		uint32 finishing_blow_damage =
 				   aabonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_DMG] + spellbonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_DMG] + itembonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_DMG];
 
-		uint32 FB_Level = 0;
-		FB_Level = aabonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
-		if (FB_Level < spellbonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX])
-			FB_Level = spellbonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
-		else if (FB_Level < itembonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX])
-			FB_Level = itembonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
+		uint32 finishing_blow_level = 0;
+		finishing_blow_level = aabonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
+		if (finishing_blow_level < spellbonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX]) {
+			finishing_blow_level = spellbonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
+		} else if (finishing_blow_level < itembonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX]) {
+			finishing_blow_level = itembonuses.FinishingBlowLvl[SBIndex::FINISHING_EFFECT_LEVEL_MAX];
+		}
 
 		// modern AA description says rank 1 (500) is 50% chance
-		int ProcChance = (
+		int proc_chance = (
 			aabonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_PROC_CHANCE] +
 			itembonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_PROC_CHANCE] +
 			spellbonuses.FinishingBlow[SBIndex::FINISHING_EFFECT_PROC_CHANCE]
 		);
 
-		if (FB_Level && FB_Dmg && (defender->GetLevel() <= FB_Level) &&
-			(ProcChance >= zone->random.Int(1, 1000))) {
-
+		if (
+			(
+				(RuleB(Combat, FinishingBlowOnlyWhenFleeing) && !defender->currently_fleeing) ||
+				!RuleB(Combat, FinishingBlowOnlyWhenFleeing)
+			) &&
+			finishing_blow_level && 
+			finishing_blow_damage && 
+			defender->GetLevel() <= finishing_blow_level &&
+			proc_chance >= zone->random.Int(1, 1000)
+		) {
 			/* Finishing Blow Critical Message */
 			entity_list.FilteredMessageCloseString(
 				this, /* Sender */
@@ -5260,7 +5286,7 @@ bool Mob::TryFinishingBlow(Mob *defender, int64 &damage)
 				GetCleanName() /* Message1 */
 			);
 
-			damage = FB_Dmg;
+			damage = finishing_blow_damage;
 			return true;
 		}
 	}

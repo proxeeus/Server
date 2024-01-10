@@ -13,6 +13,7 @@
 #include "aura.h"
 #include "../common/repositories/blocked_spells_repository.h"
 #include "../common/repositories/character_tribute_repository.h"
+#include "../common/repositories/character_data_repository.h"
 #include "../common/repositories/character_disciplines_repository.h"
 #include "../common/repositories/npc_types_repository.h"
 #include "../common/repositories/character_bind_repository.h"
@@ -20,8 +21,23 @@
 #include "../common/repositories/character_pet_inventory_repository.h"
 #include "../common/repositories/character_pet_info_repository.h"
 #include "../common/repositories/character_buffs_repository.h"
+#include "../common/repositories/character_languages_repository.h"
 #include "../common/repositories/criteria/content_filter_criteria.h"
 #include "../common/repositories/spawn2_disabled_repository.h"
+#include "../common/repositories/character_leadership_abilities_repository.h"
+#include "../common/repositories/character_material_repository.h"
+#include "../common/repositories/character_memmed_spells_repository.h"
+#include "../common/repositories/character_spells_repository.h"
+#include "../common/repositories/character_skills_repository.h"
+#include "../common/repositories/character_potionbelt_repository.h"
+#include "../common/repositories/character_bandolier_repository.h"
+#include "../common/repositories/character_currency_repository.h"
+#include "../common/repositories/character_alternate_abilities_repository.h"
+#include "../common/repositories/character_auras_repository.h"
+#include "../common/repositories/character_alt_currency_repository.h"
+#include "../common/repositories/character_item_recast_repository.h"
+#include "../common/repositories/account_repository.h"
+#include "../common/repositories/character_data_repository.h"
 
 #include <ctime>
 #include <iostream>
@@ -544,199 +560,106 @@ void ZoneDatabase::UpdateBuyLine(uint32 CharID, uint32 BuySlot, uint32 Quantity)
 #define StructDist(in, f1, f2) (uint32(&in->f2)-uint32(&in->f1))
 
 bool ZoneDatabase::LoadCharacterData(uint32 character_id, PlayerProfile_Struct* pp, ExtendedProfile_Struct* m_epp){
-	std::string query = StringFormat(
-		"SELECT                     "
-		"`name`,                    "
-		"last_name,                 "
-		"gender,                    "
-		"race,                      "
-		"class,                     "
-		"`level`,                   "
-		"deity,                     "
-		"birthday,                  "
-		"last_login,                "
-		"time_played,               "
-		"pvp_status,                "
-		"level2,                    "
-		"anon,                      "
-		"gm,                        "
-		"intoxication,              "
-		"hair_color,                "
-		"beard_color,               "
-		"eye_color_1,               "
-		"eye_color_2,               "
-		"hair_style,                "
-		"beard,                     "
-		"ability_time_seconds,      "
-		"ability_number,            "
-		"ability_time_minutes,      "
-		"ability_time_hours,        "
-		"title,                     "
-		"suffix,                    "
-		"exp,                       "
-		"points,                    "
-		"mana,                      "
-		"cur_hp,                    "
-		"str,                       "
-		"sta,                       "
-		"cha,                       "
-		"dex,                       "
-		"`int`,                     "
-		"agi,                       "
-		"wis,                       "
-		"face,                      "
-		"y,                         "
-		"x,                         "
-		"z,                         "
-		"heading,                   "
-		"pvp2,                      "
-		"pvp_type,                  "
-		"autosplit_enabled,         "
-		"zone_change_count,         "
-		"drakkin_heritage,          "
-		"drakkin_tattoo,            "
-		"drakkin_details,           "
-		"toxicity,                  "
-		"hunger_level,              "
-		"thirst_level,              "
-		"ability_up,                "
-		"zone_id,                   "
-		"zone_instance,             "
-		"leadership_exp_on,         "
-		"ldon_points_guk,           "
-		"ldon_points_mir,           "
-		"ldon_points_mmc,           "
-		"ldon_points_ruj,           "
-		"ldon_points_tak,           "
-		"ldon_points_available,     "
-		"tribute_time_remaining,    "
-		"show_helm,                 "
-		"career_tribute_points,     "
-		"tribute_points,            "
-		"tribute_active,            "
-		"endurance,                 "
-		"group_leadership_exp,      "
-		"raid_leadership_exp,       "
-		"group_leadership_points,   "
-		"raid_leadership_points,    "
-		"air_remaining,             "
-		"pvp_kills,                 "
-		"pvp_deaths,                "
-		"pvp_current_points,        "
-		"pvp_career_points,         "
-		"pvp_best_kill_streak,      "
-		"pvp_worst_death_streak,    "
-		"pvp_current_kill_streak,   "
-		"aa_points_spent,           "
-		"aa_exp,                    "
-		"aa_points,                 "
-		"group_auto_consent,        "
-		"raid_auto_consent,         "
-		"guild_auto_consent,        "
-		"RestTimer,                 "
-		"`e_aa_effects`,			"
-		"`e_percent_to_aa`,			"
-		"`e_expended_aa_spent`,		"
-		"`e_last_invsnapshot`		"
-		"FROM                       "
-		"character_data             "
-		"WHERE `id` = %i         ", character_id);
-	auto results = database.QueryDatabase(query); int r = 0;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		strcpy(pp->name, row[r]); r++;											 // "`name`,                    "
-		strcpy(pp->last_name, row[r]); r++;										 // "last_name,                 "
-		pp->gender = Strings::ToInt(row[r]); r++;											 // "gender,                    "
-		pp->race = Strings::ToInt(row[r]); r++;											 // "race,                      "
-		pp->class_ = Strings::ToInt(row[r]); r++;											 // "class,                     "
-		pp->level = Strings::ToInt(row[r]); r++;											 // "`level`,                   "
-		pp->deity = Strings::ToInt(row[r]); r++;											 // "deity,                     "
-		pp->birthday = Strings::ToInt(row[r]); r++;										 // "birthday,                  "
-		pp->lastlogin = Strings::ToInt(row[r]); r++;										 // "last_login,                "
-		pp->timePlayedMin = Strings::ToInt(row[r]); r++;									 // "time_played,               "
-		pp->pvp = Strings::ToInt(row[r]); r++;											 // "pvp_status,                "
-		pp->level2 = Strings::ToInt(row[r]); r++;											 // "level2,                    "
-		pp->anon = Strings::ToInt(row[r]); r++;											 // "anon,                      "
-		pp->gm = Strings::ToInt(row[r]); r++;												 // "gm,                        "
-		pp->intoxication = Strings::ToInt(row[r]); r++;									 // "intoxication,              "
-		pp->haircolor = Strings::ToInt(row[r]); r++;										 // "hair_color,                "
-		pp->beardcolor = Strings::ToInt(row[r]); r++;										 // "beard_color,               "
-		pp->eyecolor1 = Strings::ToInt(row[r]); r++;										 // "eye_color_1,               "
-		pp->eyecolor2 = Strings::ToInt(row[r]); r++;										 // "eye_color_2,               "
-		pp->hairstyle = Strings::ToInt(row[r]); r++;										 // "hair_style,                "
-		pp->beard = Strings::ToInt(row[r]); r++;											 // "beard,                     "
-		pp->ability_time_seconds = Strings::ToInt(row[r]); r++;							 // "ability_time_seconds,      "
-		pp->ability_number = Strings::ToInt(row[r]); r++;									 // "ability_number,            "
-		pp->ability_time_minutes = Strings::ToInt(row[r]); r++;							 // "ability_time_minutes,      "
-		pp->ability_time_hours = Strings::ToInt(row[r]); r++;								 // "ability_time_hours,        "
-		strcpy(pp->title, row[r]); r++;											 // "title,                     "
-		strcpy(pp->suffix, row[r]); r++;										 // "suffix,                    "
-		pp->exp = Strings::ToInt(row[r]); r++;											 // "exp,                       "
-		pp->points = Strings::ToInt(row[r]); r++;											 // "points,                    "
-		pp->mana = Strings::ToInt(row[r]); r++;											 // "mana,                      "
-		pp->cur_hp = Strings::ToInt(row[r]); r++;											 // "cur_hp,                    "
-		pp->STR = Strings::ToInt(row[r]); r++;											 // "str,                       "
-		pp->STA = Strings::ToInt(row[r]); r++;											 // "sta,                       "
-		pp->CHA = Strings::ToInt(row[r]); r++;											 // "cha,                       "
-		pp->DEX = Strings::ToInt(row[r]); r++;											 // "dex,                       "
-		pp->INT = Strings::ToInt(row[r]); r++;											 // "`int`,                     "
-		pp->AGI = Strings::ToInt(row[r]); r++;											 // "agi,                       "
-		pp->WIS = Strings::ToInt(row[r]); r++;											 // "wis,                       "
-		pp->face = Strings::ToInt(row[r]); r++;											 // "face,                      "
-		pp->y = Strings::ToFloat(row[r]); r++;												 // "y,                         "
-		pp->x = Strings::ToFloat(row[r]); r++;												 // "x,                         "
-		pp->z = Strings::ToFloat(row[r]); r++;												 // "z,                         "
-		pp->heading = Strings::ToFloat(row[r]); r++;										 // "heading,                   "
-		pp->pvp2 = Strings::ToInt(row[r]); r++;											 // "pvp2,                      "
-		pp->pvptype = Strings::ToInt(row[r]); r++;										 // "pvp_type,                  "
-		pp->autosplit = Strings::ToInt(row[r]); r++;										 // "autosplit_enabled,         "
-		pp->zone_change_count = Strings::ToInt(row[r]); r++;								 // "zone_change_count,         "
-		pp->drakkin_heritage = Strings::ToInt(row[r]); r++;								 // "drakkin_heritage,          "
-		pp->drakkin_tattoo = Strings::ToInt(row[r]); r++;									 // "drakkin_tattoo,            "
-		pp->drakkin_details = Strings::ToInt(row[r]); r++;								 // "drakkin_details,           "
-		pp->toxicity = Strings::ToInt(row[r]); r++;										 // "toxicity,                  "
-		pp->hunger_level = Strings::ToInt(row[r]); r++;									 // "hunger_level,              "
-		pp->thirst_level = Strings::ToInt(row[r]); r++;									 // "thirst_level,              "
-		pp->ability_up = Strings::ToInt(row[r]); r++;										 // "ability_up,                "
-		pp->zone_id = Strings::ToInt(row[r]); r++;										 // "zone_id,                   "
-		pp->zoneInstance = Strings::ToInt(row[r]); r++;									 // "zone_instance,             "
-		pp->leadAAActive = Strings::ToInt(row[r]); r++;									 // "leadership_exp_on,         "
-		pp->ldon_points_guk = Strings::ToInt(row[r]); r++;								 // "ldon_points_guk,           "
-		pp->ldon_points_mir = Strings::ToInt(row[r]); r++;								 // "ldon_points_mir,           "
-		pp->ldon_points_mmc = Strings::ToInt(row[r]); r++;								 // "ldon_points_mmc,           "
-		pp->ldon_points_ruj = Strings::ToInt(row[r]); r++;								 // "ldon_points_ruj,           "
-		pp->ldon_points_tak = Strings::ToInt(row[r]); r++;								 // "ldon_points_tak,           "
-		pp->ldon_points_available = Strings::ToInt(row[r]); r++;							 // "ldon_points_available,     "
-		pp->tribute_time_remaining = Strings::ToUnsignedInt(row[r]); r++;					 // "tribute_time_remaining,    "
-		pp->showhelm = Strings::ToInt(row[r]); r++;										 // "show_helm,                 "
-		pp->career_tribute_points = Strings::ToInt(row[r]); r++;							 // "career_tribute_points,     "
-		pp->tribute_points = Strings::ToInt(row[r]); r++;									 // "tribute_points,            "
-		pp->tribute_active = Strings::ToInt(row[r]); r++;									 // "tribute_active,            "
-		pp->endurance = Strings::ToInt(row[r]); r++;										 // "endurance,                 "
-		pp->group_leadership_exp = Strings::ToInt(row[r]); r++;							 // "group_leadership_exp,      "
-		pp->raid_leadership_exp = Strings::ToInt(row[r]); r++;							 // "raid_leadership_exp,       "
-		pp->group_leadership_points = Strings::ToInt(row[r]); r++;						 // "group_leadership_points,   "
-		pp->raid_leadership_points = Strings::ToInt(row[r]); r++;							 // "raid_leadership_points,    "
-		pp->air_remaining = Strings::ToInt(row[r]); r++;									 // "air_remaining,             "
-		pp->PVPKills = Strings::ToInt(row[r]); r++;										 // "pvp_kills,                 "
-		pp->PVPDeaths = Strings::ToInt(row[r]); r++;										 // "pvp_deaths,                "
-		pp->PVPCurrentPoints = Strings::ToInt(row[r]); r++;								 // "pvp_current_points,        "
-		pp->PVPCareerPoints = Strings::ToInt(row[r]); r++;								 // "pvp_career_points,         "
-		pp->PVPBestKillStreak = Strings::ToInt(row[r]); r++;								 // "pvp_best_kill_streak,      "
-		pp->PVPWorstDeathStreak = Strings::ToInt(row[r]); r++;							 // "pvp_worst_death_streak,    "
-		pp->PVPCurrentKillStreak = Strings::ToInt(row[r]); r++;							 // "pvp_current_kill_streak,   "
-		pp->aapoints_spent = Strings::ToInt(row[r]); r++;									 // "aa_points_spent,           "
-		pp->expAA = Strings::ToInt(row[r]); r++;											 // "aa_exp,                    "
-		pp->aapoints = Strings::ToInt(row[r]); r++;										 // "aa_points,                 "
-		pp->groupAutoconsent = Strings::ToInt(row[r]); r++;								 // "group_auto_consent,        "
-		pp->raidAutoconsent = Strings::ToInt(row[r]); r++;								 // "raid_auto_consent,         "
-		pp->guildAutoconsent = Strings::ToInt(row[r]); r++;								 // "guild_auto_consent,        "
-		pp->RestTimer = Strings::ToInt(row[r]); r++;										 // "RestTimer,                 "
-		m_epp->aa_effects = Strings::ToInt(row[r]); r++;									 // "`e_aa_effects`,			"
-		m_epp->perAA = Strings::ToInt(row[r]); r++;										 // "`e_percent_to_aa`,			"
-		m_epp->expended_aa = Strings::ToInt(row[r]); r++;									 // "`e_expended_aa_spent`,		"
-		m_epp->last_invsnapshot_time = Strings::ToUnsignedInt(row[r]); r++;						 // "`e_last_invsnapshot`		"
-		m_epp->next_invsnapshot_time = m_epp->last_invsnapshot_time + (RuleI(Character, InvSnapshotMinIntervalM) * 60);
+	const auto& e = CharacterDataRepository::FindOne(database, character_id);
+	if (!e.id) {
+		return false;
 	}
+
+	strcpy(pp->name, e.name.c_str());
+	strcpy(pp->last_name, e.last_name.c_str());
+	strcpy(pp->title, e.title.c_str());
+	strcpy(pp->suffix, e.suffix.c_str());
+
+	pp->gender                   = e.gender;
+	pp->race                     = e.race;
+	pp->class_                   = e.class_;
+	pp->level                    = e.level;
+	pp->deity                    = e.deity;
+	pp->birthday                 = e.birthday;
+	pp->lastlogin                = e.last_login;
+	pp->timePlayedMin            = e.time_played;
+	pp->pvp                      = e.pvp_status;
+	pp->level2                   = e.level2;
+	pp->anon                     = e.anon;
+	pp->gm                       = e.gm;
+	pp->intoxication             = e.intoxication;
+	pp->haircolor                = e.hair_color;
+	pp->beardcolor               = e.beard_color;
+	pp->eyecolor1                = e.eye_color_1;
+	pp->eyecolor2                = e.eye_color_2;
+	pp->hairstyle                = e.hair_style;
+	pp->beard                    = e.beard;
+	pp->ability_time_seconds     = e.ability_time_seconds;
+	pp->ability_number           = e.ability_number;
+	pp->ability_time_minutes     = e.ability_time_minutes;
+	pp->ability_time_hours       = e.ability_time_hours;
+	pp->exp                      = e.exp;
+	pp->points                   = e.points;
+	pp->mana                     = e.mana;
+	pp->cur_hp                   = e.cur_hp;
+	pp->STR                      = e.str;
+	pp->STA                      = e.sta;
+	pp->CHA                      = e.cha;
+	pp->DEX                      = e.dex;
+	pp->INT                      = e.int_;
+	pp->AGI                      = e.agi;
+	pp->WIS                      = e.wis;
+	pp->face                     = e.face;
+	pp->y                        = e.y;
+	pp->x                        = e.x;
+	pp->z                        = e.z;
+	pp->heading                  = e.heading;
+	pp->pvp2                     = e.pvp2;
+	pp->pvptype                  = e.pvp_type;
+	pp->autosplit                = e.autosplit_enabled;
+	pp->zone_change_count        = e.zone_change_count;
+	pp->drakkin_heritage         = e.drakkin_heritage;
+	pp->drakkin_tattoo           = e.drakkin_tattoo;
+	pp->drakkin_details          = e.drakkin_details;
+	pp->toxicity                 = e.toxicity;
+	pp->hunger_level             = e.hunger_level;
+	pp->thirst_level             = e.thirst_level;
+	pp->ability_up               = e.ability_up;
+	pp->zone_id                  = e.zone_id;
+	pp->zoneInstance             = e.zone_instance;
+	pp->leadAAActive             = e.leadership_exp_on;
+	pp->ldon_points_guk          = e.ldon_points_guk;
+	pp->ldon_points_mir          = e.ldon_points_mir;
+	pp->ldon_points_mmc          = e.ldon_points_mmc;
+	pp->ldon_points_ruj          = e.ldon_points_ruj;
+	pp->ldon_points_tak          = e.ldon_points_tak;
+	pp->ldon_points_available    = e.ldon_points_available;
+	pp->tribute_time_remaining   = e.tribute_time_remaining;
+	pp->showhelm                 = e.show_helm;
+	pp->career_tribute_points    = e.career_tribute_points;
+	pp->tribute_points           = e.tribute_points;
+	pp->tribute_active           = e.tribute_active;
+	pp->endurance                = e.endurance;
+	pp->group_leadership_exp     = e.group_leadership_exp;
+	pp->raid_leadership_exp      = e.raid_leadership_exp;
+	pp->group_leadership_points  = e.group_leadership_points;
+	pp->raid_leadership_points   = e.raid_leadership_points;
+	pp->air_remaining            = e.air_remaining;
+	pp->PVPKills                 = e.pvp_kills;
+	pp->PVPDeaths                = e.pvp_deaths;
+	pp->PVPCurrentPoints         = e.pvp_current_points;
+	pp->PVPCareerPoints          = e.pvp_career_points;
+	pp->PVPBestKillStreak        = e.pvp_best_kill_streak;
+	pp->PVPWorstDeathStreak      = e.pvp_worst_death_streak;
+	pp->PVPCurrentKillStreak     = e.pvp_current_kill_streak;
+	pp->aapoints_spent           = e.aa_points_spent;
+	pp->expAA                    = e.aa_exp;
+	pp->aapoints                 = e.aa_points;
+	pp->groupAutoconsent         = e.group_auto_consent;
+	pp->raidAutoconsent          = e.raid_auto_consent;
+	pp->guildAutoconsent         = e.guild_auto_consent;
+	pp->RestTimer                = e.RestTimer;
+	m_epp->aa_effects            = e.e_aa_effects;
+	m_epp->perAA                 = e.e_percent_to_aa;
+	m_epp->expended_aa           = e.e_expended_aa_spent;
+	m_epp->last_invsnapshot_time = e.e_last_invsnapshot;
+	m_epp->next_invsnapshot_time = m_epp->last_invsnapshot_time + (RuleI(Character, InvSnapshotMinIntervalM) * 60);
+
 	return true;
 }
 
@@ -747,234 +670,244 @@ bool ZoneDatabase::LoadCharacterFactionValues(uint32 character_id, faction_map &
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterMemmedSpells(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat(
-		"SELECT							"
-		"slot_id,						"
-		"`spell_id`						"
-		"FROM							"
-		"`character_memmed_spells`		"
-		"WHERE `id` = %u ORDER BY `slot_id`", character_id);
-	auto results = database.QueryDatabase(query);
-	int i = 0;
-	/* Initialize Spells */
-	for (i = 0; i < EQ::spells::SPELL_GEM_COUNT; i++){
-		pp->mem_spells[i] = 0xFFFFFFFF;
+bool ZoneDatabase::LoadCharacterMemmedSpells(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterMemmedSpellsRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} ORDER BY `slot_id`",
+			character_id
+		)
+	);
+
+	for (int i = 0; i < EQ::spells::SPELL_GEM_COUNT; i++) { // Initialize Spells
+		pp->mem_spells[i] = UINT32_MAX;
 	}
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		i = Strings::ToInt(row[0]);
-		if (i < EQ::spells::SPELL_GEM_COUNT && Strings::ToInt(row[1]) <= SPDAT_RECORDS){
-			pp->mem_spells[i] = Strings::ToInt(row[1]);
+
+	for (const auto& e : l) {
+		if (e.slot_id < EQ::spells::SPELL_GEM_COUNT && IsValidSpell(e.spell_id)) {
+			pp->mem_spells[e.slot_id] = e.spell_id;
 		}
 	}
+
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterSpellBook(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat(
-		"SELECT					"
-		"slot_id,				"
-		"`spell_id`				"
-		"FROM					"
-		"`character_spells`		"
-		"WHERE `id` = %u ORDER BY `slot_id`", character_id);
-	auto results = database.QueryDatabase(query);
+bool ZoneDatabase::LoadCharacterSpellBook(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterSpellsRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} ORDER BY `slot_id`",
+			character_id
+		)
+	);
 
-	/* Initialize Spells */
-
-	memset(pp->spell_book, 0xFF, (sizeof(uint32) * EQ::spells::SPELLBOOK_SIZE));
+	memset(pp->spell_book, UINT8_MAX, (sizeof(uint32) * EQ::spells::SPELLBOOK_SIZE));
 
 	// We have the ability to block loaded spells by max id on a per-client basis..
 	// but, we do not have to ability to keep players from using older clients after
 	// they have scribed spells on a newer one that exceeds the older one's limit.
 	// Load them all so that server actions are valid..but, nix them in translators.
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		int idx = Strings::ToInt(row[0]);
-		int id = Strings::ToInt(row[1]);
-
-		if (idx < 0 || idx >= EQ::spells::SPELLBOOK_SIZE)
+	for (const auto& e : l) {
+		if (!EQ::ValueWithin(e.slot_id, 0, EQ::spells::SPELLBOOK_SIZE)) {
 			continue;
-		if (id < 3 || id > SPDAT_RECORDS) // 3 ("Summon Corpse") is the first scribable spell in spells_us.txt
-			continue;
+		}
 
-		pp->spell_book[idx] = id;
+		if (!IsValidSpell(e.spell_id)) {
+			continue;
+		}
+
+		pp->spell_book[e.slot_id] = e.spell_id;
 	}
 
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterLanguages(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat(
-		"SELECT					"
-		"lang_id,				"
-		"`value`				"
-		"FROM					"
-		"`character_languages`	"
-		"WHERE `id` = %u ORDER BY `lang_id`", character_id);
-	auto results = database.QueryDatabase(query); int i = 0;
-	/* Initialize Languages */
-	for (i = 0; i < MAX_PP_LANGUAGE; ++i)
-		pp->languages[i] = 0;
+bool ZoneDatabase::LoadCharacterLanguages(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterLanguagesRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} ORDER BY `lang_id`",
+			character_id
+		)
+	);
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		i = Strings::ToInt(row[0]);
-		if (i < MAX_PP_LANGUAGE){
-			pp->languages[i] = Strings::ToInt(row[1]);
+	if (l.empty()) {
+		return false;
+	}
+
+	for (int i = 0; i < MAX_PP_LANGUAGE; ++i) { // Initialize Languages
+		pp->languages[i] = 0;
+	}
+
+	for (const auto& e : l) {
+		if (EQ::ValueWithin(e.lang_id, Language::CommonTongue, Language::Unknown27)) {
+			pp->languages[e.lang_id] = e.value;
 		}
 	}
 
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterLeadershipAA(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat("SELECT slot, `rank` FROM character_leadership_abilities WHERE `id` = %u", character_id);
-	auto results = database.QueryDatabase(query); uint32 slot = 0;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		slot = Strings::ToInt(row[0]);
-		pp->leader_abilities.ranks[slot] = Strings::ToInt(row[1]);
+bool ZoneDatabase::LoadCharacterLeadershipAbilities(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterLeadershipAbilitiesRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {}",
+			character_id
+		)
+	);
+
+	for (const auto& e : l) {
+		pp->leader_abilities.ranks[e.slot] = e.rank;
 	}
+
 	return true;
 }
 
 bool ZoneDatabase::LoadCharacterDisciplines(uint32 character_id, PlayerProfile_Struct* pp){
 
-	auto character_disciplines = CharacterDisciplinesRepository::GetWhere(
+	const auto& l = CharacterDisciplinesRepository::GetWhere(
 		database, fmt::format(
 			"`id` = {} ORDER BY `slot_id`",
 			character_id
 		)
 	);
 
-	if (character_disciplines.empty()) {
+	if (l.empty()) {
 		return false;
 	}
 
-	/* Initialize Disciplines */
-	memset(pp->disciplines.values, 0, (sizeof(pp->disciplines.values[0]) * MAX_PP_DISCIPLINES));
-	for (auto& row : character_disciplines) {
-		if (row.slot_id < MAX_PP_DISCIPLINES && IsValidSpell(row.disc_id)) {
-			pp->disciplines.values[row.slot_id] = row.disc_id;
+	for (int slot_id = 0; slot_id < MAX_PP_DISCIPLINES; slot_id++) { // Initialize Disciplines
+		pp->disciplines.values[slot_id] = 0;
+	}
+
+	for (const auto& e : l) {
+		if (IsValidSpell(e.disc_id) && e.slot_id < MAX_PP_DISCIPLINES) {
+			pp->disciplines.values[e.slot_id] = e.disc_id;
 		}
 	}
+
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterSkills(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat(
-		"SELECT				"
-		"skill_id,			"
-		"`value`			"
-		"FROM				"
-		"`character_skills` "
-		"WHERE `id` = %u ORDER BY `skill_id`", character_id);
-	auto results = database.QueryDatabase(query);
-	int i = 0;
-	/* Initialize Skill */
-	for (i = 0; i < MAX_PP_SKILL; ++i)
+bool ZoneDatabase::LoadCharacterSkills(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterSkillsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`id` = {} ORDER BY `skill_id",
+			character_id
+		)
+	);
+
+	for (int i = 0; i < MAX_PP_SKILL; ++i) { // Initialize Skills
 		pp->skills[i] = 0;
+	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		i = Strings::ToInt(row[0]);
-		if (i < MAX_PP_SKILL)
-			pp->skills[i] = Strings::ToInt(row[1]);
+	for (const auto& e : l) {
+		if (e.skill_id < MAX_PP_SKILL) {
+			pp->skills[e.skill_id] = e.value;
+		}
 	}
 
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat(
-		"SELECT                  "
-		"platinum,               "
-		"gold,                   "
-		"silver,                 "
-		"copper,                 "
-		"platinum_bank,          "
-		"gold_bank,              "
-		"silver_bank,            "
-		"copper_bank,            "
-		"platinum_cursor,        "
-		"gold_cursor,            "
-		"silver_cursor,          "
-		"copper_cursor,          "
-		"radiant_crystals,       "
-		"career_radiant_crystals,"
-		"ebon_crystals,          "
-		"career_ebon_crystals    "
-		"FROM                    "
-		"character_currency      "
-		"WHERE `id` = %i         ", character_id);
-	auto results = database.QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		pp->platinum = Strings::ToInt(row[0]);
-		pp->gold = Strings::ToInt(row[1]);
-		pp->silver = Strings::ToInt(row[2]);
-		pp->copper = Strings::ToInt(row[3]);
-		pp->platinum_bank = Strings::ToInt(row[4]);
-		pp->gold_bank = Strings::ToInt(row[5]);
-		pp->silver_bank = Strings::ToInt(row[6]);
-		pp->copper_bank = Strings::ToInt(row[7]);
-		pp->platinum_cursor = Strings::ToInt(row[8]);
-		pp->gold_cursor = Strings::ToInt(row[9]);
-		pp->silver_cursor = Strings::ToInt(row[10]);
-		pp->copper_cursor = Strings::ToInt(row[11]);
-		pp->currentRadCrystals = Strings::ToInt(row[12]);
-		pp->careerRadCrystals = Strings::ToInt(row[13]);
-		pp->currentEbonCrystals = Strings::ToInt(row[14]);
-		pp->careerEbonCrystals = Strings::ToInt(row[15]);
+bool ZoneDatabase::LoadCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& e = CharacterCurrencyRepository::FindOne(*this, character_id);
+	if (!e.id) {
+		return false;
 	}
+
+	pp->platinum            = e.platinum;
+	pp->platinum_bank       = e.platinum_bank;
+	pp->platinum_cursor     = e.platinum_cursor;
+	pp->gold                = e.gold;
+	pp->gold_bank           = e.gold_bank;
+	pp->gold_cursor         = e.gold_cursor;
+	pp->silver              = e.silver;
+	pp->silver_bank         = e.silver_bank;
+	pp->silver_cursor       = e.silver_cursor;
+	pp->copper              = e.copper;
+	pp->copper_bank         = e.copper_bank;
+	pp->copper_cursor       = e.copper_cursor;
+	pp->currentRadCrystals  = e.radiant_crystals;
+	pp->careerRadCrystals   = e.career_radiant_crystals;
+	pp->currentEbonCrystals = e.ebon_crystals;
+	pp->careerEbonCrystals  = e.career_ebon_crystals;
+
 	return true;
 }
 
-bool ZoneDatabase::LoadCharacterMaterialColor(uint32 character_id, PlayerProfile_Struct* pp){
-	std::string query = StringFormat("SELECT slot, blue, green, red, use_tint, color FROM `character_material` WHERE `id` = %u LIMIT 9", character_id);
-	auto results = database.QueryDatabase(query); int i = 0; int r = 0;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		r = 0;
-		i = Strings::ToInt(row[r]); /* Slot */ r++;
-		pp->item_tint.Slot[i].Blue = Strings::ToInt(row[r]); r++;
-		pp->item_tint.Slot[i].Green = Strings::ToInt(row[r]); r++;
-		pp->item_tint.Slot[i].Red = Strings::ToInt(row[r]); r++;
-		pp->item_tint.Slot[i].UseTint = Strings::ToInt(row[r]);
+bool ZoneDatabase::LoadCharacterMaterialColor(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	const auto& l = CharacterMaterialRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} LIMIT 9",
+			character_id
+		)
+	);
+
+	for (const auto& e : l) {
+		pp->item_tint.Slot[e.slot].Blue    = e.blue;
+		pp->item_tint.Slot[e.slot].Green   = e.green;
+		pp->item_tint.Slot[e.slot].Red     = e.red;
+		pp->item_tint.Slot[e.slot].UseTint = e.use_tint;
 	}
+
 	return true;
 }
 
 bool ZoneDatabase::LoadCharacterBandolier(uint32 character_id, PlayerProfile_Struct* pp)
 {
-	std::string query = StringFormat("SELECT `bandolier_id`, `bandolier_slot`, `item_id`, `icon`, `bandolier_name` FROM `character_bandolier` WHERE `id` = %u LIMIT %u",
-		character_id, EQ::profile::BANDOLIERS_SIZE);
-	auto results = database.QueryDatabase(query); int i = 0; int r = 0; int si = 0;
-	for (i = 0; i < EQ::profile::BANDOLIERS_SIZE; i++) {
+	const auto& l = CharacterBandolierRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} LIMIT {}",
+			character_id,
+			EQ::profile::BANDOLIERS_SIZE
+		)
+	);
+
+	for (int i = 0; i < EQ::profile::BANDOLIERS_SIZE; i++) {
 		pp->bandoliers[i].Name[0] = '\0';
+
 		for (int si = 0; si < EQ::profile::BANDOLIER_ITEM_COUNT; si++) {
-			pp->bandoliers[i].Items[si].ID = 0;
+			pp->bandoliers[i].Items[si].ID   = 0;
 			pp->bandoliers[i].Items[si].Icon = 0;
+
 			pp->bandoliers[i].Items[si].Name[0] = '\0';
 		}
 	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		r = 0;
-		i = Strings::ToInt(row[r]); /* Bandolier ID */ r++;
-		si = Strings::ToInt(row[r]); /* Bandolier Slot */ r++;
-
-		const EQ::ItemData* item_data = database.GetItem(Strings::ToInt(row[r]));
+	for (const auto& e : l) {
+		const auto* item_data = database.GetItem(e.item_id);
 		if (item_data) {
-			pp->bandoliers[i].Items[si].ID = item_data->ID; r++;
-			pp->bandoliers[i].Items[si].Icon = Strings::ToInt(row[r]); r++; // Must use db value in case an Ornamentation is assigned
-			strncpy(pp->bandoliers[i].Items[si].Name, item_data->Name, 64);
-		}
-		else {
-			pp->bandoliers[i].Items[si].ID = 0; r++;
-			pp->bandoliers[i].Items[si].Icon = 0; r++;
-			pp->bandoliers[i].Items[si].Name[0] = '\0';
-		}
-		strcpy(pp->bandoliers[i].Name, row[r]);  r++;
+			pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].ID   = item_data->ID;
+			pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].Icon = e.icon;
 
-		si++; // What is this for!?
+			strncpy(
+				pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].Name,
+				item_data->Name,
+				64
+			);
+		} else {
+			pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].ID   = 0;
+			pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].Icon = 0;
+
+			pp->bandoliers[e.bandolier_id].Items[e.bandolier_slot].Name[0] = '\0';
+		}
+
+		strncpy(pp->bandoliers[e.bandolier_id].Name, e.bandolier_name.c_str(), 32);
 	}
+
 	return true;
 }
 
@@ -997,27 +930,33 @@ void ZoneDatabase::LoadCharacterTribute(Client* c){
 	}
 }
 
-bool ZoneDatabase::LoadCharacterPotions(uint32 character_id, PlayerProfile_Struct *pp)
+bool ZoneDatabase::LoadCharacterPotionBelt(uint32 character_id, PlayerProfile_Struct *pp)
 {
-	std::string query =
-	    StringFormat("SELECT `potion_id`, `item_id`, `icon` FROM `character_potionbelt` WHERE `id` = %u LIMIT %u",
-		character_id, EQ::profile::POTION_BELT_SIZE);
-	auto results = database.QueryDatabase(query);
-	int i = 0;
-	for (i = 0; i < EQ::profile::POTION_BELT_SIZE; i++) {
+	const auto& l = CharacterPotionbeltRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} LIMIT {}",
+			character_id,
+			EQ::profile::POTION_BELT_SIZE
+		)
+	);
+
+	for (int i = 0; i < EQ::profile::POTION_BELT_SIZE; i++) { // Initialize Potion Belt
 		pp->potionbelt.Items[i].Icon = 0;
-		pp->potionbelt.Items[i].ID = 0;
+		pp->potionbelt.Items[i].ID   = 0;
 		pp->potionbelt.Items[i].Name[0] = '\0';
 	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		i = Strings::ToInt(row[0]);
-		const EQ::ItemData *item_data = database.GetItem(Strings::ToInt(row[1]));
-		if (!item_data)
+	for (const auto& e : l) {
+		const auto* item_data = database.GetItem(e.item_id);
+		if (!item_data) {
 			continue;
-		pp->potionbelt.Items[i].ID = item_data->ID;
-		pp->potionbelt.Items[i].Icon = Strings::ToInt(row[2]);
-		strncpy(pp->potionbelt.Items[i].Name, item_data->Name, 64);
+		}
+
+		pp->potionbelt.Items[e.potion_id].ID   = item_data->ID;
+		pp->potionbelt.Items[e.potion_id].Icon = e.icon;
+
+		strncpy(pp->potionbelt.Items[e.potion_id].Name, item_data->Name, 64);
 	}
 
 	return true;
@@ -1025,25 +964,29 @@ bool ZoneDatabase::LoadCharacterPotions(uint32 character_id, PlayerProfile_Struc
 
 bool ZoneDatabase::LoadCharacterBindPoint(uint32 character_id, PlayerProfile_Struct *pp)
 {
-	std::string query = StringFormat("SELECT `slot`, `zone_id`, `instance_id`, `x`, `y`, `z`, `heading` FROM "
-					 "`character_bind` WHERE `id` = %u LIMIT 5",
-					 character_id);
-	auto results = database.QueryDatabase(query);
+	const auto& l = CharacterBindRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} LIMIT 5",
+			character_id
+		)
+	);
 
-	if (!results.RowCount()) // SHIT -- this actually isn't good
+	if (l.empty()) {
 		return true;
+	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		int index = Strings::ToInt(row[0]);
-		if (index < 0 || index > 4)
+	for (const auto& e : l) {
+		if (!EQ::ValueWithin(e.slot, 0, 4)) {
 			continue;
+		}
 
-		pp->binds[index].zone_id = Strings::ToInt(row[1]);
-		pp->binds[index].instance_id = Strings::ToInt(row[2]);
-		pp->binds[index].x = Strings::ToFloat(row[3]);
-		pp->binds[index].y = Strings::ToFloat(row[4]);
-		pp->binds[index].z = Strings::ToFloat(row[5]);
-		pp->binds[index].heading = Strings::ToFloat(row[6]);
+		pp->binds[e.slot].zone_id     = e.zone_id;
+		pp->binds[e.slot].instance_id = e.instance_id;
+		pp->binds[e.slot].x           = e.x;
+		pp->binds[e.slot].y           = e.y;
+		pp->binds[e.slot].z           = e.z;
+		pp->binds[e.slot].heading     = e.heading;
 	}
 
 	return true;
@@ -1055,27 +998,48 @@ bool ZoneDatabase::SaveCharacterLanguage(uint32 character_id, uint32 lang_id, ui
 	return true;
 }
 
-bool ZoneDatabase::SaveCharacterMaterialColor(uint32 character_id, uint32 slot_id, uint32 color){
-	uint8 red = (color & 0x00FF0000) >> 16;
-	uint8 green = (color & 0x0000FF00) >> 8;
-	uint8 blue = (color & 0x000000FF);
+bool ZoneDatabase::SaveCharacterMaterialColor(uint32 character_id, uint8 slot_id, uint32 color)
+{
+	const uint8 red   = (color & 0x00FF0000) >> 16;
+	const uint8 green = (color & 0x0000FF00) >> 8;
+	const uint8 blue  = (color & 0x000000FF);
 
-	std::string query = StringFormat("REPLACE INTO `character_material` (id, slot, red, green, blue, color, use_tint) VALUES (%u, %u, %u, %u, %u, %u, 255)", character_id, slot_id, red, green, blue, color); auto results = QueryDatabase(query);
-	LogDebug("ZoneDatabase::SaveCharacterMaterialColor for character ID: [{}], slot_id: [{}] color: [{}] done", character_id, slot_id, color);
-	return true;
+	return CharacterMaterialRepository::ReplaceOne(
+		*this,
+		CharacterMaterialRepository::CharacterMaterial{
+			.id       = character_id,
+			.slot     = slot_id,
+			.blue     = blue,
+			.green    = green,
+			.red      = red,
+			.use_tint = UINT8_MAX,
+			.color    = color
+		}
+	);
 }
 
-bool ZoneDatabase::SaveCharacterSkill(uint32 character_id, uint32 skill_id, uint32 value){
-	std::string query = StringFormat("REPLACE INTO `character_skills` (id, skill_id, value) VALUES (%u, %u, %u)", character_id, skill_id, value); auto results = QueryDatabase(query);
-	LogDebug("ZoneDatabase::SaveCharacterSkill for character ID: [{}], skill_id:[{}] value:[{}] done", character_id, skill_id, value);
-	return true;
+bool ZoneDatabase::SaveCharacterSkill(uint32 character_id, uint32 skill_id, uint32 value)
+{
+	return CharacterSkillsRepository::ReplaceOne(
+		*this,
+		CharacterSkillsRepository::CharacterSkills{
+			.id = character_id,
+			.skill_id = static_cast<uint16_t>(skill_id),
+			.value = static_cast<uint16_t>(value)
+		}
+	);
 }
 
-bool ZoneDatabase::SaveCharacterDisc(uint32 character_id, uint32 slot_id, uint32 disc_id){
-	std::string query = StringFormat("REPLACE INTO `character_disciplines` (id, slot_id, disc_id) VALUES (%u, %u, %u)", character_id, slot_id, disc_id);
-	auto results = QueryDatabase(query);
-	LogDebug("ZoneDatabase::SaveCharacterDisc for character ID: [{}], slot:[{}] disc_id:[{}] done", character_id, slot_id, disc_id);
-	return true;
+bool ZoneDatabase::SaveCharacterDiscipline(uint32 character_id, uint32 slot_id, uint32 disc_id)
+{
+	return CharacterDisciplinesRepository::ReplaceOne(
+		*this,
+		CharacterDisciplinesRepository::CharacterDisciplines{
+			.id = character_id,
+			.slot_id = static_cast<uint16_t>(slot_id),
+			.disc_id = static_cast<uint16_t>(disc_id)
+		}
+	);
 }
 
 void ZoneDatabase::SaveCharacterTribute(Client* c)
@@ -1109,36 +1073,58 @@ void ZoneDatabase::SaveCharacterTribute(Client* c)
 	}
 }
 
-bool ZoneDatabase::SaveCharacterBandolier(uint32 character_id, uint8 bandolier_id, uint8 bandolier_slot, uint32 item_id, uint32 icon, const char* bandolier_name)
+bool ZoneDatabase::SaveCharacterBandolier(
+	uint32 character_id,
+	uint8 bandolier_id,
+	uint8 bandolier_slot,
+	uint32 item_id,
+	uint32 icon,
+	const char* bandolier_name
+)
 {
-	char bandolier_name_esc[64];
-	DoEscapeString(bandolier_name_esc, bandolier_name, strlen(bandolier_name));
-	std::string query = StringFormat("REPLACE INTO `character_bandolier` (id, bandolier_id, bandolier_slot, item_id, icon, bandolier_name) VALUES (%u, %u, %u, %u, %u,'%s')", character_id, bandolier_id, bandolier_slot, item_id, icon, bandolier_name_esc);
-	auto results = QueryDatabase(query);
-	LogDebug("ZoneDatabase::SaveCharacterBandolier for character ID: [{}], bandolier_id: [{}], bandolier_slot: [{}] item_id: [{}], icon:[{}] band_name:[{}]  done", character_id, bandolier_id, bandolier_slot, item_id, icon, bandolier_name);
-	return true;
+	return CharacterBandolierRepository::ReplaceOne(
+		*this,
+		CharacterBandolierRepository::CharacterBandolier{
+			.id = character_id,
+			.bandolier_id = bandolier_id,
+			.bandolier_slot = bandolier_slot,
+			.item_id = item_id,
+			.icon = icon,
+			.bandolier_name = bandolier_name
+		}
+	);
 }
 
 bool ZoneDatabase::SaveCharacterPotionBelt(uint32 character_id, uint8 potion_id, uint32 item_id, uint32 icon)
 {
-	std::string query = StringFormat("REPLACE INTO `character_potionbelt` (id, potion_id, item_id, icon) VALUES (%u, %u, %u, %u)", character_id, potion_id, item_id, icon);
-	auto results = QueryDatabase(query);
-	return true;
+	return CharacterPotionbeltRepository::ReplaceOne(
+		*this,
+		CharacterPotionbeltRepository::CharacterPotionbelt{
+			.id = character_id,
+			.potion_id = potion_id,
+			.item_id = item_id,
+			.icon = icon
+		}
+	);
 }
 
-bool ZoneDatabase::SaveCharacterLeadershipAA(uint32 character_id, PlayerProfile_Struct* pp){
-	uint8 first_entry = 0; std::string query = "";
-	for (int i = 0; i < MAX_LEADERSHIP_AA_ARRAY; i++){
-		if (pp->leader_abilities.ranks[i] > 0){
-			if (first_entry != 1){
-				query = StringFormat("REPLACE INTO `character_leadership_abilities` (id, slot, `rank`) VALUES (%i, %u, %u)", character_id, i, pp->leader_abilities.ranks[i]);
-				first_entry = 1;
-			}
-			query = query + StringFormat(", (%i, %u, %u)", character_id, i, pp->leader_abilities.ranks[i]);
+bool ZoneDatabase::SaveCharacterLeadershipAbilities(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	std::vector<CharacterLeadershipAbilitiesRepository::CharacterLeadershipAbilities> v;
+
+	auto e = CharacterLeadershipAbilitiesRepository::NewEntity();
+
+	for (int slot_id = 0; slot_id < MAX_LEADERSHIP_AA_ARRAY; slot_id++) {
+		if (pp->leader_abilities.ranks[slot_id] > 0) {
+			e.id   = character_id;
+			e.slot = slot_id;
+			e.rank = pp->leader_abilities.ranks[slot_id];
+
+			v.emplace_back(e);
 		}
 	}
-	auto results = QueryDatabase(query);
-	return true;
+
+	return CharacterLeadershipAbilitiesRepository::ReplaceMany(*this, v);
 }
 
 bool ZoneDatabase::SaveCharacterData(
@@ -1156,301 +1142,116 @@ bool ZoneDatabase::SaveCharacterData(
 	}
 
 	clock_t t = std::clock(); /* Function timer start */
-	const auto query = fmt::format(
-		"REPLACE INTO `character_data` ("
-		" id,                        "
-		" account_id,                "
-		" `name`,                    "
-		" last_name,                 "
-		" gender,                    "
-		" race,                      "
-		" class,                     "
-		" `level`,                   "
-		" deity,                     "
-		" birthday,                  "
-		" last_login,                "
-		" time_played,               "
-		" pvp_status,                "
-		" level2,                    "
-		" anon,                      "
-		" gm,                        "
-		" intoxication,              "
-		" hair_color,                "
-		" beard_color,               "
-		" eye_color_1,               "
-		" eye_color_2,               "
-		" hair_style,                "
-		" beard,                     "
-		" ability_time_seconds,      "
-		" ability_number,            "
-		" ability_time_minutes,      "
-		" ability_time_hours,        "
-		" title,                     "
-		" suffix,                    "
-		" exp,                       "
-		" exp_enabled,               "
-		" points,                    "
-		" mana,                      "
-		" cur_hp,                    "
-		" str,                       "
-		" sta,                       "
-		" cha,                       "
-		" dex,                       "
-		" `int`,                     "
-		" agi,                       "
-		" wis,                       "
-		" face,                      "
-		" y,                         "
-		" x,                         "
-		" z,                         "
-		" heading,                   "
-		" pvp2,                      "
-		" pvp_type,                  "
-		" autosplit_enabled,         "
-		" zone_change_count,         "
-		" drakkin_heritage,          "
-		" drakkin_tattoo,            "
-		" drakkin_details,           "
-		" toxicity,                  "
-		" hunger_level,              "
-		" thirst_level,              "
-		" ability_up,                "
-		" zone_id,                   "
-		" zone_instance,             "
-		" leadership_exp_on,         "
-		" ldon_points_guk,           "
-		" ldon_points_mir,           "
-		" ldon_points_mmc,           "
-		" ldon_points_ruj,           "
-		" ldon_points_tak,           "
-		" ldon_points_available,     "
-		" tribute_time_remaining,    "
-		" show_helm,                 "
-		" career_tribute_points,     "
-		" tribute_points,            "
-		" tribute_active,            "
-		" endurance,                 "
-		" group_leadership_exp,      "
-		" raid_leadership_exp,       "
-		" group_leadership_points,   "
-		" raid_leadership_points,    "
-		" air_remaining,             "
-		" pvp_kills,                 "
-		" pvp_deaths,                "
-		" pvp_current_points,        "
-		" pvp_career_points,         "
-		" pvp_best_kill_streak,      "
-		" pvp_worst_death_streak,    "
-		" pvp_current_kill_streak,   "
-		" aa_points_spent,           "
-		" aa_exp,                    "
-		" aa_points,                 "
-		" group_auto_consent,        "
-		" raid_auto_consent,         "
-		" guild_auto_consent,        "
-		" RestTimer,				 "
-		" e_aa_effects,				 "
-		" e_percent_to_aa,			 "
-		" e_expended_aa_spent,		 "
-		" e_last_invsnapshot,		 "
-		" mailkey					 "
-		")							 "
-		"VALUES ("
-		"{},"  // id																" id,                        "
-		"{},"  // account_id														" account_id,                "
-		"'{}',"  // `name`					  pp->name,								" `name`,                    "
-		"'{}',"  // last_name					pp->last_name,						" last_name,                 "
-		"{},"  // gender					  pp->gender,							" gender,                    "
-		"{},"  // race						  pp->race,								" race,                      "
-		"{},"  // class						  pp->class_,							" class,                     "
-		"{},"  // `level`					  pp->level,							" `level`,                   "
-		"{},"  // deity						  pp->deity,							" deity,                     "
-		"{},"  // birthday					  pp->birthday,							" birthday,                  "
-		"{},"  // last_login				  pp->lastlogin,						" last_login,                "
-		"{},"  // time_played				  pp->timePlayedMin,					" time_played,               "
-		"{},"  // pvp_status				  pp->pvp,								" pvp_status,                "
-		"{},"  // level2					  pp->level2,							" level2,                    "
-		"{},"  // anon						  pp->anon,								" anon,                      "
-		"{},"  // gm						  pp->gm,								" gm,                        "
-		"{},"  // intoxication				  pp->intoxication,						" intoxication,              "
-		"{},"  // hair_color				  pp->haircolor,						" hair_color,                "
-		"{},"  // beard_color				  pp->beardcolor,						" beard_color,               "
-		"{},"  // eye_color_1				  pp->eyecolor1,						" eye_color_1,               "
-		"{},"  // eye_color_2				  pp->eyecolor2,						" eye_color_2,               "
-		"{},"  // hair_style				  pp->hairstyle,						" hair_style,                "
-		"{},"  // beard						  pp->beard,							" beard,                     "
-		"{},"  // ability_time_seconds		  pp->ability_time_seconds,				" ability_time_seconds,      "
-		"{},"  // ability_number			  pp->ability_number,					" ability_number,            "
-		"{},"  // ability_time_minutes		  pp->ability_time_minutes,				" ability_time_minutes,      "
-		"{},"  // ability_time_hours		  pp->ability_time_hours,				" ability_time_hours,        "
-		"'{}',"  // title					  pp->title,							" title,                     "   "
-		"'{}',"  // suffix					  pp->suffix,							" suffix,                    "
-		"{},"  // exp						  pp->exp,								" exp,                       "
-		"{},"  // exp_enabled				  epp->exp_enabled,							" exp_enabled,                       "
-		"{},"  // points					  pp->points,							" points,                    "
-		"{},"  // mana						  pp->mana,								" mana,                      "
-		"{},"  // cur_hp					  pp->cur_hp,							" cur_hp,                    "
-		"{},"  // str						  pp->STR,								" str,                       "
-		"{},"  // sta						  pp->STA,								" sta,                       "
-		"{},"  // cha						  pp->CHA,								" cha,                       "
-		"{},"  // dex						  pp->DEX,								" dex,                       "
-		"{},"  // `int`						  pp->INT,								" `int`,                     "
-		"{},"  // agi						  pp->AGI,								" agi,                       "
-		"{},"  // wis						  pp->WIS,								" wis,                       "
-		"{},"  // face						  pp->face,								" face,                      "
-		"{:.2f},"  // y							  pp->y,								" y,                         "
-		"{:.2f},"  // x							  pp->x,								" x,                         "
-		"{:.2f},"  // z							  pp->z,								" z,                         "
-		"{:.2f},"  // heading					  pp->heading,							" heading,                   "
-		"{},"  // pvp2						  pp->pvp2,								" pvp2,                      "
-		"{},"  // pvp_type					  pp->pvptype,							" pvp_type,                  "
-		"{},"  // autosplit_enabled			  pp->autosplit,						" autosplit_enabled,         "
-		"{},"  // zone_change_count			  pp->zone_change_count,				" zone_change_count,         "
-		"{},"  // drakkin_heritage			  pp->drakkin_heritage,					" drakkin_heritage,          "
-		"{},"  // drakkin_tattoo			  pp->drakkin_tattoo,					" drakkin_tattoo,            "
-		"{},"  // drakkin_details			  pp->drakkin_details,					" drakkin_details,           "
-		"{},"  // toxicity					  pp->toxicity,							" toxicity,                  "
-		"{},"  // hunger_level				  pp->hunger_level,						" hunger_level,              "
-		"{},"  // thirst_level				  pp->thirst_level,						" thirst_level,              "
-		"{},"  // ability_up				  pp->ability_up,						" ability_up,                "
-		"{},"  // zone_id					  pp->zone_id,							" zone_id,                   "
-		"{},"  // zone_instance				  pp->zoneInstance,						" zone_instance,             "
-		"{},"  // leadership_exp_on			  pp->leadAAActive,						" leadership_exp_on,         "
-		"{},"  // ldon_points_guk			  pp->ldon_points_guk,					" ldon_points_guk,           "
-		"{},"  // ldon_points_mir			  pp->ldon_points_mir,					" ldon_points_mir,           "
-		"{},"  // ldon_points_mmc			  pp->ldon_points_mmc,					" ldon_points_mmc,           "
-		"{},"  // ldon_points_ruj			  pp->ldon_points_ruj,					" ldon_points_ruj,           "
-		"{},"  // ldon_points_tak			  pp->ldon_points_tak,					" ldon_points_tak,           "
-		"{},"  // ldon_points_available		  pp->ldon_points_available,			" ldon_points_available,     "
-		"{},"  // tribute_time_remaining	  pp->tribute_time_remaining,			" tribute_time_remaining,    "
-		"{},"  // show_helm					  pp->showhelm,							" show_helm,                 "
-		"{},"  // career_tribute_points		  pp->career_tribute_points,			" career_tribute_points,     "
-		"{},"  // tribute_points			  pp->tribute_points,					" tribute_points,            "
-		"{},"  // tribute_active			  pp->tribute_active,					" tribute_active,            "
-		"{},"  // endurance					  pp->endurance,						" endurance,                 "
-		"{},"  // group_leadership_exp		  pp->group_leadership_exp,				" group_leadership_exp,      "
-		"{},"  // raid_leadership_exp		  pp->raid_leadership_exp,				" raid_leadership_exp,       "
-		"{},"  // group_leadership_points	  pp->group_leadership_points,			" group_leadership_points,   "
-		"{},"  // raid_leadership_points	  pp->raid_leadership_points,			" raid_leadership_points,    "
-		"{},"  // air_remaining				  pp->air_remaining,					" air_remaining,             "
-		"{},"  // pvp_kills					  pp->PVPKills,							" pvp_kills,                 "
-		"{},"  // pvp_deaths				  pp->PVPDeaths,						" pvp_deaths,                "
-		"{},"  // pvp_current_points		  pp->PVPCurrentPoints,					" pvp_current_points,        "
-		"{},"  // pvp_career_points			  pp->PVPCareerPoints,					" pvp_career_points,         "
-		"{},"  // pvp_best_kill_streak		  pp->PVPBestKillStreak,				" pvp_best_kill_streak,      "
-		"{},"  // pvp_worst_death_streak	  pp->PVPWorstDeathStreak,				" pvp_worst_death_streak,    "
-		"{},"  // pvp_current_kill_streak	  pp->PVPCurrentKillStreak,				" pvp_current_kill_streak,   "
-		"{},"  // aa_points_spent			  pp->aapoints_spent,					" aa_points_spent,           "
-		"{},"  // aa_exp					  pp->expAA,							" aa_exp,                    "
-		"{},"  // aa_points					  pp->aapoints,							" aa_points,                 "
-		"{},"  // group_auto_consent		  pp->groupAutoconsent,					" group_auto_consent,        "
-		"{},"  // raid_auto_consent			  pp->raidAutoconsent,					" raid_auto_consent,         "
-		"{},"  // guild_auto_consent		  pp->guildAutoconsent,					" guild_auto_consent,        "
-		"{},"  // RestTimer					  pp->RestTimer,						" RestTimer)                 "
-		"{},"  // e_aa_effects
-		"{},"  // e_percent_to_aa
-		"{},"  // e_expended_aa_spent
-		"{},"  // e_last_invsnapshot
-		"'{}'" // mailkey					  mail_key
-		")",
-		c->CharacterID(),				  // " id,                        "
-		c->AccountID(),					  // " account_id,                "
-		Strings::Escape(pp->name),		  // " `name`,                    "
-		Strings::Escape(pp->last_name),	  // " last_name,                 "
-		pp->gender,						  // " gender,                    "
-		pp->race,						  // " race,                      "
-		pp->class_,						  // " class,                     "
-		pp->level,						  // " `level`,                   "
-		pp->deity,						  // " deity,                     "
-		pp->birthday,					  // " birthday,                  "
-		pp->lastlogin,					  // " last_login,                "
-		pp->timePlayedMin,				  // " time_played,               "
-		pp->pvp,						  // " pvp_status,                "
-		pp->level2,						  // " level2,                    "
-		pp->anon,						  // " anon,                      "
-		pp->gm,							  // " gm,                        "
-		pp->intoxication,				  // " intoxication,              "
-		pp->haircolor,					  // " hair_color,                "
-		pp->beardcolor,					  // " beard_color,               "
-		pp->eyecolor1,					  // " eye_color_1,               "
-		pp->eyecolor2,					  // " eye_color_2,               "
-		pp->hairstyle,					  // " hair_style,                "
-		pp->beard,						  // " beard,                     "
-		pp->ability_time_seconds,		  // " ability_time_seconds,      "
-		pp->ability_number,				  // " ability_number,            "
-		pp->ability_time_minutes,		  // " ability_time_minutes,      "
-		pp->ability_time_hours,			  // " ability_time_hours,        "
-		Strings::Escape(pp->title),		  // " title,                     "
-		Strings::Escape(pp->suffix),	  // " suffix,                    "
-		pp->exp,						  // " exp,                       "
-		c->IsEXPEnabled(),				  // " exp_enabled,               "
-		pp->points,						  // " points,                    "
-		pp->mana,						  // " mana,                      "
-		pp->cur_hp,						  // " cur_hp,                    "
-		pp->STR,						  // " str,                       "
-		pp->STA,						  // " sta,                       "
-		pp->CHA,						  // " cha,                       "
-		pp->DEX,						  // " dex,                       "
-		pp->INT,						  // " `int`,                     "
-		pp->AGI,						  // " agi,                       "
-		pp->WIS,						  // " wis,                       "
-		pp->face,						  // " face,                      "
-		pp->y,							  // " y,                         "
-		pp->x,							  // " x,                         "
-		pp->z,							  // " z,                         "
-		pp->heading,					  // " heading,                   "
-		pp->pvp2,						  // " pvp2,                      "
-		pp->pvptype,					  // " pvp_type,                  "
-		pp->autosplit,					  // " autosplit_enabled,         "
-		pp->zone_change_count,			  // " zone_change_count,         "
-		pp->drakkin_heritage,			  // " drakkin_heritage,          "
-		pp->drakkin_tattoo,				  // " drakkin_tattoo,            "
-		pp->drakkin_details,			  // " drakkin_details,           "
-		pp->toxicity,					  // " toxicity,                  "
-		pp->hunger_level,				  // " hunger_level,              "
-		pp->thirst_level,				  // " thirst_level,              "
-		pp->ability_up,					  // " ability_up,                "
-		pp->zone_id,					  // " zone_id,                   "
-		pp->zoneInstance,				  // " zone_instance,             "
-		pp->leadAAActive,				  // " leadership_exp_on,         "
-		pp->ldon_points_guk,			  // " ldon_points_guk,           "
-		pp->ldon_points_mir,			  // " ldon_points_mir,           "
-		pp->ldon_points_mmc,			  // " ldon_points_mmc,           "
-		pp->ldon_points_ruj,			  // " ldon_points_ruj,           "
-		pp->ldon_points_tak,			  // " ldon_points_tak,           "
-		pp->ldon_points_available,		  // " ldon_points_available,     "
-		pp->tribute_time_remaining,		  // " tribute_time_remaining,    "
-		pp->showhelm,					  // " show_helm,                 "
-		pp->career_tribute_points,		  // " career_tribute_points,     "
-		pp->tribute_points,				  // " tribute_points,            "
-		pp->tribute_active,				  // " tribute_active,            "
-		pp->endurance,					  // " endurance,                 "
-		pp->group_leadership_exp,		  // " group_leadership_exp,      "
-		pp->raid_leadership_exp,		  // " raid_leadership_exp,       "
-		pp->group_leadership_points,	  // " group_leadership_points,   "
-		pp->raid_leadership_points,		  // " raid_leadership_points,    "
-		pp->air_remaining,				  // " air_remaining,             "
-		pp->PVPKills,					  // " pvp_kills,                 "
-		pp->PVPDeaths,					  // " pvp_deaths,                "
-		pp->PVPCurrentPoints,			  // " pvp_current_points,        "
-		pp->PVPCareerPoints,			  // " pvp_career_points,         "
-		pp->PVPBestKillStreak,			  // " pvp_best_kill_streak,      "
-		pp->PVPWorstDeathStreak,		  // " pvp_worst_death_streak,    "
-		pp->PVPCurrentKillStreak,		  // " pvp_current_kill_streak,   "
-		pp->aapoints_spent,				  // " aa_points_spent,           "
-		pp->expAA,						  // " aa_exp,                    "
-		pp->aapoints,					  // " aa_points,                 "
-		pp->groupAutoconsent,			  // " group_auto_consent,        "
-		pp->raidAutoconsent,			  // " raid_auto_consent,         "
-		pp->guildAutoconsent,			  // " guild_auto_consent,        "
-		pp->RestTimer,					  // " RestTimer)                 "
-		m_epp->aa_effects,
-		m_epp->perAA,
-		m_epp->expended_aa,
-		m_epp->last_invsnapshot_time,
-		c->GetMailKeyFull()
-	);
-	auto results = database.QueryDatabase(query);
+
+	auto e = CharacterDataRepository::FindOne(database, c->CharacterID());
+	if (!e.id) {
+		return false;
+	}
+
+	e.id                      = c->CharacterID();
+	e.account_id              = c->AccountID();
+	e.name                    = pp->name;
+	e.last_name               = pp->last_name;
+	e.gender                  = pp->gender;
+	e.race                    = pp->race;
+	e.class_                  = pp->class_;
+	e.level                   = pp->level;
+	e.deity                   = pp->deity;
+	e.birthday                = pp->birthday;
+	e.last_login              = pp->lastlogin;
+	e.time_played             = pp->timePlayedMin;
+	e.pvp_status              = pp->pvp;
+	e.level2                  = pp->level2;
+	e.anon                    = pp->anon;
+	e.gm                      = pp->gm;
+	e.intoxication            = pp->intoxication;
+	e.hair_color              = pp->haircolor;
+	e.beard_color             = pp->beardcolor;
+	e.eye_color_1             = pp->eyecolor1;
+	e.eye_color_2             = pp->eyecolor2;
+	e.hair_style              = pp->hairstyle;
+	e.beard                   = pp->beard;
+	e.ability_time_seconds    = pp->ability_time_seconds;
+	e.ability_number          = pp->ability_number;
+	e.ability_time_minutes    = pp->ability_time_minutes;
+	e.ability_time_hours      = pp->ability_time_hours;
+	e.title                   = pp->title;
+	e.suffix                  = pp->suffix;
+	e.exp                     = pp->exp;
+	e.exp_enabled             = c->IsEXPEnabled();
+	e.points                  = pp->points;
+	e.mana                    = pp->mana;
+	e.cur_hp                  = pp->cur_hp;
+	e.str                     = pp->STR;
+	e.sta                     = pp->STA;
+	e.cha                     = pp->CHA;
+	e.dex                     = pp->DEX;
+	e.int_                    = pp->INT;
+	e.agi                     = pp->AGI;
+	e.wis                     = pp->WIS;
+	e.face                    = pp->face;
+	e.y                       = pp->y;
+	e.x                       = pp->x;
+	e.z                       = pp->z;
+	e.heading                 = pp->heading;
+	e.pvp2                    = pp->pvp2;
+	e.pvp_type                = pp->pvptype;
+	e.autosplit_enabled       = pp->autosplit;
+	e.zone_change_count       = pp->zone_change_count;
+	e.drakkin_heritage        = pp->drakkin_heritage;
+	e.drakkin_tattoo          = pp->drakkin_tattoo;
+	e.drakkin_details         = pp->drakkin_details;
+	e.toxicity                = pp->toxicity;
+	e.hunger_level            = pp->hunger_level;
+	e.thirst_level            = pp->thirst_level;
+	e.ability_up              = pp->ability_up;
+	e.zone_id                 = pp->zone_id;
+	e.zone_instance           = pp->zoneInstance;
+	e.leadership_exp_on       = pp->leadAAActive;
+	e.ldon_points_guk         = pp->ldon_points_guk;
+	e.ldon_points_mir         = pp->ldon_points_mir;
+	e.ldon_points_mmc         = pp->ldon_points_mmc;
+	e.ldon_points_ruj         = pp->ldon_points_ruj;
+	e.ldon_points_tak         = pp->ldon_points_tak;
+	e.ldon_points_available   = pp->ldon_points_available;
+	e.tribute_time_remaining  = pp->tribute_time_remaining;
+	e.show_helm               = pp->showhelm;
+	e.career_tribute_points   = pp->career_tribute_points;
+	e.tribute_points          = pp->tribute_points;
+	e.tribute_active          = pp->tribute_active;
+	e.endurance               = pp->endurance;
+	e.group_leadership_exp    = pp->group_leadership_exp;
+	e.raid_leadership_exp     = pp->raid_leadership_exp;
+	e.group_leadership_points = pp->group_leadership_points;
+	e.raid_leadership_points  = pp->raid_leadership_points;
+	e.air_remaining           = pp->air_remaining;
+	e.pvp_kills               = pp->PVPKills;
+	e.pvp_deaths              = pp->PVPDeaths;
+	e.pvp_current_points      = pp->PVPCurrentPoints;
+	e.pvp_career_points       = pp->PVPCareerPoints;
+	e.pvp_best_kill_streak    = pp->PVPBestKillStreak;
+	e.pvp_worst_death_streak  = pp->PVPWorstDeathStreak;
+	e.pvp_current_kill_streak = pp->PVPCurrentKillStreak;
+	e.aa_points_spent         = pp->aapoints_spent;
+	e.aa_exp                  = pp->expAA;
+	e.aa_points               = pp->aapoints;
+	e.group_auto_consent      = pp->groupAutoconsent;
+	e.raid_auto_consent       = pp->raidAutoconsent;
+	e.guild_auto_consent      = pp->guildAutoconsent;
+	e.RestTimer               = pp->RestTimer;
+	e.e_aa_effects            = m_epp->aa_effects;
+	e.e_percent_to_aa         = m_epp->perAA;
+	e.e_expended_aa_spent     = m_epp->expended_aa;
+	e.e_last_invsnapshot      = m_epp->last_invsnapshot_time;
+	e.mailkey                 = c->GetMailKeyFull();
+
+	const int replaced = CharacterDataRepository::ReplaceOne(database, e);
+
+	if (!replaced) {
+		LogError("Failed to save character data for [{}] ID [{}].", c->GetCleanName(), c->CharacterID());
+		return false;
+	}
+
 	LogDebug(
 		"ZoneDatabase::SaveCharacterData [{}], done Took [{}] seconds",
 		c->CharacterID(),
@@ -1459,125 +1260,141 @@ bool ZoneDatabase::SaveCharacterData(
 	return true;
 }
 
-bool ZoneDatabase::SaveCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp){
-	if (pp->copper < 0) { pp->copper = 0; }
-	if (pp->silver < 0) { pp->silver = 0; }
-	if (pp->gold < 0) { pp->gold = 0; }
-	if (pp->platinum < 0) { pp->platinum = 0; }
-	if (pp->copper_bank < 0) { pp->copper_bank = 0; }
-	if (pp->silver_bank < 0) { pp->silver_bank = 0; }
-	if (pp->gold_bank < 0) { pp->gold_bank = 0; }
-	if (pp->platinum_bank < 0) { pp->platinum_bank = 0; }
-	if (pp->platinum_cursor < 0) { pp->platinum_cursor = 0; }
-	if (pp->gold_cursor < 0) { pp->gold_cursor = 0; }
-	if (pp->silver_cursor < 0) { pp->silver_cursor = 0; }
-	if (pp->copper_cursor < 0) { pp->copper_cursor = 0; }
-	std::string query = StringFormat(
-		"REPLACE INTO `character_currency` (id, platinum, gold, silver, copper,"
-		"platinum_bank, gold_bank, silver_bank, copper_bank,"
-		"platinum_cursor, gold_cursor, silver_cursor, copper_cursor, "
-		"radiant_crystals, career_radiant_crystals, ebon_crystals, career_ebon_crystals)"
-		"VALUES (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u)",
-		character_id,
-		pp->platinum,
-		pp->gold,
-		pp->silver,
-		pp->copper,
-		pp->platinum_bank,
-		pp->gold_bank,
-		pp->silver_bank,
-		pp->copper_bank,
-		pp->platinum_cursor,
-		pp->gold_cursor,
-		pp->silver_cursor,
-		pp->copper_cursor,
-		pp->currentRadCrystals,
-		pp->careerRadCrystals,
-		pp->currentEbonCrystals,
-		pp->careerEbonCrystals);
-	auto results = database.QueryDatabase(query);
-	LogDebug("Saving Currency for character ID: [{}], done", character_id);
-	return true;
-}
+bool ZoneDatabase::SaveCharacterCurrency(uint32 character_id, PlayerProfile_Struct* pp)
+{
+	ZeroPlayerProfileCurrency(pp);
 
-bool ZoneDatabase::SaveCharacterAA(uint32 character_id, uint32 aa_id, uint32 current_level, uint32 charges){
-	std::string rquery = StringFormat("REPLACE INTO `character_alternate_abilities` (id, aa_id, aa_value, charges)"
-		" VALUES (%u, %u, %u, %u)",
-		character_id, aa_id, current_level, charges);
-	auto results = QueryDatabase(rquery);
-	LogDebug("Saving AA for character ID: [{}], aa_id: [{}] current_level: [{}]", character_id, aa_id, current_level);
-	return true;
+	auto e = CharacterCurrencyRepository::NewEntity();
+
+	return CharacterCurrencyRepository::ReplaceOne(
+		*this,
+		CharacterCurrencyRepository::CharacterCurrency{
+			.id                      = character_id,
+			.platinum                = static_cast<uint32_t>(pp->platinum),
+			.gold                    = static_cast<uint32_t>(pp->gold),
+			.silver                  = static_cast<uint32_t>(pp->silver),
+			.copper                  = static_cast<uint32_t>(pp->copper),
+			.platinum_bank           = static_cast<uint32_t>(pp->platinum_bank),
+			.gold_bank               = static_cast<uint32_t>(pp->gold_bank),
+			.silver_bank             = static_cast<uint32_t>(pp->silver_bank),
+			.copper_bank             = static_cast<uint32_t>(pp->copper_bank),
+			.platinum_cursor         = static_cast<uint32_t>(pp->platinum_cursor),
+			.gold_cursor             = static_cast<uint32_t>(pp->gold_cursor),
+			.silver_cursor           = static_cast<uint32_t>(pp->silver_cursor),
+			.copper_cursor           = static_cast<uint32_t>(pp->copper_cursor),
+			.radiant_crystals        = pp->currentRadCrystals,
+			.career_radiant_crystals = pp->careerRadCrystals,
+			.ebon_crystals           = pp->currentEbonCrystals,
+			.career_ebon_crystals    = pp->careerEbonCrystals
+		}
+	);
 }
 
 bool ZoneDatabase::SaveCharacterMemorizedSpell(uint32 character_id, uint32 spell_id, uint32 slot_id){
-	if (spell_id > SPDAT_RECORDS){ return false; }
-	std::string query = StringFormat("REPLACE INTO `character_memmed_spells` (id, slot_id, spell_id) VALUES (%u, %u, %u)", character_id, slot_id, spell_id);
-	QueryDatabase(query);
-	return true;
+	if (!IsValidSpell(spell_id)) {
+		return false;
+	}
+
+	return CharacterMemmedSpellsRepository::ReplaceOne(
+		*this,
+		CharacterMemmedSpellsRepository::CharacterMemmedSpells{
+			.id = character_id,
+			.slot_id = static_cast<uint16_t>(slot_id),
+			.spell_id = static_cast<uint16_t>(spell_id)
+		}
+	);
 }
 
-bool ZoneDatabase::SaveCharacterSpell(uint32 character_id, uint32 spell_id, uint32 slot_id){
-	if (spell_id > SPDAT_RECORDS){ return false; }
-	std::string query = StringFormat("REPLACE INTO `character_spells` (id, slot_id, spell_id) VALUES (%u, %u, %u)", character_id, slot_id, spell_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::SaveCharacterSpell(uint32 character_id, uint32 spell_id, uint32 slot_id)
+{
+	if (!IsValidSpell(spell_id)) {
+		return false;
+	}
+
+	return CharacterSpellsRepository::ReplaceOne(
+		*this,
+		CharacterSpellsRepository::CharacterSpells{
+			.id = character_id,
+			.slot_id = static_cast<uint16_t>(slot_id),
+			.spell_id = static_cast<uint16_t>(spell_id)
+		}
+	);
 }
 
-bool ZoneDatabase::DeleteCharacterSpell(uint32 character_id, uint32 spell_id, uint32 slot_id){
-	std::string query = StringFormat("DELETE FROM `character_spells` WHERE `slot_id` = %u AND `id` = %u", slot_id, character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterSpell(uint32 character_id, uint32 slot_id)
+{
+	return CharacterSpellsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `slot_id` = {}",
+			character_id,
+			slot_id
+		)
+	);
 }
 
-bool ZoneDatabase::DeleteCharacterDisc(uint32 character_id, uint32 slot_id){
-	std::string query = StringFormat("DELETE FROM `character_disciplines` WHERE `slot_id` = %u AND `id` = %u", slot_id, character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterDiscipline(uint32 character_id, uint32 slot_id)
+{
+	return CharacterDisciplinesRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `slot_id` = {}",
+			character_id,
+			slot_id
+		)
+	);
 }
 
-bool ZoneDatabase::DeleteCharacterBandolier(uint32 character_id, uint32 band_id){
-	std::string query = StringFormat("DELETE FROM `character_bandolier` WHERE `bandolier_id` = %u AND `id` = %u", band_id, character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterBandolier(uint32 character_id, uint32 bandolier_id)
+{
+	return CharacterBandolierRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `bandolier_id` = {}",
+			character_id,
+			bandolier_id
+		)
+	);
 }
 
-bool ZoneDatabase::DeleteCharacterLeadershipAAs(uint32 character_id){
-	std::string query = StringFormat("DELETE FROM `character_leadership_abilities` WHERE `id` = %u", character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterLeadershipAbilities(uint32 character_id)
+{
+	return CharacterLeadershipAbilitiesRepository::DeleteOne(*this, character_id);
 }
 
-bool ZoneDatabase::DeleteCharacterAAs(uint32 character_id){
-	std::string query = StringFormat("DELETE FROM `character_alternate_abilities` WHERE `id` = %u AND `aa_id` NOT IN(SELECT a.first_rank_id FROM aa_ability a WHERE a.grant_only != 0)", character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterAAs(uint32 character_id)
+{
+	return CharacterAlternateAbilitiesRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `aa_id` NOT IN (SELECT a.first_rank_id FROM aa_ability a WHERE a.grant_only != 0)",
+			character_id
+		)
+	);
 }
 
-bool ZoneDatabase::DeleteCharacterDye(uint32 character_id){
-	std::string query = StringFormat("DELETE FROM `character_material` WHERE `id` = %u", character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterMaterialColor(uint32 character_id)
+{
+	return CharacterMaterialRepository::DeleteOne(*this, character_id);
 }
 
-bool ZoneDatabase::DeleteCharacterMemorizedSpell(uint32 character_id, uint32 spell_id, uint32 slot_id){
-	std::string query = StringFormat("DELETE FROM `character_memmed_spells` WHERE `slot_id` = %u AND `id` = %u", slot_id, character_id);
-	QueryDatabase(query);
-	return true;
+bool ZoneDatabase::DeleteCharacterMemorizedSpell(uint32 character_id, uint32 slot_id)
+{
+	return CharacterMemmedSpellsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `slot_id` = {}",
+			character_id,
+			slot_id
+		)
+	);
 }
 
-bool ZoneDatabase::NoRentExpired(const char* name){
-	std::string query = StringFormat("SELECT (UNIX_TIMESTAMP(NOW()) - last_login) FROM `character_data` WHERE name = '%s'", name);
-	auto results = QueryDatabase(query);
-	if (!results.Success())
-        return false;
+bool ZoneDatabase::NoRentExpired(const std::string& name)
+{
+	const uint32 seconds = CharacterDataRepository::GetSecondsSinceLastLogin(*this, name);
 
-    if (results.RowCount() != 1)
-        return false;
-
-	auto& row = results.begin();
-	uint32 seconds = Strings::ToInt(row[0]);
-
-	return (seconds>1800);
+	return seconds > 1800;
 }
 
 bool ZoneDatabase::SaveCharacterInvSnapshot(uint32 character_id) {
@@ -2925,24 +2742,23 @@ int ZoneDatabase::getZoneShutDownDelay(uint32 zoneID, uint32 version)
     return z ? z->shutdowndelay : RuleI(Zone, AutoShutdownDelay);
 }
 
-uint32 ZoneDatabase::GetKarma(uint32 acct_id)
+uint32 ZoneDatabase::GetKarma(uint32 account_id)
 {
-    std::string query = StringFormat("SELECT `karma` FROM `account` WHERE `id` = '%i' LIMIT 1", acct_id);
-    auto results = QueryDatabase(query);
-	if (!results.Success())
-		return 0;
+	const auto& e = AccountRepository::FindOne(*this, account_id);
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
-	}
-
-	return 0;
+	return !e.id ? 0 : e.karma;
 }
 
-void ZoneDatabase::UpdateKarma(uint32 acct_id, uint32 amount)
+void ZoneDatabase::UpdateKarma(uint32 account_id, uint32 amount)
 {
-	std::string query = StringFormat("UPDATE account SET karma = %i WHERE id = %i", amount, acct_id);
-    QueryDatabase(query);
+	auto e = AccountRepository::FindOne(*this, account_id);
+	if (!e.id) {
+		return;
+	}
+
+	e.karma = amount;
+
+	AccountRepository::UpdateOne(*this, e);
 }
 
 void ZoneDatabase::ListAllInstances(Client* client, uint32 character_id)
@@ -3087,338 +2903,361 @@ void ZoneDatabase::QGlobalPurge()
 	database.QueryDatabase(query);
 }
 
-void ZoneDatabase::LoadAltCurrencyValues(uint32 char_id, std::map<uint32, uint32> &currency) {
+void ZoneDatabase::LoadAltCurrencyValues(uint32 char_id, std::map<uint32, uint32> &currency)
+{
+	const auto& l = CharacterAltCurrencyRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`char_id` = {}",
+			char_id
+		)
+	);
 
-	std::string query = StringFormat("SELECT currency_id, amount "
-                                    "FROM character_alt_currency "
-                                    "WHERE char_id = '%u'", char_id);
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
-        return;
-    }
+	if (l.empty()) {
+		return;
+	}
 
-    for (auto& row = results.begin(); row != results.end(); ++row)
-        currency[Strings::ToInt(row[0])] = Strings::ToInt(row[1]);
-
+	for (const auto& e : l) {
+		currency[e.currency_id] = e.amount;
+	}
 }
 
-void ZoneDatabase::UpdateAltCurrencyValue(uint32 char_id, uint32 currency_id, uint32 value) {
+void ZoneDatabase::UpdateAltCurrencyValue(uint32 char_id, uint32 currency_id, uint32 value)
+{
+	auto e = CharacterAltCurrencyRepository::NewEntity();
 
-	std::string query = StringFormat("REPLACE INTO character_alt_currency (char_id, currency_id, amount) "
-                                    "VALUES('%u', '%u', '%u')", char_id, currency_id, value);
-	database.QueryDatabase(query);
+	e.char_id     = char_id;
+	e.currency_id = currency_id;
+	e.amount      = value;
 
+	CharacterAltCurrencyRepository::ReplaceOne(*this, e);
 }
 
-void ZoneDatabase::SaveBuffs(Client *client) {
+void ZoneDatabase::SaveBuffs(Client *client)
+{
+	CharacterBuffsRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`character_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-	// delete the character buffs
-	CharacterBuffsRepository::DeleteWhere(database, fmt::format("character_id = {}", client->CharacterID()));
+	auto      buffs          = client->GetBuffs();
+	const int max_buff_slots = client->GetMaxBuffSlots();
 
-	// get the character buffs
-	uint32 buff_count = client->GetMaxBuffSlots();
-	Buffs_Struct *buffs = client->GetBuffs();
+	std::vector<CharacterBuffsRepository::CharacterBuffs> v;
 
-	// character buffs struct
-	auto b = CharacterBuffsRepository::NewEntity();
+	auto e = CharacterBuffsRepository::NewEntity();
 
-	// vector of character buffs
-	std::vector<CharacterBuffsRepository::CharacterBuffs> character_buffs = {};
+	uint32 character_buff_count = 0;
 
-	// count the number of buffs that are valid
-	int character_buff_count = 0;
-	for (int index = 0; index < buff_count; index++) {
-		if (!IsValidSpell(buffs[index].spellid)) {
+	for (int slot_id = 0; slot_id < max_buff_slots; slot_id++) {
+		if (!IsValidSpell(buffs[slot_id].spellid)) {
 			continue;
 		}
+
 		character_buff_count++;
 	}
 
-	// allocate memory for the character buffs
-	character_buffs.reserve(character_buff_count);
+	v.reserve(character_buff_count);
 
-	for (int index = 0; index < buff_count; index++) {
-		if (!IsValidSpell(buffs[index].spellid)) {
+	for (int slot_id = 0; slot_id < max_buff_slots; slot_id++) {
+		if (!IsValidSpell(buffs[slot_id].spellid)) {
 			continue;
 		}
 
-		// fill in the buff struct
-		b.character_id   = client->CharacterID();
-		b.slot_id        = index;
-		b.spell_id       = buffs[index].spellid;
-		b.caster_level   = buffs[index].casterlevel;
-		b.caster_name    = buffs[index].caster_name;
-		b.ticsremaining  = buffs[index].ticsremaining;
-		b.counters       = buffs[index].counters;
-		b.numhits        = buffs[index].hit_number;
-		b.melee_rune     = buffs[index].melee_rune;
-		b.magic_rune     = buffs[index].magic_rune;
-		b.persistent     = buffs[index].persistant_buff;
-		b.dot_rune       = buffs[index].dot_rune;
-		b.caston_x       = buffs[index].caston_x;
-		b.caston_y       = buffs[index].caston_y;
-		b.caston_z       = buffs[index].caston_z;
-		b.ExtraDIChance  = buffs[index].ExtraDIChance;
-		b.instrument_mod = buffs[index].instrument_mod;
+		e.character_id   = client->CharacterID();
+		e.slot_id        = slot_id;
+		e.spell_id       = buffs[slot_id].spellid;
+		e.caster_level   = buffs[slot_id].casterlevel;
+		e.caster_name    = buffs[slot_id].caster_name;
+		e.ticsremaining  = buffs[slot_id].ticsremaining;
+		e.counters       = buffs[slot_id].counters;
+		e.numhits        = buffs[slot_id].hit_number;
+		e.melee_rune     = buffs[slot_id].melee_rune;
+		e.magic_rune     = buffs[slot_id].magic_rune;
+		e.persistent     = buffs[slot_id].persistant_buff;
+		e.dot_rune       = buffs[slot_id].dot_rune;
+		e.caston_x       = buffs[slot_id].caston_x;
+		e.caston_y       = buffs[slot_id].caston_y;
+		e.caston_z       = buffs[slot_id].caston_z;
+		e.ExtraDIChance  = buffs[slot_id].ExtraDIChance;
+		e.instrument_mod = buffs[slot_id].instrument_mod;
 
-		// add the buff to the vector
-		character_buffs.emplace_back(b);
+		v.emplace_back(e);
 	}
 
-	// insert the buffs into the database
-	if (!character_buffs.empty()) {
-		CharacterBuffsRepository::InsertMany(database, character_buffs);
+	if (!v.empty()) {
+		CharacterBuffsRepository::ReplaceMany(database, v);
 	}
 }
 
 void ZoneDatabase::LoadBuffs(Client *client)
 {
+	auto buffs          = client->GetBuffs();
+	int  max_buff_slots = client->GetMaxBuffSlots();
 
-	Buffs_Struct *buffs = client->GetBuffs();
-	uint32 max_slots = client->GetMaxBuffSlots();
+	for (int slot_id = 0; slot_id < max_buff_slots; ++slot_id) {
+		buffs[slot_id].spellid = SPELL_UNKNOWN;
+	}
 
-	for (int index = 0; index < max_slots; ++index)
-		buffs[index].spellid = SPELL_UNKNOWN;
+	const auto& l = CharacterBuffsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`character_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-	std::string query = StringFormat("SELECT spell_id, slot_id, caster_level, caster_name, ticsremaining, "
-					 "counters, numhits, melee_rune, magic_rune, persistent, dot_rune, "
-					 "caston_x, caston_y, caston_z, ExtraDIChance, instrument_mod "
-					 "FROM `character_buffs` WHERE `character_id` = '%u'",
-					 client->CharacterID());
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
+	if (l.empty()) {
 		return;
 	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		uint32 slot_id = Strings::ToUnsignedInt(row[1]);
-		if (slot_id >= client->GetMaxBuffSlots())
+	for (const auto& e : l) {
+		if (e.slot_id >= max_buff_slots) {
 			continue;
-
-		uint32 spell_id = Strings::ToUnsignedInt(row[0]);
-		if (!IsValidSpell(spell_id))
-			continue;
-
-		Client *caster = entity_list.GetClientByName(row[3]);
-		uint32 caster_level = Strings::ToInt(row[2]);
-		int32 ticsremaining = Strings::ToInt(row[4]);
-		uint32 counters = Strings::ToUnsignedInt(row[5]);
-		uint32 hit_number = Strings::ToUnsignedInt(row[6]);
-		uint32 melee_rune = Strings::ToUnsignedInt(row[7]);
-		uint32 magic_rune = Strings::ToUnsignedInt(row[8]);
-		uint8 persistent = Strings::ToUnsignedInt(row[9]);
-		uint32 dot_rune = Strings::ToUnsignedInt(row[10]);
-		int32 caston_x = Strings::ToUnsignedInt(row[11]);
-		int32 caston_y = Strings::ToUnsignedInt(row[12]);
-		int32 caston_z = Strings::ToUnsignedInt(row[13]);
-		int32 ExtraDIChance = Strings::ToUnsignedInt(row[14]);
-		uint32 instrument_mod = Strings::ToUnsignedInt(row[15]);
-
-		buffs[slot_id].spellid = spell_id;
-		buffs[slot_id].casterlevel = caster_level;
-
-		if (caster) {
-			buffs[slot_id].casterid = caster->GetID();
-			strcpy(buffs[slot_id].caster_name, caster->GetName());
-			buffs[slot_id].client = true;
-		} else {
-			buffs[slot_id].casterid = 0;
-			strcpy(buffs[slot_id].caster_name, "");
-			buffs[slot_id].client = false;
 		}
 
-		buffs[slot_id].ticsremaining = ticsremaining;
-		buffs[slot_id].counters = counters;
-		buffs[slot_id].hit_number = hit_number;
-		buffs[slot_id].melee_rune = melee_rune;
-		buffs[slot_id].magic_rune = magic_rune;
-		buffs[slot_id].persistant_buff = persistent ? true : false;
-		buffs[slot_id].dot_rune = dot_rune;
-		buffs[slot_id].caston_x = caston_x;
-		buffs[slot_id].caston_y = caston_y;
-		buffs[slot_id].caston_z = caston_z;
-		buffs[slot_id].ExtraDIChance = ExtraDIChance;
-		buffs[slot_id].RootBreakChance = 0;
-		buffs[slot_id].virus_spread_time = 0;
-		buffs[slot_id].UpdateClient = false;
-		buffs[slot_id].instrument_mod = instrument_mod;
+		if (!IsValidSpell(e.spell_id)) {
+			continue;
+		}
+
+		Client* c = entity_list.GetClientByName(e.caster_name.c_str());
+
+		buffs[e.slot_id].spellid = e.spell_id;
+		buffs[e.slot_id].casterlevel = e.caster_level;
+
+		if (c) {
+			buffs[e.slot_id].casterid = c->GetID();
+			buffs[e.slot_id].client   = true;
+
+			strncpy(buffs[e.slot_id].caster_name, c->GetName(), 64);
+		} else {
+			buffs[e.slot_id].casterid = 0;
+			buffs[e.slot_id].client   = false;
+
+			strncpy(buffs[e.slot_id].caster_name, "", 64);
+		}
+
+		buffs[e.slot_id].ticsremaining     = e.ticsremaining;
+		buffs[e.slot_id].counters          = e.counters;
+		buffs[e.slot_id].hit_number        = e.numhits;
+		buffs[e.slot_id].melee_rune        = e.melee_rune;
+		buffs[e.slot_id].magic_rune        = e.magic_rune;
+		buffs[e.slot_id].persistant_buff   = e.persistent ? true : false;
+		buffs[e.slot_id].dot_rune          = e.dot_rune;
+		buffs[e.slot_id].caston_x          = e.caston_x;
+		buffs[e.slot_id].caston_y          = e.caston_y;
+		buffs[e.slot_id].caston_z          = e.caston_z;
+		buffs[e.slot_id].ExtraDIChance     = e.ExtraDIChance;
+		buffs[e.slot_id].RootBreakChance   = 0;
+		buffs[e.slot_id].virus_spread_time = 0;
+		buffs[e.slot_id].UpdateClient      = false;
+		buffs[e.slot_id].instrument_mod    = e.instrument_mod;
 	}
 
 	// We load up to the most our client supports
-	max_slots = EQ::spells::StaticLookup(client->ClientVersion())->LongBuffs;
-	for (int index = 0; index < max_slots; ++index) {
-		if (!IsValidSpell(buffs[index].spellid))
+	max_buff_slots = EQ::spells::StaticLookup(client->ClientVersion())->LongBuffs;
+
+	for (int slot_id = 0; slot_id < max_buff_slots; ++slot_id) {
+		if (!IsValidSpell(buffs[slot_id].spellid)) {
 			continue;
+		}
 
-		for (int effectIndex = 0; effectIndex < EFFECT_COUNT; ++effectIndex) {
+		if (IsEffectInSpell(buffs[slot_id].spellid, SE_Charm)) {
+			buffs[slot_id].spellid = SPELL_UNKNOWN;
+			break;
+		}
 
-			if (spells[buffs[index].spellid].effect_id[effectIndex] == SE_Charm) {
-				buffs[index].spellid = SPELL_UNKNOWN;
+		if (IsEffectInSpell(buffs[slot_id].spellid, SE_Illusion)) {
+			if (buffs[slot_id].persistant_buff) {
 				break;
 			}
 
-			if (spells[buffs[index].spellid].effect_id[effectIndex] == SE_Illusion) {
-				if (buffs[index].persistant_buff)
-					break;
-
-				buffs[index].spellid = SPELL_UNKNOWN;
-				break;
-			}
+			buffs[slot_id].spellid = SPELL_UNKNOWN;
+			break;
 		}
 	}
 }
 
 void ZoneDatabase::SaveAuras(Client *c)
 {
-	auto query = StringFormat("DELETE FROM `character_auras` WHERE `id` = %u", c->CharacterID());
-	auto results = database.QueryDatabase(query);
-	if (!results.Success())
-		return;
+	CharacterAurasRepository::DeleteOne(database, c->CharacterID());
 
-	const auto &auras = c->GetAuraMgr();
-	for (int i = 0; i < auras.count; ++i) {
-		auto aura = auras.auras[i].aura;
-		if (aura && aura->AuraZones()) {
-			query = StringFormat("INSERT INTO `character_auras` (id, slot, spell_id) VALUES(%u, %d, %d)",
-					     c->CharacterID(), i, aura->GetAuraID());
-			auto results = database.QueryDatabase(query);
-			if (!results.Success())
-				return;
+	std::vector<CharacterAurasRepository::CharacterAuras> v;
+
+	auto e = CharacterAurasRepository::NewEntity();
+
+	const auto& auras = c->GetAuraMgr();
+
+	for (int slot_id = 0; slot_id < auras.count; ++slot_id) {
+		Aura* a = auras.auras[slot_id].aura;
+		if (a && a->AuraZones()) {
+			e.id       = c->CharacterID();
+			e.slot     = slot_id;
+			e.spell_id = a->GetAuraID();
+
+			v.emplace_back(e);
 		}
+	}
+
+	if (!v.empty()) {
+		CharacterAurasRepository::ReplaceMany(database, v);
 	}
 }
 
 void ZoneDatabase::LoadAuras(Client *c)
 {
-	auto query = StringFormat("SELECT `spell_id` FROM `character_auras` WHERE `id` = %u ORDER BY `slot`", c->CharacterID());
-	auto results = database.QueryDatabase(query);
-	if (!results.Success())
-		return;
+	const auto& l = CharacterAurasRepository::GetWhere(
+		database,
+		fmt::format(
+			"`id` = {} ORDER BY `slot`",
+			c->CharacterID()
+		)
+	);
 
-	for (auto& row = results.begin(); row != results.end(); ++row)
-		c->MakeAura(Strings::ToInt(row[0]));
+	if (l.empty()) {
+		return;
+	}
+
+	for (const auto& e : l) {
+		c->MakeAura(e.spell_id);
+	}
 }
 
 void ZoneDatabase::SavePetInfo(Client *client)
 {
-	PetInfo *petinfo = nullptr;
+	PetInfo* p = nullptr;
 
-	// Pet Info
-	std::vector<CharacterPetInfoRepository::CharacterPetInfo> pet_infos = {};
-	CharacterPetInfoRepository::CharacterPetInfo pet_info = {};
+	std::vector<CharacterPetInfoRepository::CharacterPetInfo> pet_infos;
+	auto pet_info = CharacterPetInfoRepository::NewEntity();
 
-	// Pet buffs
-	std::vector<CharacterPetBuffsRepository::CharacterPetBuffs> pet_buffs = {};
-	CharacterPetBuffsRepository::CharacterPetBuffs pet_buff = {};
+	std::vector<CharacterPetBuffsRepository::CharacterPetBuffs> pet_buffs;
+	auto pet_buff = CharacterPetBuffsRepository::NewEntity();
 
-	// Pet inventory
-	std::vector<CharacterPetInventoryRepository::CharacterPetInventory> inventory = {};
-	CharacterPetInventoryRepository::CharacterPetInventory item = {};
+	std::vector<CharacterPetInventoryRepository::CharacterPetInventory> inventory;
+	auto item = CharacterPetInventoryRepository::NewEntity();
 
-	// Loop through pet types
-	for (int pet = 0; pet < 2; pet++) {
-		petinfo = client->GetPetInfo(pet);
-		if (!petinfo) {
+	for (int pet_info_type = PetInfoType::Current; pet_info_type <= PetInfoType::Suspended; pet_info_type++) {
+		p = client->GetPetInfo(pet_info_type);
+		if (!p) {
 			continue;
 		}
 
-		// build pet info into struct
 		pet_info.char_id  = client->CharacterID();
-		pet_info.pet      = pet;
-		pet_info.petname  = petinfo->Name;
-		pet_info.petpower = petinfo->petpower;
-		pet_info.spell_id = petinfo->SpellID;
-		pet_info.hp       = petinfo->HP;
-		pet_info.mana     = petinfo->Mana;
-		pet_info.size     = petinfo->size;
-		pet_info.taunting = (petinfo->taunting) ? 1 : 0;
+		pet_info.pet      = pet_info_type;
+		pet_info.petname  = p->Name;
+		pet_info.petpower = p->petpower;
+		pet_info.spell_id = p->SpellID;
+		pet_info.hp       = p->HP;
+		pet_info.mana     = p->Mana;
+		pet_info.size     = p->size;
+		pet_info.taunting = p->taunting ? 1 : 0;
 
-		// add pet info to vector
 		pet_infos.push_back(pet_info);
 
-		// build pet buffs into struct
-		int pet_buff_count = 0;
-		// Guard against setting the maximum pet slots above the client allowed maximum.
-		int max_slots = RuleI(Spells, MaxTotalSlotsPET) > PET_BUFF_COUNT ? PET_BUFF_COUNT : RuleI(Spells, MaxTotalSlotsPET);
+		uint32 pet_buff_count = 0;
 
-		// count pet buffs
-		for (int index = 0; index < max_slots; index++) {
-			if (!IsValidSpell(petinfo->Buffs[index].spellid)) {
+		const uint32 max_slots = (
+			RuleI(Spells, MaxTotalSlotsPET) > PET_BUFF_COUNT ?
+			PET_BUFF_COUNT :
+			RuleI(Spells, MaxTotalSlotsPET)
+		);
+
+		for (int slot_id = 0; slot_id < max_slots; slot_id++) {
+			if (!IsValidSpell(p->Buffs[slot_id].spellid)) {
 				continue;
 			}
+
 			pet_buff_count++;
 		}
 
-		// reserve space for pet buffs
 		pet_buffs.reserve(pet_buff_count);
 
-		// loop through pet buffs
-		for (int index = 0; index < max_slots; index++) {
-			if (!IsValidSpell(petinfo->Buffs[index].spellid)) {
+		for (int slot_id = 0; slot_id < max_slots; slot_id++) {
+			if (!IsValidSpell(p->Buffs[slot_id].spellid)) {
 				continue;
 			}
 
 			pet_buff.char_id        = client->CharacterID();
-			pet_buff.pet            = pet;
-			pet_buff.slot           = index;
-			pet_buff.spell_id       = petinfo->Buffs[index].spellid;
-			pet_buff.caster_level   = petinfo->Buffs[index].level;
-			pet_buff.ticsremaining  = petinfo->Buffs[index].duration;
-			pet_buff.counters       = petinfo->Buffs[index].counters;
-			pet_buff.instrument_mod = petinfo->Buffs[index].bard_modifier;
+			pet_buff.pet            = pet_info_type;
+			pet_buff.slot           = slot_id;
+			pet_buff.spell_id       = p->Buffs[slot_id].spellid;
+			pet_buff.caster_level   = p->Buffs[slot_id].level;
+			pet_buff.ticsremaining  = p->Buffs[slot_id].duration;
+			pet_buff.counters       = p->Buffs[slot_id].counters;
+			pet_buff.instrument_mod = p->Buffs[slot_id].bard_modifier;
 
-			// add pet buffs to vector
 			pet_buffs.push_back(pet_buff);
 		}
 
-		// build pet inventory into struct
-		int pet_inventory_count = 0;
-		for (int index = EQ::invslot::EQUIPMENT_BEGIN; index <= EQ::invslot::EQUIPMENT_END; index++) {
-			if (!petinfo->Items[index]) {
+		uint32 pet_inventory_count = 0;
+
+		for (
+			int slot_id = EQ::invslot::EQUIPMENT_BEGIN;
+			slot_id <= EQ::invslot::EQUIPMENT_END;
+			slot_id++
+		) {
+			if (!p->Items[slot_id]) {
 				continue;
 			}
+
 			pet_inventory_count++;
 		}
 
-		// reserve space for pet inventory
 		inventory.reserve(pet_inventory_count);
 
-		// loop through pet inventory
-		for (int index = EQ::invslot::EQUIPMENT_BEGIN; index <= EQ::invslot::EQUIPMENT_END; index++) {
-			if (!petinfo->Items[index]) {
+		for (
+			int slot_id = EQ::invslot::EQUIPMENT_BEGIN;
+			slot_id <= EQ::invslot::EQUIPMENT_END;
+			slot_id++
+		) {
+			if (!p->Items[slot_id]) {
 				continue;
 			}
 
 			item.char_id = client->CharacterID();
-			item.pet     = pet;
-			item.slot    = index;
-			item.item_id = petinfo->Items[index];
+			item.pet     = pet_info_type;
+			item.slot    = slot_id;
+			item.item_id = p->Items[slot_id];
 
-			// add pet inventory to vector
 			inventory.push_back(item);
 		}
 	}
 
-	// Delete existing pet info
-	CharacterPetInfoRepository::DeleteWhere(database, fmt::format("char_id = {}", client->CharacterID()));
+	CharacterPetInfoRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-	// insert pet info into database
 	if (!pet_infos.empty()) {
 		CharacterPetInfoRepository::InsertMany(database, pet_infos);
 	}
 
-	// Delete existing pet buffs
-	CharacterPetBuffsRepository::DeleteWhere(database, fmt::format("char_id = {}", client->CharacterID()));
+	CharacterPetBuffsRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-	// insert pet buffs into database
 	if (!pet_buffs.empty()) {
 		CharacterPetBuffsRepository::InsertMany(database, pet_buffs);
 	}
 
-	// Delete existing pet inventory
-	CharacterPetInventoryRepository::DeleteWhere(database, fmt::format("char_id = {}", client->CharacterID()));
+	CharacterPetInventoryRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-	// insert pet inventory into database
 	if (!inventory.empty()) {
 		CharacterPetInventoryRepository::InsertMany(database, inventory);
 	}
@@ -3434,130 +3273,130 @@ void ZoneDatabase::RemoveTempFactions(Client *client) {
 
 void ZoneDatabase::UpdateItemRecast(uint32 character_id, uint32 recast_type, uint32 timestamp)
 {
-	const auto query = fmt::format(
-		"REPLACE INTO character_item_recast (id, recast_type, timestamp) VALUES ({}, {}, {})",
-		character_id,
-		recast_type,
-		timestamp
+	CharacterItemRecastRepository::ReplaceOne(
+		*this,
+		CharacterItemRecastRepository::CharacterItemRecast{
+			.id = character_id,
+			.recast_type = recast_type,
+			.timestamp = timestamp,
+		}
 	);
-	QueryDatabase(query);
 }
 
 void ZoneDatabase::DeleteItemRecast(uint32 character_id, uint32 recast_type)
 {
-	const auto query = fmt::format(
-		"DELETE FROM character_item_recast WHERE id = {} AND recast_type = {}",
-		character_id,
-		recast_type
+	CharacterItemRecastRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`id` = {} AND `recast_type` = {}",
+			character_id,
+			recast_type
+		)
 	);
-	QueryDatabase(query);
 }
 
 void ZoneDatabase::LoadPetInfo(Client *client)
 {
-
 	// Load current pet and suspended pet
-	PetInfo *petinfo = client->GetPetInfo(0);
-	PetInfo *suspended = client->GetPetInfo(1);
+	auto pet_info           = client->GetPetInfo(PetInfoType::Current);
+	auto suspended_pet_info = client->GetPetInfo(PetInfoType::Suspended);
 
-	memset(petinfo, 0, sizeof(PetInfo));
-	memset(suspended, 0, sizeof(PetInfo));
+	memset(pet_info, 0, sizeof(PetInfo));
+	memset(suspended_pet_info, 0, sizeof(PetInfo));
 
-	std::string query = StringFormat("SELECT `pet`, `petname`, `petpower`, `spell_id`, "
-					 "`hp`, `mana`, `size` , `taunting` FROM `character_pet_info` "
-					 "WHERE `char_id` = %u",
-					 client->CharacterID());
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
+	const auto& info = CharacterPetInfoRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
+
+	if (info.empty()) {
 		return;
 	}
 
-	PetInfo *pi;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		uint16 pet = Strings::ToInt(row[0]);
+	PetInfo* p;
 
-		if (pet == 0)
-			pi = petinfo;
-		else if (pet == 1)
-			pi = suspended;
-		else
+	for (const auto& e : info) {
+		if (e.pet == PetInfoType::Current) {
+			p = pet_info;
+		} else if (e.pet == PetInfoType::Suspended) {
+			p = suspended_pet_info;
+		} else {
 			continue;
+		}
 
-		strncpy(pi->Name, row[1], 64);
-		pi->petpower = Strings::ToInt(row[2]);
-		pi->SpellID = Strings::ToInt(row[3]);
-		pi->HP = Strings::ToUnsignedInt(row[4]);
-		pi->Mana = Strings::ToUnsignedInt(row[5]);
-		pi->size = Strings::ToFloat(row[6]);
-		pi->taunting = (bool) Strings::ToInt(row[7]);
+		strn0cpy(p->Name, e.petname.c_str(), sizeof(p->Name));
+
+		p->petpower = e.petpower;
+		p->SpellID  = e.spell_id;
+		p->HP       = e.hp;
+		p->Mana     = e.mana;
+		p->size     = e.size;
+		p->taunting = e.taunting;
 	}
 
-	query = StringFormat("SELECT `pet`, `slot`, `spell_id`, `caster_level`, `castername`, "
-			     "`ticsremaining`, `counters`, `instrument_mod` FROM `character_pet_buffs` "
-			     "WHERE `char_id` = %u",
-			     client->CharacterID());
-	results = QueryDatabase(query);
-	if (!results.Success()) {
-		return;
+	const auto& buffs = CharacterPetBuffsRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
+
+	if (!buffs.empty()) {
+		for (const auto& e : buffs) {
+			if (e.pet == PetInfoType::Current) {
+				p = pet_info;
+			} else if (e.pet == PetInfoType::Suspended) {
+				p = suspended_pet_info;
+			} else {
+				continue;
+			}
+
+			if (e.slot >= RuleI(Spells, MaxTotalSlotsPET)) {
+				continue;
+			}
+
+			if (!IsValidSpell(e.spell_id)) {
+				continue;
+			}
+
+			p->Buffs[e.slot].spellid       = e.spell_id;
+			p->Buffs[e.slot].level         = e.caster_level;
+			p->Buffs[e.slot].player_id     = 0;
+			p->Buffs[e.slot].effect_type   = BuffEffectType::Buff;
+			p->Buffs[e.slot].duration      = e.ticsremaining;
+			p->Buffs[e.slot].counters      = e.counters;
+			p->Buffs[e.slot].bard_modifier = e.instrument_mod;
+		}
 	}
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		uint16 pet = Strings::ToInt(row[0]);
-		if (pet == 0)
-			pi = petinfo;
-		else if (pet == 1)
-			pi = suspended;
-		else
-			continue;
+	const auto& inventory = CharacterPetInventoryRepository::GetWhere(
+		database,
+		fmt::format(
+			"`char_id` = {}",
+			client->CharacterID()
+		)
+	);
 
-		uint32 slot_id = Strings::ToUnsignedInt(row[1]);
-		if (slot_id >= RuleI(Spells, MaxTotalSlotsPET))
-			continue;
+	if (!inventory.empty()) {
+		for (const auto& e : inventory) {
+			if (e.pet == PetInfoType::Current) {
+				p = pet_info;
+			} else if (e.pet == PetInfoType::Suspended) {
+				p = suspended_pet_info;
+			} else {
+				continue;
+			}
 
-		uint32 spell_id = Strings::ToUnsignedInt(row[2]);
-		if (!IsValidSpell(spell_id))
-			continue;
+			if (!EQ::ValueWithin(e.slot, EQ::invslot::EQUIPMENT_BEGIN, EQ::invslot::EQUIPMENT_END)) {
+				continue;
+			}
 
-		uint32 caster_level = Strings::ToInt(row[3]);
-		int caster_id = 0;
-		// The castername field is currently unused
-		int32 ticsremaining = Strings::ToInt(row[5]);
-		uint32 counters = Strings::ToUnsignedInt(row[6]);
-		uint8 bard_mod = Strings::ToUnsignedInt(row[7]);
-
-		pi->Buffs[slot_id].spellid = spell_id;
-		pi->Buffs[slot_id].level = caster_level;
-		pi->Buffs[slot_id].player_id = caster_id;
-		pi->Buffs[slot_id].effect_type = 2; // Always 2 in buffs struct for real buffs
-
-		pi->Buffs[slot_id].duration = ticsremaining;
-		pi->Buffs[slot_id].counters = counters;
-		pi->Buffs[slot_id].bard_modifier = bard_mod;
-	}
-
-	query = StringFormat("SELECT `pet`, `slot`, `item_id` "
-			     "FROM `character_pet_inventory` "
-			     "WHERE `char_id`=%u",
-			     client->CharacterID());
-	results = database.QueryDatabase(query);
-	if (!results.Success()) {
-		return;
-	}
-
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		uint16 pet = Strings::ToInt(row[0]);
-		if (pet == 0)
-			pi = petinfo;
-		else if (pet == 1)
-			pi = suspended;
-		else
-			continue;
-
-		int slot = Strings::ToInt(row[1]);
-		if (slot < EQ::invslot::EQUIPMENT_BEGIN || slot > EQ::invslot::EQUIPMENT_END)
-			continue;
-
-		pi->Items[slot] = Strings::ToUnsignedInt(row[2]);
+			p->Items[e.slot] = e.item_id;
+		}
 	}
 }
 
@@ -4123,15 +3962,16 @@ uint32 ZoneDatabase::GetCharacterCorpseID(uint32 char_id, uint8 corpse) {
 		return 0;
 }
 
-uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slotid) {
-	Corpse* tmp = LoadCharacterCorpse(corpse_id);
-	uint32 itemid = 0;
+uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id) {
+	Corpse* c = LoadCharacterCorpse(corpse_id);
+	uint32 item_id = 0;
 
-	if (tmp) {
-		itemid = tmp->GetWornItem(slotid);
-		tmp->DepopPlayerCorpse();
+	if (c) {
+		item_id = c->GetWornItem(slot_id);
+		c->DepopPlayerCorpse();
 	}
-	return itemid;
+
+	return item_id;
 }
 
 bool ZoneDatabase::LoadCharacterCorpseData(uint32 corpse_id, CharacterCorpseEntry& corpse){
@@ -4500,39 +4340,6 @@ bool ZoneDatabase::DeleteCharacterCorpse(uint32 db_id) {
 	return false;
 }
 
-uint32 ZoneDatabase::LoadSaylinkID(const char* saylink_text, bool auto_insert)
-{
-	if (!saylink_text || saylink_text[0] == '\0')
-		return 0;
-
-	std::string query = StringFormat("SELECT `id` FROM `saylink` WHERE `phrase` = '%s' LIMIT 1", saylink_text);
-	auto results = QueryDatabase(query);
-	if (!results.Success())
-		return 0;
-	if (!results.RowCount()) {
-		if (auto_insert)
-			return SaveSaylinkID(saylink_text);
-		else
-			return 0;
-	}
-
-	auto& row = results.begin();
-	return Strings::ToInt(row[0]);
-}
-
-uint32 ZoneDatabase::SaveSaylinkID(const char* saylink_text)
-{
-	if (!saylink_text || saylink_text[0] == '\0')
-		return 0;
-
-	std::string query = StringFormat("INSERT INTO `saylink` (`phrase`) VALUES ('%s')", saylink_text);
-	auto results = QueryDatabase(query);
-	if (!results.Success())
-		return 0;
-
-	return results.LastInsertedID();
-}
-
 bool ZoneDatabase::HasRoamBox(uint32 spawngroupId)
 {
 	std::string query = StringFormat("select* from spawngroup where(min_x != 0 or min_y != 0 or max_x != 0 or max_y != 0 or dist != 0) and id = %u", spawngroupId);
@@ -4691,67 +4498,104 @@ void ZoneDatabase::SetEXPModifier(uint32 character_id, uint32 zone_id, double ex
 	database.QueryDatabase(query);
 }
 
-void ZoneDatabase::UpdateGMStatus(uint32 accID, int newStatus)
+void ZoneDatabase::UpdateGMStatus(uint32 account_id, int new_status)
 {
-	if (accID) {
-		std::string query = fmt::format(
-			SQL(
-				UPDATE
-				`account`
-				SET `status` = {}
-				WHERE
-				`id` = {}
-			),
-			newStatus,
-			accID
-		);
-		database.QueryDatabase(query);
+	auto e = AccountRepository::FindOne(*this, account_id);
+	if (!e.id) {
+		return;
 	}
+
+	e.status = new_status;
+
+	AccountRepository::UpdateOne(*this, e);
 }
 
 void ZoneDatabase::SaveCharacterBinds(Client *c)
 {
-	// bulk save character binds
-	std::vector<CharacterBindRepository::CharacterBind> binds = {};
-	CharacterBindRepository::CharacterBind bind = {};
+	std::vector<CharacterBindRepository::CharacterBind> v;
 
-	// count character binds
-	int bind_count = 0;
-	for (auto & b : c->GetPP().binds) {
+	auto e = CharacterBindRepository::NewEntity();
+
+	uint32 bind_count = 0;
+	for (const auto &b : c->GetPP().binds) {
 		if (b.zone_id) {
 			bind_count++;
 		}
 	}
 
-	// allocate memory for binds
-	binds.reserve(bind_count);
+	v.reserve(bind_count);
 
-	// copy binds to vector
-	int i = 0;
-	for (auto &b: c->GetPP().binds) {
+	int slot_id = 0;
+
+	for (const auto &b : c->GetPP().binds) {
 		if (b.zone_id) {
-			// copy bind data
-			bind.id          = c->CharacterID();
-			bind.zone_id     = b.zone_id;
-			bind.instance_id = b.instance_id;
-			bind.x           = b.x;
-			bind.y           = b.y;
-			bind.z           = b.z;
-			bind.heading     = b.heading;
-			bind.slot        = i;
+			e.id          = c->CharacterID();
+			e.zone_id     = b.zone_id;
+			e.instance_id = b.instance_id;
+			e.x           = b.x;
+			e.y           = b.y;
+			e.z           = b.z;
+			e.heading     = b.heading;
+			e.slot        = slot_id;
 
-			// add bind to vector
-			binds.emplace_back(bind);
+			v.emplace_back(e);
 
-			i++;
+			slot_id++;
 		}
 	}
 
-	// save binds
 	if (bind_count > 0) {
-		// delete old binds
-		CharacterBindRepository::DeleteWhere(database, fmt::format("id = {}", c->CharacterID()));
-		// save new binds
-		CharacterBindRepository::InsertMany(database, binds);
+		CharacterBindRepository::ReplaceMany(database, v);
+	}
+}
+
+void ZoneDatabase::ZeroPlayerProfileCurrency(PlayerProfile_Struct* pp)
+{
+	if (pp->copper < 0) {
+		pp->copper = 0;
+	}
+
+	if (pp->silver < 0) {
+		pp->silver = 0;
+	}
+
+	if (pp->gold < 0) {
+		pp->gold = 0;
+	}
+
+	if (pp->platinum < 0) {
+		pp->platinum = 0;
+	}
+
+	if (pp->copper_bank < 0) {
+		pp->copper_bank = 0;
+	}
+
+	if (pp->silver_bank < 0) {
+		pp->silver_bank = 0;
+	}
+
+	if (pp->gold_bank < 0) {
+		pp->gold_bank = 0;
+	}
+
+	if (pp->platinum_bank < 0) {
+		pp->platinum_bank = 0;
+	}
+
+	if (pp->platinum_cursor < 0) {
+		pp->platinum_cursor = 0;
+	}
+
+	if (pp->gold_cursor < 0) {
+		pp->gold_cursor = 0;
+	}
+
+	if (pp->silver_cursor < 0) {
+		pp->silver_cursor = 0;
+	}
+
+	if (pp->copper_cursor < 0) {
+		pp->copper_cursor = 0;
 	}
 }

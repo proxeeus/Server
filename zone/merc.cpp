@@ -3546,7 +3546,7 @@ void Merc::MercGroupSay(Mob *speaker, const char *msg, ...)
 		Group *g = speaker->GetGroup();
 
 		if(g)
-			g->GroupMessage(speaker->CastToMob(), 0, 100, buf);
+			g->GroupMessage(speaker->CastToMob(), Language::CommonTongue, Language::MaxValue, buf);
 	}
 }
 
@@ -4323,7 +4323,7 @@ Merc* Merc::LoadMerc(Client *c, MercTemplate* merc_template, uint32 merchant_id,
 			npc_type->race = merc_template->RaceID;
 
 			// Use the Gender and Size of the Merchant if possible
-			uint8 tmpgender = MALE;
+			uint8 tmpgender = Gender::Male;
 			float tmpsize = 6.0f;
 			if(merchant_id > 0)
 			{
@@ -4626,7 +4626,7 @@ void Merc::UpdateMercAppearance() {
 	}
 
 	if (UpdateActiveLight())
-		SendAppearancePacket(AT_Light, GetActiveLightType());
+		SendAppearancePacket(AppearanceType::Light, GetActiveLightType());
 }
 
 void Merc::UpdateEquipmentLight()
@@ -5624,7 +5624,7 @@ void Client::SetMerc(Merc* newmerc) {
 		GetMercInfo().myTemplate = nullptr;
 		GetMercInfo().IsSuspended = false;
 		GetMercInfo().SuspendedTime = 0;
-		GetMercInfo().Gender = MALE;
+		GetMercInfo().Gender = Gender::Male;
 		GetMercInfo().State = 0;
 		memset(GetMercInfo().merc_name, 0, 64);
 		Log(Logs::General, Logs::Mercenaries, "SetMerc No Merc for %s.", GetName());
@@ -5653,7 +5653,7 @@ void Client::UpdateMercLevel() {
 	if (merc)
 	{
 		merc->UpdateMercStats(this, false);
-		merc->SendAppearancePacket(AT_WhoLevel, GetLevel(), true, true);
+		merc->SendAppearancePacket(AppearanceType::WhoLevel, GetLevel(), true, true);
 	}
 }
 

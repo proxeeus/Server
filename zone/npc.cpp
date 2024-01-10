@@ -602,14 +602,14 @@ void NPC::RemoveItem(uint32 item_id, uint16 quantity, uint16 slot) {
 		if (item->item_id == item_id && slot <= 0 && quantity <= 0) {
 			itemlist.erase(cur);
 			UpdateEquipmentLight();
-			if (UpdateActiveLight()) { SendAppearancePacket(AT_Light, GetActiveLightType()); }
+			if (UpdateActiveLight()) { SendAppearancePacket(AppearanceType::Light, GetActiveLightType()); }
 			return;
 		}
 		else if (item->item_id == item_id && item->equip_slot == slot && quantity >= 1) {
 			if (item->charges <= quantity) {
 				itemlist.erase(cur);
 				UpdateEquipmentLight();
-				if (UpdateActiveLight()) { SendAppearancePacket(AT_Light, GetActiveLightType()); }
+				if (UpdateActiveLight()) { SendAppearancePacket(AppearanceType::Light, GetActiveLightType()); }
 			}
 			else {
 				item->charges -= quantity;
@@ -655,7 +655,7 @@ void NPC::CheckTrivialMinMaxLevelDrop(Mob *killer)
 
 	UpdateEquipmentLight();
 	if (UpdateActiveLight()) {
-		SendAppearancePacket(AT_Light, GetActiveLightType());
+		SendAppearancePacket(AppearanceType::Light, GetActiveLightType());
 	}
 }
 
@@ -671,7 +671,7 @@ void NPC::ClearItemList() {
 
 	UpdateEquipmentLight();
 	if (UpdateActiveLight())
-		SendAppearancePacket(AT_Light, GetActiveLightType());
+		SendAppearancePacket(AppearanceType::Light, GetActiveLightType());
 }
 
 void NPC::QueryLoot(Client* to, bool is_pet_query)
@@ -1229,7 +1229,7 @@ void NPC::SpawnGridNodeNPC(const glm::vec4 &position, int32 grid_id, int32 grid_
 	npc_type->current_hp = 4000000;
 	npc_type->max_hp = 4000000;
 	npc_type->race = 2254;
-	npc_type->gender = NEUTER;
+	npc_type->gender = Gender::Neuter;
 	npc_type->class_ = 9;
 	npc_type->deity = 1;
 	npc_type->level = 200;
@@ -2006,7 +2006,7 @@ void NPC::Disarm(Client* client, int chance) {
 		if (zone->random.Int(0, 1000) <= chance) {
 			weapon = database.GetItem(equipment[eslot]);
 			if (weapon) {
-				if (!weapon->Magic && weapon->NoDrop == 255) {
+				if (!weapon->Magic && weapon->NoDrop != 0) {
 					int16 charges = -1;
 					ItemList::iterator cur, end;
 					cur = itemlist.begin();
@@ -2466,7 +2466,7 @@ void NPC::SetLevel(uint8 in_level, bool command)
 	if(in_level > level)
 		SendLevelAppearance();
 	level = in_level;
-	SendAppearancePacket(AT_WhoLevel, in_level);
+	SendAppearancePacket(AppearanceType::WhoLevel, in_level);
 }
 
 void NPC::ModifyNPCStat(const std::string& stat, const std::string& value)

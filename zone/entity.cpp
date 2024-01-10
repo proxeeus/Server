@@ -1283,7 +1283,7 @@ uint16 EntityList::GetFreeID()
 // if no language skill is specified, sent with 100 skill
 void EntityList::ChannelMessage(Mob *from, uint8 chan_num, uint8 language, const char *message, ...)
 {
-	ChannelMessage(from, chan_num, language, 100, message);
+	ChannelMessage(from, chan_num, language, Language::MaxValue, message);
 }
 
 void EntityList::ChannelMessage(Mob *from, uint8 chan_num, uint8 language,
@@ -1412,7 +1412,7 @@ void EntityList::SendZonePVPUpdates(Client *to)
 	while (it != client_list.end()) {
 		Client *c = it->second;
 		if(c->GetPVP())
-			c->SendAppearancePacket(AT_PVP, c->GetPVP(), true, false, to);
+			c->SendAppearancePacket(AppearanceType::PVP, c->GetPVP(), true, false, to);
 		++it;
 	}
 }
@@ -1492,18 +1492,21 @@ void EntityList::RemoveFromTargets(Mob *mob, bool RemoveFromXTargets)
 		Mob *m = it->second;
 		++it;
 
-		if (!m)
+		if (!m) {
 			continue;
+		}
 
 		if (RemoveFromXTargets && mob) {
-			if (m->IsClient() && (mob->CheckAggro(m) || mob->IsOnFeignMemory(m)))
+			if (m->IsClient() && (mob->CheckAggro(m) || mob->IsOnFeignMemory(m))) {
 				m->CastToClient()->RemoveXTarget(mob, false);
 			// FadingMemories calls this function passing the client.
-			else if (mob->IsClient() && (m->CheckAggro(mob) || m->IsOnFeignMemory(mob)))
+			} else if (mob->IsClient() && (m->CheckAggro(mob) || m->IsOnFeignMemory(mob))) {
 				mob->CastToClient()->RemoveXTarget(m, false);
+			}
 		}
 
 		m->RemoveFromHateList(mob);
+		m->RemoveFromRampageList(mob);
 	}
 }
 
@@ -1516,20 +1519,24 @@ void EntityList::RemoveFromTargetsFadingMemories(Mob *spell_target, bool RemoveF
 			continue;
 		}
 
-		if (max_level && mob->GetLevel() > max_level)
+		if (max_level && mob->GetLevel() > max_level) {
 			continue;
+		}
 
-		if (mob->GetSpecialAbility(IMMUNE_FADING_MEMORIES))
+		if (mob->GetSpecialAbility(IMMUNE_FADING_MEMORIES)) {
 			continue;
+		}
 
 		if (RemoveFromXTargets && spell_target) {
-			if (mob->IsClient() && (spell_target->CheckAggro(mob) || spell_target->IsOnFeignMemory(mob)))
+			if (mob->IsClient() && (spell_target->CheckAggro(mob) || spell_target->IsOnFeignMemory(mob))) {
 				mob->CastToClient()->RemoveXTarget(spell_target, false);
-			else if (spell_target->IsClient() && (mob->CheckAggro(spell_target) || mob->IsOnFeignMemory(spell_target)))
+			} else if (spell_target->IsClient() && (mob->CheckAggro(spell_target) || mob->IsOnFeignMemory(spell_target))) {
 				spell_target->CastToClient()->RemoveXTarget(mob, false);
+			}
 		}
 
 		mob->RemoveFromHateList(spell_target);
+		mob->RemoveFromRampageList(spell_target);
 	}
 }
 
@@ -1815,14 +1822,14 @@ void EntityList::DuelMessage(Mob *winner, Mob *loser, bool flee)
 	}
 }
 
-Client *EntityList::GetClientByName(const char *checkname)
+Client *EntityList::GetClientByName(const char* name)
 {
-	auto it = client_list.begin();
-	while (it != client_list.end()) {
-		if (strcasecmp(it->second->GetName(), checkname) == 0)
-			return it->second;
-		++it;
+	for (const auto& e : client_list) {
+		if (e.second && Strings::EqualFold(e.second->GetName(), name)) {
+			return e.second;
+		}
 	}
+
 	return nullptr;
 }
 
@@ -3189,8 +3196,10 @@ void EntityList::RemoveFromHateLists(Mob *mob, bool settoone)
 		if (it->second->CheckAggro(mob)) {
 			if (!settoone) {
 				it->second->RemoveFromHateList(mob);
-				if (mob->IsClient())
+				it->second->RemoveFromRampageList(mob);
+				if (mob->IsClient()) {
 					mob->CastToClient()->RemoveXTarget(it->second, false); // gotta do book keeping
+				}
 			} else {
 				it->second->SetHateAmountOnEnt(mob, 1);
 			}
@@ -3537,20 +3546,29 @@ void EntityList::HalveAggro(Mob *who)
 }
 
 //removes "targ" from all hate lists, including feigned, in the zone
-void EntityList::ClearAggro(Mob* targ)
+void EntityList::ClearAggro(Mob* targ, bool clear_caster_id)
 {
 	Client *c = nullptr;
+
 	if (targ->IsClient()) {
 		c = targ->CastToClient();
 	}
+
 	auto it = npc_list.begin();
 	while (it != npc_list.end()) {
+		if (clear_caster_id) {
+			it->second->BuffDetachCaster(targ);
+		}
+
 		if (it->second->CheckAggro(targ)) {
 			if (c) {
 				c->RemoveXTarget(it->second, false);
 			}
+
 			it->second->RemoveFromHateList(targ);
+			it->second->RemoveFromRampageList(targ, true);
 		}
+
 		if (c && it->second->IsOnFeignMemory(c)) {
 			it->second->RemoveFromFeignMemory(c); //just in case we feigned
 			c->RemoveXTarget(it->second, false);
@@ -3574,6 +3592,7 @@ void EntityList::ClearWaterAggro(Mob* targ)
 					c->RemoveXTarget(it->second, false);
 				}
 				it->second->RemoveFromHateList(targ);
+				it->second->RemoveFromRampageList(targ);
 			}
 			if (c && it->second->IsOnFeignMemory(c)) {
 				it->second->RemoveFromFeignMemory(c); //just in case we feigned
@@ -3619,6 +3638,11 @@ void EntityList::ClearFeignAggro(Mob *targ)
 			}
 
 			it->second->RemoveFromHateList(targ);
+
+			if (it->second->GetSpecialAbility(SPECATK_RAMPAGE)) {
+				it->second->RemoveFromRampageList(targ, true);
+			}
+
 			if (targ->IsClient()) {
 				if (it->second->GetLevel() >= 35 && zone->random.Roll(60)) {
 					it->second->AddFeignMemory(targ);
@@ -4589,7 +4613,7 @@ void EntityList::GroupMessage(uint32 gid, const char *from, const char *message)
 			g = it->second->GetGroup();
 			if (g) {
 				if (g->GetID() == gid)
-					it->second->ChannelMessageSend(from, it->second->GetName(), ChatChannel_Group, 0, 100, message);
+					it->second->ChannelMessageSend(from, it->second->GetName(), ChatChannel_Group, Language::CommonTongue, Language::MaxValue, message);
 			}
 		}
 		++it;
@@ -4705,10 +4729,10 @@ void EntityList::SendZoneAppearance(Client *c)
 				continue;
 			}
 			if (cur->GetAppearance() != eaStanding) {
-				cur->SendAppearancePacket(AT_Anim, cur->GetAppearanceValue(cur->GetAppearance()), false, true, c);
+				cur->SendAppearancePacket(AppearanceType::Animation, cur->GetAppearanceValue(cur->GetAppearance()), false, true, c);
 			}
 			if (cur->GetSize() != cur->GetBaseSize()) {
-				cur->SendAppearancePacket(AT_Size, (uint32) cur->GetSize(), false, true, c);
+				cur->SendAppearancePacket(AppearanceType::Size, (uint32) cur->GetSize(), false, true, c);
 			}
 		}
 		++it;
@@ -4782,7 +4806,7 @@ void EntityList::SendAppearanceEffects(Client *c)
 				++it;
 				continue;
 			}
-			cur->SendSavedAppearenceEffects(c);
+			cur->SendSavedAppearanceEffects(c);
 		}
 		++it;
 	}

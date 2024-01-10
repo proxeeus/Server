@@ -547,8 +547,8 @@ void Client::CompleteConnect()
 			default: { break; }				// GUILD_NONE
 			}
 		}
-		SendAppearancePacket(AT_GuildID, GuildID(), false);
-		SendAppearancePacket(AT_GuildRank, rank, false);
+		SendAppearancePacket(AppearanceType::GuildID, GuildID(), false);
+		SendAppearancePacket(AppearanceType::GuildRank, rank, false);
 	}
 
 	// moved to dbload and translators since we iterate there also .. keep m_pp values whatever they are when they get here
@@ -681,8 +681,11 @@ void Client::CompleteConnect()
 				break;
 			}
 			case SE_SummonHorse: {
-				SummonHorse(buffs[j1].spellid);
-				//hasmount = true;	//this was false, is that the correct thing?
+				if (RuleB(Character, PreventMountsFromZoning)) {
+					BuffFadeByEffect(SE_SummonHorse);
+				} else {
+					SummonHorse(buffs[j1].spellid);
+				}
 				break;
 			}
 			case SE_Silence:
@@ -703,7 +706,7 @@ void Client::CompleteConnect()
 			case SE_Invisibility2:
 			case SE_Invisibility:
 			{
-				SendAppearancePacket(AT_Invis, Invisibility::Invisible);
+				SendAppearancePacket(AppearanceType::Invisibility, Invisibility::Invisible);
 				break;
 			}
 			case SE_Levitate:
@@ -712,17 +715,17 @@ void Client::CompleteConnect()
 				{
 					if (!GetGM())
 					{
-						SendAppearancePacket(AT_Levitate, 0);
+						SendAppearancePacket(AppearanceType::FlyMode, 0);
 						BuffFadeByEffect(SE_Levitate);
 						Message(Chat::Red, "You can't levitate in this zone.");
 					}
 				}
 				else {
 					if (spell.limit_value[x1] == 1) {
-						SendAppearancePacket(AT_Levitate, EQ::constants::GravityBehavior::LevitateWhileRunning, true, true);
+						SendAppearancePacket(AppearanceType::FlyMode, EQ::constants::GravityBehavior::LevitateWhileRunning, true, true);
 					}
 					else {
-						SendAppearancePacket(AT_Levitate, EQ::constants::GravityBehavior::Levitating, true, true);
+						SendAppearancePacket(AppearanceType::FlyMode, EQ::constants::GravityBehavior::Levitating, true, true);
 					}
 				}
 				break;
@@ -747,7 +750,7 @@ void Client::CompleteConnect()
 		}
 	}
 
-	/* Sends appearances for all mobs not doing anim_stand aka sitting, looting, playing dead */
+	/* Sends appearances for all mobs not doing Animation::Standing aka sitting, looting, playing dead */
 	entity_list.SendZoneAppearance(this);
 	/* Sends the Nimbus particle effects (up to 3) for any mob using them */
 	entity_list.SendNimbusEffects(this);
@@ -1268,7 +1271,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	database.LoadCharacterBandolier(cid, &m_pp); /* Load Character Bandolier */
 	database.LoadCharacterBindPoint(cid, &m_pp); /* Load Character Bind */
 	database.LoadCharacterMaterialColor(cid, &m_pp); /* Load Character Material */
-	database.LoadCharacterPotions(cid, &m_pp); /* Load Character Potion Belt */
+	database.LoadCharacterPotionBelt(cid, &m_pp); /* Load Character Potion Belt */
 	database.LoadCharacterCurrency(cid, &m_pp); /* Load Character Currency into PP */
 	database.LoadCharacterData(cid, &m_pp, &m_epp); /* Load Character Data from DB into PP as well as E_PP */
 	database.LoadCharacterSkills(cid, &m_pp); /* Load Character Skills */
@@ -1277,7 +1280,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	database.LoadCharacterMemmedSpells(cid, &m_pp);  /* Load Character Memorized Spells */
 	database.LoadCharacterDisciplines(cid, &m_pp); /* Load Character Disciplines */
 	database.LoadCharacterLanguages(cid, &m_pp); /* Load Character Languages */
-	database.LoadCharacterLeadershipAA(cid, &m_pp); /* Load Character Leadership AA's */
+	database.LoadCharacterLeadershipAbilities(cid, &m_pp); /* Load Character Leadership AA's */
 	database.LoadCharacterTribute(this); /* Load CharacterTribute */
 
 	// this pattern is strange
@@ -1316,7 +1319,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	/* If GM, not trackable */
 	if (gm_hide_me) { trackable = false; }
 	if (gminvul) { invulnerable = true; }
-	if (flymode > 0) { SendAppearancePacket(AT_Levitate, flymode); }
+	if (flymode > 0) { SendAppearancePacket(AppearanceType::FlyMode, flymode); }
 	/* Set Con State for Reporting */
 	conn_state = PlayerProfileLoaded;
 
@@ -4326,6 +4329,14 @@ void Client::Handle_OP_CastSpell(const EQApplicationPacket *app)
 	LogSpells("OP CastSpell: slot [{}] spell [{}] target [{}] inv [{}]", castspell->slot, castspell->spell_id, castspell->target_id, (unsigned long)castspell->inventoryslot);
 	CastingSlot slot = static_cast<CastingSlot>(castspell->slot);
 
+	if (RuleB(Spells, RequireMnemonicRetention)) {
+		if (EQ::ValueWithin(castspell->slot, 8, 11) && GetAA(aaMnemonicRetention) < (castspell->slot - 7)) {
+			InterruptSpell(castspell->spell_id);
+			Message(Chat::Red, "You do not have the required AA to use this spell slot.");
+			return;
+		}
+	}
+
 	/* Memorized Spell */
 	if (m_pp.mem_spells[castspell->slot] && m_pp.mem_spells[castspell->slot] == castspell->spell_id) {
 		uint16 spell_to_cast = 0;
@@ -4505,23 +4516,24 @@ void Client::Handle_OP_CastSpell(const EQApplicationPacket *app)
 
 void Client::Handle_OP_ChannelMessage(const EQApplicationPacket *app)
 {
-	ChannelMessage_Struct* cm = (ChannelMessage_Struct*)app->pBuffer;
+	auto* cm = (ChannelMessage_Struct*) app->pBuffer;
 
 	if (app->size < sizeof(ChannelMessage_Struct)) {
-		std::cout << "Wrong size " << app->size << ", should be " << sizeof(ChannelMessage_Struct) << "+ on 0x" << std::hex << std::setfill('0') << std::setw(4) << app->GetOpcode() << std::dec << std::endl;
-		return;
-	}
-	if (IsAIControlled() && !GetGM()) {
-		Message(Chat::Red, "You try to speak but cant move your mouth!");
+		LogDebug("Size mismatch in OP_ChannelMessage expected [{}] got [{}]", sizeof(ChannelMessage_Struct), app->size);
 		return;
 	}
 
-	uint8 skill_in_language = 100;
-	if (cm->language < MAX_PP_LANGUAGE)
-	{
-		skill_in_language = m_pp.languages[cm->language];
+	if (IsAIControlled() && !GetGM()) {
+		Message(Chat::Red, "You try to speak but can't move your mouth!");
+		return;
 	}
-	ChannelMessageReceived(cm->chan_num, cm->language, skill_in_language, cm->message, cm->targetname);
+
+	uint8 language_skill = Language::MaxValue;
+	if (EQ::ValueWithin(cm->language, Language::CommonTongue, Language::Unknown27)) {
+		language_skill = m_pp.languages[cm->language];
+	}
+
+	ChannelMessageReceived(cm->chan_num, cm->language, language_skill, cm->message, cm->targetname);
 	return;
 }
 
@@ -4887,8 +4899,13 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 			CheckIncreaseSkill(EQ::skills::SkillTracking, nullptr, -20);
 	}
 
-	/* Break Hide if moving without sneaking and set rewind timer if moved */
 	if (cy != m_Position.y || cx != m_Position.x) {
+		// End trader mode if we move
+		if (Trader) {
+			Trader_EndTrader();
+		}
+
+		/* Break Hide if moving without sneaking and set rewind timer if moved */
 		if ((hidden || improved_hidden) && !sneaking) {
 			hidden = false;
 			improved_hidden = false;
@@ -5053,7 +5070,7 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 	}
 
 	if (zone->watermap) {
-		if (zone->watermap->InLiquid(glm::vec3(m_Position))) {
+		if (zone->watermap->InLiquid(glm::vec3(m_Position)) && IsMoving()) {
 			CheckIncreaseSkill(EQ::skills::SkillSwimming, nullptr, -17);
 
 			// Dismount horses when entering water
@@ -5770,7 +5787,7 @@ void Client::Handle_OP_DeleteSpell(const EQApplicationPacket *app)
 
 	if (m_pp.spell_book[dss->spell_slot] != SPELLBOOK_UNKNOWN) {
 		m_pp.spell_book[dss->spell_slot] = SPELLBOOK_UNKNOWN;
-		database.DeleteCharacterSpell(CharacterID(), m_pp.spell_book[dss->spell_slot], dss->spell_slot);
+		database.DeleteCharacterSpell(CharacterID(), dss->spell_slot);
 		dss->success = 1;
 	}
 	else
@@ -6233,6 +6250,13 @@ void Client::Handle_OP_EnvDamage(const EQApplicationPacket *app)
 	}
 
 	if (ed->dmgtype == EQ::constants::EnvironmentalDamage::Falling) {
+		if (zone->HasWaterMap()) {
+			auto target_position = glm::vec3(GetX(), GetY(), GetZ());
+			if (!zone->watermap->InLiquid(target_position)) {
+				return;
+			}
+		}
+		
 		uint32 mod = spellbonuses.ReduceFallDamage + itembonuses.ReduceFallDamage + aabonuses.ReduceFallDamage;
 		damage -= damage * mod / 100;
 	}
@@ -6481,7 +6505,7 @@ void Client::Handle_OP_GMBecomeNPC(const EQApplicationPacket *app)
 			t->SetGM(false);
 		}
 
-		m->SendAppearancePacket(AT_NPCName, 1, true);
+		m->SendAppearancePacket(AppearanceType::NPCName, 1, true);
 		t->SetBecomeNPC(true);
 		t->SetBecomeNPCLevel(b->maxlevel);
 		m->MessageString(Chat::White, TOGGLE_OFF);
@@ -6598,17 +6622,26 @@ void Client::Handle_OP_GMGoto(const EQApplicationPacket *app)
 
 	auto *gmg = (GMSummon_Struct *) app->pBuffer;
 	Mob  *gt  = entity_list.GetMob(gmg->charname);
-	if (!gt) {
-		MovePC(zone->GetZoneID(), zone->GetInstanceID(), gt->GetX(), gt->GetY(), gt->GetZ(), gt->GetHeading());
+	if (gt) {
+		MovePC(
+			zone->GetZoneID(),
+			zone->GetInstanceID(),
+			gt->GetX(),
+			gt->GetY(),
+			gt->GetZ(),
+			gt->GetHeading()
+		);
 	} else if (!worldserver.Connected()) {
 		Message(Chat::Red, "Error: World server disconnected.");
 	} else {
 		auto pack = new ServerPacket(ServerOP_GMGoto, sizeof(ServerGMGoto_Struct));
 		memset(pack->pBuffer, 0, pack->size);
-		ServerGMGoto_Struct *wsgmg = (ServerGMGoto_Struct *) pack->pBuffer;
-		strcpy(wsgmg->myname, GetName());
-		strcpy(wsgmg->gotoname, gmg->charname);
-		wsgmg->admin = admin;
+
+		auto* g = (ServerGMGoto_Struct *) pack->pBuffer;
+		strcpy(g->myname, GetName());
+		strcpy(g->gotoname, gmg->charname);
+		g->admin = admin;
+
 		worldserver.SendPacket(pack);
 		safe_delete(pack);
 	}
@@ -7303,64 +7336,81 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 	}
 
 	GroupInvite_Struct* gis = (GroupInvite_Struct*)app->pBuffer;
+	
+	Mob* invitee = nullptr;
 
-	Mob *Invitee = entity_list.GetMob(gis->invitee_name);
+	if (RuleB(Character, GroupInvitesRequireTarget)) {
+		// We can only invite the current target.
+		invitee = GetTarget();
+	} else {
+		invitee = entity_list.GetMob(gis->invitee_name);
+	}
 
-	if (Invitee == this)
-	{
+	if (invitee == this) {
 		MessageString(Chat::LightGray, GROUP_INVITEE_SELF);
 		return;
 	}
 
-	if (Invitee)
-	{
-		if (Invitee->IsClient())
-		{
-			if (Invitee->CastToClient()->MercOnlyOrNoGroup() && !Invitee->IsRaidGrouped())
-			{
-				if (app->GetOpcode() == OP_GroupInvite2)
-				{
+	if (invitee) {
+		if (invitee->IsClient()) {
+			if (invitee->CastToClient()->MercOnlyOrNoGroup() && !invitee->IsRaidGrouped()) {
+				if (app->GetOpcode() == OP_GroupInvite2) {
 					//Make a new packet using all the same information but make sure it's a fixed GroupInvite opcode so we
 					//Don't have to deal with GroupFollow2 crap.
 					auto outapp =
 						new EQApplicationPacket(OP_GroupInvite, sizeof(GroupInvite_Struct));
 					memcpy(outapp->pBuffer, app->pBuffer, outapp->size);
-					Invitee->CastToClient()->QueuePacket(outapp);
+					invitee->CastToClient()->QueuePacket(outapp);
 					safe_delete(outapp);
 					return;
-				}
-				else
-				{
+				} else {
 					//The correct opcode, no reason to bother wasting time reconstructing the packet
-					Invitee->CastToClient()->QueuePacket(app);
+					invitee->CastToClient()->QueuePacket(app);
 				}
-			}
-			else {
+			} else if (invitee->IsRaidGrouped()) {
+				Raid* inviter_raid = GetRaid();
+				Raid* invitee_raid = invitee->CastToClient()->GetRaid();
+
+				bool leader = false;
+
+				if (invitee_raid) {
+					leader = invitee_raid->IsGroupLeader(invitee->GetName());
+				}
+
+				if (inviter_raid != invitee_raid || leader) {
+					MessageString(Chat::Default, ALREADY_IN_GRP_RAID, invitee->GetCleanName());
+				} else {
+					MessageString(Chat::Default, TARGET_ALREADY_IN_GROUP, invitee->GetCleanName());
+				}
+
+				return;
+				
+			} else {
 				if (RuleB(Character, OnInviteReceiveAlreadyinGroupMessage)) {
-					if (!Invitee->CastToClient()->MercOnlyOrNoGroup()) {
-						Message(Chat::LightGray, "%s is already in another group.", Invitee->GetCleanName());
+					if (!invitee->CastToClient()->MercOnlyOrNoGroup()) {
+						MessageString(Chat::Default, TARGET_ALREADY_IN_GROUP, invitee->GetCleanName());
 					}
 				}
 			}
-		}
-		else if (Invitee->IsBot()) {
+		} else if (invitee->IsBot()) {
 			Client* inviter = entity_list.GetClientByName(gis->inviter_name);
-			if (inviter && inviter->IsRaidGrouped() && !Invitee->HasRaid()) {
-				Bot::ProcessRaidInvite(Invitee->CastToBot(), inviter, true);
-			}
-			else if (!Invitee->HasRaid()) {
-				Bot::ProcessBotGroupInvite(this, std::string(Invitee->GetName()));
+			if (inviter && inviter->IsRaidGrouped() && !invitee->HasRaid()) {
+				Bot::ProcessRaidInvite(invitee->CastToBot(), inviter, true);
+			} else if (!invitee->HasRaid()) {
+				Bot::ProcessBotGroupInvite(this, std::string(invitee->GetName()));
 			} else {
-				MessageString(Chat::LightGray, ALREADY_IN_RAID, Invitee->GetCleanName());
+				MessageString(Chat::LightGray, ALREADY_IN_RAID, invitee->GetCleanName());
 			}
 		}
-	}
-	else
-	{
-		auto pack = new ServerPacket(ServerOP_GroupInvite, sizeof(GroupInvite_Struct));
-		memcpy(pack->pBuffer, gis, sizeof(GroupInvite_Struct));
-		worldserver.SendPacket(pack);
-		safe_delete(pack);
+	} else {
+		if (RuleB(Character, GroupInvitesRequireTarget)) {
+			Message(Chat::White, "You must target a player first to invite to join your group.");
+		} else {
+			auto pack = new ServerPacket(ServerOP_GroupInvite, sizeof(GroupInvite_Struct));
+			memcpy(pack->pBuffer, gis, sizeof(GroupInvite_Struct));
+			worldserver.SendPacket(pack);
+			safe_delete(pack);
+		}
 	}
 	return;
 }
@@ -8853,7 +8903,7 @@ void Client::Handle_OP_ItemLinkClick(const EQApplicationPacket *app)
 				Message(Chat::LightGray, "You say, '%s'", response.c_str());
 			}
 
-			ChannelMessageReceived(ChatChannel_Say, 0, 100, response.c_str(), nullptr, true);
+			ChannelMessageReceived(ChatChannel_Say, Language::CommonTongue, Language::MaxValue, response.c_str(), nullptr, true);
 
 			return;
 		}
@@ -10716,7 +10766,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 		}
 
 		if ((mypet->GetPetType() == petAnimation && aabonuses.PetCommands[PetCommand]) || mypet->GetPetType() != petAnimation) {
-			if (target != this && DistanceSquaredNoZ(mypet->GetPosition(), target->GetPosition()) <= (RuleR(Pets, AttackCommandRange)*RuleR(Pets, AttackCommandRange))) {
+			if (target != this && DistanceSquared(mypet->GetPosition(), target->GetPosition()) <= (RuleR(Pets, AttackCommandRange)*RuleR(Pets, AttackCommandRange))) {
 				mypet->SetFeigned(false);
 				if (mypet->IsPetStop()) {
 					mypet->SetPetStop(false);
@@ -10842,7 +10892,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 				// Set Sit button to unpressed - send stand anim/end hpregen
 				mypet->SetFeigned(false);
 				SetPetCommandState(PET_BUTTON_SIT, 0);
-				mypet->SendAppearancePacket(AT_Anim, ANIM_STAND);
+				mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Standing);
 
 				mypet->SayString(this, Chat::PetResponse, PET_GUARDINGLIFE);
 				mypet->SetPetOrder(SPO_Guard);
@@ -10867,7 +10917,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 
 			// fix GUI sit button to be unpressed - send stand anim/end hpregen
 			SetPetCommandState(PET_BUTTON_SIT, 0);
-			mypet->SendAppearancePacket(AT_Anim, ANIM_STAND);
+			mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Standing);
 
 			if (mypet->IsPetStop()) {
 				mypet->SetPetStop(false);
@@ -10915,7 +10965,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 
 			// Set Sit button to unpressed - send stand anim/end hpregen
 			SetPetCommandState(PET_BUTTON_SIT, 0);
-			mypet->SendAppearancePacket(AT_Anim, ANIM_STAND);
+			mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Standing);
 
 			if (mypet->IsPetStop()) {
 				mypet->SetPetStop(false);
@@ -10933,7 +10983,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 				mypet->SetFeigned(false);
 				mypet->SayString(this, Chat::PetResponse, PET_SIT_STRING);
 				mypet->SetPetOrder(SPO_Follow);
-				mypet->SendAppearancePacket(AT_Anim, ANIM_STAND);
+				mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Standing);
 			}
 			else
 			{
@@ -10943,7 +10993,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 				mypet->SetRunAnimSpeed(0);
 				if (!mypet->UseBardSpellLogic())	//maybe we can have a bard pet
 					mypet->InterruptSpell(); //No cast 4 u. //i guess the pet should start casting
-				mypet->SendAppearancePacket(AT_Anim, ANIM_SIT);
+				mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Sitting);
 			}
 		}
 		break;
@@ -10956,7 +11006,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 			mypet->SayString(this, Chat::PetResponse, PET_SIT_STRING);
 			SetPetCommandState(PET_BUTTON_SIT, 0);
 			mypet->SetPetOrder(SPO_Follow);
-			mypet->SendAppearancePacket(AT_Anim, ANIM_STAND);
+			mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Standing);
 		}
 		break;
 	}
@@ -10971,7 +11021,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 			mypet->SetRunAnimSpeed(0);
 			if (!mypet->UseBardSpellLogic())	//maybe we can have a bard pet
 				mypet->InterruptSpell(); //No cast 4 u. //i guess the pet should start casting
-			mypet->SendAppearancePacket(AT_Anim, ANIM_SIT);
+			mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Sitting);
 		}
 		break;
 	}
@@ -11176,7 +11226,7 @@ void Client::Handle_OP_PetCommands(const EQApplicationPacket *app)
 				mypet->SetPetOrder(SPO_FeignDeath);
 				mypet->SetRunAnimSpeed(0);
 				mypet->StopNavigation();
-				mypet->SendAppearancePacket(AT_Anim, ANIM_DEATH);
+				mypet->SendAppearancePacket(AppearanceType::Animation, Animation::Lying);
 				mypet->SetFeigned(true);
 				mypet->SetTarget(nullptr);
 				if (!mypet->UseBardSpellLogic()) {
@@ -11564,7 +11614,7 @@ void Client::Handle_OP_PopupResponse(const EQApplicationPacket *app)
 			if (EntityVariableExists(DIAWIND_RESPONSE_ONE_KEY)) {
 				response = GetEntityVariable(DIAWIND_RESPONSE_ONE_KEY);
 				if (!response.empty()) {
-					ChannelMessageReceived(ChatChannel_Say, 0, 100, response.c_str(), nullptr, true);
+					ChannelMessageReceived(ChatChannel_Say, Language::CommonTongue, Language::MaxValue, response.c_str(), nullptr, true);
 				}
 			}
 			break;
@@ -11573,7 +11623,7 @@ void Client::Handle_OP_PopupResponse(const EQApplicationPacket *app)
 			if (EntityVariableExists(DIAWIND_RESPONSE_TWO_KEY)) {
 				response = GetEntityVariable(DIAWIND_RESPONSE_TWO_KEY);
 				if (!response.empty()) {
-					ChannelMessageReceived(ChatChannel_Say, 0, 100, response.c_str(), nullptr, true);
+					ChannelMessageReceived(ChatChannel_Say, Language::CommonTongue, Language::MaxValue, response.c_str(), nullptr, true);
 				}
 			}
 			break;
@@ -11671,7 +11721,7 @@ void Client::Handle_OP_PurchaseLeadershipAA(const EQApplicationPacket *app)
 		m_pp.raid_leadership_points -= cost;
 		m_pp.leader_abilities.ranks[aaid]++;
 
-		database.SaveCharacterLeadershipAA(CharacterID(), &m_pp);
+		database.SaveCharacterLeadershipAbilities(CharacterID(), &m_pp);
 	}
 	else {
 		//it is a group ability.
@@ -11684,7 +11734,7 @@ void Client::Handle_OP_PurchaseLeadershipAA(const EQApplicationPacket *app)
 		m_pp.group_leadership_points -= cost;
 		m_pp.leader_abilities.ranks[aaid]++;
 
-		database.SaveCharacterLeadershipAA(CharacterID(), &m_pp);
+		database.SaveCharacterLeadershipAbilities(CharacterID(), &m_pp);
 	}
 
 	//success, send them an update
@@ -11808,8 +11858,8 @@ void Client::Handle_OP_QueryUCSServerStatus(const EQApplicationPacket *app)
 		}
 
 		buffer = StringFormat("%s,%i,%s.%s,%c%s",
-			Config->ChatHost.c_str(),
-			Config->ChatPort,
+			Config->GetUCSHost().c_str(),
+			Config->GetUCSPort(),
 			Config->ShortName.c_str(),
 			GetName(),
 			ConnectionType,
@@ -11834,8 +11884,8 @@ void Client::Handle_OP_QueryUCSServerStatus(const EQApplicationPacket *app)
 		}
 
 		buffer = StringFormat("%s,%i,%s.%s,%c%s",
-			Config->MailHost.c_str(),
-			Config->MailPort,
+			Config->GetUCSHost().c_str(),
+			Config->GetUCSPort(),
 			Config->ShortName.c_str(),
 			GetName(),
 			ConnectionType,
@@ -12044,6 +12094,13 @@ void Client::Handle_OP_RaidCommand(const EQApplicationPacket* app)
 			{
 				auto player_sending_invite_group = player_sending_invite->GetGroup();
 				Group* group = GetGroup();
+
+				/* Prevent scenario where player had joined group with Raid invitor before accepting Raid invite */
+				if (group && group == player_sending_invite_group) {
+					player_sending_invite->MessageString(Chat::Red, INVITE_GROUP_LEADER);
+					return;
+				}
+
 				if (group) //if our target has a group
 				{
 					raid = new Raid(player_sending_invite);
@@ -14247,14 +14304,14 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 	if (sa->spawn_id != GetID())
 		return;
 
-	if (sa->type == AT_Invis) {
+	if (sa->type == AppearanceType::Invisibility) {
 		if (sa->parameter != 0)
 		{
 			if (!HasSkill(EQ::skills::SkillHide) && GetSkill(EQ::skills::SkillHide) == 0)
 			{
 				if (ClientVersion() < EQ::versions::ClientVersion::SoF)
 				{
-					auto message = fmt::format("Player sent OP_SpawnAppearance with AT_Invis [{}]", sa->parameter);
+					auto message = fmt::format("Player sent OP_SpawnAppearance with AppearanceType::Invisibility [{}]", sa->parameter);
 					RecordPlayerEventLog(PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 				}
 			}
@@ -14266,18 +14323,18 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		entity_list.QueueClients(this, app, true);
 		return;
 	}
-	else if (sa->type == AT_Anim) {
+	else if (sa->type == AppearanceType::Animation) {
 		if (IsAIControlled())
 			return;
 
-		if (sa->parameter == ANIM_STAND) {
+		if (sa->parameter == Animation::Standing) {
 			SetAppearance(eaStanding);
 			playeraction = 0;
 			SetFeigned(false);
 			BindWound(this, false, true);
 			camp_timer.Disable();
 		}
-		else if (sa->parameter == ANIM_SIT) {
+		else if (sa->parameter == Animation::Sitting) {
 			SetAppearance(eaSitting);
 			playeraction = 1;
 			if (!UseBardSpellLogic())
@@ -14287,19 +14344,19 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 			tmSitting = Timer::GetCurrentTime();
 			BuffFadeBySitModifier();
 		}
-		else if (sa->parameter == ANIM_CROUCH) {
+		else if (sa->parameter == Animation::Crouching) {
 			if (!UseBardSpellLogic())
 				InterruptSpell();
 			SetAppearance(eaCrouching);
 			playeraction = 2;
 			SetFeigned(false);
 		}
-		else if (sa->parameter == ANIM_DEATH) { // feign death too
+		else if (sa->parameter == Animation::Lying) { // feign death too
 			SetAppearance(eaDead);
 			playeraction = 3;
 			InterruptSpell();
 		}
-		else if (sa->parameter == ANIM_LOOT) {
+		else if (sa->parameter == Animation::Looting) {
 			SetAppearance(eaLooting);
 			playeraction = 4;
 			SetFeigned(false);
@@ -14312,7 +14369,7 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 
 		entity_list.QueueClients(this, app, true);
 	}
-	else if (sa->type == AT_Anon) {
+	else if (sa->type == AppearanceType::Anonymous) {
 		if (!anon_toggle_timer.Check()) {
 			return;
 		}
@@ -14334,19 +14391,19 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		entity_list.QueueClients(this, app, true);
 		UpdateWho();
 	}
-	else if ((sa->type == AT_HP) && (dead == 0)) {
+	else if ((sa->type == AppearanceType::Health) && (dead == 0)) {
 		return;
 	}
-	else if (sa->type == AT_AFK) {
+	else if (sa->type == AppearanceType::AFK) {
 		if (afk_toggle_timer.Check()) {
 			AFK = (sa->parameter == 1);
 			entity_list.QueueClients(this, app, true);
 		}
 	}
-	else if (sa->type == AT_Split) {
+	else if (sa->type == AppearanceType::Split) {
 		m_pp.autosplit = (sa->parameter == 1);
 	}
-	else if (sa->type == AT_Sneak) {
+	else if (sa->type == AppearanceType::Sneak) {
 		if (sneaking == 0)
 			return;
 
@@ -14354,7 +14411,7 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		{
 			if (!HasSkill(EQ::skills::SkillSneak))
 			{
-				auto message = fmt::format("Player sent OP_SpawnAppearance with AT_Sneak [{}]", sa->parameter);
+				auto message = fmt::format("Player sent OP_SpawnAppearance with AppearanceType::Sneak [{}]", sa->parameter);
 				RecordPlayerEventLog(PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 			}
 			return;
@@ -14362,38 +14419,38 @@ void Client::Handle_OP_SpawnAppearance(const EQApplicationPacket *app)
 		sneaking = 0;
 		entity_list.QueueClients(this, app, true);
 	}
-	else if (sa->type == AT_Size)
+	else if (sa->type == AppearanceType::Size)
 	{
-		auto message = fmt::format("Player sent OP_SpawnAppearance with AT_Size [{}]", sa->parameter);
+		auto message = fmt::format("Player sent OP_SpawnAppearance with AppearanceType::Size [{}]", sa->parameter);
 		RecordPlayerEventLog(PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = message});
 	}
-	else if (sa->type == AT_Light)	// client emitting light (lightstone, shiny shield)
+	else if (sa->type == AppearanceType::Light)	// client emitting light (lightstone, shiny shield)
 	{
 		//don't do anything with this
 	}
-	else if (sa->type == AT_Levitate)
+	else if (sa->type == AppearanceType::FlyMode)
 	{
 		// don't do anything with this, we tell the client when it's
 		// levitating, not the other way around
 	}
-	else if (sa->type == AT_ShowHelm)
+	else if (sa->type == AppearanceType::ShowHelm)
 	{
 		if (helm_toggle_timer.Check()) {
 			m_pp.showhelm = (sa->parameter == 1);
 			entity_list.QueueClients(this, app, true);
 		}
 	}
-	else if (sa->type == AT_GroupConsent)
+	else if (sa->type == AppearanceType::GroupAutoConsent)
 	{
 		m_pp.groupAutoconsent = (sa->parameter == 1);
 		ConsentCorpses("Group", (sa->parameter != 1));
 	}
-	else if (sa->type == AT_RaidConsent)
+	else if (sa->type == AppearanceType::RaidAutoConsent)
 	{
 		m_pp.raidAutoconsent = (sa->parameter == 1);
 		ConsentCorpses("Raid", (sa->parameter != 1));
 	}
-	else if (sa->type == AT_GuildConsent)
+	else if (sa->type == AppearanceType::GuildAutoConsent)
 	{
 		m_pp.guildAutoconsent = (sa->parameter == 1);
 		ConsentCorpses("Guild", (sa->parameter != 1));
@@ -14533,10 +14590,10 @@ void Client::Handle_OP_SwapSpell(const EQApplicationPacket *app)
 
 	/* Save Spell Swaps */
 	if (!database.SaveCharacterSpell(CharacterID(), m_pp.spell_book[swapspell->from_slot], swapspell->from_slot)) {
-		database.DeleteCharacterSpell(CharacterID(), m_pp.spell_book[swapspell->from_slot], swapspell->from_slot);
+		database.DeleteCharacterSpell(CharacterID(), swapspell->from_slot);
 	}
 	if (!database.SaveCharacterSpell(CharacterID(), swapspelltemp, swapspell->to_slot)) {
-		database.DeleteCharacterSpell(CharacterID(), swapspelltemp, swapspell->to_slot);
+		database.DeleteCharacterSpell(CharacterID(), swapspell->to_slot);
 	}
 
 	QueuePacket(app);
@@ -15503,6 +15560,8 @@ void Client::Handle_OP_Translocate(const EQApplicationPacket *app)
 				GoToBind();
 				return;
 			}
+
+			entity_list.ClearAggro(this);
 
 			////Was sending the packet back to initiate client zone...
 			////but that could be abusable, so lets go through proper channels

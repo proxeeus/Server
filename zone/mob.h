@@ -62,6 +62,11 @@ namespace EQ
 	class ItemInstance;
 }
 
+namespace DeathSave {
+    constexpr uint32 HP300  = 1;
+    constexpr uint32 HP8000 = 2;
+}
+
 enum class eSpecialAttacks : int {
 	None,
 	Rampage,
@@ -331,7 +336,6 @@ public:
 	void SendAppearanceEffect(uint32 parm1, uint32 parm2, uint32 parm3, uint32 parm4, uint32 parm5, Client *specific_target=nullptr, uint32 value1slot = 1, uint32 value1ground = 1, uint32 value2slot = 1, uint32 value2ground = 1,
 		uint32 value3slot = 1, uint32 value3ground = 1, uint32 value4slot = 1, uint32 value4ground = 1, uint32 value5slot = 1, uint32 value5ground = 1);
 	void SendLevelAppearance();
-	void SendStunAppearance();
 	void SendTargetable(bool on, Client *specific_target = nullptr);
 	void SetMobTextureProfile(uint8 material_slot, uint32 texture, uint32 color = 0, uint32 hero_forge_model = 0);
 
@@ -442,6 +446,7 @@ public:
 	void BuffFadeBySlot(int slot, bool iRecalcBonuses = true);
 	void BuffFadeDetrimentalByCaster(Mob *caster);
 	void BuffFadeBySitModifier();
+	void BuffDetachCaster(Mob *caster);
 	bool IsAffectedByBuffByGlobalGroup(GlobalGroup group);
 	void BuffModifyDurationBySpellID(uint16 spell_id, int32 newDuration);
 	int AddBuff(Mob *caster, const uint16 spell_id, int duration = 0, int32 level_override = -1, bool disable_buff_overwrite = false);
@@ -496,10 +501,10 @@ public:
 	inline bool HasEndurUpkeep() const { return endur_upkeep; }
 	inline void SetEndurUpkeep(bool val) { endur_upkeep = val; }
 	bool HasBuffWithSpellGroup(int spell_group);
-	void SetAppearenceEffects(int32 slot, int32 value);
+	void SetAppearanceEffects(int32 slot, int32 value);
 	void ListAppearanceEffects(Client* c);
-	void ClearAppearenceEffects();
-	void SendSavedAppearenceEffects(Client *receiver);
+	void ClearAppearanceEffects();
+	void SendSavedAppearanceEffects(Client *receiver);
 	void SetBuffDuration(int spell_id, int duration = 0, int level_override = -1);
 	void ApplySpellBuff(int spell_id, int duration = 0, int level_override = -1);
 	int GetBuffStatValueBySpell(int32 spell_id, const char* stat_identifier);
@@ -719,7 +724,6 @@ public:
 	virtual void GMMove(float x, float y, float z, float heading = 0.01, bool save_guard_spot = true);
 	virtual void GMMove(const glm::vec4 &position, bool save_guard_spot = true);
 	void SetDelta(const glm::vec4& delta);
-	void MakeSpawnUpdateNoDelta(PlayerPositionUpdateServer_Struct* spu);
 	void MakeSpawnUpdate(PlayerPositionUpdateServer_Struct* spu);
 	void SentPositionPacket(float dx, float dy, float dz, float dh, int anim, bool send_to_self = false);
 	virtual void StopMoving();
@@ -843,9 +847,6 @@ public:
 	void ShowStats(Client* client);
 	void ShowBuffs(Client* c);
 	bool PlotPositionAroundTarget(Mob* target, float &x_dest, float &y_dest, float &z_dest, bool lookForAftArc = true);
-	bool PlotPositionOnArcInFrontOfTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float distance, float min_deg = 5.0f, float max_deg = 150.0f);
-	bool PlotPositionOnArcBehindTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float distance);
-	bool PlotPositionBehindMeFacingTarget(Mob *target, float &x_dest, float &y_dest, float &z_dest, float min_dist = 1.0f, float max_dist = 5.0f);
 	virtual int GetKillExpMod() const { return 100; }
 
 	// aura functions
@@ -942,6 +943,7 @@ public:
 	void TrySympatheticProc(Mob *target, uint32 spell_id);
 	uint16 GetSympatheticFocusEffect(focusType type, uint16 spell_id);
 	bool TryFadeEffect(int slot);
+	void DispelMagic(Mob* casterm, uint16 spell_id, int effect_value);
 	uint16 GetSpellEffectResistChance(uint16 spell_id);
 	int32 GetVulnerability(Mob *caster, uint32 spell_id, uint32 ticsremaining, bool from_buff_tic = false);
 	int64 GetFcDamageAmtIncoming(Mob *caster, int32 spell_id, bool from_buff_tic = false);
@@ -1024,9 +1026,9 @@ public:
 	void SetFlurryChance(uint8 value) { SetSpecialAbilityParam(SPECATK_FLURRY, 0, value); }
 	uint8 GetFlurryChance() { return GetSpecialAbilityParam(SPECATK_FLURRY, 0); }
 
-	static uint32 GetAppearanceValue(EmuAppearance iAppearance);
-	void SendAppearancePacket(uint32 type, uint32 value, bool WholeZone = true, bool iIgnoreSelf = false, Client *specific_target=nullptr);
-	void SetAppearance(EmuAppearance app, bool iIgnoreSelf = true);
+	static uint32 GetAppearanceValue(EmuAppearance in_appearance);
+	void SendAppearancePacket(uint32 type, uint32 value, bool whole_zone = true, bool ignore_self = false, Client* target = nullptr);
+	void SetAppearance(EmuAppearance app, bool ignore_self = true);
 	inline EmuAppearance GetAppearance() const { return _appearance; }
 	inline const int GetAnimation() const { return animation; }
 	inline void SetAnimation(int a) { animation = a; }
@@ -1055,14 +1057,14 @@ public:
 	Mob* GetUltimateOwner();
 	void SetPetID(uint16 NewPetID);
 	inline uint16 GetPetID() const { return petid; }
-	inline PetType GetPetType() const { return typeofpet; }
-	void SetPetType(PetType p) { typeofpet = p; }
+	inline PetType GetPetType() const { return type_of_pet; }
+	void SetPetType(PetType p) { type_of_pet = p; }
 	inline int16 GetPetPower() const { return (petpower < 0) ? 0 : petpower; }
 	void SetPetPower(int16 p) { if (p < 0) petpower = 0; else petpower = p; }
-	bool IsFamiliar() const { return(typeofpet == petFamiliar); }
-	bool IsAnimation() const { return(typeofpet == petAnimation); }
-	bool IsCharmed() const { return(typeofpet == petCharmed); }
-	bool IsTargetLockPet() const { return(typeofpet == petTargetLock); }
+	bool IsFamiliar() const { return type_of_pet == petFamiliar; }
+	bool IsAnimation() const { return type_of_pet == petAnimation; }
+	bool IsCharmed() const { return type_of_pet == petCharmed; }
+	bool IsTargetLockPet() const { return type_of_pet == petTargetLock; }
 	inline uint32 GetPetTargetLockID() { return pet_targetlock_id; };
 	inline void SetPetTargetLockID(uint32 value) { pet_targetlock_id = value; };
 	void SetOwnerID(uint16 NewOwnerID);
@@ -1139,6 +1141,7 @@ public:
 	bool Rampage(ExtraAttackOptions *opts);
 	bool AddRampage(Mob*);
 	void ClearRampage();
+	void RemoveFromRampageList(Mob* mob, bool remove_feigned = false);
 	void SetBottomRampageList();
 	void SetTopRampageList();
 	void AreaRampage(ExtraAttackOptions *opts);
@@ -1253,7 +1256,7 @@ public:
 	bool CheckWillAggro(Mob *mob);
 
 	void InstillDoubt(Mob *who);
-	bool Charmed() const { return typeofpet == petCharmed; }
+	bool Charmed() const { return type_of_pet == petCharmed; }
 	static uint32 GetLevelHP(uint8 tlevel);
 	uint32 GetZoneID() const; //for perl
 	uint16 GetInstanceVersion() const; //for perl
@@ -1532,7 +1535,7 @@ protected:
 	StatBonuses aabonuses;
 	uint16 petid;
 	uint16 ownerid;
-	PetType typeofpet;
+	PetType type_of_pet;
 	int16 petpower;
 	uint32 follow_id;
 	uint32 follow_dist;

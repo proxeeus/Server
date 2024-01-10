@@ -13,7 +13,6 @@ SET(common_sources
     crc32.cpp
     database/database_dump_service.cpp
     database.cpp
-    database_conversions.cpp
     database_instances.cpp
     database/database_update_manifest.cpp
     database/database_update_manifest_bots.cpp
@@ -541,7 +540,6 @@ SET(common_headers
     events/player_event_logs.h
     events/player_event_discord_formatter.h
     events/player_events.h
-    errmsg.h
     event_sub.h
     expedition_lockout_timer.h
     extprofile.h
@@ -563,7 +561,6 @@ SET(common_headers
     item_fieldlist.h
     item_instance.h
     json_config.h
-    languages.h
     light_source.h
     linked_list.h
     loottable.h

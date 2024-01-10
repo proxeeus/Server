@@ -659,7 +659,6 @@ public:
 	void SetBotEnforceSpellSetting(bool enforcespellsettings, bool save = false);
 	bool GetBotEnforceSpellSetting() const { return m_enforce_spell_settings; }
 
-	std::string CreateSayLink(Client* botOwner, const char* message, const char* name);
 	void SetFeigned(bool in_feigned, Bot* b);
 
 	// Class Destructors

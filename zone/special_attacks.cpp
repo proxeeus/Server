@@ -24,6 +24,7 @@
 #include "mob.h"
 #include "string_ids.h"
 #include "lua_parser.h"
+#include "npc.h"
 
 #include <string.h>
 
@@ -182,7 +183,7 @@ int Mob::GetBaseSkillDamage(EQ::skills::SkillType skill, Mob *target)
 				}
 			} else if (IsNPC()) {
 				auto *npc = CastToNPC();
-				base = std::max(base, npc->GetBaseDamage());
+				base = round((npc->GetMaxDMG() - npc->GetMinDMG()) / RuleR(NPC, NPCBackstabMod));
 				// parses show relatively low BS mods from lots of NPCs, so either their BS skill is super low
 				// or their mod is divided again, this is probably not the right mod, but it's better
 				skill_bonus /= 3.0f;
@@ -653,8 +654,14 @@ int Mob::MonkSpecialAttack(Mob *other, uint8 unchecked_type)
 	}
 
 	int32 ht = 0;
-	if (max_dmg > 0)
+	if (max_dmg > 0) {
 		ht = max_dmg;
+	}
+
+	// aggro should never be negative else it does massive aggro
+	if (ht < 0)	{
+		ht = 0;
+	}
 
 	DoSpecialAttackDamage(other, skill_type, max_dmg, min_dmg, ht, reuse);
 
@@ -1806,7 +1813,9 @@ void NPC::DoClassAttacks(Mob *target) {
 		HasOwner() &&
 		target->IsNPC() &&
 		target->GetBodyType() != BT_Undead &&
-		taunt_time
+		taunt_time &&
+		type_of_pet &&
+		type_of_pet != petTargetLock
 	) {
 		GetOwner()->MessageString(Chat::PetResponse, PET_TAUNTING);
 		Taunt(target->CastToNPC(), false);

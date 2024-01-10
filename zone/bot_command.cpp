@@ -404,38 +404,38 @@ public:
 
 						for (int i = EffectIDFirst; i <= EffectIDLast; ++i) {
 							int effect_index = EFFECTIDTOINDEX(i);
-							if (spells[spell_id].base_value[effect_index] <= 0)
+							if (spells[spell_id].max_value[effect_index] <= 0)
 								continue;
 
 							switch (spells[spell_id].effect_id[effect_index]) {
 								case SE_ResistFire:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Fire)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Fire)] += spells[spell_id].max_value[effect_index];
 									break;
 								case SE_ResistCold:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Cold)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Cold)] += spells[spell_id].max_value[effect_index];
 									break;
 								case SE_ResistPoison:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Poison)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Poison)] += spells[spell_id].max_value[effect_index];
 									break;
 								case SE_ResistDisease:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Disease)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Disease)] += spells[spell_id].max_value[effect_index];
 									break;
 								case SE_ResistMagic:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Magic)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Magic)] += spells[spell_id].max_value[effect_index];
 									break;
 								case SE_ResistCorruption:
 									entry_prototype->SafeCastToResistance()->resist_value[RESISTANCEIDTOINDEX(
-										BCEnum::RT_Corruption)] += spells[spell_id].base_value[effect_index];
+										BCEnum::RT_Corruption)] += spells[spell_id].max_value[effect_index];
 									break;
 								default:
 									continue;
 							}
-							entry_prototype->SafeCastToResistance()->resist_total += spells[spell_id].base_value[effect_index];
+							entry_prototype->SafeCastToResistance()->resist_total += spells[spell_id].max_value[effect_index];
 							valid_spell = true;
 						}
 						if (!valid_spell) {
@@ -2882,7 +2882,7 @@ void bot_command_apply_poison(Client *c, const Seperator *sep)
 	}
 	if (my_rogue_bot->GetLevel() < 18) {
 
-		c->Message(Chat::White, "Your rogue bot must be level 18 before %s can apply poison!", (my_rogue_bot->GetGender() == 1 ? "she" : "he"));
+		c->Message(Chat::White, "Your rogue bot must be level 18 before %s can apply poison!", (my_rogue_bot->GetGender() == Gender::Female ? "she" : "he"));
 		return;
 	}
 
@@ -3839,7 +3839,7 @@ void bot_command_feign(Client *bot_owner, const Seperator* sep)
 	puller->WipeHateList();
 
 	puller->DoAnim(16);
-	puller->SendAppearancePacket(AT_Anim, 114, true, false);
+	puller->SendAppearancePacket(AppearanceType::Animation, 114, true, false);
 	puller->SetFeigned(true, puller);
 
 }
@@ -4243,8 +4243,6 @@ void bot_command_item_use(Client* c, const Seperator* sep)
 		}
 	}
 
-	std::string text_link;
-
 	EQ::SayLinkEngine linker;
 	linker.SetLinkType(EQ::saylink::SayLinkItemInst);
 
@@ -4290,15 +4288,6 @@ void bot_command_item_use(Client* c, const Seperator* sep)
 			continue;
 		}
 
-		text_link = bot_iter->CreateSayLink(
-			c,
-			fmt::format(
-				"^inventorygive byname {}",
-				bot_iter->GetCleanName()
-			).c_str(),
-			bot_iter->GetCleanName()
-		);
-
 		for (const auto& slot_iter : equipable_slot_list) {
 			// needs more failure criteria - this should cover the bulk for now
 			if (slot_iter == EQ::invslot::slotSecondary && item_data->Damage && !bot_iter->CanThisClassDualWield()) {
@@ -4314,7 +4303,13 @@ void bot_command_item_use(Client* c, const Seperator* sep)
 					Chat::Say,
 					fmt::format(
 						"{} says, 'I can use that for my {} instead of my {}! Would you like to {} my {}?'",
-						text_link,
+						Saylink::Silent(
+							fmt::format(
+								"^inventorygive byname {}",
+								bot_iter->GetCleanName()
+							),
+							bot_iter->GetCleanName()
+						),
 						EQ::invslot::GetInvPossessionsSlotName(slot_iter),
 						linker.GenerateLink(),
 						Saylink::Silent(
@@ -4336,7 +4331,13 @@ void bot_command_item_use(Client* c, const Seperator* sep)
 					Chat::Say,
 					fmt::format(
 						"{} says, 'I can use that for my {}! Would you like to {} it to me?'",
-						text_link,
+						Saylink::Silent(
+							fmt::format(
+								"^inventorygive byname {}",
+								bot_iter->GetCleanName()
+							),
+							bot_iter->GetCleanName()
+						),
 						EQ::invslot::GetInvPossessionsSlotName(slot_iter),
 						Saylink::Silent(
 							fmt::format(
@@ -6103,7 +6104,7 @@ void bot_subcommand_bot_beard_color(Client *c, const Seperator *sep)
 	uint8 uvalue = Strings::ToInt(sep->arg[1]);
 
 	auto fail_type = BCEnum::AFT_None;
-	if (my_bot->GetGender() != MALE && my_bot->GetRace() != DWARF)
+	if (my_bot->GetGender() != Gender::Male && my_bot->GetRace() != DWARF)
 		fail_type = BCEnum::AFT_GenderRace;
 	else if (!PlayerAppearance::IsValidBeardColor(my_bot->GetRace(), my_bot->GetGender(), uvalue))
 		fail_type = BCEnum::AFT_Value;
@@ -6140,7 +6141,7 @@ void bot_subcommand_bot_beard_style(Client *c, const Seperator *sep)
 	uint8 uvalue = Strings::ToInt(sep->arg[1]);
 
 	auto fail_type = BCEnum::AFT_None;
-	if (my_bot->GetGender() != MALE && my_bot->GetRace() != DWARF)
+	if (my_bot->GetGender() != Gender::Male && my_bot->GetRace() != DWARF)
 		fail_type = BCEnum::AFT_GenderRace;
 	else if (!PlayerAppearance::IsValidBeard(my_bot->GetRace(), my_bot->GetGender(), uvalue))
 		fail_type = BCEnum::AFT_Value;
@@ -6641,18 +6642,18 @@ void bot_subcommand_bot_create(Client *c, const Seperator *sep)
 		return;
 	}
 
-	auto bot_gender = MALE;
+	auto bot_gender = Gender::Male;
 
 	if (sep->IsNumber(4)) {
 		bot_gender = static_cast<uint8>(Strings::ToUnsignedInt(sep->arg[4]));
-		if (bot_gender == NEUTER) {
-			bot_gender = MALE;
+		if (bot_gender == Gender::Neuter) {
+			bot_gender = Gender::Male;
 		}
 	} else {
 		if (!strcasecmp(sep->arg[4], "m") || !strcasecmp(sep->arg[4], "male")) {
-			bot_gender = MALE;
+			bot_gender = Gender::Male;
 		} else if (!strcasecmp(sep->arg[4], "f") || !strcasecmp(sep->arg[4], "female")) {
-			bot_gender = FEMALE;
+			bot_gender = Gender::Female;
 		}
 	}
 
@@ -8156,7 +8157,7 @@ void bot_subcommand_bot_toggle_helm(Client *c, const Seperator *sep)
 			EQApplicationPacket* outapp = new EQApplicationPacket(OP_SpawnAppearance, sizeof(SpawnAppearance_Struct));
 			SpawnAppearance_Struct* saptr = (SpawnAppearance_Struct*)outapp->pBuffer;
 			saptr->spawn_id = bot_iter->GetID();
-			saptr->type = AT_ShowHelm;
+			saptr->type = AppearanceType::ShowHelm;
 			saptr->parameter = bot_iter->GetShowHelm();
 
 			entity_list.QueueClients(bot_iter, outapp);
@@ -8229,7 +8230,7 @@ void bot_subcommand_bot_toggle_helm(Client *c, const Seperator *sep)
 	[10-16-2015 :: 22:15:40] [Packet :: Server -> Client (Dump)] [OP_SpawnAppearance - 0x01d1] [Size: 10]
 	0: A2 02 2B 00 00 00 00 00 - showhelm = false
 
-	*** Bot did not update using the OP_SpawnAppearance packet with AT_ShowHelm appearance type ***
+	*** Bot did not update using the OP_SpawnAppearance packet with AppearanceType::ShowHelm appearance type ***
 	*/
 }
 
@@ -8256,7 +8257,7 @@ void bot_subcommand_bot_update(Client *c, const Seperator *sep)
 
 		bot_iter->SetPetChooser(false);
 		bot_iter->CalcBotStats(c->GetBotOption(Client::booStatsUpdate));
-		bot_iter->SendAppearancePacket(AT_WhoLevel, bot_iter->GetLevel(), true, true);
+		bot_iter->SendAppearancePacket(AppearanceType::WhoLevel, bot_iter->GetLevel(), true, true);
 		++bot_count;
 	}
 
@@ -10104,10 +10105,6 @@ uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_clas
 	if (!Bot::IsValidRaceClassCombo(bot_race, bot_class)) {
 		const std::string bot_race_name = GetRaceIDName(bot_race);
 		const std::string bot_class_name = GetClassIDName(bot_class);
-		const auto view_saylink = Saylink::Silent(
-			fmt::format("^viewcombos {}", bot_race),
-			"view"
-		);
 
 		bot_owner->Message(
 			Chat::White,
@@ -10115,7 +10112,10 @@ uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_clas
 				"{} {} is an invalid race-class combination, would you like to {} proper combinations for {}?",
 				bot_race_name,
 				bot_class_name,
-				view_saylink,
+				Saylink::Silent(
+					fmt::format("^viewcombos {}", bot_race),
+					"view"
+				),
 				bot_race_name
 			).c_str()
 		);
@@ -10123,15 +10123,15 @@ uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_clas
 		return bot_id;
 	}
 
-	if (!EQ::ValueWithin(bot_gender, MALE, FEMALE)) {
+	if (!EQ::ValueWithin(bot_gender, Gender::Male, Gender::Female)) {
 		bot_owner->Message(
 			Chat::White,
 			fmt::format(
 				"Gender: {} ({}) or {} ({})",
-				GetGenderName(MALE),
-				MALE,
-				GetGenderName(FEMALE),
-				FEMALE
+				GetGenderName(Gender::Male),
+				Gender::Male,
+				GetGenderName(Gender::Female),
+				Gender::Female
 			).c_str()
 		);
 		return bot_id;
@@ -10433,9 +10433,6 @@ void helper_command_depart_list(Client* bot_owner, Bot* druid_bot, Bot* wizard_b
 		return;
 	}
 
-	std::string msg;
-	std::string text_link;
-
 	auto destination_count = 0;
 	auto destination_number = 1;
 	for (auto list_iter : *local_list) {
@@ -10453,24 +10450,19 @@ void helper_command_depart_list(Client* bot_owner, Bot* druid_bot, Bot* wizard_b
 				continue;
 			}
 
-			msg = fmt::format(
-				"^circle {}{}",
-				spells[local_entry->spell_id].teleport_zone,
-				single_flag ? " single" : ""
-			);
-
-			text_link = druid_bot->CreateSayLink(
-				bot_owner,
-				msg.c_str(),
-				"Goto"
-			);
-
 			druid_bot->OwnerMessage(
 				fmt::format(
 					"Destination {} | {} | {}",
 					destination_number,
 					local_entry->long_name,
-					text_link
+					Saylink::Silent(
+						fmt::format(
+							"^circle {}{}",
+							spells[local_entry->spell_id].teleport_zone,
+							single_flag ? " single" : ""
+						),
+						"Goto"
+					)
 				)
 			);
 
@@ -10488,24 +10480,19 @@ void helper_command_depart_list(Client* bot_owner, Bot* druid_bot, Bot* wizard_b
 				continue;
 			}
 
-			msg = fmt::format(
-				"^portal {}{}",
-				spells[local_entry->spell_id].teleport_zone,
-				single_flag ? " single" : ""
-			);
-
-			text_link = wizard_bot->CreateSayLink(
-				bot_owner,
-				msg.c_str(),
-				"Goto"
-			);
-
 			wizard_bot->OwnerMessage(
 				fmt::format(
 					"Destination {} | {} | {}",
 					destination_number,
 					local_entry->long_name,
-					text_link
+					Saylink::Silent(
+						fmt::format(
+							"^portal {}{}",
+							spells[local_entry->spell_id].teleport_zone,
+							single_flag ? " single" : ""
+						),
+						"Goto"
+					)
 				)
 			);
 
