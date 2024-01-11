@@ -261,16 +261,17 @@ public:
 	void CommonOutgoingHitSuccess(Mob *defender, DamageHitInfo &hit, ExtraAttackOptions *opts = nullptr);
 	bool HasDied();
 	virtual bool CheckDualWield();
-	void DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr);
-	void DoOffHandAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr);
+	void DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr, bool rampage = false);
+	void DoOffHandAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr, bool rampage = false);
 	virtual bool CheckDoubleAttack();
 	// inline process for places where we need to do them outside of the AI_Process
-	void ProcessAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr)
+	void ProcessAttackRounds(Mob *target, ExtraAttackOptions *opts = nullptr, bool rampage = false)
 	{
 		if (target) {
-			DoMainHandAttackRounds(target, opts);
-			if (CanThisClassDualWield())
-				DoOffHandAttackRounds(target, opts);
+			DoMainHandAttackRounds(target, opts, rampage);
+			if (CanThisClassDualWield()) {
+				DoOffHandAttackRounds(target, opts, rampage);
+			}
 		}
 		return;
 	}
@@ -1150,7 +1151,7 @@ public:
 	void StartEnrage();
 	void ProcessEnrage();
 	bool IsEnraged();
-	void Taunt(NPC *who, bool always_succeed, int chance_bonus = 0, bool FromSpell = false, int32 bonus_hate = 0);
+	void Taunt(NPC *who, bool always_succeed, int chance_bonus = 0, bool from_spell = false, int32 bonus_hate = 0);
 
 	virtual void AI_Init();
 	virtual void AI_Start(uint32 iMoveDelay = 0);

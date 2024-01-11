@@ -1463,9 +1463,9 @@ void Mob::DoAttack(Mob *other, DamageHitInfo &hit, ExtraAttackOptions *opts, boo
 //SYNC WITH: tune.cpp, mob.h TuneClientAttack
 bool Mob::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool IsFromSpell, ExtraAttackOptions *opts)
 {
-	if (!other) {
+	if (!other || (other && other->IsCorpse())) {
 		SetTarget(nullptr);
-		LogError("A null Mob object was passed for evaluation!");
+		LogError("A null or invalid Mob object was passed for evaluation!");
 		return false;
 	}
 
@@ -3221,57 +3221,73 @@ uint8 Mob::GetWeaponDamageBonus(const EQ::ItemData *weapon, bool offhand)
 	// We assume that the level check is done before calling this function and sinister strikes is checked before
 	// calling for offhand DB
 	auto level = GetLevel();
-	if (!weapon)
+
+	if (!weapon) {
 		return 1 + ((level - 28) / 3); // how does weaponless scale?
+	}
 
 	auto delay = weapon->Delay;
 	if (weapon->IsType1HWeapon() || weapon->ItemType == EQ::item::ItemTypeMartial) {
 		// we assume sinister strikes is checked before calling here
 		if (!offhand) {
-			if (delay <= 39)
+			if (delay <= 39) {
 				return 1 + ((level - 28) / 3);
-			else if (delay < 43)
+			} else if (delay < 43) {
 				return 2 + ((level - 28) / 3) + ((delay - 40) / 3);
-			else if (delay < 45)
+			} else if (delay < 45) {
 				return 3 + ((level - 28) / 3) + ((delay - 40) / 3);
-			else if (delay >= 45)
+			} else if (delay >= 45) {
 				return 4 + ((level - 28) / 3) + ((delay - 40) / 3);
+			}
+		} else {
+			if (RuleB(Skills, UseAltSinisterStrikeFormula)) {
+				if (delay <= 19) {
+					return 5 + ((level - 40) / 3) * (delay / 30);
+				} else if (delay <= 23) {
+					return 6 + ((level - 40) / 3) * (delay / 30);
+				} else if (delay >= 24) {
+					return 7 + ((level - 40) / 3) * (delay / 30);
+				}
+			} else {
+				return 1 + ((level - 40) / 3) * (delay / 30); // YOOO shit's useless waste of AAs
+			}
 		}
-		else {
-			return 1 + ((level - 40) / 3) * (delay / 30); // YOOO shit's useless waste of AAs
-		}
-	}
-	else {
+	} else {
 		// 2h damage bonus
 		int64 damage_bonus = 1 + (level - 28) / 3;
-		if (delay <= 27)
+
+		if (delay <= 27) {
 			return damage_bonus + 1;
+		}
+
 		// Client isn't reflecting what the dev quoted, this matches better
 		if (level > 29) {
 			int level_bonus = (level - 30) / 5 + 1;
 			if (level > 50) {
 				level_bonus++;
 				int level_bonus2 = level - 50;
-				if (level > 67)
+				if (level > 67) {
 					level_bonus2 += 5;
-				else if (level > 59)
+				} else if (level > 59) {
 					level_bonus2 += 4;
-				else if (level > 58)
+				} else if (level > 58) {
 					level_bonus2 += 3;
-				else if (level > 56)
+				} else if (level > 56) {
 					level_bonus2 += 2;
-				else if (level > 54)
+				} else if (level > 54) {
 					level_bonus2++;
+				}
 				level_bonus += level_bonus2 * delay / 40;
 			}
 			damage_bonus += level_bonus;
 		}
 		if (delay >= 40) {
 			int delay_bonus = (delay - 40) / 3 + 1;
-			if (delay >= 45)
+			if (delay >= 45) {
 				delay_bonus += 2;
-			else if (delay >= 43)
+			} else if (delay >= 43) {
 				delay_bonus++;
+			}
 			damage_bonus += delay_bonus;
 		}
 		return damage_bonus;
@@ -3708,22 +3724,39 @@ bool Mob::HasRangedProcs() const
 
 bool Client::CheckDoubleAttack()
 {
-	int chance = 0;
-	int skill = GetSkill(EQ::skills::SkillDoubleAttack);
 	//Check for bonuses that give you a double attack chance regardless of skill (ie Bestial Frenzy/Harmonious Attack AA)
-	int bonusGiveDA = aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack;
-	if (skill > 0)
-		chance = skill + GetLevel();
-	else if (!bonusGiveDA)
+	uint32 bonus_give_double_attack = aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack;
+
+	if (!HasSkill(EQ::skills::SkillDoubleAttack) && !bonus_give_double_attack) {
 		return false;
+	}
 
-	if (bonusGiveDA)
-		chance += bonusGiveDA / 100.0f * 500; // convert to skill value
-	int per_inc = aabonuses.DoubleAttackChance + spellbonuses.DoubleAttackChance + itembonuses.DoubleAttackChance;
-	if (per_inc)
-		chance += chance * per_inc / 100;
+	float chance = 0.0f;
+	uint16 skill = GetSkill(EQ::skills::SkillDoubleAttack);
 
-	return zone->random.Int(1, 500) <= chance;
+	int32 bonus_double_attack = 0;
+	if ((GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight) && (!HasTwoHanderEquipped())) {
+		LogCombatDetail("Knight class without a 2 hand weapon equipped = No DA Bonus!");
+	} else {
+		bonus_double_attack = aabonuses.DoubleAttackChance + spellbonuses.DoubleAttackChance + itembonuses.DoubleAttackChance;
+	}
+
+	//Use skill calculations otherwise, if you only have AA applied GiveDoubleAttack chance then use that value as the base.
+	if (skill) {
+		chance = (float(skill + GetLevel()) * (float(100.0f + bonus_double_attack + bonus_give_double_attack) / 100.0f)) / 500.0f;
+	} else {
+		chance = (float(bonus_give_double_attack + bonus_double_attack) / 100.0f);
+	}
+
+	LogCombatDetail(
+		"skill [{}] bonus_give_double_attack [{}] bonus_double_attack [{}] chance [{}]",
+		skill,
+		bonus_give_double_attack,
+		bonus_double_attack,
+		chance
+	);
+
+	return zone->random.Roll(chance);
 }
 
 // Admittedly these parses were short, but this check worked for 3 toons across multiple levels
@@ -5350,24 +5383,29 @@ void Mob::DoRiposte(Mob *defender)
 
 void Mob::ApplyMeleeDamageMods(uint16 skill, int64 &damage, Mob *defender, ExtraAttackOptions *opts)
 {
-	int64 dmgbonusmod = 0;
+	int64 damage_bonus_mod = 0;
+	damage_bonus_mod += GetMeleeDamageMod_SE(skill);
+	damage_bonus_mod += GetMeleeDmgPositionMod(defender);
 
-	dmgbonusmod += GetMeleeDamageMod_SE(skill);
-	dmgbonusmod += GetMeleeDmgPositionMod(defender);
-	if (opts)
-		dmgbonusmod += opts->melee_damage_bonus_flat;
+	if (opts) {
+		damage_bonus_mod += opts->melee_damage_bonus_flat;
+	}
 
 	if (defender) {
 		if (defender->IsOfClientBotMerc() && defender->GetClass() == Class::Warrior) {
-			dmgbonusmod -= 5;
+			damage_bonus_mod -= 5;
 		}
-		// 168 defensive
-		dmgbonusmod += (defender->spellbonuses.MeleeMitigationEffect +
-		                defender->itembonuses.MeleeMitigationEffect +
-		                defender->aabonuses.MeleeMitigationEffect);
+
+		if (defender->IsOfClientBotMerc()) {
+			damage_bonus_mod += (
+				defender->spellbonuses.MeleeMitigationEffect +
+				defender->itembonuses.MeleeMitigationEffect +
+				defender->aabonuses.MeleeMitigationEffect
+			);
+		}
 	}
 
-	damage += damage * dmgbonusmod / 100;
+	damage += damage * damage_bonus_mod / 100;
 }
 
 bool Mob::HasDied() {
@@ -6289,8 +6327,9 @@ void NPC::SetAttackTimer()
 
 void Client::DoAttackRounds(Mob *target, int hand, bool IsFromSpell)
 {
-	if (!target)
+	if (!target || (target && target->IsCorpse())) {
 		return;
+	}
 
 	Attack(target, hand, false, false, IsFromSpell);
 
@@ -6393,10 +6432,11 @@ bool Client::CheckDualWield()
 	return zone->random.Int(1, 375) <= chance;
 }
 
-void Mob::DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
+void Mob::DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts, bool rampage)
 {
-	if (!target)
+	if (!target) {
 		return;
+	}
 
 	if (RuleB(Combat, UseLiveCombatRounds)) {
 		// A "quad" on live really is just a successful dual wield where both double attack
@@ -6406,8 +6446,9 @@ void Mob::DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
 			Attack(target, EQ::invslot::slotPrimary, false, false, false, opts);
 			if ((IsPet() || IsTempPet()) && IsPetOwnerClient()) {
 				int chance = spellbonuses.PC_Pet_Flurry + itembonuses.PC_Pet_Flurry + aabonuses.PC_Pet_Flurry;
-				if (chance && zone->random.Roll(chance))
+				if (chance && zone->random.Roll(chance)) {
 					Flurry(nullptr);
+				}
 			}
 		}
 		return;
@@ -6415,16 +6456,14 @@ void Mob::DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
 
 	if (IsNPC()) {
 		int16 n_atk = CastToNPC()->GetNumberOfAttacks();
-		if (n_atk <= 1) {
+		if (n_atk <= 1 || rampage) {
 			Attack(target, EQ::invslot::slotPrimary, false, false, false, opts);
-		}
-		else {
+		} else {
 			for (int i = 0; i < n_atk; ++i) {
 				Attack(target, EQ::invslot::slotPrimary, false, false, false, opts);
 			}
 		}
-	}
-	else {
+	} else {
 		Attack(target, EQ::invslot::slotPrimary, false, false, false, opts);
 	}
 
@@ -6450,10 +6489,12 @@ void Mob::DoMainHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
 	}
 }
 
-void Mob::DoOffHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
+void Mob::DoOffHandAttackRounds(Mob *target, ExtraAttackOptions *opts, bool rampage)
 {
-	if (!target)
+	if (!target) {
 		return;
+	}
+
 	// Mobs will only dual wield w/ the flag or have a secondary weapon
 	// For now, SPECATK_QUAD means innate DW when Combat:UseLiveCombatRounds is true
 	if ((GetSpecialAbility(SPECATK_INNATE_DW) ||
@@ -6461,13 +6502,14 @@ void Mob::DoOffHandAttackRounds(Mob *target, ExtraAttackOptions *opts)
 		GetEquippedItemFromTextureSlot(EQ::textures::weaponSecondary) != 0) {
 		if (CheckDualWield()) {
 			Attack(target, EQ::invslot::slotSecondary, false, false, false, opts);
-			if (CanThisClassDoubleAttack() && GetLevel() > 35 && CheckDoubleAttack()) {
+			if (CanThisClassDoubleAttack() && GetLevel() > 35 && CheckDoubleAttack() && !rampage) {
 				Attack(target, EQ::invslot::slotSecondary, false, false, false, opts);
 
 				if ((IsPet() || IsTempPet()) && IsPetOwnerClient()) {
 					int chance = spellbonuses.PC_Pet_Flurry + itembonuses.PC_Pet_Flurry + aabonuses.PC_Pet_Flurry;
-					if (chance && zone->random.Roll(chance))
+					if (chance && zone->random.Roll(chance)) {
 						Flurry(nullptr);
+					}
 				}
 			}
 		}

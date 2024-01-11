@@ -220,6 +220,23 @@ bool Mob::CastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 		BuffFadeByEffect(SE_NegateIfCombat);
 	}
 
+	// check to see if target is a caster mob before performing a mana tap
+	if(GetTarget() && IsManaTapSpell(spell_id)) {
+		if (
+			GetTarget()->GetCasterClass() == 'N' &&
+			(
+				!RuleB(Spells, ManaTapsRequireNPCMana) ||
+				(
+					RuleB(Spells, ManaTapsRequireNPCMana) && 
+					GetTarget()->GetMana() == 0
+				)
+			)
+		) {
+			InterruptSpell(TARGET_NO_MANA, 0x121, spell_id);
+			return false;
+		}
+	}
+
 	//Casting a spell from an item click will also stop bard pulse.
 	if (HasActiveSong() && (IsBardSong(spell_id) || slot == CastingSlot::Item)) {
 		LogSpells("Casting a new song while singing a song. Killing old song [{}]", bardsong);
@@ -2483,14 +2500,6 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, in
 		return false;
 	}
 
-	// check to see if target is a caster mob before performing a mana tap
-	if(spell_target && IsManaTapSpell(spell_id)) {
-		if(spell_target->GetCasterClass() == 'N') {
-			MessageString(Chat::Red, TARGET_NO_MANA);
-			return false;
-		}
-	}
-
 	//range check our target, if we have one and it is not us
 	float range = spells[spell_id].range + GetRangeDistTargetSizeMod(spell_target);
 	if(IsClient() && CastToClient()->TGB() && IsTGBCompatibleSpell(spell_id) && IsGroupSpell(spell_id))
@@ -2792,15 +2801,11 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, in
 		{
 			CastToClient()->GetPTimers().Start(casting_spell_timer, casting_spell_timer_duration);
 			LogSpells("Spell [{}]: Setting custom reuse timer [{}] to [{}]", spell_id, casting_spell_timer, casting_spell_timer_duration);
-		}
-		else if(spells[spell_id].recast_time > 1000 && !spells[spell_id].is_discipline) {
+		} else if (spells[spell_id].recast_time > 1000 && !spells[spell_id].is_discipline) {
 			int recast = spells[spell_id].recast_time/1000;
-			if (spell_id == SPELL_LAY_ON_HANDS)	//lay on hands
-			{
+			if (spell_id == SPELL_LAY_ON_HANDS)	{ //lay on hands
 				recast -= GetAA(aaFervrentBlessing) * 420;
-			}
-			else if (spell_id == SPELL_HARM_TOUCH || spell_id == SPELL_HARM_TOUCH2)	//harm touch
-			{
+			} else if (IsHarmTouchSpell(spell_id)) { //harm touch
 				recast -= GetAA(aaTouchoftheWicked) * 420;
 			}
 
@@ -3522,7 +3527,9 @@ int Mob::AddBuff(Mob *caster, uint16 spell_id, int duration, int32 level_overrid
 				LogSpells("Adding buff [{}] failed: stacking prevented by spell [{}] in slot [{}] with caster level [{}]",
 						spell_id, curbuf.spellid, buffslot, curbuf.casterlevel);
 				if (caster && caster->IsClient() && RuleB(Client, UseLiveBlockedMessage)) {
-					caster->Message(Chat::Red, "Your %s did not take hold on %s. (Blocked by %s.)", spells[spell_id].name, GetName(), spells[curbuf.spellid].name);
+					if (caster->GetClass() != Class::Bard) {
+						caster->Message(Chat::Red, "Your %s did not take hold on %s. (Blocked by %s.)", spells[spell_id].name, GetName(), spells[curbuf.spellid].name);
+					}
 				}
 				return -1;
 			}
@@ -3800,7 +3807,7 @@ bool Mob::SpellOnTarget(
 
 	LogSpells("Casting spell [{}] on [{}] with effective caster level [{}]", spell_id, spelltar->GetName(), caster_level);
 
-	if (IsClient() && (IsDiscipline(spell_id) || spells[spell_id].is_discipline)) {
+	if (IsOfClientBotMerc() && (IsDiscipline(spell_id) || spells[spell_id].is_discipline)) {
 		entity_list.MessageClose(this, false, 200, 0, fmt::format("{}{}", GetCleanName(), spells[spell_id].cast_on_other).c_str());
 	}
 
@@ -5187,13 +5194,12 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 
 	// Special case. If the caster has the Unholy Aura Discipline activated and the spell is HT,
 	// or improved HT then the resist type is disease.
-	if ((spell_id == SPELL_HARM_TOUCH || spell_id == SPELL_HARM_TOUCH2 || spell_id == SPELL_IMP_HARM_TOUCH) && caster->IsClient() && caster->CastToClient()->FindBuff(DISC_UNHOLY_AURA)) {
+	if (IsHarmTouchSpell(spell_id) && caster->IsClient() && caster->CastToClient()->FindBuff(DISC_UNHOLY_AURA)) {
 		resist_type = RESIST_DISEASE;
 	}
 	
 	//Get the resist chance for the target
-	if(resist_type == RESIST_NONE || spells[spell_id].no_resist)
-	{
+	if (resist_type == RESIST_NONE || spells[spell_id].no_resist) {
 		LogSpells("Spell was unresistable");
 		return 100;
 	}

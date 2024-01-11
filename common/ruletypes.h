@@ -244,7 +244,8 @@ RULE_INT(Guild, PlayerCreationRequiredTime, 0, "Time needed online on the accoun
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Skills)
-RULE_INT(Skills, MaxTrainTradeskills, 21, "Highest level for trading skills that can be learnt by the trainer")
+RULE_INT(Skills, MaxTrainTradeskills, 21, "Highest level for trade skills that can be taught by the trainer")
+RULE_INT(Skills, MaxTrainResearch, 21, "Highest level for training research from a GM.")
 RULE_BOOL(Skills, UseLimitTradeskillSearchSkillDiff, true, "Enables the limit for the maximum difference between trivial and skill for recipe searches and favorites")
 RULE_BOOL(Skills, TrivialTradeskillCombinesNoFail, false, "Enable to make all trivial tradeskill combines unable to fail")
 RULE_INT(Skills, MaxTradeskillSearchSkillDiff, 50, "The maximum difference in skill between the trivial of an item and the skill of the player if the trivial is higher than the skill. Recipes that have not been learnt or made at least once via the Experiment mode will be removed from searches based on this criteria.")
@@ -255,6 +256,8 @@ RULE_INT(Skills, SenseHeadingStartValue, 200, "Start value of sense heading skil
 RULE_BOOL(Skills, SelfLanguageLearning, true, "Enabling self-learning of languages")
 RULE_BOOL(Skills, RequireTomeHandin, false, "Disable click-to-learn and force hand in to Guild Master")
 RULE_INT(Skills, TradeSkillClamp, 0, "Legacy tradeskills would clamp at 252 regardless of item modifiers and skill combination. DEFAULT: 0 will bypass clamp. Legacy value 252")
+RULE_BOOL(Skills, UseAltSinisterStrikeFormula, false, "Enabling will utilize a formula derived from 2004 monkey business post which makes the AA actually worth something.")
+RULE_BOOL(Skills, TrackingAutoRefreshSkillUps, true, "Disable to prevent tracking auto-refresh from giving skill-ups. Classic Style")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Pets)
@@ -478,6 +481,9 @@ RULE_BOOL(Spells, EvacClearAggroInSameZone, false, "Enable to clear aggro on cli
 RULE_BOOL(Spells, CharmAggroOverLevel, false, "Enabling this rule will cause Charm casts over level to show resisted and cause aggro. Early EQ style.")
 RULE_BOOL(Spells, RequireMnemonicRetention, true, "Enabling will require spell slots 9-12 to have the appropriate Mnemonic Retention AA learned.")
 RULE_BOOL(Spells, EvacClearCharmPet, false, "Enable to have evac in zone clear charm from charm pets and detach buffs.")
+RULE_BOOL(Spells, ManaTapsRequireNPCMana, false, "Enabling will require target to have mana to tap. Default off as many npc's are caster class with 0 mana and need fixed.")
+RULE_INT(Spells, HarmTouchCritRatio, 200, "Harmtouch crit bonus, on top of BaseCritRatio")
+RULE_BOOL(Spells, UseClassicSpellFocus, false, "Enabling will tell the server to handle random focus damage as classic spell imports lack the limit values.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)
@@ -515,6 +521,7 @@ RULE_REAL(Combat, AvgDefProcsPerMinute, 2.0, "Average defense procs per minute")
 RULE_REAL(Combat, DefProcPerMinAgiContrib, 0.075, "How much agility contributes to defensive proc rate")
 RULE_INT(Combat, NPCFlurryChance, 20, "Chance for NPC to flurry")
 RULE_BOOL(Combat, TauntOverLevel, 1, "Allows you to taunt NPC's over warriors level")
+RULE_INT(Combat, TauntOverAggro, 0, "+ amount over hate_top it will add before any bonus hate.")
 RULE_REAL(Combat, TauntSkillFalloff, 0.33, "For every taunt skill point that's not maxed you lose this percentage chance to taunt")
 RULE_BOOL(Combat, EXPFromDmgShield, false, "Determine if damage from a damage shield counts for experience gain")
 RULE_INT(Combat, QuiverHasteCap, 1000, "Quiver haste cap 1000 on live for a while, currently 700 on live")
@@ -569,6 +576,8 @@ RULE_INT(Combat, ClassicTripleAttackChanceMonk, 100, "Innate Chance for Monk to 
 RULE_INT(Combat, ClassicTripleAttackChanceBerserker, 100, "Innate Chance for Berserker to Triple Attack after a Double Attack (200 = 20%). DEFAULT: 100")
 RULE_INT(Combat, ClassicTripleAttackChanceRanger, 100, "Innate Chance for Ranger to Triple Attack after a Double Attack (200 = 20%). DEFAULT: 100")
 RULE_INT(Combat, StunChance, 12, "Percent chance that client will be stunned when mob is behind player. DEFAULT: 12")
+RULE_BOOL(Combat, BashTwoHanderUseShoulderAC, false, "Enable to use shoulder AC for bash calculations when two hander is equipped. Unproven if accurate DEFAULT: false")
+RULE_REAL(Combat, BashACBonusDivisor, 25.0, "this divides the AC value contribution to bash damage, lower to increase damage")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(NPC)
@@ -626,6 +635,7 @@ RULE_REAL(Aggro, PetAttackRange, 40000.0, "Maximum squared range /pet attack wor
 RULE_BOOL(Aggro, NPCAggroMaxDistanceEnabled, true, "If enabled, NPC's will drop aggro beyond 600 units or what is defined at the zone level")
 RULE_BOOL(Aggro, AggroPlayerPets, false, "If enabled, NPCs will aggro player pets")
 RULE_BOOL(Aggro, UndeadAlwaysAggro, true, "should undead always aggro?")
+RULE_INT(Aggro, BardAggroCap, 40, "per song bard aggro cap.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(TaskSystem)
