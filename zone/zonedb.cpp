@@ -37,6 +37,19 @@
 #include "../common/repositories/character_alt_currency_repository.h"
 #include "../common/repositories/character_item_recast_repository.h"
 #include "../common/repositories/account_repository.h"
+#include "../common/repositories/respawn_times_repository.h"
+#include "../common/repositories/object_contents_repository.h"
+#include "../common/repositories/mercs_repository.h"
+#include "../common/repositories/merc_buffs_repository.h"
+#include "../common/repositories/merc_inventory_repository.h"
+#include "../common/repositories/merc_subtypes_repository.h"
+#include "../common/repositories/npc_types_tint_repository.h"
+#include "../common/repositories/merchantlist_temp_repository.h"
+#include "../common/repositories/character_exp_modifiers_repository.h"
+#include "../common/repositories/character_data_repository.h"
+#include "../common/repositories/character_corpses_repository.h"
+#include "../common/repositories/character_corpse_items_repository.h"
+#include "../common/repositories/zone_repository.h"
 
 #include <ctime>
 #include <iostream>
@@ -84,42 +97,44 @@ ZoneDatabase::~ZoneDatabase() {
 	}
 }
 
-bool ZoneDatabase::SaveZoneCFG(uint32 zoneid, uint16 instance_version, NewZone_Struct* zd) {
-	std::string query = fmt::format(
-		"UPDATE zone SET underworld = {:.2f}, minclip = {:.2f}, "
-		"maxclip = {:.2f}, fog_minclip = {:.2f}, fog_maxclip = {:.2f}, "
-		"fog_blue = {}, fog_red = {}, fog_green = {}, "
-		"sky = {}, ztype = {}, zone_exp_multiplier = {:.2f}, "
-		"safe_x = {:.2f}, safe_y = {:.2f}, safe_z = {:.2f} "
-		"WHERE zoneidnumber = {} AND version = {}",
-		zd->underworld,
-		zd->minclip,
-		zd->maxclip,
-		zd->fog_minclip[0],
-		zd->fog_maxclip[0],
-		zd->fog_blue[0],
-		zd->fog_red[0],
-		zd->fog_green[0],
-		zd->sky,
-		zd->ztype,
-		zd->zone_exp_multiplier,
-		zd->safe_x,
-		zd->safe_y,
-		zd->safe_z,
-		zoneid,
-		instance_version
+bool ZoneDatabase::SaveZoneCFG(uint32 zone_id, uint16 instance_version, NewZone_Struct* zd)
+{
+	const auto& l = ZoneRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`zoneidnumber` = {} AND `version` = {}",
+			zone_id,
+			instance_version
+		)
 	);
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
-        return false;
+
+	if (l.empty()) {
+		return false;
 	}
 
-	return true;
+	auto e = l.front();
+
+	e.underworld          = zd->underworld;
+	e.minclip             = zd->minclip;
+	e.maxclip             = zd->maxclip;
+	e.fog_minclip         = zd->fog_minclip[0];
+	e.fog_maxclip         = zd->fog_maxclip[0];
+	e.fog_blue            = zd->fog_blue[0];
+	e.fog_red             = zd->fog_red[0];
+	e.fog_green           = zd->fog_green[0];
+	e.sky                 = zd->sky;
+	e.ztype               = zd->ztype;
+	e.zone_exp_multiplier = zd->zone_exp_multiplier;
+	e.safe_x              = zd->safe_x;
+	e.safe_y              = zd->safe_y;
+	e.safe_z              = zd->safe_z;
+	e.safe_heading        = zd->safe_heading;
+
+	return ZoneRepository::UpdateOne(*this, e);
 }
 
 void ZoneDatabase::UpdateRespawnTime(uint32 spawn2_id, uint16 instance_id, uint32 time_left)
 {
-
 	timeval tv;
 	gettimeofday(&tv, nullptr);
 	uint32 current_time = tv.tv_sec;
@@ -128,63 +143,36 @@ void ZoneDatabase::UpdateRespawnTime(uint32 spawn2_id, uint16 instance_id, uint3
 			otherwise we update with a REPLACE INTO
 	*/
 
-	if(time_left == 0) {
-        std::string query = StringFormat("DELETE FROM `respawn_times` WHERE `id` = %u AND `instance_id` = %u", spawn2_id, instance_id);
-        QueryDatabase(query);
+	if (!time_left) {
+		RespawnTimesRepository::DeleteWhere(
+			*this,
+			fmt::format(
+				"`id` = {} AND `instance_id` = {}",
+				spawn2_id,
+				instance_id
+			)
+		);
 		return;
 	}
 
-    std::string query = StringFormat(
-		"REPLACE INTO `respawn_times` "
-		"(id, "
-		"start, "
-		"duration, "
-		"instance_id) "
-		"VALUES "
-		"(%u, "
-		"%u, "
-		"%u, "
-		"%u)",
-		spawn2_id,
-		current_time,
-		time_left,
-		instance_id
+	RespawnTimesRepository::ReplaceOne(
+		*this,
+		RespawnTimesRepository::RespawnTimes{
+			.id = static_cast<int32_t>(spawn2_id),
+			.start = static_cast<int32_t>(current_time),
+			.duration = static_cast<int32_t>(time_left),
+			.instance_id = static_cast<int16_t>(instance_id)
+		}
 	);
-    QueryDatabase(query);
-
-	return;
 }
 
 //Gets the respawn time left in the database for the current spawn id
-uint32 ZoneDatabase::GetSpawnTimeLeft(uint32 id, uint16 instance_id)
+uint32 ZoneDatabase::GetSpawnTimeLeft(uint32 spawn2_id, uint16 instance_id)
 {
-	std::string query = StringFormat("SELECT start, duration FROM respawn_times "
-                                    "WHERE id = %lu AND instance_id = %lu",
-                                    (unsigned long)id, (unsigned long)zone->GetInstanceID());
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
-		return 0;
-    }
+	timeval tv;
+	gettimeofday(&tv, nullptr);
 
-    if (results.RowCount() != 1)
-        return 0;
-
-    auto& row = results.begin();
-
-    timeval tv;
-    gettimeofday(&tv, nullptr);
-    uint32 resStart = Strings::ToInt(row[0]);
-    uint32 resDuration = Strings::ToInt(row[1]);
-
-    //compare our values to current time
-    if((resStart + resDuration) <= tv.tv_sec) {
-        //our current time was expired
-        return 0;
-    }
-
-    //we still have time left on this timer
-    return ((resStart + resDuration) - tv.tv_sec);
-
+	return RespawnTimesRepository::GetTimeRemaining(*this, spawn2_id, instance_id, tv.tv_sec);
 }
 
 void ZoneDatabase::UpdateSpawn2Status(uint32 id, uint8 new_status, uint32 instance_id)
@@ -219,110 +207,99 @@ bool ZoneDatabase::SetSpecialAttkFlag(uint8 id, const char* flag) {
 	return results.RowsAffected() != 0;
 }
 
-// Load child objects for a world container (i.e., forge, bag dropped to ground, etc)
-void ZoneDatabase::LoadWorldContainer(uint32 parentid, EQ::ItemInstance* container)
+void ZoneDatabase::LoadWorldContainer(uint32 parent_id, EQ::ItemInstance* container)
 {
 	if (!container) {
-		LogError("Programming error: LoadWorldContainer passed nullptr pointer");
 		return;
 	}
 
-	std::string query   = StringFormat(
-		"SELECT bagidx, itemid, charges, augslot1, augslot2, augslot3, augslot4, augslot5, augslot6 "
-		"FROM object_contents WHERE parentid = %i", parentid
+	const auto& l = ObjectContentsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`parentid` = {}",
+			parent_id
+		)
 	);
 
-	auto        results = QueryDatabase(query);
-	if (!results.Success()) {
-		LogError("Error in DB::LoadWorldContainer: [{}]", results.ErrorMessage().c_str());
+	for (const auto& e : l) {
+		const uint32 augments[EQ::invaug::SOCKET_COUNT] = {
+			e.augslot1,
+			e.augslot2,
+			e.augslot3,
+			e.augslot4,
+			e.augslot5,
+			static_cast<uint32>(e.augslot6)
+		};
+
+		auto inst = database.CreateItem(e.itemid, e.charges);
+
+		if (inst && inst->GetItem()->IsClassCommon()) {
+			for (int i = EQ::invaug::SOCKET_BEGIN; i <= EQ::invaug::SOCKET_END; i++) {
+				if (augments[i]) {
+					inst->PutAugment(&database, i, augments[i]);
+				}
+			}
+
+			container->PutItem(e.bagidx, *inst);
+		}
+
+		safe_delete(inst);
+	}
+}
+
+void ZoneDatabase::SaveWorldContainer(uint32 zone_id, uint32 parent_id, const EQ::ItemInstance* container)
+{
+	if (!container) {
 		return;
 	}
 
-    for (auto& row = results.begin(); row != results.end(); ++row) {
-        uint8 index = (uint8)Strings::ToInt(row[0]);
-        uint32 item_id = (uint32)Strings::ToInt(row[1]);
-        int8 charges = (int8)Strings::ToInt(row[2]);
-		uint32 aug[EQ::invaug::SOCKET_COUNT];
-        aug[0] = (uint32)Strings::ToInt(row[3]);
-        aug[1] = (uint32)Strings::ToInt(row[4]);
-        aug[2] = (uint32)Strings::ToInt(row[5]);
-        aug[3] = (uint32)Strings::ToInt(row[6]);
-        aug[4] = (uint32)Strings::ToInt(row[7]);
-		aug[5] = (uint32)Strings::ToInt(row[8]);
+	DeleteWorldContainer(parent_id, zone_id);
 
-        EQ::ItemInstance* inst = database.CreateItem(item_id, charges);
-		if (inst && inst->GetItem()->IsClassCommon()) {
-			for (int i = EQ::invaug::SOCKET_BEGIN; i <= EQ::invaug::SOCKET_END; i++)
-                if (aug[i])
-                    inst->PutAugment(&database, i, aug[i]);
-            // Put item inside world container
-            container->PutItem(index, *inst);
-        }
-		safe_delete(inst);
-    }
-
-}
-
-// Save child objects for a world container (i.e., forge, bag dropped to ground, etc)
-void ZoneDatabase::SaveWorldContainer(uint32 zone_id, uint32 parent_id, const EQ::ItemInstance* container)
-{
-	// Since state is not saved for each world container action, we'll just delete
-	// all and save from scratch .. we may come back later to optimize
-	if (!container)
-		return;
-
-	//Delete all items from container
-	DeleteWorldContainer(parent_id,zone_id);
-
-	// Save all 10 items, if they exist
 	for (uint8 index = EQ::invbag::SLOT_BEGIN; index <= EQ::invbag::SLOT_END; index++) {
+		auto inst = container->GetItem(index);
+		if (!inst) {
+			continue;
+		}
 
-		EQ::ItemInstance* inst = container->GetItem(index);
-		if (!inst)
-            continue;
-
-        uint32 item_id = inst->GetItem()->ID;
-		uint32 augslot[EQ::invaug::SOCKET_COUNT] = { 0, 0, 0, 0, 0, 0 };
+		uint32 augments[EQ::invaug::SOCKET_COUNT] = { 0, 0, 0, 0, 0, 0 };
 
 		if (inst->IsType(EQ::item::ItemClassCommon)) {
 			for (int i = EQ::invaug::SOCKET_BEGIN; i <= EQ::invaug::SOCKET_END; i++) {
-                EQ::ItemInstance *auginst=inst->GetAugment(i);
-                augslot[i]=(auginst && auginst->GetItem()) ? auginst->GetItem()->ID : 0;
-            }
-        }
-
-		std::string query   = StringFormat(
-			"REPLACE INTO object_contents "
-			"(zoneid, parentid, bagidx, itemid, charges, "
-			"augslot1, augslot2, augslot3, augslot4, augslot5, augslot6, droptime) "
-			"VALUES (%i, %i, %i, %i, %i, %i, %i, %i, %i, %i, %i, now())",
-			zone_id, parent_id, index, item_id, inst->GetCharges(),
-			augslot[0], augslot[1], augslot[2], augslot[3], augslot[4], augslot[5]
-		);
-
-		auto results = database.QueryDatabase(query);
-		if (!results.Success()) {
-			LogError("Error in ZoneDatabase::SaveWorldContainer: [{}]", results.ErrorMessage().c_str());
+				auto augment = inst->GetAugment(i);
+				augments[i] = (augment && augment->GetItem()) ? augment->GetItem()->ID : 0;
+			}
 		}
 
+		ObjectContentsRepository::ReplaceOne(
+			*this,
+			ObjectContentsRepository::ObjectContents{
+				.zoneid = zone_id,
+				.parentid = parent_id,
+				.bagidx = index,
+				.itemid = inst->GetItem()->ID,
+				.charges = inst->GetCharges(),
+				.droptime = std::time(nullptr),
+				.augslot1 = augments[0],
+				.augslot2 = augments[1],
+				.augslot3 = augments[2],
+				.augslot4 = augments[3],
+				.augslot5 = augments[4],
+				.augslot6 = static_cast<int32_t>(augments[5])
+			}
+		);
 	}
-
 }
 
-// Remove all child objects inside a world container (i.e., forge, bag dropped to ground, etc)
 void ZoneDatabase::DeleteWorldContainer(uint32 parent_id, uint32 zone_id)
 {
-	std::string query = StringFormat(
-		"DELETE FROM object_contents WHERE parentid = %i AND zoneid = %i",
-		parent_id,
-		zone_id
+	ObjectContentsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`parentid` = {} AND `zoneid` = {}",
+			parent_id,
+			zone_id
+		)
 	);
-
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
-		LogError("Error in ZoneDatabase::DeleteWorldContainer: [{}]", results.ErrorMessage().c_str());
-	}
-
 }
 
 Trader_Struct* ZoneDatabase::LoadTraderItem(uint32 char_id)
@@ -762,7 +739,7 @@ bool ZoneDatabase::LoadCharacterLeadershipAbilities(uint32 character_id, PlayerP
 	);
 
 	for (const auto& e : l) {
-		pp->leader_abilities.ranks[e.slot] = e.rank;
+		pp->leader_abilities.ranks[e.slot] = e.rank_;
 	}
 
 	return true;
@@ -991,10 +968,16 @@ bool ZoneDatabase::LoadCharacterBindPoint(uint32 character_id, PlayerProfile_Str
 	return true;
 }
 
-bool ZoneDatabase::SaveCharacterLanguage(uint32 character_id, uint32 lang_id, uint32 value){
-	std::string query = StringFormat("REPLACE INTO `character_languages` (id, lang_id, value) VALUES (%u, %u, %u)", character_id, lang_id, value); QueryDatabase(query);
-	LogDebug("ZoneDatabase::SaveCharacterLanguage for character ID: [{}], lang_id:[{}] value:[{}] done", character_id, lang_id, value);
-	return true;
+bool ZoneDatabase::SaveCharacterLanguage(uint32 character_id, uint32 language_id, uint32 value)
+{
+	return CharacterLanguagesRepository::ReplaceOne(
+		*this,
+		CharacterLanguagesRepository::CharacterLanguages{
+			.id = character_id,
+			.lang_id = static_cast<uint16_t>(language_id),
+			.value = static_cast<uint16_t>(value)
+		}
+	);
 }
 
 bool ZoneDatabase::SaveCharacterMaterialColor(uint32 character_id, uint8 slot_id, uint32 color)
@@ -1115,9 +1098,9 @@ bool ZoneDatabase::SaveCharacterLeadershipAbilities(uint32 character_id, PlayerP
 
 	for (int slot_id = 0; slot_id < MAX_LEADERSHIP_AA_ARRAY; slot_id++) {
 		if (pp->leader_abilities.ranks[slot_id] > 0) {
-			e.id   = character_id;
-			e.slot = slot_id;
-			e.rank = pp->leader_abilities.ranks[slot_id];
+			e.id    = character_id;
+			e.slot  = slot_id;
+			e.rank_ = pp->leader_abilities.ranks[slot_id];
 
 			v.emplace_back(e);
 		}
@@ -1987,605 +1970,632 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 	return npc;
 }
 
-const NPCType* ZoneDatabase::GetMercType(uint32 id, uint16 raceid, uint32 clientlevel)
+const NPCType* ZoneDatabase::GetMercenaryType(uint32 merc_npc_type_id, uint16 race_id, uint32 owner_level)
 {
-	//need to save based on merc_npc_type & client level
-	uint32 merc_type_id = id * 100 + clientlevel;
+	const uint32 merc_type_id = merc_npc_type_id * 100 + owner_level;
 
-	// If Merc is already in tree, return it.
-	auto itr = zone->merctable.find(merc_type_id);
-	if(itr != zone->merctable.end())
-		return itr->second;
+	auto i = zone->merctable.find(merc_type_id);
+	if (i != zone->merctable.end()) {
+		return i->second;
+	}
 
-	//If the id is 0, return nullptr. (sanity check)
-	if(id == 0)
-        return nullptr;
-
-	// Otherwise, load Merc data on demand
-	std::string query = StringFormat("SELECT "
-		"m_stats.merc_npc_type_id, "
-		"'' AS name, "
-		"m_stats.level, "
-		"m_types.race_id, "
-		"m_subtypes.class_id, "
-		"m_stats.hp, "
-		"m_stats.mana, "
-		"0 AS gender, "
-		"m_armorinfo.texture, "
-		"m_armorinfo.helmtexture, "
-		"m_stats.attack_delay, "
-		"m_stats.STR, "
-		"m_stats.STA, "
-		"m_stats.DEX, "
-		"m_stats.AGI, "
-		"m_stats._INT, "
-		"m_stats.WIS, "
-		"m_stats.CHA, "
-		"m_stats.MR, "
-		"m_stats.CR, "
-		"m_stats.DR, "
-		"m_stats.FR, "
-		"m_stats.PR, "
-		"m_stats.Corrup, "
-		"m_stats.mindmg, "
-		"m_stats.maxdmg, "
-		"m_stats.attack_count, "
-		"m_stats.special_abilities, "
-		"m_weaponinfo.d_melee_texture1, "
-		"m_weaponinfo.d_melee_texture2, "
-		"m_weaponinfo.prim_melee_type, "
-		"m_weaponinfo.sec_melee_type, "
-		"m_stats.runspeed, "
-		"m_stats.hp_regen_rate, "
-		"m_stats.mana_regen_rate, "
-		"1 AS bodytype, "
-		"m_armorinfo.armortint_id, "
-		"m_armorinfo.armortint_red, "
-		"m_armorinfo.armortint_green, "
-		"m_armorinfo.armortint_blue, "
-		"m_stats.AC, "
-		"m_stats.ATK, "
-		"m_stats.Accuracy, "
-		"m_stats.statscale, "
-		"m_stats.spellscale, "
-		"m_stats.healscale "
-		"FROM merc_stats m_stats "
-		"INNER JOIN merc_armorinfo m_armorinfo "
-		"ON m_stats.merc_npc_type_id = m_armorinfo.merc_npc_type_id "
-		"AND m_armorinfo.minlevel <= m_stats.level AND m_armorinfo.maxlevel >= m_stats.level "
-		"INNER JOIN merc_weaponinfo m_weaponinfo "
-		"ON m_stats.merc_npc_type_id = m_weaponinfo.merc_npc_type_id "
-		"AND m_weaponinfo.minlevel <= m_stats.level AND m_weaponinfo.maxlevel >= m_stats.level "
-		"INNER JOIN merc_templates m_templates "
-		"ON m_templates.merc_npc_type_id = m_stats.merc_npc_type_id "
-		"INNER JOIN merc_types m_types "
-		"ON m_templates.merc_type_id = m_types.merc_type_id "
-		"INNER JOIN merc_subtypes m_subtypes "
-		"ON m_templates.merc_subtype_id = m_subtypes.merc_subtype_id "
-		"WHERE m_templates.merc_npc_type_id = %d AND m_stats.clientlevel = %d AND m_types.race_id = %d",
-		id, clientlevel, raceid); //dual primary keys. one is ID, one is level.
-
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
+	if (!merc_npc_type_id) {
 		return nullptr;
 	}
 
-	const NPCType *npc = nullptr;
+	const std::string& query = fmt::format(
+		SQL(
+			SELECT
+			m_stats.merc_npc_type_id,
+			'' AS name,
+			m_stats.level,
+			m_types.race_id,
+			m_subtypes.class_id,
+			m_stats.hp,
+			m_stats.mana,
+			0 AS gender,
+			m_armorinfo.texture,
+			m_armorinfo.helmtexture,
+			m_stats.attack_delay,
+			m_stats.STR,
+			m_stats.STA,
+			m_stats.DEX,
+			m_stats.AGI,
+			m_stats._INT,
+			m_stats.WIS,
+			m_stats.CHA,
+			m_stats.MR,
+			m_stats.CR,
+			m_stats.DR,
+			m_stats.FR,
+			m_stats.PR,
+			m_stats.Corrup,
+			m_stats.mindmg,
+			m_stats.maxdmg,
+			m_stats.attack_count,
+			m_stats.special_abilities,
+			m_weaponinfo.d_melee_texture1,
+			m_weaponinfo.d_melee_texture2,
+			m_weaponinfo.prim_melee_type,
+			m_weaponinfo.sec_melee_type,
+			m_stats.runspeed,
+			m_stats.hp_regen_rate,
+			m_stats.mana_regen_rate,
+			1 AS bodytype,
+			m_armorinfo.armortint_id,
+			m_armorinfo.armortint_red,
+			m_armorinfo.armortint_green,
+			m_armorinfo.armortint_blue,
+			m_stats.AC,
+			m_stats.ATK,
+			m_stats.Accuracy,
+			m_stats.statscale,
+			m_stats.spellscale,
+			m_stats.healscale
+			FROM merc_stats m_stats
+			INNER JOIN merc_armorinfo m_armorinfo
+			ON m_stats.merc_npc_type_id = m_armorinfo.merc_npc_type_id
+			AND m_armorinfo.minlevel <= m_stats.level AND m_armorinfo.maxlevel >= m_stats.level
+			INNER JOIN merc_weaponinfo m_weaponinfo
+			ON m_stats.merc_npc_type_id = m_weaponinfo.merc_npc_type_id
+			AND m_weaponinfo.minlevel <= m_stats.level AND m_weaponinfo.maxlevel >= m_stats.level
+			INNER JOIN merc_templates m_templates
+			ON m_templates.merc_npc_type_id = m_stats.merc_npc_type_id
+			INNER JOIN merc_types m_types
+			ON m_templates.merc_type_id = m_types.merc_type_id
+			INNER JOIN merc_subtypes m_subtypes
+			ON m_templates.merc_subtype_id = m_subtypes.merc_subtype_id
+			WHERE m_templates.merc_npc_type_id = {} AND m_types.race_id = {} AND m_stats.clientlevel = {}
+		),
+		merc_npc_type_id,
+		race_id,
+		owner_level
+	);
 
-	// Process each row returned.
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		NPCType *tmpNPCType;
-		tmpNPCType = new NPCType;
-		memset(tmpNPCType, 0, sizeof *tmpNPCType);
+	auto results = QueryDatabase(query);
+	if (!results.Success() || !results.RowCount()) {
+		return nullptr;
+	}
 
-		tmpNPCType->npc_id = Strings::ToInt(row[0]);
+	const NPCType* n = nullptr;
 
-		strn0cpy(tmpNPCType->name, row[1], 50);
+	auto row = results.begin();
 
-		tmpNPCType->level = Strings::ToInt(row[2]);
-		tmpNPCType->race = Strings::ToInt(row[3]);
-		tmpNPCType->class_ = Strings::ToInt(row[4]);
-		tmpNPCType->max_hp = Strings::ToInt(row[5]);
-		tmpNPCType->current_hp = tmpNPCType->max_hp;
-		tmpNPCType->Mana = Strings::ToInt(row[6]);
-		tmpNPCType->gender = Strings::ToInt(row[7]);
-		tmpNPCType->texture = Strings::ToInt(row[8]);
-		tmpNPCType->helmtexture = Strings::ToInt(row[9]);
-		tmpNPCType->attack_delay = Strings::ToInt(row[10]) * 100; // TODO: fix DB
-		tmpNPCType->STR = Strings::ToInt(row[11]);
-		tmpNPCType->STA = Strings::ToInt(row[12]);
-		tmpNPCType->DEX = Strings::ToInt(row[13]);
-		tmpNPCType->AGI = Strings::ToInt(row[14]);
-		tmpNPCType->INT = Strings::ToInt(row[15]);
-		tmpNPCType->WIS = Strings::ToInt(row[16]);
-		tmpNPCType->CHA = Strings::ToInt(row[17]);
-		tmpNPCType->MR = Strings::ToInt(row[18]);
-		tmpNPCType->CR = Strings::ToInt(row[19]);
-		tmpNPCType->DR = Strings::ToInt(row[20]);
-		tmpNPCType->FR = Strings::ToInt(row[21]);
-		tmpNPCType->PR = Strings::ToInt(row[22]);
-		tmpNPCType->Corrup = Strings::ToInt(row[23]);
-		tmpNPCType->min_dmg = Strings::ToInt(row[24]);
-		tmpNPCType->max_dmg = Strings::ToInt(row[25]);
-		tmpNPCType->attack_count = Strings::ToInt(row[26]);
+	NPCType* t = new NPCType;
 
-		if (row[27] != nullptr)
-			strn0cpy(tmpNPCType->special_abilities, row[27], 512);
-		else
-			tmpNPCType->special_abilities[0] = '\0';
+	memset(t, 0, sizeof *t);
 
-		tmpNPCType->d_melee_texture1 = Strings::ToUnsignedInt(row[28]);
-		tmpNPCType->d_melee_texture2 = Strings::ToUnsignedInt(row[29]);
-		tmpNPCType->prim_melee_type = Strings::ToInt(row[30]);
-		tmpNPCType->sec_melee_type = Strings::ToInt(row[31]);
-		tmpNPCType->runspeed = Strings::ToFloat(row[32]);
+	t->npc_id = Strings::ToInt(row[0]);
 
-		tmpNPCType->hp_regen = Strings::ToInt(row[33]);
-		tmpNPCType->mana_regen = Strings::ToInt(row[34]);
+	strn0cpy(t->name, row[1], sizeof(t->name));
 
-		tmpNPCType->aggroradius = RuleI(Mercs, AggroRadius);
+	t->level        = Strings::ToInt(row[2]);
+	t->race         = Strings::ToInt(row[3]);
+	t->class_       = Strings::ToInt(row[4]);
+	t->max_hp       = Strings::ToInt(row[5]);
+	t->current_hp   = t->max_hp;
+	t->Mana         = Strings::ToInt(row[6]);
+	t->gender       = Strings::ToInt(row[7]);
+	t->texture      = Strings::ToInt(row[8]);
+	t->helmtexture  = Strings::ToInt(row[9]);
+	t->attack_delay = Strings::ToInt(row[10]) * 100; // TODO: fix DB
+	t->STR          = Strings::ToInt(row[11]);
+	t->STA          = Strings::ToInt(row[12]);
+	t->DEX          = Strings::ToInt(row[13]);
+	t->AGI          = Strings::ToInt(row[14]);
+	t->INT          = Strings::ToInt(row[15]);
+	t->WIS          = Strings::ToInt(row[16]);
+	t->CHA          = Strings::ToInt(row[17]);
+	t->MR           = Strings::ToInt(row[18]);
+	t->CR           = Strings::ToInt(row[19]);
+	t->DR           = Strings::ToInt(row[20]);
+	t->FR           = Strings::ToInt(row[21]);
+	t->PR           = Strings::ToInt(row[22]);
+	t->Corrup       = Strings::ToInt(row[23]);
+	t->min_dmg      = Strings::ToInt(row[24]);
+	t->max_dmg      = Strings::ToInt(row[25]);
+	t->attack_count = Strings::ToInt(row[26]);
 
-		if (row[35] && strlen(row[35]))
-			tmpNPCType->bodytype = (uint8)Strings::ToInt(row[35]);
-		else
-			tmpNPCType->bodytype = 1;
+	if (row[27]) {
+		strn0cpy(t->special_abilities, row[27], sizeof(t->special_abilities));
+	} else {
+		t->special_abilities[0] = '\0';
+	}
 
-		uint32 armor_tint_id = Strings::ToInt(row[36]);
-		tmpNPCType->armor_tint.Slot[0].Color = (Strings::ToInt(row[37]) & 0xFF) << 16;
-		tmpNPCType->armor_tint.Slot[0].Color |= (Strings::ToInt(row[38]) & 0xFF) << 8;
-		tmpNPCType->armor_tint.Slot[0].Color |= (Strings::ToInt(row[39]) & 0xFF);
-		tmpNPCType->armor_tint.Slot[0].Color |= (tmpNPCType->armor_tint.Slot[0].Color) ? (0xFF << 24) : 0;
+	t->d_melee_texture1 = Strings::ToUnsignedInt(row[28]);
+	t->d_melee_texture2 = Strings::ToUnsignedInt(row[29]);
+	t->prim_melee_type  = Strings::ToInt(row[30]);
+	t->sec_melee_type   = Strings::ToInt(row[31]);
+	t->runspeed         = Strings::ToFloat(row[32]);
+	t->hp_regen         = Strings::ToInt(row[33]);
+	t->mana_regen       = Strings::ToInt(row[34]);
+	t->aggroradius      = RuleI(Mercs, AggroRadius);
+	t->bodytype         = row[35] && strlen(row[35]) ? static_cast<uint8>(Strings::ToUnsignedInt(row[35])) : 1;
 
-		if (armor_tint_id == 0)
-			for (int index = EQ::textures::armorChest; index <= EQ::textures::LastTexture; index++)
-				tmpNPCType->armor_tint.Slot[index].Color = tmpNPCType->armor_tint.Slot[0].Color;
-		else if (tmpNPCType->armor_tint.Slot[0].Color == 0) {
-			std::string armorTint_query = StringFormat("SELECT red1h, grn1h, blu1h, "
-								   "red2c, grn2c, blu2c, "
-								   "red3a, grn3a, blu3a, "
-								   "red4b, grn4b, blu4b, "
-								   "red5g, grn5g, blu5g, "
-								   "red6l, grn6l, blu6l, "
-								   "red7f, grn7f, blu7f, "
-								   "red8x, grn8x, blu8x, "
-								   "red9x, grn9x, blu9x "
-								   "FROM npc_types_tint WHERE id = %d",
-								   armor_tint_id);
-			auto armorTint_results = QueryDatabase(armorTint_query);
-			if (!results.Success() || results.RowCount() == 0)
-				armor_tint_id = 0;
-			else {
-				auto& armorTint_row = results.begin();
+	uint32 armor_tint_id = Strings::ToInt(row[36]);
 
-				for (int index = EQ::textures::textureBegin; index <= EQ::textures::LastTexture; index++) {
-					tmpNPCType->armor_tint.Slot[index].Color = Strings::ToInt(armorTint_row[index * 3]) << 16;
-					tmpNPCType->armor_tint.Slot[index].Color |= Strings::ToInt(armorTint_row[index * 3 + 1]) << 8;
-					tmpNPCType->armor_tint.Slot[index].Color |= Strings::ToInt(armorTint_row[index * 3 + 2]);
-					tmpNPCType->armor_tint.Slot[index].Color |= (tmpNPCType->armor_tint.Slot[index].Color) ? (0xFF << 24) : 0;
-				}
-			}
-		} else
+	t->armor_tint.Slot[0].Color = (Strings::ToInt(row[37]) & 0xFF) << 16;
+	t->armor_tint.Slot[0].Color |= (Strings::ToInt(row[38]) & 0xFF) << 8;
+	t->armor_tint.Slot[0].Color |= (Strings::ToInt(row[39]) & 0xFF);
+	t->armor_tint.Slot[0].Color |= (t->armor_tint.Slot[0].Color) ? (0xFF << 24) : 0;
+
+	if (armor_tint_id == 0) {
+		for (int index = EQ::textures::armorChest; index <= EQ::textures::LastTexture; index++) {
+			t->armor_tint.Slot[index].Color = t->armor_tint.Slot[0].Color;
+		}
+	} else if (t->armor_tint.Slot[0].Color == 0) {
+		const auto& e = NpcTypesTintRepository::FindOne(*this, armor_tint_id);
+		if (!e.id) {
 			armor_tint_id = 0;
+		} else {
+			t->armor_tint.Slot[EQ::textures::armorHead].Color = e.red1h << 16;
+			t->armor_tint.Slot[EQ::textures::armorHead].Color = e.grn1h << 8;
+			t->armor_tint.Slot[EQ::textures::armorHead].Color = e.blu1h;
 
-		tmpNPCType->AC = Strings::ToInt(row[40]);
-		tmpNPCType->ATK = Strings::ToInt(row[41]);
-		tmpNPCType->accuracy_rating = Strings::ToInt(row[42]);
-		tmpNPCType->scalerate = Strings::ToInt(row[43]);
-		tmpNPCType->spellscale = Strings::ToInt(row[44]);
-		tmpNPCType->healscale = Strings::ToInt(row[45]);
-		tmpNPCType->skip_global_loot = true;
-		tmpNPCType->skip_auto_scale = true;
+			t->armor_tint.Slot[EQ::textures::armorChest].Color = e.red2c << 16;
+			t->armor_tint.Slot[EQ::textures::armorChest].Color = e.grn2c << 8;
+			t->armor_tint.Slot[EQ::textures::armorChest].Color = e.blu2c;
 
-		// If Merc with duplicate NPC id already in table,
-		// free item we attempted to add.
-		if (zone->merctable.find(merc_type_id) != zone->merctable.end()) {
-			delete tmpNPCType;
-			return nullptr;
+			t->armor_tint.Slot[EQ::textures::armorArms].Color = e.red3a << 16;
+			t->armor_tint.Slot[EQ::textures::armorArms].Color = e.grn3a << 8;
+			t->armor_tint.Slot[EQ::textures::armorArms].Color = e.blu3a;
+
+			t->armor_tint.Slot[EQ::textures::armorWrist].Color = e.red4b << 16;
+			t->armor_tint.Slot[EQ::textures::armorWrist].Color = e.grn4b << 8;
+			t->armor_tint.Slot[EQ::textures::armorWrist].Color = e.blu4b;
+
+			t->armor_tint.Slot[EQ::textures::armorHands].Color = e.red5g << 16;
+			t->armor_tint.Slot[EQ::textures::armorHands].Color = e.grn5g << 8;
+			t->armor_tint.Slot[EQ::textures::armorHands].Color = e.blu5g;
+
+			t->armor_tint.Slot[EQ::textures::armorLegs].Color = e.red6l << 16;
+			t->armor_tint.Slot[EQ::textures::armorLegs].Color = e.grn6l << 8;
+			t->armor_tint.Slot[EQ::textures::armorLegs].Color = e.blu6l;
+
+			t->armor_tint.Slot[EQ::textures::armorFeet].Color = e.red7f << 16;
+			t->armor_tint.Slot[EQ::textures::armorFeet].Color = e.grn7f << 8;
+			t->armor_tint.Slot[EQ::textures::armorFeet].Color = e.blu7f;
+
+			t->armor_tint.Slot[EQ::textures::weaponPrimary].Color = e.red8x << 16;
+			t->armor_tint.Slot[EQ::textures::weaponPrimary].Color = e.grn8x << 8;
+			t->armor_tint.Slot[EQ::textures::weaponPrimary].Color = e.blu8x;
+
+			t->armor_tint.Slot[EQ::textures::weaponSecondary].Color = e.red9x << 16;
+			t->armor_tint.Slot[EQ::textures::weaponSecondary].Color = e.grn9x << 8;
+			t->armor_tint.Slot[EQ::textures::weaponSecondary].Color = e.blu9x;
 		}
-
-		zone->merctable[merc_type_id] = tmpNPCType;
-		npc = tmpNPCType;
 	}
 
-	return npc;
+	t->AC               = Strings::ToInt(row[40]);
+	t->ATK              = Strings::ToInt(row[41]);
+	t->accuracy_rating  = Strings::ToInt(row[42]);
+	t->scalerate        = Strings::ToInt(row[43]);
+	t->spellscale       = Strings::ToInt(row[44]);
+	t->healscale        = Strings::ToInt(row[45]);
+	t->skip_global_loot = true;
+	t->skip_auto_scale  = true;
+
+	// If Merc with duplicate NPC id already in table,
+	// free item we attempted to add.
+	if (zone->merctable.find(merc_type_id) != zone->merctable.end()) {
+		delete t;
+		return nullptr;
+	}
+
+	zone->merctable[merc_type_id] = t;
+	n = t;
+
+	return n;
 }
 
-bool ZoneDatabase::LoadMercInfo(Client *client) {
+bool ZoneDatabase::LoadMercenaryInfo(Client* c)
+{
+	const auto& l = MercsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`OwnerCharacterID` = {} ORDER BY `Slot`",
+			c->CharacterID()
+		)
+	);
 
-	std::string query = StringFormat("SELECT MercID, Slot, Name, TemplateID, SuspendedTime, "
-                                    "IsSuspended, TimerRemaining, Gender, MercSize, StanceID, HP, Mana, "
-                                    "Endurance, Face, LuclinHairStyle, LuclinHairColor, "
-                                    "LuclinEyeColor, LuclinEyeColor2, LuclinBeardColor, LuclinBeard, "
-                                    "DrakkinHeritage, DrakkinTattoo, DrakkinDetails "
-                                    "FROM mercs WHERE OwnerCharacterID = '%i' ORDER BY Slot", client->CharacterID());
-    auto results = QueryDatabase(query);
-    if (!results.Success())
-        return false;
-
-	if(results.RowCount() == 0)
-		return false;
-
-    for (auto& row = results.begin(); row != results.end(); ++row) {
-        uint8 slot = Strings::ToInt(row[1]);
-
-        if(slot >= MAXMERCS)
-            continue;
-
-        client->GetMercInfo(slot).mercid = Strings::ToInt(row[0]);
-        client->GetMercInfo(slot).slot = slot;
-        snprintf(client->GetMercInfo(slot).merc_name, 64, "%s", row[2]);
-        client->GetMercInfo(slot).MercTemplateID = Strings::ToInt(row[3]);
-        client->GetMercInfo(slot).SuspendedTime = Strings::ToInt(row[4]);
-        client->GetMercInfo(slot).IsSuspended = Strings::ToInt(row[5]) == 1 ? true : false;
-		client->GetMercInfo(slot).MercTimerRemaining = Strings::ToInt(row[6]);
-		client->GetMercInfo(slot).Gender = Strings::ToInt(row[7]);
-		client->GetMercInfo(slot).MercSize = Strings::ToFloat(row[8]);
-		client->GetMercInfo(slot).State = 5;
-		client->GetMercInfo(slot).Stance = Strings::ToInt(row[9]);
-		client->GetMercInfo(slot).hp = Strings::ToInt(row[10]);
-		client->GetMercInfo(slot).mana = Strings::ToInt(row[11]);
-		client->GetMercInfo(slot).endurance = Strings::ToInt(row[12]);
-		client->GetMercInfo(slot).face = Strings::ToInt(row[13]);
-		client->GetMercInfo(slot).luclinHairStyle = Strings::ToInt(row[14]);
-		client->GetMercInfo(slot).luclinHairColor = Strings::ToInt(row[15]);
-		client->GetMercInfo(slot).luclinEyeColor = Strings::ToInt(row[16]);
-		client->GetMercInfo(slot).luclinEyeColor2 = Strings::ToInt(row[17]);
-		client->GetMercInfo(slot).luclinBeardColor = Strings::ToInt(row[18]);
-		client->GetMercInfo(slot).luclinBeard = Strings::ToInt(row[19]);
-		client->GetMercInfo(slot).drakkinHeritage = Strings::ToInt(row[20]);
-		client->GetMercInfo(slot).drakkinTattoo = Strings::ToInt(row[21]);
-		client->GetMercInfo(slot).drakkinDetails = Strings::ToInt(row[22]);
-    }
-
-	return true;
-}
-
-bool ZoneDatabase::LoadCurrentMerc(Client *client) {
-
-	uint8 slot = client->GetMercSlot();
-
-	if(slot > MAXMERCS)
-        return false;
-
-    std::string query = StringFormat("SELECT MercID, Name, TemplateID, SuspendedTime, "
-                                    "IsSuspended, TimerRemaining, Gender, MercSize, StanceID, HP, "
-                                    "Mana, Endurance, Face, LuclinHairStyle, LuclinHairColor, "
-                                    "LuclinEyeColor, LuclinEyeColor2, LuclinBeardColor, "
-                                    "LuclinBeard, DrakkinHeritage, DrakkinTattoo, DrakkinDetails "
-                                    "FROM mercs WHERE OwnerCharacterID = '%i' AND Slot = '%u'",
-                                    client->CharacterID(), slot);
-    auto results = database.QueryDatabase(query);
-
-    if(!results.Success())
-		return false;
-
-	if(results.RowCount() == 0)
-		return false;
-
-
-    for (auto& row = results.begin(); row != results.end(); ++row) {
-        client->GetMercInfo(slot).mercid = Strings::ToInt(row[0]);
-        client->GetMercInfo(slot).slot = slot;
-        snprintf(client->GetMercInfo(slot).merc_name, 64, "%s", row[1]);
-        client->GetMercInfo(slot).MercTemplateID = Strings::ToInt(row[2]);
-        client->GetMercInfo(slot).SuspendedTime = Strings::ToInt(row[3]);
-        client->GetMercInfo(slot).IsSuspended = Strings::ToInt(row[4]) == 1? true: false;
-        client->GetMercInfo(slot).MercTimerRemaining = Strings::ToInt(row[5]);
-		client->GetMercInfo(slot).Gender = Strings::ToInt(row[6]);
-		client->GetMercInfo(slot).MercSize = Strings::ToFloat(row[7]);
-		client->GetMercInfo(slot).State = Strings::ToInt(row[8]);
-		client->GetMercInfo(slot).hp = Strings::ToInt(row[9]);
-		client->GetMercInfo(slot).mana = Strings::ToInt(row[10]);
-		client->GetMercInfo(slot).endurance = Strings::ToInt(row[11]);
-		client->GetMercInfo(slot).face = Strings::ToInt(row[12]);
-		client->GetMercInfo(slot).luclinHairStyle = Strings::ToInt(row[13]);
-		client->GetMercInfo(slot).luclinHairColor = Strings::ToInt(row[14]);
-		client->GetMercInfo(slot).luclinEyeColor = Strings::ToInt(row[15]);
-		client->GetMercInfo(slot).luclinEyeColor2 = Strings::ToInt(row[16]);
-		client->GetMercInfo(slot).luclinBeardColor = Strings::ToInt(row[17]);
-		client->GetMercInfo(slot).luclinBeard = Strings::ToInt(row[18]);
-		client->GetMercInfo(slot).drakkinHeritage = Strings::ToInt(row[19]);
-		client->GetMercInfo(slot).drakkinTattoo = Strings::ToInt(row[20]);
-		client->GetMercInfo(slot).drakkinDetails = Strings::ToInt(row[21]);
-	}
-
-	return true;
-}
-
-bool ZoneDatabase::SaveMerc(Merc *merc) {
-	Client *owner = merc->GetMercOwner();
-
-	if(!owner)
-		return false;
-
-	if(merc->GetMercID() == 0)
-	{
-		// New merc record
-		std::string query = StringFormat("INSERT INTO mercs "
-		"(OwnerCharacterID, Slot, Name, TemplateID, "
-		"SuspendedTime, IsSuspended, TimerRemaining, "
-		"Gender, MercSize, StanceID, HP, Mana, Endurance, Face, "
-		"LuclinHairStyle, LuclinHairColor, LuclinEyeColor, "
-		"LuclinEyeColor2, LuclinBeardColor, LuclinBeard, "
-		"DrakkinHeritage, DrakkinTattoo, DrakkinDetails) "
-		"VALUES('%u', '%u', '%s', '%u', '%u', '%u', '%u', "
-		"'%u', '%u', '%f', '%u', '%u', '%u', '%i', '%i', '%i', "
-		"'%i', '%i', '%i', '%i', '%i', '%i', '%i')",
-		merc->GetMercCharacterID(), owner->GetNumMercs(),
-		merc->GetCleanName(), merc->GetMercTemplateID(),
-		owner->GetMercInfo().SuspendedTime, merc->IsSuspended(),
-		owner->GetMercInfo().MercTimerRemaining, merc->GetGender(),
-		merc->GetSize(), merc->GetStance(), merc->GetHP(),
-		merc->GetMana(), merc->GetEndurance(), merc->GetLuclinFace(),
-		merc->GetHairStyle(), merc->GetHairColor(), merc->GetEyeColor1(),
-		merc->GetEyeColor2(), merc->GetBeardColor(),
-		merc->GetBeard(), merc->GetDrakkinHeritage(),
-		merc->GetDrakkinTattoo(), merc->GetDrakkinDetails());
-
-		auto results = database.QueryDatabase(query);
-		if(!results.Success()) {
-			owner->Message(Chat::Red, results.ErrorMessage().c_str());
-			return false;
-		} else if (results.RowsAffected() != 1) {
-			owner->Message(Chat::Red, "Unable to save merc to the database.");
-			return false;
-		}
-
-		merc->SetMercID(results.LastInsertedID());
-		merc->UpdateMercInfo(owner);
-		database.SaveMercBuffs(merc);
-		return true;
-	}
-
-	// Update existing merc record
-	std::string query = StringFormat("UPDATE mercs SET OwnerCharacterID = '%u', Slot = '%u', "
-	"Name = '%s', TemplateID = '%u', SuspendedTime = '%u', "
-	"IsSuspended = '%u', TimerRemaining = '%u', Gender = '%u', MercSize = '%f', "
-	"StanceID = '%u', HP = '%u', Mana = '%u', Endurance = '%u', "
-	"Face = '%i', LuclinHairStyle = '%i', LuclinHairColor = '%i', "
-	"LuclinEyeColor = '%i', LuclinEyeColor2 = '%i', LuclinBeardColor = '%i', "
-	"LuclinBeard = '%i', DrakkinHeritage = '%i', DrakkinTattoo = '%i', "
-	"DrakkinDetails = '%i' WHERE MercID = '%u'",
-	merc->GetMercCharacterID(), owner->GetMercSlot(), merc->GetCleanName(),
-	merc->GetMercTemplateID(), owner->GetMercInfo().SuspendedTime,
-	merc->IsSuspended(), owner->GetMercInfo().MercTimerRemaining,
-	merc->GetGender(), merc->GetSize(), merc->GetStance(), merc->GetHP(),
-	merc->GetMana(), merc->GetEndurance(), merc->GetLuclinFace(),
-	merc->GetHairStyle(), merc->GetHairColor(), merc->GetEyeColor1(),
-	merc->GetEyeColor2(), merc->GetBeardColor(), merc->GetBeard(),
-	merc->GetDrakkinHeritage(), merc->GetDrakkinTattoo(), merc->GetDrakkinDetails(),
-	merc->GetMercID());
-
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
-		owner->Message(Chat::Red, results.ErrorMessage().c_str());
-		return false;
-	} else if (results.RowsAffected() != 1) {
-		owner->Message(Chat::Red, "Unable to save merc to the database.");
+	if (l.empty()) {
 		return false;
 	}
 
-	merc->UpdateMercInfo(owner);
-	database.SaveMercBuffs(merc);
-
-	return true;
-}
-
-void ZoneDatabase::SaveMercBuffs(Merc *merc) {
-
-	Buffs_Struct *buffs = merc->GetBuffs();
-
-	// Remove any existing buff saves
-	std::string query   = StringFormat("DELETE FROM merc_buffs WHERE MercId = %u", merc->GetMercID());
-	auto        results = database.QueryDatabase(query);
-	if (!results.Success()) {
-		LogError("Error While Deleting Merc Buffs before save: [{}]", results.ErrorMessage().c_str());
-		return;
-	}
-
-	for (int buffCount = 0; buffCount <= BUFF_COUNT; buffCount++) {
-		if (!IsValidSpell(buffs[buffCount].spellid)) {
+	for (const auto& e : l) {
+		if (e.Slot >= MAXMERCS) {
 			continue;
 		}
 
-        int IsPersistent = buffs[buffCount].persistant_buff? 1: 0;
+		auto& m = c->GetMercInfo(e.Slot);
 
-        query = StringFormat("INSERT INTO merc_buffs (MercId, SpellId, CasterLevel, DurationFormula, "
-                            "TicsRemaining, PoisonCounters, DiseaseCounters, CurseCounters, "
-                            "CorruptionCounters, HitCount, MeleeRune, MagicRune, dot_rune, "
-                            "caston_x, Persistent, caston_y, caston_z, ExtraDIChance) "
-                            "VALUES (%u, %u, %u, %u, %u, %d, %u, %u, %u, %u, %u, %u, %u, %i, %u, %i, %i, %i);",
-                            merc->GetMercID(), buffs[buffCount].spellid, buffs[buffCount].casterlevel,
-                            spells[buffs[buffCount].spellid].buff_duration_formula, buffs[buffCount].ticsremaining,
-                            CalculatePoisonCounters(buffs[buffCount].spellid) > 0 ? buffs[buffCount].counters : 0,
-                            CalculateDiseaseCounters(buffs[buffCount].spellid) > 0 ? buffs[buffCount].counters : 0,
-                            CalculateCurseCounters(buffs[buffCount].spellid) > 0 ? buffs[buffCount].counters : 0,
-                            CalculateCorruptionCounters(buffs[buffCount].spellid) > 0 ? buffs[buffCount].counters : 0,
-                            buffs[buffCount].hit_number, buffs[buffCount].melee_rune, buffs[buffCount].magic_rune,
-                            buffs[buffCount].dot_rune, buffs[buffCount].caston_x, IsPersistent, buffs[buffCount].caston_y,
-                            buffs[buffCount].caston_z, buffs[buffCount].ExtraDIChance);
-        results = database.QueryDatabase(query);
-        if(!results.Success()) {
-      LogError("Error Saving Merc Buffs: [{}]", results.ErrorMessage().c_str());
-            break;
-        }
+		strn0cpy(m.merc_name, e.Name.c_str(), sizeof(m.merc_name));
+
+		m.mercid             = e.MercID;
+		m.slot               = e.Slot;
+		m.MercTemplateID     = e.TemplateID;
+		m.SuspendedTime      = e.SuspendedTime;
+		m.IsSuspended        = e.IsSuspended;
+		m.MercTimerRemaining = e.TimerRemaining;
+		m.Gender             = e.Gender;
+		m.MercSize           = e.MercSize;
+		m.State              = 5;
+		m.Stance             = e.StanceID;
+		m.hp                 = e.HP;
+		m.mana               = e.Mana;
+		m.endurance          = e.Endurance;
+		m.face               = e.Face;
+		m.luclinHairStyle    = e.LuclinHairStyle;
+		m.luclinHairColor    = e.LuclinHairColor;
+		m.luclinEyeColor     = e.LuclinEyeColor;
+		m.luclinEyeColor2    = e.LuclinEyeColor2;
+		m.luclinBeardColor   = e.LuclinBeardColor;
+		m.luclinBeard        = e.LuclinBeard;
+		m.drakkinHeritage    = e.DrakkinHeritage;
+		m.drakkinTattoo      = e.DrakkinTattoo;
+		m.drakkinDetails     = e.DrakkinDetails;
 	}
+
+	return true;
 }
 
-void ZoneDatabase::LoadMercBuffs(Merc *merc) {
-	Buffs_Struct *buffs = merc->GetBuffs();
-	uint32 max_slots = merc->GetMaxBuffSlots();
+bool ZoneDatabase::LoadCurrentMercenary(Client* c)
+{
+	const uint8 mercenary_slot = c->GetMercSlot();
 
+	if (mercenary_slot > MAXMERCS) {
+		return false;
+	}
 
-	bool BuffsLoaded = false;
-    std::string query = StringFormat("SELECT SpellId, CasterLevel, DurationFormula, TicsRemaining, "
-                                    "PoisonCounters, DiseaseCounters, CurseCounters, CorruptionCounters, "
-                                    "HitCount, MeleeRune, MagicRune, dot_rune, caston_x, Persistent, "
-                                    "caston_y, caston_z, ExtraDIChance FROM merc_buffs WHERE MercId = %u",
-                                    merc->GetMercID());
-    auto results = database.QueryDatabase(query);
-	if(!results.Success()) {
-		LogError("Error Loading Merc Buffs: [{}]", results.ErrorMessage().c_str());
+	const auto& e = MercsRepository::GetMercenaryBySlot(*this, c);
+
+	if (!e.MercID) {
+		return false;
+	}
+
+	auto& m = c->GetMercInfo(mercenary_slot);
+
+	strn0cpy(m.merc_name, e.Name.c_str(), sizeof(m.merc_name));
+
+	m.mercid             = e.MercID;
+	m.slot               = e.Slot;
+	m.MercTemplateID     = e.TemplateID;
+	m.SuspendedTime      = e.SuspendedTime;
+	m.IsSuspended        = e.IsSuspended;
+	m.MercTimerRemaining = e.TimerRemaining;
+	m.Gender             = e.Gender;
+	m.MercSize           = e.MercSize;
+	m.State              = e.StanceID;
+	m.hp                 = e.HP;
+	m.mana               = e.Mana;
+	m.endurance          = e.Endurance;
+	m.face               = e.Face;
+	m.luclinHairStyle    = e.LuclinHairStyle;
+	m.luclinHairColor    = e.LuclinHairColor;
+	m.luclinEyeColor     = e.LuclinEyeColor;
+	m.luclinEyeColor2    = e.LuclinEyeColor2;
+	m.luclinBeardColor   = e.LuclinBeardColor;
+	m.luclinBeard        = e.LuclinBeard;
+	m.drakkinHeritage    = e.DrakkinHeritage;
+	m.drakkinTattoo      = e.DrakkinTattoo;
+	m.drakkinDetails     = e.DrakkinDetails;
+
+	return true;
+}
+
+bool ZoneDatabase::SaveMercenary(Merc* m)
+{
+	Client* c = m->GetMercenaryOwner();
+
+	if (!c) {
+		return false;
+	}
+
+	if (!m->GetMercenaryID()) {
+		auto e = MercsRepository::NewEntity();
+
+		e.OwnerCharacterID = m->GetMercenaryCharacterID();
+		e.Slot             = c->GetNumberOfMercenaries();
+		e.Name             = m->GetCleanName();
+		e.TemplateID       = m->GetMercenaryTemplateID();
+		e.SuspendedTime    = c->GetMercInfo().SuspendedTime;
+		e.IsSuspended      = m->IsSuspended();
+		e.TimerRemaining   = c->GetMercInfo().MercTimerRemaining;
+		e.Gender           = m->GetGender();
+		e.MercSize         = m->GetSize();
+		e.StanceID         = m->GetStance();
+		e.HP               = m->GetHP();
+		e.Mana             = m->GetMana();
+		e.Endurance        = m->GetEndurance();
+		e.Face             = m->GetLuclinFace();
+		e.LuclinHairStyle  = m->GetHairStyle();
+		e.LuclinHairColor  = m->GetHairColor();
+		e.LuclinEyeColor   = m->GetEyeColor1();
+		e.LuclinEyeColor2  = m->GetEyeColor2();
+		e.LuclinBeardColor = m->GetBeardColor();
+		e.LuclinBeard      = m->GetBeard();
+		e.DrakkinHeritage  = m->GetDrakkinHeritage();
+		e.DrakkinTattoo    = m->GetDrakkinTattoo();
+		e.DrakkinDetails   = m->GetDrakkinDetails();
+
+		e = MercsRepository::InsertOne(*this, e);
+
+		if (!e.MercID) {
+			c->Message(Chat::Red, "Unable to save mercenary to the database.");
+			return false;
+		}
+
+		m->SetMercID(e.MercID);
+		m->UpdateMercInfo(c);
+
+		database.SaveMercenaryBuffs(m);
+
+		return true;
+	}
+
+	auto e = MercsRepository::FindOne(*this, m->GetMercenaryID());
+
+	e.OwnerCharacterID = m->GetMercenaryCharacterID();
+	e.Slot             = c->GetNumberOfMercenaries();
+	e.Name             = m->GetCleanName();
+	e.TemplateID       = m->GetMercenaryTemplateID();
+	e.SuspendedTime    = c->GetMercInfo().SuspendedTime;
+	e.IsSuspended      = m->IsSuspended();
+	e.TimerRemaining   = c->GetMercInfo().MercTimerRemaining;
+	e.Gender           = m->GetGender();
+	e.MercSize         = m->GetSize();
+	e.StanceID         = m->GetStance();
+	e.HP               = m->GetHP();
+	e.Mana             = m->GetMana();
+	e.Endurance        = m->GetEndurance();
+	e.Face             = m->GetLuclinFace();
+	e.LuclinHairStyle  = m->GetHairStyle();
+	e.LuclinHairColor  = m->GetHairColor();
+	e.LuclinEyeColor   = m->GetEyeColor1();
+	e.LuclinEyeColor2  = m->GetEyeColor2();
+	e.LuclinBeardColor = m->GetBeardColor();
+	e.LuclinBeard      = m->GetBeard();
+	e.DrakkinHeritage  = m->GetDrakkinHeritage();
+	e.DrakkinTattoo    = m->GetDrakkinTattoo();
+	e.DrakkinDetails   = m->GetDrakkinDetails();
+
+	const int updated = MercsRepository::UpdateOne(*this, e);
+
+	if (!updated) {
+		c->Message(Chat::Red, "Unable to save mercenary to the database.");
+		return false;
+	}
+
+	m->UpdateMercInfo(c);
+
+	database.SaveMercenaryBuffs(m);
+
+	return true;
+}
+
+void ZoneDatabase::SaveMercenaryBuffs(Merc* m)
+{
+	auto buffs = m->GetBuffs();
+
+	MercBuffsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`MercID` = {}",
+			m->GetMercenaryID()
+		)
+	);
+
+	std::vector<MercBuffsRepository::MercBuffs> v;
+
+	auto e = MercBuffsRepository::NewEntity();
+
+	for (uint32 slot_id = 0; slot_id <= BUFF_COUNT; slot_id++) {
+		if (!IsValidSpell(buffs[slot_id].spellid)) {
+			continue;
+		}
+
+		e.MercId             = m->GetMercenaryID();
+		e.SpellId            = buffs[slot_id].spellid;
+		e.CasterLevel        = buffs[slot_id].casterlevel;
+		e.DurationFormula    = spells[buffs[slot_id].spellid].buff_duration_formula;
+		e.TicsRemaining      = buffs[slot_id].ticsremaining;
+		e.PoisonCounters     = CalculatePoisonCounters(buffs[slot_id].spellid) > 0 ? buffs[slot_id].counters : 0;
+		e.DiseaseCounters    = CalculateDiseaseCounters(buffs[slot_id].spellid) > 0 ? buffs[slot_id].counters : 0;
+		e.CurseCounters      = CalculateCurseCounters(buffs[slot_id].spellid) > 0 ? buffs[slot_id].counters : 0;
+		e.CorruptionCounters = CalculateCorruptionCounters(buffs[slot_id].spellid) > 0 ? buffs[slot_id].counters : 0;
+		e.HitCount           = buffs[slot_id].hit_number;
+		e.MeleeRune          = buffs[slot_id].melee_rune;
+		e.MagicRune          = buffs[slot_id].magic_rune;
+		e.dot_rune           = buffs[slot_id].dot_rune;
+		e.caston_x           = buffs[slot_id].caston_x;
+		e.caston_y           = buffs[slot_id].caston_y;
+		e.caston_z           = buffs[slot_id].caston_z;
+		e.Persistent         = buffs[slot_id].persistant_buff ? 1 : 0;
+		e.ExtraDIChance      = buffs[slot_id].ExtraDIChance;
+
+		v.emplace_back(e);
+	}
+
+	MercBuffsRepository::InsertMany(*this, v);
+}
+
+void ZoneDatabase::LoadMercenaryBuffs(Merc* m)
+{
+	auto      buffs     = m->GetBuffs();
+	const int max_slots = m->GetMaxBuffSlots();
+
+	const auto& l = MercBuffsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`MercID` = {}",
+			m->GetMercenaryID()
+		)
+	);
+
+	if (l.empty()) {
 		return;
 	}
 
-    int buffCount = 0;
-    for (auto& row = results.begin(); row != results.end(); ++row, ++buffCount) {
-        if(buffCount == BUFF_COUNT)
-            break;
+	uint32 slot_id = 0;
 
-        buffs[buffCount].spellid = Strings::ToInt(row[0]);
-        buffs[buffCount].casterlevel = Strings::ToInt(row[1]);
-        buffs[buffCount].ticsremaining = Strings::ToInt(row[3]);
+	for (const auto& e : l) {
+		if (slot_id == BUFF_COUNT) {
+			break;
+		}
 
-        if(CalculatePoisonCounters(buffs[buffCount].spellid) > 0)
-            buffs[buffCount].counters = Strings::ToInt(row[4]);
+		buffs[slot_id].spellid         = e.SpellId;
+		buffs[slot_id].casterlevel     = e.CasterLevel;
+		buffs[slot_id].ticsremaining   = e.TicsRemaining;
+		buffs[slot_id].hit_number      = e.HitCount;
+		buffs[slot_id].melee_rune      = e.MeleeRune;
+		buffs[slot_id].magic_rune      = e.MagicRune;
+		buffs[slot_id].dot_rune        = e.dot_rune;
+		buffs[slot_id].caston_x        = e.caston_x;
+		buffs[slot_id].caston_y        = e.caston_y;
+		buffs[slot_id].caston_z        = e.caston_z;
+		buffs[slot_id].casterid        = 0;
+		buffs[slot_id].ExtraDIChance   = e.ExtraDIChance;
+		buffs[slot_id].persistant_buff = e.Persistent;
 
-        if(CalculateDiseaseCounters(buffs[buffCount].spellid) > 0)
-            buffs[buffCount].counters = Strings::ToInt(row[5]);
+		if (CalculatePoisonCounters(buffs[slot_id].spellid) > 0) {
+			buffs[slot_id].counters = e.PoisonCounters;
+		}
 
-        if(CalculateCurseCounters(buffs[buffCount].spellid) > 0)
-            buffs[buffCount].counters = Strings::ToInt(row[6]);
+		if (CalculateDiseaseCounters(buffs[slot_id].spellid) > 0) {
+			buffs[slot_id].counters = e.DiseaseCounters;
+		}
 
-		if(CalculateCorruptionCounters(buffs[buffCount].spellid) > 0)
-            buffs[buffCount].counters = Strings::ToInt(row[7]);
+		if (CalculateCurseCounters(buffs[slot_id].spellid) > 0) {
+			buffs[slot_id].counters = e.CurseCounters;
+		}
 
-        buffs[buffCount].hit_number = Strings::ToInt(row[8]);
-		buffs[buffCount].melee_rune = Strings::ToInt(row[9]);
-		buffs[buffCount].magic_rune = Strings::ToInt(row[10]);
-		buffs[buffCount].dot_rune = Strings::ToInt(row[11]);
-		buffs[buffCount].caston_x = Strings::ToInt(row[12]);
-		buffs[buffCount].casterid = 0;
-
-        bool IsPersistent = Strings::ToInt(row[13])? true: false;
-
-        buffs[buffCount].caston_y = Strings::ToInt(row[13]);
-        buffs[buffCount].caston_z = Strings::ToInt(row[14]);
-        buffs[buffCount].ExtraDIChance = Strings::ToInt(row[15]);
-
-        buffs[buffCount].persistant_buff = IsPersistent;
-
-    }
-
-	query = StringFormat("DELETE FROM merc_buffs WHERE MercId = %u", merc->GetMercID());
-    results = database.QueryDatabase(query);
-    if(!results.Success())
-    LogError("Error Loading Merc Buffs: [{}]", results.ErrorMessage().c_str());
-
-}
-
-bool ZoneDatabase::DeleteMerc(uint32 merc_id) {
-
-	if(merc_id == 0)
-		return false;
-
-	// TODO: These queries need to be ran together as a transaction.. ie,
-	// if one or more fail then they all will fail to commit to the database.
-	// ...Not all mercs will have buffs, so why is it required that both deletes succeed?
-	std::string query = StringFormat("DELETE FROM merc_buffs WHERE MercId = '%u'", merc_id);
-	auto results = database.QueryDatabase(query);
-	if(!results.Success())
-	{
-		LogError("Error Deleting Merc Buffs: [{}]", results.ErrorMessage().c_str());
+		if (CalculateCorruptionCounters(buffs[slot_id].spellid) > 0) {
+			buffs[slot_id].counters = e.CorruptionCounters;
+		}
 	}
 
-	query = StringFormat("DELETE FROM mercs WHERE MercID = '%u'", merc_id);
-	results = database.QueryDatabase(query);
-	if(!results.Success())
-	{
-		LogError("Error Deleting Merc: [{}]", results.ErrorMessage().c_str());
+	MercBuffsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`MercID` = {}",
+			m->GetMercenaryID()
+		)
+	);
+}
+
+bool ZoneDatabase::DeleteMercenary(uint32 mercenary_id)
+{
+	if (!mercenary_id) {
+		return false;
+	}
+
+	MercBuffsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`MercID` = {}",
+			mercenary_id
+		)
+	);
+
+	const int deleted = MercsRepository::DeleteOne(*this, mercenary_id);
+	if (!deleted) {
 		return false;
 	}
 
 	return true;
 }
 
-void ZoneDatabase::LoadMercEquipment(Merc *merc) {
+void ZoneDatabase::LoadMercenaryEquipment(Merc* m)
+{
+	const int merc_subtype_id = MercSubtypesRepository::GetSubtype(*this, m->GetClass(), m->GetTierID());
 
-	std::string query = StringFormat("SELECT item_id FROM merc_inventory "
-                                    "WHERE merc_subtype_id = ("
-                                    "SELECT merc_subtype_id FROM merc_subtypes "
-                                    "WHERE class_id = '%u' AND tier_id = '%u') "
-                                    "AND min_level <= %u AND max_level >= %u",
-                                    merc->GetClass(), merc->GetTierID(),
-                                    merc->GetLevel(), merc->GetLevel());
-    auto results = database.QueryDatabase(query);
-	if(!results.Success()) {
-		LogError("Error Loading Merc Inventory: [{}]", results.ErrorMessage().c_str());
+	const auto& l = MercInventoryRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`merc_subtype_id` = {} AND `min_level` <= {} AND `max_level` >= {}",
+			merc_subtype_id,
+			m->GetLevel(),
+			m->GetLevel()
+		)
+	);
+
+	if (l.empty()) {
 		return;
 	}
 
-    int itemCount = 0;
-    for(auto& row = results.begin(); row != results.end(); ++row) {
-		if (itemCount == EQ::invslot::EQUIPMENT_COUNT)
-            break;
+	uint32 item_count = 0;
 
-        if(Strings::ToInt(row[0]) == 0)
-            continue;
+	for (const auto& e: l) {
+		if (item_count == EQ::invslot::EQUIPMENT_COUNT) {
+			break;
+		}
 
-        merc->AddItem(itemCount, Strings::ToInt(row[0]));
-        itemCount++;
-    }
+		if (!e.item_id) {
+			continue;
+		}
+
+		m->AddItem(item_count, e.item_id);
+
+		item_count++;
+	}
 }
 
-uint8 ZoneDatabase::GetGridType(uint32 grid, uint32 zoneid ) {
+void ZoneDatabase::SaveMerchantTemp(
+	uint32 npc_id,
+	uint32 slot_id,
+	uint32 zone_id,
+	uint32 instance_id,
+	uint32 item_id,
+	uint32 charges
+)
+{
+	auto e = MerchantlistTempRepository::NewEntity();
 
-	std::string query = StringFormat("SELECT type FROM grid WHERE id = %i AND zoneid = %i", grid, zoneid);
-	auto results = QueryDatabase(query);
-	if (!results.Success()) {
-        return 0;
+	e.npcid       = npc_id;
+	e.slot        = slot_id;
+	e.zone_id     = zone_id;
+	e.instance_id = instance_id;
+	e.itemid      = item_id;
+	e.charges     = charges;
+
+	MerchantlistTempRepository::ReplaceOne(*this, e);
+}
+
+void ZoneDatabase::DeleteMerchantTemp(uint32 npc_id, uint32 slot_id, uint32 zone_id, uint32 instance_id)
+{
+	MerchantlistTempRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`npcid` = {} AND `slot` = {} AND `zone_id` = {} AND `instance_id` = {}",
+			npc_id,
+			slot_id,
+			zone_id,
+			instance_id
+		)
+	);
+}
+
+uint32 ZoneDatabase::GetZoneTimezone(uint32 zone_id, uint32 instance_version)
+{
+	const auto& l = ZoneRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`zoneidnumber` = {} AND (`version` = {} OR `version` = 0) ORDER BY `version` DESC",
+			zone_id,
+			instance_version
+		)
+	);
+
+	if (l.empty()) {
+		return 0;
 	}
 
-    if (results.RowCount() != 1)
-        return 0;
-
-    auto& row = results.begin();
-
-	return Strings::ToInt(row[0]);
+	return l[0].id ? l[0].timezone : 0;
 }
 
-void ZoneDatabase::SaveMerchantTemp(uint32 npcid, uint32 slot, uint32 zone_id, uint32 instance_id, uint32 item, uint32 charges){
-
-	std::string query = StringFormat("REPLACE INTO merchantlist_temp (npcid, slot, zone_id, instance_id, itemid, charges) "
-                                    "VALUES(%d, %d, %d, %d, %d, %d)", npcid, slot, zone_id, instance_id, item, charges);
-    QueryDatabase(query);
-}
-
-void ZoneDatabase::DeleteMerchantTemp(uint32 npcid, uint32 slot, uint32 zone_id, uint32 instance_id) {
-	std::string query = StringFormat("DELETE FROM merchantlist_temp WHERE npcid=%d AND slot=%d AND zone_id=%d AND instance_id=%d",
-			npcid, slot, zone_id, instance_id);
-	QueryDatabase(query);
-}
-
-//New functions for timezone
-uint32 ZoneDatabase::GetZoneTZ(uint32 zoneid, uint32 version) {
-
-	std::string query = StringFormat("SELECT timezone FROM zone WHERE zoneidnumber = %i "
-                                    "AND (version = %i OR version = 0) ORDER BY version DESC",
-                                    zoneid, version);
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
-        return 0;
-    }
-
-    if (results.RowCount() == 0)
-        return 0;
-
-    auto& row = results.begin();
-    return Strings::ToInt(row[0]);
-}
-
-bool ZoneDatabase::SetZoneTZ(uint32 zoneid, uint32 version, uint32 tz) {
-
-	std::string query = StringFormat("UPDATE zone SET timezone = %i "
-                                    "WHERE zoneidnumber = %i AND version = %i",
-                                    tz, zoneid, version);
-    auto results = QueryDatabase(query);
-    if (!results.Success()) {
-		return false;
-    }
-
-    return results.RowsAffected() == 1;
+bool ZoneDatabase::SetZoneTimezone(uint32 zone_id, uint32 instance_version, uint32 timezone)
+{
+	return ZoneRepository::SetTimeZone(*this, zone_id, instance_version, timezone);
 }
 
 void ZoneDatabase::RefreshGroupFromDB(Client *client){
@@ -2645,40 +2655,6 @@ void ZoneDatabase::RefreshGroupFromDB(Client *client){
 	group->NotifyPullerTarget(client);
 	group->SendMarkedNPCsToMember(client);
 }
-
-uint8 ZoneDatabase::GroupCount(uint32 groupid) {
-
-	std::string query = StringFormat("SELECT count(charid) FROM group_id WHERE groupid = %d", groupid);
-	auto results = QueryDatabase(query);
-    if (!results.Success()) {
-        return 0;
-    }
-
-    if (results.RowCount() == 0)
-        return 0;
-
-    auto& row = results.begin();
-
-	return Strings::ToInt(row[0]);
-}
-
-uint8 ZoneDatabase::RaidGroupCount(uint32 raidid, uint32 groupid) {
-
-	std::string query = StringFormat("SELECT count(charid) FROM raid_members "
-                                    "WHERE raidid = %d AND groupid = %d;", raidid, groupid);
-    auto results = QueryDatabase(query);
-
-    if (!results.Success()) {
-        return 0;
-    }
-
-    if (results.RowCount() == 0)
-        return 0;
-
-    auto& row = results.begin();
-
-	return Strings::ToInt(row[0]);
- }
 
 int64 ZoneDatabase::GetBlockedSpellsCount(uint32 zone_id)
 {
@@ -3699,269 +3675,230 @@ bool ZoneDatabase::GetFactionIdsForNPC(uint32 nfl_id, std::list<struct NPCFactio
 	return true;
 }
 
-/*  Corpse Queries */
+uint32 ZoneDatabase::SendCharacterCorpseToGraveyard(
+	uint32 corpse_id,
+	uint32 zone_id,
+	uint16 instance_id,
+	glm::vec4& position
+)
+{
+	position.x += zone->random.Real(-20, 20);
+	position.y += zone->random.Real(-20, 20);
 
-uint32 ZoneDatabase::SendCharacterCorpseToGraveyard(uint32 dbid, uint32 zone_id, uint16 instance_id, const glm::vec4& position) {
-
-	double xcorpse = (position.x + zone->random.Real(-20,20));
-	double ycorpse = (position.y + zone->random.Real(-20,20));
-
-	std::string query = StringFormat("UPDATE `character_corpses` "
-                                    "SET `zone_id` = %u, `instance_id` = 0, "
-                                    "`x` = %1.1f, `y` = %1.1f, `z` = %1.1f, `heading` = %1.1f, "
-                                    "`was_at_graveyard` = 1 "
-                                    "WHERE `id` = %d",
-                                    zone_id, xcorpse, ycorpse, position.z, position.w, dbid);
-	QueryDatabase(query);
-	return dbid;
+	return CharacterCorpsesRepository::SendToGraveyard(*this, corpse_id, zone_id, instance_id, position);
 }
 
-void ZoneDatabase::SendCharacterCorpseToNonInstance(uint32 corpse_db_id)
+void ZoneDatabase::SendCharacterCorpseToNonInstance(uint32 corpse_id)
 {
-	if (corpse_db_id != 0)
-	{
-		auto query = fmt::format(SQL(
-			UPDATE character_corpses SET instance_id = 0 WHERE id = {};
-		), corpse_db_id);
+	CharacterCorpsesRepository::SendToNonInstance(*this, corpse_id);
+}
 
-		QueryDatabase(query);
+uint32 ZoneDatabase::GetCharacterCorpseDecayTimer(uint32 corpse_id)
+{
+	return CharacterCorpsesRepository::GetDecayTimer(*this, corpse_id);
+}
+
+uint32 ZoneDatabase::UpdateCharacterCorpse(
+	uint32 corpse_id,
+	uint32 character_id,
+	const std::string& name,
+	uint32 zone_id,
+	uint16 instance_id,
+	const CharacterCorpseEntry& c,
+	const glm::vec4& position,
+	uint32 guild_consent_id,
+	bool is_resurrected
+)
+{
+	auto e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
+
+	e.charname         = name;
+	e.zone_id          = zone_id;
+	e.instance_id      = instance_id;
+	e.charid           = character_id;
+	e.x                = position.x;
+	e.y                = position.y;
+	e.z                = position.z;
+	e.heading          = position.w;
+	e.guild_consent_id = guild_consent_id;
+	e.is_locked        = c.locked;
+	e.exp              = c.exp;
+	e.size             = c.size;
+	e.level            = c.level;
+	e.race             = c.race;
+	e.gender           = c.gender;
+	e.class_           = c.class_;
+	e.deity            = c.deity;
+	e.texture          = c.texture;
+	e.helm_texture     = c.helmtexture;
+	e.copper           = c.copper;
+	e.silver           = c.silver;
+	e.gold             = c.gold;
+	e.platinum         = c.plat;
+	e.hair_color       = c.haircolor;
+	e.beard_color      = c.beardcolor;
+	e.eye_color_1      = c.eyecolor1;
+	e.eye_color_2      = c.eyecolor2;
+	e.hair_style       = c.hairstyle;
+	e.face             = c.face;
+	e.beard            = c.beard;
+	e.drakkin_heritage = c.drakkin_heritage;
+	e.drakkin_details  = c.drakkin_details;
+	e.drakkin_tattoo   = c.drakkin_tattoo;
+	e.wc_1             = c.item_tint.Head.Color;
+	e.wc_2             = c.item_tint.Chest.Color;
+	e.wc_3             = c.item_tint.Arms.Color;
+	e.wc_4             = c.item_tint.Wrist.Color;
+	e.wc_5             = c.item_tint.Hands.Color;
+	e.wc_6             = c.item_tint.Legs.Color;
+	e.wc_7             = c.item_tint.Feet.Color;
+	e.wc_8             = c.item_tint.Primary.Color;
+	e.wc_9             = c.item_tint.Secondary.Color;
+
+	CharacterCorpsesRepository::UpdateOne(*this, e);
+
+	return corpse_id;
+}
+
+uint32 ZoneDatabase::UpdateCharacterCorpseConsent(uint32 character_id, uint32 guild_consent_id)
+{
+	return CharacterCorpsesRepository::SetGuildConsentID(*this, character_id, guild_consent_id);
+}
+
+void ZoneDatabase::MarkCorpseAsResurrected(uint32 corpse_id)
+{
+	CharacterCorpsesRepository::ResurrectCorpse(*this, corpse_id);
+}
+
+uint32 ZoneDatabase::SaveCharacterCorpse(
+	uint32 character_id,
+	const std::string& name,
+	uint32 zone_id,
+	uint16 instance_id,
+	const CharacterCorpseEntry& corpse,
+	const glm::vec4& position,
+	uint32 guild_consent_id
+)
+{
+	auto e = CharacterCorpsesRepository::NewEntity();
+
+	e.charname         = name;
+	e.zone_id          = zone_id;
+	e.instance_id      = instance_id;
+	e.charid           = character_id;
+	e.x                = position.x;
+	e.y                = position.y;
+	e.z                = position.z;
+	e.heading          = position.w;
+	e.guild_consent_id = guild_consent_id;
+	e.time_of_death    = std::time(nullptr);
+	e.is_locked        = corpse.locked;
+	e.exp              = corpse.exp;
+	e.size             = corpse.size;
+	e.level            = corpse.level;
+	e.race             = corpse.race;
+	e.gender           = corpse.gender;
+	e.class_           = corpse.class_;
+	e.deity            = corpse.deity;
+	e.texture          = corpse.texture;
+	e.helm_texture     = corpse.helmtexture;
+	e.copper           = corpse.copper;
+	e.silver           = corpse.silver;
+	e.gold             = corpse.gold;
+	e.platinum         = corpse.plat;
+	e.hair_color       = corpse.haircolor;
+	e.beard_color      = corpse.beardcolor;
+	e.eye_color_1      = corpse.eyecolor1;
+	e.eye_color_2      = corpse.eyecolor2;
+	e.hair_style       = corpse.hairstyle;
+	e.face             = corpse.face;
+	e.beard            = corpse.beard;
+	e.drakkin_heritage = corpse.drakkin_heritage;
+	e.drakkin_tattoo   = corpse.drakkin_tattoo;
+	e.drakkin_details  = corpse.drakkin_details;
+	e.wc_1             = corpse.item_tint.Head.Color;
+	e.wc_2             = corpse.item_tint.Chest.Color;
+	e.wc_3             = corpse.item_tint.Arms.Color;
+	e.wc_4             = corpse.item_tint.Wrist.Color;
+	e.wc_5             = corpse.item_tint.Hands.Color;
+	e.wc_6             = corpse.item_tint.Legs.Color;
+	e.wc_7             = corpse.item_tint.Feet.Color;
+	e.wc_8             = corpse.item_tint.Primary.Color;
+	e.wc_9             = corpse.item_tint.Secondary.Color;
+
+	e = CharacterCorpsesRepository::InsertOne(*this, e);
+
+	std::vector<CharacterCorpseItemsRepository::CharacterCorpseItems> v;
+
+	v.reserve(corpse.items.size());
+
+	auto i = CharacterCorpseItemsRepository::NewEntity();
+
+	for (const auto& item : corpse.items) {
+		i.corpse_id           = e.id;
+		i.equip_slot          = item.equip_slot;
+		i.item_id             = item.item_id;
+		i.charges             = item.charges;
+		i.aug_1               = item.aug_1;
+		i.aug_2               = item.aug_2;
+		i.aug_3               = item.aug_3;
+		i.aug_4               = item.aug_4;
+		i.aug_5               = item.aug_5;
+		i.aug_6               = item.aug_6;
+		i.attuned             = item.attuned;
+		i.custom_data         = item.custom_data;
+		i.ornamenticon        = item.ornamenticon;
+		i.ornamentidfile      = item.ornamentidfile;
+		i.ornament_hero_model = item.ornament_hero_model;
+
+		v.emplace_back(i);
 	}
+
+	if (!v.empty()) {
+		CharacterCorpseItemsRepository::ReplaceMany(*this, v);
+	}
+
+	return e.id;
 }
 
-uint32 ZoneDatabase::GetCharacterCorpseDecayTimer(uint32 corpse_db_id){
-	std::string query = StringFormat("SELECT(UNIX_TIMESTAMP() - UNIX_TIMESTAMP(time_of_death)) FROM `character_corpses` WHERE `id` = %d AND NOT `time_of_death` = 0", corpse_db_id);
-	auto results = QueryDatabase(query);
-	auto& row = results.begin();
-	if (results.Success() && results.RowsAffected() != 0)
-		return Strings::ToUnsignedInt(row[0]);
-
-	return 0;
-}
-
-uint32 ZoneDatabase::UpdateCharacterCorpse(uint32 db_id, uint32 char_id, const char* char_name, uint32 zone_id, uint16 instance_id, const CharacterCorpseEntry& corpse, const glm::vec4& position, uint32 guild_id, bool is_rezzed) {
-	std::string query = StringFormat("UPDATE `character_corpses` "
-                                    "SET `charname` = '%s', `zone_id` = %u, `instance_id` = %u, `charid` = %d, "
-                                    "`x` = %1.1f,`y` =	%1.1f,`z` = %1.1f, `heading` = %1.1f, `guild_consent_id` = %u, "
-                                    "`is_locked` = %d, `exp` = %u, `size` = %f, `level` = %u, "
-                                    "`race` = %u, `gender` = %u, `class` = %u, `deity` = %u, "
-                                    "`texture` = %u, `helm_texture` = %u, `copper` = %u, "
-                                    "`silver` = %u, `gold` = %u, `platinum` = %u, `hair_color`  = %u, "
-                                    "`beard_color` = %u, `eye_color_1` = %u, `eye_color_2` = %u, "
-                                    "`hair_style`  = %u, `face` = %u, `beard` = %u, `drakkin_heritage` = %u, "
-                                    "`drakkin_tattoo`  = %u, `drakkin_details` = %u, `wc_1` = %u, "
-                                    "`wc_2` = %u, `wc_3` = %u, `wc_4` = %u, `wc_5` = %u, `wc_6` = %u, "
-                                    "`wc_7` = %u, `wc_8` = %u, `wc_9` = %u "
-                                    "WHERE `id` = %u",
-                                    Strings::Escape(char_name).c_str(), zone_id, instance_id, char_id,
-                                    position.x, position.y, position.z, position.w, guild_id,
-                                    corpse.locked, corpse.exp, corpse.size, corpse.level, corpse.race,
-                                    corpse.gender, corpse.class_, corpse.deity, corpse.texture,
-                                    corpse.helmtexture, corpse.copper, corpse.silver, corpse.gold,
-                                    corpse.plat, corpse.haircolor, corpse.beardcolor, corpse.eyecolor1,
-                                    corpse.eyecolor2, corpse.hairstyle, corpse.face, corpse.beard,
-                                    corpse.drakkin_heritage, corpse.drakkin_tattoo, corpse.drakkin_details,
-                                    corpse.item_tint.Head.Color, corpse.item_tint.Chest.Color, corpse.item_tint.Arms.Color,
-                                    corpse.item_tint.Wrist.Color, corpse.item_tint.Hands.Color, corpse.item_tint.Legs.Color,
-                                    corpse.item_tint.Feet.Color, corpse.item_tint.Primary.Color, corpse.item_tint.Secondary.Color,
-                                    db_id);
-	auto results = QueryDatabase(query);
-
-	return db_id;
-}
-
-uint32 ZoneDatabase::UpdateCharacterCorpseConsent(uint32 charid, uint32 guildid)
+uint32 ZoneDatabase::GetCharacterBuriedCorpseCount(uint32 character_id)
 {
-	std::string query = fmt::format("UPDATE `character_corpses` SET `guild_consent_id` = '{}' WHERE charid = '{}'", guildid, charid);
-	auto results = QueryDatabase(query);
-	return results.RowsAffected();
-}
-
-void ZoneDatabase::MarkCorpseAsRezzed(uint32 db_id) {
-	std::string query = StringFormat("UPDATE `character_corpses` SET `is_rezzed` = 1 WHERE `id` = %i", db_id);
-	auto results = QueryDatabase(query);
-}
-
-uint32 ZoneDatabase::SaveCharacterCorpse(uint32 charid, const char* charname, uint32 zoneid, uint16 instanceid, const CharacterCorpseEntry& corpse, const glm::vec4& position, uint32 guildid) {
-	/* Dump Basic Corpse Data */
-	std::string query = StringFormat(
-		"INSERT INTO `character_corpses` "
-		"SET `charname` = '%s',  "
-		"`zone_id` =	%u,  "
-		"`instance_id` =	%u,  "
-		"`charid` = %d, "
-		"`x` =	%1.1f,  "
-		"`y` = %1.1f,  "
-		"`z` = %1.1f,  "
-		"`heading` = %1.1f, "
-		"`guild_consent_id` = %u,  "
-		"`time_of_death` = NOW(),  "
-		"`is_buried` =	0,  "
-		"`is_locked` = %d, "
-		"`exp` = %u,  "
-		"`size` = %f,  "
-		"`level` = %u,  "
-		"`race` = %u,  "
-		"`gender` = %u, "
-		"`class` = %u,  "
-		"`deity` = %u,  "
-		"`texture` = %u,  "
-		"`helm_texture` = %u, "
-		"`copper` = %u,  "
-		"`silver` = %u, "
-		"`gold` = %u, "
-		"`platinum` = %u, "
-		"`hair_color`  = %u, "
-		"`beard_color` = %u, "
-		"`eye_color_1` = %u, "
-		"`eye_color_2` = %u, "
-		"`hair_style`  = %u, "
-		"`face` = %u, "
-		"`beard` = %u, "
-		"`drakkin_heritage` = %u, "
-		"`drakkin_tattoo` = %u, "
-		"`drakkin_details` = %u, "
-		"`wc_1` = %u, "
-		"`wc_2` = %u, "
-		"`wc_3` = %u, "
-		"`wc_4` = %u, "
-		"`wc_5` = %u, "
-		"`wc_6` = %u, "
-		"`wc_7` = %u, "
-		"`wc_8` = %u, "
-		"`wc_9`	= %u ",
-		Strings::Escape(charname).c_str(),
-		zoneid,
-		instanceid,
-		charid,
-		position.x,
-		position.y,
-		position.z,
-		position.w,
-		guildid,
-		corpse.locked,
-		corpse.exp,
-		corpse.size,
-		corpse.level,
-		corpse.race,
-		corpse.gender,
-		corpse.class_,
-		corpse.deity,
-		corpse.texture,
-		corpse.helmtexture,
-		corpse.copper,
-		corpse.silver,
-		corpse.gold,
-		corpse.plat,
-		corpse.haircolor,
-		corpse.beardcolor,
-		corpse.eyecolor1,
-		corpse.eyecolor2,
-		corpse.hairstyle,
-		corpse.face,
-		corpse.beard,
-		corpse.drakkin_heritage,
-		corpse.drakkin_tattoo,
-		corpse.drakkin_details,
-		corpse.item_tint.Head.Color,
-		corpse.item_tint.Chest.Color,
-		corpse.item_tint.Arms.Color,
-		corpse.item_tint.Wrist.Color,
-		corpse.item_tint.Hands.Color,
-		corpse.item_tint.Legs.Color,
-		corpse.item_tint.Feet.Color,
-		corpse.item_tint.Primary.Color,
-		corpse.item_tint.Secondary.Color
+	return CharacterCorpsesRepository::Count(
+		*this,
+		fmt::format(
+			"`charid` = {} AND `is_buried` = 1",
+			character_id
+		)
 	);
-	auto results = QueryDatabase(query);
-	uint32 last_insert_id = results.LastInsertedID();
-
-	std::string corpse_items_query;
-	/* Dump Items from Inventory */
-	uint8 first_entry = 0;
-	for(auto &item : corpse.items)
-	{
-		if (first_entry != 1){
-			corpse_items_query = StringFormat("REPLACE INTO `character_corpse_items` \n"
-				" (corpse_id, equip_slot, item_id, charges, aug_1, aug_2, aug_3, aug_4, aug_5, aug_6, attuned, custom_data, ornamenticon, ornamentidfile, ornament_hero_model) \n"
-				" VALUES (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, '%s', %u, %u, %u) \n",
-				last_insert_id,
-				item.equip_slot,
-				item.item_id,
-				item.charges,
-				item.aug_1,
-				item.aug_2,
-				item.aug_3,
-				item.aug_4,
-				item.aug_5,
-				item.aug_6,
-				item.attuned,
-				item.custom_data.c_str(),
-				item.ornamenticon,
-				item.ornamentidfile,
-				item.ornament_hero_model
-			);
-			first_entry = 1;
-		}
-		else{
-			corpse_items_query = corpse_items_query + StringFormat(", (%u, %u, %u, %u, %u, %u, %u, %u, %u, %u, %u, '%s', %u, %u, %u) \n",
-				last_insert_id,
-				item.equip_slot,
-				item.item_id,
-				item.charges,
-				item.aug_1,
-				item.aug_2,
-				item.aug_3,
-				item.aug_4,
-				item.aug_5,
-				item.aug_6,
-				item.attuned,
-				item.custom_data.c_str(),
-				item.ornamenticon,
-				item.ornamentidfile,
-				item.ornament_hero_model
-			);
-		}
-	}
-
-	if (!corpse_items_query.empty())
-		QueryDatabase(corpse_items_query);
-
-	return last_insert_id;
 }
 
-uint32 ZoneDatabase::GetCharacterBuriedCorpseCount(uint32 char_id) {
-	std::string query = StringFormat("SELECT COUNT(*) FROM `character_corpses` WHERE `charid` = '%u' AND `is_buried` = 1", char_id);
-	auto results = QueryDatabase(query);
-
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
-	}
-	return 0;
+int64 ZoneDatabase::GetCharacterCorpseCount(uint32 character_id)
+{
+	return CharacterCorpsesRepository::Count(
+		*this,
+		fmt::format(
+			"`charid` = {}",
+			character_id
+		)
+	);
 }
 
-uint32 ZoneDatabase::GetCharacterCorpseCount(uint32 char_id) {
-	std::string query = StringFormat("SELECT COUNT(*) FROM `character_corpses` WHERE `charid` = '%u'", char_id);
-	auto results = QueryDatabase(query);
+uint32 ZoneDatabase::GetCharacterCorpseID(uint32 character_id, uint8 corpse_limit)
+{
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {} LIMIT {}, 1",
+			character_id,
+			corpse_limit
+		)
+	);
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
-	}
-	return 0;
+	return l.empty() ? 0 : l[0].id;
 }
 
-uint32 ZoneDatabase::GetCharacterCorpseID(uint32 char_id, uint8 corpse) {
-	std::string query = StringFormat("SELECT `id` FROM `character_corpses` WHERE `charid` = '%u' limit %d, 1", char_id, corpse);
-
-	auto results = QueryDatabase(query);
-	auto& row = results.begin();
-
-	if (row != results.end())
-		return Strings::ToUnsignedInt(row[0]);
-	else
-		return 0;
-}
-
-uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id) {
+uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id)
+{
 	Corpse* c = LoadCharacterCorpse(corpse_id);
 	uint32 item_id = 0;
 
@@ -3973,370 +3910,296 @@ uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id) 
 	return item_id;
 }
 
-bool ZoneDatabase::LoadCharacterCorpseData(uint32 corpse_id, CharacterCorpseEntry& corpse){
-	std::string query = StringFormat(
-		"SELECT           \n"
-		"is_locked,       \n"
-		"exp,             \n"
-		"size,            \n"
-		"`level`,         \n"
-		"race,            \n"
-		"gender,          \n"
-		"class,           \n"
-		"deity,           \n"
-		"texture,         \n"
-		"helm_texture,    \n"
-		"copper,          \n"
-		"silver,          \n"
-		"gold,            \n"
-		"platinum,        \n"
-		"hair_color,      \n"
-		"beard_color,     \n"
-		"eye_color_1,     \n"
-		"eye_color_2,     \n"
-		"hair_style,      \n"
-		"face,            \n"
-		"beard,           \n"
-		"drakkin_heritage,\n"
-		"drakkin_tattoo,  \n"
-		"drakkin_details, \n"
-		"wc_1,            \n"
-		"wc_2,            \n"
-		"wc_3,            \n"
-		"wc_4,            \n"
-		"wc_5,            \n"
-		"wc_6,            \n"
-		"wc_7,            \n"
-		"wc_8,            \n"
-		"wc_9             \n"
-		"FROM             \n"
-		"character_corpses\n"
-		"WHERE `id` = %u  LIMIT 1\n",
-		corpse_id
+bool ZoneDatabase::LoadCharacterCorpseData(uint32 corpse_id, CharacterCorpseEntry& corpse)
+{
+	const auto& e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
+
+	corpse.locked                    = e.is_locked;
+	corpse.exp                       = e.exp;
+	corpse.size                      = e.size;
+	corpse.level                     = e.level;
+	corpse.race                      = e.race;
+	corpse.gender                    = e.gender;
+	corpse.class_                    = e.class_;
+	corpse.deity                     = e.deity;
+	corpse.texture                   = e.texture;
+	corpse.helmtexture               = e.helm_texture;
+	corpse.copper                    = e.copper;
+	corpse.silver                    = e.silver;
+	corpse.gold                      = e.gold;
+	corpse.plat                      = e.platinum;
+	corpse.haircolor                 = e.hair_color;
+	corpse.beardcolor                = e.beard_color;
+	corpse.eyecolor1                 = e.eye_color_1;
+	corpse.eyecolor2                 = e.eye_color_2;
+	corpse.hairstyle                 = e.hair_style;
+	corpse.face                      = e.face;
+	corpse.beard                     = e.beard;
+	corpse.drakkin_heritage          = e.drakkin_heritage;
+	corpse.drakkin_tattoo            = e.drakkin_tattoo;
+	corpse.drakkin_details           = e.drakkin_details;
+	corpse.item_tint.Head.Color      = e.wc_1;
+	corpse.item_tint.Chest.Color     = e.wc_2;
+	corpse.item_tint.Arms.Color      = e.wc_3;
+	corpse.item_tint.Wrist.Color     = e.wc_4;
+	corpse.item_tint.Hands.Color     = e.wc_5;
+	corpse.item_tint.Legs.Color      = e.wc_6;
+	corpse.item_tint.Feet.Color      = e.wc_7;
+	corpse.item_tint.Primary.Color   = e.wc_8;
+	corpse.item_tint.Secondary.Color = e.wc_9;
+
+	const auto& l = CharacterCorpseItemsRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`corpse_id` = {}",
+			corpse_id
+		)
 	);
-	auto results = QueryDatabase(query);
-	uint16 i = 0;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		corpse.locked = Strings::ToInt(row[i++]);						// is_locked,
-		corpse.exp = Strings::ToUnsignedInt(row[i++]);							// exp,
-		corpse.size = Strings::ToInt(row[i++]);							// size,
-		corpse.level = Strings::ToInt(row[i++]);						// `level`,
-		corpse.race = Strings::ToInt(row[i++]);							// race,
-		corpse.gender = Strings::ToInt(row[i++]);						// gender,
-		corpse.class_ = Strings::ToInt(row[i++]);						// class,
-		corpse.deity = Strings::ToInt(row[i++]);						// deity,
-		corpse.texture = Strings::ToInt(row[i++]);						// texture,
-		corpse.helmtexture = Strings::ToInt(row[i++]);					// helm_texture,
-		corpse.copper = Strings::ToUnsignedInt(row[i++]);						// copper,
-		corpse.silver = Strings::ToUnsignedInt(row[i++]);						// silver,
-		corpse.gold = Strings::ToUnsignedInt(row[i++]);						// gold,
-		corpse.plat = Strings::ToUnsignedInt(row[i++]);						// platinum,
-		corpse.haircolor = Strings::ToInt(row[i++]);					// hair_color,
-		corpse.beardcolor = Strings::ToInt(row[i++]);					// beard_color,
-		corpse.eyecolor1 = Strings::ToInt(row[i++]);					// eye_color_1,
-		corpse.eyecolor2 = Strings::ToInt(row[i++]);					// eye_color_2,
-		corpse.hairstyle = Strings::ToInt(row[i++]);					// hair_style,
-		corpse.face = Strings::ToInt(row[i++]);							// face,
-		corpse.beard = Strings::ToInt(row[i++]);						// beard,
-		corpse.drakkin_heritage = Strings::ToUnsignedInt(row[i++]);			// drakkin_heritage,
-		corpse.drakkin_tattoo = Strings::ToUnsignedInt(row[i++]);				// drakkin_tattoo,
-		corpse.drakkin_details = Strings::ToUnsignedInt(row[i++]);				// drakkin_details,
-		corpse.item_tint.Head.Color = Strings::ToUnsignedInt(row[i++]);		// wc_1,
-		corpse.item_tint.Chest.Color = Strings::ToUnsignedInt(row[i++]);		// wc_2,
-		corpse.item_tint.Arms.Color = Strings::ToUnsignedInt(row[i++]);		// wc_3,
-		corpse.item_tint.Wrist.Color = Strings::ToUnsignedInt(row[i++]);		// wc_4,
-		corpse.item_tint.Hands.Color = Strings::ToUnsignedInt(row[i++]);		// wc_5,
-		corpse.item_tint.Legs.Color = Strings::ToUnsignedInt(row[i++]);		// wc_6,
-		corpse.item_tint.Feet.Color = Strings::ToUnsignedInt(row[i++]);		// wc_7,
-		corpse.item_tint.Primary.Color = Strings::ToUnsignedInt(row[i++]);		// wc_8,
-		corpse.item_tint.Secondary.Color = Strings::ToUnsignedInt(row[i++]);	// wc_9
-	}
-	query = StringFormat(
-		"SELECT                       \n"
-		"equip_slot,                  \n"
-		"item_id,                     \n"
-		"charges,                     \n"
-		"aug_1,                       \n"
-		"aug_2,                       \n"
-		"aug_3,                       \n"
-		"aug_4,                       \n"
-		"aug_5,                       \n"
-		"aug_6,                       \n"
-		"attuned,                     \n"
-		"custom_data,                 \n"
-		"ornamenticon,                \n"
-		"ornamentidfile,              \n"
-		"ornament_hero_model          \n"
-		"FROM                         \n"
-		"character_corpse_items       \n"
-		"WHERE `corpse_id` = %u\n"
-		,
-		corpse_id
-	);
-	results = QueryDatabase(query);
 
-	i = 0;
-	uint16 r = 0;
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		CharacterCorpseItemEntry item;
-		item.equip_slot = Strings::ToInt(row[r++]);		// equip_slot,
-		item.item_id = Strings::ToUnsignedInt(row[r++]); 		// item_id,
-		item.charges = Strings::ToInt(row[r++]); 		// charges,
-		item.aug_1 = Strings::ToInt(row[r++]); 			// aug_1,
-		item.aug_2 = Strings::ToInt(row[r++]); 			// aug_2,
-		item.aug_3 = Strings::ToInt(row[r++]); 			// aug_3,
-		item.aug_4 = Strings::ToInt(row[r++]); 			// aug_4,
-		item.aug_5 = Strings::ToInt(row[r++]); 			// aug_5,
-		item.aug_6 = Strings::ToInt(row[r++]); 			// aug_6,
-		item.attuned = Strings::ToInt(row[r++]) > 0 ? true : false; // attuned,
-
-		if (row[r]) {
-			item.custom_data = row[r++];
-		}
-		else {
-			r++;
-		}
-
-		item.ornamenticon = Strings::ToUnsignedInt(row[r++]);
-		item.ornamentidfile = Strings::ToUnsignedInt(row[r++]);
-		item.ornament_hero_model = Strings::ToUnsignedInt(row[r++]);
+	for (const auto& e : l) {
+		CharacterCorpseItemEntry item{
+			.item_id = e.item_id,
+			.equip_slot = static_cast<int16>(e.equip_slot),
+			.charges = static_cast<uint16>(e.charges),
+			.aug_1 = e.aug_1,
+			.aug_2 = e.aug_2,
+			.aug_3 = e.aug_3,
+			.aug_4 = e.aug_4,
+			.aug_5 = e.aug_5,
+			.aug_6 = static_cast<uint32>(e.aug_6),
+			.attuned = e.attuned == 1,
+			.custom_data = e.custom_data,
+			.ornamenticon = e.ornamenticon,
+			.ornamentidfile = e.ornamentidfile,
+			.ornament_hero_model = e.ornament_hero_model
+		};
 
 		corpse.items.emplace_back(std::move(item));
-		r = 0;
-		i++;
 	}
 
 	return true;
 }
 
-Corpse* ZoneDatabase::SummonBuriedCharacterCorpses(uint32 char_id, uint32 dest_zone_id, uint16 dest_instance_id, const glm::vec4& position) {
-	Corpse* corpse = nullptr;
-	std::string query = StringFormat("SELECT `id`, `charname`, `time_of_death`, `is_rezzed`, `guild_consent_id` "
-                                    "FROM `character_corpses` "
-                                    "WHERE `charid` = '%u' AND `is_buried` = 1 "
-                                    "ORDER BY `time_of_death` LIMIT 1",
-                                    char_id);
-	auto results = QueryDatabase(query);
+Corpse* ZoneDatabase::SummonBuriedCharacterCorpses(
+	uint32 character_id,
+	uint32 zone_id,
+	uint16 instance_id,
+	const glm::vec4& position
+)
+{
+	Corpse* c = nullptr;
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		corpse = Corpse::LoadCharacterCorpseEntity(
-			Strings::ToUnsignedInt(row[0]), 			 // uint32 in_dbid
-			char_id, 				 // uint32 in_charid
-			row[1], 				 // char* in_charname
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {} AND `is_buried` = 1 ORDER BY `time_of_death` LIMIT 1",
+			character_id
+		)
+	);
+
+	for (const auto& e : l) {
+		c = Corpse::LoadCharacterCorpseEntity(
+			e.id,
+			e.charid,
+			e.charname,
 			position,
-			row[2], 				 // char* time_of_death
-			Strings::ToInt(row[3]) == 1, 		 // bool rezzed
-			false,					 // bool was_at_graveyard
-			Strings::ToUnsignedInt(row[4])            // uint32 guild_consent_id
+			std::to_string(e.time_of_death),
+			e.is_rezzed == 1,
+			RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
+			e.guild_consent_id
 		);
-		if (!corpse)
-            continue;
 
-		entity_list.AddCorpse(corpse);
-		corpse->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
-		corpse->Spawn();
-		if (!UnburyCharacterCorpse(corpse->GetCorpseDBID(), dest_zone_id, dest_instance_id, position))
-			LogError("Unable to unbury a summoned player corpse for character id [{}]", char_id);
+		if (!c) {
+			continue;
+		}
+
+		entity_list.AddCorpse(c);
+		c->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
+		c->Spawn();
+
+		if (!UnburyCharacterCorpse(c->GetCorpseDBID(), zone_id, instance_id, position)) {
+			LogError("Unable to unbury a summoned player corpse_id [{}] for character_id [{}]", e.id, character_id);
+		}
 	}
 
-	return corpse;
+	return c;
 }
 
-bool ZoneDatabase::SummonAllCharacterCorpses(uint32 char_id, uint32 dest_zone_id, uint16 dest_instance_id, const glm::vec4& position) {
-	Corpse* corpse = nullptr;
-	int CorpseCount = 0;
+bool ZoneDatabase::SummonAllCharacterCorpses(
+	uint32 character_id,
+	uint32 zone_id,
+	uint16 instance_id,
+	const glm::vec4& position
+)
+{
+	Corpse* c = nullptr;
+	int64 corpse_count = 0;
 
-	std::string query = StringFormat(
-		"UPDATE character_corpses SET zone_id = %i, instance_id = %i, x = %f, y = %f, z = %f, heading = %f, is_buried = 0, was_at_graveyard = 0 WHERE charid = %i",
-		dest_zone_id, dest_instance_id, position.x, position.y, position.z, position.w, char_id
+	auto l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {}",
+			character_id
+		)
 	);
-	auto results = QueryDatabase(query);
 
-	query = StringFormat(
-		"SELECT `id`, `charname`, `time_of_death`, `is_rezzed`, `guild_consent_id` FROM `character_corpses` WHERE `charid` = '%u'"
-		"ORDER BY time_of_death",
-		char_id);
-	results = QueryDatabase(query);
+	for (auto& e : l) {
+		e.zone_id          = zone_id;
+		e.instance_id      = instance_id;
+		e.x                = position.x;
+		e.y                = position.y;
+		e.z                = position.z;
+		e.heading          = position.w;
+		e.is_buried        = 0;
+		e.was_at_graveyard = 0;
 
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		corpse = Corpse::LoadCharacterCorpseEntity(
-			Strings::ToUnsignedInt(row[0]),
-			char_id,
-			row[1],
+		c = Corpse::LoadCharacterCorpseEntity(
+			e.id,
+			e.charid,
+			e.charname,
 			position,
-			row[2],
-			Strings::ToInt(row[3]) == 1,
-			false,
-			Strings::ToUnsignedInt(row[4]));
+			std::to_string(e.time_of_death),
+			e.is_rezzed == 1,
+			RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
+			e.guild_consent_id
+		);
 
-		if (corpse) {
-			entity_list.AddCorpse(corpse);
-			corpse->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
-			corpse->Spawn();
-			++CorpseCount;
+		if (c) {
+			entity_list.AddCorpse(c);
+			c->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
+			c->Spawn();
+			++corpse_count;
+		} else {
+			LogError("Unable to construct a player corpse_id [{}] for character_id [{}]", e.id, character_id);
 		}
-		else{
-			LogError("Unable to construct a player corpse for character id [{}]", char_id);
-		}
 	}
 
-	return (CorpseCount > 0);
+	CharacterCorpsesRepository::ReplaceMany(*this, l);
+
+	return corpse_count > 0;
 }
 
-int ZoneDatabase::CountCharacterCorpses(uint32 char_id) {
-	std::string query = fmt::format(
-		SQL(
-			SELECT
-			COUNT(*)
-			FROM
-			character_corpses
-			WHERE
-			charid = '{}'
-		),
-		char_id
+int64 ZoneDatabase::CountCharacterCorpses(uint32 character_id)
+{
+	return CharacterCorpsesRepository::Count(
+		*this,
+		fmt::format(
+			"`charid` = {}",
+			character_id
+		)
 	);
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
-	}
-	return 0;
 }
 
-int ZoneDatabase::CountCharacterCorpsesByZoneID(uint32 char_id, uint32 zone_id) {
-	std::string query = fmt::format(
-		SQL(
-			SELECT
-			COUNT(*)
-			FROM
-			character_corpses
-			WHERE
-			charid = '{}'
-			AND
-			zone_id = '{}'
-		),
-		char_id,
-		zone_id
+int64 ZoneDatabase::CountCharacterCorpsesByZoneID(uint32 character_id, uint32 zone_id)
+{
+	return CharacterCorpsesRepository::Count(
+		*this,
+		fmt::format(
+			"`charid` = {} AND `zone_id` = {}",
+			character_id,
+			zone_id
+		)
 	);
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
+}
+
+bool ZoneDatabase::UnburyCharacterCorpse(uint32 corpse_id, uint32 zone_id, uint16 instance_id, const glm::vec4& position)
+{
+	return CharacterCorpsesRepository::UnburyCorpse(*this, corpse_id, zone_id, instance_id, position);
+}
+
+Corpse* ZoneDatabase::LoadCharacterCorpse(uint32 corpse_id)
+{
+	const auto& e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
+
+	Corpse* c = 0;
+
+	if (!e.id) {
+		return c;
 	}
-	return 0;
-}
 
-bool ZoneDatabase::UnburyCharacterCorpse(uint32 db_id, uint32 new_zone_id, uint16 new_instance_id, const glm::vec4& position) {
-	std::string query = StringFormat("UPDATE `character_corpses` "
-                                    "SET `is_buried` = 0, `zone_id` = %u, `instance_id` = %u, "
-                                    "`x` = %f, `y` = %f, `z` = %f, `heading` = %f, "
-                                    "`time_of_death` = Now(), `was_at_graveyard` = 0 "
-                                    "WHERE `id` = %u",
-                                    new_zone_id, new_instance_id,
-                                    position.x, position.y, position.z, position.w, db_id);
-	auto results = QueryDatabase(query);
-	if (results.Success() && results.RowsAffected() != 0)
-		return true;
+	glm::vec4 position = glm::vec4(e.x, e.y, e.z, e.heading);
 
-	return false;
-}
-
-Corpse* ZoneDatabase::LoadCharacterCorpse(uint32 player_corpse_id) {
-	Corpse* NewCorpse = 0;
-	std::string query = StringFormat(
-		"SELECT `id`, `charid`, `charname`, `x`, `y`, `z`, `heading`, `time_of_death`, `is_rezzed`, `was_at_graveyard`, `guild_consent_id` FROM `character_corpses` WHERE `id` = '%u' LIMIT 1",
-		player_corpse_id
+	c = Corpse::LoadCharacterCorpseEntity(
+		e.id,
+		e.charid,
+		e.charname,
+		position,
+		std::to_string(e.time_of_death),
+		e.is_rezzed == 1,
+		RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
+		e.guild_consent_id
 	);
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-        auto position = glm::vec4(Strings::ToFloat(row[3]), Strings::ToFloat(row[4]), Strings::ToFloat(row[5]), Strings::ToFloat(row[6]));
-		NewCorpse = Corpse::LoadCharacterCorpseEntity(
-				Strings::ToUnsignedInt(row[0]), 		 // id					  uint32 in_dbid
-				Strings::ToUnsignedInt(row[1]),		 // charid				  uint32 in_charid
-				row[2], 			 //	char_name
-				position,
-				row[7],				 // time_of_death		  char* time_of_death
-				Strings::ToInt(row[8]) == 1, 	 // is_rezzed			  bool rezzed
-				Strings::ToInt(row[9]),		 // was_at_graveyard	  bool was_at_graveyard
-				Strings::ToUnsignedInt(row[10])       // guild_consent_id      uint32 guild_consent_id
-			);
-		entity_list.AddCorpse(NewCorpse);
-	}
-	return NewCorpse;
+
+	entity_list.AddCorpse(c);
+
+	return c;
 }
 
-bool ZoneDatabase::LoadCharacterCorpses(uint32 zone_id, uint16 instance_id) {
-	std::string query;
-	if (!RuleB(Zone, EnableShadowrest)){
-		query = StringFormat("SELECT id, charid, charname, x, y, z, heading, time_of_death, is_rezzed, was_at_graveyard, guild_consent_id FROM character_corpses WHERE zone_id='%u' AND instance_id='%u'", zone_id, instance_id);
-	}
-	else{
-		query = StringFormat("SELECT id, charid, charname, x, y, z, heading, time_of_death, is_rezzed, 0 as was_at_graveyard, guild_consent_id FROM character_corpses WHERE zone_id='%u' AND instance_id='%u' AND is_buried=0", zone_id, instance_id);
-	}
+bool ZoneDatabase::LoadCharacterCorpses(uint32 zone_id, uint16 instance_id)
+{
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`zone_id` = {} AND `instance_id` = {}{}",
+			zone_id,
+			instance_id,
+			RuleB(Zone, EnableShadowrest) ? " AND `is_buried` = 0" : ""
+		)
+	);
 
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-        auto position = glm::vec4(Strings::ToFloat(row[3]), Strings::ToFloat(row[4]), Strings::ToFloat(row[5]), Strings::ToFloat(row[6]));
+	for (const auto& e : l) {
+		glm::vec4 position = glm::vec4(e.x, e.y, e.z, e.heading);
+
 		entity_list.AddCorpse(
-			 Corpse::LoadCharacterCorpseEntity(
-				Strings::ToUnsignedInt(row[0]), 		  // id					  uint32 in_dbid
-				Strings::ToUnsignedInt(row[1]), 		  // charid				  uint32 in_charid
-				row[2], 			  //					  char_name
+			Corpse::LoadCharacterCorpseEntity(
+				e.id,
+				e.charid,
+				e.charname,
 				position,
-				row[7], 			  // time_of_death		  char* time_of_death
-				Strings::ToInt(row[8]) == 1, 	  // is_rezzed			  bool rezzed
-				Strings::ToInt(row[9]),
-				Strings::ToUnsignedInt(row[10]))       // guild_consent_id     uint32 guild_consent_id
+				std::to_string(e.time_of_death),
+				e.is_rezzed == 1,
+				RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
+				e.guild_consent_id
+			)
 		);
 	}
-
-	LogInfo("Loaded [{}] player corpse(s)", Strings::Commify(results.RowCount()));
 
 	return true;
 }
 
-uint32 ZoneDatabase::GetFirstCorpseID(uint32 char_id) {
-	std::string query = StringFormat("SELECT `id` FROM `character_corpses` WHERE `charid` = '%u' AND `is_buried` = 0 ORDER BY `time_of_death` LIMIT 1", char_id);
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToInt(row[0]);
+uint32 ZoneDatabase::GetFirstCorpseID(uint32 character_id)
+{
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {} AND `is_buried` = 0 ORDER BY `time_of_death` LIMIT 1",
+			character_id
+		)
+	);
+
+	if (l.empty()) {
+		return 0;
 	}
-	return 0;
+
+	return l[0].id;
 }
 
-bool ZoneDatabase::DeleteItemOffCharacterCorpse(uint32 db_id, uint32 equip_slot, uint32 item_id){
-	std::string query = StringFormat("DELETE FROM `character_corpse_items` WHERE `corpse_id` = %u AND equip_slot = %u AND item_id = %u", db_id, equip_slot, item_id);
-	auto results = QueryDatabase(query);
-	if (results.Success() && results.RowsAffected() != 0){
-		return true;
-	}
-	return false;
+bool ZoneDatabase::DeleteItemOffCharacterCorpse(uint32 corpse_id, uint32 slot_id, uint32 item_id)
+{
+	return CharacterCorpseItemsRepository::DeleteWhere(
+		*this,
+		fmt::format(
+			"`corpse_id` = {} AND `equip_slot` = {} AND `item_id` = {}",
+			corpse_id,
+			slot_id,
+			item_id
+		)
+	);
 }
 
-bool ZoneDatabase::BuryCharacterCorpse(uint32 db_id) {
-	std::string query = StringFormat("UPDATE `character_corpses` SET `is_buried` = 1 WHERE `id` = %u", db_id);
-	auto results = QueryDatabase(query);
-	if (results.Success() && results.RowsAffected() != 0){
-		return true;
-	}
-	return false;
-}
-
-bool ZoneDatabase::BuryAllCharacterCorpses(uint32 char_id) {
-	std::string query = StringFormat("SELECT `id` FROM `character_corpses` WHERE `charid` = %u", char_id);
-	auto results = QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		BuryCharacterCorpse(Strings::ToInt(row[0]));
-		return true;
-	}
-	return false;
-}
-
-bool ZoneDatabase::DeleteCharacterCorpse(uint32 db_id) {
-	std::string query = StringFormat("DELETE FROM `character_corpses` WHERE `id` = %d", db_id);
-	auto results = QueryDatabase(query);
-	if (results.Success() && results.RowsAffected() != 0)
-		return true;
-
-	return false;
+bool ZoneDatabase::BuryCharacterCorpse(uint32 corpse_id)
+{
+	return CharacterCorpsesRepository::BuryCorpse(*this, corpse_id);
 }
 
 bool ZoneDatabase::HasRoamBox(uint32 spawngroupId)
@@ -4405,96 +4268,10 @@ uint32 ZoneDatabase::GetPlayerBotGuildId()
 }
 
 
-double ZoneDatabase::GetAAEXPModifier(uint32 character_id, uint32 zone_id, int16 instance_version) const {
-	const std::string query = fmt::format(
-		SQL(
-			SELECT
-			`aa_modifier`
-			FROM
-			`character_exp_modifiers`
-			WHERE
-			`character_id` = {}
-			AND
-			(`zone_id` = {} OR `zone_id` = 0) AND
-			(`instance_version` = {} OR `instance_version` = -1)
-			ORDER BY `zone_id`, `instance_version` DESC
-			LIMIT 1
-		),
-		character_id,
-		zone_id,
-		instance_version
-	);
 
-	auto results = database.QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToFloat(row[0]);
-	}
-
-	return 1.0f;
-}
-
-double ZoneDatabase::GetEXPModifier(uint32 character_id, uint32 zone_id, int16 instance_version) const {
-	const std::string query = fmt::format(
-		SQL(
-			SELECT
-			`exp_modifier`
-			FROM
-			`character_exp_modifiers`
-			WHERE
-			`character_id` = {}
-			AND
-			(`zone_id` = {} OR `zone_id` = 0) AND
-			(`instance_version` = {} OR `instance_version` = -1)
-			ORDER BY `zone_id`, `instance_version` DESC
-			LIMIT 1
-		),
-		character_id,
-		zone_id,
-		instance_version
-	);
-
-	auto results = database.QueryDatabase(query);
-	for (auto& row = results.begin(); row != results.end(); ++row) {
-		return Strings::ToFloat(row[0]);
-	}
-
-	return 1.0f;
-}
-
-void ZoneDatabase::SetAAEXPModifier(uint32 character_id, uint32 zone_id, double aa_modifier, int16 instance_version) {
-	float exp_modifier = GetEXPModifier(character_id, zone_id, instance_version);
-	std::string query = fmt::format(
-		SQL(
-			REPLACE INTO
-			`character_exp_modifiers`
-			VALUES
-			({}, {}, {}, {}, {})
-		),
-		character_id,
-		zone_id,
-		instance_version,
-		aa_modifier,
-		exp_modifier
-	);
-	database.QueryDatabase(query);
-}
-
-void ZoneDatabase::SetEXPModifier(uint32 character_id, uint32 zone_id, double exp_modifier, int16 instance_version) {
-	float aa_modifier = GetAAEXPModifier(character_id, zone_id, instance_version);
-	std::string query = fmt::format(
-		SQL(
-			REPLACE INTO
-			`character_exp_modifiers`
-			VALUES
-			({}, {}, {}, {}, {})
-		),
-		character_id,
-		zone_id,
-		instance_version,
-		aa_modifier,
-		exp_modifier
-	);
-	database.QueryDatabase(query);
+bool ZoneDatabase::DeleteCharacterCorpse(uint32 corpse_id)
+{
+	return CharacterCorpsesRepository::DeleteOne(*this, corpse_id);
 }
 
 void ZoneDatabase::UpdateGMStatus(uint32 account_id, int new_status)
@@ -4597,4 +4374,131 @@ void ZoneDatabase::ZeroPlayerProfileCurrency(PlayerProfile_Struct* pp)
 	if (pp->copper_cursor < 0) {
 		pp->copper_cursor = 0;
 	}
+}
+
+float ZoneDatabase::GetAAEXPModifierByCharID(
+	uint32 character_id,
+	uint32 zone_id,
+	int16 instance_version
+)
+{
+	EXPModifier m = CharacterExpModifiersRepository::GetEXPModifier(
+		database,
+		character_id,
+		zone_id,
+		instance_version
+	);
+
+	return m.aa_modifier;
+}
+
+float ZoneDatabase::GetEXPModifierByCharID(
+	uint32 character_id,
+	uint32 zone_id,
+	int16 instance_version
+)
+{
+	EXPModifier m = CharacterExpModifiersRepository::GetEXPModifier(
+		database,
+		character_id,
+		zone_id,
+		instance_version
+	);
+
+	return m.exp_modifier;
+}
+
+void ZoneDatabase::SetAAEXPModifierByCharID(
+	uint32 character_id,
+	uint32 zone_id,
+	float aa_modifier,
+	int16 instance_version
+)
+{
+	CharacterExpModifiersRepository::SetEXPModifier(
+		database,
+		character_id,
+		zone_id,
+		instance_version,
+		EXPModifier{
+			.aa_modifier = aa_modifier,
+			.exp_modifier = -1.0f
+		}
+	);
+}
+
+void ZoneDatabase::SetEXPModifierByCharID(
+	uint32 character_id,
+	uint32 zone_id,
+	float exp_modifier,
+	int16 instance_version
+)
+{
+	CharacterExpModifiersRepository::SetEXPModifier(
+		database,
+		character_id,
+		zone_id,
+		instance_version,
+		EXPModifier{
+			.aa_modifier = -1.0f,
+			.exp_modifier = exp_modifier
+		}
+	);
+}
+
+void ZoneDatabase::LoadCharacterEXPModifier(Client* c)
+{
+	if (!zone) {
+		return;
+	}
+
+	EXPModifier m = CharacterExpModifiersRepository::GetEXPModifier(
+		*this,
+		c->CharacterID(),
+		zone->GetZoneID(),
+		zone->GetInstanceVersion()
+	);
+
+	zone->exp_modifiers[c->CharacterID()] = m;
+}
+
+void ZoneDatabase::SaveCharacterEXPModifier(Client* c)
+{
+	if (!zone) {
+		return;
+	}
+
+	EXPModifier m = zone->exp_modifiers[c->CharacterID()];
+
+	CharacterExpModifiersRepository::ReplaceOne(
+		*this,
+		CharacterExpModifiersRepository::CharacterExpModifiers{
+			.character_id = static_cast<int32_t>(c->CharacterID()),
+			.zone_id = static_cast<int32_t>(zone->GetZoneID()),
+			.instance_version = zone->GetInstanceVersion(),
+			.aa_modifier = m.aa_modifier,
+			.exp_modifier = m.exp_modifier
+		}
+	);
+}
+
+bool ZoneDatabase::BuryAllCharacterCorpses(uint32 character_id)
+{
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {}",
+			character_id
+		)
+	);
+
+	if (l.empty()) {
+		return false;
+	}
+
+	for (const auto& e : l) {
+		BuryCharacterCorpse(e.id);
+	}
+
+	return true;
 }

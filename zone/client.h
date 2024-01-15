@@ -248,6 +248,9 @@ public:
 	bool IsEXPEnabled() const;
 	void SetEXPEnabled(bool is_exp_enabled);
 
+	std::vector<EXPModifier> GetEXPModifiers();
+	void SetEXPModifiers(std::vector<EXPModifier> exp_modifiers);
+
 	void SetPrimaryWeaponOrnamentation(uint32 model_id);
 	void SetSecondaryWeaponOrnamentation(uint32 model_id);
 
@@ -602,10 +605,10 @@ public:
 
 	inline uint32 GetEXP() const { return m_pp.exp; }
 
-	inline double GetAAEXPModifier(uint32 zone_id, int16 instance_version = -1) const { return database.GetAAEXPModifier(CharacterID(), zone_id, instance_version); };
-	inline double GetEXPModifier(uint32 zone_id, int16 instance_version = -1) const { return database.GetEXPModifier(CharacterID(), zone_id, instance_version); };
-	inline void SetAAEXPModifier(uint32 zone_id, double aa_modifier, int16 instance_version = -1) { database.SetAAEXPModifier(CharacterID(), zone_id, aa_modifier, instance_version); };
-	inline void SetEXPModifier(uint32 zone_id, double exp_modifier, int16 instance_version = -1) { database.SetEXPModifier(CharacterID(), zone_id, exp_modifier, instance_version); };
+	float GetAAEXPModifier(uint32 zone_id, int16 instance_version = -1);
+	float GetEXPModifier(uint32 zone_id, int16 instance_version = -1);
+	void SetAAEXPModifier(uint32 zone_id, float aa_modifier, int16 instance_version = -1);
+	void SetEXPModifier(uint32 zone_id, float exp_modifier, int16 instance_version = -1);
 
 	bool UpdateLDoNPoints(uint32 theme_id, int points);
 	void SetLDoNPoints(uint32 theme_id, uint32 points);
@@ -1451,7 +1454,7 @@ public:
 	void DepopAllCorpses();
 	void DepopPlayerCorpse(uint32 dbid);
 	void BuryPlayerCorpses();
-	uint32 GetCorpseCount() { return database.GetCharacterCorpseCount(CharacterID()); }
+	int64 GetCorpseCount() { return database.GetCharacterCorpseCount(CharacterID()); }
 	uint32 GetCorpseID(int corpse) { return database.GetCharacterCorpseID(CharacterID(), corpse); }
 	uint32 GetCorpseItemAt(int corpse_id, int slot_id) { return database.GetCharacterCorpseItemAt(corpse_id, slot_id); }
 	void SuspendMinion(int value);
@@ -1554,14 +1557,14 @@ public:
 	bool CheckCanUnsuspendMerc();
 	bool DismissMerc(uint32 MercID);
 	bool MercOnlyOrNoGroup();
-	inline uint32 GetMercID() const { return mercid; }
+	inline uint32 GetMercenaryID() const { return mercid; }
 	inline uint8 GetMercSlot() const { return mercSlot; }
 	void SetMercID( uint32 newmercid) { mercid = newmercid; }
 	void SetMercSlot( uint8 newmercslot) { mercSlot = newmercslot; }
 	Merc* GetMerc();
 	MercInfo& GetMercInfo(uint8 slot) { return m_mercinfo[slot]; }
 	MercInfo& GetMercInfo() { return m_mercinfo[mercSlot]; }
-	uint8 GetNumMercs();
+	uint8 GetNumberOfMercenaries();
 	void SetMerc(Merc* newmerc);
 	void SendMercResponsePackets(uint32 ResponseType);
 	void SendMercMerchantResponsePacket(int32 response_type);
@@ -1590,8 +1593,6 @@ public:
 	void DuplicateLoreMessage(uint32 ItemID);
 	void GarbleMessage(char *, uint8);
 
-	void TickItemCheck();
-	void TryItemTick(int slot);
 	void ItemTimerCheck();
 	void TryItemTimer(int slot);
 	void SendItemScale(EQ::ItemInstance *inst);
@@ -1955,6 +1956,8 @@ private:
 
 	bool m_exp_enabled;
 
+	std::vector<EXPModifier> m_exp_modifiers;
+
 	//Anti Spam Stuff
 	Timer *KarmaUpdateTimer;
 	uint32 TotalKarma;
@@ -2008,7 +2011,6 @@ private:
 
 	AggroMeter m_aggrometer;
 
-	Timer ItemTickTimer;
 	Timer ItemQuestTimer;
 	std::map<std::string,std::string> accountflags;
 

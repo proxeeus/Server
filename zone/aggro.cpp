@@ -1213,17 +1213,17 @@ int32 Mob::CheckAggroAmount(uint16 spell_id, Mob *target, bool is_proc)
 	for (int o = 0; o < EFFECT_COUNT; o++) {
 		switch (spells[spell_id].effect_id[o]) {
 			case SE_PoisonCounter: {
-				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base_value[o], spells[spell_id].max_value[o], slevel, spell_id);
-				if (isproc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
+				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base_value[o], spells[spell_id].max_value[o], mob_level, spell_id);
+				if (is_proc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
 					val = RuleI(Aggro, MaxScalingProcAggro);
-				AggroAmount += val;
+				aggro_amount += val;
 				break;
 			}
 			case SE_DiseaseCounter: {
-				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base_value[o], spells[spell_id].max_value[o], slevel, spell_id)*10;	// double the hate for Disease spells?
-				if (isproc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
+				int val = CalcSpellEffectValue_formula(spells[spell_id].formula[o], spells[spell_id].base_value[o], spells[spell_id].max_value[o], mob_level, spell_id)*10;	// double the hate for Disease spells?
+				if (is_proc && RuleI(Aggro, MaxScalingProcAggro) > -1 && (val > RuleI(Aggro, MaxScalingProcAggro)))
 					val = RuleI(Aggro, MaxScalingProcAggro);
-				AggroAmount += val;
+				aggro_amount += val;
 				break;
 			}
 			case SE_CurrentHPOnce:

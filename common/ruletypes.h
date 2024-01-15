@@ -219,6 +219,7 @@ RULE_BOOL(Character, UseForageCommonFood, true, "If enabled, use the common food
 RULE_INT(Character, ClearXTargetDelay, 10, "Seconds between uses of the #clearxtargets command (Set to 0 to disable)")
 RULE_BOOL(Character, PreventMountsFromZoning, false, "Enable to prevent mounts from zoning - Prior to December 15, 2004 this is enabled.")
 RULE_BOOL(Character, GroupInvitesRequireTarget, false, "Enable to require players to have invitee on target (Disables /invite name) - Classic Style")
+RULE_BOOL(Character, PlayerTradingLoreFeedback, true, "If enabled, during a player to player trade, if lore items exist, it will output which items.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Mercs)
@@ -337,7 +338,6 @@ RULE_BOOL(Zone, UseZoneController, true, "Enables the ability to use persistent 
 RULE_BOOL(Zone, EnableZoneControllerGlobals, false, "Enables the ability to use quest globals with the zone controller NPC")
 RULE_INT(Zone, GlobalLootMultiplier, 1, "Sets Global Loot drop multiplier for database based drops, useful for double, triple loot etc")
 RULE_BOOL(Zone, KillProcessOnDynamicShutdown, true, "When process has booted a zone and has hit its zone shut down timer, it will hard kill the process to free memory back to the OS")
-RULE_INT(Zone, SecondsBeforeIdle, 60, "Seconds before IDLE_WHEN_EMPTY define kicks in")
 RULE_INT(Zone, SpawnEventMin, 3, "When strict is set in spawn_events, specifies the max EQ minutes into the trigger hour a spawn_event will fire. Going below 3 may cause the spawn_event to not fire.")
 RULE_INT(Zone, ForageChance, 25, "Chance of foraging from zone table vs global table")
 RULE_CATEGORY_END()

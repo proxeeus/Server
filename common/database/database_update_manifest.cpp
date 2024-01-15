@@ -5175,7 +5175,63 @@ ALTER TABLE `task_activities`
 )",
 		.content_schema_update = true
 	},
-
+	ManifestEntry{
+		.version = 9251,
+		.description = "2023_01_12_instance_list_notes.sql",
+		.check = "SHOW COLUMNS FROM `instance_list` LIKE 'notes'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+ALTER TABLE `instance_list`
+	ADD COLUMN `notes` varchar(50) NOT NULL DEFAULT '' AFTER `never_expires`;
+)",
+	},
+	ManifestEntry{
+		.version = 9252,
+		.description = "2024_01_07_zone_idle_when_empty.sql",
+		.check = "SHOW COLUMNS FROM `zone` LIKE 'idle_when_empty'",
+		.condition = "empty",
+		.match = "",
+		.sql = R"(
+ALTER TABLE `zone`
+ADD COLUMN `idle_when_empty` tinyint(1) UNSIGNED NOT NULL DEFAULT 1 AFTER `min_lava_damage`,
+ADD COLUMN `seconds_before_idle` int(11) UNSIGNED NOT NULL DEFAULT 60 AFTER `idle_when_empty`;
+)",
+		.content_schema_update = true
+	},
+	ManifestEntry{
+		.version = 9253,
+		.description = "2024_01_13_merchantlist_slot.sql",
+		.check = "SHOW COLUMNS FROM `merchantlist` LIKE 'slot'",
+		.condition = "missing",
+		.match = "unsigned",
+		.sql = R"(
+ALTER TABLE `merchantlist`
+	MODIFY COLUMN `slot` int(11) UNSIGNED NOT NULL DEFAULT 0
+)",
+		.content_schema_update = true
+	},
+	ManifestEntry{
+		.version = 9254,
+		.description = "2024_01_13_merchantlist_temp_slot.sql",
+		.check = "SHOW COLUMNS FROM `merchantlist_temp` LIKE 'slot'",
+		.condition = "contains",
+		.match = "tinyint",
+		.sql = R"(
+ALTER TABLE `merchantlist_temp`
+	MODIFY COLUMN `slot` int(11) UNSIGNED NOT NULL DEFAULT 0
+)"
+	},
+	ManifestEntry{
+		.version = 9255,
+		.description = "2024_01_13_drop_item_tick_deprecated.sql",
+		.check = "show tables like 'item_tick'",
+		.condition = "not_empty",
+		.match = "",
+		.sql = R"(
+DROP TABLE IF EXISTS item_tick
+)"
+	}
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{
 //		.version = 9228,

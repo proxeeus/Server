@@ -1818,9 +1818,9 @@ bool Client::Death(Mob* killerMob, int64 damage, uint16 spell, EQ::skills::Skill
 				parse->EventNPC(EVENT_SLAY, killerMob->CastToNPC(), this, "", 0);
 			}
 
-			auto emote_id = killerMob->GetEmoteID();
+			const uint32 emote_id = killerMob->GetEmoteID();
 			if (emote_id) {
-				killerMob->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::KilledPC, emoteid, this);
+				killerMob->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::KilledPC, emote_id, this);
 			}
 
 			killerMob->TrySpellOnKill(killed_level, spell);
@@ -2729,7 +2729,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 		entity_list.RemoveFromAutoXTargets(this);
 
-		uint32 emoteid = GetEmoteID();
+		const uint32 emote_id = GetEmoteID();
 		corpse = new Corpse(this, &itemlist, GetNPCTypeID(), &NPCTypedata,
 			level > 54 ? RuleI(NPC, MajorNPCCorpseDecayTimeMS)
 			: RuleI(NPC, MinorNPCCorpseDecayTimeMS));
@@ -2744,8 +2744,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		SetID(0);
 		ApplyIllusionToCorpse(illusion_spell_id, corpse);
 
-		if (killer != 0 && emoteid != 0)
-			corpse->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::AfterDeath, emoteid, killer);
+		if (killer != 0 && emote_id)
+			corpse->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::AfterDeath, emote_id, killer);
 		if (killer != 0 && killer->IsClient()) {
 			corpse->AllowPlayerLoot(killer, 0);
 			if (killer->IsGrouped()) {
@@ -2827,9 +2827,9 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	// Parse quests even if we're killed by an NPC
 	if (oos) {
 		if (IsNPC()) {
-			auto emote_id = GetEmoteID();
+			const uint32 emote_id = GetEmoteID();
 			if (emote_id) {
-				DoNPCEmote(EQ::constants::EmoteEventTypes::OnDeath, emoteid, killer_mob);
+				DoNPCEmote(EQ::constants::EmoteEventTypes::OnDeath, emote_id, killer_mob);
 			}
 		}
 
@@ -2838,10 +2838,11 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 				parse->EventNPC(EVENT_NPC_SLAY, oos->CastToNPC(), this, "", 0);
 			}
 
-			auto emote_id = oos->GetEmoteID();
+			const uint32 emote_id = oos->GetEmoteID();
 			if (emote_id) {
 				oos->CastToNPC()->DoNPCEmote(EQ::constants::EmoteEventTypes::KilledNPC, emote_id, this);
 			}
+
 			if (killer_mob) {
 				killer_mob->TrySpellOnKill(killed_level, spell);
 			}
@@ -3039,12 +3040,12 @@ void Mob::AddToHateList(Mob* other, int64 hate /*= 0*/, int64 damage /*= 0*/, bo
 
 	// if other is a merc, add the merc client to the hate list
 	if (other->IsMerc()) {
-		if (other->CastToMerc()->GetMercOwner() && other->CastToMerc()->GetMercOwner()->CastToClient()->GetFeigned()) {
-			AddFeignMemory(other->CastToMerc()->GetMercOwner()->CastToClient());
+		if (other->CastToMerc()->GetMercenaryOwner() && other->CastToMerc()->GetMercenaryOwner()->CastToClient()->GetFeigned()) {
+			AddFeignMemory(other->CastToMerc()->GetMercenaryOwner()->CastToClient());
 		}
 		else {
-			if (!hate_list.IsEntOnHateList(other->CastToMerc()->GetMercOwner()))
-				hate_list.AddEntToHateList(other->CastToMerc()->GetMercOwner(), 0, 0, false, true);
+			if (!hate_list.IsEntOnHateList(other->CastToMerc()->GetMercenaryOwner()))
+				hate_list.AddEntToHateList(other->CastToMerc()->GetMercenaryOwner(), 0, 0, false, true);
 			// if mercs are reworked to include adding 'this' to owner's xtarget list, this should reflect bots code above
 		}
 	} //MERC
@@ -5302,8 +5303,8 @@ bool Mob::TryFinishingBlow(Mob *defender, int64 &damage)
 				(RuleB(Combat, FinishingBlowOnlyWhenFleeing) && !defender->currently_fleeing) ||
 				!RuleB(Combat, FinishingBlowOnlyWhenFleeing)
 			) &&
-			finishing_blow_level && 
-			finishing_blow_damage && 
+			finishing_blow_level &&
+			finishing_blow_damage &&
 			defender->GetLevel() <= finishing_blow_level &&
 			proc_chance >= zone->random.Int(1, 1000)
 		) {

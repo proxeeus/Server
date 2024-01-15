@@ -16,7 +16,6 @@
 #include "../../strings.h"
 #include <ctime>
 
-
 class BaseCharacterBandolierRepository {
 public:
 	struct CharacterBandolier {
@@ -136,12 +135,12 @@ public:
 		if (results.RowCount() == 1) {
 			CharacterBandolier e{};
 
-			e.id             = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
-			e.bandolier_id   = static_cast<uint8_t>(strtoul(row[1], nullptr, 10));
-			e.bandolier_slot = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.item_id        = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.icon           = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
-			e.bandolier_name = row[5] ? row[5] : "";
+			e.id             = row[0] ? static_cast<uint32_t>(strtoul(row[0], nullptr, 10)) : 0;
+			e.bandolier_id   = row[1] ? static_cast<uint8_t>(strtoul(row[1], nullptr, 10)) : 0;
+			e.bandolier_slot = row[2] ? static_cast<uint8_t>(strtoul(row[2], nullptr, 10)) : 0;
+			e.item_id        = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
+			e.icon           = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
+			e.bandolier_name = row[5] ? row[5] : "0";
 
 			return e;
 		}
@@ -276,12 +275,12 @@ public:
 		for (auto row = results.begin(); row != results.end(); ++row) {
 			CharacterBandolier e{};
 
-			e.id             = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
-			e.bandolier_id   = static_cast<uint8_t>(strtoul(row[1], nullptr, 10));
-			e.bandolier_slot = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.item_id        = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.icon           = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
-			e.bandolier_name = row[5] ? row[5] : "";
+			e.id             = row[0] ? static_cast<uint32_t>(strtoul(row[0], nullptr, 10)) : 0;
+			e.bandolier_id   = row[1] ? static_cast<uint8_t>(strtoul(row[1], nullptr, 10)) : 0;
+			e.bandolier_slot = row[2] ? static_cast<uint8_t>(strtoul(row[2], nullptr, 10)) : 0;
+			e.item_id        = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
+			e.icon           = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
+			e.bandolier_name = row[5] ? row[5] : "0";
 
 			all_entries.push_back(e);
 		}
@@ -306,12 +305,12 @@ public:
 		for (auto row = results.begin(); row != results.end(); ++row) {
 			CharacterBandolier e{};
 
-			e.id             = static_cast<uint32_t>(strtoul(row[0], nullptr, 10));
-			e.bandolier_id   = static_cast<uint8_t>(strtoul(row[1], nullptr, 10));
-			e.bandolier_slot = static_cast<uint8_t>(strtoul(row[2], nullptr, 10));
-			e.item_id        = static_cast<uint32_t>(strtoul(row[3], nullptr, 10));
-			e.icon           = static_cast<uint32_t>(strtoul(row[4], nullptr, 10));
-			e.bandolier_name = row[5] ? row[5] : "";
+			e.id             = row[0] ? static_cast<uint32_t>(strtoul(row[0], nullptr, 10)) : 0;
+			e.bandolier_id   = row[1] ? static_cast<uint8_t>(strtoul(row[1], nullptr, 10)) : 0;
+			e.bandolier_slot = row[2] ? static_cast<uint8_t>(strtoul(row[2], nullptr, 10)) : 0;
+			e.item_id        = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
+			e.icon           = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
+			e.bandolier_name = row[5] ? row[5] : "0";
 
 			all_entries.push_back(e);
 		}

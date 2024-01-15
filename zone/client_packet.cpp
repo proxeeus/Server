@@ -63,9 +63,11 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "gm_commands/object_manipulation.h"
 #include "client.h"
 #include "../common/repositories/account_repository.h"
+#include "../common/repositories/character_corpses_repository.h"
 
 #include "../common/events/player_event_logs.h"
 #include "../common/repositories/character_stats_record_repository.h"
+#include "dialogue_window.h"
 
 extern QueryServ* QServ;
 extern Zone* zone;
@@ -1282,6 +1284,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	database.LoadCharacterLanguages(cid, &m_pp); /* Load Character Languages */
 	database.LoadCharacterLeadershipAbilities(cid, &m_pp); /* Load Character Leadership AA's */
 	database.LoadCharacterTribute(this); /* Load CharacterTribute */
+	database.LoadCharacterEXPModifier(this); /* Load Character EXP Modifier */
 
 	// this pattern is strange
 	// this is remnants of the old way of doing things
@@ -6253,11 +6256,11 @@ void Client::Handle_OP_EnvDamage(const EQApplicationPacket *app)
 	if (ed->dmgtype == EQ::constants::EnvironmentalDamage::Falling) {
 		if (zone->HasWaterMap()) {
 			auto target_position = glm::vec3(GetX(), GetY(), GetZ());
-			if (!zone->watermap->InLiquid(target_position)) {
+			if (zone->watermap->InLiquid(target_position)) {
 				return;
 			}
 		}
-		
+
 		uint32 mod = spellbonuses.ReduceFallDamage + itembonuses.ReduceFallDamage + aabonuses.ReduceFallDamage;
 		damage -= damage * mod / 100;
 	}
@@ -6821,73 +6824,96 @@ void Client::Handle_OP_GMSearchCorpse(const EQApplicationPacket *app)
 	// Could make this into a rule, although there is a hard limit since we are using a popup, of 4096 bytes that can
 	// be displayed in the window, including all the HTML formatting tags.
 	//
-	const int maxResults = 10;
+	const int max_results = 10;
 
-	if (app->size < sizeof(GMSearchCorpse_Struct))
-	{
+	if (app->size < sizeof(GMSearchCorpse_Struct)) {
 		LogDebug("OP_GMSearchCorpse size lower than expected: got [{}] expected at least [{}]", app->size, sizeof(GMSearchCorpse_Struct));
 		DumpPacket(app);
 		return;
 	}
 
-	GMSearchCorpse_Struct *gmscs = (GMSearchCorpse_Struct *)app->pBuffer;
-	gmscs->Name[63] = '\0';
+	auto s = (GMSearchCorpse_Struct *) app->pBuffer;
+	s->Name[63] = '\0';
 
-	auto escSearchString = new char[129];
-	database.DoEscapeString(escSearchString, gmscs->Name, strlen(gmscs->Name));
+	const auto& l = CharacterCorpsesRepository::GetWhere(
+		database,
+		fmt::format(
+			"`charname` LIKE '%{}%' ORDER BY `charname` LIMIT {}",
+			Strings::Escape(s->Name),
+			max_results
+		)
+	);
 
-	std::string query = StringFormat("SELECT charname, zone_id, x, y, z, time_of_death, is_rezzed, is_buried "
-		"FROM character_corpses WheRE charname LIKE '%%%s%%' ORDER BY charname LIMIT %i",
-		escSearchString, maxResults);
-	safe_delete_array(escSearchString);
-	auto results = database.QueryDatabase(query);
-	if (!results.Success()) {
+	if (l.empty()) {
+		Message(
+			Chat::White,
+			fmt::format(
+				"No corpses were found matching '{}'.",
+				s->Name
+			).c_str()
+		);
 		return;
 	}
 
-	if (results.RowCount() == 0)
-		return;
-
-	if (results.RowCount() == maxResults)
-		Message(Chat::Red, "Your search found too many results; some are not displayed.");
-	else
-		Message(Chat::Yellow, "There are %i corpse(s) that match the search string '%s'.", results.RowCount(), gmscs->Name);
-
-	char charName[64], time_of_death[20];
-
-	std::string popupText = "<table><tr><td>Name</td><td>Zone</td><td>X</td><td>Y</td><td>Z</td><td>Date</td><td>"
-		"Rezzed</td><td>Buried</td></tr><tr><td>&nbsp</td><td></td><td></td><td></td><td></td><td>"
-		"</td><td></td><td></td></tr>";
-
-	for (auto row = results.begin(); row != results.end(); ++row) {
-
-		strn0cpy(charName, row[0], sizeof(charName));
-
-		uint32 ZoneID = Strings::ToInt(row[1]);
-		float CorpseX = Strings::ToFloat(row[2]);
-		float CorpseY = Strings::ToFloat(row[3]);
-		float CorpseZ = Strings::ToFloat(row[4]);
-
-		strn0cpy(time_of_death, row[5], sizeof(time_of_death));
-
-		bool corpseRezzed = Strings::ToInt(row[6]);
-		bool corpseBuried = Strings::ToInt(row[7]);
-
-		popupText += StringFormat("<tr><td>%s</td><td>%s</td><td>%8.0f</td><td>%8.0f</td><td>%8.0f</td><td>%s</td><td>%s</td><td>%s</td></tr>",
-			charName, zone_store.GetZoneName(ZoneID, true), CorpseX, CorpseY, CorpseZ, time_of_death,
-			corpseRezzed ? "Yes" : "No", corpseBuried ? "Yes" : "No");
-
-		if (popupText.size() > 4000) {
-			Message(Chat::Red, "Unable to display all the results.");
-			break;
-		}
-
+	if (l.size() == max_results) {
+		Message(Chat::White, "Your search found too many results; some are not displayed.");
+	} else {
+		Message(
+			Chat::White,
+			fmt::format(
+				"{} Corpse{} were found matching '{}'.",
+				l.size(),
+				l.size() != 1 ? "s" : "",
+				s->Name
+			).c_str()
+		);
 	}
 
-	popupText += "</table>";
+	std::string popup_text = DialogueWindow::TableRow(
+		DialogueWindow::TableCell("Name") +
+		DialogueWindow::TableCell("Zone") +
+		DialogueWindow::TableCell("Position") +
+		DialogueWindow::TableCell("Date") +
+		DialogueWindow::TableCell("Resurrected") +
+		DialogueWindow::TableCell("Buried")
+	);
 
-	SendPopupToClient("Corpses", popupText.c_str());
+	for (const auto& e : l) {
+		popup_text += DialogueWindow::TableRow(
+			DialogueWindow::TableCell(e.charname) +
+			DialogueWindow::TableCell(
+				fmt::format(
+					"{} ({})",
+					zone_store.GetZoneLongName(e.zone_id, true),
+					e.zone_id
+				)
+			) +
+			DialogueWindow::TableCell(
+				fmt::format(
+					"{:.2f}, {:.2f}, {:.2f}, {:.2f}",
+					e.x,
+					e.y,
+					e.z,
+					e.heading
+				)
+			) +
+			DialogueWindow::TableCell(std::to_string(e.time_of_death)) +
+			DialogueWindow::TableCell(
+				e.is_rezzed ?
+				DialogueWindow::ColorMessage("forest_green", "Y") :
+				DialogueWindow::ColorMessage("red_1", "N")
+			) +
+			DialogueWindow::TableCell(
+				e.is_buried ?
+				DialogueWindow::ColorMessage("forest_green", "Y") :
+				DialogueWindow::ColorMessage("red_1", "N")
+			)
+		);
+	}
 
+	popup_text = DialogueWindow::Table(popup_text);
+
+	SendPopupToClient("Corpses", popup_text.c_str());
 }
 
 void Client::Handle_OP_GMServers(const EQApplicationPacket *app)
@@ -7337,7 +7363,7 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 	}
 
 	GroupInvite_Struct* gis = (GroupInvite_Struct*)app->pBuffer;
-	
+
 	Mob* invitee = nullptr;
 
 	if (RuleB(Character, GroupInvitesRequireTarget)) {
@@ -7385,7 +7411,7 @@ void Client::Handle_OP_GroupInvite2(const EQApplicationPacket *app)
 				}
 
 				return;
-				
+
 			} else {
 				if (RuleB(Character, OnInviteReceiveAlreadyinGroupMessage)) {
 					if (!invitee->CastToClient()->MercOnlyOrNoGroup()) {
@@ -10191,14 +10217,14 @@ void Client::Handle_OP_MercenaryCommand(const EQApplicationPacket *app)
 			uint8 numStances = 0;
 
 			//get number of available stances for the current merc
-			std::list<MercStanceInfo> mercStanceList = zone->merc_stance_list[merc->GetMercTemplateID()];
+			std::list<MercStanceInfo> mercStanceList = zone->merc_stance_list[merc->GetMercenaryTemplateID()];
 			auto iter = mercStanceList.begin();
 			while (iter != mercStanceList.end()) {
 				numStances++;
 				++iter;
 			}
 
-			MercTemplate* mercTemplate = zone->GetMercTemplate(GetMerc()->GetMercTemplateID());
+			MercTemplate* mercTemplate = zone->GetMercTemplate(GetMerc()->GetMercenaryTemplateID());
 			if (mercTemplate)
 			{
 				//check to see if selected option is a valid stance slot (option is the slot the stance is in, not the actual stance)
@@ -10264,14 +10290,14 @@ void Client::Handle_OP_MercenaryDataRequest(const EQApplicationPacket *app)
 			return;
 		}
 
-		mercTypeCount = tar->GetNumMercTypes(static_cast<unsigned int>(ClientVersion()));
-		mercCount = tar->GetNumMercs(static_cast<unsigned int>(ClientVersion()));
+		mercTypeCount = tar->GetNumMercenaryTypes(static_cast<unsigned int>(ClientVersion()));
+		mercCount = tar->GetNumberOfMercenaries(static_cast<unsigned int>(ClientVersion()));
 
 		if (mercCount > MAX_MERC)
 			return;
 
-		std::list<MercType> mercTypeList = tar->GetMercTypesList(static_cast<unsigned int>(ClientVersion()));
-		std::list<MercData> mercDataList = tar->GetMercsList(static_cast<unsigned int>(ClientVersion()));
+		std::list<MercType> mercTypeList = tar->GetMercenaryTypesList(static_cast<unsigned int>(ClientVersion()));
+		std::list<MercData> mercDataList = tar->GetMercenariesList(static_cast<unsigned int>(ClientVersion()));
 
 		int i = 0;
 		int StanceCount = 0;
@@ -10358,7 +10384,7 @@ void Client::Handle_OP_MercenaryDataUpdateRequest(const EQApplicationPacket *app
 
 	Log(Logs::General, Logs::Mercenaries, "Data Update Request Received for %s.", GetName());
 
-	if (GetMercID())
+	if (GetMercenaryID())
 	{
 		SendMercPersonalInfo();
 	}
@@ -10431,7 +10457,7 @@ void Client::Handle_OP_MercenaryHire(const EQApplicationPacket *app)
 		GetMercInfo().MercTimerRemaining = RuleI(Mercs, UpkeepIntervalMS);
 
 		// Get merc, assign it to client & spawn
-		Merc* merc = Merc::LoadMerc(this, merc_template, merchant_id, false);
+		Merc* merc = Merc::LoadMercenary(this, merc_template, merchant_id, false);
 
 		if (merc)
 		{
@@ -10504,7 +10530,7 @@ void Client::Handle_OP_MercenaryTimerRequest(const EQApplicationPacket *app)
 	uint32 entityID = 0;
 	uint32 mercState = 5;
 	uint32 suspendedTime = 0;
-	if (GetMercID()) {
+	if (GetMercenaryID()) {
 		Merc* merc = GetMerc();
 
 		if (merc) {
