@@ -50,17 +50,17 @@ void command_spawnfix(Client *c, const Seperator *sep)
 		}
 
 		c->Message(10, "Inserting new spawnentry...");
-		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100', '1', '-1', '-1',NULL, NULL);", lastSpawnGroupId, target_mob->CastToNPC()->GetNPCTypeID());
+		std::string spawnentryquery = StringFormat("insert into spawnentry values('%i', '%i', '100', '1', '0', '0', '-1', '-1',NULL, NULL);", lastSpawnGroupId, target_mob->CastToNPC()->GetNPCTypeID());
 		auto spawnentryresults = database.QueryDatabase(spawnentryquery);
 		if (!spawnentryresults.Success())
 		{
-			c->Message(13, "Error inserting sppawnentry.");
+			c->Message(13, "Error inserting spawnentry.");
 			return;
 		}
 
 		c->Message(10, "Inserting spawn2 entry...");
 
-		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,enabled,animation, min_expansion, max_expansion, content_flags,content_flags_disabled) values('%i','%s','0','%f','%f','%f','%f','600','0','0','0','1','1','0', '-1', '-1', NULL, NULL);", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
+		std::string spawn2entryquery = StringFormat("insert into spawn2(spawngroupID, zone, version,x,y,z,heading,respawntime,variance,pathgrid,_condition, cond_value,animation, min_expansion, max_expansion, content_flags,content_flags_disabled) values('%i','%s','0','%f','%f','%f','%f','600','0','0','0','1','0', '-1', '-1', NULL, NULL);", lastSpawnGroupId, zone->GetShortName(), c->GetX(), c->GetY(), c->GetZ(), c->GetHeading());
 		auto spawn2entryResults = database.QueryDatabase(spawn2entryquery);
 		if (spawn2entryResults.Success())
 		{
