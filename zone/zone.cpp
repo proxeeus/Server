@@ -66,6 +66,7 @@
 #include "../common/repositories/npc_emotes_repository.h"
 #include "../common/serverinfo.h"
 #include "../common/repositories/merc_stance_entries_repository.h"
+#include "../common/repositories/alternate_currency_repository.h"
 
 #include <time.h>
 
@@ -660,68 +661,53 @@ void Zone::LoadNewMerchantData(uint32 merchantid) {
 	merchanttable[merchantid] = merchant_list;
 }
 
-void Zone::GetMerchantDataForZoneLoad() {
-	auto query = fmt::format(
-		SQL (
-			SELECT
-			merchantid,
-			slot,
-			item,
-			faction_required,
-			level_required,
-			min_status,
-			max_status,
-			alt_currency_cost,
-			classes_required,
-			probability,
-			bucket_name,
-			bucket_value,
-			bucket_comparison
-			from merchantlist where merchantid IN (
-					select merchant_id from npc_types where id in (
-						select npcID from spawnentry where spawngroupID IN (
-							select spawngroupID from spawn2 where `zone` = '{}' and (`version` = {} OR `version` = -1)
+void Zone::LoadMerchants()
+{
+	const auto& l = MerchantlistRepository::GetWhere(
+		content_db,
+		fmt::format(
+			SQL(
+				`merchantid` IN (
+					SELECT `merchant_id` FROM `npc_types` WHERE `id` IN (
+						SELECT `npcID` FROM `spawnentry` WHERE `spawngroupID` IN (
+							SELECT `spawngroupID` FROM `spawn2` WHERE `zone` = '{}' AND (`version` = {} OR `version` = -1)
+						)
 					)
 				)
-			)
-			{}
-			ORDER BY
-			merchantlist.slot
-		),
-		GetShortName(),
-		GetInstanceVersion(),
-		ContentFilterCriteria::apply()
+				{}
+				ORDER BY `merchantlist`.`slot`
+			),
+			GetShortName(),
+			GetInstanceVersion(),
+			ContentFilterCriteria::apply()
+		)
 	);
 
-	auto results = content_db.QueryDatabase(query);
+	LogInfo("Loaded [{}] merchant lists", Strings::Commify(l.size()));
 
-	LogInfo("Loaded [{}] merchant lists", Strings::Commify(results.RowCount()));
-
-	std::map<uint32, std::list<MerchantList> >::iterator merchant_list;
-
-	uint32 npc_id = 0;
-	if (!results.Success() || !results.RowCount()) {
+	if (l.empty()) {
 		LogDebug("No Merchant Data found for [{}]", GetShortName());
 		return;
 	}
 
-	for (auto row : results) {
-		MerchantList mle{};
-		mle.id = Strings::ToUnsignedInt(row[0]);
-		if (npc_id != mle.id) {
-			merchant_list = merchanttable.find(mle.id);
-			if (merchant_list == merchanttable.end()) {
+	std::map<uint32, std::list<MerchantList>>::iterator ml;
+	uint32 npc_id = 0;
+
+	for (const auto& e : l) {
+		if (npc_id != e.merchantid) {
+			ml = merchanttable.find(e.merchantid);
+			if (ml == merchanttable.end()) {
 				std::list<MerchantList> empty;
-				merchanttable[mle.id] = empty;
-				merchant_list = merchanttable.find(mle.id);
+				merchanttable[e.merchantid] = empty;
+				ml = merchanttable.find(e.merchantid);
 			}
 
-			npc_id = mle.id;
+			npc_id = e.merchantid;
 		}
 
 		bool found = false;
-		for (const auto &m : merchant_list->second) {
-			if (m.item == mle.id) {
+		for (const auto &m : ml->second) {
+			if (m.item == e.merchantid) {
 				found = true;
 				break;
 			}
@@ -731,20 +717,23 @@ void Zone::GetMerchantDataForZoneLoad() {
 			continue;
 		}
 
-		mle.slot              = Strings::ToUnsignedInt(row[1]);
-		mle.item              = Strings::ToUnsignedInt(row[2]);
-		mle.faction_required  = static_cast<int16>(Strings::ToInt(row[3]));
-		mle.level_required    = static_cast<uint8>(Strings::ToUnsignedInt(row[4]));
-		mle.min_status        = static_cast<uint8>(Strings::ToUnsignedInt(row[5]));
-		mle.max_status        = static_cast<uint8>(Strings::ToUnsignedInt(row[6]));
-		mle.alt_currency_cost = static_cast<uint16>(Strings::ToUnsignedInt(row[7]));
-		mle.classes_required  = Strings::ToUnsignedInt(row[8]);
-		mle.probability       = static_cast<uint8>(Strings::ToUnsignedInt(row[9]));
-		mle.bucket_name       = row[10];
-		mle.bucket_value      = row[11];
-		mle.bucket_comparison = static_cast<uint8>(Strings::ToUnsignedInt(row[12]));
-
-		merchant_list->second.push_back(mle);
+		ml->second.push_back(
+			MerchantList{
+				.id = static_cast<uint32>(e.merchantid),
+				.slot = e.slot,
+				.item = static_cast<uint32>(e.item),
+				.faction_required = e.faction_required,
+				.level_required = static_cast<int8>(e.level_required),
+				.min_status = e.min_status,
+				.max_status = e.max_status,
+				.alt_currency_cost = e.alt_currency_cost,
+				.classes_required = static_cast<uint32>(e.classes_required),
+				.probability = static_cast<uint8>(e.probability),
+				.bucket_name = e.bucket_name,
+				.bucket_value = e.bucket_value,
+				.bucket_comparison = e.bucket_comparison
+			}
+		);
 	}
 }
 
@@ -974,6 +963,7 @@ Zone::Zone(uint32 in_zoneid, uint32 in_instanceid, const char* in_short_name)
 	default_ruleset = 0;
 
 	is_zone_time_localized = false;
+	quest_idle_override = false;
 
 	loglevelvar = 0;
 	merchantvar = 0;
@@ -1133,49 +1123,25 @@ bool Zone::Init(bool is_static) {
 	watermap = WaterMap::LoadWaterMapfile(map_name);
 	pathing  = IPathfinder::Load(map_name);
 
-	if(!spawn_conditions.LoadSpawnConditions(short_name, instanceid)) {
-		LogError("Loading spawn conditions failed, continuing without them");
-	}
+	spawn_conditions.LoadSpawnConditions(short_name, instanceid);
 
-	if (!content_db.LoadStaticZonePoints(&zone_point_list, short_name, GetInstanceVersion())) {
-		LogError("Loading static zone points failed");
-		return false;
-	}
+	content_db.LoadStaticZonePoints(&zone_point_list, short_name, GetInstanceVersion());
 
 	if (!content_db.LoadSpawnGroups(short_name, GetInstanceVersion(), &spawn_group_list)) {
 		LogError("Loading spawn groups failed");
 		return false;
 	}
 
-	if (!content_db.PopulateZoneSpawnList(zoneid, spawn2_list, GetInstanceVersion()))
-	{
-		LogError("Loading spawn2 points failed");
-		return false;
-	}
+	content_db.PopulateZoneSpawnList(zoneid, spawn2_list, GetInstanceVersion());
+	database.LoadCharacterCorpses(zoneid, instanceid);
 
-	if (!database.LoadCharacterCorpses(zoneid, instanceid)) {
-		LogError("Loading player corpses failed");
-		return false;
-	}
-
-	if (!content_db.LoadTraps(short_name, GetInstanceVersion()))
-	{
-		LogError("Loading traps failed");
-		return false;
-	}
+	content_db.LoadTraps(short_name, GetInstanceVersion());
 
 	LogInfo("Loading adventure flavor text");
 	LoadAdventureFlavor();
 
-	if (!LoadGroundSpawns())
-	{
-		LogError("Loading ground spawns failed. continuing");
-	}
-
-	if (!LoadZoneObjects())
-	{
-		LogError("Loading World Objects failed. continuing");
-	}
+	LoadGroundSpawns();
+	LoadZoneObjects();
 
 	RespawnTimesRepository::ClearExpiredRespawnTimers(database);
 
@@ -1199,7 +1165,7 @@ bool Zone::Init(bool is_static) {
 	content_db.LoadGlobalLoot();
 
 	//Load merchant data
-	GetMerchantDataForZoneLoad();
+	LoadMerchants();
 
 	//Load temporary merchant data
 	LoadTempMerchantData();
@@ -1933,9 +1899,7 @@ void Zone::Repop()
 		LogError("Loading spawn groups failed");
 	}
 
-	if (!spawn_conditions.LoadSpawnConditions(short_name, instanceid)) {
-		LogError("Loading spawn conditions failed, continuing without them");
-	}
+	spawn_conditions.LoadSpawnConditions(short_name, instanceid);
 
 	if (!content_db.PopulateZoneSpawnList(zoneid, spawn2_list, GetInstanceVersion())) {
 		LogDebug("Error in Zone::Repop: database.PopulateZoneSpawnList failed");
@@ -2456,21 +2420,25 @@ void Zone::LoadAlternateCurrencies()
 {
 	AlternateCurrencies.clear();
 
-	AltCurrencyDefinition_Struct current_currency;
+	const auto& l = AlternateCurrencyRepository::All(content_db);
 
-    const std::string query = "SELECT id, item_id FROM alternate_currency";
-    auto results = content_db.QueryDatabase(query);
-    if (!results.Success()) {
+	if (l.empty()) {
 		return;
-    }
+	}
 
-    for (auto row : results) {
-        current_currency.id = Strings::ToUnsignedInt(row[0]);
-        current_currency.item_id = Strings::ToUnsignedInt(row[1]);
-        AlternateCurrencies.push_back(current_currency);
-    }
+	AltCurrencyDefinition_Struct c;
 
-	LogInfo("Loaded [{}] alternate currencies", Strings::Commify(results.RowCount()));
+	for (const auto &e : l) {
+		c.id      = e.id;
+		c.item_id = e.item_id;
+		AlternateCurrencies.push_back(c);
+	}
+
+	LogInfo(
+		"Loaded [{}] Alternate Currenc{}",
+		Strings::Commify(l.size()),
+		l.size() != 1 ? "ies" : "y"
+	);
 }
 
 void Zone::UpdateQGlobal(uint32 qid, QGlobal newGlobal)

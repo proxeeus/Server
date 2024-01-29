@@ -15,8 +15,6 @@
 
 #include "bot_database.h"
 
-#define WOLF 42
-
 class Client;
 class Corpse;
 class Merc;
@@ -337,12 +335,12 @@ struct CharacterCorpseEntry
 
 namespace BeastlordPetData {
 	struct PetStruct {
-		uint16 race_id = WOLF;
-		uint8 texture = 0;
-		uint8 helm_texture = 0;
-		uint8 gender = Gender::Neuter;
-		float size_modifier = 1.0f;
-		uint8 face = 0;
+		uint16 race_id       = Race::Wolf;
+		uint8  texture       = 0;
+		uint8  helm_texture  = 0;
+		uint8  gender        = Gender::Neuter;
+		float  size_modifier = 1.0f;
+		uint8  face          = 0;
 	};
 }
 
@@ -530,23 +528,21 @@ public:
 	bool		LoadSpawnGroups(const char* zone_name, uint16 version, SpawnGroupList* spawn_group_list);
 	bool		LoadSpawnGroupsByID(int spawn_group_id, SpawnGroupList* spawn_group_list);
 	bool		PopulateZoneSpawnList(uint32 zoneid, LinkedList<Spawn2*> &spawn2_list, int16 version);
-	bool		CreateSpawn2(Client *c, uint32 spawngroup, const char* zone, const glm::vec4& position, uint32 respawn, uint32 variance, uint16 condition, int16 cond_value);
+	bool		CreateSpawn2(Client* c, uint32 spawngroup_id, const std::string& zone_short_name, const glm::vec4& position, uint32 respawn, uint32 variance, uint16 condition, int16 condition_value);
 	void		UpdateRespawnTime(uint32 spawn2_id, uint16 instance_id,uint32 timeleft);
 	uint32		GetSpawnTimeLeft(uint32 spawn2_id, uint16 instance_id);
 	void        UpdateSpawn2Status(uint32 id, uint8 new_status, uint32 instance_id);
 
 	/* Grids/Paths  */
-	uint32		GetFreeGrid(uint16 zoneid);
-	void		DeleteGrid(Client *c, uint32 sg2, uint32 grid_num, bool grid_too, uint16 zoneid);
-	void		DeleteWaypoint(Client *c, uint32 grid_num, uint32 wp_num, uint16 zoneid);
-	void		AddWP(Client *c, uint32 gridid, uint32 wpnum, const glm::vec4& position, uint32 pause, uint16 zoneid);
-	uint32		AddWPForSpawn(Client *c, uint32 spawn2id, const glm::vec4& position, uint32 pause, int type1, int type2, uint16 zoneid);
-	void		ModifyGrid(Client *c, bool remove, uint32 id, uint8 type = 0, uint8 type2 = 0, uint16 zoneid = 0);
-	bool		GridExistsInZone(uint32 zone_id, uint32 grid_id);
-	void		ModifyWP(Client *c, uint32 grid_id, uint32 wp_num, const glm::vec3& location, uint32 script = 0, uint16 zoneid = 0);
-	int			GetHighestGrid(uint32 zoneid);
-	int			GetHighestWaypoint(uint32 zoneid, uint32 gridid);
-	int			GetRandomWaypointLocFromGrid(glm::vec4 &loc, uint16 zoneid, int grid);
+	uint32 GetFreeGrid(uint32 zone_id);
+	void DeleteWaypoint(Client* c, uint32 grid_id, uint32 number, uint32 zone_id);
+	void AddWaypoint(Client* c, uint32 grid_id, uint32 number, const glm::vec4 &position, uint32 pause, uint32 zone_id);
+	uint32 AddWaypointForSpawn(Client* c, uint32 spawn2_id, const glm::vec4 &position, uint32 pause, int type, int type2, uint32 zone_id);
+	void ModifyGrid(Client* c, bool remove, uint32 grid_id, uint8 type = 0, uint8 type2 = 0, uint32 zone_id = 0);
+	bool GridExistsInZone(uint32 zone_id, uint32 grid_id);
+	int GetHighestGrid(uint32 zone_id);
+	int GetHighestWaypoint(uint32 zone_id, uint32 grid_id);
+	int GetRandomWaypointFromGrid(glm::vec4 &loc, uint32 zone_id, uint32 grid_id);
 
 	/* NPCs  */
 
@@ -624,8 +620,8 @@ public:
 	bool LoadBlockedSpells(int64 blocked_spells_count, ZoneSpellsBlocked* into, uint32 zone_id);
 
 	/* Traps   */
-	bool	LoadTraps(const char* zonename, int16 version);
-	bool	SetTrapData(Trap* trap, bool repopnow = false);
+	bool	LoadTraps(const std::string& zone_short_name, int16 instance_version);
+	bool	SetTrapData(Trap* t, bool repop = false);
 
 	/* Time   */
 	uint32	GetZoneTimezone(uint32 zoneid, uint32 version);
