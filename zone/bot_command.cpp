@@ -7753,27 +7753,6 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 		return;
 	}
 
-	// this probably needs work...
-	if (c->GetGroup()) {
-		std::list<Mob*> group_list;
-		c->GetGroup()->GetMemberList(group_list);
-		for (auto member_iter : group_list) {
-			if (!member_iter)
-				continue;
-			if (member_iter->qglobal) // what is this?? really should have had a message to describe failure... (can't spawn bots if you are assigned to a task/instance?)
-				return;
-			//if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) && (member_iter->IsEngaged() || (member_iter->IsClient() && member_iter->CastToClient()->GetAggroCount()))) {
-			if (!member_iter->qglobal && (member_iter->GetAppearance() != eaDead) ) {
-				c->Message(Chat::Red, "You can't summon bots while you are engaged.");
-				return;
-			}
-		}
-	}
-	//else if (c->GetAggroCount() > 0) {
-	//	c->Message(Chat::Red, "You can't spawn bots while you are engaged.");
-	//	return;
-	//}
-
 	auto my_bot = Bot::LoadBot(bot_id);
 	if (!my_bot) {
 		c->Message(Chat::Red, "No valid bot '%s' (id: %i) exists", bot_name.c_str(), bot_id);
@@ -7782,7 +7761,8 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 
 	my_bot->Spawn(c);
 
-	static const char* bot_spawn_message[16] = {
+	static std::string bot_spawn_message[17] = {
+		"I am ready to fight!", // DEFAULT
 		"A solid weapon is my ally!", // WARRIOR / 'generic'
 		"The pious shall never die!", // CLERIC
 		"I am the symbol of Light!", // PALADIN
@@ -7801,7 +7781,17 @@ void bot_subcommand_playerbot_spawn(Client *c, const Seperator *sep, std::string
 		"My bloodthirst shall not be quenched!" // BERSERKER
 	};
 
-	Bot::BotGroupSay(my_bot, "%s", bot_spawn_message[CLASSIDTOINDEX(my_bot->GetClass())]);
+	uint8 message_index = 0;
+	if (c->GetBotOption(Client::booSpawnMessageClassSpecific)) {
+		message_index = VALIDATECLASSID(my_bot->GetClass());
+	}
+
+	if (c->GetBotOption(Client::booSpawnMessageSay)) {
+		Bot::BotGroupSay(my_bot, bot_spawn_message[message_index].c_str());
+	}
+	else if (c->GetBotOption(Client::booSpawnMessageTell)) {
+		my_bot->OwnerMessage(bot_spawn_message[message_index]);
+	}
 }
 
 
