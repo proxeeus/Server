@@ -1504,7 +1504,7 @@ bool Mob::Attack(Mob* other, int Hand, bool bRiposte, bool IsStrikethrough, bool
 	}
 
 	if (Hand == EQ::invslot::slotSecondary) {
-		weapon = (IsClient()) ? GetInv().GetItem(EQ::invslot::slotSecondary) : CastToBot()->GetBotItem(EQ::invslot::slotPrimary);
+		weapon = (IsClient()) ? GetInv().GetItem(EQ::invslot::slotSecondary) : CastToBot()->GetBotItem(EQ::invslot::slotSecondary);
 		OffHandAtk(true);
 	}
 	else {
@@ -2454,6 +2454,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		}
 	}
 
+	auto* killer = GetHateDamageTop(this);
+
 	entity_list.RemoveFromTargets(this, p_depop);
 
 	if (p_depop) {
@@ -2509,7 +2511,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	Mob* give_exp = hate_list.GetDamageTopOnHateList(this);
 
 	if (give_exp) {
-		give_exp = killer_mob;
+		give_exp = killer;
 	}
 
 	if (give_exp && give_exp->HasOwner()) {
@@ -2801,8 +2803,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			if (killer_mob->GetOwner() != 0 && killer_mob->GetOwner()->IsClient())
 				killer_mob = killer_mob->GetOwner();
 
-			if (killer_mob->IsClient() && !killer_mob->CastToClient()->GetGM()) {
-				CheckTrivialMinMaxLevelDrop(killer_mob);
+			if (killer->IsClient() && !killer->CastToClient()->GetGM()) {
+				CheckTrivialMinMaxLevelDrop(killer);
 			}
 		}
 
@@ -2835,10 +2837,10 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		SetID(0);
 		ApplyIllusionToCorpse(illusion_spell_id, corpse);
 
-		if (killer_mob && killer_mob->IsClient()) {
-			corpse->AllowPlayerLoot(killer_mob, 0);
-			if (killer_mob->IsGrouped()) {
-				Group* g = entity_list.GetGroupByClient(killer_mob->CastToClient());
+		if (killer && killer->IsClient()) {
+			corpse->AllowPlayerLoot(killer, 0);
+			if (killer->IsGrouped()) {
+				Group* g = entity_list.GetGroupByClient(killer->CastToClient());
 				if (g) {
 					uint8 slot_id = 0;
 
@@ -2850,8 +2852,8 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 						slot_id++;
 					}
 				}
-			} else if (killer_mob->IsRaidGrouped()) {
-				Raid* r = entity_list.GetRaidByClient(killer_mob->CastToClient());
+			} else if (killer->IsRaidGrouped()) {
+				Raid* r = entity_list.GetRaidByClient(killer->CastToClient());
 				if (r) {
 					uint8 slot_id = 0;
 
@@ -4399,7 +4401,7 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		//this was done to simplify the code here (since we can only effectively skip one mob on queue)
 		eqFilterType filter;
 		Mob* skip = attacker;
-		if (attacker && attacker->GetOwner()) {
+		if (attacker && attacker->IsPet() && !attacker->IsBot()) {
 			//attacker is a pet, let pet owners see their pet's damage
 			Mob* owner = attacker->GetOwner();
 			if (owner && owner->IsClient()) {
@@ -4415,22 +4417,23 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 						} else {
 							filter = FilterPetHits;
 						}
-					}
-					else if (damage == -5)
-						filter = FilterNone;	//cant filter invulnerable
-					else
+					} else if (damage == -5) {
+						filter = FilterNone;    //cant filter invulnerable
+					} else {
 						filter = FilterPetMisses;
+					}
 
-					if (!FromDamageShield)
+					if (!FromDamageShield) {
 						entity_list.QueueCloseClients(
-							this, /* Sender */
+							attacker, /* Sender */
 							outapp, /* packet */
 							false, /* Skip Sender */
 							((IsValidSpell(spell_id)) ? RuleI(Range, SpellMessages) : RuleI(Range, DamageMessages)),
 							0, /* don't skip anyone on spell */
 							true, /* Packet ACK */
 							filter /* eqFilterType filter */
-							);
+						);
+					}
 				}
 			}
 
@@ -4439,13 +4442,32 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		else {
 			//attacker is not a pet, send to the attacker
 			//if the attacker is a client, try them with the correct filter
-			if (attacker && (attacker->IsClient() || attacker->IsBot())) {
+			if (attacker && attacker->IsOfClientBot()) {
 				if ((IsValidSpell(spell_id) || FromDamageShield) && damage > 0) {
 					//special crap for spell damage, looks hackish to me
 					char val1[20] = { 0 };
 					if (FromDamageShield) {
-						if (attacker->CastToClient()->GetFilter(FilterDamageShields) != FilterHide)
-							attacker->MessageString(Chat::DamageShield, OTHER_HIT_NONMELEE, GetCleanName(), ConvertArray(damage, val1));
+						if (attacker->IsBot()) {
+							Mob* owner = attacker->GetOwner();
+
+							if (owner->CastToClient()->GetFilter(FilterDamageShields) != FilterHide) {
+								owner->MessageString(
+									Chat::DamageShield,
+									OTHER_HIT_NONMELEE,
+									GetCleanName(),
+									ConvertArray(damage, val1)
+								);
+							}
+						} else {
+							if (attacker->CastToClient()->GetFilter(FilterDamageShields) != FilterHide) {
+								attacker->MessageString(
+									Chat::DamageShield,
+									OTHER_HIT_NONMELEE,
+									GetCleanName(),
+									ConvertArray(damage, val1)
+								);
+							}
+						}
 					}
 					else {
 						entity_list.FilteredMessageCloseString(
@@ -4463,7 +4485,7 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 					}
 				}
 				// Only try to queue these packets to a client
-				else if (attacker && (attacker->IsClient())) {
+				else {
 					if (damage > 0) {
 						if (IsValidSpell(spell_id)) {
 							filter = iBuffTic ? FilterDOT : FilterSpellDamage;
@@ -4477,7 +4499,23 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 					else
 						filter = FilterMyMisses;
 
-					attacker->CastToClient()->QueuePacket(outapp, true, CLIENT_CONNECTED, filter);
+					if (attacker->IsClient()) {
+						attacker->CastToClient()->QueuePacket(outapp, true, CLIENT_CONNECTED, filter);
+					} else {
+						entity_list.QueueCloseClients(
+							attacker, /* Sender */
+							outapp, /* packet */
+							false, /* Skip Sender */
+							(
+								IsValidSpell(spell_id) ?
+								RuleI(Range, SpellMessages) :
+								RuleI(Range, DamageMessages)
+							),
+							0, /* don't skip anyone on spell */
+							true, /* Packet ACK */
+							filter /* eqFilterType filter */
+						);
+					}
 				}
 			}
 		}
