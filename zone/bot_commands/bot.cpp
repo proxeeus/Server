@@ -1020,6 +1020,9 @@ void bot_command_spawn(Client *c, const Seperator *sep)
 		return;
 	}
 
+	if (RuleB(Bots, HealOnSpawn))
+		my_bot->Heal(); my_bot->SetMana(my_bot->GetMaxMana());
+
 	static std::string bot_spawn_message[17] = {
 		"I am ready to fight!", // DEFAULT
 		"A solid weapon is my ally!", // Class::Warrior
