@@ -533,7 +533,7 @@ bool BotDatabase::SaveBot(Bot* b)
 	e.owner_id               = b->GetBotOwnerCharacterID();
 	e.spells_id              = b->GetBotSpellID();
 	e.name                   = b->GetCleanName();
-	e.last_name              = b->GetLastName();
+	e.last_name              = b->GetSurname();
 	e.title                  = b->GetTitle();
 	e.suffix                 = b->GetSuffix();
 	e.zone_id                = b->GetLastZoneID();
