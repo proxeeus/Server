@@ -57,6 +57,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "dialogue_window.h"
 #include "bot_command.h"
 #include "../common/events/player_event_logs.h"
+#include "../common/repositories/guild_tributes_repository.h"
 
 extern EntityList entity_list;
 extern Zone* zone;
@@ -781,8 +782,18 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	case ServerOP_DeleteGuild:
 	case ServerOP_GuildCharRefresh:
 	case ServerOP_GuildMemberUpdate:
+	case ServerOP_GuildPermissionUpdate:
 	case ServerOP_GuildRankUpdate:
+	case ServerOP_GuildRankNameChange:
 	case ServerOP_LFGuildUpdate:
+	case ServerOP_GuildMemberLevelUpdate:
+	case ServerOP_GuildMemberPublicNote:
+	case ServerOP_GuildChannel:
+	case ServerOP_GuildURL:
+	case ServerOP_GuildMemberRemove:
+	case ServerOP_GuildMemberAdd:
+	case ServerOP_GuildSendGuildList:
+	case ServerOP_GuildMembersList:
 	{
 		guild_mgr.ProcessWorldPacket(pack);
 		break;
@@ -1269,6 +1280,22 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	case ServerOP_IsOwnerOnline: {
+		auto o = (ServerIsOwnerOnline_Struct*)pack->pBuffer;
+		if (zone) {
+			if (o->zone_id != zone->GetZoneID()) {
+				break;
+			}
+
+			Corpse* c = entity_list.GetCorpseByID(o->corpse_id);
+			if (c && o->online) {
+				c->SetOwnerOnline(true);
+			} else if (c) {
+				c->SetOwnerOnline(false);
+			}
+		}
+		break;
+	}
 	case ServerOP_OOZGroupMessage: {
 		ServerGroupChannelMessage_Struct* gcm = (ServerGroupChannelMessage_Struct*)pack->pBuffer;
 		if (zone) {
@@ -1587,12 +1614,14 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		break;
 	}
 	case ServerOP_SpawnPlayerCorpse: {
-		SpawnPlayerCorpse_Struct* s = (SpawnPlayerCorpse_Struct*)pack->pBuffer;
-		Corpse* NewCorpse = database.LoadCharacterCorpse(s->player_corpse_id);
-		if (NewCorpse)
-			NewCorpse->Spawn();
-		else
+		auto   *s = (SpawnPlayerCorpse_Struct *) pack->pBuffer;
+		Corpse *c = database.LoadCharacterCorpse(s->player_corpse_id);
+		if (c) {
+			c->Spawn();
+		}
+		else {
 			LogError("Unable to load player corpse id [{}] for zone [{}]", s->player_corpse_id, zone->GetShortName());
+		}
 
 		break;
 	}
@@ -1957,6 +1986,15 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	case ServerOP_ReloadBaseData:
+	{
+		if (zone && zone->IsLoaded()) {
+			zone->SendReloadMessage("Base Data");
+			zone->ReloadBaseData();
+		}
+
+		break;
+	}
 	case ServerOP_ReloadBlockedSpells:
 	{
 		if (zone && zone->IsLoaded()) {
@@ -1989,6 +2027,17 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	case ServerOP_ReloadFactions:
+	{
+		if (zone && zone->IsLoaded()) {
+			zone->SendReloadMessage("Factions");
+			content_db.LoadFactionData();
+			zone->ReloadNPCFactions();
+			zone->ReloadFactionAssociations();
+		}
+
+		break;
+	}
 	case ServerOP_ReloadLevelEXPMods:
 	{
 		if (zone && zone->IsLoaded()) {
@@ -2002,6 +2051,14 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		zone->SendReloadMessage("Log Settings");
 		LogSys.LoadLogDatabaseSettings();
 		player_event_logs.ReloadSettings();
+		break;
+	}
+	case ServerOP_ReloadLoot:
+	{
+		if (zone && zone->IsLoaded()) {
+			zone->SendReloadMessage("Loot");
+			zone->ReloadLootTables();
+		}
 		break;
 	}
 	case ServerOP_ReloadMerchants: {
@@ -3497,21 +3554,6 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			LogError("Loading items failed!");
 		}
 
-		LogInfo("Loading npc faction lists");
-		if (!content_db.LoadNPCFactionLists(hotfix_name)) {
-			LogError("Loading npcs faction lists failed!");
-		}
-
-		LogInfo("Loading faction association hits");
-		if (!content_db.LoadFactionAssociation(hotfix_name)) {
-			LogError("Loading faction association hits failed!");
-		}
-
-		LogInfo("Loading loot tables");
-		if (!content_db.LoadLoot(hotfix_name)) {
-			LogError("Loading loot failed!");
-		}
-
 		LogInfo("Loading skill caps");
 		if (!content_db.LoadSkillCaps(std::string(hotfix_name))) {
 			LogError("Loading skill caps failed!");
@@ -3520,11 +3562,6 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		LogInfo("Loading spells");
 		if (!content_db.LoadSpells(hotfix_name, &SPDAT_RECORDS, &spells)) {
 			LogError("Loading spells failed!");
-		}
-
-		LogInfo("Loading base data");
-		if (!content_db.LoadBaseData(hotfix_name)) {
-			LogError("Loading base data failed!");
 		}
 		break;
 	}
@@ -3585,6 +3622,225 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 	case ServerOP_DataBucketCacheUpdate:
 	{
 		DataBucket::HandleWorldMessage(pack);
+		break;
+	}
+	case ServerOP_GuildTributeUpdate: {
+		GuildTributeUpdate* in = (GuildTributeUpdate*)pack->pBuffer;
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		if (guild) {
+			guild->tribute.favor          = in->favor;
+			guild->tribute.id_1           = in->tribute_id_1;
+			guild->tribute.id_2           = in->tribute_id_2;
+			guild->tribute.id_1_tier      = in->tribute_id_1_tier;
+			guild->tribute.id_2_tier      = in->tribute_id_2_tier;
+			guild->tribute.time_remaining = in->time_remaining;
+			guild->tribute.enabled        = in->enabled;
+		}
+		EQApplicationPacket* outapp = new EQApplicationPacket(OP_GuildSendActiveTributes, sizeof(GuildTributeSendActive_Struct));
+		GuildTributeSendActive_Struct* out = (GuildTributeSendActive_Struct*)outapp->pBuffer;
+
+		out->not_used          = in->guild_id;
+		out->guild_favor       = in->favor;
+		out->tribute_enabled   = in->enabled;
+		out->tribute_timer     = in->time_remaining;
+		out->tribute_id_1      = in->tribute_id_1;
+		out->tribute_id_2      = in->tribute_id_2;
+		out->tribute_id_1_tier = in->tribute_id_1_tier;
+		out->tribute_id_2_tier = in->tribute_id_2_tier;
+
+		entity_list.QueueClientsGuild(outapp, in->guild_id);
+		safe_delete(outapp);
+		break;
+	}
+	case ServerOP_GuildTributeActivate: {
+		GuildTributeUpdate* in = (GuildTributeUpdate*)pack->pBuffer;
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		if (guild) {
+			guild->tribute.favor = in->favor;
+			guild->tribute.id_1 = in->tribute_id_1;
+			guild->tribute.id_2 = in->tribute_id_2;
+			guild->tribute.id_1_tier = in->tribute_id_1_tier;
+			guild->tribute.id_2_tier = in->tribute_id_2_tier;
+			guild->tribute.time_remaining = in->time_remaining;
+			guild->tribute.enabled = in->enabled;
+		}
+
+		EQApplicationPacket* outapp = new EQApplicationPacket(OP_GuildTributeToggleReply, sizeof(GuildTributeSendActive_Struct));
+		GuildTributeSendActive_Struct* out = (GuildTributeSendActive_Struct*)outapp->pBuffer;
+
+		out->not_used = in->guild_id;
+		out->guild_favor = in->favor;
+		out->tribute_enabled = in->enabled;
+		out->tribute_timer = in->time_remaining;
+		out->tribute_id_1 = in->tribute_id_1;
+		out->tribute_id_2 = in->tribute_id_2;
+		out->tribute_id_1_tier = in->tribute_id_1_tier;
+		out->tribute_id_2_tier = in->tribute_id_2_tier;
+
+		entity_list.QueueClientsGuild(outapp, in->guild_id);
+		safe_delete(outapp);
+
+		for (auto& c : entity_list.GetClientList()) {
+			if (c.second->IsInGuild(in->guild_id)) {
+				c.second->DoGuildTributeUpdate();
+			}
+		}
+		break;
+	}
+	case ServerOP_GuildTributeUpdateDonations:
+	{
+		GuildTributeUpdate* in = (GuildTributeUpdate*)pack->pBuffer;
+
+		EQApplicationPacket* outapp = new EQApplicationPacket(OP_GuildOptInOut, sizeof(GuildTributeOptInOutReply_Struct));
+		GuildTributeOptInOutReply_Struct* data = (GuildTributeOptInOutReply_Struct*)outapp->pBuffer;
+
+		data->guild_id = in->guild_id;
+		strn0cpy(data->player_name, in->player_name, sizeof(data->player_name));
+		data->no_donations = in->member_favor;
+		data->tribute_toggle = in->member_enabled ? true : false;
+		data->tribute_trophy_toggle = 0; //not yet implemented
+		data->time = in->member_time;
+		data->command = 1;
+
+		entity_list.QueueClientsGuild(outapp, in->guild_id);
+		safe_delete(outapp);
+
+		//my new items
+		outapp = new EQApplicationPacket(OP_GuildTributeToggleReply, sizeof(GuildTributeSendActive_Struct));
+		GuildTributeSendActive_Struct *out = (GuildTributeSendActive_Struct *) outapp->pBuffer;
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		out->not_used          = in->guild_id;
+		out->guild_favor       = guild->tribute.favor;
+		out->tribute_enabled   = guild->tribute.enabled;
+		out->tribute_timer     = guild->tribute.time_remaining;
+		out->tribute_id_1      = guild->tribute.id_1;
+		out->tribute_id_2      = guild->tribute.id_2;
+		out->tribute_id_1_tier = guild->tribute.id_1_tier;
+		out->tribute_id_2_tier = guild->tribute.id_2_tier;
+
+		entity_list.QueueClientsGuild(outapp, in->guild_id);
+		safe_delete(outapp)
+
+		break;
+	}
+	case ServerOP_GuildTributeOptInToggle:
+	{
+		GuildTributeMemberToggle* in = (GuildTributeMemberToggle*)pack->pBuffer;
+
+		EQApplicationPacket* outapp = new EQApplicationPacket(OP_GuildOptInOut, sizeof(GuildTributeOptInOutReply_Struct));
+		GuildTributeOptInOutReply_Struct* data = (GuildTributeOptInOutReply_Struct*)outapp->pBuffer;
+
+		data->guild_id = in->guild_id;
+		strn0cpy(data->player_name, in->player_name, sizeof(data->player_name));
+		data->no_donations = in->no_donations;
+		data->tribute_toggle = in->tribute_toggle ? true : false;
+		data->tribute_trophy_toggle = 0; //not yet implemented
+		data->time = in->member_last_donated;
+		data->command = in->command;
+
+		entity_list.QueueClientsGuild(outapp, in->guild_id);
+		safe_delete(outapp);
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		auto client = entity_list.GetClientByCharID(in->char_id);
+		if (guild && client) {
+			client->SetGuildTributeOptIn(in->tribute_toggle ? true : false);
+
+			EQApplicationPacket* outapp = new EQApplicationPacket(OP_GuildTributeToggleReply, sizeof(GuildTributeSendActive_Struct));
+			GuildTributeSendActive_Struct* out = (GuildTributeSendActive_Struct*)outapp->pBuffer;
+
+			out->not_used = in->guild_id;
+			out->guild_favor = guild->tribute.favor;
+			out->tribute_enabled = guild->tribute.enabled;
+			out->tribute_timer = guild->tribute.time_remaining;
+			out->tribute_id_1 = guild->tribute.id_1;
+			out->tribute_id_2 = guild->tribute.id_2;
+			out->tribute_id_1_tier = guild->tribute.id_1_tier;
+			out->tribute_id_2_tier = guild->tribute.id_2_tier;
+			client->QueuePacket(outapp);
+			safe_delete(outapp);
+			//send deactivate and then activate
+
+			client->DoGuildTributeUpdate();
+		}
+
+		break;
+	}
+	case ServerOP_GuildTributeFavAndTimer:
+	{
+		GuildTributeFavorTimer_Struct* in = (GuildTributeFavorTimer_Struct*)pack->pBuffer;
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		if (guild) {
+			guild->tribute.favor = in->guild_favor;
+			guild->tribute.time_remaining = in->tribute_timer;
+
+			auto outapp = new EQApplicationPacket(OP_GuildTributeFavorAndTimer, sizeof(GuildTributeFavorTimer_Struct));
+			GuildTributeFavorTimer_Struct* gtsa = (GuildTributeFavorTimer_Struct*)outapp->pBuffer;
+
+			gtsa->guild_id = in->guild_id;
+			gtsa->guild_favor = guild->tribute.favor;
+			gtsa->tribute_timer = guild->tribute.time_remaining;
+			gtsa->trophy_timer = 0; //not yet implemented
+
+			entity_list.QueueClientsGuild(outapp, in->guild_id);
+			safe_delete(outapp);
+		}
+		break;
+	}
+	case ServerOP_RequestGuildActiveTributes:
+	{
+		GuildTributeUpdate* in = (GuildTributeUpdate*)pack->pBuffer;
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+
+		if (guild) {
+			auto outapp = new EQApplicationPacket(OP_GuildSendActiveTributes, sizeof(GuildTributeSendActive_Struct));
+			GuildTributeSendActive_Struct* gtsa = (GuildTributeSendActive_Struct*)outapp->pBuffer;
+
+			guild->tribute.enabled = in->enabled;
+			guild->tribute.favor = in->favor;
+			guild->tribute.id_1 = in->tribute_id_1;
+			guild->tribute.id_2 = in->tribute_id_2;
+			guild->tribute.id_1_tier = in->tribute_id_1_tier;
+			guild->tribute.id_2_tier = in->tribute_id_2_tier;
+			guild->tribute.time_remaining = in->time_remaining;
+
+			gtsa->guild_favor = guild->tribute.favor;
+			gtsa->tribute_timer = guild->tribute.time_remaining;
+			gtsa->tribute_enabled = guild->tribute.enabled;
+			gtsa->tribute_id_1 = guild->tribute.id_1;
+			gtsa->tribute_id_1_tier = guild->tribute.id_1_tier;
+			gtsa->tribute_id_2 = guild->tribute.id_2;
+			gtsa->tribute_id_2_tier = guild->tribute.id_2_tier;
+
+			entity_list.QueueClientsGuild(outapp, in->guild_id);
+			safe_delete(outapp);
+		}
+		break;
+	}
+	case ServerOP_RequestGuildFavorAndTimer:
+	{
+		GuildTributeFavorTimer_Struct* in = (GuildTributeFavorTimer_Struct*)pack->pBuffer;
+
+		auto guild = guild_mgr.GetGuildByGuildID(in->guild_id);
+		if (guild) {
+			guild->tribute.favor = in->guild_favor;
+			guild->tribute.time_remaining = in->tribute_timer;
+
+			auto outapp = new EQApplicationPacket(OP_GuildTributeFavorAndTimer, sizeof(GuildTributeFavorTimer_Struct));
+			GuildTributeFavorTimer_Struct* gtsa = (GuildTributeFavorTimer_Struct*)outapp->pBuffer;
+
+			gtsa->guild_id = in->guild_id;
+			gtsa->guild_favor = guild->tribute.favor;
+			gtsa->tribute_timer = guild->tribute.time_remaining;
+			gtsa->trophy_timer = 0; //not yet implemented
+
+			entity_list.QueueClientsGuild(outapp, in->guild_id);
+			safe_delete(outapp);
+		}
 		break;
 	}
 	default: {

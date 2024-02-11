@@ -45,6 +45,7 @@
 #include "../common/misc.h"
 #include "client.h"
 #include "worlddb.h"
+#include "wguild_mgr.h"
 
 #ifdef _WINDOWS
 #include <process.h>
@@ -141,8 +142,6 @@ int main(int argc, char **argv)
 	if (!WorldBoot::LoadServerConfig()) {
 		return 0;
 	}
-
-	WorldBoot::CheckForXMLConfigUpgrade();
 
 	Config = WorldConfig::get();
 
@@ -411,6 +410,7 @@ int main(int argc, char **argv)
 		event_scheduler.Process(&zoneserver_list);
 
 		client_list.Process();
+		guild_mgr.Process();
 
 		if (player_event_process_timer.Check()) {
 			player_event_logs.Process();

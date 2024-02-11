@@ -1746,6 +1746,8 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 	}
 
 	std::vector<uint32> npc_ids;
+	std::vector<uint32> npc_faction_ids;
+	std::vector<uint32> loottable_ids;
 
 	for (NpcTypesRepository::NpcTypes &n : NpcTypesRepository::GetWhere((Database &) content_db, filter)) {
 		NPCType *t;
@@ -1798,6 +1800,12 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 			t->special_abilities[0] = '\0';
 		}
 
+		if (n.loottable_id > 0) {
+			// check if we already have this loottable_id before inserting it
+			if (std::find(loottable_ids.begin(), loottable_ids.end(), n.loottable_id) == loottable_ids.end()) {
+				loottable_ids.emplace_back(n.loottable_id);
+			}
+		}
 
 		t->npc_spells_id         = n.npc_spells_id;
 		t->npc_spells_effects_id = n.npc_spells_effects_id;
@@ -1844,6 +1852,18 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 		t->drakkin_heritage = n.drakkin_heritage;
 		t->drakkin_tattoo   = n.drakkin_tattoo;
 		t->drakkin_details  = n.drakkin_details;
+
+		if (t->npc_faction_id > 0) {
+			if (
+				std::find(
+					npc_faction_ids.begin(),
+					npc_faction_ids.end(),
+					t->npc_faction_id
+				) == npc_faction_ids.end()
+			) {
+				npc_faction_ids.emplace_back(t->npc_faction_id);
+			}
+		}
 
 		// armor tint
 		uint32 armor_tint_id = n.armortint_id;
@@ -1966,6 +1986,13 @@ const NPCType *ZoneDatabase::LoadNPCTypesData(uint32 npc_type_id, bool bulk_load
 	}
 
 	DataBucket::BulkLoadEntities(DataBucketLoadType::NPC, npc_ids);
+
+	if (!npc_faction_ids.empty()) {
+		zone->LoadNPCFactions(npc_faction_ids);
+		zone->LoadNPCFactionAssociations(npc_faction_ids);
+	}
+
+	zone->LoadLootTables(loottable_ids);
 
 	return npc;
 }
@@ -3467,30 +3494,6 @@ std::string ZoneDatabase::GetFactionName(int32 faction_id)
 }
 
 //o--------------------------------------------------------------
-//| Name: GetNPCFactionList; Dec. 16, 2001
-//o--------------------------------------------------------------
-//| Purpose: Gets a list of faction_id's and values bound to the npc_id. Returns false on failure.
-//o--------------------------------------------------------------
-bool ZoneDatabase::GetNPCFactionList(uint32 npcfaction_id, int32* faction_id, int32* value, uint8* temp, int32* primary_faction) {
-	if (npcfaction_id <= 0) {
-		if (primary_faction)
-			*primary_faction = npcfaction_id;
-		return true;
-	}
-	const NPCFactionList* nfl = GetNPCFactionEntry(npcfaction_id);
-	if (!nfl)
-		return false;
-	if (primary_faction)
-		*primary_faction = nfl->primaryfaction;
-	for (int i=0; i<MAX_NPC_FACTIONS; i++) {
-		faction_id[i] = nfl->factionid[i];
-		value[i] = nfl->factionvalue[i];
-		temp[i] = nfl->factiontemp[i];
-	}
-	return true;
-}
-
-//o--------------------------------------------------------------
 //| Name: SetCharacterFactionLevel; Dec. 20, 2001
 //o--------------------------------------------------------------
 //| Purpose: Update characters faction level with specified faction_id to specified value. Returns false on failure.
@@ -3634,46 +3637,40 @@ bool ZoneDatabase::LoadFactionData()
 	return true;
 }
 
-bool ZoneDatabase::GetFactionIdsForNPC(uint32 nfl_id, std::list<struct NPCFaction*> *faction_list, int32* primary_faction) {
-	if (nfl_id <= 0) {
-		std::list<struct NPCFaction*>::iterator cur,end;
-		cur = faction_list->begin();
-		end = faction_list->end();
-		for(; cur != end; ++cur) {
-			struct NPCFaction* tmp = *cur;
-			safe_delete(tmp);
+bool ZoneDatabase::GetFactionIDsForNPC(
+	uint32 npc_faction_id,
+	std::list<NpcFactionEntriesRepository::NpcFactionEntries> *faction_list,
+	int32* primary_faction
+)
+{
+	if (npc_faction_id <= 0) {
+		faction_list->clear();
+
+		if (primary_faction) {
+			*primary_faction = npc_faction_id;
 		}
 
-		faction_list->clear();
-		if (primary_faction)
-			*primary_faction = nfl_id;
 		return true;
 	}
-	const NPCFactionList* nfl = GetNPCFactionEntry(nfl_id);
-	if (!nfl)
-		return false;
-	if (primary_faction)
-		*primary_faction = nfl->primaryfaction;
 
-	std::list<struct NPCFaction*>::iterator cur,end;
-	cur = faction_list->begin();
-	end = faction_list->end();
-	for(; cur != end; ++cur) {
-		struct NPCFaction* tmp = *cur;
-		safe_delete(tmp);
+	const auto& npcf = zone->GetNPCFaction(npc_faction_id);
+	if (!npcf) {
+		LogError("No NPC faction entry for [{}]", npc_faction_id);
+		return false;
 	}
+
+	const auto& l = zone->GetNPCFactionEntries(npc_faction_id);
+
+	if (primary_faction) {
+		*primary_faction = npcf->primaryfaction;
+	}
+
 	faction_list->clear();
-	for (int i=0; i<MAX_NPC_FACTIONS; i++) {
-		struct NPCFaction *pFac;
-		if (nfl->factionid[i]) {
-			pFac = new struct NPCFaction;
-			pFac->factionID = nfl->factionid[i];
-			pFac->value_mod = nfl->factionvalue[i];
-			pFac->npc_value = nfl->factionnpcvalue[i];
-			pFac->temp = nfl->factiontemp[i];
-			faction_list->push_back(pFac);
-		}
+
+	for (const auto& e: l) {
+		faction_list->emplace_back(e);
 	}
+
 	return true;
 }
 
@@ -3777,7 +3774,7 @@ uint32 ZoneDatabase::SaveCharacterCorpse(
 	const std::string& name,
 	uint32 zone_id,
 	uint16 instance_id,
-	const CharacterCorpseEntry& corpse,
+	const CharacterCorpseEntry& c,
 	const glm::vec4& position,
 	uint32 guild_consent_id
 )
@@ -3794,66 +3791,69 @@ uint32 ZoneDatabase::SaveCharacterCorpse(
 	e.heading          = position.w;
 	e.guild_consent_id = guild_consent_id;
 	e.time_of_death    = std::time(nullptr);
-	e.is_locked        = corpse.locked;
-	e.exp              = corpse.exp;
-	e.size             = corpse.size;
-	e.level            = corpse.level;
-	e.race             = corpse.race;
-	e.gender           = corpse.gender;
-	e.class_           = corpse.class_;
-	e.deity            = corpse.deity;
-	e.texture          = corpse.texture;
-	e.helm_texture     = corpse.helmtexture;
-	e.copper           = corpse.copper;
-	e.silver           = corpse.silver;
-	e.gold             = corpse.gold;
-	e.platinum         = corpse.plat;
-	e.hair_color       = corpse.haircolor;
-	e.beard_color      = corpse.beardcolor;
-	e.eye_color_1      = corpse.eyecolor1;
-	e.eye_color_2      = corpse.eyecolor2;
-	e.hair_style       = corpse.hairstyle;
-	e.face             = corpse.face;
-	e.beard            = corpse.beard;
-	e.drakkin_heritage = corpse.drakkin_heritage;
-	e.drakkin_tattoo   = corpse.drakkin_tattoo;
-	e.drakkin_details  = corpse.drakkin_details;
-	e.wc_1             = corpse.item_tint.Head.Color;
-	e.wc_2             = corpse.item_tint.Chest.Color;
-	e.wc_3             = corpse.item_tint.Arms.Color;
-	e.wc_4             = corpse.item_tint.Wrist.Color;
-	e.wc_5             = corpse.item_tint.Hands.Color;
-	e.wc_6             = corpse.item_tint.Legs.Color;
-	e.wc_7             = corpse.item_tint.Feet.Color;
-	e.wc_8             = corpse.item_tint.Primary.Color;
-	e.wc_9             = corpse.item_tint.Secondary.Color;
+	e.is_locked        = c.locked;
+	e.exp              = c.exp;
+	e.size             = c.size;
+	e.level            = c.level;
+	e.race             = c.race;
+	e.gender           = c.gender;
+	e.class_           = c.class_;
+	e.deity            = c.deity;
+	e.texture          = c.texture;
+	e.helm_texture     = c.helmtexture;
+	e.copper           = c.copper;
+	e.silver           = c.silver;
+	e.gold             = c.gold;
+	e.platinum         = c.plat;
+	e.hair_color       = c.haircolor;
+	e.beard_color      = c.beardcolor;
+	e.eye_color_1      = c.eyecolor1;
+	e.eye_color_2      = c.eyecolor2;
+	e.hair_style       = c.hairstyle;
+	e.face             = c.face;
+	e.beard            = c.beard;
+	e.drakkin_heritage = c.drakkin_heritage;
+	e.drakkin_tattoo   = c.drakkin_tattoo;
+	e.drakkin_details  = c.drakkin_details;
+	e.wc_1             = c.item_tint.Head.Color;
+	e.wc_2             = c.item_tint.Chest.Color;
+	e.wc_3             = c.item_tint.Arms.Color;
+	e.wc_4             = c.item_tint.Wrist.Color;
+	e.wc_5             = c.item_tint.Hands.Color;
+	e.wc_6             = c.item_tint.Legs.Color;
+	e.wc_7             = c.item_tint.Feet.Color;
+	e.wc_8             = c.item_tint.Primary.Color;
+	e.wc_9             = c.item_tint.Secondary.Color;
+	e.killed_by        = c.killed_by;
+	e.rezzable         = c.rezzable;
+	e.rez_time         = c.rez_time;
 
 	e = CharacterCorpsesRepository::InsertOne(*this, e);
 
 	std::vector<CharacterCorpseItemsRepository::CharacterCorpseItems> v;
 
-	v.reserve(corpse.items.size());
+	v.reserve(c.items.size());
 
-	auto i = CharacterCorpseItemsRepository::NewEntity();
+	auto ci = CharacterCorpseItemsRepository::NewEntity();
 
-	for (const auto& item : corpse.items) {
-		i.corpse_id           = e.id;
-		i.equip_slot          = item.equip_slot;
-		i.item_id             = item.item_id;
-		i.charges             = item.charges;
-		i.aug_1               = item.aug_1;
-		i.aug_2               = item.aug_2;
-		i.aug_3               = item.aug_3;
-		i.aug_4               = item.aug_4;
-		i.aug_5               = item.aug_5;
-		i.aug_6               = item.aug_6;
-		i.attuned             = item.attuned;
-		i.custom_data         = item.custom_data;
-		i.ornamenticon        = item.ornamenticon;
-		i.ornamentidfile      = item.ornamentidfile;
-		i.ornament_hero_model = item.ornament_hero_model;
+	for (const auto& i : c.items) {
+		ci.corpse_id           = e.id;
+		ci.equip_slot          = i.equip_slot;
+		ci.item_id             = i.item_id;
+		ci.charges             = i.charges;
+		ci.aug_1               = i.aug_1;
+		ci.aug_2               = i.aug_2;
+		ci.aug_3               = i.aug_3;
+		ci.aug_4               = i.aug_4;
+		ci.aug_5               = i.aug_5;
+		ci.aug_6               = i.aug_6;
+		ci.attuned             = i.attuned;
+		ci.custom_data         = i.custom_data;
+		ci.ornamenticon        = i.ornamenticon;
+		ci.ornamentidfile      = i.ornamentidfile;
+		ci.ornament_hero_model = i.ornament_hero_model;
 
-		v.emplace_back(i);
+		v.emplace_back(ci);
 	}
 
 	if (!v.empty()) {
@@ -3901,6 +3901,8 @@ uint32 ZoneDatabase::GetCharacterCorpseID(uint32 character_id, uint8 corpse_limi
 
 uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id)
 {
+	LogCorpsesDetail("corpse_id [{}] slot_id [{}]", corpse_id, slot_id);
+
 	Corpse* c = LoadCharacterCorpse(corpse_id);
 	uint32 item_id = 0;
 
@@ -3910,76 +3912,6 @@ uint32 ZoneDatabase::GetCharacterCorpseItemAt(uint32 corpse_id, uint16 slot_id)
 	}
 
 	return item_id;
-}
-
-bool ZoneDatabase::LoadCharacterCorpseData(uint32 corpse_id, CharacterCorpseEntry& corpse)
-{
-	const auto& e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
-
-	corpse.locked                    = e.is_locked;
-	corpse.exp                       = e.exp;
-	corpse.size                      = e.size;
-	corpse.level                     = e.level;
-	corpse.race                      = e.race;
-	corpse.gender                    = e.gender;
-	corpse.class_                    = e.class_;
-	corpse.deity                     = e.deity;
-	corpse.texture                   = e.texture;
-	corpse.helmtexture               = e.helm_texture;
-	corpse.copper                    = e.copper;
-	corpse.silver                    = e.silver;
-	corpse.gold                      = e.gold;
-	corpse.plat                      = e.platinum;
-	corpse.haircolor                 = e.hair_color;
-	corpse.beardcolor                = e.beard_color;
-	corpse.eyecolor1                 = e.eye_color_1;
-	corpse.eyecolor2                 = e.eye_color_2;
-	corpse.hairstyle                 = e.hair_style;
-	corpse.face                      = e.face;
-	corpse.beard                     = e.beard;
-	corpse.drakkin_heritage          = e.drakkin_heritage;
-	corpse.drakkin_tattoo            = e.drakkin_tattoo;
-	corpse.drakkin_details           = e.drakkin_details;
-	corpse.item_tint.Head.Color      = e.wc_1;
-	corpse.item_tint.Chest.Color     = e.wc_2;
-	corpse.item_tint.Arms.Color      = e.wc_3;
-	corpse.item_tint.Wrist.Color     = e.wc_4;
-	corpse.item_tint.Hands.Color     = e.wc_5;
-	corpse.item_tint.Legs.Color      = e.wc_6;
-	corpse.item_tint.Feet.Color      = e.wc_7;
-	corpse.item_tint.Primary.Color   = e.wc_8;
-	corpse.item_tint.Secondary.Color = e.wc_9;
-
-	const auto& l = CharacterCorpseItemsRepository::GetWhere(
-		*this,
-		fmt::format(
-			"`corpse_id` = {}",
-			corpse_id
-		)
-	);
-
-	for (const auto& e : l) {
-		CharacterCorpseItemEntry item{
-			.item_id = e.item_id,
-			.equip_slot = static_cast<int16>(e.equip_slot),
-			.charges = static_cast<uint16>(e.charges),
-			.aug_1 = e.aug_1,
-			.aug_2 = e.aug_2,
-			.aug_3 = e.aug_3,
-			.aug_4 = e.aug_4,
-			.aug_5 = e.aug_5,
-			.aug_6 = static_cast<uint32>(e.aug_6),
-			.attuned = e.attuned == 1,
-			.custom_data = e.custom_data,
-			.ornamenticon = e.ornamenticon,
-			.ornamentidfile = e.ornamentidfile,
-			.ornament_hero_model = e.ornament_hero_model
-		};
-
-		corpse.items.emplace_back(std::move(item));
-	}
-
-	return true;
 }
 
 Corpse* ZoneDatabase::SummonBuriedCharacterCorpses(
@@ -4000,23 +3932,13 @@ Corpse* ZoneDatabase::SummonBuriedCharacterCorpses(
 	);
 
 	for (const auto& e : l) {
-		c = Corpse::LoadCharacterCorpseEntity(
-			e.id,
-			e.charid,
-			e.charname,
-			position,
-			std::to_string(e.time_of_death),
-			e.is_rezzed == 1,
-			RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
-			e.guild_consent_id
-		);
-
+		c = Corpse::LoadCharacterCorpse(e, position);
 		if (!c) {
 			continue;
 		}
 
 		entity_list.AddCorpse(c);
-		c->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
+		c->SetDecayTimer(RuleI(Character, CorpseDecayTime));
 		c->Spawn();
 
 		if (!UnburyCharacterCorpse(c->GetCorpseDBID(), zone_id, instance_id, position)) {
@@ -4055,20 +3977,10 @@ bool ZoneDatabase::SummonAllCharacterCorpses(
 		e.is_buried        = 0;
 		e.was_at_graveyard = 0;
 
-		c = Corpse::LoadCharacterCorpseEntity(
-			e.id,
-			e.charid,
-			e.charname,
-			position,
-			std::to_string(e.time_of_death),
-			e.is_rezzed == 1,
-			RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
-			e.guild_consent_id
-		);
-
+		c = Corpse::LoadCharacterCorpse(e, position);
 		if (c) {
 			entity_list.AddCorpse(c);
-			c->SetDecayTimer(RuleI(Character, CorpseDecayTimeMS));
+			c->SetDecayTimer(RuleI(Character, CorpseDecayTime));
 			c->Spawn();
 			++corpse_count;
 		} else {
@@ -4111,26 +4023,16 @@ bool ZoneDatabase::UnburyCharacterCorpse(uint32 corpse_id, uint32 zone_id, uint1
 
 Corpse* ZoneDatabase::LoadCharacterCorpse(uint32 corpse_id)
 {
-	const auto& e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
-
-	Corpse* c = 0;
-
-	if (!e.id) {
-		return c;
+	if (!corpse_id) {
+		return nullptr;
 	}
 
-	glm::vec4 position = glm::vec4(e.x, e.y, e.z, e.heading);
+	const auto &e = CharacterCorpsesRepository::FindOne(*this, corpse_id);
+	if (!e.id) {
+		return nullptr;
+	}
 
-	c = Corpse::LoadCharacterCorpseEntity(
-		e.id,
-		e.charid,
-		e.charname,
-		position,
-		std::to_string(e.time_of_death),
-		e.is_rezzed == 1,
-		RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
-		e.guild_consent_id
-	);
+	auto c = Corpse::LoadCharacterCorpse(e, glm::vec4(e.x, e.y, e.z, e.heading));
 
 	entity_list.AddCorpse(c);
 
@@ -4149,21 +4051,9 @@ bool ZoneDatabase::LoadCharacterCorpses(uint32 zone_id, uint16 instance_id)
 		)
 	);
 
-	for (const auto& e : l) {
+	for (const auto &e: l) {
 		glm::vec4 position = glm::vec4(e.x, e.y, e.z, e.heading);
-
-		entity_list.AddCorpse(
-			Corpse::LoadCharacterCorpseEntity(
-				e.id,
-				e.charid,
-				e.charname,
-				position,
-				std::to_string(e.time_of_death),
-				e.is_rezzed == 1,
-				RuleB(Zone, EnableShadowrest) ? 0 : e.was_at_graveyard,
-				e.guild_consent_id
-			)
-		);
+		entity_list.AddCorpse(Corpse::LoadCharacterCorpse(e, position));
 	}
 
 	return true;

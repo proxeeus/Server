@@ -2308,8 +2308,10 @@ void EntityList::ChannelMessageFromWorld(const char *from, const char *to,
 		if (chan_num == ChatChannel_Guild) {
 			if (!client->IsInGuild(guild_id))
 				continue;
-			if (!guild_mgr.CheckPermission(guild_id, client->GuildRank(), GUILD_HEAR))
-				continue;
+			if (client->ClientVersion() >= EQ::versions::ClientVersion::RoF) {
+				if (!guild_mgr.CheckPermission(guild_id, client->GuildRank(), GUILD_ACTION_GUILD_CHAT_SEE))
+					continue;
+			}
 			if (client->GetFilter(FilterGuildChat) == FilterHide)
 				continue;
 		} else if (chan_num == ChatChannel_OOC) {
@@ -2338,14 +2340,13 @@ void EntityList::Message(uint32 to_guilddbid, uint32 type, const char *message, 
 	}
 }
 
-void EntityList::QueueClientsGuild(Mob *sender, const EQApplicationPacket *app,
-		bool ignore_sender, uint32 guild_id)
+void EntityList::QueueClientsGuild(const EQApplicationPacket *app, uint32 guild_id)
 {
 	auto it = client_list.begin();
 	while (it != client_list.end()) {
 		Client *client = it->second;
 		if (client->IsInGuild(guild_id))
-			client->QueuePacket(app);
+			client->QueuePacket(app, true);
 		++it;
 	}
 }

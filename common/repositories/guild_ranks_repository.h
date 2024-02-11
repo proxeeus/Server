@@ -45,6 +45,21 @@ public:
 
 	// Custom extended repository methods here
 
+	static int UpdateTitle(Database &db, uint32 guild_id, uint32 rank, std::string title)
+	{
+		auto guild_rank = GetWhere(db, fmt::format("guild_id = '{}' AND rank = '{}'", guild_id, rank));
+		if (guild_rank.empty()) {
+			return 0;
+		}
+
+		auto r = guild_rank[0];
+		r.title = title;
+
+		DeleteWhere(db, fmt::format("guild_id = '{}' AND rank = '{}'", guild_id, rank));
+		InsertOne(db, r);
+
+		return 1;
+	}
 };
 
 #endif //EQEMU_GUILD_RANKS_REPOSITORY_H

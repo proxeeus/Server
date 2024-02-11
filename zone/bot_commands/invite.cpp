@@ -59,7 +59,7 @@ void bot_command_invite(Client* bot_owner, const Seperator* sep)
 
 		// Sample loop taken from NPC::QueryLoot
 		int x = 0;
-		for (auto cur = player_bot->itemlist.begin(); cur != player_bot->itemlist.end(); cur++, ++x)
+		for (auto cur = player_bot->GetLootItems().begin(); cur != player_bot->GetLootItems().end(); cur++, ++x)
 		{
 			if (!(*cur)) {
 				Log(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
