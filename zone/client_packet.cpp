@@ -516,7 +516,7 @@ int Client::HandlePacket(const EQApplicationPacket *app)
 	case CLIENT_LINKDEAD:
 		break;
 	default:
-		LogDebug("Unknown client_state: [{}]\n", client_state);
+		LogDebug("Unknown client_state: [{}]\n", static_cast<int>(client_state));
 		break;
 	}
 
@@ -8163,6 +8163,10 @@ void Client::Handle_OP_GuildInvite(const EQApplicationPacket *app)
 				rank = GUILD_LEADER;
 				break;
 			}
+			default: {
+				rank = GUILD_RANK_NONE;
+				break;
+			}
 		}
 	}
 
@@ -8562,6 +8566,10 @@ void Client::Handle_OP_GuildPromote(const EQApplicationPacket *app)
 				}
 				case GUILD_LEADER_TI: {
 					rank = GUILD_LEADER;
+					break;
+				}
+				default: {
+					rank = GUILD_RANK_NONE;
 					break;
 				}
 			}
@@ -16334,7 +16342,7 @@ void Client::Handle_OP_XTargetRequest(const EQApplicationPacket *app)
 	}
 
 	default:
-		LogDebug("Unhandled XTarget Type [{}]", Type);
+		LogDebug("Unhandled XTarget Type [{}]", static_cast<int>(Type));
 		break;
 	}
 
