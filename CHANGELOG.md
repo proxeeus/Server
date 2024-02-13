@@ -1,3 +1,45 @@
+## [22.44.5] - 2/12/2024
+
+### Fixes
+
+* [Hotfix] Fix issues where we're using the wrong database pointers @Akkadius
+
+## [22.44.4] - 2/12/2024
+
+### Fixes
+
+* Fix ClearSpawnTimers() ([#4073](https://github.com/EQEmu/Server/pull/4073)) @Kinglykrab 2024-02-13
+
+## [22.44.3] - 2/12/2024
+
+### Fixes
+
+* Fix Issue with ClearSpawnTimers() ([#4070](https://github.com/EQEmu/Server/pull/4070)) @Kinglykrab 2024-02-13
+
+## [22.44.2] - 2/12/2024
+
+### Bots
+
+* Remove Alt Combat Functionality ([#4067](https://github.com/EQEmu/Server/pull/4067)) @Kinglykrab 2024-02-12
+
+### Code
+
+* Use explicit conversions for enum formatting ([#4064](https://github.com/EQEmu/Server/pull/4064)) @hgtw 2024-02-12
+
+### Database
+
+* Fix default value for `time_of_death` in `character_corpses` ([#4060](https://github.com/EQEmu/Server/pull/4060)) @joligario 2024-02-11
+* Fix table name in manifest ([#4063](https://github.com/EQEmu/Server/pull/4063)) @joligario 2024-02-11
+* Proper default for `droptime` from `object_contents` ([#4061](https://github.com/EQEmu/Server/pull/4061)) @joligario 2024-02-11
+
+### Fixes
+
+* Guard against crash condition ([#4062](https://github.com/EQEmu/Server/pull/4062)) @neckkola 2024-02-11
+
+### Guilds
+
+* Clean up `GUILD_RANK_NONE` references ([#4059](https://github.com/EQEmu/Server/pull/4059)) @joligario 2024-02-11
+
 ## [22.44.1] - 2/11/2024
 
 ### Fixes

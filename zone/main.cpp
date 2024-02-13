@@ -317,7 +317,7 @@ int main(int argc, char **argv)
 	}
 
 	/* Guilds */
-	guild_mgr.SetDatabase(&database);
+	guild_mgr.SetDatabase(&database)->SetContentDatabase(&content_db);
 	GuildBanks = nullptr;
 
 #ifdef _EQDEBUG
