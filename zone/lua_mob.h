@@ -569,6 +569,10 @@ public:
 	std::string GetRacePlural();
 	bool IsTemporaryPet();
 	uint32 GetMobTypeIdentifier();
+	uint32 GetHateListCount();
+	uint32 GetHateListBotCount();
+	uint32 GetHateListClientCount();
+	uint32 GetHateListNPCCount();
 };
 
 #endif
