@@ -538,9 +538,8 @@ void QuestManager::settimer(const std::string& timer_name, uint32 seconds, Mob* 
 	);
 
 	if (!QTimerList.empty()) {
-		for (auto e : QTimerList) {
+		for (auto& e : QTimerList) {
 			if (e.mob && e.mob == mob && e.name == timer_name) {
-				e.Timer_.Enable();
 				e.Timer_.Start(seconds * 1000, false);
 
 				if (has_start_event) {
@@ -614,9 +613,8 @@ void QuestManager::settimerMS(const std::string& timer_name, uint32 milliseconds
 	}
 
 	if (!QTimerList.empty()) {
-		for (auto e : QTimerList) {
+		for (auto& e : QTimerList) {
 			if (e.mob && e.mob == owner && e.name == timer_name) {
-				e.Timer_.Enable();
 				e.Timer_.Start(milliseconds, false);
 
 				if (has_start_event) {
@@ -679,9 +677,8 @@ void QuestManager::settimerMS(const std::string& timer_name, uint32 milliseconds
 	);
 
 	if (!QTimerList.empty()) {
-		for (auto e : QTimerList) {
+		for (auto& e : QTimerList) {
 			if (e.mob && e.mob == m && e.name == timer_name) {
-				e.Timer_.Enable();
 				e.Timer_.Start(milliseconds, false);
 
 				if (has_start_event) {
@@ -2350,6 +2347,10 @@ void QuestManager::set_proximity_range(float x_range, float y_range, float z_ran
 	n->proximity->max_z         = n->GetZ() + z_range;
 	n->proximity->say           = enable_say;
 	n->proximity->proximity_set = true;
+
+	if (enable_say) {
+		HaveProximitySays = enable_say;
+	}
 }
 
 void QuestManager::set_proximity(float min_x, float max_x, float min_y, float max_y, float min_z, float max_z, bool enable_say)
@@ -2371,6 +2372,10 @@ void QuestManager::set_proximity(float min_x, float max_x, float min_y, float ma
 	n->proximity->max_z         = max_z;
 	n->proximity->say           = enable_say;
 	n->proximity->proximity_set = true;
+
+	if (enable_say) {
+		HaveProximitySays = enable_say;
+	}
 }
 
 void QuestManager::clear_proximity() {
@@ -3879,13 +3884,6 @@ void QuestManager::FlagInstanceByRaidLeader(uint32 zone, int16 version)
 			database.FlagInstanceByRaidLeader(zone, version, initiator->CharacterID(), r->GetID());
 		}
 	}
-}
-
-std::string QuestManager::saylink(char *saylink_text, bool silent, const char *link_name)
-{
-	QuestManagerCurrentQuestVars();
-
-	return Saylink::Create(saylink_text, silent, link_name);
 }
 
 std::string QuestManager::getcharnamebyid(uint32 char_id) {

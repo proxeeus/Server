@@ -16,31 +16,31 @@
 #include "zone.h"
 #include "zone_config.h"
 
-#include "lua_parser.h"
 #include "lua_bit.h"
+#include "lua_bot.h"
+#include "lua_buff.h"
+#include "lua_client.h"
+#include "lua_corpse.h"
+#include "lua_door.h"
+#include "lua_encounter.h"
 #include "lua_entity.h"
+#include "lua_entity_list.h"
 #include "lua_expedition.h"
+#include "lua_general.h"
+#include "lua_group.h"
+#include "lua_hate_list.h"
+#include "lua_inventory.h"
 #include "lua_item.h"
 #include "lua_iteminst.h"
 #include "lua_mob.h"
-#include "lua_hate_list.h"
-#include "lua_client.h"
-#include "lua_inventory.h"
 #include "lua_npc.h"
-#include "lua_spell.h"
-#include "lua_entity_list.h"
-#include "lua_group.h"
-#include "lua_raid.h"
-#include "lua_corpse.h"
 #include "lua_object.h"
-#include "lua_door.h"
-#include "lua_spawn.h"
 #include "lua_packet.h"
-#include "lua_general.h"
-#include "lua_encounter.h"
+#include "lua_parser.h"
+#include "lua_raid.h"
+#include "lua_spawn.h"
+#include "lua_spell.h"
 #include "lua_stat_bonuses.h"
-
-#include "lua_bot.h"
 
 const char *LuaEvents[_LargestEventID] = {
 	"event_say",
@@ -182,7 +182,8 @@ const char *LuaEvents[_LargestEventID] = {
 	"event_timer_stop",
 	"event_entity_variable_delete",
 	"event_entity_variable_set",
-	"event_entity_variable_update"
+	"event_entity_variable_update",
+	"event_aa_loss"
 };
 
 extern Zone *zone;
@@ -343,6 +344,7 @@ LuaParser::LuaParser() {
 	PlayerArgumentDispatch[EVENT_ENTITY_VARIABLE_DELETE]     = handle_player_entity_variable;
 	PlayerArgumentDispatch[EVENT_ENTITY_VARIABLE_SET]        = handle_player_entity_variable;
 	PlayerArgumentDispatch[EVENT_ENTITY_VARIABLE_UPDATE]     = handle_player_entity_variable;
+	PlayerArgumentDispatch[EVENT_AA_LOSS]                    = handle_player_aa_loss;
 
 	ItemArgumentDispatch[EVENT_ITEM_CLICK]      = handle_item_click;
 	ItemArgumentDispatch[EVENT_ITEM_CLICK_CAST] = handle_item_click;
@@ -1303,7 +1305,8 @@ void LuaParser::MapFunctions(lua_State *L) {
 			lua_register_journal_speakmode(),
 			lua_register_journal_mode(),
 			lua_register_expedition(),
-			lua_register_expedition_lock_messages()
+			lua_register_expedition_lock_messages(),
+			lua_register_buff()
 		)];
 
 	} catch(std::exception &ex) {

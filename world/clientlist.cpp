@@ -94,8 +94,25 @@ void ClientList::GetCLEIP(uint32 in_ip) {
 	int count = 0;
 	iterator.Reset();
 
+	const auto& zones = Strings::Split(RuleS(World, IPExemptionZones), ",");
+
 	while (iterator.MoreElements()) {
 		cle = iterator.GetData();
+
+		if (!zones.empty() && cle->zone()) {
+			auto it = std::ranges::find_if(
+				zones,
+				[cle](const auto& z) {
+					return Strings::ToUnsignedInt(z) == cle->zone();
+				}
+			);
+
+			if (it != zones.end()) {
+				iterator.Advance();
+				continue;
+			}
+		}
+
 		if (
 			cle->GetIP() == in_ip &&
 			(

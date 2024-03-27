@@ -380,12 +380,12 @@ void Perl__settimer(std::string timer_name, uint32 seconds)
 
 void Perl__settimer(std::string timer_name, uint32 seconds, Mob* m)
 {
-	quest_manager.settimer(timer_name, seconds);
+	quest_manager.settimer(timer_name, seconds, m);
 }
 
 void Perl__settimer(std::string timer_name, uint32 seconds, EQ::ItemInstance* inst)
 {
-	quest_manager.settimer(timer_name, seconds);
+	quest_manager.settimerMS(timer_name, seconds * 1000, inst);
 }
 
 void Perl__settimerMS(std::string timer_name, uint32 milliseconds)
@@ -1598,9 +1598,7 @@ std::string Perl__GetCharactersInInstance(uint16 instance_id)
 		char_id_string = fmt::format("{} player(s) in instance: ", character_ids.size());
 		auto iter = character_ids.begin();
 		while (iter != character_ids.end()) {
-			char char_name[64];
-			database.GetCharName(*iter, char_name);
-			char_id_string += char_name;
+			char_id_string += database.GetCharName(*iter);
 			char_id_string += "(";
 			char_id_string += itoa(*iter);
 			char_id_string += ")";
@@ -1673,20 +1671,19 @@ void Perl__FlagInstanceByRaidLeader(uint32 zone, uint16 version)
 	quest_manager.FlagInstanceByRaidLeader(zone, version);
 }
 
-std::string Perl__saylink(const char* text)
+std::string Perl__saylink(std::string text)
 {
-	// const cast is safe since, target api doesn't modify it
-	return quest_manager.saylink(const_cast<char*>(text), false, text);
+	return Saylink::Create(text);
 }
 
-std::string Perl__saylink(const char* text, bool silent)
+std::string Perl__saylink(std::string text, bool silent)
 {
-	return quest_manager.saylink(const_cast<char*>(text), silent, text);
+	return Saylink::Create(text, silent);
 }
 
-std::string Perl__saylink(const char* text, bool silent, const char* link_name)
+std::string Perl__saylink(std::string text, bool silent, std::string link_name)
 {
-	return quest_manager.saylink(const_cast<char*>(text), silent, link_name);
+	return Saylink::Create(text, silent, link_name);
 }
 
 std::string Perl__getcharnamebyid(uint32 char_id)
@@ -5852,6 +5849,16 @@ uint16 Perl__GetBotRaceByID(uint32 bot_id)
 	return database.botdb.GetBotRaceByID(bot_id);
 }
 
+std::string Perl__silent_saylink(std::string text)
+{
+	return Saylink::Silent(text);
+}
+
+std::string Perl__silent_saylink(std::string text, std::string link_name)
+{
+	return Saylink::Silent(text, link_name);
+}
+
 void perl_register_quest()
 {
 	perl::interpreter perl(PERL_GET_THX);
@@ -6663,9 +6670,9 @@ void perl_register_quest()
 	package.add("say", (void(*)(const char*, uint8, int))&Perl__say);
 	package.add("say", (void(*)(const char*, uint8, int, int))&Perl__say);
 	package.add("say", (void(*)(const char*, uint8, int, int, int))&Perl__say);
-	package.add("saylink", (std::string(*)(const char*))&Perl__saylink);
-	package.add("saylink", (std::string(*)(const char*, bool))&Perl__saylink);
-	package.add("saylink", (std::string(*)(const char*, bool, const char*))&Perl__saylink);
+	package.add("saylink", (std::string(*)(std::string))&Perl__saylink);
+	package.add("saylink", (std::string(*)(std::string, bool))&Perl__saylink);
+	package.add("saylink", (std::string(*)(std::string, bool, std::string))&Perl__saylink);
 	package.add("scribespells", (int(*)(int))&Perl__scribespells);
 	package.add("scribespells", (int(*)(int, int))&Perl__scribespells);
 	package.add("secondstotime", &Perl__secondstotime);
@@ -6703,9 +6710,9 @@ void perl_register_quest()
 	package.add("settarget", &Perl__settarget);
 	package.add("settime", (void(*)(int, int))&Perl__settime);
 	package.add("settime", (void(*)(int, int, bool))&Perl__settime);
-	package.add("settimer", (void(*)(std::string, uint32))&Perl__settimer),
-	package.add("settimer", (void(*)(std::string, uint32, EQ::ItemInstance*))&Perl__settimer),
-	package.add("settimer", (void(*)(std::string, uint32, Mob*))&Perl__settimer),
+	package.add("settimer", (void(*)(std::string, uint32))&Perl__settimer);
+	package.add("settimer", (void(*)(std::string, uint32, EQ::ItemInstance*))&Perl__settimer);
+	package.add("settimer", (void(*)(std::string, uint32, Mob*))&Perl__settimer);
 	package.add("settimerMS", (void(*)(std::string, uint32))&Perl__settimerMS);
 	package.add("settimerMS", (void(*)(std::string, uint32, EQ::ItemInstance*))&Perl__settimerMS);
 	package.add("settimerMS", (void(*)(std::string, uint32, Mob*))&Perl__settimerMS);
@@ -6717,6 +6724,8 @@ void perl_register_quest()
 	package.add("signal", (void(*)(int, int))&Perl__signal);
 	package.add("signalwith", (void(*)(int, int))&Perl__signalwith);
 	package.add("signalwith", (void(*)(int, int, int))&Perl__signalwith);
+	package.add("silent_saylink", (std::string(*)(std::string))&Perl__silent_saylink);
+	package.add("silent_saylink", (std::string(*)(std::string, std::string))&Perl__silent_saylink);
 	package.add("snow", &Perl__snow);
 	package.add("spawn", &Perl__spawn);
 	package.add("spawn2", &Perl__spawn2);

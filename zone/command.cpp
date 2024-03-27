@@ -131,6 +131,7 @@ int command_init(void)
 		command_add("feature", "Change your or your target's feature's temporarily", AccountStatus::QuestTroupe, command_feature) ||
 		command_add("size", "Change your targets size (alias of #feature size)", AccountStatus::QuestTroupe, command_feature) ||
 		command_add("find", "Search command used to find various things", AccountStatus::Guide, command_find) ||
+		command_add("fish", "Fish for an item", AccountStatus::QuestTroupe, command_fish) ||
 		command_add("fixmob", "[race|gender|texture|helm|face|hair|haircolor|beard|beardcolor|heritage|tattoo|detail] [next|prev] - Manipulate appearance of your target", AccountStatus::QuestTroupe, command_fixmob) ||
 		command_add("flagedit", "Edit zone flags on your target. Use #flagedit help for more info.", AccountStatus::GMAdmin, command_flagedit) ||
 		command_add("forage", "Forage an item", AccountStatus::QuestTroupe, command_forage) ||
@@ -207,6 +208,7 @@ int command_init(void)
 		command_add("scribespells", "[Max level] [Min level] - Scribe all spells for you or your player target that are usable by them, up to level specified. (may freeze client for a few seconds)", AccountStatus::GMLeadAdmin, command_scribespells) ||
 		command_add("sendzonespawns", "Refresh spawn list for all clients in zone", AccountStatus::GMLeadAdmin, command_sendzonespawns) ||
 		command_add("sensetrap", "Analog for ldon sense trap for the newer clients since we still don't have it working.", AccountStatus::Player, command_sensetrap) ||
+		command_add("serverrules", "Show server rules", AccountStatus::Player, command_serverrules) ||
 		command_add("set", "Set command used to set various things", AccountStatus::Guide, command_set) ||
 		command_add("show", "Show command used to show various things", AccountStatus::Guide, command_show) ||
 		command_add("shutdown", "Shut this zone process down", AccountStatus::GMLeadAdmin, command_shutdown) ||
@@ -826,6 +828,7 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/faction.cpp"
 #include "gm_commands/feature.cpp"
 #include "gm_commands/find.cpp"
+#include "gm_commands/fish.cpp"
 #include "gm_commands/fixmob.cpp"
 #include "gm_commands/flagedit.cpp"
 #include "gm_commands/forage.cpp"
@@ -898,6 +901,7 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/scribespells.cpp"
 #include "gm_commands/sendzonespawns.cpp"
 #include "gm_commands/sensetrap.cpp"
+#include "gm_commands/serverrules.cpp"
 #include "gm_commands/set.cpp"
 #include "gm_commands/show.cpp"
 #include "gm_commands/shutdown.cpp"

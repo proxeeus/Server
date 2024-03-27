@@ -86,8 +86,9 @@
 #include "world_boot.h"
 #include "../common/path_manager.h"
 #include "../common/events/player_event_logs.h"
+#include "../common/skill_caps.h"
 
-
+SkillCaps           skill_caps;
 ZoneStore           zone_store;
 ClientList          client_list;
 GroupLFPList        LFPGroupList;
@@ -187,6 +188,13 @@ int main(int argc, char **argv)
 		console = std::make_unique<EQ::Net::ConsoleServer>(Config->TelnetIP, Config->TelnetTCPPort);
 		RegisterConsoleFunctions(console);
 	}
+
+	content_service.SetDatabase(&database)
+		->SetContentDatabase(&content_db)
+		->SetExpansionContext()
+		->ReloadContentFlags();
+
+	skill_caps.SetContentDatabase(&content_db)->LoadSkillCaps();
 
 	std::unique_ptr<EQ::Net::ServertalkServer> server_connection;
 	server_connection = std::make_unique<EQ::Net::ServertalkServer>();

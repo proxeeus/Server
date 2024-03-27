@@ -67,6 +67,7 @@
 #include "../common/serverinfo.h"
 #include "../common/repositories/merc_stance_entries_repository.h"
 #include "../common/repositories/alternate_currency_repository.h"
+#include "../common/repositories/graveyard_repository.h"
 
 #include <time.h>
 
@@ -355,9 +356,7 @@ bool Zone::IsSpecialBindLocation(const glm::vec4& location)
 
 //this also just loads into entity_list, not really into zone
 bool Zone::LoadGroundSpawns() {
-	GroundSpawns g;
-
-	memset(&g, 0, sizeof(g));
+	GroundSpawns g{};
 
 	content_db.LoadGroundSpawns(zoneid, GetInstanceVersion(), &g);
 
@@ -1025,9 +1024,16 @@ Zone::Zone(uint32 in_zoneid, uint32 in_instanceid, const char* in_short_name)
 
 	if (graveyard_id() > 0) {
 		LogDebug("Graveyard ID is [{}]", graveyard_id());
-		bool GraveYardLoaded = content_db.GetZoneGraveyard(graveyard_id(), &pgraveyard_zoneid, &m_graveyard.x, &m_graveyard.y, &m_graveyard.z, &m_graveyard.w);
+		const auto& e = GraveyardRepository::FindOne(content_db, graveyard_id());
 
-		if (GraveYardLoaded) {
+		if (e.id) {
+			pgraveyard_zoneid = e.zone_id;
+
+			m_graveyard.x = e.x;
+			m_graveyard.y = e.y;
+			m_graveyard.z = e.z;
+			m_graveyard.w = e.heading;
+
 			LogDebug("Loaded a graveyard for zone [{}]: graveyard zoneid is [{}] at [{}]", short_name, graveyard_zoneid(), to_string(m_graveyard).c_str());
 		}
 		else {
@@ -3167,6 +3173,11 @@ void Zone::ClearEXPModifier(Client* c)
 	exp_modifiers.erase(c->CharacterID());
 }
 
+void Zone::ClearEXPModifierByCharacterID(const uint32 character_id)
+{
+	exp_modifiers.erase(character_id);
+}
+
 float Zone::GetAAEXPModifier(Client* c)
 {
 	const auto& l = exp_modifiers.find(c->CharacterID());
@@ -3179,9 +3190,33 @@ float Zone::GetAAEXPModifier(Client* c)
 	return v.aa_modifier;
 }
 
+float Zone::GetAAEXPModifierByCharacterID(const uint32 character_id)
+{
+	const auto& l = exp_modifiers.find(character_id);
+	if (l == exp_modifiers.end()) {
+		return 1.0f;
+	}
+
+	const auto& v = l->second;
+
+	return v.aa_modifier;
+}
+
 float Zone::GetEXPModifier(Client* c)
 {
 	const auto& l = exp_modifiers.find(c->CharacterID());
+	if (l == exp_modifiers.end()) {
+		return 1.0f;
+	}
+
+	const auto& v = l->second;
+
+	return v.exp_modifier;
+}
+
+float Zone::GetEXPModifierByCharacterID(const uint32 character_id)
+{
+	const auto& l = exp_modifiers.find(character_id);
 	if (l == exp_modifiers.end()) {
 		return 1.0f;
 	}
@@ -3211,6 +3246,26 @@ void Zone::SetAAEXPModifier(Client* c, float aa_modifier)
 	);
 }
 
+void Zone::SetAAEXPModifierByCharacterID(const uint32 character_id, float aa_modifier)
+{
+	auto l = exp_modifiers.find(character_id);
+	if (l == exp_modifiers.end()) {
+		return;
+	}
+
+	auto& m = l->second;
+
+	m.aa_modifier = aa_modifier;
+
+	CharacterExpModifiersRepository::SetEXPModifier(
+		database,
+		character_id,
+		GetZoneID(),
+		GetInstanceVersion(),
+		m
+	);
+}
+
 void Zone::SetEXPModifier(Client* c, float exp_modifier)
 {
 	auto l = exp_modifiers.find(c->CharacterID());
@@ -3225,6 +3280,26 @@ void Zone::SetEXPModifier(Client* c, float exp_modifier)
 	CharacterExpModifiersRepository::SetEXPModifier(
 		database,
 		c->CharacterID(),
+		GetZoneID(),
+		GetInstanceVersion(),
+		m
+	);
+}
+
+void Zone::SetEXPModifierByCharacterID(const uint32 character_id, float exp_modifier)
+{
+	auto l = exp_modifiers.find(character_id);
+	if (l == exp_modifiers.end()) {
+		return;
+	}
+
+	auto& m = l->second;
+
+	m.exp_modifier = exp_modifier;
+
+	CharacterExpModifiersRepository::SetEXPModifier(
+		database,
+		character_id,
 		GetZoneID(),
 		GetInstanceVersion(),
 		m
@@ -3249,6 +3324,17 @@ uint32 Zone::GetSecondsBeforeIdle() const
 void Zone::SetSecondsBeforeIdle(uint32 seconds_before_idle)
 {
 	Zone::m_seconds_before_idle = seconds_before_idle;
+}
+
+bool Zone::DoesAlternateCurrencyExist(uint32 currency_id)
+{
+	return std::any_of(
+		AlternateCurrencies.begin(),
+		AlternateCurrencies.end(),
+		[&](const auto& c) {
+			return c.id == currency_id;
+		}
+	);
 }
 
 #include "zone_loot.cpp"

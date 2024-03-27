@@ -28,6 +28,9 @@
 #ifndef RULE_BOOL
 #define RULE_BOOL(cat, rule, default_value, notes)
 #endif
+#ifndef RULE_STRING
+#define RULE_STRING(cat, rule, default_value, notes)
+#endif
 #ifndef RULE_CATEGORY_END
 #define RULE_CATEGORY_END()
 #endif
@@ -324,6 +327,9 @@ RULE_INT(World, MaximumQuestErrors, 30, "Changes the maximum number of quest err
 RULE_INT(World, BootHour, 0, "Sets the in-game hour world will set when it first boots. 0-24 are valid options, where 0 disables this rule")
 RULE_BOOL(World, UseItemLinksForKeyRing, false, "Uses item links for Key Ring Listing instead of item name")
 RULE_BOOL(World, UseOldShadowKnightClassExport, true, "Disable to have Shadowknight show as Shadow Knight (live-like)")
+RULE_STRING(World, IPExemptionZones, "", "Comma-delimited list of zones to exclude from IP-limit checks. Empty string to disable.")
+RULE_STRING(World, MOTD, "", "Server MOTD sent on login, change from empty to have this be used instead of variables table 'motd' value")
+RULE_STRING(World, Rules, "", "Server Rules, change from empty to have this be used instead of variables table 'rules' value, lines are pipe (|) separated, example: A|B|C")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Zone)
@@ -349,6 +355,7 @@ RULE_INT(Zone, GlobalLootMultiplier, 1, "Sets Global Loot drop multiplier for da
 RULE_BOOL(Zone, KillProcessOnDynamicShutdown, true, "When process has booted a zone and has hit its zone shut down timer, it will hard kill the process to free memory back to the OS")
 RULE_INT(Zone, SpawnEventMin, 3, "When strict is set in spawn_events, specifies the max EQ minutes into the trigger hour a spawn_event will fire. Going below 3 may cause the spawn_event to not fire.")
 RULE_INT(Zone, ForageChance, 25, "Chance of foraging from zone table vs global table")
+RULE_INT(Zone, FishingChance, 399, "Chance of fishing from zone table vs global table")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnBots, false, "Set to true to allow cross zone spells (cast/remove) to affect bots")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnMercs, false, "Set to true to allow cross zone spells (cast/remove) to affect mercenaries")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnPets, false, "Set to true to allow cross zone spells (cast/remove) to affect pets")
@@ -496,6 +503,7 @@ RULE_BOOL(Spells, EvacClearCharmPet, false, "Enable to have evac in zone clear c
 RULE_BOOL(Spells, ManaTapsRequireNPCMana, false, "Enabling will require target to have mana to tap. Default off as many npc's are caster class with 0 mana and need fixed.")
 RULE_INT(Spells, HarmTouchCritRatio, 200, "Harmtouch crit bonus, on top of BaseCritRatio")
 RULE_BOOL(Spells, UseClassicSpellFocus, false, "Enabling will tell the server to handle random focus damage as classic spell imports lack the limit values.")
+RULE_BOOL(Spells, ManaTapsOnAnyClass, false, "Enabling this will allow you to cast mana taps on any class, this will bypass ManaTapsRequireNPCMana rule.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)
@@ -522,6 +530,7 @@ RULE_REAL(Combat, BaseProcChance, 0.035, "Base chance for procs")
 RULE_REAL(Combat, ProcDexDivideBy, 11000, "Divisor for the probability of a proc increased by dexterity")
 RULE_INT(Combat, MinRangedAttackDist, 25, "Minimum Distance to use Ranged Attacks")
 RULE_BOOL(Combat, ArcheryBonusRequiresStationary, true, "does the 2x archery bonus chance require a stationary npc")
+RULE_INT(Combat, ArcheryBonusLevelRequirement, 51, "Level requirement when the 2x archery bonus will be enabled. The default is 51.")
 RULE_REAL(Combat, ArcheryNPCMultiplier, 1.0, "Value is multiplied by the regular dmg to get the archery dmg")
 RULE_BOOL(Combat, AssistNoTargetSelf, true, "When assisting a target that does not have a target: true = target self, false = leave target as was before assist (false = live like)")
 RULE_INT(Combat, MaxRampageTargets, 3, "Maximum number of people hit with rampage")
@@ -575,10 +584,12 @@ RULE_BOOL(Combat, NPCsUseFrontalStunImmunityClasses, false, "Enable or disable N
 RULE_INT(Combat, FrontalStunImmunityRaces, 512, "Bitmask for Races than have frontal stun immunity, Ogre (512) only by default.")
 RULE_BOOL(Combat, NPCsUseFrontalStunImmunityRaces, true, "Enable or disable NPCs using frontal stun immunity Races from Combat:FrontalStunImmunityRaces, true by default.")
 RULE_BOOL(Combat, AssassinateOnlyHumanoids, true, "Enable or disable Assassinate only being allowed on Humanoids, true by default.")
+RULE_INT(Combat, AssassinateLevelRequirement, 60, "Level requirement to enable assassinate attempts on backstabs. The default is 60.")
 RULE_BOOL(Combat, HeadshotOnlyHumanoids, true, "Enable or disable Headshot only being allowed on Humanoids, true by default.")
 RULE_BOOL(Combat, EnableWarriorShielding, true, "Enable or disable Warrior Shielding Ability (/shield), true by default.")
 RULE_BOOL(Combat, BackstabIgnoresElemental, false, "Enable or disable Elemental weapon damage affecting backstab damage, false by default.")
 RULE_BOOL(Combat, BackstabIgnoresBane, false, "Enable or disable Bane weapon damage affecting backstab damage, false by default.")
+RULE_INT(Combat, DoubleBackstabLevelRequirement, 55, "Level requirement to enable double backstab attempts. The default is 55.")
 RULE_BOOL(Combat, SummonMeleeRange, true, "Enable or disable summoning of a player when already in melee range of the summoner.")
 RULE_BOOL(Combat, WaterMatchRequiredForAutoFireLoS, true, "Enable/Disable the requirement of both the attacker/victim being both in or out of water for AutoFire LoS to pass.")
 RULE_INT(Combat, ExtraAllowedKickClassesBitmask, 0, "Bitmask for allowing extra classes beyond Warrior, Ranger, Beastlord, and Berserker to kick, No Extra Classes (0) by default")
@@ -969,4 +980,5 @@ RULE_CATEGORY_END()
 #undef RULE_INT
 #undef RULE_REAL
 #undef RULE_BOOL
+#undef RULE_STRING
 #undef RULE_CATEGORY_END

@@ -56,6 +56,7 @@ void perl_register_doors();
 void perl_register_expedition();
 void perl_register_expedition_lock_messages();
 void perl_register_bot();
+void perl_register_buff();
 #endif // EMBPERL_XS_CLASSES
 #endif // EMBPERL_XS
 
@@ -200,6 +201,7 @@ const char* QuestEventSubroutines[_LargestEventID] = {
 	"EVENT_ENTITY_VARIABLE_DELETE",
 	"EVENT_ENTITY_VARIABLE_SET",
 	"EVENT_ENTITY_VARIABLE_UPDATE",
+	"EVENT_AA_LOSS",
 
 	// Add new events before these or Lua crashes
 	"EVENT_SPELL_EFFECT_BOT",
@@ -1174,6 +1176,7 @@ void PerlembParser::MapFunctions()
 	perl_register_expedition();
 	perl_register_expedition_lock_messages();
 	perl_register_bot();
+	perl_register_buff();
 #endif // EMBPERL_XS_CLASSES
 }
 
@@ -2270,6 +2273,11 @@ void PerlembParser::ExportEventVariables(
 
 		case EVENT_AA_GAIN: {
 			ExportVar(package_name.c_str(), "aa_gained", data);
+			break;
+		}
+
+		case EVENT_AA_LOSS: {
+			ExportVar(package_name.c_str(), "aa_lost", data);
 			break;
 		}
 

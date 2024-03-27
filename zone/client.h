@@ -272,6 +272,8 @@ public:
 	int GetQuiverHaste(int delay);
 	void DoAttackRounds(Mob *target, int hand, bool IsFromSpell = false);
 
+	std::vector<Mob*> GetRaidOrGroupOrSelf(bool clients_only = false);
+
 	void AI_Init();
 	void AI_Start(uint32 iMoveDelay = 0);
 	void AI_Stop();
@@ -348,6 +350,7 @@ public:
 	int GetRecipeMadeCount(uint32 recipe_id);
 	bool HasRecipeLearned(uint32 recipe_id);
 	bool CanIncreaseTradeskill(EQ::skills::SkillType tradeskill);
+	void ScribeRecipes(uint32_t item_id) const;
 
 	bool GetRevoked() const { return revoked; }
 	void SetRevoked(bool rev) { revoked = rev; }
@@ -812,9 +815,9 @@ public:
 	void SetHoTT(uint32 mobid);
 	void ShowSkillsWindow();
 
-	uint16 MaxSkill(EQ::skills::SkillType skillid, uint16 class_, uint16 level) const;
-	inline uint16 MaxSkill(EQ::skills::SkillType skillid) const { return MaxSkill(skillid, GetClass(), GetLevel()); }
-	uint8 SkillTrainLevel(EQ::skills::SkillType skillid, uint16 class_);
+	uint16 MaxSkill(EQ::skills::SkillType skill_id, uint8 class_id, uint8 level) const;
+	inline uint16 MaxSkill(EQ::skills::SkillType skill_id) const { return MaxSkill(skill_id, GetClass(), GetLevel()); }
+	uint8 SkillTrainLevel(EQ::skills::SkillType skill_id, uint8 class_id);
 	void MaxSkills();
 
 	void SendTradeskillSearchResults(const std::string &query, unsigned long objtype, unsigned long someid);
@@ -933,8 +936,9 @@ public:
 	void ResetAlternateAdvancementTimers();
 	void ResetOnDeathAlternateAdvancement();
 
-	void SetAAPoints(uint32 points) { m_pp.aapoints = points; SendAlternateAdvancementStats(); }
+	void SetAAPoints(uint32 points);
 	void AddAAPoints(uint32 points);
+	bool RemoveAAPoints(uint32 points);
 	int GetAAPoints() { return m_pp.aapoints; }
 	int GetSpentAA() { return m_pp.aapoints_spent; }
 	uint32 GetRequiredAAExperience();
@@ -1090,7 +1094,7 @@ public:
 	void SetPEQZoneFlag(uint32 zone_id);
 
 	bool CanFish();
-	void GoFish();
+	void GoFish(bool guarantee = false, bool use_bait = true);
 	void ForageItem(bool guarantee = false);
 	//Calculate vendor price modifier based on CHA: (reverse==selling)
 	float CalcPriceMod(Mob* other = 0, bool reverse = false);
@@ -1539,6 +1543,7 @@ public:
 	void SendAltCurrencies();
 	void SetAlternateCurrencyValue(uint32 currency_id, uint32 new_amount);
 	int AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_scripted = false);
+	bool RemoveAlternateCurrencyValue(uint32 currency_id, uint32 amount);
 	void SendAlternateCurrencyValues();
 	void SendAlternateCurrencyValue(uint32 currency_id, bool send_if_null = true);
 	uint32 GetAlternateCurrencyValue(uint32 currency_id) const;

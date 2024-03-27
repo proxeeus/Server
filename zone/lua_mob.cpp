@@ -3,18 +3,19 @@
 #include "lua.hpp"
 #include <luabind/luabind.hpp>
 
-#include "client.h"
-#include "npc.h"
 #include "bot.h"
+#include "client.h"
+#include "dialogue_window.h"
 #include "lua_bot.h"
+#include "lua_buff.h"
+#include "lua_client.h"
+#include "lua_hate_list.h"
 #include "lua_item.h"
 #include "lua_iteminst.h"
 #include "lua_mob.h"
 #include "lua_npc.h"
-#include "lua_hate_list.h"
-#include "lua_client.h"
 #include "lua_stat_bonuses.h"
-#include "dialogue_window.h"
+#include "npc.h"
 
 struct SpecialAbilities { };
 
@@ -213,11 +214,6 @@ void Lua_Mob::RangedAttack(Lua_Mob other) {
 void Lua_Mob::ThrowingAttack(Lua_Mob other) {
 	Lua_Safe_Call_Void();
 	self->ThrowingAttack(other);
-}
-
-void Lua_Mob::Heal() {
-	Lua_Safe_Call_Void();
-	self->Heal();
 }
 
 void Lua_Mob::HealDamage(uint64 amount) {
@@ -3289,6 +3285,100 @@ bool Lua_Mob::IsPetOwnerNPC()
 	return self->IsPetOwnerNPC();
 }
 
+bool Lua_Mob::IsDestructibleObject()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsDestructibleObject();
+}
+
+bool Lua_Mob::IsBoat()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsBoat();
+}
+
+bool Lua_Mob::IsControllableBoat()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsControllableBoat();
+}
+
+int Lua_Mob::GetHeroicStrikethrough()
+{
+	Lua_Safe_Call_Int();
+	return self->GetHeroicStrikethrough();
+}
+
+bool Lua_Mob::IsAlwaysAggro()
+{
+	Lua_Safe_Call_Bool();
+	return self->AlwaysAggro();
+}
+
+std::string Lua_Mob::GetDeityName()
+{
+	Lua_Safe_Call_String();
+	return EQ::deity::GetDeityName(static_cast<EQ::deity::DeityType>(self->GetDeity()));
+}
+
+luabind::object Lua_Mob::GetBuffs(lua_State* L)
+{
+	auto t = luabind::newtable(L);
+	if (d_) {
+		auto     self    = reinterpret_cast<NativeType *>(d_);
+		auto     l       = self->GetBuffs();
+		int      i       = 1;
+		for (int slot_id = 0; slot_id < self->GetMaxBuffSlots(); slot_id++) {
+			t[i] = Lua_Buff(&l[slot_id]);
+			i++;
+		}
+	}
+
+	return t;
+}
+
+void Lua_Mob::RestoreEndurance()
+{
+	Lua_Safe_Call_Void();
+	self->RestoreEndurance();
+}
+
+void Lua_Mob::RestoreHealth()
+{
+	Lua_Safe_Call_Void();
+	self->RestoreHealth();
+}
+
+void Lua_Mob::RestoreMana()
+{
+	Lua_Safe_Call_Void();
+	self->RestoreMana();
+}
+
+std::string Lua_Mob::GetArchetypeName()
+{
+	Lua_Safe_Call_String();
+	return self->GetArchetypeName();
+}
+
+bool Lua_Mob::IsIntelligenceCasterClass()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsIntelligenceCasterClass();
+}
+
+bool Lua_Mob::IsPureMeleeClass()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsPureMeleeClass();
+}
+
+bool Lua_Mob::IsWisdomCasterClass()
+{
+	Lua_Safe_Call_Bool();
+	return self->IsWisdomCasterClass();
+}
+
 luabind::scope lua_register_mob() {
 	return luabind::class_<Lua_Mob, Lua_Entity>("Mob")
 	.def(luabind::constructor<>())
@@ -3480,6 +3570,7 @@ luabind::scope lua_register_mob() {
 	.def("GetAggroRange", (float(Lua_Mob::*)(void))&Lua_Mob::GetAggroRange)
 	.def("GetAllowBeneficial", (bool(Lua_Mob::*)(void))&Lua_Mob::GetAllowBeneficial)
 	.def("GetAppearance", (uint32(Lua_Mob::*)(void))&Lua_Mob::GetAppearance)
+	.def("GetArchetypeName", &Lua_Mob::GetArchetypeName)
 	.def("GetAssistRange", (float(Lua_Mob::*)(void))&Lua_Mob::GetAssistRange)
 	.def("GetBaseGender", &Lua_Mob::GetBaseGender)
 	.def("GetBaseRace", &Lua_Mob::GetBaseRace)
@@ -3491,6 +3582,7 @@ luabind::scope lua_register_mob() {
 	.def("GetBucketExpires", (std::string(Lua_Mob::*)(std::string))&Lua_Mob::GetBucketExpires)
 	.def("GetBucketKey", (std::string(Lua_Mob::*)(void))&Lua_Mob::GetBucketKey)
 	.def("GetBucketRemaining", (std::string(Lua_Mob::*)(std::string))&Lua_Mob::GetBucketRemaining)
+	.def("GetBuffs", &Lua_Mob::GetBuffs)
 	.def("GetBuffSlotFromType", &Lua_Mob::GetBuffSlotFromType)
 	.def("GetBuffSpellIDs", &Lua_Mob::GetBuffSpellIDs)
 	.def("GetBuffStatValueBySlot", (void(Lua_Mob::*)(uint8, const char*))& Lua_Mob::GetBuffStatValueBySlot)
@@ -3514,6 +3606,7 @@ luabind::scope lua_register_mob() {
 	.def("GetDefaultRaceSize", (float(Lua_Mob::*)(int))&Lua_Mob::GetDefaultRaceSize)
 	.def("GetDefaultRaceSize", (float(Lua_Mob::*)(int,int))&Lua_Mob::GetDefaultRaceSize)
 	.def("GetDeity", &Lua_Mob::GetDeity)
+	.def("GetDeityName", &Lua_Mob::GetDeityName)
 	.def("GetDisplayAC", &Lua_Mob::GetDisplayAC)
 	.def("GetDrakkinDetails", &Lua_Mob::GetDrakkinDetails)
 	.def("GetDrakkinHeritage", &Lua_Mob::GetDrakkinHeritage)
@@ -3568,6 +3661,7 @@ luabind::scope lua_register_mob() {
 	.def("GetHateTopNPC", (Lua_NPC(Lua_Mob::*)(void))&Lua_Mob::GetHateTopNPC)
 	.def("GetHeading", &Lua_Mob::GetHeading)
 	.def("GetHelmTexture", &Lua_Mob::GetHelmTexture)
+	.def("GetHeroicStrikethrough", &Lua_Mob::GetHeroicStrikethrough)
 	.def("GetHerosForgeModel", (int32(Lua_Mob::*)(uint8))&Lua_Mob::GetHerosForgeModel)
 	.def("GetINT", &Lua_Mob::GetINT)
 	.def("GetInvisibleLevel", (uint8(Lua_Mob::*)(void))&Lua_Mob::GetInvisibleLevel)
@@ -3658,12 +3752,13 @@ luabind::scope lua_register_mob() {
 	.def("HasTimer", &Lua_Mob::HasTimer)
 	.def("HasTwoHandBluntEquipped", (bool(Lua_Mob::*)(void))&Lua_Mob::HasTwoHandBluntEquipped)
 	.def("HasTwoHanderEquipped", (bool(Lua_Mob::*)(void))&Lua_Mob::HasTwoHanderEquipped)
-	.def("Heal", &Lua_Mob::Heal)
+	.def("Heal", &Lua_Mob::RestoreHealth)
 	.def("HealDamage", (void(Lua_Mob::*)(uint64))&Lua_Mob::HealDamage)
 	.def("HealDamage", (void(Lua_Mob::*)(uint64,Lua_Mob))&Lua_Mob::HealDamage)
 	.def("InterruptSpell", (void(Lua_Mob::*)(int))&Lua_Mob::InterruptSpell)
 	.def("InterruptSpell", (void(Lua_Mob::*)(void))&Lua_Mob::InterruptSpell)
 	.def("IsAIControlled", (bool(Lua_Mob::*)(void))&Lua_Mob::IsAIControlled)
+	.def("IsAlwaysAggro", &Lua_Mob::IsAlwaysAggro)
 	.def("IsAmnesiad", (bool(Lua_Mob::*)(void))&Lua_Mob::IsAmnesiad)
 	.def("IsAnimation", &Lua_Mob::IsAnimation)
 	.def("IsAttackAllowed", (bool(Lua_Mob::*)(Lua_Mob))&Lua_Mob::IsAttackAllowed)
@@ -3671,8 +3766,11 @@ luabind::scope lua_register_mob() {
 	.def("IsBeneficialAllowed", (bool(Lua_Mob::*)(Lua_Mob))&Lua_Mob::IsBeneficialAllowed)
 	.def("IsBerserk", &Lua_Mob::IsBerserk)
 	.def("IsBlind", (bool(Lua_Mob::*)(void))&Lua_Mob::IsBlind)
+	.def("IsBoat", &Lua_Mob::IsBoat)
 	.def("IsCasting", &Lua_Mob::IsCasting)
 	.def("IsCharmed", &Lua_Mob::IsCharmed)
+	.def("IsControllableBoat", &Lua_Mob::IsControllableBoat)
+	.def("IsDestructibleObject", &Lua_Mob::IsDestructibleObject)
 	.def("IsEliteMaterialItem", (uint32(Lua_Mob::*)(uint8))&Lua_Mob::IsEliteMaterialItem)
 	.def("IsEngaged", (bool(Lua_Mob::*)(void))&Lua_Mob::IsEngaged)
 	.def("IsEnraged", (bool(Lua_Mob::*)(void))&Lua_Mob::IsEnraged)
@@ -3681,6 +3779,7 @@ luabind::scope lua_register_mob() {
 	.def("IsFindable", (bool(Lua_Mob::*)(void))&Lua_Mob::IsFindable)
 	.def("IsHorse", &Lua_Mob::IsHorse)
 	.def("IsImmuneToSpell", (bool(Lua_Mob::*)(int,Lua_Mob))&Lua_Mob::IsImmuneToSpell)
+	.def("IsIntelligenceCasterClass", &Lua_Mob::IsIntelligenceCasterClass)
 	.def("IsInvisible", (bool(Lua_Mob::*)(Lua_Mob))&Lua_Mob::IsInvisible)
 	.def("IsInvisible", (bool(Lua_Mob::*)(void))&Lua_Mob::IsInvisible)
 	.def("IsMeleeDisabled", (bool(Lua_Mob::*)(void))&Lua_Mob::IsMeleeDisabled)
@@ -3691,6 +3790,7 @@ luabind::scope lua_register_mob() {
 	.def("IsPetOwnerBot", &Lua_Mob::IsPetOwnerBot)
 	.def("IsPetOwnerClient", &Lua_Mob::IsPetOwnerClient)
 	.def("IsPetOwnerNPC", &Lua_Mob::IsPetOwnerNPC)
+	.def("IsPureMeleeClass", &Lua_Mob::IsPureMeleeClass)
 	.def("IsRoamer", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRoamer)
 	.def("IsRooted", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRooted)
 	.def("IsRunning", (bool(Lua_Mob::*)(void))&Lua_Mob::IsRunning)
@@ -3702,6 +3802,7 @@ luabind::scope lua_register_mob() {
 	.def("IsTemporaryPet", &Lua_Mob::IsTemporaryPet)
 	.def("IsTrackable", (bool(Lua_Mob::*)(void))&Lua_Mob::IsTrackable)
 	.def("IsWarriorClass", &Lua_Mob::IsWarriorClass)
+	.def("IsWisdomCasterClass", &Lua_Mob::IsWisdomCasterClass)
 	.def("Kill", (void(Lua_Mob::*)(void))&Lua_Mob::Kill)
 	.def("Mesmerize", (void(Lua_Mob::*)(void))&Lua_Mob::Mesmerize)
 	.def("Message", &Lua_Mob::Message)
@@ -3734,6 +3835,9 @@ luabind::scope lua_register_mob() {
 	.def("ResistSpell", (double(Lua_Mob::*)(int,int,Lua_Mob,bool))&Lua_Mob::ResistSpell)
 	.def("ResistSpell", (double(Lua_Mob::*)(int,int,Lua_Mob,bool,int))&Lua_Mob::ResistSpell)
 	.def("ResistSpell", (double(Lua_Mob::*)(int,int,Lua_Mob,bool,int,bool))&Lua_Mob::ResistSpell)
+	.def("RestoreEndurance", &Lua_Mob::RestoreEndurance)
+	.def("RestoreHealth", &Lua_Mob::RestoreHealth)
+	.def("RestoreMana", &Lua_Mob::RestoreMana)
 	.def("ResumeTimer", &Lua_Mob::ResumeTimer)
 	.def("RunTo", (void(Lua_Mob::*)(double, double, double))&Lua_Mob::RunTo)
 	.def("Say", (void(Lua_Mob::*)(const char*))& Lua_Mob::Say)
@@ -3891,7 +3995,9 @@ luabind::scope lua_register_special_abilities() {
 				luabind::value("modify_avoid_damage", static_cast<int>(MODIFY_AVOID_DAMAGE)),
 				luabind::value("immune_open", static_cast<int>(IMMUNE_OPEN)),
 				luabind::value("immune_assassinate", static_cast<int>(IMMUNE_ASSASSINATE)),
-				luabind::value("immune_headshot", static_cast<int>(IMMUNE_HEADSHOT))
+				luabind::value("immune_headshot", static_cast<int>(IMMUNE_HEADSHOT)),
+				luabind::value("immune_aggro_bot", static_cast<int>(IMMUNE_AGGRO_BOT)),
+				luabind::value("immune_damage_bot", static_cast<int>(IMMUNE_DAMAGE_BOT))
 		)];
 }
 

@@ -46,6 +46,7 @@
 #include "../common/repositories/lootdrop_repository.h"
 #include "../common/repositories/lootdrop_entries_repository.h"
 #include "../common/repositories/base_data_repository.h"
+#include "../common/repositories/skill_caps_repository.h"
 
 struct EXPModifier
 {
@@ -152,6 +153,7 @@ public:
 	bool IsSpecialBindLocation(const glm::vec4& location);
 	bool Process();
 	bool SaveZoneCFG();
+	bool DoesAlternateCurrencyExist(uint32 currency_id);
 
 	int GetNpcPositionUpdateDistance() const;
 	void SetNpcPositionUpdateDistance(int in_npc_position_update_distance);
@@ -269,10 +271,15 @@ public:
 	void SendReloadMessage(std::string reload_type);
 
 	void ClearEXPModifier(Client* c);
+	void ClearEXPModifierByCharacterID(const uint32 character_id);
 	float GetAAEXPModifier(Client* c);
+	float GetAAEXPModifierByCharacterID(const uint32 character_id);
 	float GetEXPModifier(Client* c);
+	float GetEXPModifierByCharacterID(const uint32 character_id);
 	void SetAAEXPModifier(Client* c, float aa_modifier);
+	void SetAAEXPModifierByCharacterID(const uint32 character_id, float aa_modifier);
 	void SetEXPModifier(Client* c, float exp_modifier);
+	void SetEXPModifierByCharacterID(const uint32 character_id, float exp_modifier);
 
 	void AddAggroMob() { aggroedmobs++; }
 	void AddAuth(ServerZoneIncomingClient_Struct *szic);
@@ -432,7 +439,7 @@ public:
 
 	// loot
 	void LoadLootTable(const uint32 loottable_id);
-	void LoadLootTables(const std::vector<uint32>& loottable_ids);
+	void LoadLootTables(const std::vector<uint32> in_loottable_ids);
 	void ClearLootTables();
 	void ReloadLootTables();
 	LoottableRepository::Loottable *GetLootTable(const uint32 loottable_id);
@@ -445,6 +452,7 @@ public:
 	BaseDataRepository::BaseData GetBaseData(uint8 level, uint8 class_id);
 	void LoadBaseData();
 	void ReloadBaseData();
+
 
 private:
 	bool      allow_mercs;

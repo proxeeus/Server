@@ -68,10 +68,12 @@ extern volatile bool RunLoops;
 #include "../common/repositories/discovered_items_repository.h"
 #include "../common/repositories/inventory_repository.h"
 #include "../common/repositories/keyring_repository.h"
+#include "../common/repositories/tradeskill_recipe_repository.h"
 #include "../common/events/player_events.h"
 #include "../common/events/player_event_logs.h"
 #include "dialogue_window.h"
 #include "../common/zone_store.h"
+#include "../common/skill_caps.h"
 
 
 extern QueryServ* QServ;
@@ -284,6 +286,7 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	PendingSacrifice = false;
 	controlling_boat_id = 0;
 	controlled_mob_id = 0;
+	qGlobals = nullptr;
 
 	if (!RuleB(Character, PerCharacterQglobalMaxLevel) && !RuleB(Character, PerCharacterBucketMaxLevel)) {
 		SetClientMaxLevel(0);
@@ -311,7 +314,6 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	aa_los_them_mob = nullptr;
 	los_status = false;
 	los_status_facing = false;
-	qGlobals = nullptr;
 	HideCorpseMode = HideCorpseNone;
 	PendingGuildInvitation = false;
 
@@ -2307,29 +2309,23 @@ void Client::ReadBook(BookRequest_Struct *book) {
 
 		BookText_Struct *out = (BookText_Struct *) outapp->pBuffer;
 		out->window = book->window;
-
-
-		if (ClientVersion() >= EQ::versions::ClientVersion::SoF) {
-			// SoF+ need to look up book type for the output message.
-			const EQ::ItemInstance *inst = nullptr;
-
-			if (book->invslot <= EQ::invbag::GENERAL_BAGS_END)
-			{
-				inst = m_inv[book->invslot];
-			}
-
-			if(inst)
-				out->type = inst->GetItem()->Book;
-			else
-				out->type = book->type;
-		}
-		else {
-			out->type = book->type;
-		}
+		out->type = book->type;
 		out->invslot = book->invslot;
 		out->target_id = book->target_id;
 		out->can_cast = 0; // todo: implement
-		out->can_scribe = 0; // todo: implement
+		out->can_scribe = false;
+
+		if (ClientVersion() >= EQ::versions::ClientVersion::SoF && book->invslot <= EQ::invbag::GENERAL_BAGS_END)
+		{
+			const EQ::ItemInstance* inst = m_inv[book->invslot];
+			if (inst && inst->GetItem())
+			{
+				auto recipe = TradeskillRecipeRepository::GetWhere(content_db,
+					fmt::format("learned_by_item_id = {} LIMIT 1", inst->GetItem()->ID));
+				out->type = inst->GetItem()->Book;
+				out->can_scribe = !recipe.empty();
+			}
+		}
 
 		memcpy(out->booktext, booktxt2.c_str(), length);
 
@@ -2774,31 +2770,48 @@ void Client::CheckLanguageSkillIncrease(uint8 language_id, uint8 teacher_skill) 
 	}
 }
 
-bool Client::HasSkill(EQ::skills::SkillType skill_id) const {
-	return((GetSkill(skill_id) > 0) && CanHaveSkill(skill_id));
-}
-
-bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skill_id == EQ::skills::Skill1HPiercing)
-		skill_id = EQ::skills::Skill2HPiercing;
-
-	return(content_db.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)) > 0);
-	//if you don't have it by max level, then odds are you never will?
-}
-
-uint16 Client::MaxSkill(EQ::skills::SkillType skillid, uint16 class_, uint16 level) const {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skillid == EQ::skills::Skill1HPiercing)
-		skillid = EQ::skills::Skill2HPiercing;
-
-	return(content_db.GetSkillCap(class_, skillid, level));
-}
-
-uint8 Client::SkillTrainLevel(EQ::skills::SkillType skillid, uint16 class_)
+bool Client::HasSkill(EQ::skills::SkillType skill_id) const
 {
-	if (ClientVersion() < EQ::versions::ClientVersion::RoF2 && class_ == Class::Berserker && skillid == EQ::skills::Skill1HPiercing)
-		skillid = EQ::skills::Skill2HPiercing;
+	return GetSkill(skill_id) > 0 && CanHaveSkill(skill_id);
+}
 
-	return(content_db.GetTrainLevel(class_, skillid, RuleI(Character, MaxLevel)));
+bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const
+{
+	if (
+		ClientVersion() < EQ::versions::ClientVersion::RoF2 &&
+		class_ == Class::Berserker &&
+		skill_id == EQ::skills::Skill1HPiercing
+	) {
+		skill_id = EQ::skills::Skill2HPiercing;
+	}
+
+	return skill_caps.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)).cap > 0;
+}
+
+uint16 Client::MaxSkill(EQ::skills::SkillType skill_id, uint8 class_id, uint8 level) const
+{
+	if (
+		ClientVersion() < EQ::versions::ClientVersion::RoF2 &&
+		class_id == Class::Berserker &&
+		skill_id == EQ::skills::Skill1HPiercing
+	) {
+		skill_id = EQ::skills::Skill2HPiercing;
+	}
+
+	return skill_caps.GetSkillCap(class_id, skill_id, level).cap;
+}
+
+uint8 Client::SkillTrainLevel(EQ::skills::SkillType skill_id, uint8 class_id)
+{
+	if (
+		ClientVersion() < EQ::versions::ClientVersion::RoF2 &&
+		class_id == Class::Berserker &&
+		skill_id == EQ::skills::Skill1HPiercing
+	) {
+		skill_id = EQ::skills::Skill2HPiercing;
+	}
+
+	return skill_caps.GetTrainLevel(class_id, skill_id, RuleI(Character, MaxLevel));
 }
 
 uint16 Client::GetMaxSkillAfterSpecializationRules(EQ::skills::SkillType skillid, uint16 maxSkill)
@@ -3804,14 +3817,12 @@ void Client::GetRaidAAs(RaidLeadershipAA_Struct *into) const {
 
 void Client::EnteringMessages(Client* client)
 {
-	std::string rules;
-	if (database.GetVariable("Rules", rules)) {
-		uint8 flag = database.GetAgreementFlag(client->AccountID());
+	std::string rules = RuleS(World, Rules);
+
+	if (!rules.empty() || database.GetVariable("Rules", rules)) {
+		const uint8 flag = database.GetAgreementFlag(client->AccountID());
 		if (!flag) {
-			auto rules_link = Saylink::Silent(
-				"#serverrules",
-				"rules"
-			);
+			const std::string& rules_link = Saylink::Silent("#serverrules", "rules");
 
 			client->Message(
 				Chat::White,
@@ -3828,9 +3839,9 @@ void Client::EnteringMessages(Client* client)
 
 void Client::SendRules()
 {
-	std::string rules;
+	std::string rules = RuleS(World, Rules);
 
-	if (!database.GetVariable("Rules", rules)) {
+	if (rules.empty() && !database.GetVariable("Rules", rules)) {
 		return;
 	}
 
@@ -4462,7 +4473,7 @@ bool Client::GroupFollow(Client* inviter) {
 			}
 
 			//now we have a group id, can set inviter's id
-			database.SetGroupID(inviter->GetName(), group->GetID(), inviter->CharacterID(), false);
+			group->AddToGroup(inviter);
 			database.SetGroupLeaderName(group->GetID(), inviter->GetName());
 			group->UpdateGroupAAs();
 
@@ -6298,7 +6309,17 @@ void Client::SendZonePoints()
 			zp->zpe[i].z = data->target_z;
 			zp->zpe[i].heading = data->target_heading;
 			zp->zpe[i].zoneid = data->target_zone_id;
-			zp->zpe[i].zoneinstance = data->target_zone_instance;
+
+			// if the target zone is the same as the current zone, use the instance of the current zone
+			// if we don't use the same instance_id that the client was sent, the client will forcefully
+			// issue a zone change request when they should be simply moving to a different point in the same zone
+			// because the client will think the zone point target is different from the current instance
+			auto target_instance = data->target_zone_instance;
+			if (data->target_zone_id == zone->GetZoneID() && data->target_zone_instance == 0) {
+				target_instance = zone->GetInstanceID();
+			}
+
+			zp->zpe[i].zoneinstance = target_instance;
 			i++;
 		}
 		iterator.Advance();
@@ -6623,13 +6644,72 @@ void Client::SendAltCurrencies() {
 
 void Client::SetAlternateCurrencyValue(uint32 currency_id, uint32 new_amount)
 {
+	if (!zone->DoesAlternateCurrencyExist(currency_id)) {
+		return;
+	}
+
+	const uint32 current_amount = alternate_currency[currency_id];
+
+	const bool is_gain = new_amount > current_amount;
+
+	const uint32 change_amount = is_gain ? (new_amount - current_amount) : (current_amount - new_amount);
+
+	if (!change_amount) {
+		return;
+	}
+
 	alternate_currency[currency_id] = new_amount;
 	database.UpdateAltCurrencyValue(CharacterID(), currency_id, new_amount);
 	SendAlternateCurrencyValue(currency_id);
+
+	QuestEventID event_id = is_gain ? EVENT_ALT_CURRENCY_GAIN : EVENT_ALT_CURRENCY_LOSS;
+	if (parse->PlayerHasQuestSub(event_id)) {
+		const std::string &export_string = fmt::format(
+			"{} {} {}",
+			currency_id,
+			change_amount,
+			new_amount
+		);
+
+		parse->EventPlayer(event_id, this, export_string, 0);
+	}
+}
+
+bool Client::RemoveAlternateCurrencyValue(uint32 currency_id, uint32 amount)
+{
+	if (!amount || !zone->DoesAlternateCurrencyExist(currency_id)) {
+		return false;
+	}
+
+	const uint32 current_amount = alternate_currency[currency_id];
+	if (current_amount < amount) {
+		return false;
+	}
+
+	const uint32 new_amount = (current_amount - amount);
+
+	alternate_currency[currency_id] = new_amount;
+
+	if (parse->PlayerHasQuestSub(EVENT_ALT_CURRENCY_LOSS)) {
+		const std::string &export_string = fmt::format(
+			"{} {} {}",
+			currency_id,
+			amount,
+			new_amount
+		);
+
+		parse->EventPlayer(EVENT_ALT_CURRENCY_LOSS, this, export_string, 0);
+	}
+
+	return true;
 }
 
 int Client::AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_scripted)
 {
+	if (!zone->DoesAlternateCurrencyExist(currency_id)) {
+		return 0;
+	}
+
 	/* Added via Quest, rest of the logging methods may be done inline due to information available in that area of the code */
 	if (is_scripted) {
 		/* QS: PlayerLogAlternateCurrencyTransactions :: Cursor to Item Storage */
@@ -6668,7 +6748,6 @@ int Client::AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_sc
 	SendAlternateCurrencyValue(currency_id);
 
 	QuestEventID event_id = amount > 0 ? EVENT_ALT_CURRENCY_GAIN : EVENT_ALT_CURRENCY_LOSS;
-
 	if (parse->PlayerHasQuestSub(event_id)) {
 		const std::string &export_string = fmt::format(
 			"{} {} {}",
@@ -6709,6 +6788,10 @@ void Client::SendAlternateCurrencyValue(uint32 currency_id, bool send_if_null)
 
 uint32 Client::GetAlternateCurrencyValue(uint32 currency_id) const
 {
+	if (!zone->DoesAlternateCurrencyExist(currency_id)) {
+		return 0;
+	}
+
 	auto iter = alternate_currency.find(currency_id);
 
 	return iter == alternate_currency.end() ? 0 : (*iter).second;
@@ -6778,23 +6861,36 @@ void Client::UpdateClientXTarget(Client *c)
 // IT IS NOT SAFE TO CALL THIS IF IT'S NOT INITIAL AGGRO
 void Client::AddAutoXTarget(Mob *m, bool send)
 {
+	if (m->IsBot() || ((m->IsPet() || m->IsTempPet()) && m->IsPetOwnerBot())) {
+		return;
+	}
+
 	m_activeautohatermgr->increment_count(m);
 
-	if (!XTargettingAvailable() || !XTargetAutoAddHaters || IsXTarget(m))
+	if (!XTargettingAvailable() || !XTargetAutoAddHaters || IsXTarget(m)) {
 		return;
+	}
 
-	for(int i = 0; i < GetMaxXTargets(); ++i)
-	{
-		if((XTargets[i].Type == Auto) && (XTargets[i].ID == 0))
-		{
+	for (int i = 0; i < GetMaxXTargets(); ++i) {
+		if (XTargets[i].Type == Auto && XTargets[i].ID == 0) {
 			XTargets[i].ID = m->GetID();
-			if (send) // if we don't send we're bulk sending updates later on
+
+			if (send) { // if we don't send we're bulk sending updates later on
 				SendXTargetPacket(i, m);
-			else
+			} else {
 				XTargets[i].dirty = true;
+			}
+
 			break;
 		}
 	}
+
+	LogXTargets(
+		"Adding [{}] to [{}] ({}) XTargets",
+		m->GetCleanName(),
+		GetCleanName(),
+		GetID()
+	);
 }
 
 void Client::RemoveXTarget(Mob *m, bool OnlyAutoSlots)
@@ -6803,15 +6899,23 @@ void Client::RemoveXTarget(Mob *m, bool OnlyAutoSlots)
 	// now we may need to clean up our CurrentTargetNPC entries
 	for (int i = 0; i < GetMaxXTargets(); ++i) {
 		if (XTargets[i].Type == CurrentTargetNPC && XTargets[i].ID == m->GetID()) {
-			XTargets[i].Type = Auto;
-			XTargets[i].ID = 0;
+			XTargets[i].Type  = Auto;
+			XTargets[i].ID    = 0;
 			XTargets[i].dirty = true;
 		}
 	}
+
 	auto r = GetRaid();
 	if (r) {
 		r->UpdateRaidXTargets();
 	}
+
+	LogXTargets(
+		"Removing [{}] from [{}] ({}) XTargets",
+		m->GetCleanName(),
+		GetCleanName(),
+		GetID()
+	);
 }
 
 void Client::UpdateXTargetType(XTargetType Type, Mob *m, const char *Name)
@@ -9147,6 +9251,7 @@ void Client::ShowDevToolsMenu()
 	menu_reload_six += " | " + Saylink::Silent("#reload quest", "Quests");
 
 	menu_reload_seven += Saylink::Silent("#reload rules", "Rules");
+	menu_reload_seven += " | " + Saylink::Silent("#reload skill_caps", "Skill Caps");
 	menu_reload_seven += " | " + Saylink::Silent("#reload static", "Static Zone Data");
 	menu_reload_seven += " | " + Saylink::Silent("#reload tasks", "Tasks");
 
@@ -11274,6 +11379,16 @@ void Client::SendReloadCommandMessages() {
 		).c_str()
 	);
 
+	auto skill_caps_link = Saylink::Silent("#reload skill_caps");
+
+	Message(
+		Chat::White,
+		fmt::format(
+			"Usage: {} - Reloads Skill Caps globally",
+			skill_caps_link
+		).c_str()
+	);
+
 	auto static_link = Saylink::Silent("#reload static");
 
 	Message(
@@ -11447,6 +11562,39 @@ bool Client::IsLockSavePosition() const
 void Client::SetLockSavePosition(bool lock_save_position)
 {
 	Client::m_lock_save_position = lock_save_position;
+}
+
+void Client::SetAAPoints(uint32 points)
+{
+	const uint32 current_points = m_pp.aapoints;
+
+	m_pp.aapoints = points;
+
+	QuestEventID event_id = points > current_points ? EVENT_AA_GAIN : EVENT_AA_LOSS;
+	const uint32 change   = event_id == EVENT_AA_GAIN ? points - current_points : current_points - points;
+
+	if (parse->PlayerHasQuestSub(event_id)) {
+		parse->EventPlayer(event_id, this, std::to_string(change), 0);
+	}
+
+	SendAlternateAdvancementStats();
+}
+
+bool Client::RemoveAAPoints(uint32 points)
+{
+	if (m_pp.aapoints < points) {
+		return false;
+	}
+
+	m_pp.aapoints -= points;
+
+	if (parse->PlayerHasQuestSub(EVENT_AA_LOSS)) {
+		parse->EventPlayer(EVENT_AA_LOSS, this, std::to_string(points), 0);
+	}
+
+	SendAlternateAdvancementStats();
+
+	return true;
 }
 
 void Client::AddAAPoints(uint32 points)
@@ -11655,7 +11803,7 @@ void Client::MaxSkills()
 		auto current_skill_value = (
 			EQ::skills::IsSpecializedSkill(s.first) ?
 			MAX_SPECIALIZED_SKILL :
-			content_db.GetSkillCap(GetClass(), s.first, GetLevel())
+			skill_caps.GetSkillCap(GetClass(), s.first, GetLevel()).cap
 		);
 
 		if (GetSkill(s.first) < current_skill_value) {
@@ -12200,4 +12348,35 @@ int Client::GetEXPPercentage()
 	int scaled = static_cast<int>(330.0f * norm); // scale and truncate
 
 	return static_cast<int>(std::round(scaled * 100.0 / 330.0)); // unscaled pct
+}
+
+std::vector<Mob*> Client::GetRaidOrGroupOrSelf(bool clients_only)
+{
+	std::vector<Mob*> v;
+
+	if (IsRaidGrouped()) {
+		Raid* r = GetRaid();
+
+		if (r) {
+			for (const auto& m : r->members) {
+				if (m.member && (!m.is_bot || !clients_only)) {
+					v.emplace_back(m.member);
+				}
+			}
+		}
+	} else if (IsGrouped()) {
+		Group* g = GetGroup();
+
+		if (g) {
+			for (const auto& m : g->members) {
+				if (m && (m->IsClient() || !clients_only)) {
+					v.emplace_back(m);
+				}
+			}
+		}
+	} else {
+		v.emplace_back(this);
+	}
+
+	return v;
 }
