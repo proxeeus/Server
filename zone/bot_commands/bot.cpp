@@ -1021,7 +1021,7 @@ void bot_command_spawn(Client *c, const Seperator *sep)
 	}
 
 	if (RuleB(Bots, HealOnSpawn))
-		my_bot->Heal(); my_bot->SetMana(my_bot->GetMaxMana());
+		my_bot->RestoreHealth(); my_bot->RestoreMana();
 
 	static std::string bot_spawn_message[17] = {
 		"I am ready to fight!", // DEFAULT
