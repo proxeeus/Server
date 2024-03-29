@@ -632,7 +632,7 @@ uint32 Database::GetAccountIDByName(const std::string& account_name, const std::
 	return e.id;
 }
 
-const std::string& Database::GetAccountName(uint32 account_id, uint32* lsaccount_id)
+const std::string Database::GetAccountName(uint32 account_id, uint32* lsaccount_id)
 {
 	const auto& e = AccountRepository::FindOne(*this, account_id);
 
@@ -647,28 +647,28 @@ const std::string& Database::GetAccountName(uint32 account_id, uint32* lsaccount
 	return e.name;
 }
 
-const std::string& Database::GetCharName(uint32 character_id)
+const std::string Database::GetCharName(uint32 character_id)
 {
 	const auto& e = CharacterDataRepository::FindOne(*this, character_id);
 
 	return e.id ? e.name : std::string();
 }
 
-const std::string& Database::GetCharNameByID(uint32 character_id)
+const std::string Database::GetCharNameByID(uint32 character_id)
 {
 	const auto& e = CharacterDataRepository::FindOne(*this, character_id);
 
 	return e.id ? e.name : std::string();
 }
 
-const std::string& Database::GetNPCNameByID(uint32 npc_id)
+const std::string Database::GetNPCNameByID(uint32 npc_id)
 {
 	const auto& e = NpcTypesRepository::FindOne(*this, npc_id);
 
 	return e.id ? e.name : std::string();
 }
 
-const std::string& Database::GetCleanNPCNameByID(uint32 npc_id)
+const std::string Database::GetCleanNPCNameByID(uint32 npc_id)
 {
 	const auto& e = NpcTypesRepository::FindOne(*this, npc_id);
 
@@ -986,7 +986,7 @@ bool Database::UpdateLiveChar(const std::string& name, uint32 account_id)
 	return AccountRepository::UpdateOne(*this, e);
 }
 
-const std::string& Database::GetLiveChar(uint32 account_id)
+const std::string Database::GetLiveChar(uint32 account_id)
 {
 	auto e = AccountRepository::FindOne(*this, account_id);
 
@@ -1114,14 +1114,12 @@ void Database::SetGroupLeaderName(uint32 group_id, const std::string& name)
 
 	e.leadername = name;
 
-	const int updated_leader = GroupLeadersRepository::UpdateOne(*this, e);
-
-	if (!updated_leader) {
+	if (e.gid) {
+		GroupLeadersRepository::UpdateOne(*this, e);
 		return;
 	}
 
 	e.gid            = group_id;
-	e.leadername     = name;
 	e.marknpc        = std::string();
 	e.leadershipaa   = std::string();
 	e.maintank       = std::string();
@@ -1130,7 +1128,7 @@ void Database::SetGroupLeaderName(uint32 group_id, const std::string& name)
 	e.mentoree       = std::string();
 	e.mentor_percent = 0;
 
-	GroupLeadersRepository::UpdateOne(*this, e);
+	GroupLeadersRepository::InsertOne(*this, e);
 }
 
 std::string Database::GetGroupLeaderName(uint32 group_id)
@@ -1335,7 +1333,7 @@ uint32 Database::GetRaidID(const std::string& name)
 	return e.raidid;
 }
 
-const std::string& Database::GetRaidLeaderName(uint32 raid_id)
+const std::string Database::GetRaidLeaderName(uint32 raid_id)
 {
 	const auto& l = RaidMembersRepository::GetWhere(
 		*this,
@@ -1350,7 +1348,7 @@ const std::string& Database::GetRaidLeaderName(uint32 raid_id)
 		return "UNKNOWN";
 	}
 
-	auto e = l.front();
+	auto& e = l.front();
 
 	return e.name;
 }
