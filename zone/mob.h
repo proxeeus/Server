@@ -590,6 +590,7 @@ public:
 	inline const char* GetName() const { return name; }
 	inline const char* GetOrigName() const { return orig_name; }
 	inline const char* GetLastName() const { return lastname; }
+	inline const eStandingPetOrder GetPreviousPetOrder() const { return m_previous_pet_order; }
 	const char *GetCleanName();
 	const char *GetCleanPlayerBotName();
 	virtual void SetName(const char *new_name = nullptr) {
@@ -1182,7 +1183,7 @@ public:
 	inline const float GetAssistRange() const { return (spellbonuses.AssistRange == -1) ? pAssistRange : spellbonuses.AssistRange; }
 
 
-	inline void SetPetOrder(eStandingPetOrder i) { pStandingPetOrder = i; }
+	void SetPetOrder(eStandingPetOrder i);
 	inline const eStandingPetOrder GetPetOrder() const { return pStandingPetOrder; }
 	inline void SetHeld(bool nState) { held = nState; }
 	inline const bool IsHeld() const { return held; }
@@ -1671,8 +1672,6 @@ protected:
 	int32 appearance_effects_id[MAX_APPEARANCE_EFFECTS];
 	int32 appearance_effects_slot[MAX_APPEARANCE_EFFECTS];
 
-	int queue_wearchange_slot;
-
 	Timer shield_timer;
 	uint32 m_shield_target_id;
 	uint32 m_shielder_id;
@@ -1778,6 +1777,7 @@ protected:
 
 	// MobAI stuff
 	eStandingPetOrder pStandingPetOrder;
+	eStandingPetOrder m_previous_pet_order;
 	uint32 minLastFightingDelayMoving;
 	uint32 maxLastFightingDelayMoving;
 	float pAggroRange = 0;
