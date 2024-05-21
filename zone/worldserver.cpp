@@ -2086,6 +2086,17 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	case ServerOP_ReloadNPCSpells:
+	{
+		if (zone && zone->IsLoaded()) {
+			zone->SendReloadMessage("NPC Spells");
+			content_db.ClearNPCSpells();
+			for (auto& e : entity_list.GetNPCList()) {
+				e.second->ReloadSpells();
+			}
+		}
+		break;
+	}
 	case ServerOP_ReloadPerlExportSettings:
 	{
 		zone->SendReloadMessage("Perl Event Export Settings");
@@ -3550,18 +3561,18 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 			zone->SetQuestHotReloadQueued(true);
 		} else if (request_zone_short_name == "all") {
 			std::string reload_quest_saylink = Saylink::Silent("#reload quest", "Locally");
-			std::string reload_world_saylink = Saylink::Silent("#reload world", "Globally");
-			worldserver.SendEmoteMessage(
-				0,
-				0,
-				AccountStatus::ApprenticeGuide,
-				Chat::Yellow,
-				fmt::format(
+			std::string reload_world_saylink = Saylink::Silent("#reload world 1", "Globally");
+			for (const auto& [client_id, client] : entity_list.GetClientList()) {
+				if (client->Admin() < AccountStatus::ApprenticeGuide) {
+					continue;
+				}
+
+				client->Message(Chat::Yellow, fmt::format(
 					"A quest, plugin, or global script has changed. Reload: [{}] [{}]",
 					reload_quest_saylink,
 					reload_world_saylink
-				).c_str()
-			);
+				).c_str());
+			}
 		}
 		break;
 	}

@@ -1724,7 +1724,7 @@ void Client::Damage(Mob* other, int64 damage, uint16 spell_id, EQ::skills::Skill
 	}
 }
 
-bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillType attack_skill, KilledByTypes killed_by)
+bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillType attack_skill, KilledByTypes killed_by, bool is_buff_tic)
 {
 	if (!ClientFinishedLoading() || dead) {
 		return false;
@@ -1786,12 +1786,25 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 	/* Make Death Packet */
 	EQApplicationPacket app(OP_Death, sizeof(Death_Struct));
 	Death_Struct* d = (Death_Struct*)app.pBuffer;
+
+	// Convert last message to color to avoid duplicate damage messages
+	// that occur in these rare cases when this is the death blow.
+	if (IsValidSpell(spell) &&
+		(attack_skill == EQ::skills::SkillTigerClaw ||
+        (IsDamageSpell(spell) && IsDiscipline(spell)) ||
+		!is_buff_tic)) {
+			d->attack_skill = DamageTypeSpell;
+			d->spell_id = (is_buff_tic) ? UINT32_MAX : spell;
+	}
+	else {
+		d->attack_skill = SkillDamageTypes[attack_skill];
+		d->spell_id = UINT32_MAX;
+	}
+
 	d->spawn_id = GetID();
 	d->killer_id = killer_mob ? killer_mob->GetID() : 0;
 	d->corpseid = GetID();
 	d->bindzoneid = m_pp.binds[0].zone_id;
-	d->spell_id = IsValidSpell(spell) ? spell : 0xffffffff;
-	d->attack_skill = IsValidSpell(spell) ? 0xe7 : attack_skill;
 	d->damage = damage;
 	app.priority = 6;
 	entity_list.QueueClients(this, &app);
@@ -1946,7 +1959,7 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 			} else {
 				newexp -= exploss;
 			}
-			SetEXP(newexp, GetAAXP());
+			SetEXP(ExpSource::Death, newexp, GetAAXP());
 			//m_epp.perAA = 0;	//reset to no AA exp on death.
 		}
 
@@ -2380,7 +2393,7 @@ void NPC::Damage(Mob* other, int64 damage, uint16 spell_id, EQ::skills::SkillTyp
 	}
 }
 
-bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillType attack_skill, KilledByTypes killed_by)
+bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillType attack_skill, KilledByTypes killed_by, bool is_buff_tic)
 {
 	LogCombat(
 		"Fatal blow dealt by [{}] with [{}] damage, spell [{}], skill [{}]",
@@ -2493,12 +2506,24 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	auto app = new EQApplicationPacket(OP_Death, sizeof(Death_Struct));
 
 	auto d = (Death_Struct*) app->pBuffer;
+ 
+	// Convert last message to color to avoid duplicate damage messages
+	// that occur in these rare cases when this is the death blow.
+	if (IsValidSpell(spell) &&
+		(attack_skill == EQ::skills::SkillTigerClaw ||
+        (IsDamageSpell(spell) && IsDiscipline(spell)) ||
+		!is_buff_tic)) {
+			d->attack_skill = DamageTypeSpell;
+			d->spell_id = (is_buff_tic) ? UINT32_MAX : spell;
+	}
+	else {
+		d->attack_skill = SkillDamageTypes[attack_skill];
+		d->spell_id = UINT32_MAX;
+	}
 
 	d->spawn_id     = GetID();
 	d->killer_id    = killer_mob ? killer_mob->GetID() : 0;
 	d->bindzoneid   = 0;
-	d->spell_id     = UINT32_MAX;
-	d->attack_skill = SkillDamageTypes[attack_skill];
 	d->damage       = damage;
 	d->corpseid		= GetID();
 
@@ -2594,7 +2619,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 		if (killer_raid) {
 			if (!is_ldon_treasure && MerchantType == 0) {
-				killer_raid->SplitExp(final_exp, this);
+				killer_raid->SplitExp(ExpSource::Kill, final_exp, this);
 
 				if (
 					killer_mob &&
@@ -2660,7 +2685,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			}
 		} else if (give_exp_client->IsGrouped() && killer_group) {
 			if (!is_ldon_treasure && MerchantType == 0) {
-				killer_group->SplitExp(final_exp, this);
+					killer_group->SplitExp(ExpSource::Kill, final_exp, this);
 
 				if (
 					killer_mob &&
@@ -2724,7 +2749,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 				if (con_level != ConsiderColor::Gray) {
 					if (!GetOwner() || (GetOwner() && !GetOwner()->IsClient())) {
-						give_exp_client->AddEXP(final_exp, con_level);
+						give_exp_client->AddEXP(ExpSource::Kill, final_exp, con_level);
 
 						if (
 							killer_mob &&
@@ -4239,8 +4264,8 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 
 			if (!IsSaved && !TrySpellOnDeath()) {
 				SetHP(-500);
-
-				if (Death(attacker, damage, spell_id, skill_used)) {
+				// killedByType is clarified in Client::Death if we are client.
+				if (Death(attacker, damage, spell_id, skill_used, KilledByTypes::Killed_NPC, iBuffTic)) {
 					return;
 				}
 			}

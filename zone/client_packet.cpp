@@ -543,7 +543,7 @@ void Client::CompleteConnect()
 	LoadZoneFlags();
 	LoadAccountFlags();
 
-	/* Sets GM Flag if needed & Sends Petition Queue */
+	/* Sets GM flag if needed & Sends Petition Queue */
 	UpdateAdmin(false);
 
 	// Task Packets
@@ -709,23 +709,28 @@ void Client::CompleteConnect()
 			}
 			case SE_Levitate:
 			{
-				if (!zone->CanLevitate())
-				{
-					if (!GetGM())
-					{
+				if (!zone->CanLevitate()) {
+					if (!GetGM()) {
 						SendAppearancePacket(AppearanceType::FlyMode, 0);
 						BuffFadeByEffect(SE_Levitate);
 						Message(Chat::Red, "You can't levitate in this zone.");
+						break;
 					}
+
+					Message(Chat::White, "Your GM flag allows you to levitate in this zone.");
 				}
-				else {
-					if (spell.limit_value[x1] == 1) {
-						SendAppearancePacket(AppearanceType::FlyMode, EQ::constants::GravityBehavior::LevitateWhileRunning, true, true);
-					}
-					else {
-						SendAppearancePacket(AppearanceType::FlyMode, EQ::constants::GravityBehavior::Levitating, true, true);
-					}
-				}
+
+				SendAppearancePacket(
+					AppearanceType::FlyMode,
+					(
+						spell.limit_value[x1] == 1 ?
+							EQ::constants::GravityBehavior::LevitateWhileRunning :
+							EQ::constants::GravityBehavior::Levitating
+					),
+					true,
+					true
+				);
+
 				break;
 			}
 			case SE_AddMeleeProc:
@@ -1279,7 +1284,7 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 
 	/* Load Character Data */
 	query = fmt::format(
-		"SELECT `lfp`, `lfg`, `xtargets`, `firstlogon`, `guild_id`, `rank`, `exp_enabled`, `tribute_enable` FROM `character_data` LEFT JOIN `guild_members` ON `id` = `char_id` WHERE `id` = {}",
+		"SELECT `lfp`, `lfg`, `xtargets`, `firstlogon`, `guild_id`, `rank`, `exp_enabled`, `tribute_enable`, `extra_haste` FROM `character_data` LEFT JOIN `guild_members` ON `id` = `char_id` WHERE `id` = {}",
 		cid
 	);
 	auto results = database.QueryDatabase(query);
@@ -1290,7 +1295,8 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 			guild_tribute_opt_in = row[7] ? Strings::ToBool(row[7]) : 0;
 		}
 
-		SetEXPEnabled(atobool(row[6]));
+		SetEXPEnabled(Strings::ToBool(row[6]));
+		SetExtraHaste(Strings::ToInt(row[8]), false);
 
 		if (LFP) { LFP = Strings::ToInt(row[0]); }
 		if (LFG) { LFG = Strings::ToInt(row[1]); }
@@ -2127,8 +2133,19 @@ void Client::Handle_OP_AdventureMerchantPurchase(const EQApplicationPacket *app)
 	if (item->MaxCharges != 0)
 		charges = item->MaxCharges;
 
-	if (RuleB(Character, EnableDiscoveredItems) && !GetGM() && !IsDiscovered(item->ID)) {
-		DiscoverItem(item->ID);
+	if (RuleB(Character, EnableDiscoveredItems) && !IsDiscovered(item->ID)) {
+		if (!GetGM()) {
+			DiscoverItem(item->ID);
+		} else {
+			const std::string& item_link = database.CreateItemLink(item->ID);
+			Message(
+				Chat::White,
+				fmt::format(
+					"Your GM flag prevents {} from being added to discovered items.",
+					item_link
+				).c_str()
+			);
+		}
 	}
 
 	EQ::ItemInstance *inst = database.CreateItem(item, charges);
@@ -2682,8 +2699,19 @@ void Client::Handle_OP_AltCurrencyPurchase(const EQApplicationPacket *app)
 			RecordPlayerEventLog(PlayerEvent::MERCHANT_PURCHASE, e);
 		}
 
-		if (RuleB(Character, EnableDiscoveredItems) && !GetGM() && !IsDiscovered(item->ID)) {
-			DiscoverItem(item->ID);
+		if (RuleB(Character, EnableDiscoveredItems) && !IsDiscovered(item->ID)) {
+			if (!GetGM()) {
+				DiscoverItem(item->ID);
+			} else {
+				const std::string& item_link = database.CreateItemLink(item->ID);
+				Message(
+					Chat::White,
+					fmt::format(
+						"Your GM flag prevents {} from being added to discovered items.",
+						item_link
+					).c_str()
+				);
+			}
 		}
 
 		EQ::ItemInstance *inst = database.CreateItem(item, charges);
@@ -14013,16 +14041,21 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 
 	EQ::ItemInstance* inst = database.CreateItem(item, charges);
 
-	int SinglePrice = 0;
-	if (RuleB(Merchant, UsePriceMod))
-		SinglePrice = (item->Price * (RuleR(Merchant, SellCostMod)) * item->SellRate * Client::CalcPriceMod(tmp, false));
-	else
-		SinglePrice = (item->Price * (RuleR(Merchant, SellCostMod)) * item->SellRate);
+	int single_price = (item->Price * item->SellRate);
+
+	// Don't use SellCostMod if using UseClassicPriceMod
+	if (!RuleB(Merchant, UseClassicPriceMod)) {
+		single_price *= RuleR(Merchant, SellCostMod);
+	}
+
+	if (RuleB(Merchant, UsePriceMod)) {
+		single_price *= Client::CalcPriceMod(tmp, false);
+	}
 
 	if (item->MaxCharges > 1)
-		mpo->price = SinglePrice;
+		mpo->price = single_price;
 	else
-		mpo->price = SinglePrice * mp->quantity;
+		mpo->price = single_price * mp->quantity;
 
 	if (mpo->price < 0)
 	{
@@ -14103,7 +14136,7 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 		else {
 			// Update the charges/quantity in the merchant window
 			inst->SetCharges(new_charges);
-			inst->SetPrice(SinglePrice);
+			inst->SetPrice(single_price);
 			inst->SetMerchantSlot(mp->itemslot);
 			inst->SetMerchantCount(new_charges);
 
@@ -14214,8 +14247,20 @@ void Client::Handle_OP_ShopPlayerBuy(const EQApplicationPacket *app)
 		RecordPlayerEventLog(PlayerEvent::MERCHANT_PURCHASE, e);
 	}
 
-	if (RuleB(Character, EnableDiscoveredItems) && !GetGM() && !IsDiscovered(item_id)) {
-		DiscoverItem(item_id);
+
+	if (RuleB(Character, EnableDiscoveredItems) && !IsDiscovered(item_id)) {
+		if (!GetGM()) {
+			DiscoverItem(item_id);
+		} else {
+			const std::string& item_link = database.CreateItemLink(item_id);
+			Message(
+				Chat::White,
+				fmt::format(
+					"Your GM flag prevents {} from being added to discovered items.",
+					item_link
+				).c_str()
+			);
+		}
 	}
 
 	t1.stop();
@@ -14270,7 +14315,15 @@ void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)
 
 	if (RuleB(Merchant, UsePriceMod)) {
 		for (i = 1; i <= cost_quantity; i++) {
-			price = (uint32)((item->Price * i)*(RuleR(Merchant, BuyCostMod))*Client::CalcPriceMod(vendor, true) + 0.5); // need to round up, because client does it automatically when displaying price
+			price = (uint32)(item->Price * i) * Client::CalcPriceMod(vendor, true);
+
+			// Don't use SellCostMod if using UseClassicPriceMod
+			if (!RuleB(Merchant, UseClassicPriceMod)) {
+				price *= RuleR(Merchant, BuyCostMod);
+			}
+
+			price += 0.5; // need to round up, because client does it automatically when displaying price
+
 			if (price > 4000000000) {
 				cost_quantity = i;
 				mp->quantity = i;
@@ -14320,11 +14373,12 @@ void Client::Handle_OP_ShopPlayerSell(const EQApplicationPacket *app)
 					break;
 				}
 
-				uint32 price = (
-					item->Price *
-					RuleR(Merchant, SellCostMod) *
-					item->SellRate
-				);
+				uint32 price = (item->Price * item->SellRate);
+
+				// Don't use SellCostMod if using UseClassicPriceMod
+				if (!RuleB(Merchant, UseClassicPriceMod)) {
+					price *= RuleR(Merchant, SellCostMod);
+				}
 
 				if (RuleB(Merchant, UsePriceMod)) {
 					price *= Client::CalcPriceMod(vendor, false);
@@ -14531,11 +14585,18 @@ void Client::Handle_OP_ShopRequest(const EQApplicationPacket *app)
 	mco->command     = action; // Merchant command 0x01 = open
 	mco->tab_display = tabs_to_display;
 
+	float buy_cost_mod = 1;
+
+	// Only use the BuyCostMod if we're not using the classic function.
+	if (!RuleB(Merchant, UseClassicPriceMod)) {
+		buy_cost_mod = RuleR(Merchant, BuyCostMod);
+	}
+
 	if (RuleB(Merchant, UsePriceMod)) {
-		mco->rate = 1 / ((RuleR(Merchant, BuyCostMod)) * Client::CalcPriceMod(tmp, true)); // works
+		mco->rate = 1 / (buy_cost_mod * Client::CalcPriceMod(tmp, true));
 	}
 	else {
-		mco->rate = 1 / (RuleR(Merchant, BuyCostMod));
+		mco->rate = 1 / buy_cost_mod;
 	}
 
 	outapp->priority = 6;

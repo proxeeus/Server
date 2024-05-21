@@ -1218,6 +1218,7 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	e.race            = n->GetRace();
 	e.class_          = n->GetClass();
 	e.hp              = n->GetMaxHP();
+	e.mana            = n->GetMaxMana();
 	e.gender          = n->GetGender();
 	e.texture         = n->GetTexture();
 	e.helmtexture     = n->GetHelmTexture();
@@ -1225,8 +1226,50 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	e.loottable_id    = n->GetLoottableID();
 	e.merchant_id     = n->MerchantType;
 	e.runspeed        = n->GetRunspeed();
-	e.prim_melee_type = static_cast<uint8_t>(EQ::skills::SkillHandtoHand);
-	e.sec_melee_type  = static_cast<uint8_t>(EQ::skills::SkillHandtoHand);
+	e.walkspeed       = n->GetWalkspeed();
+	e.prim_melee_type = n->GetPrimSkill();
+	e.sec_melee_type  = n->GetSecSkill();
+	
+	e.bodytype        = n->GetBodyType();
+	e.npc_faction_id  = n->GetNPCFactionID();
+	e.aggroradius     = n->GetAggroRange();
+	e.assistradius    = n->GetAssistRange();
+
+	e.AC              = n->GetAC();
+	e.ATK             = n->GetATK();
+	e.STR             = n->GetSTR();
+	e.STA             = n->GetSTA();
+	e.AGI             = n->GetAGI();
+	e.DEX             = n->GetDEX();
+	e.WIS             = n->GetWIS();
+	e._INT            = n->GetINT();
+	e.CHA             = n->GetCHA();
+	
+	e.PR              = n->GetPR();
+	e.MR              = n->GetMR();
+	e.DR              = n->GetDR();
+	e.FR              = n->GetFR();
+	e.CR              = n->GetCR();
+	e.Corrup          = n->GetCorrup();
+	e.PhR             = n->GetPhR();
+
+	e.Accuracy        = n->GetAccuracyRating();
+	e.slow_mitigation = n->GetSlowMitigation();
+	e.mindmg          = n->GetMinDMG();
+	e.maxdmg          = n->GetMaxDMG();
+	e.hp_regen_rate   = n->GetHPRegen();
+	e.hp_regen_per_second = n->GetHPRegenPerSecond();
+	//e.attack_delay    = n->GetAttackDelay(); // Attack delay isn't copying correctly, 3000 becomes 18,400 in the copied NPC?
+	e.spellscale      = n->GetSpellScale();
+	e.healscale       = n->GetHealScale();
+	e.Avoidance       = n->GetAvoidanceRating();
+	e.heroic_strikethrough = n->GetHeroicStrikethrough();
+	
+	e.see_hide        = n->SeeHide();
+	e.see_improved_hide = n->SeeImprovedHide();
+	e.see_invis       = n->SeeInvisible();
+	e.see_invis_undead = n->SeeInvisibleUndead();
+
 
 	e = NpcTypesRepository::InsertOne(*this, e);
 
@@ -1237,9 +1280,10 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	auto sg = SpawngroupRepository::NewEntity();
 
 	sg.name = fmt::format(
-		"{}-{}",
+		"{}_{}_{}",
 		zone,
-		n->GetName()
+		Strings::Escape(n->GetName()),
+		Timer::GetCurrentTime()
 	);
 
 	sg = SpawngroupRepository::InsertOne(*this, sg);
@@ -1258,7 +1302,7 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	s2.x            = n->GetX();
 	s2.y            = n->GetY();
 	s2.z            = n->GetZ();
-	s2.respawntime  = 1200;
+	s2.respawntime  = extra > 0 ? extra : 1200;
 	s2.heading      = n->GetHeading();
 	s2.spawngroupID = sg.id;
 
@@ -1370,12 +1414,17 @@ uint32 ZoneDatabase::UpdateNPCTypeAppearance(Client* c, NPC* n)
 	return updated;
 }
 
-uint32 ZoneDatabase::DeleteSpawnLeaveInNPCTypeTable(const std::string& zone, Client* c, NPC* n)
+uint32 ZoneDatabase::DeleteSpawnLeaveInNPCTypeTable(const std::string& zone, Client* c, NPC* n, uint32 remove_spawngroup_id)
 {
+	if (!n->respawn2) {
+		return 0;
+	}
+
 	const auto& l = Spawn2Repository::GetWhere(
 		*this,
 		fmt::format(
-			"`zone` = '{}' AND `spawngroupID` = {}",
+			"`id` = {} AND `zone` = '{}' AND `spawngroupID` = {}",
+			n->respawn2->GetID(),
 			zone,
 			n->GetSpawnGroupId()
 		)
@@ -1391,12 +1440,14 @@ uint32 ZoneDatabase::DeleteSpawnLeaveInNPCTypeTable(const std::string& zone, Cli
 		return 0;
 	}
 
-	if (!SpawngroupRepository::DeleteOne(*this, e.spawngroupID)) {
-		return 0;
-	}
+	if (remove_spawngroup_id > 0) {
+		if (!SpawngroupRepository::DeleteOne(*this, e.spawngroupID)) {
+			return 0;
+		}
 
-	if (!SpawnentryRepository::DeleteOne(*this, e.spawngroupID)) {
-		return 0;
+		if (!SpawnentryRepository::DeleteOne(*this, e.spawngroupID)) {
+			return 0;
+		}
 	}
 
 	return 1;
@@ -1449,7 +1500,7 @@ uint32 ZoneDatabase::AddSpawnFromSpawnGroup(
 	uint32 instance_version,
 	Client* c,
 	NPC* n,
-	uint32 spawngroup_id
+	uint32 extra
 )
 {
 	auto e = Spawn2Repository::NewEntity();
@@ -1460,8 +1511,8 @@ uint32 ZoneDatabase::AddSpawnFromSpawnGroup(
 	e.y            = c->GetY();
 	e.z            = c->GetZ();
 	e.heading      = c->GetHeading();
-	e.respawntime  = 120;
-	e.spawngroupID = spawngroup_id;
+	e.respawntime  = extra > 0 ? extra : 1200;
+	e.spawngroupID = n->GetSpawnGroupId();
 
 	e = Spawn2Repository::InsertOne(*this, e);
 
@@ -1538,7 +1589,7 @@ uint32 ZoneDatabase::NPCSpawnDB(
 			return UpdateNPCTypeAppearance(c, n);
 		}
 		case NPCSpawnTypes::RemoveSpawn: {
-			return DeleteSpawnLeaveInNPCTypeTable(zone, c, n);
+			return DeleteSpawnLeaveInNPCTypeTable(zone, c, n, extra);
 		}
 		case NPCSpawnTypes::DeleteSpawn: {
 			return DeleteSpawnRemoveFromNPCTypeTable(zone, instance_version, c, n);

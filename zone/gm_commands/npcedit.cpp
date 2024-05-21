@@ -1579,6 +1579,24 @@ void command_npcedit(Client *c, const Seperator *sep)
 			);
 			return;
 		}
+	} else if (!strcasecmp(sep->arg[1], "is_parcel_merchant")) {
+		if (sep->IsNumber(2)) {
+			const bool is_parcel_merchant = static_cast<uint8_t>(Strings::ToUnsignedInt(sep->arg[2]));
+
+			n.is_parcel_merchant = is_parcel_merchant;
+
+			d = fmt::format(
+				"{} will {} be a Parcel Merchant.",
+				npc_id_string,
+				is_parcel_merchant ? "now" : "no longer"
+			);
+		} else {
+			c->Message(
+				Chat::White,
+				"Usage: #npcedit is_parcel_merchant [Flag] - Sets an NPC's Parcel Merchant Flag [0 = False, 1 = True]"
+			);
+			return;
+		}
 	} else if (!strcasecmp(sep->arg[1], "setanimation")) {
 		if (sep->IsNumber(2)) {
 			auto animation_id   = Strings::ToUnsignedInt(sep->arg[2]);
@@ -1648,7 +1666,7 @@ void command_npcedit(Client *c, const Seperator *sep)
 	} else if (!strcasecmp(sep->arg[1], "set_grid")) {
 		if (sep->IsNumber(2)) {
 			const uint32 grid_id = Strings::ToUnsignedInt(sep->arg[2]);
-			if (grid_id) {
+			if (grid_id >= 0) {
 				d = fmt::format(
 					"{} now has a Grid ID of {} on Spawn Group ID {}.",
 					npc_id_string,
@@ -1656,14 +1674,15 @@ void command_npcedit(Client *c, const Seperator *sep)
 					Strings::Commify(std::to_string(t->GetSpawnGroupId()))
 				);
 				auto query = fmt::format(
-					"UPDATE spawn2 SET pathgrid = {} WHERE spawngroupID = {} AND version = {}",
+					"UPDATE spawn2 SET pathgrid = {} WHERE spawngroupID = {} AND version = {} AND zone = '{}'",
 					grid_id,
 					t->GetSpawnGroupId(),
-					zone->GetInstanceVersion()
+					zone->GetInstanceVersion(),
+					zone->GetShortName()
 				);
 				content_db.QueryDatabase(query);
 			} else {
-				c->Message(Chat::White, "Grid ID must be greater than 0.");
+				c->Message(Chat::White, "Grid ID must be greater than or equal to 0.");
 				return;
 			}
 		} else {
@@ -1791,6 +1810,7 @@ void SendNPCEditSubCommands(Client *c)
 	c->Message(Chat::White, "Usage: #npcedit heroic_strikethrough [Heroic Strikethrough] - Sets an NPC's Heroic Strikethrough");
 	c->Message(Chat::White, "Usage: #npcedit faction_amount [Faction Amount] - Sets an NPC's Faction Amount");
 	c->Message(Chat::White, "Usage: #npcedit keeps_sold_items [Flag] - Sets an NPC's Keeps Sold Items Flag [0 = False, 1 = True]");
+	c->Message(Chat::White, "Usage: #npcedit is_parcel_merchant [Flag] - Sets an NPC's Parcel Merchant Flag [0 = False, 1 = True]");
 	c->Message(Chat::White, "Usage: #npcedit setanimation [Animation ID] - Sets an NPC's Animation on Spawn (Stored in spawn2 table)");
 	c->Message(Chat::White, "Usage: #npcedit respawntime [Respawn Time] - Sets an NPC's Respawn Timer in Seconds (Stored in spawn2 table)");
 	c->Message(Chat::White, "Usage: #npcedit set_grid [Grid ID] - Sets an NPC's Grid ID");

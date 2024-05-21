@@ -2354,6 +2354,13 @@ const uint16 BotDatabase::GetBotRaceByID(const uint32 bot_id)
 	return e.bot_id ? e.race : Race::Doug;
 }
 
+const int BotDatabase::GetBotExtraHasteByID(const uint32 bot_id)
+{
+	const auto& e = BotDataRepository::FindOne(database, bot_id);
+
+	return e.bot_id ? e.extra_haste : 0;
+}
+
 int BotDatabase::LoadBotGuild(uint32 bot_id)
 {
 	if (!bot_id >= 1)
