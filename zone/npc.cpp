@@ -76,7 +76,7 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 		  npc_type_data->gender,
 		  npc_type_data->race,
 		  npc_type_data->class_,
-		  (bodyType) npc_type_data->bodytype,
+		  npc_type_data->bodytype,
 		  npc_type_data->deity,
 		  npc_type_data->level,
 		  npc_type_data->npc_id,
@@ -451,7 +451,7 @@ NPC::NPC(const NPCType *npc_type_data, Spawn2 *in_respawn, const glm::vec4 &posi
 
 	RestoreMana();
 
-	if (GetBodyType() == BT_Animal && !RuleB(NPC, AnimalsOpenDoors)) {
+	if (GetBodyType() == BodyType::Animal && !RuleB(NPC, AnimalsOpenDoors)) {
 		m_can_open_doors = false;
 	}
 
@@ -582,7 +582,7 @@ bool NPC::Process()
 		Mob* owner = entity_list.GetMob(ownerid);
 		if (owner != 0)
 		{
-			//if(GetBodyType() != BT_SwarmPet)
+			//if(GetBodyType() != BodyType::SwarmPet)
 			// owner->SetPetID(0);
 			ownerid = 0;
 			petid = 0;
@@ -776,7 +776,7 @@ bool NPC::Process()
 		ProcessEnrage();
 
 		/* Don't keep running the check every second if we don't have enrage */
-		if (!GetSpecialAbility(SPECATK_ENRAGE)) {
+		if (!GetSpecialAbility(SpecialAbility::Enrage)) {
 			enraged_timer.Disable();
 		}
 	}
@@ -1192,7 +1192,14 @@ NPC* NPC::SpawnNPC(const char* spawncommand, const glm::vec4& position, Client* 
 			}
 
 			if (npc->bodytype) {
-				client->Message(Chat::White, fmt::format("Body Type | {} ({})", EQ::constants::GetBodyTypeName(npc->bodytype), npc->bodytype).c_str());
+				client->Message(
+					Chat::White,
+					fmt::format(
+						"Body Type | {} ({})",
+						BodyType::GetName(npc->bodytype),
+						npc->bodytype
+					).c_str()
+				);
 			}
 
 			client->Message(Chat::White, "New NPC spawned!");
@@ -1229,7 +1236,7 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	e.walkspeed       = n->GetWalkspeed();
 	e.prim_melee_type = n->GetPrimSkill();
 	e.sec_melee_type  = n->GetSecSkill();
-	
+
 	e.bodytype        = n->GetBodyType();
 	e.npc_faction_id  = n->GetNPCFactionID();
 	e.aggroradius     = n->GetAggroRange();
@@ -1244,7 +1251,7 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	e.WIS             = n->GetWIS();
 	e._INT            = n->GetINT();
 	e.CHA             = n->GetCHA();
-	
+
 	e.PR              = n->GetPR();
 	e.MR              = n->GetMR();
 	e.DR              = n->GetDR();
@@ -1264,7 +1271,7 @@ uint32 ZoneDatabase::CreateNewNPCCommand(
 	e.healscale       = n->GetHealScale();
 	e.Avoidance       = n->GetAvoidanceRating();
 	e.heroic_strikethrough = n->GetHeroicStrikethrough();
-	
+
 	e.see_hide        = n->SeeHide();
 	e.see_improved_hide = n->SeeImprovedHide();
 	e.see_invis       = n->SeeInvisible();
@@ -1845,7 +1852,7 @@ void NPC::Disarm(Client* client, int chance) {
 			int matslot = eslot == EQ::invslot::slotPrimary ? EQ::textures::weaponPrimary : EQ::textures::weaponSecondary;
 			if (matslot != -1)
 				SendWearChange(matslot);
-			if ((CastToMob()->GetBodyType() == BT_Humanoid || CastToMob()->GetBodyType() == BT_Summoned) && eslot == EQ::invslot::slotPrimary)
+			if ((CastToMob()->GetBodyType() == BodyType::Humanoid || CastToMob()->GetBodyType() == BodyType::Summoned) && eslot == EQ::invslot::slotPrimary)
 				Say("Ahh! My weapon!");
 			client->MessageString(Chat::Skills, DISARM_SUCCESS, GetCleanName());
 			if (chance != 1000)
@@ -1872,127 +1879,127 @@ void Mob::NPCSpecialAttacks(const char* parse, int permtag, bool reset, bool rem
 		switch(*parse)
 		{
 			case 'E':
-				SetSpecialAbility(SPECATK_ENRAGE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::Enrage, remove ? 0 : 1);
 				break;
 			case 'F':
-				SetSpecialAbility(SPECATK_FLURRY, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::Flurry, remove ? 0 : 1);
 				break;
 			case 'R':
-				SetSpecialAbility(SPECATK_RAMPAGE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::Rampage, remove ? 0 : 1);
 				break;
 			case 'r':
-				SetSpecialAbility(SPECATK_AREA_RAMPAGE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::AreaRampage, remove ? 0 : 1);
 				break;
 			case 'S':
 				if(remove) {
-					SetSpecialAbility(SPECATK_SUMMON, 0);
-					StopSpecialAbilityTimer(SPECATK_SUMMON);
+					SetSpecialAbility(SpecialAbility::Summon, 0);
+					StopSpecialAbilityTimer(SpecialAbility::Summon);
 				} else {
-					SetSpecialAbility(SPECATK_SUMMON, 1);
+					SetSpecialAbility(SpecialAbility::Summon, 1);
 				}
 			break;
 			case 'T':
-				SetSpecialAbility(SPECATK_TRIPLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::TripleAttack, remove ? 0 : 1);
 				break;
 			case 'Q':
 				//quad requires triple to work properly
 				if(remove) {
-					SetSpecialAbility(SPECATK_QUAD, 0);
+					SetSpecialAbility(SpecialAbility::QuadrupleAttack, 0);
 				} else {
-					SetSpecialAbility(SPECATK_TRIPLE, 1);
-					SetSpecialAbility(SPECATK_QUAD, 1);
+					SetSpecialAbility(SpecialAbility::TripleAttack, 1);
+					SetSpecialAbility(SpecialAbility::QuadrupleAttack, 1);
 					}
 				break;
 			case 'b':
-				SetSpecialAbility(SPECATK_BANE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::BaneAttack, remove ? 0 : 1);
 				break;
 			case 'm':
-				SetSpecialAbility(SPECATK_MAGICAL, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MagicalAttack, remove ? 0 : 1);
 				break;
 			case 'U':
-				SetSpecialAbility(UNSLOWABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::SlowImmunity, remove ? 0 : 1);
 				break;
 			case 'M':
-				SetSpecialAbility(UNMEZABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MesmerizeImmunity, remove ? 0 : 1);
 				break;
 			case 'C':
-				SetSpecialAbility(UNCHARMABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::CharmImmunity, remove ? 0 : 1);
 				break;
 			case 'N':
-				SetSpecialAbility(UNSTUNABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::StunImmunity, remove ? 0 : 1);
 				break;
 			case 'I':
-				SetSpecialAbility(UNSNAREABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::SnareImmunity, remove ? 0 : 1);
 				break;
 			case 'D':
-				SetSpecialAbility(UNFEARABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::FearImmunity, remove ? 0 : 1);
 				break;
 			case 'K':
-				SetSpecialAbility(UNDISPELLABLE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::DispellImmunity, remove ? 0 : 1);
 				break;
 			case 'A':
-				SetSpecialAbility(IMMUNE_MELEE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MeleeImmunity, remove ? 0 : 1);
 				break;
 			case 'B':
-				SetSpecialAbility(IMMUNE_MAGIC, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MagicImmunity, remove ? 0 : 1);
 				break;
 			case 'f':
-				SetSpecialAbility(IMMUNE_FLEEING, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::FleeingImmunity, remove ? 0 : 1);
 				break;
 			case 'O':
-				SetSpecialAbility(IMMUNE_MELEE_EXCEPT_BANE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MeleeImmunityExceptBane, remove ? 0 : 1);
 				break;
 			case 'W':
-				SetSpecialAbility(IMMUNE_MELEE_NONMAGICAL, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::MeleeImmunityExceptMagical, remove ? 0 : 1);
 				break;
 			case 'H':
-				SetSpecialAbility(IMMUNE_AGGRO, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::AggroImmunity, remove ? 0 : 1);
 				break;
 			case 'G':
-				SetSpecialAbility(IMMUNE_AGGRO_ON, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::BeingAggroImmunity, remove ? 0 : 1);
 				break;
 			case 'g':
-				SetSpecialAbility(IMMUNE_CASTING_FROM_RANGE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::CastingFromRangeImmunity, remove ? 0 : 1);
 				break;
 			case 'd':
-				SetSpecialAbility(IMMUNE_FEIGN_DEATH, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::FeignDeathImmunity, remove ? 0 : 1);
 				break;
 			case 'Y':
-				SetSpecialAbility(SPECATK_RANGED_ATK, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::RangedAttack, remove ? 0 : 1);
 				break;
 			case 'L':
-				SetSpecialAbility(SPECATK_INNATE_DW, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::DualWield, remove ? 0 : 1);
 				break;
 			case 't':
-				SetSpecialAbility(NPC_TUNNELVISION, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::TunnelVision, remove ? 0 : 1);
 				break;
 			case 'n':
-				SetSpecialAbility(NPC_NO_BUFFHEAL_FRIENDS, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::NoBuffHealFriends, remove ? 0 : 1);
 				break;
 			case 'p':
-				SetSpecialAbility(IMMUNE_PACIFY, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::PacifyImmunity, remove ? 0 : 1);
 				break;
 			case 'J':
-				SetSpecialAbility(LEASH, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::Leash, remove ? 0 : 1);
 				break;
 			case 'j':
-				SetSpecialAbility(TETHER, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::Tether, remove ? 0 : 1);
 				break;
 			case 'o':
-				SetSpecialAbility(DESTRUCTIBLE_OBJECT, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::DestructibleObject, remove ? 0 : 1);
 				SetDestructibleObject(remove ? true : false);
 				break;
 			case 'Z':
-				SetSpecialAbility(NO_HARM_FROM_CLIENT, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::HarmFromClientImmunity, remove ? 0 : 1);
 				break;
 			case 'i':
-				SetSpecialAbility(IMMUNE_TAUNT, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::TauntImmunity, remove ? 0 : 1);
 				break;
 			case 'e':
-				SetSpecialAbility(ALWAYS_FLEE, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::AlwaysFlee, remove ? 0 : 1);
 				break;
 			case 'h':
-				SetSpecialAbility(FLEE_PERCENT, remove ? 0 : 1);
+				SetSpecialAbility(SpecialAbility::FleePercent, remove ? 0 : 1);
 				break;
 
 			default:
@@ -2019,147 +2026,147 @@ bool Mob::HasNPCSpecialAtk(const char* parse) {
 		switch(*parse)
 		{
 			case 'E':
-				if (!GetSpecialAbility(SPECATK_ENRAGE))
+				if (!GetSpecialAbility(SpecialAbility::Enrage))
 					HasAllAttacks = false;
 				break;
 			case 'F':
-				if (!GetSpecialAbility(SPECATK_FLURRY))
+				if (!GetSpecialAbility(SpecialAbility::Flurry))
 					HasAllAttacks = false;
 				break;
 			case 'R':
-				if (!GetSpecialAbility(SPECATK_RAMPAGE))
+				if (!GetSpecialAbility(SpecialAbility::Rampage))
 					HasAllAttacks = false;
 				break;
 			case 'r':
-				if (!GetSpecialAbility(SPECATK_AREA_RAMPAGE))
+				if (!GetSpecialAbility(SpecialAbility::AreaRampage))
 					HasAllAttacks = false;
 				break;
 			case 'S':
-				if (!GetSpecialAbility(SPECATK_SUMMON))
+				if (!GetSpecialAbility(SpecialAbility::Summon))
 					HasAllAttacks = false;
 				break;
 			case 'T':
-				if (!GetSpecialAbility(SPECATK_TRIPLE))
+				if (!GetSpecialAbility(SpecialAbility::TripleAttack))
 					HasAllAttacks = false;
 				break;
 			case 'Q':
-				if (!GetSpecialAbility(SPECATK_QUAD))
+				if (!GetSpecialAbility(SpecialAbility::QuadrupleAttack))
 					HasAllAttacks = false;
 				break;
 			case 'b':
-				if (!GetSpecialAbility(SPECATK_BANE))
+				if (!GetSpecialAbility(SpecialAbility::BaneAttack))
 					HasAllAttacks = false;
 				break;
 			case 'm':
-				if (!GetSpecialAbility(SPECATK_MAGICAL))
+				if (!GetSpecialAbility(SpecialAbility::MagicalAttack))
 					HasAllAttacks = false;
 				break;
 			case 'U':
-				if (!GetSpecialAbility(UNSLOWABLE))
+				if (!GetSpecialAbility(SpecialAbility::SlowImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'M':
-				if (!GetSpecialAbility(UNMEZABLE))
+				if (!GetSpecialAbility(SpecialAbility::MesmerizeImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'C':
-				if (!GetSpecialAbility(UNCHARMABLE))
+				if (!GetSpecialAbility(SpecialAbility::CharmImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'N':
-				if (!GetSpecialAbility(UNSTUNABLE))
+				if (!GetSpecialAbility(SpecialAbility::StunImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'I':
-				if (!GetSpecialAbility(UNSNAREABLE))
+				if (!GetSpecialAbility(SpecialAbility::SnareImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'D':
-				if (!GetSpecialAbility(UNFEARABLE))
+				if (!GetSpecialAbility(SpecialAbility::FearImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'A':
-				if (!GetSpecialAbility(IMMUNE_MELEE))
+				if (!GetSpecialAbility(SpecialAbility::MeleeImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'B':
-				if (!GetSpecialAbility(IMMUNE_MAGIC))
+				if (!GetSpecialAbility(SpecialAbility::MagicImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'f':
-				if (!GetSpecialAbility(IMMUNE_FLEEING))
+				if (!GetSpecialAbility(SpecialAbility::FleeingImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'O':
-				if (!GetSpecialAbility(IMMUNE_MELEE_EXCEPT_BANE))
+				if (!GetSpecialAbility(SpecialAbility::MeleeImmunityExceptBane))
 					HasAllAttacks = false;
 				break;
 			case 'W':
-				if (!GetSpecialAbility(IMMUNE_MELEE_NONMAGICAL))
+				if (!GetSpecialAbility(SpecialAbility::MeleeImmunityExceptMagical))
 					HasAllAttacks = false;
 				break;
 			case 'H':
-				if (!GetSpecialAbility(IMMUNE_AGGRO))
+				if (!GetSpecialAbility(SpecialAbility::AggroImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'G':
-				if (!GetSpecialAbility(IMMUNE_AGGRO_ON))
+				if (!GetSpecialAbility(SpecialAbility::BeingAggroImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'g':
-				if (!GetSpecialAbility(IMMUNE_CASTING_FROM_RANGE))
+				if (!GetSpecialAbility(SpecialAbility::CastingFromRangeImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'd':
-				if (!GetSpecialAbility(IMMUNE_FEIGN_DEATH))
+				if (!GetSpecialAbility(SpecialAbility::FeignDeathImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'Y':
-				if (!GetSpecialAbility(SPECATK_RANGED_ATK))
+				if (!GetSpecialAbility(SpecialAbility::RangedAttack))
 					HasAllAttacks = false;
 				break;
 			case 'L':
-				if (!GetSpecialAbility(SPECATK_INNATE_DW))
+				if (!GetSpecialAbility(SpecialAbility::DualWield))
 					HasAllAttacks = false;
 				break;
 			case 't':
-				if (!GetSpecialAbility(NPC_TUNNELVISION))
+				if (!GetSpecialAbility(SpecialAbility::TunnelVision))
 					HasAllAttacks = false;
 				break;
 			case 'n':
-				if (!GetSpecialAbility(NPC_NO_BUFFHEAL_FRIENDS))
+				if (!GetSpecialAbility(SpecialAbility::NoBuffHealFriends))
 					HasAllAttacks = false;
 				break;
 			case 'p':
-				if(!GetSpecialAbility(IMMUNE_PACIFY))
+				if(!GetSpecialAbility(SpecialAbility::PacifyImmunity))
 					HasAllAttacks = false;
 				break;
 			case 'J':
-				if(!GetSpecialAbility(LEASH))
+				if(!GetSpecialAbility(SpecialAbility::Leash))
 					HasAllAttacks = false;
 				break;
 			case 'j':
-				if(!GetSpecialAbility(TETHER))
+				if(!GetSpecialAbility(SpecialAbility::Tether))
 					HasAllAttacks = false;
 				break;
 			case 'o':
-				if(!GetSpecialAbility(DESTRUCTIBLE_OBJECT))
+				if(!GetSpecialAbility(SpecialAbility::DestructibleObject))
 				{
 					HasAllAttacks = false;
 					SetDestructibleObject(false);
 				}
 				break;
 			case 'Z':
-				if(!GetSpecialAbility(NO_HARM_FROM_CLIENT)){
+				if(!GetSpecialAbility(SpecialAbility::HarmFromClientImmunity)){
 					HasAllAttacks = false;
 				}
 				break;
 			case 'e':
-				if(!GetSpecialAbility(ALWAYS_FLEE))
+				if(!GetSpecialAbility(SpecialAbility::AlwaysFlee))
 					HasAllAttacks = false;
 				break;
 			case 'h':
-				if(!GetSpecialAbility(FLEE_PERCENT))
+				if(!GetSpecialAbility(SpecialAbility::FleePercent))
 					HasAllAttacks = false;
 				break;
 			default:
@@ -2227,7 +2234,7 @@ void NPC::PetOnSpawn(NewSpawn_Struct* ns)
 
 		//Not recommended if using above (However, this will work better on older clients).
 		if (RuleB(Pets, UnTargetableSwarmPet)) {
-			ns->spawn.bodytype = BT_NoTarget;
+			ns->spawn.bodytype = BodyType::NoTarget;
 		}
 
 		if (
@@ -3087,7 +3094,7 @@ int NPC::GetScore()
         if(HasNPCSpecialAtk("S")) { spccontrib++; }    //Summon
         if(HasNPCSpecialAtk("T")) { spccontrib += 2; } //Triple
         if(HasNPCSpecialAtk("Q")) { spccontrib += 3; } //Quad
-        if(HasNPCSpecialAtk("U")) { spccontrib += 5; } //Unslowable
+        if(HasNPCSpecialAtk("U")) { spccontrib += 5; } //SpecialAbility::SlowImmunity
         if(HasNPCSpecialAtk("L")) { spccontrib++; }    //Innate Dual Wield
     }
 
@@ -3321,7 +3328,7 @@ bool NPC::AICheckCloseBeneficialSpells(
 		return false;
 	}
 
-	if (caster->GetSpecialAbility(NPC_NO_BUFFHEAL_FRIENDS)) {
+	if (caster->GetSpecialAbility(SpecialAbility::NoBuffHealFriends)) {
 		return false;
 	}
 
@@ -3832,56 +3839,56 @@ void NPC::DescribeSpecialAbilities(Client* c)
 
 	// These abilities are simple on/off flags
 	static const std::vector<uint32> toggleable_special_abilities = {
-		SPECATK_TRIPLE,
-		SPECATK_QUAD,
-		SPECATK_INNATE_DW,
-		SPECATK_BANE,
-		SPECATK_MAGICAL,
-		UNSLOWABLE,
-		UNMEZABLE,
-		UNCHARMABLE,
-		UNSTUNABLE,
-		UNSNAREABLE,
-		UNFEARABLE,
-		UNDISPELLABLE,
-		IMMUNE_MELEE,
-		IMMUNE_MAGIC,
-		IMMUNE_FLEEING,
-		IMMUNE_MELEE_EXCEPT_BANE,
-		IMMUNE_MELEE_NONMAGICAL,
-		IMMUNE_AGGRO,
-		IMMUNE_AGGRO_ON,
-		IMMUNE_CASTING_FROM_RANGE,
-		IMMUNE_FEIGN_DEATH,
-		IMMUNE_TAUNT,
-		NPC_NO_BUFFHEAL_FRIENDS,
-		IMMUNE_PACIFY,
-		DESTRUCTIBLE_OBJECT,
-		NO_HARM_FROM_CLIENT,
-		ALWAYS_FLEE,
-		ALLOW_BENEFICIAL,
-		DISABLE_MELEE,
-		ALLOW_TO_TANK,
-		IGNORE_ROOT_AGGRO_RULES,
-		PROX_AGGRO,
-		IMMUNE_RANGED_ATTACKS,
-		IMMUNE_DAMAGE_CLIENT,
-		IMMUNE_DAMAGE_NPC,
-		IMMUNE_AGGRO_CLIENT,
-		IMMUNE_AGGRO_NPC,
-		IMMUNE_FADING_MEMORIES,
-		IMMUNE_OPEN,
-		IMMUNE_ASSASSINATE,
-		IMMUNE_HEADSHOT,
-		IMMUNE_AGGRO_BOT,
-		IMMUNE_DAMAGE_BOT
+		SpecialAbility::TripleAttack,
+		SpecialAbility::QuadrupleAttack,
+		SpecialAbility::DualWield,
+		SpecialAbility::BaneAttack,
+		SpecialAbility::MagicalAttack,
+		SpecialAbility::SlowImmunity,
+		SpecialAbility::MesmerizeImmunity,
+		SpecialAbility::CharmImmunity,
+		SpecialAbility::StunImmunity,
+		SpecialAbility::SnareImmunity,
+		SpecialAbility::FearImmunity,
+		SpecialAbility::DispellImmunity,
+		SpecialAbility::MeleeImmunity,
+		SpecialAbility::MagicImmunity,
+		SpecialAbility::FleeingImmunity,
+		SpecialAbility::MeleeImmunityExceptBane,
+		SpecialAbility::MeleeImmunityExceptMagical,
+		SpecialAbility::AggroImmunity,
+		SpecialAbility::BeingAggroImmunity,
+		SpecialAbility::CastingFromRangeImmunity,
+		SpecialAbility::FeignDeathImmunity,
+		SpecialAbility::TauntImmunity,
+		SpecialAbility::NoBuffHealFriends,
+		SpecialAbility::PacifyImmunity,
+		SpecialAbility::DestructibleObject,
+		SpecialAbility::HarmFromClientImmunity,
+		SpecialAbility::AlwaysFlee,
+		SpecialAbility::AllowBeneficial,
+		SpecialAbility::DisableMelee,
+		SpecialAbility::AllowedToTank,
+		SpecialAbility::IgnoreRootAggroRules,
+		SpecialAbility::ProximityAggro,
+		SpecialAbility::RangedAttackImmunity,
+		SpecialAbility::ClientDamageImmunity,
+		SpecialAbility::NPCDamageImmunity,
+		SpecialAbility::ClientAggroImmunity,
+		SpecialAbility::NPCAggroImmunity,
+		SpecialAbility::MemoryFadeImmunity,
+		SpecialAbility::OpenImmunity,
+		SpecialAbility::AssassinateImmunity,
+		SpecialAbility::HeadshotImmunity,
+		SpecialAbility::BotAggroImmunity,
+		SpecialAbility::BotDamageImmunity
 	};
 
 	// These abilities have parameters that need to be parsed out individually
 	static const std::map<uint32, std::vector<std::string>> parameter_special_abilities = {
-		{ SPECATK_SUMMON, { "Cooldown in Milliseconds", "Health Percentage" } },
+		{ SpecialAbility::Summon, { "Cooldown in Milliseconds", "Health Percentage" } },
 		{
-			SPECATK_ENRAGE,
+			SpecialAbility::Enrage,
 			{
 				"Health Percentage",
 				"Duration in Milliseconds",
@@ -3889,7 +3896,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			}
 		},
 		{
-			SPECATK_RAMPAGE,
+			SpecialAbility::Rampage,
 			{
 				"Chance",
 				"Targets",
@@ -3901,7 +3908,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			}
 		},
 		{
-			SPECATK_AREA_RAMPAGE,
+			SpecialAbility::AreaRampage,
 			{
 				"Targets",
 				"Normal Attack Damage Percentage",
@@ -3913,7 +3920,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			}
 		},
 		{
-			SPECATK_FLURRY,
+			SpecialAbility::Flurry,
 			{
 				"Attacks",
 				"Normal Attack Damage Percentage",
@@ -3925,7 +3932,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			}
 		},
 		{
-			SPECATK_RANGED_ATK,
+			SpecialAbility::RangedAttack,
 			{
 				"Attacks",
 				"Maximum Range",
@@ -3934,21 +3941,21 @@ void NPC::DescribeSpecialAbilities(Client* c)
 				"Minimum Range"
 			}
 		},
-		{ NPC_TUNNELVISION, { "Aggro Modifier on Non-Tanks" } },
-		{ LEASH, { "Range" } },
-		{ TETHER, { "Range" } },
-		{ FLEE_PERCENT, { "Health Percentage", "Chance" } },
+		{ SpecialAbility::TunnelVision, { "Aggro Modifier on Non-Tanks" } },
+		{ SpecialAbility::Leash, { "Range" } },
+		{ SpecialAbility::Tether, { "Range" } },
+		{ SpecialAbility::FleePercent, { "Health Percentage", "Chance" } },
 		{
-			NPC_CHASE_DISTANCE,
+			SpecialAbility::NPCChaseDistance,
 			{
 				"Maximum Distance",
 				"Minimum Distance",
 				"Ignore Line of Sight"
 			}
 		},
-		{ CASTING_RESIST_DIFF, { "Resist Difficulty Value" } },
+		{ SpecialAbility::CastingResistDifficulty, { "Resist Difficulty Value" } },
 		{
-			COUNTER_AVOID_DAMAGE,
+			SpecialAbility::CounterAvoidDamage,
 			{
 				"Reduction Percentage for Block, Dodge, Parry, and Riposte",
 				"Reduction Percentage for Riposte",
@@ -3958,7 +3965,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			}
 		},
 		{
-			MODIFY_AVOID_DAMAGE,
+			SpecialAbility::ModifyAvoidDamage,
 			{
 				"Addition Percentage for Block, Dodge, Parry, and Riposte",
 				"Addition Percentage for Riposte",
@@ -3976,7 +3983,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 			messages.emplace_back(
 				fmt::format(
 					"{} ({})",
-					EQ::constants::GetSpecialAbilityName(e),
+					SpecialAbility::GetName(e),
 					e
 				)
 			);
@@ -3993,7 +4000,7 @@ void NPC::DescribeSpecialAbilities(Client* c)
 				messages.emplace_back(
 					fmt::format(
 						"{} ({}) | {}: {}",
-						EQ::constants::GetSpecialAbilityName(e.first),
+						SpecialAbility::GetName(e.first),
 						e.first,
 						a,
 						GetSpecialAbilityParam(e.first, slot_id)
