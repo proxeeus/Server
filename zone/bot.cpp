@@ -5767,13 +5767,13 @@ void Bot::GenerateSpecialAttacks() {
 			||
 			(GetClass() == Class::Warrior || GetLevel() >= RuleI(Combat, WarriorOldTripleAttackLevel)))
 			
-			SetSpecialAbility(SPECATK_TRIPLE, 1);
+			SetSpecialAbility(SpecialAbility::TripleAttack, 1);
 		
 	}
 	else
 	{
 		if (((GetClass() == Class::Monk) || (GetClass() == Class::Warrior) || (GetClass() == Class::Ranger) || (GetClass() == Class::Berserker)) && (GetLevel() >= 60))
-			SetSpecialAbility(SPECATK_TRIPLE, 1);
+			SetSpecialAbility(SpecialAbility::TripleAttack, 1);
 	}
 }
 
