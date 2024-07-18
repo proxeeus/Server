@@ -77,6 +77,7 @@
 #include "zone_store.h"
 #include "repositories/merchantlist_temp_repository.h"
 #include "repositories/bot_data_repository.h"
+#include "repositories/trader_repository.h"
 
 extern Client client;
 
@@ -1628,16 +1629,29 @@ uint32 Database::GetGuildIDByCharID(uint32 character_id)
 
 uint32 Database::GetGroupIDByCharID(uint32 character_id)
 {
-	const auto& e = GroupIdRepository::FindOne(*this, character_id);
+	const auto& e = GroupIdRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`character_id` = {}",
+			character_id
+		)
+	);
 
-	return e.character_id ? e.group_id : 0;
+	return e.size() == 1 ? e.front().group_id : 0;
 }
 
 uint32 Database::GetRaidIDByCharID(uint32 character_id)
 {
-	const auto& e = RaidMembersRepository::FindOne(*this, character_id);
 
-	return e.charid ? e.raidid : 0;
+	const auto& e = RaidMembersRepository::GetWhere(
+		*this,
+		fmt::format(
+			"`charid` = {}",
+			character_id
+		)
+	);
+
+	return e.size() == 1 ? e.front().raidid : 0;
 }
 
 int64 Database::CountInvSnapshots()
@@ -2103,4 +2117,9 @@ void Database::PurgeCharacterParcels()
 void Database::ClearGuildOnlineStatus()
 {
 	GuildMembersRepository::ClearOnlineStatus(*this);
+}
+
+void Database::ClearTraderDetails()
+{
+	TraderRepository::Truncate(*this);
 }
