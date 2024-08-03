@@ -65,6 +65,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/repositories/account_repository.h"
 #include "../common/repositories/character_corpses_repository.h"
 #include "../common/repositories/guild_tributes_repository.h"
+#include "../common/repositories/buyer_buy_lines_repository.h"
 
 #include "../common/events/player_event_logs.h"
 #include "../common/repositories/character_stats_record_repository.h"
@@ -757,8 +758,6 @@ void Client::CompleteConnect()
 	entity_list.SendAppearanceEffects(this);
 
 	entity_list.SendIllusionWearChange(this);
-
-	entity_list.SendTraders(this);
 
 	SendWearChangeAndLighting(EQ::textures::LastTexture);
 	Mob* pet = GetPet();
@@ -3759,116 +3758,104 @@ void Client::Handle_OP_Barter(const EQApplicationPacket *app)
 	}
 
 	char* Buf = (char *)app->pBuffer;
+	auto in = (BuyerGeneric_Struct *)app->pBuffer;
 
 	// The first 4 bytes of the packet determine the action. A lot of Barter packets require the
 	// packet the client sent, sent back to it as an acknowledgement.
 	//
-	uint32 Action = VARSTRUCT_DECODE_TYPE(uint32, Buf);
+	//uint32 Action = VARSTRUCT_DECODE_TYPE(uint32, Buf);
 
 
-	switch (Action)
-	{
+	switch (in->action) {
 
-	case Barter_BuyerSearch:
-	{
-		BuyerItemSearch(app);
-		break;
-	}
-
-	case Barter_SellerSearch:
-	{
-		BarterSearchRequest_Struct *bsr = (BarterSearchRequest_Struct*)app->pBuffer;
-		SendBuyerResults(bsr->SearchString, bsr->SearchID);
-		break;
-	}
-
-	case Barter_BuyerModeOn:
-	{
-		if (!IsTrader()) {
-			ToggleBuyerMode(true);
+		case Barter_BuyerSearch: {
+			BuyerItemSearch(app);
+			break;
 		}
-		else {
-			Buf = (char *)app->pBuffer;
-			VARSTRUCT_ENCODE_TYPE(uint32, Buf, Barter_BuyerModeOff);
-			Message(Chat::Red, "You cannot be a Trader and Buyer at the same time.");
+
+		case Barter_SellerSearch: {
+			auto bsr = (BarterSearchRequest_Struct *) app->pBuffer;
+			SendBuyerResults(*bsr);
+			break;
 		}
-		QueuePacket(app);
-		break;
-	}
 
-	case Barter_BuyerModeOff:
-	{
-		QueuePacket(app);
-		ToggleBuyerMode(false);
-		break;
-	}
+		case Barter_BuyerModeOn: {
+			if (!IsTrader()) {
+				ToggleBuyerMode(true);
+			}
+			else {
+				ToggleBuyerMode(false);
+				Message(Chat::Red, "You cannot be a Trader and Buyer at the same time.");
+			}
+			break;
+		}
 
-	case Barter_BuyerItemUpdate:
-	{
-		UpdateBuyLine(app);
-		break;
-	}
+		case Barter_BuyerModeOff: {
+			ToggleBuyerMode(false);
+			break;
+		}
 
-	case Barter_BuyerItemRemove:
-	{
-		BuyerRemoveItem_Struct* bris = (BuyerRemoveItem_Struct*)app->pBuffer;
-		database.RemoveBuyLine(CharacterID(), bris->BuySlot);
-		QueuePacket(app);
-		break;
-	}
+		case Barter_BuyerItemUpdate: {
+			ModifyBuyLine(app);
+			break;
+		}
 
-	case Barter_SellItem:
-	{
-		SellToBuyer(app);
-		break;
-	}
+		case Barter_BuyerItemStart: {
+			CreateStartingBuyLines(app);
+			break;
+		}
 
-	case Barter_BuyerInspectBegin:
-	{
-		ShowBuyLines(app);
-		break;
-	}
+		case Barter_BuyerItemRemove: {
+			auto bris = (BuyerRemoveItem_Struct *) app->pBuffer;
+			BuyerBuyLinesRepository::DeleteBuyLine(database, CharacterID(), bris->buy_slot_id);
+			QueuePacket(app);
+			break;
+		}
 
-	case Barter_BuyerInspectEnd:
-	{
-		BuyerInspectRequest_Struct* bir = (BuyerInspectRequest_Struct*)app->pBuffer;
-		Client *Buyer = entity_list.GetClientByID(bir->BuyerID);
-		if (Buyer)
-			Buyer->WithCustomer(0);
+		case Barter_SellItem: {
+			SellToBuyer(app);
+			break;
+		}
 
-		break;
-	}
+		case Barter_BuyerInspectBegin: {
+			ShowBuyLines(app);
+			break;
+		}
 
-	case Barter_BarterItemInspect:
-	{
-		BarterItemSearchLinkRequest_Struct* bislr = (BarterItemSearchLinkRequest_Struct*)app->pBuffer;
+		case Barter_BuyerInspectEnd: {
+			auto bir   = (BuyerInspectRequest_Struct *) app->pBuffer;
+			auto buyer = entity_list.GetClientByID(bir->buyer_id);
+			if (buyer) {
+				buyer->WithCustomer(0);
+			}
 
-		const EQ::ItemData* item = database.GetItem(bislr->ItemID);
+			break;
+		}
+		case Barter_BarterItemInspect: {
+			auto               bislr = (BarterItemSearchLinkRequest_Struct *) app->pBuffer;
+			const EQ::ItemData *item = database.GetItem(bislr->item_id);
 
-		if (!item)
-			Message(Chat::Red, "Error: This item does not exist!");
-		else
-		{
-			EQ::ItemInstance* inst = database.CreateItem(item);
-			if (inst)
-			{
+			if (!item) {
+				Message(Chat::Red, "Error: This item does not exist!");
+				return;
+			}
+
+			EQ::ItemInstance *inst = database.CreateItem(item);
+			if (inst) {
 				SendItemPacket(0, inst, ItemPacketViewLink);
 				safe_delete(inst);
 			}
-		}
 		break;
 	}
-
 	case Barter_Welcome:
 	{
-		//SendBazaarWelcome();
+		SendBarterWelcome();
 		break;
 	}
 
-	case Barter_WelcomeMessageUpdate:
-	{
-		BuyerWelcomeMessageUpdate_Struct* bwmu = (BuyerWelcomeMessageUpdate_Struct*)app->pBuffer;
-		SetBuyerWelcomeMessage(bwmu->WelcomeMessage);
+	case Barter_WelcomeMessageUpdate: {
+		auto bwmu = (BuyerWelcomeMessageUpdate_Struct *) app->pBuffer;
+		SetBuyerWelcomeMessage(bwmu->welcome_message);
 		break;
 	}
 
@@ -3892,15 +3879,20 @@ void Client::Handle_OP_Barter(const EQApplicationPacket *app)
 		break;
 	}
 
-	case Barter_Unknown23:
+	case Barter_Greeting:
 	{
-		// Sent by SoD client for no discernible reason.
+		auto data = (BuyerGreeting_Struct *)app->pBuffer;
+		SendBuyerGreeting(data->buyer_id);
+	}
+	case Barter_OpenBarterWindow:
+	{
+		SendBulkBazaarBuyers();
 		break;
 	}
 
 	default:
 		Message(Chat::Red, "Unrecognised Barter action.");
-		LogTrading("Unrecognised Barter Action [{}]", Action);
+		LogTrading("Unrecognised Barter Action [{}]", in->action);
 
 	}
 }
@@ -4980,6 +4972,10 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 		// End trader mode if we move
 		if (IsTrader()) {
 			TraderEndTrader();
+		}
+
+		if (IsBuyer()) {
+			ToggleBuyerMode(false);
 		}
 
 		/* Break Hide if moving without sneaking and set rewind timer if moved */
@@ -10909,7 +10905,121 @@ void Client::Handle_OP_MoveItem(const EQApplicationPacket *app)
 
 void Client::Handle_OP_MoveMultipleItems(const EQApplicationPacket *app)
 {
-	Kick("Unimplemented move multiple items"); // TODO: lets not desync though
+	// This packet is only sent from the client if we ctrl click items in inventory
+	if (m_ClientVersionBit & EQ::versions::maskRoF2AndLater) {
+		if (!CharacterID()) {
+			LinkDead();
+			return;
+		}
+
+		if (app->size < sizeof(MultiMoveItem_Struct)) {
+			LinkDead();
+			return; // Not enough data to be a valid packet
+		}
+
+		const MultiMoveItem_Struct* multi_move = reinterpret_cast<const MultiMoveItem_Struct*>(app->pBuffer);
+		if (app->size != sizeof(MultiMoveItem_Struct) + sizeof(MultiMoveItemSub_Struct) * multi_move->count) {
+			LinkDead();
+			return; // Packet size does not match expected size
+		}
+
+		const int16 from_parent = multi_move->moves[0].from_slot.Slot;
+		const int16 to_parent   = multi_move->moves[0].to_slot.Slot;
+
+		// CTRL + left click drops an item into a bag without opening it.
+		// This can be a bag, in which case it tries to fill the target bag with the contents of the bag on the cursor
+		// CTRL + right click swaps the contents of two bags if a bag is on your cursor and you ctrl-right click on another bag.
+
+		// We need to check if this is a swap or just an addition (left click or right click)
+		// Check if any component of this transaction is coming from anywhere other than the cursor
+		bool left_click = true;
+		for (int i = 0; i < multi_move->count; i++) {
+			if (multi_move->moves[i].from_slot.Slot != EQ::invslot::slotCursor) {
+				left_click = false;
+			}
+		}
+
+		// This is a left click which is purely additive. This should always be cursor object or cursor bag contents into general\bank\whatever bag
+		if (left_click) {
+			for (int i = 0; i < multi_move->count; i++) {
+				MoveItem_Struct* mi = new MoveItem_Struct();
+				mi->from_slot 	= multi_move->moves[i].from_slot.SubIndex == -1 ? multi_move->moves[i].from_slot.Slot : m_inv.CalcSlotId(multi_move->moves[i].from_slot.Slot, multi_move->moves[i].from_slot.SubIndex);
+				mi->to_slot = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot, multi_move->moves[i].to_slot.SubIndex);
+
+				if (multi_move->moves[i].to_slot.Type == EQ::invtype::typeBank) { // Target is bank inventory
+					mi->to_slot = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot + EQ::invslot::BANK_BEGIN, multi_move->moves[i].to_slot.SubIndex);
+				} else if (multi_move->moves[i].to_slot.Type == EQ::invtype::typeSharedBank) { // Target is shared bank inventory
+					mi->to_slot = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot + EQ::invslot::SHARED_BANK_BEGIN, multi_move->moves[i].to_slot.SubIndex);
+				}
+
+				// This sends '1' as the stack count for unstackable items, which our titanium-era SwapItem blows up
+				if (m_inv.GetItem(mi->from_slot)->IsStackable()) {
+					mi->number_in_stack = multi_move->moves[i].number_in_stack;
+				} else {
+					mi->number_in_stack = 0;
+				}
+
+				if (!SwapItem(mi) && IsValidSlot(mi->from_slot) && IsValidSlot(mi->to_slot)) {
+					bool error = false;
+					SwapItemResync(mi);
+					InterrogateInventory(this, false, true, false, error, false);
+					if (error) {
+						InterrogateInventory(this, true, false, true, error);
+					}
+				}
+			}
+		// This is the swap.
+		// Client behavior is just to move stacks without combining them
+		// Items get rearranged to fill the 'top' of the bag first
+		} else {
+			struct MoveInfo {
+				EQ::ItemInstance* item;
+				uint16 to_slot;
+			};
+
+			std::vector<MoveInfo> items;
+    		items.reserve(multi_move->count);
+
+			for (int i = 0; i < multi_move->count; i++) {
+				// These are always bags, so we don't need to worry about raw items in slotCursor
+				uint16 from_slot   = m_inv.CalcSlotId(multi_move->moves[i].from_slot.Slot, multi_move->moves[i].from_slot.SubIndex);
+				if (multi_move->moves[i].from_slot.Type == EQ::invtype::typeBank) { // Target is bank inventory
+					from_slot = m_inv.CalcSlotId(multi_move->moves[i].from_slot.Slot + EQ::invslot::BANK_BEGIN, multi_move->moves[i].from_slot.SubIndex);
+				} else if (multi_move->moves[i].from_slot.Type == EQ::invtype::typeSharedBank) { // Target is shared bank inventory
+					from_slot = m_inv.CalcSlotId(multi_move->moves[i].from_slot.Slot + EQ::invslot::SHARED_BANK_BEGIN, multi_move->moves[i].from_slot.SubIndex);
+				}
+
+				uint16 to_slot   = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot, multi_move->moves[i].to_slot.SubIndex);
+				if (multi_move->moves[i].to_slot.Type == EQ::invtype::typeBank) { // Target is bank inventory
+					to_slot = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot + EQ::invslot::BANK_BEGIN, multi_move->moves[i].to_slot.SubIndex);
+				} else if (multi_move->moves[i].to_slot.Type == EQ::invtype::typeSharedBank) { // Target is shared bank inventory
+					to_slot = m_inv.CalcSlotId(multi_move->moves[i].to_slot.Slot + EQ::invslot::SHARED_BANK_BEGIN, multi_move->moves[i].to_slot.SubIndex);
+				}
+
+				// I wasn't able to produce any error states on purpose.
+				MoveInfo move{
+					.item = m_inv.PopItem(from_slot), // Don't delete the instance here
+					.to_slot = to_slot
+				};
+
+				if (move.item) {
+					items.push_back(move);
+					database.SaveInventory(CharacterID(), NULL, from_slot); // We have to manually save inventory here.
+				} else {
+					LinkDead();
+					return; // Prevent inventory desync here. Forcing a resync would be better, but we don't have a MoveItem struct to work with.
+				}
+			}
+
+			for (const MoveInfo& move : items) {
+				PutItemInInventory(move.to_slot, *move.item); // This saves inventory too
+			}
+		}
+
+	} else {
+		LinkDead(); // This packet should not be sent by an older client
+		return;
+	}
 }
 
 void Client::Handle_OP_OpenContainer(const EQApplicationPacket *app)
@@ -15526,7 +15636,7 @@ void Client::Handle_OP_Trader(const EQApplicationPacket *app)
 			break;
 		}
 		case TraderOn: {
-			if (Buyer) {
+			if (IsBuyer()) {
 				TraderEndTrader();
 				Message(Chat::Red, "You cannot be a Trader and Buyer at the same time.");
 				return;
@@ -15572,7 +15682,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 	auto trader = entity_list.GetClientByID(in->trader_id);
 
 	switch (in->method) {
-		case ByVendor: {
+		case BazaarByVendor: {
 			if (trader) {
 				LogTrading("Buy item directly from vendor id <green>[{}] item_id <green>[{}] quantity <green>[{}] "
 						   "serial_number <green>[{}]",
@@ -15585,7 +15695,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 			}
 			break;
 		}
-		case ByParcel: {
+		case BazaarByParcel: {
 			if (!RuleB(Parcel, EnableParcelMerchants) || !RuleB(Bazaar, EnableParcelDelivery)) {
 				LogTrading(
 					"Bazaar purchase attempt by parcel delivery though 'Parcel:EnableParcelMerchants' or "
@@ -15595,7 +15705,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 					Chat::Yellow,
 					"The bazaar parcel delivey system is not enabled on this server.  Please visit the vendor directly in the Bazaar."
 				);
-				in->method     = ByParcel;
+				in->method     = BazaarByParcel;
 				in->sub_action = Failed;
 				TradeRequestFailed(app);
 				return;
@@ -15610,7 +15720,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 			BuyTraderItemOutsideBazaar(in, app);
 			break;
 		}
-		case ByDirectToInventory: {
+		case BazaarByDirectToInventory: {
 			if (!RuleB(Parcel, EnableDirectToInventoryDelivery)) {
 				LogTrading("Bazaar purchase attempt by direct inventory delivery though "
 						   "'Parcel:EnableDirectToInventoryDelivery' not enabled."
@@ -15619,7 +15729,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 					Chat::Yellow,
 					"Direct inventory delivey is not enabled on this server.  Please visit the vendor directly."
 				);
-				in->method     = ByDirectToInventory;
+				in->method     = BazaarByDirectToInventory;
 				in->sub_action = Failed;
 				TradeRequestFailed(app);
 				return;
@@ -15636,7 +15746,7 @@ void Client::Handle_OP_TraderBuy(const EQApplicationPacket *app)
 				Chat::Yellow,
 				"Direct inventory delivey is not yet implemented.  Please visit the vendor directly or purchase via parcel delivery."
 			);
-			in->method     = ByDirectToInventory;
+			in->method     = BazaarByDirectToInventory;
 			in->sub_action = Failed;
 			TradeRequestFailed(app);
 			break;
@@ -16035,7 +16145,8 @@ void Client::Handle_OP_WearChange(const EQApplicationPacket *app)
 		wc->hero_forge_model = GetHerosForgeModel(wc->wear_slot_id);
 
 	// we could maybe ignore this and just send our own from moveitem
-	entity_list.QueueClients(this, app, false);
+	// We probably need to skip this entirely when it is send as an ack, but not sure how to ID that.
+	entity_list.QueueClients(this, app, true);
 }
 
 void Client::Handle_OP_WhoAllRequest(const EQApplicationPacket *app)

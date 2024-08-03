@@ -69,6 +69,7 @@
 #include "../common/repositories/alternate_currency_repository.h"
 #include "../common/repositories/graveyard_repository.h"
 #include "../common/repositories/trader_repository.h"
+#include "../common/repositories/buyer_repository.h"
 
 #include <time.h>
 
@@ -2683,6 +2684,22 @@ uint32 Zone::GetSpawnKillCount(uint32 in_spawnid) {
 		iterator.Advance();
 	}
 	return 0;
+}
+
+bool Zone::IsWaterZone(float z)
+{
+
+	switch (GetZoneID()) {
+		case Zones::KEDGE:
+			return true;
+		case Zones::POWATER:
+			if (z < 0.0f) {
+				return true;
+			}
+			return false;
+		default:
+			return false;
+	}
 }
 
 void Zone::SetIsHotzone(bool is_hotzone)
