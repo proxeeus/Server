@@ -762,8 +762,8 @@ public:
 	void GetRaidAAs(RaidLeadershipAA_Struct *into) const;
 	void ClearGroupAAs();
 	void UpdateGroupAAs(int32 points, uint32 type);
-	void SacrificeConfirm(Client* caster);
-	void Sacrifice(Client* caster);
+	void SacrificeConfirm(Mob* caster);
+	void Sacrifice(Mob* caster);
 	void GoToDeath();
 	inline const int32 GetInstanceID() const { return zone->GetInstanceID(); }
 	void SetZoning(bool in) { bZoning = in; }
@@ -1245,7 +1245,7 @@ public:
 	bool PendingTranslocate;
 	time_t TranslocateTime;
 	bool PendingSacrifice;
-	std::string SacrificeCaster;
+	uint16 sacrifice_caster_id;
 	PendingTranslocate_Struct PendingTranslocateData;
 	void SendOPTranslocateConfirm(Mob *Caster, uint16 SpellID);
 
@@ -1420,7 +1420,11 @@ public:
 	{
 		return (task_state ? task_state->EnabledTaskCount(task_set_id) : -1);
 	}
-	inline int IsTaskCompleted(int task_id) { return (task_state ? task_state->IsTaskCompleted(task_id) : -1); }
+	inline bool IsTaskCompleted(int task_id) { return (task_state ? task_state->IsTaskCompleted(task_id) : false); }
+	inline bool AreTasksCompleted(std::vector<int> task_ids)
+	{
+		return (task_state ? task_state->AreTasksCompleted(task_ids) : false);
+	}
 	inline void ShowClientTasks(Client *client) { if (task_state) { task_state->ShowClientTasks(this, client); }}
 	inline void CancelAllTasks() { if (task_state) { task_state->CancelAllTasks(this); }}
 	inline int GetActiveTaskCount() { return (task_state ? task_state->GetActiveTaskCount() : 0); }
@@ -2008,6 +2012,8 @@ private:
 	void ZonePC(uint32 zoneID, uint32 instance_id, float x, float y, float z, float heading, uint8 ignorerestrictions, ZoneMode zm);
 	void ProcessMovePC(uint32 zoneID, uint32 instance_id, float x, float y, float z, float heading, uint8 ignorerestrictions = 0, ZoneMode zm = ZoneSolicited);
 
+	void SendTopLevelInventory();
+
 	glm::vec4 m_ZoneSummonLocation;
 	uint16 zonesummon_id;
 	uint8 zonesummon_ignorerestrictions;
@@ -2052,6 +2058,11 @@ private:
 	Timer task_request_timer;
 	Timer pick_lock_timer;
 	Timer parcel_timer;	//Used to limit the number of parcels to one every 30 seconds (default).  Changable via rule.
+	Timer lazy_load_bank_check_timer;
+	Timer bandolier_throttle_timer;
+
+	bool m_lazy_load_bank            = false;
+	int  m_lazy_load_sent_bank_slots = 0;
 
 	glm::vec3 m_Proximity;
 	glm::vec4 last_position_before_bulk_update;
@@ -2170,7 +2181,6 @@ private:
 	glm::vec3 m_quest_compass;
 	bool m_has_quest_compass = false;
 	std::vector<uint32_t> m_dynamic_zone_ids;
-
 
 public:
 	enum BotOwnerOption : size_t {

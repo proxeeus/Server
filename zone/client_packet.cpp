@@ -934,6 +934,7 @@ void Client::CompleteConnect()
 	}
 
 	database.LoadAuras(this); // this ends up spawning them so probably safer to load this later (here)
+	database.LoadCharacterDisciplines(this);
 
 	entity_list.RefreshClientXTargets(this);
 
@@ -1318,7 +1319,6 @@ void Client::Handle_Connect_OP_ZoneEntry(const EQApplicationPacket *app)
 	database.LoadCharacterInspectMessage(cid, &m_inspect_message); /* Load Character Inspect Message */
 	database.LoadCharacterSpellBook(cid, &m_pp); /* Load Character Spell Book */
 	database.LoadCharacterMemmedSpells(cid, &m_pp);  /* Load Character Memorized Spells */
-	database.LoadCharacterDisciplines(cid, &m_pp); /* Load Character Disciplines */
 	database.LoadCharacterLanguages(cid, &m_pp); /* Load Character Languages */
 	database.LoadCharacterLeadershipAbilities(cid, &m_pp); /* Load Character Leadership AA's */
 	database.LoadCharacterTribute(this); /* Load CharacterTribute */
@@ -3285,6 +3285,10 @@ void Client::Handle_OP_AugmentItem(const EQApplicationPacket *app)
 							}
 						}
 
+						if (new_aug->GetItem()->Attuneable) {
+							new_aug->SetAttuned(true);
+						}
+
 						tobe_auged->PutAugment(in_augment->augment_index, *new_aug);
 						tobe_auged->UpdateOrnamentationInfo();
 
@@ -3638,29 +3642,39 @@ void Client::Handle_OP_AutoFire(const EQApplicationPacket *app)
 void Client::Handle_OP_Bandolier(const EQApplicationPacket *app)
 {
 	// Although there are three different structs for OP_Bandolier, they are all the same size.
-	//
 	if (app->size != sizeof(BandolierCreate_Struct)) {
 		LogDebug("Size mismatch in OP_Bandolier expected [{}] got [{}]", sizeof(BandolierCreate_Struct), app->size);
 		DumpPacket(app);
 		return;
 	}
 
-	BandolierCreate_Struct *bs = (BandolierCreate_Struct*)app->pBuffer;
+	auto bs = (BandolierCreate_Struct*) app->pBuffer;
 
-	switch (bs->Action)
-	{
-	case bandolierCreate:
-		CreateBandolier(app);
-		break;
-	case bandolierRemove:
-		RemoveBandolier(app);
-		break;
-	case bandolierSet:
-		SetBandolier(app);
-		break;
-	default:
-		LogDebug("Unknown Bandolier action [{}]", bs->Action);
-		break;
+	switch (bs->Action) {
+		case bandolierCreate:
+			CreateBandolier(app);
+			break;
+		case bandolierRemove:
+			RemoveBandolier(app);
+			break;
+		case bandolierSet:
+			if (bandolier_throttle_timer.GetDuration() && !bandolier_throttle_timer.Check()) {
+				Message(
+					Chat::White,
+					fmt::format(
+						"You may only modify your bandolier once every {}.",
+						Strings::ToLower(Strings::MillisecondsToTime(RuleI(Character, BandolierSwapDelay)))
+					).c_str()
+				);
+				SendTopLevelInventory();
+				break;
+			}
+
+			SetBandolier(app);
+			break;
+		default:
+			LogDebug("Unknown Bandolier action [{}]", bs->Action);
+			break;
 	}
 }
 
@@ -13667,11 +13681,11 @@ void Client::Handle_OP_Sacrifice(const EQApplicationPacket *app)
 	}
 
 	if (ss->Confirm) {
-		Client *Caster = entity_list.GetClientByName(SacrificeCaster.c_str());
+		Mob *Caster = entity_list.GetMob(sacrifice_caster_id);
 		if (Caster) Sacrifice(Caster);
 	}
 	PendingSacrifice = false;
-	SacrificeCaster.clear();
+	sacrifice_caster_id = 0;
 }
 
 void Client::Handle_OP_SafeFallSuccess(const EQApplicationPacket *app)	// bit of a misnomer, sent whenever safe fall is used (success of fail)
@@ -16893,9 +16907,14 @@ void Client::Handle_OP_RaidClearNPCMarks(const EQApplicationPacket* app)
 
 void Client::RecordStats()
 {
+	const uint32 character_id = CharacterID();
+	if (!character_id) {
+		return;
+	}
+
 	auto r = CharacterStatsRecordRepository::FindOne(
 		database,
-		CharacterID()
+		character_id
 	);
 
 	r.status                   = Admin();
@@ -16973,8 +16992,8 @@ void Client::RecordStats()
 	if (r.character_id > 0) {
 		CharacterStatsRecordRepository::UpdateOne(database, r);
 	} else {
-		r.character_id = CharacterID();
-		r.created_at = std::time(nullptr);
+		r.character_id = character_id;
+		r.created_at   = std::time(nullptr);
 		CharacterStatsRecordRepository::InsertOne(database, r);
 	}
 }

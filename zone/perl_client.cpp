@@ -1162,19 +1162,17 @@ void Perl_Client_AddCrystals(Client* self, uint32 radiant_count, uint32 ebon_cou
 	if (ebon_count != 0) {
 		if (ebon_count > 0) {
 			self->AddEbonCrystals(ebon_count);
-			return;
+		} else {
+			self->RemoveEbonCrystals(ebon_count);
 		}
-
-		self->RemoveEbonCrystals(ebon_count);
 	}
 
 	if (radiant_count != 0) {
 		if (radiant_count > 0) {
 			self->AddRadiantCrystals(radiant_count);
-			return;
+		} else {
+			self->RemoveRadiantCrystals(radiant_count);
 		}
-
-		self->RemoveRadiantCrystals(radiant_count);
 	}
 }
 
@@ -3178,6 +3176,32 @@ uint8 Perl_Client_GetSkillTrainLevel(Client* self, int skill_id)
 	return self->GetSkillTrainLevel(static_cast<EQ::skills::SkillType>(skill_id), self->GetClass());
 }
 
+bool Perl_Client_AreTasksCompleted(Client* self, perl::array task_ids)
+{
+	std::vector<int> v;
+
+	for (const auto& e : task_ids) {
+		v.push_back(static_cast<int>(e));
+	}
+
+	return self->AreTasksCompleted(v);
+}
+
+void Perl_Client_AreaTaunt(Client* self)
+{
+	entity_list.AETaunt(self);
+}
+
+void Perl_Client_AreaTaunt(Client* self, float range)
+{
+	entity_list.AETaunt(self, range);
+}
+
+void Perl_Client_AreaTaunt(Client* self, float range, int bonus_hate)
+{
+	entity_list.AETaunt(self, range, bonus_hate);
+}
+
 void perl_register_client()
 {
 	perl::interpreter perl(PERL_GET_THX);
@@ -3227,6 +3251,10 @@ void perl_register_client()
 	package.add("ApplySpellRaid", (void(*)(Client*, int, int, int, bool))&Perl_Client_ApplySpellRaid);
 	package.add("ApplySpellRaid", (void(*)(Client*, int, int, int, bool, bool))&Perl_Client_ApplySpellRaid);
 	package.add("ApplySpellRaid", (void(*)(Client*, int, int, int, bool, bool, bool))&Perl_Client_ApplySpellRaid);
+	package.add("AreTasksCompleted", (bool(*)(Client*, perl::array))&Perl_Client_AreTasksCompleted);
+	package.add("AreaTaunt", (void(*)(Client*))&Perl_Client_AreaTaunt);
+	package.add("AreaTaunt", (void(*)(Client*, float))&Perl_Client_AreaTaunt);
+	package.add("AreaTaunt", (void(*)(Client*, float, int))&Perl_Client_AreaTaunt);
 	package.add("AssignTask", (void(*)(Client*, int))&Perl_Client_AssignTask);
 	package.add("AssignTask", (void(*)(Client*, int, int))&Perl_Client_AssignTask);
 	package.add("AssignTask", (void(*)(Client*, int, int, bool))&Perl_Client_AssignTask);

@@ -178,6 +178,7 @@ RULE_BOOL(Character, NoSkillsOnHorse, false, "Enabling this will prevent Bind Wo
 RULE_BOOL(Character, UseNoJunkFishing, false, "Disregards junk items when fishing")
 RULE_BOOL(Character, SoftDeletes, true, "When characters are deleted in character select, they are only soft deleted")
 RULE_INT(Character, DefaultGuild, 0, "If not 0, new characters placed into the guild # indicated")
+RULE_INT(Character, DefaultGuildRank, 8, "Default guild rank when Character:DefaultGuild is a non-0 value, default is 8 (Recruit)")
 RULE_BOOL(Character, ProcessFearedProximity, false, "Processes proximity checks when feared")
 RULE_BOOL(Character, EnableCharacterEXPMods, false, "Enables character zone-based experience modifiers.")
 RULE_BOOL(Character, PVPEnableGuardFactionAssist, true, "Enables faction based assisting against the aggresor in pvp.")
@@ -228,6 +229,7 @@ RULE_BOOL(Character, GroupInvitesRequireTarget, false, "Enable to require player
 RULE_BOOL(Character, PlayerTradingLoreFeedback, true, "If enabled, during a player to player trade, if lore items exist, it will output which items.")
 RULE_INT(Character, MendAlwaysSucceedValue, 199, "Value at which mend will always succeed its skill check. Default: 199")
 RULE_BOOL(Character, SneakAlwaysSucceedOver100, false, "When sneak skill is over 100, always succeed sneak/hide. Default: false")
+RULE_INT(Character, BandolierSwapDelay, 0, "Bandolier swap delay in milliseconds, default is 0")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Mercs)
@@ -720,6 +722,7 @@ RULE_BOOL(TaskSystem, ExpRewardsIgnoreLevelBasedEXPMods, false, "Rewarding Level
 RULE_INT(TaskSystem, SharedTasksWorldProcessRate, 6000, "Timer interval (milliseconds) that shared tasks are processed in world")
 RULE_INT(TaskSystem, SharedTasksTerminateTimerMS, 120000, "Delay (milliseconds) until a shared task is terminated if requirements are no longer met after member removal (default: 2 minutes)")
 RULE_BOOL(TaskSystem, UpdateOneElementPerTask, true, "If true (live-like) task updates only increment the first matching activity. If false all matching elements will be incremented.")
+RULE_INT(TaskSystem, MaxUpdateMessages, 50, "Maximum update messages for non-GiveCash activity types in IncrementDoneCount")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Range)
@@ -927,6 +930,7 @@ RULE_BOOL(Inventory, AllowAnyWeaponTransformation, false, "Weapons can use any w
 RULE_BOOL(Inventory, TransformSummonedBags, false, "Transforms summoned bags into disenchanted ones instead of deleting")
 RULE_BOOL(Inventory, AllowMultipleOfSameAugment, false, "Allows multiple of the same augment to be placed in an item via #augmentitem or MQ2, set to true to allow")
 RULE_INT(Inventory, AlternateAugmentationSealer, 53, "Allows RoF+ clients to augment items from a special container type")
+RULE_BOOL(Inventory, LazyLoadBank, true, "Don't load bank during zoning, only when in proximinity to a banker. May increase zone speed and stability")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Client)
