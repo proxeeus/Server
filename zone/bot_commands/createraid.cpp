@@ -142,8 +142,41 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		}
 	}
 
-	// 11. Add bots to the raid and their groups (skip if already in raid)
+	// --- Adjustment: Avoid lone healers in 1-man groups ---
 	for (int g = 0; g < max_groups; ++g) {
+		if (groups[g].size() == 1) {
+			Bot* only_bot = groups[g][0];
+			if (only_bot &&
+				(only_bot->GetClass() == Class::Cleric ||
+					only_bot->GetClass() == Class::Druid ||
+					only_bot->GetClass() == Class::Shaman)) {
+				// Find a group with >1 member and less than MAX_GROUP_SIZE
+				int best_group = -1;
+				size_t min_size = MAX_GROUP_SIZE + 1;
+				for (int gg = 0; gg < max_groups; ++gg) {
+					if (gg == g) continue;
+					if (groups[gg].size() > 1 && groups[gg].size() < MAX_GROUP_SIZE) {
+						if (groups[gg].size() < min_size) {
+							min_size = groups[gg].size();
+							best_group = gg;
+						}
+					}
+				}
+				if (best_group != -1) {
+					groups[best_group].push_back(only_bot);
+					groups[g].clear();
+				}
+			}
+		}
+	}
+	// Optionally, remove empty groups at the end (not strictly necessary, but cleaner)
+	groups.erase(
+		std::remove_if(groups.begin(), groups.end(), [](const std::vector<Bot*>& grp) { return grp.empty(); }),
+		groups.end()
+	);
+
+	// 11. Add bots to the raid and their groups (skip if already in raid)
+	for (int g = 0; g < static_cast<int>(groups.size()); ++g) {
 		for (size_t i = 0; i < groups[g].size(); ++i) {
 			Bot* bot = groups[g][i];
 			if (!bot) continue;
@@ -158,7 +191,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		Chat::White,
 		fmt::format(
 			"Bot raid updated with up to {} groups. Missing bots were respawned and added. Groups have been balanced with available healers.",
-			max_groups
+			groups.size()
 		).c_str()
 	);
 }
