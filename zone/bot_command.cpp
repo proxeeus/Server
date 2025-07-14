@@ -1373,7 +1373,8 @@ int bot_command_init(void)
 		bot_command_add("ultravision", "Orders a bot to cast an ultravision spell", 0, bot_command_ultravision) ||
 		bot_command_add("memblur", "Orders an Enchanter bot to cast Memory Blur on your target.", 0, bot_command_memblur) ||
 		bot_command_add("guildinvite", "Invites a Bot to your guild (purely cosmetic).", 0, bot_command_guildinvite) ||
-		bot_command_add("guildremove", "Kicks a Bot from your guild (purely cosmetic).", 0, bot_command_guildremove)
+		bot_command_add("guildremove", "Kicks a Bot from your guild (purely cosmetic).", 0, bot_command_guildremove) ||
+		bot_command_add("createraid", "Creates a raid with the specified name and invites all bots in your bot army.", 0, bot_command_create_raid)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -2206,3 +2207,4 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/ultravision.cpp"
 #include "bot_commands/memblur.cpp"
 #include "bot_commands/rdefensive.cpp"
+#include "bot_commands/createraid.cpp"
