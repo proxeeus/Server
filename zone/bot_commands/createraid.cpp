@@ -1,4 +1,5 @@
 #include "../bot_command.h"
+#include <unordered_set>
 
 void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 {
@@ -10,16 +11,67 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		max_groups = std::clamp(atoi(sep->arg[1]), 2, 12);
 	}
 
-	// 2. Gather all spawned bots for this client
-	auto bots = entity_list.GetBotsByBotOwnerCharacterID(bot_owner->CharacterID());
+	// 2. Get current raid (if any)
+	Raid* raid = bot_owner->GetRaid();
 
-	// 3. If no bots are spawned, load and spawn from DB
+	// 3. Build a set of bot names already in the raid (if raid exists)
+	std::unordered_set<std::string> bots_in_raid;
+	std::vector<std::string> bots_to_respawn;
+	if (raid) {
+		for (const auto& member : raid->GetMembers()) {
+			if (member.is_bot && member.member_name[0])
+				bots_in_raid.insert(member.member_name);
+		}
+	}
+
+	// 4. Gather all currently spawned bots for this client
+	auto all_bots = entity_list.GetBotsByBotOwnerCharacterID(bot_owner->CharacterID());
+	std::unordered_set<std::string> spawned_bot_names;
+	for (auto* bot : all_bots) {
+		if (!bot) continue;
+		spawned_bot_names.insert(bot->GetCleanName());
+	}
+
+	// 5. If a raid is active, respawn any bots in the raid that are not currently spawned
+	if (raid) {
+		std::list<BotsAvailableList> bots_list;
+		if (database.botdb.LoadBotsList(bot_owner->CharacterID(), bots_list)) {
+			for (const auto& b : bots_list) {
+				if (bots_in_raid.find(b.bot_name) != bots_in_raid.end() &&
+					spawned_bot_names.find(b.bot_name) == spawned_bot_names.end()) {
+					// Bot is in the raid but not spawned
+					std::string cmd = "^spawn ";
+					cmd += b.bot_name;
+					bot_command_real_dispatch(bot_owner, cmd.c_str());
+				}
+			}
+		}
+		// Refresh the spawned bots list after respawning
+		all_bots = entity_list.GetBotsByBotOwnerCharacterID(bot_owner->CharacterID());
+		spawned_bot_names.clear();
+		for (auto* bot : all_bots) {
+			if (!bot) continue;
+			spawned_bot_names.insert(bot->GetCleanName());
+		}
+	}
+
+	// 6. Gather all spawned bots for this client that are NOT in the raid
+	std::vector<Bot*> bots;
+	for (auto* bot : all_bots) {
+		if (!bot) continue;
+		if (!raid || bots_in_raid.find(bot->GetCleanName()) == bots_in_raid.end())
+			bots.push_back(bot);
+	}
+
+	// 7. If no eligible bots are spawned, load and spawn from DB (skip bots already in raid)
 	if (bots.empty()) {
 		std::list<BotsAvailableList> bots_list;
 		if (database.botdb.LoadBotsList(bot_owner->CharacterID(), bots_list)) {
 			int count = 0;
 			for (const auto& b : bots_list) {
 				if (b.level == bot_owner->GetLevel()) {
+					if (raid && bots_in_raid.find(b.bot_name) != bots_in_raid.end())
+						continue; // Already in raid
 					if (count >= max_groups * 6) break;
 					std::string cmd = "^spawn ";
 					cmd += b.bot_name;
@@ -29,14 +81,19 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 			}
 		}
 		// Refresh the bots list after spawning
-		bots = entity_list.GetBotsByBotOwnerCharacterID(bot_owner->CharacterID());
+		all_bots = entity_list.GetBotsByBotOwnerCharacterID(bot_owner->CharacterID());
+		for (auto* bot : all_bots) {
+			if (!bot) continue;
+			if (!raid || bots_in_raid.find(bot->GetCleanName()) == bots_in_raid.end())
+				bots.push_back(bot);
+		}
 		if (bots.empty()) {
 			bot_owner->Message(Chat::White, "No eligible bots found to spawn for your raid.");
 			return;
 		}
 	}
 
-	// 4. Identify healers and non-healers
+	// 8. Identify healers and non-healers
 	std::vector<Bot*> healers, non_healers;
 	for (auto* bot : bots) {
 		if (!bot) continue;
@@ -52,8 +109,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		}
 	}
 
-	// 5. Create a new raid if one does not exist
-	Raid* raid = bot_owner->GetRaid();
+	// 9. Create a new raid if one does not exist
 	if (!raid) {
 		raid = new Raid(bot_owner);
 		entity_list.AddRaid(raid);
@@ -63,7 +119,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		raid->SendMakeLeaderPacketTo(bot_owner->GetName(), bot_owner);
 	}
 
-	// 6. Distribute bots into groups (max 6 per group, up to max_groups)
+	// 10. Distribute bots into groups (max 6 per group, up to max_groups)
 	constexpr int MAX_GROUP_SIZE = 6;
 	std::vector<std::vector<Bot*>> groups(max_groups);
 
@@ -86,15 +142,13 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		}
 	}
 
-	// 7. Add bots to the raid and their groups
+	// 11. Add bots to the raid and their groups (skip if already in raid)
 	for (int g = 0; g < max_groups; ++g) {
 		for (size_t i = 0; i < groups[g].size(); ++i) {
 			Bot* bot = groups[g][i];
 			if (!bot) continue;
-			// Sanity check: skip if already in the raid
 			if (raid->IsRaidMember(bot->GetCleanName()))
 				continue;
-			// First bot in group is group leader
 			bool group_leader = (i == 0);
 			raid->AddBot(bot, g, false, group_leader, false);
 		}
@@ -103,7 +157,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 	bot_owner->Message(
 		Chat::White,
 		fmt::format(
-			"Bot raid created with up to {} groups. Groups have been balanced with available healers.",
+			"Bot raid updated with up to {} groups. Missing bots were respawned and added. Groups have been balanced with available healers.",
 			max_groups
 		).c_str()
 	);
