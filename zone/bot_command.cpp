@@ -1374,7 +1374,9 @@ int bot_command_init(void)
 		bot_command_add("memblur", "Orders an Enchanter bot to cast Memory Blur on your target.", 0, bot_command_memblur) ||
 		bot_command_add("guildinvite", "Invites a Bot to your guild (purely cosmetic).", 0, bot_command_guildinvite) ||
 		bot_command_add("guildremove", "Kicks a Bot from your guild (purely cosmetic).", 0, bot_command_guildremove) ||
-		bot_command_add("createraid", "Creates a raid with the specified name and invites all bots in your bot army.", 0, bot_command_create_raid)
+		bot_command_add("createraid", "Creates a raid with the specified name and invites all bots in your bot army.", 0, bot_command_create_raid) ||
+		bot_command_add("addtoroster", "Adds a bot to your raid roster.", 0, bot_command_addtoroster) ||
+		bot_command_add("removefromroster", "Removes a bot from your raid roster.", 0, bot_command_removefromroster)
 	) {
 		bot_command_deinit();
 		return -1;

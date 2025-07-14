@@ -1788,4 +1788,6 @@ void bot_command_ultravision(Client* c, const Seperator* sep);
 void bot_command_memblur(Client* c, const Seperator* sep);
 void bot_command_rdefensive(Client* c, const Seperator* sep);
 void bot_command_create_raid(Client* c, const Seperator* sep);
+void bot_command_addtoroster(Client* c, const Seperator* sep);
+void bot_command_removefromroster(Client* c, const Seperator* sep);
 #endif

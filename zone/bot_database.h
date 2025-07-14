@@ -169,6 +169,10 @@ public:
 	const int GetBotExtraHasteByID(const uint32 bot_id);
 	int LoadBotGuild(const uint32 bot_id);
 	bool DeleteBotGuild(const uint32 bot_id);
+	bool AddBotToRaidRoster(uint32 owner_id, uint32 bot_id);
+	bool RemoveBotFromRaidRoster(uint32 owner_id, uint32 bot_id);
+	bool IsBotInRaidRoster(uint32 owner_id, uint32 bot_id);
+	bool GetRaidRosterBotIDs(uint32 owner_id, std::vector<uint32>& bot_ids);
 
 	class fail {
 	public:

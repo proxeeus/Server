@@ -583,7 +583,7 @@ void bot_command_inspect_message(Client *c, const Seperator *sep)
 	}
 }
 
-void bot_command_list_bots(Client *c, const Seperator *sep)
+void bot_command_list_bots(Client* c, const Seperator* sep)
 {
 	enum {
 		FilterClass,
@@ -686,19 +686,39 @@ void bot_command_list_bots(Client *c, const Seperator *sep)
 
 		auto* bot = entity_list.GetBotByBotName(bots_iter.bot_name);
 
+		// --- Saylink Integration for Raid Roster ---
+		std::string roster_saylink;
+		uint32 bot_id = bots_iter.bot_id;
+		bool in_roster = database.botdb.IsBotInRaidRoster(c->CharacterID(), bot_id);
+
+		if (in_roster) {
+			roster_saylink = Saylink::Silent(
+				fmt::format("^removefromroster {}", bots_iter.bot_name),
+				"[Remove from Raid Roster]"
+			);
+		}
+		else {
+			roster_saylink = Saylink::Silent(
+				fmt::format("^addtoroster {}", bots_iter.bot_name),
+				"[Add to Raid Roster]"
+			);
+		}
+		// --- End Saylink Integration ---
+
 		c->Message(
 			Chat::White,
 			fmt::format(
-				"Bot {} | {} is a Level {} {} {} {} owned by {}.",
+				"Bot {} | {} {} is a Level {} {} {} {} owned by {}.",
 				bot_number,
+				roster_saylink,
 				(
 					(c->CharacterID() == bots_iter.owner_id && !bot) ?
-						Saylink::Silent(
-							fmt::format("^spawn {}", bots_iter.bot_name),
-							bots_iter.bot_name
-						) :
+					Saylink::Silent(
+						fmt::format("^spawn {}", bots_iter.bot_name),
 						bots_iter.bot_name
-				),
+					) :
+					bots_iter.bot_name
+					),
 				bots_iter.level,
 				GetGenderName(bots_iter.gender),
 				GetRaceIDName(bots_iter.race),
@@ -718,7 +738,8 @@ void bot_command_list_bots(Client *c, const Seperator *sep)
 	if (!bot_count) {
 		c->Message(Chat::White, "You have no bots meeting this criteria.");
 		return;
-	} else {
+	}
+	else {
 		c->Message(
 			Chat::White,
 			fmt::format(
@@ -732,7 +753,7 @@ void bot_command_list_bots(Client *c, const Seperator *sep)
 		);
 
 		c->Message(Chat::White, "Note: You can spawn any owned bots by clicking their name if they are not already spawned.");
-
+		c->Message(Chat::White, "Note: Use [AddToRoster]/[RemoveFromRoster] to manage your raid roster for ^createraid.");
 		c->Message(Chat::White, "Your bot creation limits are as follows:");
 
 		const auto overall_bot_creation_limit = c->GetBotCreationLimit();

@@ -2392,3 +2392,36 @@ bool BotDatabase::DeleteBotGuild(uint32 bot_id)
 
 	return true;
 }
+
+bool BotDatabase::AddBotToRaidRoster(uint32 owner_id, uint32 bot_id) {
+	auto results = database.QueryDatabase(
+		fmt::format("REPLACE INTO bot_raid_roster (owner_id, bot_id) VALUES ({}, {})", owner_id, bot_id)
+	);
+	return results.Success();
+}
+
+bool BotDatabase::RemoveBotFromRaidRoster(uint32 owner_id, uint32 bot_id) {
+	auto results = database.QueryDatabase(
+		fmt::format("DELETE FROM bot_raid_roster WHERE owner_id = {} AND bot_id = {}", owner_id, bot_id)
+	);
+	return results.Success();
+}
+
+bool BotDatabase::IsBotInRaidRoster(uint32 owner_id, uint32 bot_id) {
+	auto results = database.QueryDatabase(
+		fmt::format("SELECT 1 FROM bot_raid_roster WHERE owner_id = {} AND bot_id = {} LIMIT 1", owner_id, bot_id)
+	);
+	return results.Success() && results.RowCount() > 0;
+}
+
+bool BotDatabase::GetRaidRosterBotIDs(uint32 owner_id, std::vector<uint32>& bot_ids) {
+	bot_ids.clear();
+	auto results = database.QueryDatabase(
+		fmt::format("SELECT bot_id FROM bot_raid_roster WHERE owner_id = {}", owner_id)
+	);
+	if (!results.Success()) return false;
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		bot_ids.push_back(Strings::ToInt(row[0]));
+	}
+	return true;
+}
