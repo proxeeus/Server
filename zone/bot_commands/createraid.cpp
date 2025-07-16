@@ -32,7 +32,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		}
 	}
 
-	const int max_bots = max_groups * 6;
+	const int max_bots = max_groups * 6 - 1;
 
 	if (!raid) {
 		// No raid: spawn up to max, roster first, then fill with others
