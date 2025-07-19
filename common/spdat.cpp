@@ -2444,7 +2444,7 @@ bool IsManaRegenSpell(uint16 spell_id)
 bool IsTwitchSpell(uint16 spell_id)
 {
 	if (IsValidSpell(spell_id)) {
-		if (spell_id == 1514) {	// Todo: add more twitch spells
+		if (spell_id == 1514 || spell_id == 1515 || spell_id == 1718) {	// Todo: add more twitch spells
 			return true;
 		}
 		
