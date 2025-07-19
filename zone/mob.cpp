@@ -8689,3 +8689,15 @@ bool Mob::IsCloseToBanker()
 
 	return false;
 }
+
+int Mob::GetActiveBuffCount() const {
+	int activeBuffCount = 0;
+
+	for (int i = 0; i < BUFF_COUNT; ++i) {
+		if (buffs[i].spellid != SPELL_UNKNOWN) { // Check if a buff is active in the slot
+			++activeBuffCount;
+		}
+	}
+
+	return activeBuffCount;
+}

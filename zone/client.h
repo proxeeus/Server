@@ -641,8 +641,8 @@ public:
 	virtual int GetCurrentBuffSlots() const;
 	virtual int GetCurrentSongSlots() const;
 	virtual int GetCurrentDiscSlots() const { return 1; }
-	virtual int GetMaxBuffSlots() const { return EQ::spells::LONG_BUFFS; }
-	virtual int GetMaxSongSlots() const { return EQ::spells::SHORT_BUFFS; }
+	virtual int GetMaxBuffSlots() const { return 15; }
+	virtual int GetMaxSongSlots() const { return 10; }
 	virtual int GetMaxDiscSlots() const { return EQ::spells::DISC_BUFFS; }
 	virtual int GetMaxTotalSlots() const { return EQ::spells::TOTAL_BUFFS; }
 	virtual uint32 GetFirstBuffSlot(bool disc, bool song);

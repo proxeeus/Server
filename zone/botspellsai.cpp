@@ -842,13 +842,20 @@ bool Bot::BotCastEscape(Mob*& tar, uint8 botClass, BotSpell& botSpell, uint32 iS
 	return casted_spell;
 }
 
+
 bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 	bool casted_spell = false;
+
+	// Check if the target has reached the maximum number of allowed buffs
+	if (tar->GetActiveBuffCount() >= tar->GetMaxBuffSlots()) {
+		LogAI("Target [{}] has reached the maximum number of allowed buffs [{}]. Skipping buff casting.", tar->GetName(), tar->GetMaxBuffSlots());
+		return casted_spell; // Skip casting
+	}
+
 	if (tar->DontBuffMeBefore() < Timer::GetCurrentTime()) {
 		std::list<BotSpell> buffSpellList = GetBotSpellsBySpellType(this, SpellType_Buff);
 
 		for (const auto& s : buffSpellList) {
-
 			if (!IsValidSpell(s.SpellId)) {
 				continue;
 			}
@@ -899,24 +906,24 @@ bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 
 			switch (tar->GetArchetype())
 			{
-				case Archetype::Caster:
-					//TODO: probably more caster specific spell effects in here
-					if (IsEffectInSpell(s.SpellId, SE_AttackSpeed) || IsEffectInSpell(s.SpellId, SE_ATK) ||
-						IsEffectInSpell(s.SpellId, SE_STR) || IsEffectInSpell(s.SpellId, SE_ReverseDS))
-					{
-						continue;
-					}
-					break;
-				case Archetype::Melee:
-					if (IsEffectInSpell(s.SpellId, SE_IncreaseSpellHaste) || IsEffectInSpell(s.SpellId, SE_ManaPool) ||
-						IsEffectInSpell(s.SpellId, SE_CastingLevel) || IsEffectInSpell(s.SpellId, SE_ManaRegen_v2) ||
-						IsEffectInSpell(s.SpellId, SE_CurrentMana))
-					{
-						continue;
-					}
-					break;
-				default: //Hybrids get all buffs
-					break;
+			case Archetype::Caster:
+				//TODO: probably more caster specific spell effects in here
+				if (IsEffectInSpell(s.SpellId, SE_AttackSpeed) || IsEffectInSpell(s.SpellId, SE_ATK) ||
+					IsEffectInSpell(s.SpellId, SE_STR) || IsEffectInSpell(s.SpellId, SE_ReverseDS))
+				{
+					continue;
+				}
+				break;
+			case Archetype::Melee:
+				if (IsEffectInSpell(s.SpellId, SE_IncreaseSpellHaste) || IsEffectInSpell(s.SpellId, SE_ManaPool) ||
+					IsEffectInSpell(s.SpellId, SE_CastingLevel) || IsEffectInSpell(s.SpellId, SE_ManaRegen_v2) ||
+					IsEffectInSpell(s.SpellId, SE_CurrentMana))
+				{
+					continue;
+				}
+				break;
+			default: //Hybrids get all buffs
+				break;
 			}
 
 			if (botClass == Class::Enchanter && IsEffectInSpell(s.SpellId, SE_Rune))
@@ -959,6 +966,7 @@ bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 			}
 		}
 	}
+
 	return casted_spell;
 }
 

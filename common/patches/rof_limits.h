@@ -304,8 +304,8 @@ namespace RoF
 		const int SPELLBOOK_SIZE = 720;
 		const int SPELL_GEM_COUNT = static_cast<uint32>(CastingSlot::MaxGems);
 		
-		const int LONG_BUFFS = 42;
-		const int SHORT_BUFFS = 20;
+		const int LONG_BUFFS = 15; // was 42 in Rof, now 15
+		const int SHORT_BUFFS = 10; // was 20 in Rof, now 20
 		const int DISC_BUFFS = 1;
 		const int TOTAL_BUFFS = LONG_BUFFS + SHORT_BUFFS + DISC_BUFFS;
 		const int NPC_BUFFS = 97;

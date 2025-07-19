@@ -330,8 +330,8 @@ namespace Titanium
 		const int SPELLBOOK_SIZE = 400;
 		const int SPELL_GEM_COUNT = static_cast<uint32>(CastingSlot::MaxGems);
 		
-		const int LONG_BUFFS = 25;
-		const int SHORT_BUFFS = 12;
+		const int LONG_BUFFS = 15; // was 25 in Titanum
+		const int SHORT_BUFFS = 10;// was 12 in Titanium
 		const int DISC_BUFFS = 1;
 		const int TOTAL_BUFFS = LONG_BUFFS + SHORT_BUFFS + DISC_BUFFS;
 		const int NPC_BUFFS = 60;

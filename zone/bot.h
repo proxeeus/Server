@@ -378,8 +378,8 @@ public:
 		bool IsFromSpell = false, ExtraAttackOptions *opts = nullptr) override
 			{ return Mob::Attack(other, Hand, FromRiposte, IsStrikethrough, IsFromSpell, opts); }
 
-	[[nodiscard]] int GetMaxBuffSlots() const final { return EQ::spells::LONG_BUFFS; }
-	[[nodiscard]] int GetMaxSongSlots() const final { return EQ::spells::SHORT_BUFFS; }
+	[[nodiscard]] int GetMaxBuffSlots() const final { return 15; }
+	[[nodiscard]] int GetMaxSongSlots() const final { return 15; }
 	[[nodiscard]] int GetMaxDiscSlots() const final { return EQ::spells::DISC_BUFFS; }
 	[[nodiscard]] int GetMaxTotalSlots() const final { return EQ::spells::TOTAL_BUFFS; }
 
