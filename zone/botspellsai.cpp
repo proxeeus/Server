@@ -215,12 +215,12 @@ bool Bot::BotCastTwitch(Mob* tar, uint8 botLevel, BotSpell& botSpell) {
 				}
 
 				if (GetNeedsTwitched(member) && member->DontTwitchMeBefore() < Timer::GetCurrentTime()) {
-					Say(fmt::format("{} needs mana! I shall impart some of mine...", member->GetCleanName()).c_str());
 					botSpell = GetBestBotSpellForTwitch(this, member);
 
 					if (!IsValidSpell(botSpell.SpellId)) {
 						continue;
 					}
+					BotGroupSay(this, fmt::format("Casting {} on {}.", spells[botSpell.SpellId].name, member->GetCleanName()).c_str());
 
 					uint32 TempDontTwitchMeBeforeTime = member->DontTwitchMeBefore();
 					casted_spell = AIDoSpellCast(botSpell.SpellIndex, member, botSpell.ManaCost, &TempDontTwitchMeBeforeTime);
