@@ -86,6 +86,8 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 			return BotCastCombatSong(tar, botLevel);
 		case SpellType_OutOfCombatBuffSong:
 			return BotCastSong(tar, botLevel);
+		case SpellType_Twitch:
+			return BotCastTwitch(tar, botLevel, botSpell);
 		case SpellType_Resurrect:
 		case SpellType_PreCombatBuff:
 		case SpellType_PreCombatBuffSong:
@@ -192,6 +194,42 @@ bool Bot::BotCastHateReduction(Mob* tar, uint8 botLevel, const BotSpell& botSpel
 						spells[iter.SpellId].name
 					).c_str()
 				);
+			}
+		}
+	}
+
+	return casted_spell;
+}
+
+bool Bot::BotCastTwitch(Mob* tar, uint8 botLevel, BotSpell& botSpell) {
+	bool casted_spell = false;
+
+	// If the bot has a group, iterate through group members
+	if (HasGroup()) {
+		Group* group = GetGroup();
+		if (group) {
+			for (int i = 0; i < MAX_GROUP_MEMBERS; i++) {
+				Mob* member = group->members[i];
+				if (!member || member == this) { // Skip invalid members and self
+					continue;
+				}
+
+				if (GetNeedsTwitched(member) && member->DontTwitchMeBefore() < Timer::GetCurrentTime()) {
+					Say(fmt::format("{} needs mana! I shall impart some of mine...", member->GetCleanName()).c_str());
+					botSpell = GetBestBotSpellForTwitch(this, member);
+
+					if (!IsValidSpell(botSpell.SpellId)) {
+						continue;
+					}
+
+					uint32 TempDontTwitchMeBeforeTime = member->DontTwitchMeBefore();
+					casted_spell = AIDoSpellCast(botSpell.SpellIndex, member, botSpell.ManaCost, &TempDontTwitchMeBeforeTime);
+
+					if (casted_spell) {
+						member->SetDontTwitchMeBefore(Timer::GetCurrentTime() + 4000);
+						return casted_spell; // Exit after successfully casting
+					}
+				}
 			}
 		}
 	}
@@ -1418,7 +1456,9 @@ bool Bot::AI_IdleCastCheck() {
 					if (!AICastSpell(GetPet(), 100, SpellType_Cure)) {
 						if (!AICastSpell(this, 100, SpellType_Buff)) {
 							if (!AICastSpell(GetPet(), 100, SpellType_Heal)) {
-								if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, 100, BotAISpellRange, SpellType_Buff)) {
+								if (!AICastSpell(this, 100, SpellType_Twitch)) {
+									if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, 100, BotAISpellRange, SpellType_Buff)) {
+									}
 								}
 							}
 						}
@@ -1679,8 +1719,10 @@ bool Bot::AI_EngagedCastCheck() {
 							if (!entity_list.Bot_AICheckCloseBeneficialSpells(this, GetChanceToCastBySpellType(SpellType_InCombatBuff), BotAISpellRange, SpellType_InCombatBuff)) {
 								if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_DOT), SpellType_DOT)) {
 									if (!AICastSpell(GetPet(), GetChanceToCastBySpellType(SpellType_Heal), SpellType_Heal)) {
-										if (!AICastSpell(GetTarget(), mayGetAggro ? 0 : GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
-											failedToCast = true;
+										if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Twitch), SpellType_Twitch)) {
+											if (!AICastSpell(GetTarget(), mayGetAggro ? 0 : GetChanceToCastBySpellType(SpellType_Nuke), SpellType_Nuke)) {
+												failedToCast = true;
+											}
 										}
 									}
 								}
@@ -2760,6 +2802,42 @@ BotSpell Bot::GetBestBotSpellForResistDebuff(Bot* botCaster, Mob* tar) {
 	return result;
 }
 
+BotSpell Bot::GetBestBotSpellForTwitch(Bot* botCaster, Mob* tar)
+{
+	BotSpell result;
+	bool spellSelected = false;
+
+	result.SpellId = 0;
+	result.SpellIndex = 0;
+	result.ManaCost = 0;
+
+	if (!tar)
+		return result;
+
+	if (botCaster->AI_HasSpells()) {
+		std::vector<BotSpells_Struct> botSpellList = botCaster->AIBot_spells;
+
+		for (int i = botSpellList.size() - 1; i >= 0; i--) {
+			if (!IsValidSpell(botSpellList[i].spellid)) {
+				// this is both to quit early to save cpu and to avoid casting bad spells
+				// Bad info from database can trigger this incorrectly, but that should be fixed in DB, not here
+				continue;
+			}
+
+			if ((botSpellList[i].type & SpellType_Twitch) || IsTwitchSpell(botSpellList[i].spellid))
+			{
+				result.SpellId = botSpellList[i].spellid;
+				result.SpellIndex = i;
+				result.ManaCost = botSpellList[i].manacost;
+
+				break;
+			}
+		}
+	}
+
+	return result;
+}
+
 BotSpell Bot::GetBestBotSpellForCure(Bot* botCaster, Mob* tar) {
 	BotSpell_wPriority result;
 	bool spellSelected = false;
@@ -2940,6 +3018,9 @@ uint8 Bot::GetChanceToCastBySpellType(uint32 spellType)
 		break;
 	case SpellType_PreCombatBuffSong:
 		spell_type_index = spellTypeIndexPreCombatBuffSong;
+		break;
+	case SpellType_Twitch:
+		spell_type_index = spellTypeIndexTwitch;
 		break;
 	default:
 		break;

@@ -119,11 +119,12 @@ public:
 		spellTypeIndexInCombatBuffSong,
 		spellTypeIndexOutOfCombatBuffSong,
 		spellTypeIndexPreCombatBuff,
-		spellTypeIndexPreCombatBuffSong
+		spellTypeIndexPreCombatBuffSong,
+		spellTypeIndexTwitch
 	};
 
 	static const uint32 SPELL_TYPE_FIRST = spellTypeIndexNuke;
-	static const uint32 SPELL_TYPE_LAST = spellTypeIndexPreCombatBuffSong;
+	static const uint32 SPELL_TYPE_LAST = spellTypeIndexTwitch;
 	static const uint32 SPELL_TYPE_COUNT = SPELL_TYPE_LAST + 1;
 
 	// Class Constructors
@@ -228,6 +229,7 @@ public:
 	uint8 GetNumberNeedingHealedInRaidGroup(uint8& need_healed, uint8 hpr, bool includePets, Raid* raid);
 	bool GetNeedsCured(Mob *tar);
 	bool GetNeedsHateRedux(Mob *tar);
+	bool GetNeedsTwitched(Mob* tar);
 	bool HasOrMayGetAggro();
 	void SetDefaultBotStance();
 	void SetSurname(std::string_view bot_surname);
@@ -450,6 +452,7 @@ public:
 	static BotSpell GetDebuffBotSpell(Bot* botCaster, Mob* target);
 	static BotSpell GetBestBotSpellForCure(Bot* botCaster, Mob* target);
 	static BotSpell GetBestBotSpellForResistDebuff(Bot* botCaster, Mob* target);
+	static BotSpell GetBestBotSpellForTwitch(Bot* botCaster, Mob* tar);
 
 	static NPCType *CreateDefaultNPCTypeStructForBot(
 		const std::string& botName,
@@ -770,6 +773,7 @@ public:
 	bool BotCastHateReduction(Mob* tar, uint8 botLevel, const BotSpell& botSpell);
 	bool BotCastCombatSong(Mob* tar, uint8 botLevel);
 	bool BotCastSong(Mob* tar, uint8 botLevel);
+	bool BotCastTwitch(Mob* tar, uint8 botLevel, BotSpell& botSpell);
 
 	bool CheckIfIncapacitated();
 	bool IsAIProcessValid(const Client* bot_owner, const Group* bot_group, const Raid* raid);

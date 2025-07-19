@@ -1251,12 +1251,14 @@ public:
 	inline uint32		DontRootMeBefore() const { return pDontRootMeBefore; }
 	inline uint32		DontSnareMeBefore() const { return pDontSnareMeBefore; }
 	inline uint32		DontCureMeBefore() const { return pDontCureMeBefore; }
+	inline uint32		DontTwitchMeBefore() const { return pDontTwitchMeBefore; }
 	void				SetDontRootMeBefore(uint32 time) { pDontRootMeBefore = time; }
 	void				SetDontHealMeBefore(uint32 time) { pDontHealMeBefore = time; }
 	void				SetDontBuffMeBefore(uint32 time) { pDontBuffMeBefore = time; }
 	void				SetDontDotMeBefore(uint32 time) { pDontDotMeBefore = time; }
 	void				SetDontSnareMeBefore(uint32 time) { pDontSnareMeBefore = time; }
 	void				SetDontCureMeBefore(uint32 time) { pDontCureMeBefore = time; }
+	void				SetDontTwitchMeBefore(uint32 time) { pDontTwitchMeBefore = time; }
 
 	// calculate interruption of spell via movement of mob
 	void SaveSpellLoc() { m_SpellLocation = glm::vec3(m_Position); }
@@ -1854,6 +1856,7 @@ protected:
 	uint32 pDontRootMeBefore;
 	uint32 pDontSnareMeBefore;
 	uint32 pDontCureMeBefore;
+	uint32 pDontTwitchMeBefore;
 
 	// hp event
 	int nexthpevent;

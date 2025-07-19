@@ -7725,6 +7725,23 @@ int Bot::GroupLeadershipAAOffenseEnhancement() {
 	return 0;
 }
 
+bool Bot::GetNeedsTwitched(Mob* tar)
+{
+	bool needTwitched = false;
+	if (!tar || tar == this) { // Exclude self
+		return false;
+	}
+	if (tar)
+	{
+		if (tar->GetManaRatio() < RuleR(Bot, ManaTwitchThreshold))
+		{
+			needTwitched = true;
+		}
+	}
+
+	return needTwitched;
+}
+
 bool Bot::GetNeedsCured(Mob *tar) {
 	bool needCured = false;
 	if (tar) {

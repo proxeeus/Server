@@ -782,6 +782,7 @@ RULE_BOOL(Bots, CanClickMageEpicV1, true, "Whether or not bots are allowed to cl
 RULE_BOOL(Bots, BotsIgnoreLevelBasedHasteCaps, false, "Ignores hard coded level based haste caps.")
 RULE_INT(Bots, BotsHasteCap, 100, "Haste cap for non-v3(over haste) haste")
 RULE_INT(Bots, BotsHastev3Cap, 25, "Haste cap for v3(over haste) haste")
+RULE_REAL(Bots, ManaTwitchThreshold, 90.0, "Threshold for mana twitch spells (ie: Necros) to be used, default is 90%")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBots)

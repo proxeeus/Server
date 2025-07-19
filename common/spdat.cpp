@@ -2440,3 +2440,14 @@ bool IsManaRegenSpell(uint16 spell_id)
 	}
 	return false;
 }
+
+bool IsTwitchSpell(uint16 spell_id)
+{
+	if (IsValidSpell(spell_id)) {
+		if (spell_id == 1514) {	// Todo: add more twitch spells
+			return true;
+		}
+		
+	}
+	return false;
+}
