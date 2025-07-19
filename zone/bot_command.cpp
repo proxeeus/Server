@@ -732,309 +732,74 @@ private:
 #define GT_SPELLS_STR(l, r, s) (strcasecmp(spells[l->spell_id].s, spells[r->spell_id].s) > 0)
 
 
-		for (auto map_iter = bot_command_spells.begin(); map_iter != bot_command_spells.end(); ++map_iter) {
-			if (map_iter->second.size() < 2)
+// Iterate through all bot command spells
+		for (auto& map_iter : bot_command_spells) {
+			if (map_iter.second.size() < 2) {
+				// Skip lists with fewer than 2 elements
 				continue;
+			}
 
-			auto spell_type = map_iter->first;
-			bcst_list* spell_list = &map_iter->second;
-			switch (spell_type) {
-			case BCEnum::SpT_BindAffinity:
-				if (RuleB(Bots, PreferNoManaCommandSpells)) {
-					spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-						if (LT_SPELLS(l, r, mana))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && LT_STBASE(l, r, target_type))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
+			auto spell_type = map_iter.first;
+			bcst_list* spell_list = &map_iter.second;
 
-						return false;
-					});
+			// Debugging: Log the size of the list
+			LogInfo("Sorting spell list for type [{}], size [{}]", BCEnum::SpellTypeEnumToString(spell_type).c_str(), spell_list->size());
+
+			// Validate list elements before sorting
+			for (auto& entry : *spell_list) {
+				if (!entry) {
+					LogError("Null pointer encountered in spell list for type [{}]", BCEnum::SpellTypeEnumToString(spell_type).c_str());
+					continue;
 				}
-				else {
+				assert(entry->spell_id >= 0); // Ensure spell_id is valid
+			}
+
+			// Sorting logic based on spell type
+			try {
+				switch (spell_type) {
+				case BCEnum::SpT_BindAffinity:
 					spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-						if (LT_STBASE(l, r, target_type))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
-
+						if (!l || !r) return false; // Handle null pointers
+						if (spells[l->spell_id].mana < spells[r->spell_id].mana) return true;
+						if (spells[l->spell_id].mana == spells[r->spell_id].mana && l->target_type < r->target_type) return true;
+						if (spells[l->spell_id].mana == spells[r->spell_id].mana && l->target_type == r->target_type && l->spell_level < r->spell_level) return true;
 						return false;
-					});
-				}
-				continue;
-			case BCEnum::SpT_Charm:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_SPELLS(l, r, resist_difficulty))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, max_value, 1))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
+						});
+					break;
 
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Cure: // per-use sorting in command handler
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (l->spell_id < r->spell_id)
-						return true;
-					if (l->spell_id == r->spell_id && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Depart:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, caster_class))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, caster_class) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, caster_class) && EQ_STBASE(l, r, spell_level) && LT_SPELLS_STR(l, r, name))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Escape:
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (LT_STESCAPE(l, r, lesser))
-						return true;
-					if (EQ_STESCAPE(l, r, lesser) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STESCAPE(l, r, lesser) && EQ_STBASE(l, r, target_type) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STESCAPE(l, r, lesser) && EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Identify:
-				if (RuleB(Bots, PreferNoManaCommandSpells)) {
+				case BCEnum::SpT_Charm:
 					spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-						if (LT_SPELLS(l, r, mana))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && LT_STBASE(l, r, target_type))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_SPELLS(l, r, mana) && EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
-
+						if (!l || !r) return false; // Handle null pointers
+						if (spells[l->spell_id].resist_difficulty < spells[r->spell_id].resist_difficulty) return true;
+						if (spells[l->spell_id].resist_difficulty == spells[r->spell_id].resist_difficulty && l->target_type < r->target_type) return true;
 						return false;
-					});
-				}
-				else {
+						});
+					break;
+
+				case BCEnum::SpT_Depart:
 					spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-						if (LT_STBASE(l, r, target_type))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
-
+						if (!l || !r) return false; // Handle null pointers
+						if (l->target_type < r->target_type) return true;
+						if (l->target_type == r->target_type && l->caster_class < r->caster_class) return true;
 						return false;
-					});
+						});
+					break;
+
+				case BCEnum::SpT_Resurrect:
+					spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
+						if (!l || !r) return false; // Handle null pointers
+						if (spells[l->spell_id].base_value[EFFECTIDTOINDEX(1)] > spells[r->spell_id].base_value[EFFECTIDTOINDEX(1)]) return true;
+						return false;
+						});
+					break;
+
+				default:
+					LogWarning("Unhandled spell type [{}] during sorting", BCEnum::SpellTypeEnumToString(spell_type).c_str());
+					break;
 				}
-				continue;
-			case BCEnum::SpT_Invisibility:
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (LT_STINVISIBILITY(l, r, invis_type))
-						return true;
-					if (EQ_STINVISIBILITY(l, r, invis_type) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STINVISIBILITY(l, r, invis_type) && EQ_STBASE(l, r, target_type) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STINVISIBILITY(l, r, invis_type) && EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Levitation:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && LT_SPELLS(l, r, zone_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS(l, r, zone_type) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS(l, r, zone_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Lull:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_SPELLS(l, r, resist_difficulty))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, max_value, 3))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 3) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 3) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Mesmerize:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (GT_SPELLS(l, r, resist_difficulty))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, max_value, 1))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_SPELLS(l, r, resist_difficulty) && EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_MovementSpeed:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, base_value, 2))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 2) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 2) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Resistance: // per-use sorting in command handler
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (l->spell_id < r->spell_id)
-						return true;
-					if (l->spell_id == r->spell_id && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Resurrect:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (GT_SPELLS_EFFECT_ID(l, r, base_value, 1))
-						return true;
-					if (EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && EQ_STBASE(l, r, target_type) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Rune:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, max_value, 1))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, max_value, 1) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_SendHome:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Size:
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-
-					auto l_size_type = l->SafeCastToSize()->size_type;
-					auto r_size_type = r->SafeCastToSize()->size_type;
-					if (l_size_type < r_size_type)
-						return true;
-					if (l_size_type == BCEnum::SzT_Enlarge && r_size_type == BCEnum::SzT_Enlarge) {
-						if (EQ_STBASE(l, r, target_type) && GT_SPELLS_EFFECT_ID(l, r, base_value, 1))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && GT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
-					}
-					if (l_size_type == BCEnum::SzT_Reduce && r_size_type == BCEnum::SzT_Reduce) {
-						if (EQ_STBASE(l, r, target_type) && LT_SPELLS_EFFECT_ID(l, r, base_value, 1))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && GT_STBASE(l, r, spell_level))
-							return true;
-						if (EQ_STBASE(l, r, target_type) && EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-							return true;
-					}
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_Stance:
-				spell_list->sort([](STBaseEntry* l, STBaseEntry* r) {
-					if (LT_STSTANCE(l, r, stance_type))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_SummonCorpse:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (GT_SPELLS_EFFECT_ID(l, r, base_value, 1))
-						return true;
-					if (EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && LT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_SPELLS_EFFECT_ID(l, r, base_value, 1) && EQ_STBASE(l, r, spell_level) && EQ_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			case BCEnum::SpT_WaterBreathing:
-				spell_list->sort([](const STBaseEntry* l, const STBaseEntry* r) {
-					if (LT_STBASE(l, r, target_type))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && GT_STBASE(l, r, spell_level))
-						return true;
-					if (EQ_STBASE(l, r, target_type) && EQ_STBASE(l, r, spell_level) && LT_STBASE(l, r, caster_class))
-						return true;
-
-					return false;
-				});
-				continue;
-			default:
-				continue;
+			}
+			catch (const std::exception& e) {
+				LogError("Exception occurred during sorting for spell type [{}]: {}", BCEnum::SpellTypeEnumToString(spell_type).c_str(), e.what());
 			}
 		}
 	}
