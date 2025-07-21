@@ -181,6 +181,16 @@ public:
 			e.fast_heals          = row[3] ? static_cast<uint32_t>(strtoul(row[3], nullptr, 10)) : 0;
 			e.adaptive_targeting  = row[4] ? static_cast<uint32_t>(strtoul(row[4], nullptr, 10)) : 0;
 			e.casting_override    = row[5] ? static_cast<uint32_t>(strtoul(row[5], nullptr, 10)) : 0;
+			e.safe_hp_base		  = row[6] ? static_cast<float>(atof(row[6])) : 0.0f;
+			e.safe_hp_cloth		  = row[7] ? static_cast<float>(atof(row[7])) : 0.0f;
+			e.safe_hp_leather	  = row[8] ? static_cast<float>(atof(row[8])) : 0.0f;
+			e.safe_hp_chain		  = row[9] ? static_cast<float>(atof(row[9])) : 0.0f;
+			e.safe_hp_plate		  = row[10] ? static_cast<float>(atof(row[10])) : 0.0f;
+			e.critical_hp_base	  = row[11] ? static_cast<float>(atof(row[11])) : 0.0f;
+			e.critical_hp_cloth	  = row[12] ? static_cast<float>(atof(row[12])) : 0.0f;
+			e.critical_hp_leather = row[13] ? static_cast<float>(atof(row[13])) : 0.0f;
+			e.critical_hp_chain   = row[14] ? static_cast<float>(atof(row[14])) : 0.0f;
+			e.critical_hp_plate   = row[15] ? static_cast<float>(atof(row[15])) : 0.0f;
 
 			return e;
 		}
