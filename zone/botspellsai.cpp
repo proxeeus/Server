@@ -1922,8 +1922,7 @@ bool Bot::AIHealRotation(Mob* tar, bool useFastHeals) {
 	}
 
 	if (castedSpell) {
-		BotGroupSay(
-			this,
+		Shout(
 			fmt::format(
 				"Casting {} on {}, please stay in range!",
 				spells[botSpell.SpellId].name,
