@@ -2170,6 +2170,14 @@ void Bot::AI_Process()
 				}
 			}
 
+			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
+			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC())
+			{
+				Taunt(tar->CastToNPC(), true, 100, false, 50000);
+				taunt_timer.Start(TauntReuseTime * 1000);
+				Shout("Come on, hit me your spineless goblin !");
+			}
+
 			//
 			// Proxeeus: experimental code to try & get non-tanking bots to go automatically at the back of the current
 			// target (to prevent ripostes and stuff).
@@ -4968,7 +4976,14 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 			else {
 				BotGroupSay(this, "Taunting %s", target->GetCleanName());
 			}
-			Taunt(target->CastToNPC(), false);
+			// Test : Warrior Bots are Masters of Roast
+			if(GetClass() == Class::Warrior)
+			{
+				Taunt(target->CastToNPC(), true, 100, false, 50000);
+				Shout("Come on, hit me your spineless goblin !");
+			}
+			else
+				Taunt(target->CastToNPC(), false);
 			taunt_timer.Start(TauntReuseTime * 1000);
 		}
 	}

@@ -15405,7 +15405,15 @@ void Client::Handle_OP_Taunt(const EQApplicationPacket *app)
 		return;
 	}
 
-	Taunt(GetTarget()->CastToNPC(), false);
+	// Proxeeus : Warriors don't do much, but they fucking ROAST mobs. At least in my world.
+	if (GetClass() == Class::Warrior)
+	{
+		Taunt(GetTarget()->CastToNPC(), true, 100, false, 50000);
+		Say("I'll teach you to mess with me, you spineless cur!");
+		Emote("You taunt %s, causing it to focus its attention on you!", GetTarget()->GetName());
+	}
+	else
+		Taunt(GetTarget()->CastToNPC(), false);
 	return;
 }
 
