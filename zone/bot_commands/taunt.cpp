@@ -1,4 +1,5 @@
 #include "../bot_command.h"
+#include "../../common/repositories/bot_data_repository.h"
 
 void bot_command_taunt(Client *c, const Seperator *sep)
 {
@@ -48,6 +49,8 @@ void bot_command_taunt(Client *c, const Seperator *sep)
 		} else {
 			bot_iter->SetTaunting(taunt_state);
 		}
+
+		BotDataRepository::SetTaunting(database, bot_iter->GetBotID(), bot_iter->IsTaunting());
 
 		if (sbl.size() == 1) {
 			Bot::BotGroupSay(

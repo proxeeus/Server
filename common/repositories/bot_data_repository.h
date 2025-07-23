@@ -84,6 +84,17 @@ public:
 
 		return results.Success();
 	}
+
+	static bool SetTaunting(Database& db, uint32 bot_id, bool taunting) {
+		auto results = db.QueryDatabase(
+			fmt::format(
+				"UPDATE `bot_data` SET `taunting` = {} WHERE `bot_id` = {}",
+				taunting ? 1 : 0,
+				bot_id
+			)
+		);
+		return results.Success();
+	}
 };
 
 #endif //EQEMU_BOT_DATA_REPOSITORY_H

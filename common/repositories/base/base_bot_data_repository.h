@@ -71,6 +71,7 @@ public:
 		uint8_t     enforce_spell_settings;
 		uint8_t     archery_setting;
 		uint32_t    caster_range;
+		uint8_t		taunting;
 	};
 
 	static std::string PrimaryKey()
@@ -133,6 +134,7 @@ public:
 			"enforce_spell_settings",
 			"archery_setting",
 			"caster_range",
+			"taunting",
 		};
 	}
 
@@ -191,6 +193,7 @@ public:
 			"enforce_spell_settings",
 			"archery_setting",
 			"caster_range",
+			"taunting",
 		};
 	}
 
@@ -283,6 +286,7 @@ public:
 		e.enforce_spell_settings = 0;
 		e.archery_setting        = 0;
 		e.caster_range           = 300;
+		e.taunting				 = 0;
 
 		return e;
 	}
@@ -371,6 +375,7 @@ public:
 			e.enforce_spell_settings = row[49] ? static_cast<uint8_t>(strtoul(row[49], nullptr, 10)) : 0;
 			e.archery_setting        = row[50] ? static_cast<uint8_t>(strtoul(row[50], nullptr, 10)) : 0;
 			e.caster_range           = row[51] ? static_cast<uint32_t>(strtoul(row[51], nullptr, 10)) : 300;
+			e.taunting				 = row[52] ? static_cast<uint8_t>(strtoul(row[52], nullptr, 10)) : 0;
 
 			return e;
 		}
@@ -455,6 +460,7 @@ public:
 		v.push_back(columns[49] + " = " + std::to_string(e.enforce_spell_settings));
 		v.push_back(columns[50] + " = " + std::to_string(e.archery_setting));
 		v.push_back(columns[51] + " = " + std::to_string(e.caster_range));
+		v.push_back(columns[52] + " = " + std::to_string(e.taunting));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -528,6 +534,7 @@ public:
 		v.push_back(std::to_string(e.enforce_spell_settings));
 		v.push_back(std::to_string(e.archery_setting));
 		v.push_back(std::to_string(e.caster_range));
+		v.push_back(std::to_string(e.taunting));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -609,6 +616,7 @@ public:
 			v.push_back(std::to_string(e.enforce_spell_settings));
 			v.push_back(std::to_string(e.archery_setting));
 			v.push_back(std::to_string(e.caster_range));
+			v.push_back(std::to_string(e.taunting));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}
@@ -694,6 +702,7 @@ public:
 			e.enforce_spell_settings = row[49] ? static_cast<uint8_t>(strtoul(row[49], nullptr, 10)) : 0;
 			e.archery_setting        = row[50] ? static_cast<uint8_t>(strtoul(row[50], nullptr, 10)) : 0;
 			e.caster_range           = row[51] ? static_cast<uint32_t>(strtoul(row[51], nullptr, 10)) : 300;
+			e.taunting				 = row[52] ? static_cast<uint8_t>(strtoul(row[52], nullptr, 10)) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -770,6 +779,7 @@ public:
 			e.enforce_spell_settings = row[49] ? static_cast<uint8_t>(strtoul(row[49], nullptr, 10)) : 0;
 			e.archery_setting        = row[50] ? static_cast<uint8_t>(strtoul(row[50], nullptr, 10)) : 0;
 			e.caster_range           = row[51] ? static_cast<uint32_t>(strtoul(row[51], nullptr, 10)) : 300;
+			e.taunting				 = row[52] ? static_cast<uint8_t>(strtoul(row[52], nullptr, 10)) : 0;
 
 			all_entries.push_back(e);
 		}
@@ -896,6 +906,7 @@ public:
 		v.push_back(std::to_string(e.enforce_spell_settings));
 		v.push_back(std::to_string(e.archery_setting));
 		v.push_back(std::to_string(e.caster_range));
+		v.push_back(std::to_string(e.taunting));
 
 		auto results = db.QueryDatabase(
 			fmt::format(
@@ -970,6 +981,7 @@ public:
 			v.push_back(std::to_string(e.enforce_spell_settings));
 			v.push_back(std::to_string(e.archery_setting));
 			v.push_back(std::to_string(e.caster_range));
+			v.push_back(std::to_string(e.taunting));
 
 			insert_chunks.push_back("(" + Strings::Implode(",", v) + ")");
 		}

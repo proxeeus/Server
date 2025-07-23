@@ -28,6 +28,7 @@
 #include "../common/data_verification.h"
 #include "../common/repositories/criteria/content_filter_criteria.h"
 #include "../common/skill_caps.h"
+#include "../../common/repositories/bot_data_repository.h"
 
 // This constructor is used during the bot create command
 Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1), ping_timer(1) {
@@ -1347,6 +1348,7 @@ bool Bot::Save()
 	database.botdb.SaveBuffs(this);
 	database.botdb.SaveTimers(this);
 	database.botdb.SaveStance(this);
+	BotDataRepository::SetTaunting(database, GetBotID(), IsTaunting());
 
 	if (!SavePet())
 		bot_owner->Message(Chat::White, "Failed to save pet for '%s'", GetCleanName());
@@ -2171,7 +2173,7 @@ void Bot::AI_Process()
 			}
 
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
-			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC())
+			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
 			{
 				Taunt(tar->CastToNPC(), true, 100, false, 50000);
 				taunt_timer.Start(TauntReuseTime * 1000);
@@ -4977,7 +4979,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 				BotGroupSay(this, "Taunting %s", target->GetCleanName());
 			}
 			// Test : Warrior Bots are Masters of Roast
-			if(GetClass() == Class::Warrior)
+			if(GetClass() == Class::Warrior && IsTaunting())
 			{
 				Taunt(target->CastToNPC(), true, 100, false, 50000);
 				Shout("Come on, hit me your spineless goblin !");

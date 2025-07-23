@@ -422,6 +422,8 @@ bool BotDatabase::LoadBot(const uint32 bot_id, Bot*& loaded_bot)
 		loaded_bot->SetBotArcherySetting(e.archery_setting);
 
 		loaded_bot->SetBotCasterRange(e.caster_range);
+
+		loaded_bot->SetTaunting(e.taunting == 1);
 	}
 
 	return true;
