@@ -1,0 +1,17 @@
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+libs/
+
+./vscode
+.git/
+.gitignore
+
+*.jpg
+*.png
+*.ico
+*.zip
+*.rar
+*.pdf
