@@ -99,7 +99,6 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	m_fd_pull_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
-	m_fd_abort_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -225,7 +224,6 @@ Bot::Bot(
 	m_fd_pull_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
-	m_fd_abort_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -3210,8 +3208,13 @@ bool Bot::AddsHaveReturned() const {
 		if (mob->IsEngaged()) {
 			return false;
 		}
-		if (mob->IsMoving()) {
-			return false; // still walking back to spawn
+		if (!mob->IsNPC()) {
+			continue;
+		}
+		// Wait until the add is physically back near its spawn point
+		const auto spawn = mob->CastToNPC()->GetSpawnPoint();
+		if (DistanceSquared(mob->GetPosition(), spawn) > FD_ADD_HOME_RADIUS_SQ) {
+			return false; // still pathing home
 		}
 	}
 	return true;
@@ -3249,7 +3252,6 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
-	m_fd_abort_timer.Disable();
 }
 
 void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
@@ -3282,7 +3284,6 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			pull_target->AddToHateList(this, 1);
 			SetTarget(pull_target);
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
-			m_fd_abort_timer.Start(FD_ABORT_TIMEOUT_MS);
 			const auto tag_msg = fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName());
 			if (raid) {
 				raid->RaidSay(tag_msg.c_str(), GetCleanName(), 0, 100);
@@ -3312,17 +3313,6 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	}
 
 	case FDPullState::FeignWait: {
-		if (m_fd_abort_timer.Check()) {
-			FDPullReset(bot_owner);
-			const char* abort_msg = "Adds never cleared — FD pull aborted.";
-			if (raid) {
-				raid->RaidSay(abort_msg, GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, abort_msg);
-			}
-			return;
-		}
-
 		if (!m_fd_feign_check_timer.Check()) {
 			return;
 		}
@@ -3374,17 +3364,6 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	}
 
 	case FDPullState::RetagKiting: {
-		if (m_fd_abort_timer.Check()) {
-			FDPullReset(bot_owner);
-			const char* abort_msg = "FD pull timed out — aborting.";
-			if (raid) {
-				raid->RaidSay(abort_msg, GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, abort_msg);
-			}
-			return;
-		}
-
 		if (IsBeingChasedByAdds(pull_target)) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			m_fd_pull_state = FDPullState::Tagging;
@@ -3412,7 +3391,6 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			m_fd_pull_state = FDPullState::None;
 			m_fd_tag_timer.Disable();
 			m_fd_feign_check_timer.Disable();
-			m_fd_abort_timer.Disable();
 			const auto pull_msg = fmt::format("Pulling {} solo!", pull_target->GetCleanName());
 			if (raid) {
 				raid->RaidSay(pull_msg.c_str(), GetCleanName(), 0, 100);
