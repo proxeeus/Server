@@ -1782,6 +1782,7 @@ void bot_command_invite(Client* c, const Seperator* sep);
 void bot_command_stats(Client* c, const Seperator* sep);
 void bot_command_feign(Client* c, const Seperator* sep);
 void bot_command_rpull(Client* c, const Seperator* sep);
+void bot_command_fdpull(Client* c, const Seperator* sep);
 void bot_command_summon_drink(Client* c, const Seperator* sep);
 void bot_command_summon_food(Client* c, const Seperator* sep);
 void bot_command_ultravision(Client* c, const Seperator* sep);

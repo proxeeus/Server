@@ -95,6 +95,11 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	SetPullFlag(false);
 	SetPullingFlag(false);
 	SetReturningFlag(false);
+	m_fd_pull_state     = FDPullState::None;
+	m_fd_pull_target_id = 0;
+	m_fd_tag_timer.Disable();
+	m_fd_feign_check_timer.Disable();
+	m_fd_abort_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -216,6 +221,11 @@ Bot::Bot(
 	SetPullFlag(false);
 	SetPullingFlag(false);
 	SetReturningFlag(false);
+	m_fd_pull_state     = FDPullState::None;
+	m_fd_pull_target_id = 0;
+	m_fd_tag_timer.Disable();
+	m_fd_feign_check_timer.Disable();
+	m_fd_abort_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -2058,6 +2068,15 @@ void Bot::AI_Process()
 
 	HealRotationChecks();
 
+	if (IsFDPulling()) {
+		FDPullerProcess(bot_owner, raid);
+		if (IsFDPulling()) { // still in FD state — skip normal AI this tick
+			return;
+		}
+		// FD state machine handed off to normal pull machinery (Retagging → Pulling transition)
+		// Fall through so the PullingFlag is processed immediately this tick
+	}
+
 	if (GetAttackFlag()) { // Push owner's target onto our hate list
 		SetOwnerTarget(bot_owner);
 	}
@@ -3156,6 +3175,259 @@ void Bot::BotPullerProcess(Client* bot_owner, Raid* raid) {
 				GetPet()->SetPetOrder(SPO_Guard);
 			}
 		}
+	}
+}
+
+void Bot::ExecuteFeignDeath() {
+	if (IsFDPulling()) {
+		m_fd_pull_add_ids.clear();
+	}
+	std::list<NPC*> npc_list;
+	entity_list.GetNPCList(npc_list);
+	for (auto* npc : npc_list) {
+		if (npc->IsOnHatelist(this)) {
+			if (IsFDPulling() && static_cast<uint16>(npc->GetID()) != m_fd_pull_target_id && !npc->IsPet()) {
+				m_fd_pull_add_ids.push_back(static_cast<uint16>(npc->GetID()));
+			}
+			npc->WipeHateList();
+		}
+	}
+	WipeHateList();
+	if (IsMoving()) {
+		StopMoving();
+	}
+	DoAnim(16);
+	SendAppearancePacket(AppearanceType::Animation, 114, true, false);
+	SetFeigned(true, this);
+}
+
+bool Bot::AddsHaveReturned() const {
+	for (uint16 add_id : m_fd_pull_add_ids) {
+		auto* mob = entity_list.GetMob(add_id);
+		if (!mob || mob->GetHP() <= 0) {
+			continue; // dead or despawned — no longer a threat
+		}
+		if (mob->IsEngaged()) {
+			return false;
+		}
+		if (mob->IsMoving()) {
+			return false; // still walking back to spawn
+		}
+	}
+	return true;
+}
+
+bool Bot::IsBeingChasedByAdds(const Mob* ignore_target) const {
+	std::list<NPC*> npc_list;
+	entity_list.GetNPCList(npc_list);
+	for (auto* npc : npc_list) {
+		if (npc == ignore_target) {
+			continue;
+		}
+		if (npc->IsPet()) {
+			continue;
+		}
+		if (npc->IsOnHatelist(const_cast<Bot*>(this))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void Bot::FDPullReset(Client* bot_owner) {
+	SetFeigned(false, this);
+	SetPullingFlag(false);
+	SetReturningFlag(false);
+	if (bot_owner) {
+		bot_owner->SetBotPulling(false);
+	}
+	if (HasPet()) {
+		GetPet()->SetPetOrder(m_previous_pet_order);
+	}
+	m_fd_pull_state     = FDPullState::None;
+	m_fd_pull_target_id = 0;
+	m_fd_pull_add_ids.clear();
+	m_fd_tag_timer.Disable();
+	m_fd_feign_check_timer.Disable();
+	m_fd_abort_timer.Disable();
+}
+
+void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
+	auto* pull_target = entity_list.GetMob(m_fd_pull_target_id);
+
+	if (!pull_target || !pull_target->IsNPC() || pull_target->GetHP() <= 0) {
+		FDPullReset(bot_owner);
+		const char* msg = "FD pull target lost — aborting.";
+		if (raid) {
+			raid->RaidSay(msg, GetCleanName(), 0, 100);
+		} else {
+			BotGroupSay(this, msg);
+		}
+		return;
+	}
+
+	switch (m_fd_pull_state) {
+
+	case FDPullState::Tagging: {
+		if (!m_fd_tag_timer.Enabled()) {
+			// Haven't tagged yet — move to target first
+			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+			if (dist_sq > FD_TAG_RANGE_SQ) {
+				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+				return;
+			}
+			// In melee range — tag the target
+			InterruptSpell();
+			AddToHateList(pull_target, 1);
+			pull_target->AddToHateList(this, 1);
+			SetTarget(pull_target);
+			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+			m_fd_abort_timer.Start(FD_ABORT_TIMEOUT_MS);
+			const auto tag_msg = fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName());
+			if (raid) {
+				raid->RaidSay(tag_msg.c_str(), GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, tag_msg.c_str());
+			}
+		} else {
+			// After tagging: run toward owner for FD_TAG_WAIT_MS to create separation, then FD.
+			// Never FD immediately — the running distance determines how far adds must walk home
+			// before the monk re-enters their aggro range on the next approach.
+			if (!m_fd_tag_timer.Check()) {
+				RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+			} else {
+				const bool had_adds = IsBeingChasedByAdds(pull_target);
+				ExecuteFeignDeath();
+				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+				m_fd_pull_state = FDPullState::FeignWait;
+				const char* fd_msg = had_adds ? "Adds incoming — feigning." : "Feigning — pulling solo.";
+				if (raid) {
+					raid->RaidSay(fd_msg, GetCleanName(), 0, 100);
+				} else {
+					BotGroupSay(this, fd_msg);
+				}
+			}
+		}
+		break;
+	}
+
+	case FDPullState::FeignWait: {
+		if (m_fd_abort_timer.Check()) {
+			FDPullReset(bot_owner);
+			const char* abort_msg = "Adds never cleared — FD pull aborted.";
+			if (raid) {
+				raid->RaidSay(abort_msg, GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, abort_msg);
+			}
+			return;
+		}
+
+		if (!m_fd_feign_check_timer.Check()) {
+			return;
+		}
+		m_fd_feign_check_timer.Start(FD_FEIGN_CHECK_MS);
+
+		if (AddsHaveReturned()) {
+			SetFeigned(false, this);
+			m_fd_pull_state = FDPullState::Retagging;
+			const auto alone_msg = fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName());
+			if (raid) {
+				raid->RaidSay(alone_msg.c_str(), GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, alone_msg.c_str());
+			}
+		}
+		break;
+	}
+
+	case FDPullState::Retagging: {
+		// If adds aggro during approach, run back toward owner first then FD (same as initial tag cycle)
+		if (IsBeingChasedByAdds(pull_target)) {
+			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+			m_fd_pull_state = FDPullState::Tagging;
+			if (raid) {
+				raid->RaidSay("Adds aggroed on approach — running back.", GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, "Adds aggroed on approach — running back.");
+			}
+			return;
+		}
+		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+		if (dist_sq > FD_TAG_RANGE_SQ) {
+			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+			return;
+		}
+		// In range — re-tag then enter kiting loop watching for re-aggro
+		InterruptSpell();
+		AddToHateList(pull_target, 1);
+		pull_target->AddToHateList(this, 1);
+		SetTarget(pull_target);
+		m_fd_pull_state = FDPullState::RetagKiting;
+		const auto retag_msg = fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName());
+		if (raid) {
+			raid->RaidSay(retag_msg.c_str(), GetCleanName(), 0, 100);
+		} else {
+			BotGroupSay(this, retag_msg.c_str());
+		}
+		break;
+	}
+
+	case FDPullState::RetagKiting: {
+		if (m_fd_abort_timer.Check()) {
+			FDPullReset(bot_owner);
+			const char* abort_msg = "FD pull timed out — aborting.";
+			if (raid) {
+				raid->RaidSay(abort_msg, GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, abort_msg);
+			}
+			return;
+		}
+
+		if (IsBeingChasedByAdds(pull_target)) {
+			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+			m_fd_pull_state = FDPullState::Tagging;
+			if (raid) {
+				raid->RaidSay("Adds re-aggroed — running back.", GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, "Adds re-aggroed — running back.");
+			}
+			return;
+		}
+
+		float owner_dist_sq = DistanceSquared(GetPosition(), bot_owner->GetPosition());
+		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
+			InterruptSpell();
+			WipeHateList();
+			AddToHateList(pull_target, 1);
+			SetTarget(pull_target);
+			SetPullingFlag();
+			bot_owner->SetBotPulling();
+			if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
+				GetPet()->WipeHateList();
+				GetPet()->SetTarget(nullptr);
+				GetPet()->SetPetOrder(SPO_Guard);
+			}
+			m_fd_pull_state = FDPullState::None;
+			m_fd_tag_timer.Disable();
+			m_fd_feign_check_timer.Disable();
+			m_fd_abort_timer.Disable();
+			const auto pull_msg = fmt::format("Pulling {} solo!", pull_target->GetCleanName());
+			if (raid) {
+				raid->RaidSay(pull_msg.c_str(), GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, pull_msg.c_str());
+			}
+			return;
+		}
+
+		RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+		break;
+	}
+
+	default:
+		break;
 	}
 }
 
@@ -4492,6 +4764,10 @@ bool Bot::Death(Mob *killer_mob, int64 damage, uint16 spell_id, EQ::skills::Skil
 	}
 
 	LeaveHealRotationMemberPool();
+
+	if (IsFDPulling() && my_owner && my_owner->IsClient()) {
+		FDPullReset(my_owner->CastToClient());
+	}
 
 	if ((GetPullingFlag() || GetReturningFlag()) && my_owner && my_owner->IsClient()) {
 		my_owner->CastToClient()->SetBotPulling(false);

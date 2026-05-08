@@ -49,6 +49,14 @@ extern WorldServer worldserver;
 constexpr int BotAISpellRange = 100; // TODO: Write a method that calcs what the bot's spell range is based on spell, equipment, AA, whatever and replace this
 constexpr int NegativeItemReuse = -1; // Unlinked timer for items
 
+// FD Pull tuning constants
+constexpr int   FD_TAG_WAIT_MS           = 2000;            // ms monk runs toward owner before FD'ing after tag
+constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 10000;           // ms to wait after FD before first "adds gone?" check
+constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subsequent "adds gone?" checks
+constexpr int   FD_ABORT_TIMEOUT_MS      = 120000;          // max wait before aborting (2 min)
+constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — used for owner proximity on pull handoff
+constexpr float FD_TAG_RANGE_SQ          = 60.0f * 60.0f;   // melee tag range²
+
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
 // pS		positive Slower
@@ -126,6 +134,14 @@ public:
 	static const uint32 SPELL_TYPE_FIRST = spellTypeIndexNuke;
 	static const uint32 SPELL_TYPE_LAST = spellTypeIndexTwitch;
 	static const uint32 SPELL_TYPE_COUNT = SPELL_TYPE_LAST + 1;
+
+	enum class FDPullState : uint8_t {
+		None         = 0,
+		Tagging      = 1,  // moving to target, tagging it, kiting back
+		FeignWait    = 2,  // feigned, waiting for physical separation
+		Retagging    = 3,  // moving back to target to re-tag
+		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
+	};
 
 	// Class Constructors
 	Bot(NPCType *npcTypeData, Client* botOwner);
@@ -796,6 +812,17 @@ public:
 	bool ReturningFlagChecks(Client* bot_owner, float fm_distance);
 	void BotPullerProcess(Client* bot_owner, Raid* raid);
 
+	bool IsFDPulling() const { return m_fd_pull_state != FDPullState::None; }
+	FDPullState GetFDPullState() const { return m_fd_pull_state; }
+	void SetFDPullState(FDPullState s) { m_fd_pull_state = s; }
+	uint16 GetFDPullTargetID() const { return m_fd_pull_target_id; }
+	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
+	void FDPullerProcess(Client* bot_owner, Raid* raid);
+	void ExecuteFeignDeath();
+	bool AddsHaveReturned() const;
+	bool IsBeingChasedByAdds(const Mob* ignore_target) const;
+	void FDPullReset(Client* bot_owner);
+
 
 	// Movement Methods
 	void CalcMeleeDistances(
@@ -895,6 +922,12 @@ private:
 	bool m_pull_flag;
 	bool m_pulling_flag;
 	bool m_returning_flag;
+	FDPullState          m_fd_pull_state;
+	uint16               m_fd_pull_target_id;
+	std::vector<uint16>  m_fd_pull_add_ids;
+	Timer                m_fd_tag_timer;
+	Timer                m_fd_feign_check_timer;
+	Timer                m_fd_abort_timer;
 	bool is_using_item_click;
 	uint32 m_bot_caster_range;
 	BotCastingRoles m_CastingRoles;

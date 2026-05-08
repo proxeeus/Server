@@ -26,22 +26,6 @@ void bot_command_feign(Client* bot_owner, const Seperator* sep)
 		return;
 	}
 
-	std::list<NPC*> npc_list;
-	entity_list.GetNPCList(npc_list);
-
-	// Clean all other aggroed targets on puller
-	for (std::list<NPC*>::iterator itr = npc_list.begin(); itr != npc_list.end(); ++itr)
-	{
-		NPC* npc = *itr;
-		if (npc->IsOnHatelist(puller)/* && puller->GetTarget() != npc  && puller->IsEngaged()*/)
-		{
-			npc->WipeHateList();
-		}
-	}
-	puller->WipeHateList();
-
-	puller->DoAnim(16);
-	puller->SendAppearancePacket(AppearanceType::Animation, 114, true, false);
-	puller->SetFeigned(true, puller);
+	puller->ExecuteFeignDeath();
 
 }
