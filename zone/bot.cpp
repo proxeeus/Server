@@ -3199,23 +3199,66 @@ void Bot::ExecuteFeignDeath() {
 	SetFeigned(true, this);
 }
 
+float Bot::GetFDTagRangeSq() {
+	constexpr size_t PULL_AGGRO = 5225;
+	const auto* range_inst = GetBotItem(EQ::invslot::slotRange);
+	if (range_inst) {
+		const auto* item = range_inst->GetItem();
+		if (item && item->ItemType == 7 && item->Range > 0) {
+			const float r = static_cast<float>(item->Range);
+			return r * r;
+		}
+	}
+	const float sr = spells[PULL_AGGRO].range;
+	return sr * sr;
+}
+
+void Bot::ExecuteFDTag(Mob* target) {
+	constexpr size_t PULL_AGGRO = 5225;
+	StopMoving();
+	SetTarget(target);
+
+	const auto* range_inst = GetBotItem(EQ::invslot::slotRange);
+	bool used_throwing = false;
+	if (range_inst) {
+		const auto* item = range_inst->GetItem();
+		if (item && item->ItemType == 7) {
+			BotRangedAttack(target);
+			used_throwing = true;
+		}
+	}
+	if (!used_throwing) {
+		CastSpell(PULL_AGGRO, static_cast<uint16>(target->GetID()));
+	}
+	// Guarantee mutual hate regardless of attack outcome (miss, timer, etc.)
+	AddToHateList(target, 1);
+	target->AddToHateList(this, 1);
+}
+
 bool Bot::AddsHaveReturned() const {
 	for (uint16 add_id : m_fd_pull_add_ids) {
 		auto* mob = entity_list.GetMob(add_id);
 		if (!mob || mob->GetHP() <= 0) {
-			continue; // dead or despawned — no longer a threat
+			continue;
 		}
 		if (mob->IsEngaged()) {
 			return false;
 		}
-		if (!mob->IsNPC()) {
+		// Primary: add has walked far enough from the monk's feign position.
+		// The monk is stationary (StopMoving was called on FD), so GetPosition() is the
+		// feign point. This fires as the add retreats, regardless of spawn geometry.
+		if (DistanceSquared(GetPosition(), mob->GetPosition()) >= FD_ADD_RETREAT_DIST_SQ) {
 			continue;
 		}
-		// Wait until the add is physically back near its spawn point
-		const auto spawn = mob->CastToNPC()->GetSpawnPoint();
-		if (DistanceSquared(mob->GetPosition(), spawn) > FD_ADD_HOME_RADIUS_SQ) {
-			return false; // still pathing home
+		// Fallback: add has reached its own spawn (covers short-distance spawns where
+		// the add arrives home before travelling FD_ADD_RETREAT_DIST_SQ units).
+		if (mob->IsNPC()) {
+			const auto spawn = mob->CastToNPC()->GetSpawnPoint();
+			if (DistanceSquared(mob->GetPosition(), spawn) <= FD_ADD_HOME_RADIUS_SQ) {
+				continue;
+			}
 		}
+		return false;
 	}
 	return true;
 }
@@ -3238,6 +3281,16 @@ bool Bot::IsBeingChasedByAdds(const Mob* ignore_target) const {
 }
 
 void Bot::FDPullReset(Client* bot_owner) {
+	// Clear hate on both sides before standing up so the bot doesn't re-engage
+	// mobs that were aggroed during the pull, and those mobs return home cleanly.
+	std::list<NPC*> npc_list;
+	entity_list.GetNPCList(npc_list);
+	for (auto* npc : npc_list) {
+		if (npc->IsOnHatelist(this)) {
+			npc->WipeHateList();
+		}
+	}
+	WipeHateList();
 	SetFeigned(false, this);
 	SetPullingFlag(false);
 	SetReturningFlag(false);
@@ -3273,16 +3326,15 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	case FDPullState::Tagging: {
 		if (!m_fd_tag_timer.Enabled()) {
 			// Haven't tagged yet — move to target first
+			const float tag_range_sq = GetFDTagRangeSq();
 			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-			if (dist_sq > FD_TAG_RANGE_SQ) {
+			if (dist_sq > tag_range_sq) {
 				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 				return;
 			}
-			// In melee range — tag the target
+			// In range — tag the target
 			InterruptSpell();
-			AddToHateList(pull_target, 1);
-			pull_target->AddToHateList(this, 1);
-			SetTarget(pull_target);
+			ExecuteFDTag(pull_target);
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			const auto tag_msg = fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName());
 			if (raid) {
@@ -3343,16 +3395,15 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 			return;
 		}
+		const float tag_range_sq = GetFDTagRangeSq();
 		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-		if (dist_sq > FD_TAG_RANGE_SQ) {
+		if (dist_sq > tag_range_sq) {
 			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 			return;
 		}
 		// In range — re-tag then enter kiting loop watching for re-aggro
 		InterruptSpell();
-		AddToHateList(pull_target, 1);
-		pull_target->AddToHateList(this, 1);
-		SetTarget(pull_target);
+		ExecuteFDTag(pull_target);
 		m_fd_pull_state = FDPullState::RetagKiting;
 		const auto retag_msg = fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName());
 		if (raid) {

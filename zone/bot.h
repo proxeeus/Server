@@ -53,9 +53,9 @@ constexpr int NegativeItemReuse = -1; // Unlinked timer for items
 constexpr int   FD_TAG_WAIT_MS           = 2000;            // ms monk runs toward owner before FD'ing after tag
 constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 10000;           // ms to wait after FD before first "adds gone?" check
 constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subsequent "adds gone?" checks
-constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // distance² add must be within its spawn to count as home
+constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
+constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
 constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — owner proximity for pull handoff
-constexpr float FD_TAG_RANGE_SQ          = 60.0f * 60.0f;   // melee tag range²
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -819,6 +819,8 @@ public:
 	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
 	void FDPullerProcess(Client* bot_owner, Raid* raid);
 	void ExecuteFeignDeath();
+	void ExecuteFDTag(Mob* target);
+	float GetFDTagRangeSq();
 	bool AddsHaveReturned() const;
 	bool IsBeingChasedByAdds(const Mob* ignore_target) const;
 	void FDPullReset(Client* bot_owner);
