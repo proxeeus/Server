@@ -3358,11 +3358,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			// Haven't tagged yet — move to target first
 			const float tag_range_sq = GetFDTagRangeSq();
 			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-			if (dist_sq > tag_range_sq) {
+			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 				return;
 			}
-			// In range — tag the target
+			// In range and have LOS — tag the target
 			InterruptSpell();
 			ExecuteFDTag(pull_target);
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
@@ -3437,11 +3437,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 		const float tag_range_sq = GetFDTagRangeSq();
 		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-		if (dist_sq > tag_range_sq) {
+		if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 			return;
 		}
-		// In range — re-tag then enter kiting loop watching for re-aggro
+		// In range and have LOS — re-tag then enter kiting loop watching for re-aggro
 		InterruptSpell();
 		ExecuteFDTag(pull_target);
 		m_fd_pull_state = FDPullState::RetagKiting;
