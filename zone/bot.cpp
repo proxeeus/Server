@@ -2211,8 +2211,7 @@ void Bot::AI_Process()
 			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == Class::Rogue || GetClass() == Class::Ranger || GetClass() == Class::Monk ||
 				GetClass() == Class::Bard || GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight || GetClass() == Class::Warrior) && ( this != tar->GetHateTop()))
 			{
-				GMMove(tar->GetPosition());
-				TryMoveAlong(10.0, 256.0);
+				Teleport(TryMoveAlong(tar->GetPosition(), 10.0f, 256.0f));
 				return;
 			}
 			//

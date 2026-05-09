@@ -1161,8 +1161,7 @@ void Mob::AI_Process() {
 
 			// Bot-owned pets position themselves behind the target (same as non-tanking bots) to avoid ripostes and flurries.
 			if (IsPetOwnerBot() && target && !BehindMob(target, GetX(), GetY()) && this != target->GetHateTop()) {
-				GMMove(target->GetPosition());
-				TryMoveAlong(10.0, 256.0);
+				Teleport(TryMoveAlong(target->GetPosition(), 10.0f, 256.0f));
 				return;
 			}
 
