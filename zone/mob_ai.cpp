@@ -1161,8 +1161,14 @@ void Mob::AI_Process() {
 
 			// Bot-owned pets position themselves behind the target (same as non-tanking bots) to avoid ripostes and flurries.
 			if (IsPetOwnerBot() && target && !BehindMob(target, GetX(), GetY()) && this != target->GetHateTop()) {
-				Teleport(TryMoveAlong(target->GetPosition(), 10.0f, 256.0f));
-				return;
+				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
+				const auto dest = TryMoveAlong(target->GetPosition(), 10.0f, behind_angles[GetID() % 5]);
+				const float expected_z = target->GetPosition().z - target->GetZOffset() + GetZOffset();
+				const float dz = dest.z - expected_z;
+				if (dz > -15.0f && dz < 15.0f) {
+					Teleport(dest);
+					return;
+				}
 			}
 
 			//casting checked above...

@@ -2211,8 +2211,20 @@ void Bot::AI_Process()
 			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == Class::Rogue || GetClass() == Class::Ranger || GetClass() == Class::Monk ||
 				GetClass() == Class::Bard || GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight || GetClass() == Class::Warrior) && ( this != tar->GetHateTop()))
 			{
-				Teleport(TryMoveAlong(tar->GetPosition(), 10.0f, 256.0f));
-				return;
+				// Spread bots across a ±60° arc behind the target so they don't stack.
+				// Five slots: straight behind, ±30°, ±60° (512 heading units = 360°).
+				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
+				const auto dest = TryMoveAlong(tar->GetPosition(), 10.0f, behind_angles[GetID() % 5]);
+				// When FindDestGroundZ fails (bridge gap, ledge edge), GetFixedZ returns the
+				// uncorrected start Z — roughly tar->GetPosition().z. Guard against that by
+				// checking the result is within 15 units of the expected terrain level.
+				const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
+				const float dz = dest.z - expected_z;
+				if (dz > -15.0f && dz < 15.0f) {
+					Teleport(dest);
+					return;
+				}
+				// Can't safely reposition (e.g., narrow bridge) — fight from current position.
 			}
 			//
 			//
