@@ -29,6 +29,7 @@
 #include "../common/repositories/criteria/content_filter_criteria.h"
 #include "../common/skill_caps.h"
 #include "../../common/repositories/bot_data_repository.h"
+#include "../common/features.h"
 
 // This constructor is used during the bot create command
 Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1), ping_timer(1) {
@@ -99,6 +100,7 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	m_fd_pull_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
+	m_fd_reuse_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -224,6 +226,7 @@ Bot::Bot(
 	m_fd_pull_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
+	m_fd_reuse_timer.Disable();
 	SetIsUsingItemClick(false);
 	m_previous_pet_order = SPO_Guard;
 
@@ -3176,7 +3179,32 @@ void Bot::BotPullerProcess(Client* bot_owner, Raid* raid) {
 	}
 }
 
-void Bot::ExecuteFeignDeath() {
+bool Bot::ExecuteFeignDeath() {
+	// Skill check — same formula as player Handle_OP_FeignDeath
+	uint16 primfeign = GetSkill(EQ::skills::SkillFeignDeath);
+	uint16 secfeign  = GetSkill(EQ::skills::SkillFeignDeath);
+	if (primfeign > 100) {
+		primfeign = 100;
+		secfeign  = (secfeign - 100) / 2;
+	} else {
+		secfeign = 0;
+	}
+	uint16 totalfeign = primfeign + secfeign;
+
+	// Start reuse timer regardless of outcome
+	int reuse_sec = FeignDeathReuseTime;
+	reuse_sec -= GetSkillReuseTime(EQ::skills::SkillFeignDeath);
+	if (reuse_sec < 1)
+		reuse_sec = 1;
+	m_fd_reuse_timer.Start(static_cast<uint32>(reuse_sec) * 1000);
+
+	if (zone->random.Real(0, 160) > totalfeign) {
+		// Failure — mobs retain aggro, no animation
+		entity_list.MessageCloseString(this, false, 200, 10, STRING_FEIGNFAILED, GetCleanName());
+		return false;
+	}
+
+	// Success — snapshot adds, wipe hate, feign
 	if (IsFDPulling()) {
 		m_fd_pull_add_ids.clear();
 	}
@@ -3197,6 +3225,7 @@ void Bot::ExecuteFeignDeath() {
 	DoAnim(16);
 	SendAppearancePacket(AppearanceType::Animation, 114, true, false);
 	SetFeigned(true, this);
+	return true;
 }
 
 float Bot::GetFDTagRangeSq() {
@@ -3305,6 +3334,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
+	m_fd_reuse_timer.Disable();
 }
 
 void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
@@ -3350,14 +3380,24 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
 			} else {
 				const bool had_adds = IsBeingChasedByAdds(pull_target);
-				ExecuteFeignDeath();
-				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
-				m_fd_pull_state = FDPullState::FeignWait;
-				const char* fd_msg = had_adds ? "Adds incoming — feigning." : "Feigning — pulling solo.";
-				if (raid) {
-					raid->RaidSay(fd_msg, GetCleanName(), 0, 100);
+				const bool fd_ok = ExecuteFeignDeath();
+				if (fd_ok) {
+					m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+					m_fd_pull_state = FDPullState::FeignWait;
+					const char* fd_msg = had_adds ? "Adds incoming — feigning." : "Feigning — pulling solo.";
+					if (raid) {
+						raid->RaidSay(fd_msg, GetCleanName(), 0, 100);
+					} else {
+						BotGroupSay(this, fd_msg);
+					}
 				} else {
-					BotGroupSay(this, fd_msg);
+					// FD failed — stay put, wait for reuse timer before retrying
+					m_fd_pull_state = FDPullState::FDCooldown;
+					if (raid) {
+						raid->RaidSay("FD failed — holding position, will retry.", GetCleanName(), 0, 100);
+					} else {
+						BotGroupSay(this, "FD failed — holding position, will retry.");
+					}
 				}
 			}
 		}
@@ -3452,6 +3492,32 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 
 		RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+		break;
+	}
+
+	case FDPullState::FDCooldown: {
+		// FD failed — stay put (running back would drag mobs), retry when reuse timer expires
+		if (m_fd_reuse_timer.Enabled() && m_fd_reuse_timer.GetRemainingTime() > 0) {
+			return;
+		}
+		m_fd_reuse_timer.Disable();
+		const bool fd_ok = ExecuteFeignDeath();
+		if (fd_ok) {
+			m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+			m_fd_pull_state = FDPullState::FeignWait;
+			if (raid) {
+				raid->RaidSay("FD retry succeeded — feigning.", GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, "FD retry succeeded — feigning.");
+			}
+		} else {
+			// Still failed — ExecuteFeignDeath restarted the reuse timer; stay in FDCooldown
+			if (raid) {
+				raid->RaidSay("FD failed again — waiting.", GetCleanName(), 0, 100);
+			} else {
+				BotGroupSay(this, "FD failed again — waiting.");
+			}
+		}
 		break;
 	}
 

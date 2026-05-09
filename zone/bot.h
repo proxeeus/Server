@@ -141,6 +141,7 @@ public:
 		FeignWait    = 2,  // feigned, waiting for physical separation
 		Retagging    = 3,  // moving back to target to re-tag
 		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
+		FDCooldown   = 5,  // FD failed — staying put until reuse timer expires, then retry
 	};
 
 	// Class Constructors
@@ -818,7 +819,7 @@ public:
 	uint16 GetFDPullTargetID() const { return m_fd_pull_target_id; }
 	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
 	void FDPullerProcess(Client* bot_owner, Raid* raid);
-	void ExecuteFeignDeath();
+	bool ExecuteFeignDeath();
 	void ExecuteFDTag(Mob* target);
 	float GetFDTagRangeSq();
 	bool AddsHaveReturned() const;
@@ -929,6 +930,7 @@ private:
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;
 	Timer                m_fd_feign_check_timer;
+	Timer                m_fd_reuse_timer;
 	bool is_using_item_click;
 	uint32 m_bot_caster_range;
 	BotCastingRoles m_CastingRoles;

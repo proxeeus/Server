@@ -47,39 +47,55 @@ void bot_command_fdpull(Client* c, const Seperator* sep)
 		return;
 	}
 
-	// Gather bots in group
-	const int ab_mask = ActionableBots::ABM_OwnerGroup;
-	std::list<Bot*> sbl;
-	if (ActionableBots::PopulateSBL(c, "ownergroup", sbl, ab_mask) == ActionableBots::ABT_None) {
-		c->Message(Chat::Red, "No bots found in your group.");
-		return;
-	}
-	sbl.remove(nullptr);
-
-	// Optional name filter
+	// Optional name filter — if provided, search all spawned bots (cross-group raid support)
 	const char* name_arg = sep->arg[1];
 	const bool has_name = (name_arg && name_arg[0] != '\0');
 
 	Bot* monk = nullptr;
-	for (auto* bot : sbl) {
-		if (bot->GetClass() != Class::Monk)
-			continue;
-		if (bot->GetAppearance() == eaDead)
-			continue;
-		if (bot->GetBotStance() == Stance::Passive)
-			continue;
-		if (has_name && strcasecmp(bot->GetCleanName(), name_arg) != 0)
-			continue;
-		monk = bot;
-		break;
-	}
 
-	if (!monk) {
-		if (has_name)
-			c->Message(Chat::Red, "No alive Monk bot named '%s' found in your group.", name_arg);
-		else
-			c->Message(Chat::Red, "No available Monk bot found in your group.");
-		return;
+	if (has_name) {
+		std::list<Bot*> all_bots;
+		MyBots::PopulateSBL_BySpawnedBots(c, all_bots);
+		all_bots.remove(nullptr);
+		for (auto* bot : all_bots) {
+			if (bot->GetClass() != Class::Monk)
+				continue;
+			if (bot->GetAppearance() == eaDead)
+				continue;
+			if (bot->GetBotStance() == Stance::Passive)
+				continue;
+			if (strcasecmp(bot->GetCleanName(), name_arg) != 0)
+				continue;
+			monk = bot;
+			break;
+		}
+		if (!monk) {
+			c->Message(Chat::Red, "No alive Monk bot named '%s' found.", name_arg);
+			return;
+		}
+	} else {
+		// No name specified — prefer a monk in the owner's own group
+		const int ab_mask = ActionableBots::ABM_OwnerGroup;
+		std::list<Bot*> sbl;
+		if (ActionableBots::PopulateSBL(c, "ownergroup", sbl, ab_mask) == ActionableBots::ABT_None) {
+			c->Message(Chat::Red, "No bots found in your group.");
+			return;
+		}
+		sbl.remove(nullptr);
+		for (auto* bot : sbl) {
+			if (bot->GetClass() != Class::Monk)
+				continue;
+			if (bot->GetAppearance() == eaDead)
+				continue;
+			if (bot->GetBotStance() == Stance::Passive)
+				continue;
+			monk = bot;
+			break;
+		}
+		if (!monk) {
+			c->Message(Chat::Red, "No available Monk bot found in your group. Use '%s <target> <bot_name>' to pick one from another group.", sep->arg[0]);
+			return;
+		}
 	}
 
 	// Arm the FD pull state machine

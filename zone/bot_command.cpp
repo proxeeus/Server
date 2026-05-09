@@ -1131,8 +1131,8 @@ int bot_command_init(void)
 		bot_command_add("dmf", "Orders a designated Necromancer bot to cast Dead Man Floating.", 0, bot_command_dmf) ||
 		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
 		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats) ||
-		bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
-		bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
+		//bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
+		//bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
 		bot_command_add("fdpull", "Orders a Monk bot to autonomously FD single-pull a raid target", 0, bot_command_fdpull) ||
 		bot_command_add("drink", "Orders a bot to summon drinks", 0, bot_command_summon_drink) ||
 		bot_command_add("food", "Orders a bot to summon food", 0, bot_command_summon_food) ||
@@ -1968,8 +1968,8 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/dmf.cpp"
 #include "bot_commands/invite.cpp"
 #include "bot_commands/stats.cpp"
-#include "bot_commands/feign.cpp"
-#include "bot_commands/rpull.cpp"
+//#include "bot_commands/feign.cpp"
+//#include "bot_commands/rpull.cpp"
 #include "bot_commands/fdpull.cpp"
 #include "bot_commands/summon_drink.cpp"
 #include "bot_commands/summon_food.cpp"
