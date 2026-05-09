@@ -98,6 +98,7 @@ Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm
 	SetReturningFlag(false);
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
+	m_rooted_reposition_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
 	m_fd_reuse_timer.Disable();
@@ -224,6 +225,7 @@ Bot::Bot(
 	SetReturningFlag(false);
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
+	m_rooted_reposition_target_id = 0;
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();
 	m_fd_reuse_timer.Disable();
@@ -2208,13 +2210,42 @@ void Bot::AI_Process()
 			// - be a melee
 			// - not be the first on the hate-list (ie: not tanking)
 			//
+
+			// Perma-rooted mobs use GetClosestEntOnHateList instead of highest hate for targeting.
+			// Keep the tank ultra-close (2 units) so it always wins the "closest" race and the
+			// mob never spins away from it toward a DPS bot.
+			if (tar->IsPermaRooted() && this == tar->GetHateTop()) {
+				if (DistanceNoZ(m_Position, tar->GetPosition()) > 5.0f) {
+					const auto dest = TryMoveAlong(tar->GetPosition(), 2.0f, 0.0f);
+					const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
+					const float dz = dest.z - expected_z;
+					if (dz > -15.0f && dz < 15.0f) {
+						Teleport(dest);
+						return;
+					}
+				}
+			}
+
 			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == Class::Rogue || GetClass() == Class::Ranger || GetClass() == Class::Monk ||
 				GetClass() == Class::Bard || GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight || GetClass() == Class::Warrior) && ( this != tar->GetHateTop()))
 			{
 				// Spread bots across a ±60° arc behind the target so they don't stack.
 				// Five slots: straight behind, ±30°, ±60° (512 heading units = 360°).
 				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
-				const auto dest = TryMoveAlong(tar->GetPosition(), 10.0f, behind_angles[GetID() % 5]);
+
+				// Perma-rooted mobs target the closest entity on the hate list (not highest hate).
+				// DPS bots must stay at max melee range so the tank (ultra-close) remains the
+				// closest entity and the mob stays facing it.
+				float reposition_dist = 10.0f;
+				if (tar->IsPermaRooted()) {
+					float melee_dist_max = 0.0f, melee_dist = 0.0f;
+					CalcMeleeDistances(tar, p_item, s_item, false, false, melee_dist_max, melee_dist);
+					reposition_dist = sqrtf(melee_dist_max) - 2.0f;
+					if (reposition_dist < 5.0f)
+						reposition_dist = 5.0f;
+				}
+
+				const auto dest = TryMoveAlong(tar->GetPosition(), reposition_dist, behind_angles[GetID() % 5]);
 				// When FindDestGroundZ fails (bridge gap, ledge edge), GetFixedZ returns the
 				// uncorrected start Z — roughly tar->GetPosition().z. Guard against that by
 				// checking the result is within 15 units of the expected terrain level.
@@ -2226,9 +2257,6 @@ void Bot::AI_Process()
 				}
 				// Can't safely reposition (e.g., narrow bridge) — fight from current position.
 			}
-			//
-			//
-			//
 
 			if (!IsBotNonSpellFighter() && AI_EngagedCastCheck()) {
 				return;
@@ -3342,6 +3370,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	}
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
+	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
 	m_fd_feign_check_timer.Disable();

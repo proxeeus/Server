@@ -927,6 +927,7 @@ private:
 	bool m_returning_flag;
 	FDPullState          m_fd_pull_state;
 	uint16               m_fd_pull_target_id;
+	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;
 	Timer                m_fd_feign_check_timer;

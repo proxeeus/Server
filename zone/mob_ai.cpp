@@ -1162,7 +1162,20 @@ void Mob::AI_Process() {
 			// Bot-owned pets position themselves behind the target (same as non-tanking bots) to avoid ripostes and flurries.
 			if (IsPetOwnerBot() && target && !BehindMob(target, GetX(), GetY()) && this != target->GetHateTop()) {
 				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
-				const auto dest = TryMoveAlong(target->GetPosition(), 10.0f, behind_angles[GetID() % 5]);
+				// Perma-rooted mobs: stay at max melee range so the bot tank (ultra-close) remains
+				// the closest entity on the hate list and the mob doesn't spin toward pets.
+				float reposition_dist = 10.0f;
+				if (target->IsPermaRooted()) {
+					float melee_dist_max = target->GetSize();
+					if (melee_dist_max < 6.0f) melee_dist_max = 8.0f;
+					if (melee_dist_max > 29.0f) melee_dist_max *= melee_dist_max;
+					else if (melee_dist_max > 19.0f) melee_dist_max *= melee_dist_max * 2.0f;
+					else melee_dist_max *= melee_dist_max * 4.0f;
+					if (melee_dist_max > 10000.0f) melee_dist_max /= 7.0f;
+					reposition_dist = sqrtf(melee_dist_max) - 2.0f;
+					if (reposition_dist < 5.0f) reposition_dist = 5.0f;
+				}
+				const auto dest = TryMoveAlong(target->GetPosition(), reposition_dist, behind_angles[GetID() % 5]);
 				const float expected_z = target->GetPosition().z - target->GetZOffset() + GetZOffset();
 				const float dz = dest.z - expected_z;
 				if (dz > -15.0f && dz < 15.0f) {
