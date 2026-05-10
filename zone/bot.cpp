@@ -1745,8 +1745,10 @@ void Bot::SpellProcess() {
 
 void Bot::BotMeditate(bool isSitting) {
 	if (isSitting) {
-		if (GetManaRatio() < 99.0f || GetHPRatio() < 99.0f) {
-			if (!IsEngaged() && !IsSitting()) {
+		const float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
+		const bool hp_sit_condition   = !IsEngaged() && GetHPRatio() < 99.0f;
+		if (GetManaRatio() < mana_sit_threshold || hp_sit_condition) {
+			if (!IsSitting()) {
 				Sit();
 			}
 		} else {
