@@ -28,6 +28,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
 class ClientListEntry;
 
@@ -57,6 +58,19 @@ private:
 		char            char_name[30] = {};
 		uint32_t        zone_id       = 0;
 		uint32_t        char_id       = 0;
+
+		// EQNetwork fragment reassembly
+		struct FragEntry {
+			std::vector<uint8_t> data;
+			bool                 received = false;
+		};
+		struct FragGroup {
+			uint16_t               opcode = 0;
+			uint16_t               total  = 0;
+			uint16_t               count  = 0;
+			std::vector<FragEntry> frags;
+		};
+		std::map<uint16_t, FragGroup> frag_groups;
 	};
 
 	void OnDatagram(const std::string& addr, int port, Session& s,
@@ -69,6 +83,12 @@ private:
 	                     const uint8_t* payload, uint32_t plen);
 
 	void HandleEnterWorld(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+
+	void HandleNameApproval(const std::string& addr, int port, Session& s,
+	                        const uint8_t* payload, uint32_t plen);
+
+	void HandleCharCreate(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 
 	void SendCharSelect(const std::string& addr, int port, Session& s);

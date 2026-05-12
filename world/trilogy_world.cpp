@@ -26,6 +26,7 @@
 #include "world_config.h"
 #include "../common/crc32.h"
 #include "../common/eqemu_logsys.h"
+#include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/strings.h"
 
@@ -48,6 +49,9 @@ static constexpr uint16_t WS_SEND_EXPANSION_INFO = 0xd821; // world -> client: 4
 static constexpr uint16_t WS_SEND_CHAR_INFO      = 0x4720; // world -> client: CharacterSelect_Struct
 static constexpr uint16_t OP_ENTERWORLD          = 0x0180; // client -> world: char name (30 bytes)
 static constexpr uint16_t TRI_OP_ZoneServerInfo  = 0x0480; // world -> client: ZoneServerInfo_Struct
+static constexpr uint16_t OP_GUILDS_LIST         = 0x9221; // client -> world: request guilds (4 bytes)
+static constexpr uint16_t OP_NAME_APPROVAL       = 0x8B20; // bidirectional: name approval
+static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: PlayerProfile (EQClassic)
 
 // EQNetwork header flags
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -126,7 +130,50 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	if (hdr0 & HDR0_FRAGMENT) {
 		if (o + 6 > size - 4) return;
-		o += 6;
+		uint16_t fseq   = ntohs(*reinterpret_cast<const uint16_t*>(data + o)); o += 2;
+		uint16_t fcurr  = ntohs(*reinterpret_cast<const uint16_t*>(data + o)); o += 2;
+		uint16_t ftotal = ntohs(*reinterpret_cast<const uint16_t*>(data + o)); o += 2;
+
+		uint16_t fopcode = 0;
+		if (fcurr == 0) {
+			if (o + 2 > size - 4) return;
+			fopcode = ntohs(*reinterpret_cast<const uint16_t*>(data + o));
+			o += 2;
+		}
+
+		int fdata_len = static_cast<int>(size - 4) - o;
+		if (fdata_len < 0) fdata_len = 0;
+
+		// Fragment reassembly — EQNetwork fraginfo: dwSeq/dwCurr/dwTotal (EQClassic EQNetwork.cpp)
+		// 's' is the session for this addr/port (passed in from OnRawPacket via m_sessions[key])
+		auto& fg = s.frag_groups[fseq];
+		if (fcurr == 0) fg.opcode = fopcode;
+		fg.total = ftotal;
+		if (static_cast<uint16_t>(fg.frags.size()) < ftotal)
+			fg.frags.resize(ftotal);
+		if (!fg.frags[fcurr].received) {
+			fg.frags[fcurr].data.assign(data + o, data + o + fdata_len);
+			fg.frags[fcurr].received = true;
+			++fg.count;
+		}
+
+		if (has_arq) {
+			s.cli_arq = cli_arq;
+			s.ack_due = true;
+		}
+		s.last_pkt = std::time(nullptr);
+		if (s.ack_due) SendAck(addr, port, s);
+
+		if (fg.count == fg.total) {
+			std::vector<uint8_t> full;
+			full.reserve(fg.count * 512);
+			for (auto& fe : fg.frags)
+				full.insert(full.end(), fe.data.begin(), fe.data.end());
+			uint16_t ropcode = fg.opcode;
+			s.frag_groups.erase(fseq);
+			OnOpcode(addr, port, s, ropcode, full.data(), static_cast<uint32_t>(full.size()));
+		}
+		return;
 	}
 
 	if (hdr0 & HDR0_ASQ) {
@@ -193,6 +240,16 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		break;
 	case OP_ENTERWORLD:
 		HandleEnterWorld(addr, port, s, payload, plen);
+		break;
+	case OP_GUILDS_LIST:
+		// Client requests guilds on char-select load; just ACK — no guilds implemented yet
+		if (s.ack_due) SendAck(addr, port, s);
+		break;
+	case OP_NAME_APPROVAL:
+		HandleNameApproval(addr, port, s, payload, plen);
+		break;
+	case OP_CHAR_CREATE:
+		HandleCharCreate(addr, port, s, payload, plen);
 		break;
 	default:
 		if (s.ack_due)
@@ -425,6 +482,183 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 
 	SendApp(addr, port, s, TRI_OP_ZoneServerInfo,
 	        reinterpret_cast<const uint8_t*>(&zsi), sizeof(zsi));
+}
+
+// ============================================================
+// OP_NAME_APPROVAL (0x8B20): validate and reserve character name
+// EQClassic NameApproval_Struct: char[30] name + 8 unknown bytes = ~40 bytes
+// Response: same opcode, 1 byte (1=approved, 0=rejected)
+// ============================================================
+
+void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, Session& s,
+                                             const uint8_t* payload, uint32_t plen)
+{
+	if (plen < 1 || s.account_id == 0) {
+		SendAck(addr, port, s);
+		return;
+	}
+
+	char name[31] = {};
+	strncpy(name, reinterpret_cast<const char*>(payload), std::min(30u, plen));
+	name[30] = '\0';
+
+	uint32_t length = static_cast<uint32_t>(strlen(name));
+	bool valid = true;
+
+	if (length < 4 || length > 15) {
+		valid = false;
+	} else if (!isupper(static_cast<unsigned char>(name[0]))) {
+		valid = false;
+	} else if (!database.CheckNameFilter(name)) {
+		valid = false;
+	} else {
+		for (uint32_t i = 1; i < length; ++i) {
+			if (!isalpha(static_cast<unsigned char>(name[i])) ||
+			    isupper(static_cast<unsigned char>(name[i]))) {
+				valid = false;
+				break;
+			}
+		}
+	}
+
+	if (valid) {
+		valid = database.ReserveName(s.account_id, name);
+		if (valid)
+			strncpy(s.char_name, name, sizeof(s.char_name) - 1);
+	}
+
+	LogInfo("[TrilogyWorld] Name approval [{}]: {} for account [{}] from {}:{}",
+	        name, valid ? "approved" : "rejected", s.account_name, addr, port);
+
+	uint8_t response[1] = { valid ? 1u : 0u };
+	SendApp(addr, port, s, OP_NAME_APPROVAL, response, 1);
+}
+
+// ============================================================
+// OP_CHAR_CREATE (0x4920): EQClassic PlayerProfile (no checksum prefix)
+// Layout (payload offsets = struct_offset - 0x0004):
+//   [  0..29] char  name[30]
+//   [80]      uint8 gender
+//   [81]      uint8 deity
+//   [82..83]  int16 race (LE)
+//   [84]      uint8 class_
+//   [110]     uint8 face
+//   [287]     uint8 STR  [288] STA  [289] CHA
+//   [290]     uint8 DEX  [291] INT  [292] AGI  [293] WIS
+// After creation, send updated CharSelect.
+// ============================================================
+
+void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Session& s,
+                                           const uint8_t* payload, uint32_t plen)
+{
+	if (s.account_id == 0) {
+		SendAck(addr, port, s);
+		return;
+	}
+
+	// Need at least through WIS (offset 293)
+	if (plen < 294) {
+		LogInfo("[TrilogyWorld] CharCreate: plen={} too small from {}:{}", plen, addr, port);
+		uint8_t reject[1] = { 0 };
+		SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
+		return;
+	}
+
+	char name[31] = {};
+	strncpy(name, reinterpret_cast<const char*>(payload), 30);
+	name[30] = '\0';
+
+	// EQClassic PP field offsets (payload = struct starting at name field)
+	const uint8_t  gender  = payload[80];
+	const uint8_t  deity   = payload[81];
+	const uint16_t race    = *reinterpret_cast<const uint16_t*>(payload + 82); // LE
+	const uint8_t  class_  = payload[84];
+	const uint8_t  face    = payload[110];
+	const uint8_t  str_v   = payload[287];
+	const uint8_t  sta_v   = payload[288];
+	const uint8_t  cha_v   = payload[289];
+	const uint8_t  dex_v   = payload[290];
+	const uint8_t  int_v   = payload[291];
+	const uint8_t  agi_v   = payload[292];
+	const uint8_t  wis_v   = payload[293];
+
+	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] from {}:{}",
+	        s.account_name, name, race, class_, gender, addr, port);
+
+	// Get char_id from the row created by ReserveName
+	uint32_t char_id = database.GetCharacterID(name);
+	if (char_id == 0) {
+		LogInfo("[TrilogyWorld] CharCreate: reserved character [{}] not found in DB", name);
+		uint8_t reject[1] = { 0 };
+		SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
+		return;
+	}
+
+	// Build EQEmu PlayerProfile_Struct
+	PlayerProfile_Struct pp;
+	memset(&pp, 0, sizeof(pp));
+	strncpy(pp.name, name, sizeof(pp.name) - 1);
+	pp.race   = race;
+	pp.class_ = class_;
+	pp.gender = gender;
+	pp.deity  = deity;
+	pp.face   = face;
+	pp.STR    = str_v;
+	pp.STA    = sta_v;
+	pp.CHA    = cha_v;
+	pp.DEX    = dex_v;
+	pp.INT    = int_v;
+	pp.AGI    = agi_v;
+	pp.WIS    = wis_v;
+	pp.level  = 1;
+	pp.points = 5;
+	pp.cur_hp = 1000;
+	pp.hunger_level = 6000;
+	pp.thirst_level = 6000;
+
+	const time_t bday = std::time(nullptr);
+	pp.birthday  = static_cast<uint32_t>(bday);
+	pp.lastlogin = static_cast<uint32_t>(bday);
+
+	// Mark all spell-book and mem-spell slots as empty
+	memset(pp.spell_book, 0xFF, sizeof(pp.spell_book));
+	memset(pp.mem_spells, 0xFF, sizeof(pp.mem_spells));
+
+	// Look up starting zone via start_zones table (race/class/deity, ignoring player_choice for Trilogy)
+	{
+		auto zq = fmt::format(
+			"SELECT `x`, `y`, `z`, `heading`, `start_zone` FROM `start_zones`"
+			" WHERE `player_class`={} AND `player_deity`={} AND `player_race`={}"
+			" LIMIT 1",
+			class_, deity, race);
+		auto zr = content_db.QueryDatabase(zq);
+		if (zr.RowCount() > 0) {
+			auto zrow = zr.begin();
+			pp.x       = Strings::ToFloat(zrow[0]);
+			pp.y       = Strings::ToFloat(zrow[1]);
+			pp.z       = Strings::ToFloat(zrow[2]);
+			pp.heading = Strings::ToFloat(zrow[3]);
+			pp.zone_id = static_cast<uint16_t>(Strings::ToInt(zrow[4]));
+		} else {
+			// Default: Qeynos (zone_id=1)
+			pp.zone_id = 1;
+			pp.x = -13.0f; pp.y = -7.0f; pp.z = 4.0f; pp.heading = 0.0f;
+		}
+	}
+
+	// Primary bind = start location; home bind = also start location
+	for (int i = 0; i < 5; ++i) {
+		pp.binds[i].zone_id = pp.zone_id;
+		pp.binds[i].x = pp.x; pp.binds[i].y = pp.y;
+		pp.binds[i].z = pp.z; pp.binds[i].heading = pp.heading;
+	}
+
+	database.SaveCharacterCreate(char_id, s.account_id, &pp);
+
+	LogInfo("[TrilogyWorld] Character [{}] created in zone [{}] for account [{}]",
+	        name, pp.zone_id, s.account_name);
+
+	SendCharSelect(addr, port, s);
 }
 
 // ============================================================
