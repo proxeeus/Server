@@ -111,6 +111,9 @@ SET(common_sources
     net/websocket_server.cpp
     net/websocket_server_connection.cpp
     patches/patches.cpp
+    patches/trilogy.cpp
+    patches/trilogy_crypto.cpp
+    patches/trilogy_limits.cpp
     patches/sod.cpp
     patches/sod_limits.cpp
     patches/sof.cpp
@@ -653,6 +656,11 @@ SET(common_headers
     net/websocket_server.h
     net/websocket_server_connection.h
     patches/patches.h
+    patches/trilogy.h
+    patches/trilogy_crypto.h
+    patches/trilogy_limits.h
+    patches/trilogy_ops.h
+    patches/trilogy_structs.h
     patches/sod.h
     patches/sod_limits.h
     patches/sod_ops.h
@@ -739,6 +747,11 @@ SOURCE_GROUP(Net FILES
 
 SOURCE_GROUP(Patches FILES
     patches/patches.h
+    patches/trilogy.h
+    patches/trilogy_crypto.h
+    patches/trilogy_limits.h
+    patches/trilogy_ops.h
+    patches/trilogy_structs.h
     patches/sod.h
     patches/sod_limits.h
     patches/sod_ops.h
@@ -767,6 +780,9 @@ SOURCE_GROUP(Patches FILES
     patches/uf_ops.h
     patches/uf_structs.h
     patches/patches.cpp
+    patches/trilogy.cpp
+    patches/trilogy_crypto.cpp
+    patches/trilogy_limits.cpp
     patches/sod.cpp
     patches/sod_limits.cpp
     patches/sof.cpp

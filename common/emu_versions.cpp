@@ -42,6 +42,8 @@ const char* EQ::versions::ClientVersionName(ClientVersion client_version)
 	switch (client_version) {
 	case ClientVersion::Unknown:
 		return "Unknown Version";
+	case ClientVersion::Trilogy:
+		return "Trilogy";
 	case ClientVersion::Client62:
 		return "Client 6.2";
 	case ClientVersion::Titanium:
@@ -64,6 +66,8 @@ const char* EQ::versions::ClientVersionName(ClientVersion client_version)
 uint32 EQ::versions::ConvertClientVersionToClientVersionBit(ClientVersion client_version)
 {
 	switch (client_version) {
+	case ClientVersion::Trilogy:
+		return bitTrilogy;
 	case ClientVersion::Titanium:
 		return bitTitanium;
 	case ClientVersion::SoF:
@@ -84,6 +88,8 @@ uint32 EQ::versions::ConvertClientVersionToClientVersionBit(ClientVersion client
 EQ::versions::ClientVersion EQ::versions::ConvertClientVersionBitToClientVersion(uint32 client_version_bit)
 {
 	switch (client_version_bit) {
+	case ((uint32)1 << (static_cast<unsigned int>(ClientVersion::Trilogy) - 1)) :
+		return ClientVersion::Trilogy;
 	case ((uint32)1 << (static_cast<unsigned int>(ClientVersion::Titanium) - 1)) :
 		return ClientVersion::Titanium;
 	case ((uint32)1 << (static_cast<unsigned int>(ClientVersion::SoF) - 1)) :
@@ -170,6 +176,8 @@ const char* EQ::versions::MobVersionName(MobVersion mob_version)
 	switch (mob_version) {
 	case MobVersion::Unknown:
 		return "Unknown Version";
+	case MobVersion::Trilogy:
+		return "Trilogy";
 	case MobVersion::Client62:
 		return "Client 6.2";
 	case MobVersion::Titanium:
@@ -200,6 +208,8 @@ const char* EQ::versions::MobVersionName(MobVersion mob_version)
 		return "Merc Pet";
 	case MobVersion::BotPet:
 		return "Bot Pet";
+	case MobVersion::OfflineTrilogy:
+		return "Offline Trilogy";
 	case MobVersion::OfflineTitanium:
 		return "Offline Titanium";
 	case MobVersion::OfflineSoF:
@@ -223,6 +233,8 @@ EQ::versions::ClientVersion EQ::versions::ConvertMobVersionToClientVersion(MobVe
 	case MobVersion::Unknown:
 	case MobVersion::Client62:
 		return ClientVersion::Unknown;
+	case MobVersion::Trilogy:
+		return ClientVersion::Trilogy;
 	case MobVersion::Titanium:
 		return ClientVersion::Titanium;
 	case MobVersion::SoF:
@@ -246,6 +258,8 @@ EQ::versions::MobVersion EQ::versions::ConvertClientVersionToMobVersion(ClientVe
 	case ClientVersion::Unknown:
 	case ClientVersion::Client62:
 		return MobVersion::Unknown;
+	case ClientVersion::Trilogy:
+		return MobVersion::Trilogy;
 	case ClientVersion::Titanium:
 		return MobVersion::Titanium;
 	case ClientVersion::SoF:
@@ -266,6 +280,8 @@ EQ::versions::MobVersion EQ::versions::ConvertClientVersionToMobVersion(ClientVe
 EQ::versions::MobVersion EQ::versions::ConvertPCMobVersionToOfflinePCMobVersion(MobVersion mob_version)
 {
 	switch (mob_version) {
+	case MobVersion::Trilogy:
+		return MobVersion::OfflineTrilogy;
 	case MobVersion::Titanium:
 		return MobVersion::OfflineTitanium;
 	case MobVersion::SoF:
@@ -286,6 +302,8 @@ EQ::versions::MobVersion EQ::versions::ConvertPCMobVersionToOfflinePCMobVersion(
 EQ::versions::MobVersion EQ::versions::ConvertOfflinePCMobVersionToPCMobVersion(MobVersion mob_version)
 {
 	switch (mob_version) {
+	case MobVersion::OfflineTrilogy:
+		return MobVersion::Trilogy;
 	case MobVersion::OfflineTitanium:
 		return MobVersion::Titanium;
 	case MobVersion::OfflineSoF:
@@ -306,6 +324,8 @@ EQ::versions::MobVersion EQ::versions::ConvertOfflinePCMobVersionToPCMobVersion(
 EQ::versions::ClientVersion EQ::versions::ConvertOfflinePCMobVersionToClientVersion(MobVersion mob_version)
 {
 	switch (mob_version) {
+	case MobVersion::OfflineTrilogy:
+		return ClientVersion::Trilogy;
 	case MobVersion::OfflineTitanium:
 		return ClientVersion::Titanium;
 	case MobVersion::OfflineSoF:
@@ -326,6 +346,8 @@ EQ::versions::ClientVersion EQ::versions::ConvertOfflinePCMobVersionToClientVers
 EQ::versions::MobVersion EQ::versions::ConvertClientVersionToOfflinePCMobVersion(ClientVersion client_version)
 {
 	switch (client_version) {
+	case ClientVersion::Trilogy:
+		return MobVersion::OfflineTrilogy;
 	case ClientVersion::Titanium:
 		return MobVersion::OfflineTitanium;
 	case ClientVersion::SoF:

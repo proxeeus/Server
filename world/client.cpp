@@ -56,6 +56,8 @@
 #include "../common/repositories/group_id_repository.h"
 #include "../common/repositories/character_data_repository.h"
 #include "../common/skill_caps.h"
+#include "../common/patches/trilogy_crypto.h"
+#include "../common/patches/trilogy_structs.h"
 
 #include <iostream>
 #include <iomanip>
@@ -447,6 +449,72 @@ void Client::SendPostEnterWorld() {
 
 bool Client::HandleSendLoginInfoPacket(const EQApplicationPacket *app)
 {
+	// Trilogy clients send a 40-byte DES-CBC credential block instead of the
+	// standard EQEmu 488-byte LoginInfo_Struct.
+	if (GetClientVersion() == EQ::versions::ClientVersion::Trilogy) {
+		if (app->size < sizeof(Trilogy::structs::LoginInfo_Struct)) {
+			LogNetcode("[Trilogy] OP_SendLoginInfo too small: {} bytes", app->size);
+			return false;
+		}
+		uint8 plain[40] = {0};
+		if (!Trilogy::DecryptLoginBlock(
+				reinterpret_cast<const uint8 *>(app->pBuffer),
+				plain,
+				static_cast<int>(sizeof(Trilogy::structs::LoginInfo_Struct)))) {
+			LogNetcode("[Trilogy] DES decrypt unavailable (no OpenSSL)");
+			return false;
+		}
+		char tri_name[21]     = {0};
+		char tri_password[21] = {0};
+		strn0cpy(tri_name,     reinterpret_cast<char *>(plain),      20);
+		strn0cpy(tri_password, reinterpret_cast<char *>(plain + 20), 20);
+		LogClientLogin("[Trilogy] Login | name [{}]", tri_name);
+
+		if (tri_name[0] == '\0' || tri_password[0] == '\0') {
+			LogInfo("[Trilogy] Empty name or password");
+			return false;
+		}
+
+		int16    account_status = static_cast<int16>(WorldConfig::get()->DefaultStatus);
+		uint32   account_id     = database.CheckLogin(tri_name, tri_password, "trilogy", &account_status);
+
+		if (account_id == 0) {
+			// Distinguish wrong password from new account.
+			auto existing = AccountRepository::GetWhere(
+				database,
+				fmt::format("`name` = '{}' AND `ls_id` = 'trilogy'",
+				            Strings::Escape(tri_name))
+			);
+			if (!existing.empty()) {
+				LogInfo("[Trilogy] Bad password for account [{}]", tri_name);
+				return false;
+			}
+			account_status = static_cast<int16>(WorldConfig::get()->DefaultStatus);
+			account_id = database.CreateAccount(tri_name, "", account_status, "trilogy", 0);
+			if (account_id == 0) {
+				LogError("[Trilogy] Failed to create account for [{}]", tri_name);
+				return false;
+			}
+			database.SetLocalPassword(account_id, tri_password);
+			LogInfo("[Trilogy] Auto-created account [{}] id [{}]", tri_name, account_id);
+		}
+
+		cle = client_list.CLEAddDirect(account_id, tri_name, account_status, GetIP());
+		cle->SetOnline(CLE_Status::CharSelect);
+		LogInfo("[Trilogy] Account [{}] id [{}] at char select", tri_name, account_id);
+
+		SendGuildList();
+		SendLogServer();
+		SendApproveWorld();
+		SendEnterWorld(cle->name());
+		SendPostEnterWorld();
+		SendExpansionInfo();
+		SendCharInfo();
+		database.LoginIP(account_id, long2ip(GetIP()));
+		cle->SetIP(GetIP());
+		return true;
+	}
+
 	if (app->size != sizeof(LoginInfo_Struct)) {
 		return false;
 	}

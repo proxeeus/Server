@@ -10,6 +10,7 @@
 #include "login_server.h"
 #include "loginserver_webserver.h"
 #include "loginserver_command_handler.h"
+#include "trilogy_ls.h"
 #include "../common/strings.h"
 #include "../common/path_manager.h"
 #include <time.h>
@@ -18,10 +19,11 @@
 #include <sstream>
 #include <thread>
 
-LoginServer server;
-EQEmuLogSys LogSys;
-bool        run_server = true;
-PathManager path;
+LoginServer       server;
+EQEmuLogSys       LogSys;
+bool              run_server = true;
+PathManager       path;
+TrilogyLoginServer trilogy_ls;
 
 void ResolveAddresses();
 void CatchSignal(int sig_num)
@@ -256,6 +258,12 @@ int main(int argc, char **argv)
 
 	LogInfo("Server Started");
 
+	// Start Trilogy (EQ v29c/v30) EQNetwork Login Server (default UDP 5996)
+	uint16_t trilogy_port = static_cast<uint16_t>(
+		server.config.GetVariableInt("client_configuration", "trilogy_port", 5996)
+	);
+	trilogy_ls.Start(trilogy_port);
+
 	/**
 	 * Web API
 	 */
@@ -312,6 +320,8 @@ int main(int argc, char **argv)
 	EQ::EventLoop::Get().Run();
 
 	LogInfo("Server Shutdown");
+
+	trilogy_ls.Stop();
 
 	LogInfo("Client Manager Shutdown");
 	delete server.client_manager;

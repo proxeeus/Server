@@ -11,42 +11,41 @@
 	are required to give you total support for your newly bought product;
 	without even the implied warranty of MERCHANTABILITY or FITNESS FOR
 	A PARTICULAR PURPOSE.  See the GNU General Public License for more details.
-	
+
 	You should have received a copy of the GNU General Public License
 	along with this program; if not, write to the Free Software
 	Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
-#include "../global_define.h"
-#include "patches.h"
+#ifndef COMMON_TRILOGY_H
+#define COMMON_TRILOGY_H
 
-#include "trilogy.h"
-#include "titanium.h"
-#include "uf.h"
-#include "sof.h"
-#include "sod.h"
-#include "rof.h"
-#include "rof2.h"
+#include "../struct_strategy.h"
 
+class EQStreamIdentifier;
 
-void RegisterAllPatches(EQStreamIdentifier &into)
+namespace Trilogy
 {
-	Trilogy::Register(into);
-	Titanium::Register(into);
-	SoF::Register(into);
-	SoD::Register(into);
-	UF::Register(into);
-	RoF::Register(into);
-	RoF2::Register(into);
-}
 
-void ReloadAllPatches()
-{
-	Trilogy::Reload();
-	Titanium::Reload();
-	SoF::Reload();
-	SoD::Reload();
-	UF::Reload();
-	RoF::Reload();
-	RoF2::Reload();
-}
+	// Public interface — called from patches.cpp
+	extern void Register(EQStreamIdentifier &into);
+	extern void Reload();
+
+	// Strategy class — inherits StructStrategy, registered as the
+	// encoder/decoder for all streams identified as Trilogy clients.
+	class Strategy : public StructStrategy {
+	public:
+		Strategy();
+
+	protected:
+		virtual std::string Describe() const;
+		virtual const EQ::versions::ClientVersion ClientVersion() const;
+
+		// Declares Encode_*/Decode_* methods listed in trilogy_ops.h
+		#include "ss_declare.h"
+		#include "trilogy_ops.h"
+	};
+
+} /*Trilogy*/
+
+#endif /*COMMON_TRILOGY_H*/

@@ -114,6 +114,22 @@ ClientListEntry::ClientListEntry(uint32 in_id, ZoneServer *iZS, ServerClientList
 	}
 }
 
+ClientListEntry::ClientListEntry(uint32 in_id, uint32 iAccID, const char* iAccName, MD5& /*iMD5Pass*/, int16 iAdmin)
+	: id(in_id)
+{
+	ClearVars(true);
+	pIP         = 0;
+	pLSID       = 0;
+	paccountid  = iAccID;
+	padmin      = iAdmin;
+	pworldadmin = 0;
+	plocal      = false;
+	pguild_rank = 0;
+	strn0cpy(paccountname,             iAccName, sizeof(paccountname));
+	strn0cpy(loginserver_account_name, iAccName, sizeof(loginserver_account_name));
+	memset(pLFGComments, 0, sizeof(pLFGComments));
+}
+
 ClientListEntry::~ClientListEntry()
 {
 	if (RunLoops) {

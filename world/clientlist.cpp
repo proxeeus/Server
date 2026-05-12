@@ -337,6 +337,15 @@ void ClientList::CLEAdd(uint32 iLSID, const char *iLoginServerName, const char* 
 	clientlist.Append(tmp);
 }
 
+ClientListEntry* ClientList::CLEAddDirect(uint32 account_id, const char* account_name, int16 admin, uint32 ip)
+{
+	MD5 dummy;
+	auto* tmp = new ClientListEntry(GetNextCLEID(), account_id, account_name, dummy, admin);
+	tmp->SetIP(ip);
+	clientlist.Append(tmp);
+	return tmp;
+}
+
 void ClientList::CLCheckStale() {
 	LinkedListIterator<ClientListEntry*> iterator(clientlist);
 
