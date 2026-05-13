@@ -237,7 +237,7 @@ void EQ::Net::DaybreakConnectionManager::ProcessPacket(const std::string &endpoi
 				m_connections.emplace(std::make_pair(std::make_pair(endpoint, port), connection));
 				connection->ProcessPacket(p);
 			}
-			else if (data[0] != 0 && m_on_unknown_packet) {
+			else if (m_on_unknown_packet && data[1] != OP_OutOfSession) {
 				m_on_unknown_packet(endpoint, port, data, size);
 			}
 			else if (data[1] != OP_OutOfSession) {

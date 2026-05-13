@@ -50,6 +50,8 @@ private:
 		char        account_name[32] = {};
 		char        key[16]          = {}; // 15-char session key + null
 		uint32_t    client_ip        = 0;
+		// set when client sends a reconnect IP (post-char-create re-auth)
+		bool        reconnect_mode   = false;
 	};
 
 	void RunLoop(uint16_t port);

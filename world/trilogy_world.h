@@ -58,7 +58,6 @@ private:
 		char            char_name[30] = {};
 		uint32_t        zone_id       = 0;
 		uint32_t        char_id       = 0;
-
 		// EQNetwork fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;

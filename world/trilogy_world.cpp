@@ -35,6 +35,8 @@
 #  include <netinet/in.h>
 #endif
 
+#include "../common/rulesys.h"
+
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -94,6 +96,18 @@ void TrilogyWorldServer::OnRawPacket(const std::string& addr, int port,
 void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& s,
                                      const uint8_t* data, int size)
 {
+	// Log every raw datagram before any filtering so nothing is invisible
+	{
+		std::string hex;
+		int dump_len = std::min(size, 24);
+		for (int i = 0; i < dump_len; ++i) {
+			char tmp[4];
+			snprintf(tmp, sizeof(tmp), "%02X ", data[i]);
+			hex += tmp;
+		}
+		LogNetcode("[TrilogyWorld] raw rx {} bytes hdr0={:02X}: {}", size, (unsigned)data[0], hex);
+	}
+
 	if (size < 8)
 		return;
 
@@ -101,8 +115,10 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 	{
 		uint32_t stored = ntohl(*reinterpret_cast<const uint32_t*>(data + size - 4));
 		uint32_t calc   = CRC32::Generate(data, static_cast<uint32_t>(size - 4));
-		if (stored != calc)
+		if (stored != calc) {
+			LogNetcode("[TrilogyWorld] raw rx CRC MISMATCH size={} stored={:08X} calc={:08X}", size, stored, calc);
 			return;
+		}
 	}
 
 	uint8_t hdr0 = data[0];
@@ -144,6 +160,9 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		int fdata_len = static_cast<int>(size - 4) - o;
 		if (fdata_len < 0) fdata_len = 0;
 
+		LogNetcode("[TrilogyWorld] rx FRAGMENT fseq={} fcurr={}/{} has_arq={} cli_arq={:04X} opcode={:04X} dlen={} size={}",
+		           fseq, fcurr, ftotal, has_arq, cli_arq, fopcode, fdata_len, size);
+
 		// Fragment reassembly — EQNetwork fraginfo: dwSeq/dwCurr/dwTotal (EQClassic EQNetwork.cpp)
 		// 's' is the session for this addr/port (passed in from OnRawPacket via m_sessions[key])
 		auto& fg = s.frag_groups[fseq];
@@ -171,6 +190,7 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 				full.insert(full.end(), fe.data.begin(), fe.data.end());
 			uint16_t ropcode = fg.opcode;
 			s.frag_groups.erase(fseq);
+			LogNetcode("[TrilogyWorld] rx FRAGMENT COMPLETE opcode={:04X} plen={}", ropcode, full.size());
 			OnOpcode(addr, port, s, ropcode, full.data(), static_cast<uint32_t>(full.size()));
 		}
 		return;
@@ -185,9 +205,17 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		}
 	}
 
-	// Disconnect packet
-	if ((hdr0 & 0x04) && (hdr0 & 0x40)) {
-		m_sessions.erase(SessionKey(addr, port));
+	// a2_Closing + a6_Closing: client signals graceful close (may precede CharCreate on new session).
+	// ACK the ARQ to stop retransmits but preserve the session — CharCreate arrives shortly after.
+	bool is_close = (hdr0 & 0x04) && (hdr0 & 0x40);
+	if (is_close) {
+		uint64_t key = SessionKey(addr, port);
+		auto it = m_sessions.find(key);
+		if (it != m_sessions.end() && has_arq) {
+			it->second.cli_arq = cli_arq;
+			it->second.ack_due = true;
+			SendAck(addr, port, it->second);
+		}
 		return;
 	}
 
@@ -197,8 +225,21 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	if (is_new && !seqstart)
 		return;
-	if (is_new)
+	if (is_new) {
 		m_sessions[key] = Session{};
+	} else if (seqstart) {
+		// Client reconnected with SEQSTART on an existing session (e.g. after the close handshake).
+		// Reset transport state but preserve auth fields so CharCreate can still identify the account.
+		Session& existing = m_sessions[key];
+		existing.sack_init = false;
+		existing.seq_sent  = false;
+		existing.gsq       = 0;
+		existing.arq       = 0;
+		existing.asq_hi    = 1;
+		existing.asq_lo    = 0;
+		existing.ack_due   = false;
+		existing.frag_groups.clear();
+	}
 
 	Session& session   = m_sessions[key];
 	session.last_pkt   = std::time(nullptr);
@@ -210,6 +251,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	int remaining = size - o - 4;
 	if (remaining <= 0) {
+		LogNetcode("[TrilogyWorld] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X} size={} o={}",
+		           hdr0, has_arq, cli_arq, size, o);
 		if (session.ack_due)
 			SendAck(addr, port, session);
 		return;
@@ -222,6 +265,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 	const uint8_t* payload = data + o;
 	uint32_t       plen    = static_cast<uint32_t>(size - o - 4);
 
+	LogNetcode("[TrilogyWorld] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} size={}",
+	           hdr0, hdr1, has_arq, cli_arq, opcode, size);
 	OnOpcode(addr, port, session, opcode, payload, plen);
 }
 
@@ -250,6 +295,13 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		break;
 	case OP_CHAR_CREATE:
 		HandleCharCreate(addr, port, s, payload, plen);
+		break;
+	case 0x2320: // name-approval handshake ping: echo back to client
+	case 0xa980: // unknown size-0 opcodes seen in EQClassic world — echo back
+	case 0x00ab:
+	case 0x00ac:
+	case 0x00ad:
+		SendApp(addr, port, s, opcode, nullptr, 0);
 		break;
 	default:
 		if (s.ack_due)
@@ -305,13 +357,14 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 		return;
 	}
 
-	s.account_id = account_id;
+	uint32_t eqemu_account_id = cle->AccountID();
+	s.account_id = (eqemu_account_id > 0) ? eqemu_account_id : account_id;
 	strncpy(s.account_name, cle->AccountName(), sizeof(s.account_name) - 1);
 	s.cle = cle;
 	cle->SetOnline(CLE_Status::CharSelect);
 
-	LogInfo("[TrilogyWorld] Auth success for account [{}] id [{}] from {}:{}",
-	        s.account_name, account_id, addr, port);
+	LogInfo("[TrilogyWorld] Auth success | account [{}] ls_id [{}] eqemu_id [{}] session_account_id [{}] from {}:{}",
+	        s.account_name, account_id, eqemu_account_id, s.account_id, addr, port);
 
 	// EQClassic sequence (client_process.cpp ProcessOP_SendLoginInfo):
 	//   SendLoginApproved() -> SendEnterWorld() -> SendExpansionInfo() -> SendCharInfo()
@@ -359,26 +412,31 @@ void TrilogyWorldServer::SendExpansionInfo(const std::string& addr, int port, Se
 void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Session& s)
 {
 	auto query = fmt::format(
-		"SELECT `name`, `level`, `class`, `race`, `gender`, `face`, `zone_id` "
-		"FROM `character_data` WHERE `account_id` = {} AND `deleted_at` IS NULL "
-		"ORDER BY `name` LIMIT 10",
+		"SELECT cd.`name`, cd.`level`, cd.`class`, cd.`race`, cd.`gender`, cd.`face`,"
+		" COALESCE(z.`short_name`, '') "
+		"FROM `character_data` cd "
+		"LEFT JOIN `zone` z ON z.`zoneidnumber` = cd.`zone_id` "
+		"WHERE cd.`account_id` = {} AND cd.`deleted_at` IS NULL "
+		"ORDER BY cd.`name` LIMIT 10",
 		s.account_id
 	);
 
 	auto results = database.QueryDatabase(query);
+
+	LogInfo("[TrilogyWorld] SendCharSelect | account_id [{}] rows [{}]", s.account_id, results.RowCount());
 
 	Trilogy::structs::CharacterSelect_Struct cs{};
 	memset(&cs, 0, sizeof(cs));
 
 	int slot = 0;
 	for (auto row = results.begin(); row != results.end() && slot < 10; ++row, ++slot) {
-		strncpy(cs.name[slot], row[0], 29);
+		strncpy(cs.name[slot],  row[0], 29);
 		cs.level[slot]  = static_cast<int8_t>(Strings::ToInt(row[1]));
 		cs.class_[slot] = static_cast<int8_t>(Strings::ToInt(row[2]));
 		cs.race[slot]   = static_cast<int16_t>(Strings::ToInt(row[3]));
 		cs.gender[slot] = static_cast<int8_t>(Strings::ToInt(row[4]));
 		cs.face[slot]   = static_cast<int8_t>(Strings::ToInt(row[5]));
-		// zone name not available here, leave zeroed (client can handle it)
+		strncpy(cs.zone[slot],  row[6], 19);
 	}
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
@@ -485,10 +543,30 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 }
 
 // ============================================================
-// OP_NAME_APPROVAL (0x8B20): validate and reserve character name
-// EQClassic NameApproval_Struct: char[30] name + 8 unknown bytes = ~40 bytes
-// Response: same opcode, 1 byte (1=approved, 0=rejected)
+// OP_NAME_APPROVAL (0x8B20): validate, reserve, and create character.
+// Trilogy sends race/class in this packet (EQClassic NameApproval_Struct, 40 bytes):
+//   charname[30] + unknown[2] + race(uint8)[32] + unknown[3] + class_(uint8)[36] + unknown[3]
+// OP_CharacterCreate (0x4920) is never sent separately by this client.
+// Response: same opcode, 1 byte (1=approved, 0=rejected), then CharInfo.
 // ============================================================
+
+// Racial base stats for character creation (indexed by EQ race ID 1-13).
+static const struct { uint8_t str, sta, cha, dex, intel, agi, wis; } kRaceBaseStats[] = {
+	{  0,   0,   0,   0,   0,   0,   0 }, // 0  (unused)
+	{ 75,  75,  75,  75,  75,  75,  75 }, // 1  Human
+	{103,  95,  55,  70,  60,  82,  70 }, // 2  Barbarian
+	{ 60,  70,  70,  70, 107,  70,  83 }, // 3  Erudite
+	{ 65,  65,  75,  80,  75,  95,  80 }, // 4  Wood Elf
+	{ 55,  65,  80,  75,  92,  80,  95 }, // 5  High Elf
+	{ 60,  65,  60,  75,  99,  90,  83 }, // 6  Dark Elf
+	{ 70,  70,  75,  85,  75,  90,  70 }, // 7  Half Elf
+	{ 90,  90,  45,  90,  60,  70,  83 }, // 8  Dwarf
+	{108, 109,  40,  75,  52,  83,  60 }, // 9  Troll
+	{130, 122,  40,  70,  60,  70,  67 }, // 10 Ogre
+	{ 70,  75,  75,  90,  67,  95,  80 }, // 11 Halfling
+	{ 60,  67,  60,  85,  98,  85,  67 }, // 12 Gnome
+	{ 70,  70,  55,  85,  75,  90,  80 }, // 13 Iksar
+};
 
 void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, Session& s,
                                              const uint8_t* payload, uint32_t plen)
@@ -501,6 +579,15 @@ void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, S
 	char name[31] = {};
 	strncpy(name, reinterpret_cast<const char*>(payload), std::min(30u, plen));
 	name[30] = '\0';
+
+	// Retransmit: name already reserved this session — re-send 1-byte approval.
+	if (s.char_name[0] != '\0' && strcmp(s.char_name, name) == 0) {
+		LogInfo("[TrilogyWorld] Name approval [{}]: retransmit for account [{}]",
+		        name, s.account_name);
+		uint8_t ok[1] = { 1u };
+		SendApp(addr, port, s, OP_NAME_APPROVAL, ok, 1);
+		return;
+	}
 
 	uint32_t length = static_cast<uint32_t>(strlen(name));
 	bool valid = true;
@@ -523,41 +610,39 @@ void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, S
 
 	if (valid) {
 		valid = database.ReserveName(s.account_id, name);
-		if (valid)
+		if (valid) {
 			strncpy(s.char_name, name, sizeof(s.char_name) - 1);
+		}
 	}
 
-	LogInfo("[TrilogyWorld] Name approval [{}]: {} for account [{}] from {}:{}",
-	        name, valid ? "approved" : "rejected", s.account_name, addr, port);
+	LogInfo("[TrilogyWorld] Name approval [{}]: {} for account [{}] id [{}] from {}:{}",
+	        name, valid ? "approved" : "rejected", s.account_name, s.account_id, addr, port);
 
+	// EQClassic server sends 1 byte: 0x01=approved, 0x00=rejected.
+	// Client will then send OP_CHAR_CREATE (0x4920) with the full character data.
 	uint8_t response[1] = { valid ? 1u : 0u };
 	SendApp(addr, port, s, OP_NAME_APPROVAL, response, 1);
 }
 
 // ============================================================
-// OP_CHAR_CREATE (0x4920): EQClassic PlayerProfile (no checksum prefix)
-// Layout (payload offsets = struct_offset - 0x0004):
-//   [  0..29] char  name[30]
-//   [80]      uint8 gender
-//   [81]      uint8 deity
-//   [82..83]  int16 race (LE)
-//   [84]      uint8 class_
-//   [110]     uint8 face
-//   [287]     uint8 STR  [288] STA  [289] CHA
-//   [290]     uint8 DEX  [291] INT  [292] AGI  [293] WIS
+// OP_CHAR_CREATE (0x4920): Trilogy PlayerProfile_Struct minus 4-byte checksum prefix.
+// payload[N] == Trilogy::structs::PlayerProfile_Struct[N+4], total plen=8100 bytes.
 // After creation, send updated CharSelect.
 // ============================================================
 
 void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Session& s,
                                            const uint8_t* payload, uint32_t plen)
 {
+	LogInfo("[TrilogyWorld] HandleCharCreate | account_id [{}] account_name [{}] from {}:{}",
+	        s.account_id, s.account_name, addr, port);
 	if (s.account_id == 0) {
 		SendAck(addr, port, s);
 		return;
 	}
 
-	// Need at least through WIS (offset 293)
-	if (plen < 294) {
+	// Payload = Trilogy::structs::PlayerProfile_Struct minus 4-byte checksum prefix.
+	// payload[N] == struct[N+4]. Need at least through WIS (struct[129] = payload[125]).
+	if (plen < 126) {
 		LogInfo("[TrilogyWorld] CharCreate: plen={} too small from {}:{}", plen, addr, port);
 		uint8_t reject[1] = { 0 };
 		SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
@@ -568,19 +653,26 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	strncpy(name, reinterpret_cast<const char*>(payload), 30);
 	name[30] = '\0';
 
-	// EQClassic PP field offsets (payload = struct starting at name field)
-	const uint8_t  gender  = payload[80];
-	const uint8_t  deity   = payload[81];
-	const uint16_t race    = *reinterpret_cast<const uint16_t*>(payload + 82); // LE
-	const uint8_t  class_  = payload[84];
-	const uint8_t  face    = payload[110];
-	const uint8_t  str_v   = payload[287];
-	const uint8_t  sta_v   = payload[288];
-	const uint8_t  cha_v   = payload[289];
-	const uint8_t  dex_v   = payload[290];
-	const uint8_t  int_v   = payload[291];
-	const uint8_t  agi_v   = payload[292];
-	const uint8_t  wis_v   = payload[293];
+	// Trilogy PlayerProfile_Struct field offsets (payload = struct - 4-byte checksum):
+	//   payload[0..29]   name[30]        (struct[4..33])
+	//   payload[50]      gender          (struct[54])
+	//   payload[51]      deity           (struct[55])
+	//   payload[52..53]  race (int16 LE) (struct[56..57])
+	//   payload[54]      class_          (struct[58])
+	//   payload[68]      face            (struct[72])
+	//   payload[119..125] STR STA CHA DEX INT AGI WIS (struct[123..129])
+	const uint8_t  gender  = payload[50];
+	const uint8_t  deity   = payload[51];
+	const uint16_t race    = *reinterpret_cast<const uint16_t*>(payload + 52); // LE
+	const uint8_t  class_  = payload[54];
+	const uint8_t  face    = payload[68];
+	const uint8_t  str_v   = payload[119];
+	const uint8_t  sta_v   = payload[120];
+	const uint8_t  cha_v   = payload[121];
+	const uint8_t  dex_v   = payload[122];
+	const uint8_t  int_v   = payload[123];
+	const uint8_t  agi_v   = payload[124];
+	const uint8_t  wis_v   = payload[125];
 
 	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] from {}:{}",
 	        s.account_name, name, race, class_, gender, addr, port);
@@ -624,13 +716,14 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	memset(pp.spell_book, 0xFF, sizeof(pp.spell_book));
 	memset(pp.mem_spells, 0xFF, sizeof(pp.mem_spells));
 
-	// Look up starting zone via start_zones table (race/class/deity, ignoring player_choice for Trilogy)
+	// Look up starting zone via start_zones table (class/race/deity, Trilogy has no player_choice)
 	{
 		auto zq = fmt::format(
-			"SELECT `x`, `y`, `z`, `heading`, `start_zone` FROM `start_zones`"
-			" WHERE `player_class`={} AND `player_deity`={} AND `player_race`={}"
-			" LIMIT 1",
-			class_, deity, race);
+			"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+			" FROM `start_zones` sz"
+			" WHERE sz.`player_class`={} AND sz.`player_race`={}"
+			" ORDER BY (sz.`player_deity`={}) DESC, sz.`player_deity` ASC LIMIT 1",
+			class_, race, deity);
 		auto zr = content_db.QueryDatabase(zq);
 		if (zr.RowCount() > 0) {
 			auto zrow = zr.begin();
@@ -640,9 +733,9 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			pp.heading = Strings::ToFloat(zrow[3]);
 			pp.zone_id = static_cast<uint16_t>(Strings::ToInt(zrow[4]));
 		} else {
-			// Default: Qeynos (zone_id=1)
-			pp.zone_id = 1;
-			pp.x = -13.0f; pp.y = -7.0f; pp.z = 4.0f; pp.heading = 0.0f;
+			int titan_zone = RuleI(World, TitaniumStartZoneID);
+			pp.zone_id = (titan_zone > 0) ? static_cast<uint16_t>(titan_zone) : 1;
+			pp.x = 0.0f; pp.y = 0.0f; pp.z = 0.0f; pp.heading = 0.0f;
 		}
 	}
 
@@ -687,6 +780,8 @@ void TrilogyWorldServer::SendApp(const std::string& addr, int port, Session& s,
 
 	uint8_t hdr0 = HDR0_ARQ | HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
 	uint8_t hdr1 = s.ack_due ? HDR1_ARSP : 0u;
+	LogNetcode("[TrilogyWorld] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
+	           opcode, s.gsq, s.ack_due, s.cli_arq);
 	buf[o++] = hdr0;
 	buf[o++] = hdr1;
 
@@ -715,6 +810,17 @@ void TrilogyWorldServer::SendApp(const std::string& addr, int port, Session& s,
 	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
+	{
+		std::string hex;
+		int dump_len = std::min(o, 20);
+		for (int i = 0; i < dump_len; ++i) {
+			char tmp[4];
+			snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
+			hex += tmp;
+		}
+		LogNetcode("[TrilogyWorld] tx bytes[0..{}]: {}", dump_len - 1, hex);
+	}
+
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }
 
@@ -732,6 +838,8 @@ void TrilogyWorldServer::SendAck(const std::string& addr, int port, Session& s)
 
 	uint8_t buf[16];
 	int     o = 0;
+
+	LogNetcode("[TrilogyWorld] tx ACK SEQ={} cli_arq={:04X}", s.gsq, s.cli_arq);
 
 	buf[o++] = 0x00;
 	buf[o++] = HDR1_ARSP;

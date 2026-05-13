@@ -364,7 +364,11 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 	}
 
 	case LS_OP_LoginInfo: {
-		// Client sends 40-byte DES-CBC block with Verant key/IV: username[20]+password[20].
+		// Client sends 40-byte DES-CBC block with Verant key/IV: username[20]+password[20],
+		// optionally followed by a null-terminated server IP string at byte 40.
+		// When the IP is present and not "none", this is a post-char-create reconnect:
+		// the client already knows which server to use and expects the LS to push a
+		// session key automatically after the server list (it will NOT send LS_OP_SessionKey).
 		if (plen >= 40) {
 			uint8_t plain[40] = {};
 			if (trilogy_des_decrypt(payload, plain, 40)) {
@@ -375,12 +379,30 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 				username[20] = '\0';
 				password[20] = '\0';
 
+				// Parse reconnect IP from bytes 40+ (null-terminated string)
+				if (plen > 40) {
+					char reconnect_ip[64] = {};
+					size_t ip_len = 0;
+					while (ip_len < plen - 40 && ip_len < 63 && payload[40 + ip_len] != '\0')
+						++ip_len;
+					strncpy(reconnect_ip, reinterpret_cast<const char*>(payload + 40), ip_len);
+					reconnect_ip[ip_len] = '\0';
+					s.reconnect_mode = (ip_len > 0 && strcmp(reconnect_ip, "none") != 0);
+					if (s.reconnect_mode)
+						LogInfo("[TrilogyLS] Reconnect mode for user [{}] via [{}]", username, reconnect_ip);
+				}
+
 				LogInfo("[TrilogyLS] Login attempt for user [{}]", username);
 
 				unsigned int account_id = 0;
 				std::string  stored_hash;
 				if (server.db->GetLoginDataFromAccountInfo(username, "local", stored_hash, account_id)) {
-					if (eqcrypt_verify_hash(username, password, stored_hash, server.options.GetEncryptionMode())) {
+					bool auth_ok = eqcrypt_verify_hash(username, password, stored_hash, server.options.GetEncryptionMode());
+					if (!auth_ok) {
+						// Fallback: legacy plaintext stored by earlier Trilogy LS code
+						auth_ok = (stored_hash == std::string(password));
+					}
+					if (auth_ok) {
 						s.account_id = account_id;
 						strncpy(s.account_name, username, sizeof(s.account_name) - 1);
 						s.client_ip  = ip;
@@ -389,7 +411,9 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 						LogInfo("[TrilogyLS] Login failed (bad password) for user [{}]", username);
 					}
 				} else if (server.options.CanAutoCreateAccounts()) {
-					account_id = server.db->CreateLoginAccount(username, password, "local");
+					// Hash before storing so future logins can verify with eqcrypt_verify_hash
+					std::string hashed_pw = eqcrypt_hash(username, std::string(password), server.options.GetEncryptionMode());
+					account_id = server.db->CreateLoginAccount(username, hashed_pw, "local");
 					if (account_id > 0) {
 						s.account_id = account_id;
 						strncpy(s.account_name, username, sizeof(s.account_name) - 1);
@@ -428,6 +452,38 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 		auto list = BuildServerList();
 		SendApp(sock, ip, port_ne, s, LS_OP_ServerList,
 		        list.data(), static_cast<uint32_t>(list.size()));
+
+		// In reconnect mode (post-char-create), the client will NOT send LS_OP_SessionKey —
+		// it expects the LS to push the session key automatically after the server list.
+		if (s.reconnect_mode && s.account_id > 0) {
+			char key_str[16] = {};
+			for (int i = 0; i < 15; ++i) {
+				int y = (rand() % 62) + 48;
+				if (y > 57) y += 7;
+				if (y > 90) y += 6;
+				key_str[i] = static_cast<char>(y);
+			}
+			strncpy(s.key, key_str, sizeof(s.key) - 1);
+
+			if (server.server_manager) {
+				struct in_addr addr_in;
+				addr_in.s_addr = s.client_ip;
+				std::string ip_str = inet_ntoa(addr_in);
+				for (auto& ws : server.server_manager->getWorldServers()) {
+					if (ws->IsAuthorized()) {
+						ws->SendClientAuth(ip_str, s.account_name, key_str, s.account_id, "local");
+						LogInfo("[TrilogyLS] Reconnect: SendClientAuth to [{}] for user [{}] id [{}]",
+						        ws->GetServerLongName(), s.account_name, s.account_id);
+					}
+				}
+			}
+
+			uint8_t key_pkt[17]{};
+			memcpy(key_pkt + 1, key_str, 15);
+			SendApp(sock, ip, port_ne, s, LS_OP_SessionKey, key_pkt, 17);
+			LogInfo("[TrilogyLS] Reconnect: pushed session key for user [{}] id [{}]",
+			        s.account_name, s.account_id);
+		}
 		break;
 	}
 
