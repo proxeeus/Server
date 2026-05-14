@@ -34,6 +34,8 @@ class TrilogyZoneServer {
 public:
 	void SetSendFn(std::function<void(const std::string&, int, const void*, size_t)> fn);
 	void OnRawPacket(const std::string& addr, int port, const char* data, size_t size);
+	void Tick();
+	bool HasConnectedSession() const;
 
 private:
 	enum ZoneState : uint8_t {
@@ -66,12 +68,28 @@ private:
 		uint32_t    account_id    = 0;
 		uint16_t    zone_id       = 0;
 
+		// Player entity spawn_id: (char_id & 0x3FFF) | 0x4000, range 16384-32767.
+		// Kept above NPC entity IDs (1-~500) to prevent entity confusion on zone-in.
+		uint16_t    player_spawn_id = 0;
+
+		// Source address / port (populated on first datagram)
+		int         source_port       = 0;
+
 		// Last-known position (updated from 0xF320 ClientUpdate packets)
 		float       pos_x         = 0.0f;
 		float       pos_y         = 0.0f;
 		float       pos_z         = 0.0f;
 		float       pos_heading   = 0.0f;
 		std::time_t pos_save_time = 0;
+
+		// Heartbeat rate limiting — A120 sent at most once per 250ms
+		uint64_t    last_heartbeat_ms = 0;
+
+		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion
+		uint64_t    last_stamina_ms   = 0;
+
+		// True while this session has incremented the global numclients counter.
+		bool        counted_in_zone = false;
 
 		// Fragment reassembly
 		struct FragEntry {
@@ -108,12 +126,16 @@ private:
 	void SendWeather(const std::string& addr, int port, Session& s);
 	void SendNewZone(const std::string& addr, int port, Session& s);
 	void SendZoneSpawns(const std::string& addr, int port, Session& s);
+	void SendTimeOfDay(const std::string& addr, int port, Session& s);
 
 	void SendApp(const std::string& addr, int port, Session& s,
 	             uint16_t opcode,
 	             const uint8_t* payload = nullptr, uint32_t plen = 0);
+	void SendMobHeartbeat(const std::string& addr, int port, Session& s);
 	void SendAck(const std::string& addr, int port, Session& s);
 	void SendClose(const std::string& addr, int port, Session& s);
+
+	void RemoveSession(uint64_t key);
 
 	static uint64_t SessionKey(const std::string& addr, int port);
 

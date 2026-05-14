@@ -653,10 +653,11 @@ int main(int argc, char **argv)
 	while (RunLoops) {
 		if (!is_boat_zone)
 		{
-			bool previous_loaded = is_zone_loaded && numclients > 0;
+			bool previous_loaded = is_zone_loaded && (numclients > 0 || trilogy_zone.HasConnectedSession());
 			EQ::EventLoop::Get().Process();
+			trilogy_zone.Tick();
 
-			bool current_loaded = is_zone_loaded && numclients > 0;
+			bool current_loaded = is_zone_loaded && (numclients > 0 || trilogy_zone.HasConnectedSession());
 			if (previous_loaded && !current_loaded) {
 				process_timer.Stop();
 				process_timer.Start(1000, true);
@@ -677,6 +678,7 @@ int main(int argc, char **argv)
 		{
 			bool previous_loaded = is_zone_loaded;
 			EQ::EventLoop::Get().Process();
+			trilogy_zone.Tick();
 			bool current_loaded = is_zone_loaded;
 			if (previous_loaded && !current_loaded)
 			{

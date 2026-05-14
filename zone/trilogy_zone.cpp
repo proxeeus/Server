@@ -19,12 +19,17 @@
 #include "../common/global_define.h"
 #include "trilogy_zone.h"
 #include "zonedb.h"
+#include "zone.h"
 #include "npc.h"
 #include "../common/crc32.h"
 #include "../common/compression.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/patches/trilogy_structs.h"
+#include "../common/eq_packet_structs.h"
 #include "../common/strings.h"
+
+extern Zone*   zone;
+extern uint32  numclients;
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -32,6 +37,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -50,6 +56,10 @@ static constexpr uint16_t ZN_OP_ZoneSpawns   = 0x6121; // zone -> client: bulk s
 static constexpr uint16_t ZN_OP_NewSpawn     = 0x4921; // zone -> client: single NewSpawn_Struct (encrypted)
 static constexpr uint16_t ZN_OP_Appearance   = 0xf520; // zone -> client: SpawnAppearance_Struct
 static constexpr uint16_t ZN_OP_ClientUpdate = 0xf320; // client -> zone: SpawnPositionUpdate_Struct (fire-and-forget)
+static constexpr uint16_t ZN_OP_MobUpdate    = 0xa120; // zone -> client: SpawnPositionUpdates_Struct (heartbeat + NPC positions)
+static constexpr uint16_t ZN_OP_TimeOfDay    = 0xf220; // zone -> client: TimeOfDay_Struct (6 bytes)
+static constexpr uint16_t ZN_OP_Stamina      = 0x5721; // zone -> client: Stamina_Struct (8 bytes)
+static constexpr uint16_t ZN_OP_SetAvatar    = 0x6f20; // zone -> client: MSG_SET_AVATAR (1 byte, zeroed) — signals gameplay mode start
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -84,6 +94,17 @@ static void EncryptProfilePacket(uint8_t* buf, uint32_t size)
 }
 
 // ============================================================
+
+void TrilogyZoneServer::RemoveSession(uint64_t key)
+{
+	auto it = m_sessions.find(key);
+	if (it == m_sessions.end()) return;
+	if (it->second.counted_in_zone && numclients > 0) {
+		--numclients;
+		LogInfo("[TrilogyZone] Session removed, numclients={}", numclients);
+	}
+	m_sessions.erase(it);
+}
 
 uint64_t TrilogyZoneServer::SessionKey(const std::string& addr, int port)
 {
@@ -230,8 +251,10 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	if (is_close) {
 		uint64_t key = SessionKey(addr, port);
 		auto it = m_sessions.find(key);
-		if (it != m_sessions.end())
+		if (it != m_sessions.end()) {
 			SendClose(addr, port, it->second);
+			RemoveSession(key);
+		}
 		return;
 	}
 
@@ -244,6 +267,10 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		m_sessions[key] = Session{};
 	} else if (seqstart) {
 		Session& existing = m_sessions[key];
+		if (existing.counted_in_zone && numclients > 0) {
+			--numclients;
+			LogInfo("[TrilogyZone] Session restarted, numclients={}", numclients);
+		}
 		existing.state      = CONNECTING1;
 		existing.sack_init  = false;
 		existing.seq_sent   = false;
@@ -255,13 +282,16 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		existing.frag_groups.clear();
 		existing.char_name[0] = '\0';
 		existing.zone_short[0] = '\0';
-		existing.char_id    = 0;
-		existing.account_id = 0;
-		existing.zone_id    = 0;
+		existing.char_id         = 0;
+		existing.account_id      = 0;
+		existing.zone_id         = 0;
+		existing.player_spawn_id = 0;
+		existing.counted_in_zone = false;
 	}
 
 	Session& session = m_sessions[key];
-	session.last_pkt = std::time(nullptr);
+	session.last_pkt    = std::time(nullptr);
+	session.source_port = port;
 
 	if (has_arq) { session.cli_arq = cli_arq; session.ack_due = true; }
 
@@ -269,6 +299,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	if (remaining <= 0) {
 		LogInfo("[TrilogyZone] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X}", hdr0, has_arq, cli_arq);
 		if (session.ack_due) SendAck(addr, port, session);
+		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick() on a 250ms timer.
 		return;
 	}
 
@@ -333,6 +364,7 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case CONNECTED:
 		if (opcode == ZN_OP_ClientUpdate)
 			HandleClientUpdate(addr, port, s, payload, plen);
+		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
 	}
@@ -393,9 +425,10 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	s.zone_id    = static_cast<uint16_t>(Strings::ToInt(row[2]));
 	strncpy(s.char_name,  char_name, sizeof(s.char_name) - 1);
 	strncpy(s.zone_short, row[3],    sizeof(s.zone_short) - 1);
+	s.player_spawn_id = static_cast<uint16_t>((s.char_id & 0x3FFF) | 0x4000);
 
-	LogInfo("[TrilogyZone] ZoneEntry | char_id={} account_id={} zone_id={} zone={}",
-	        s.char_id, s.account_id, s.zone_id, s.zone_short);
+	LogInfo("[TrilogyZone] ZoneEntry | char_id={} account_id={} zone_id={} zone={} player_spawn_id={}",
+	        s.char_id, s.account_id, s.zone_id, s.zone_short, s.player_spawn_id);
 
 	// Server sends: PlayerProfile → ServerZoneEntry → Weather
 	SendPlayerProfile(addr, port, s);
@@ -429,8 +462,9 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 
 	SendNewZone(addr, port, s);
 	SendZoneSpawns(addr, port, s);
+	SendTimeOfDay(addr, port, s);
 
-	// 0xd820 with 0 bytes — signals end of zone data (EQClassic client_process.cpp: Process_ClientConnection4)
+	// 0xd820 with 0 bytes — signals end of zone data
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	s.state = CONNECTING5;
@@ -438,35 +472,63 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 
 // ============================================================
 // CONNECTING5 → CONNECTED: client signals zone-in complete
-//   server sends SpawnAppearance + broadcast NewSpawn + 0xc321 + 0xd820
+//   server sends SpawnAppearance(type=0x10) + Stamina + 0xd820
 // ============================================================
 
 void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, Session& s)
 {
 	LogInfo("[TrilogyZone] ZoneInComplete (0xd820) — finalising zone-in, CONNECTED");
 
-	// SpawnAppearance for this player's self-spawn (appearance type 1 = standing)
+	// MSG_SET_AVATAR (0x6f40 on EQClassic/EQMac → 0x6f20 on Trilogy v29c/v30)
+	// EQClassic sends this 1-byte zeroed packet immediately before SpawnAppearance(type=0x10).
+	// Signals the client to enter gameplay mode.
+	{
+		uint8_t avatar_byte = 0;
+		SendApp(addr, port, s, ZN_OP_SetAvatar, &avatar_byte, 1);
+	}
+
+	// SpawnAppearance type=0x10 tells the client which entity ID is its own player.
+	// EQClassic client_process.cpp: sa->type = 0x10; sa->parameter = GetID();
 	{
 		Trilogy::structs::SpawnAppearance_Struct sa{};
 		memset(&sa, 0, sizeof(sa));
-		sa.spawn_id  = static_cast<int16_t>(s.char_id & 0x7FFF);
-		sa.type      = 0; // appearance type 0
-		sa.parameter = 0;
+		sa.spawn_id  = 0;
+		sa.type      = 0x10;
+		sa.parameter = static_cast<int32_t>(s.player_spawn_id);
 		SendApp(addr, port, s, ZN_OP_Appearance,
 		        reinterpret_cast<const uint8_t*>(&sa), sizeof(sa));
 	}
 
-	// 0xc321 — 8 bytes zeroed (EQClassic client_process.cpp Process_ClientConnection5)
+	// OP_Stamina — food/water/fatigue (6000=full, 0=hungry; fatigue 0=rested)
 	{
-		uint8_t buf[8] = {};
-		SendApp(addr, port, s, 0xc321, buf, 8);
+		Trilogy::structs::Stamina_Struct sta{};
+		memset(&sta, 0, sizeof(sta));
+		sta.food    = 6000;
+		sta.water   = 6000;
+		sta.fatigue = 0;
+		SendApp(addr, port, s, ZN_OP_Stamina,
+		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
+		// Seed the timer so Tick() waits the full 5s before the next refresh.
+		// Sending Stamina immediately after D820 (when the client just entered gameplay
+		// mode) causes a CTD — the stamina UI hasn't finished initialising yet.
+		s.last_stamina_ms = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
 	}
 
-	// Final 0xd820 (empty) — marks zone-in finalised
+	s.state = CONNECTED;
+	if (!s.counted_in_zone) {
+		++numclients;
+		s.counted_in_zone = true;
+	}
+	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}] (numclients={})", s.char_name, s.zone_short, numclients);
+
+	// NPCs were delivered via ZN_OP_ZoneSpawns in SendZoneSpawns (before the first
+	// D820), so the client had them buffered during zone-load. Nothing to send here.
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
-	s.state = CONNECTED;
-	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}]", s.char_name, s.zone_short);
+	// Prime the heartbeat: first A120 sent immediately so the client's ARQ timer starts.
+	SendMobHeartbeat(addr, port, s);
 }
 
 // ============================================================
@@ -482,6 +544,9 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	// Initialise spell slots to "empty" (-1 = 0xFFFF)
 	memset(pp.spell_book,   0xFF, sizeof(pp.spell_book));
 	memset(pp.spell_memory, 0xFF, sizeof(pp.spell_memory));
+	// Empty buff slots must have spellid=0xFFFF; spellid=0 causes SpellEffect(NULL,0,0,0) x15 at zone-in
+	for (int i = 0; i < 15; i++)
+		pp.buffs[i].spellid = static_cast<int16_t>(0xFFFF);
 
 	// ---- character_data ----
 	{
@@ -741,6 +806,41 @@ void TrilogyZoneServer::SendWeather(const std::string& addr, int port, Session& 
 }
 
 // ============================================================
+// SendTimeOfDay — send OP_TimeOfDay (0xf220) with current EQ time.
+// EQClassic sends this immediately after OP_ZoneSpawns, before
+// the end-of-data 0xd820.  Scale: 1 EQ minute = 3 real seconds;
+// 1 EQ day = 4320 real seconds (72 real minutes).
+// ============================================================
+
+void TrilogyZoneServer::SendTimeOfDay(const std::string& addr, int port, Session& s)
+{
+	Trilogy::structs::TimeOfDay_Struct tod{};
+	memset(&tod, 0, sizeof(tod));
+
+	// Use zone's authoritative EQ clock (same source as EQClassic/EQMacEmuTrilogy)
+	if (zone) {
+		TimeOfDay_Struct zt{};
+		zone->zone_time.GetCurrentEQTimeOfDay(time(nullptr), &zt);
+		tod.hour   = static_cast<int8_t>(zt.hour);
+		tod.minute = static_cast<int8_t>(zt.minute);
+		tod.day    = static_cast<int8_t>(zt.day);
+		tod.month  = static_cast<int8_t>(zt.month);
+		tod.year   = static_cast<int16_t>(zt.year);
+	} else {
+		// Fallback when zone not yet initialised
+		tod.hour  = 8;
+		tod.minute = 0;
+		tod.day   = 1;
+		tod.month = 1;
+		tod.year  = 3100;
+	}
+
+	LogInfo("[TrilogyZone] SendTimeOfDay | EQ time {:02d}:{:02d}", tod.hour, tod.minute);
+	SendApp(addr, port, s, ZN_OP_TimeOfDay,
+	        reinterpret_cast<const uint8_t*>(&tod), sizeof(tod));
+}
+
+// ============================================================
 // SendNewZone — query zone table, fill NewZone_Struct
 // ============================================================
 
@@ -759,7 +859,7 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 		" `fog_red1`, `fog_green1`, `fog_blue1`, `fog_minclip1`, `fog_maxclip1`,"
 		" `fog_red2`, `fog_green2`, `fog_blue2`, `fog_minclip2`, `fog_maxclip2`,"
 		" `fog_red3`, `fog_green3`, `fog_blue3`, `fog_minclip3`, `fog_maxclip3`,"
-		" `sky`, `safe_x`, `safe_y`, `safe_z`, `underworld`, `minclip`, `maxclip` "
+		" `sky`, `safe_x`, `safe_y`, `safe_z`, `underworld`, `minclip`, `maxclip`, `gravity` "
 		"FROM `zone` WHERE `short_name` = '{}' LIMIT 1",
 		Strings::Escape(s.zone_short)
 	);
@@ -799,10 +899,13 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 		nz.underworld= Strings::ToFloat(row[25]);
 		nz.minclip   = Strings::ToFloat(row[26]);
 		nz.maxclip   = Strings::ToFloat(row[27]);
+		nz.gravity   = Strings::ToFloat(row[28]);
+		if (nz.gravity == 0.0f) nz.gravity = 0.4f; // 0 in DB means "use default"
 	} else {
 		LogInfo("[TrilogyZone] SendNewZone: zone [{}] not found in DB — using defaults", s.zone_short);
 		nz.minclip  = 10.0f;
 		nz.maxclip  = 1000.0f;
+		nz.gravity  = 0.4f;
 	}
 
 	// unknown331 MUST be 0.4f — if zero, player cannot move after zoning in
@@ -838,6 +941,8 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 
 	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
 
+	// Heartbeat (A120) is now sent by SendMobHeartbeat(), called for every CONNECTED packet.
+
 	std::time_t now = std::time(nullptr);
 	if (now - s.pos_save_time < 30) return;
 	s.pos_save_time = now;
@@ -868,53 +973,140 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		return;
 	}
 
-	std::vector<Trilogy::structs::Spawn_Struct> spawns;
-	spawns.reserve(npc_map.size());
-
+	// Deliver all zone NPCs as individual ZN_OP_ZoneSpawns (0x6121) packets.
+	// Each is a single NewSpawn_Struct (168 bytes) — well below the 512-byte
+	// fragmentation threshold, so every packet is a single datagram.
+	//
+	// This MUST be called before the first D820 (end-of-zone-data signal) so
+	// the client is still in zone-load mode and buffers the entities for
+	// rendering on zone-in completion.  Sending them as OP_NewSpawn (0x4921)
+	// after the client's D820 (gameplay mode) is silently ignored.
+	uint32_t sent = 0;
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
 		if (!npc) continue;
 
-		Trilogy::structs::Spawn_Struct sp{};
-		memset(&sp, 0, sizeof(sp));
+		Trilogy::structs::NewSpawn_Struct ns{};
+		memset(&ns, 0, sizeof(ns));
+		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
 
 		sp.size      = npc->GetSize();
 		sp.walkspeed = 0.7f;
 		sp.runspeed  = 1.4f;
-
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());
 		sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
-
 		sp.spawn_id  = static_cast<int16_t>(npc->GetID());
 		sp.body_type = static_cast<int16_t>(npc->GetBodyType());
-		sp.cur_hp    = 100; // full HP (percent)
-		sp.GuildID   = static_cast<uint16_t>(0xFFFF); // no guild
-
+		sp.cur_hp    = 100;
+		sp.GuildID   = static_cast<uint16_t>(0xFFFF);
 		sp.race      = static_cast<int8_t>(npc->GetRace());
-		sp.NPC       = 1; // NPC
+		sp.NPC       = 1;
 		sp.class_    = static_cast<int8_t>(npc->GetClass());
 		sp.gender    = static_cast<int8_t>(npc->GetGender());
 		sp.level     = static_cast<int8_t>(npc->GetLevel());
-
+		sp.anim_type         = static_cast<int8_t>(0x64);
 		sp.npc_armor_graphic = static_cast<int8_t>(npc->GetTexture());
 		sp.npc_helm_graphic  = static_cast<int8_t>(npc->GetHelmTexture());
-		sp.guildrank         = static_cast<int8_t>(0xFF); // no guild rank
-
+		sp.guildrank         = static_cast<int8_t>(0xFF);
 		strncpy(sp.name,    npc->GetName(),    sizeof(sp.name) - 1);
 		strncpy(sp.Surname, npc->GetLastName(), sizeof(sp.Surname) - 1);
 
-		spawns.push_back(sp);
+		CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&ns), sizeof(ns));
+		SendApp(addr, port, s, ZN_OP_ZoneSpawns,
+		        reinterpret_cast<const uint8_t*>(&ns), sizeof(ns));
+		++sent;
+	}
+	LogInfo("[TrilogyZone] SendZoneSpawns: sent {} NPC packets (opcode=6121) before D820", sent);
+}
+
+// ============================================================
+// TrilogyZoneServer::Tick — called every ~100ms from the zone main loop.
+// Sends an A120 heartbeat for every CONNECTED session (rate-limited to 250ms
+// inside SendMobHeartbeat).  This is the sole driver of the heartbeat chain:
+//   Tick→A120 → client 0x4121 (ACK'd) → Tick→A120 → ...
+// The chain must be timer-driven rather than packet-reactive because 0x4121
+// (client's immediate ARQ response to A120) consumes CACK.dwARQ before the
+// no_ack_sent_timer fires, so no pure ACK ever arrives when the player is idle.
+void TrilogyZoneServer::Tick()
+{
+	std::time_t now = std::time(nullptr);
+
+	// Collect stale sessions (no packet in 120s) before iterating for heartbeats.
+	std::vector<uint64_t> to_remove;
+	for (const auto& kv : m_sessions) {
+		if (now - kv.second.last_pkt > 120)
+			to_remove.push_back(kv.first);
+	}
+	for (uint64_t key : to_remove) {
+		LogInfo("[TrilogyZone] Session timeout, removing");
+		RemoveSession(key);
 	}
 
-	if (spawns.empty()) return;
+	uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
 
-	uint32_t total = static_cast<uint32_t>(spawns.size() * sizeof(Trilogy::structs::Spawn_Struct));
-	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs ({} bytes)", spawns.size(), total);
+	for (auto& kv : m_sessions) {
+		Session& s = kv.second;
+		if (s.state != CONNECTED) continue;
 
-	SendApp(addr, port, s, ZN_OP_ZoneSpawns,
-	        reinterpret_cast<const uint8_t*>(spawns.data()), total);
+		SendMobHeartbeat(s.source_addr, s.source_port, s);
+
+		// Refresh stamina every 5s so client-side endurance never depletes to 0.
+		if (now_ms - s.last_stamina_ms >= 5000) {
+			s.last_stamina_ms = now_ms;
+			Trilogy::structs::Stamina_Struct sta{};
+			sta.food    = 6000;
+			sta.water   = 6000;
+			sta.fatigue = 0;
+			SendApp(s.source_addr, s.source_port, s, ZN_OP_Stamina,
+			        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
+		}
+	}
+}
+
+bool TrilogyZoneServer::HasConnectedSession() const
+{
+	for (const auto& kv : m_sessions)
+		if (kv.second.state == CONNECTED) return true;
+	return false;
+}
+
+// SendMobHeartbeat — send OP_MobUpdate (0xa120) containing the
+//   first NPC's current position.  Called on every incoming
+//   CONNECTED-state packet (F320, WearChange, keep-alive, etc.)
+//   to maintain the client's connection meter.
+//
+// Sending this as ARQ'd is intentional: the client's 500ms
+// no_ack_sent_timer fires after each A120 and sends a pure ACK
+// back to us.  Our keep-alive handler (remaining==0 path) then
+// calls SendMobHeartbeat again, creating a self-sustaining
+// heartbeat chain that keeps the meter green even while idle.
+//
+// IMPORTANT: must NOT use player_spawn_id.  EQClassic broadcasts
+// position updates with iIgnoreSender=true — the player never
+// receives their own echo.  Sending player_spawn_id here would
+// rubber-band (override) the player's local movement.
+// ============================================================
+
+void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Session& s)
+{
+	// Rate-limit to 250ms (4 Hz) — matches EQClassic entity_list.SendPositionUpdates()
+	// interval. Without this every incoming packet (including 0x4121 responses to A120)
+	// triggers another A120, creating an unbounded feedback loop at ~1000+ pps.
+	uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (now_ms - s.last_heartbeat_ms < 250) return;
+	s.last_heartbeat_ms = now_ms;
+
+	// Always send n=0 (empty) keepalive — NPC position data in A120 (n>0)
+	// appears to break the client's heartbeat chain until the format is confirmed.
+	int32_t n = 0;
+	SendApp(addr, port, s, ZN_OP_MobUpdate,
+	        reinterpret_cast<const uint8_t*>(&n), 4);
 }
 
 // ============================================================
@@ -973,7 +1165,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 			{ uint16_t fc = htons(static_cast<uint16_t>(i));  memcpy(buf + o, &fc, 2); o += 2; }
 			{ uint16_t ft = htons(static_cast<uint16_t>(frags + 1)); memcpy(buf + o, &ft, 2); o += 2; }
 
-			if (has_asq) { buf[o++] = s.asq_hi; buf[o++] = s.asq_lo++; }
+			if (has_asq) { buf[o++] = s.asq_hi; buf[o++] = s.asq_lo++; if (s.asq_lo == 0) ++s.asq_hi; }
 			if (i == 0)  { uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2; }
 
 			uint32_t chunk;
@@ -1003,8 +1195,9 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	uint8_t hdr0 = HDR0_ARQ | HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
 	uint8_t hdr1 = s.ack_due ? HDR1_ARSP : 0u;
 
-	LogInfo("[TrilogyZone] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
-	        opcode, s.gsq, s.ack_due, s.cli_arq);
+	if (opcode != ZN_OP_NewSpawn)
+		LogInfo("[TrilogyZone] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
+		        opcode, s.gsq, s.ack_due, s.cli_arq);
 
 	buf[o++] = hdr0;
 	buf[o++] = hdr1;
@@ -1017,6 +1210,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	{ uint16_t arq = htons(s.arq++); memcpy(buf + o, &arq, 2); o += 2; }
 	buf[o++] = s.asq_hi;
 	buf[o++] = s.asq_lo++;
+	if (s.asq_lo == 0) ++s.asq_hi;
 	{ uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2; }
 	if (plen > 0 && payload) {
 		if (static_cast<size_t>(o) + plen > sizeof(buf) - 4) return;

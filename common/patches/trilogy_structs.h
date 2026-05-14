@@ -327,7 +327,8 @@ struct NewZone_Struct
 /*243*/	int8	unknown243;
 /*244*/	float	fog_minclip[4];
 /*260*/	float	fog_maxclip[4];
-/*276*/	int8	unknown276[54];
+/*276*/	float	gravity;			// 0.4f = normal EQ gravity; 0 = zero-g / moon-jump
+/*280*/	int8	unknown280[50];
 /*330*/	int8	sky;
 /*331*/	float	unknown331;
 /*335*/	int8	unknown335[9];
@@ -492,6 +493,39 @@ struct SpawnPositionUpdates_Struct
 /*000*/	int32				num_updates;
 /*004*/	SpawnPositionUpdate_Struct	spawn_update[0];
 /*004*/
+};
+
+/*
+** TimeOfDay_Struct
+** Opcode:  OP_TimeOfDay = 0xf220
+** Direction: zone server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: TimeOfDay_Struct
+** Size:    6 bytes
+*/
+struct TimeOfDay_Struct
+{
+/*000*/	int8	hour;
+/*001*/	int8	minute;
+/*002*/	int8	day;
+/*003*/	int8	month;
+/*004*/	int16	year;
+/*006*/
+};
+
+/*
+** Stamina_Struct
+** Opcode:  OP_Stamina = 0x5721
+** Direction: zone server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: Stamina_Struct
+** Size:    8 bytes (6 fields + 2 padding per EQClassic "Length: 8 Bytes" comment)
+*/
+struct Stamina_Struct
+{
+/*000*/	int16	food;		// 6000=full, 0=starving
+/*002*/	int16	water;		// 6000=full, 0=parched
+/*004*/	int16	fatigue;	// 0=rested, 100=exhausted
+/*006*/	int16	unknown006;
+/*008*/
 };
 
 // -------------------------------------------------------------------------
