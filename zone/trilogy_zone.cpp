@@ -1032,7 +1032,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		if (sp.size <= 0.0f) sp.size = 6.0f;
 		sp.walkspeed = 0.7f;
 		sp.runspeed  = 1.4f;
-		sp.heading   = static_cast<int8_t>(npc->GetHeading());
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());
 		sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
