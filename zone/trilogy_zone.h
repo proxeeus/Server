@@ -66,6 +66,13 @@ private:
 		uint32_t    account_id    = 0;
 		uint16_t    zone_id       = 0;
 
+		// Last-known position (updated from 0xF320 ClientUpdate packets)
+		float       pos_x         = 0.0f;
+		float       pos_y         = 0.0f;
+		float       pos_z         = 0.0f;
+		float       pos_heading   = 0.0f;
+		std::time_t pos_save_time = 0;
+
 		// Fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;
@@ -92,12 +99,15 @@ private:
 	void HandlePostInventory(const std::string& addr, int port, Session& s);
 	void HandleZoneDataRequest(const std::string& addr, int port, Session& s);
 	void HandleZoneInComplete(const std::string& addr, int port, Session& s);
+	void HandleClientUpdate(const std::string& addr, int port, Session& s,
+	                        const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
 	void SendZoneEntrySpawn(const std::string& addr, int port, Session& s);
 	void SendWeather(const std::string& addr, int port, Session& s);
 	void SendNewZone(const std::string& addr, int port, Session& s);
+	void SendZoneSpawns(const std::string& addr, int port, Session& s);
 
 	void SendApp(const std::string& addr, int port, Session& s,
 	             uint16_t opcode,

@@ -19,6 +19,7 @@
 #include "../common/global_define.h"
 #include "trilogy_zone.h"
 #include "zonedb.h"
+#include "npc.h"
 #include "../common/crc32.h"
 #include "../common/compression.h"
 #include "../common/eqemu_logsys.h"
@@ -48,6 +49,7 @@ static constexpr uint16_t ZN_OP_NewZone      = 0x5b20; // zone -> client: NewZon
 static constexpr uint16_t ZN_OP_ZoneSpawns   = 0x6121; // zone -> client: bulk spawns (array of Spawn_Struct)
 static constexpr uint16_t ZN_OP_NewSpawn     = 0x4921; // zone -> client: single NewSpawn_Struct (encrypted)
 static constexpr uint16_t ZN_OP_Appearance   = 0xf520; // zone -> client: SpawnAppearance_Struct
+static constexpr uint16_t ZN_OP_ClientUpdate = 0xf320; // client -> zone: SpawnPositionUpdate_Struct (fire-and-forget)
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -329,7 +331,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		break;
 
 	case CONNECTED:
-		// In-zone opcodes — future phase
+		if (opcode == ZN_OP_ClientUpdate)
+			HandleClientUpdate(addr, port, s, payload, plen);
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
 	}
@@ -425,13 +428,10 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 	LogInfo("[TrilogyZone] ZoneDataRequest (0x0a20) — sending NewZone + zone data, advancing to CONNECTING5");
 
 	SendNewZone(addr, port, s);
+	SendZoneSpawns(addr, port, s);
 
 	// 0xd820 with 0 bytes — signals end of zone data (EQClassic client_process.cpp: Process_ClientConnection4)
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
-
-	// MVP: 0 spawns — send empty ZoneSpawns (just opcode, no spawn data)
-	// EQClassic sends OP_ZoneSpawns (0x6121) for bulk spawns; 0 spawns = empty
-	// (Do not send if no spawns; EQClassic skips the send if spawn count is 0)
 
 	s.state = CONNECTING5;
 }
@@ -814,6 +814,107 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 
 	SendApp(addr, port, s, ZN_OP_NewZone,
 	        reinterpret_cast<const uint8_t*>(&nz), sizeof(nz));
+}
+
+// ============================================================
+// HandleClientUpdate — decode 0xF320 (SpawnPositionUpdate_Struct,
+//   15 bytes, fire-and-forget) and rate-limit save to character_data.
+// Coordinate scale: x,y = 1:1 float; z = raw_int16 / 10.0f
+// Heading scale: raw_uint8 * 2.0f → EQEmu 0-512 range
+// ============================================================
+
+void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (plen < sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)) return;
+
+	Trilogy::structs::SpawnPositionUpdate_Struct upd;
+	memcpy(&upd, payload, sizeof(upd));
+
+	float x       = static_cast<float>(upd.x_pos);
+	float y       = static_cast<float>(upd.y_pos);
+	float z       = static_cast<float>(upd.z_pos) / 10.0f;
+	float heading = static_cast<float>(static_cast<uint8_t>(upd.heading)) * 2.0f;
+
+	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
+
+	std::time_t now = std::time(nullptr);
+	if (now - s.pos_save_time < 30) return;
+	s.pos_save_time = now;
+
+	auto q = fmt::format(
+		"UPDATE `character_data` SET `x`={:.6f}, `y`={:.6f}, `z`={:.6f}, `heading`={:.6f} "
+		"WHERE `id`={}",
+		x, y, z, heading, s.char_id
+	);
+	database.QueryDatabase(q);
+	LogInfo("[TrilogyZone] Position saved char_id={} ({:.1f},{:.1f},{:.1f}) heading={:.1f}",
+	        s.char_id, x, y, z, heading);
+}
+
+// ============================================================
+// SendZoneSpawns — iterate entity_list NPCs, fill Trilogy
+//   Spawn_Struct (164 bytes each), and send as OP_ZoneSpawns.
+// Called from HandleZoneDataRequest (CONNECTING4) before 0xd820.
+// Coordinate scale: x,y = int16 cast; z = int16(float*10)
+// Heading: EQEmu 0-512 float → int8 (divide by 2)
+// ============================================================
+
+void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Session& s)
+{
+	const auto& npc_map = entity_list.GetNPCList();
+	if (npc_map.empty()) {
+		LogInfo("[TrilogyZone] SendZoneSpawns: zone has no NPCs");
+		return;
+	}
+
+	std::vector<Trilogy::structs::Spawn_Struct> spawns;
+	spawns.reserve(npc_map.size());
+
+	for (const auto& kv : npc_map) {
+		NPC* npc = kv.second;
+		if (!npc) continue;
+
+		Trilogy::structs::Spawn_Struct sp{};
+		memset(&sp, 0, sizeof(sp));
+
+		sp.size      = npc->GetSize();
+		sp.walkspeed = 0.7f;
+		sp.runspeed  = 1.4f;
+
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+		sp.y_pos     = static_cast<int16_t>(npc->GetY());
+		sp.x_pos     = static_cast<int16_t>(npc->GetX());
+		sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
+
+		sp.spawn_id  = static_cast<int16_t>(npc->GetID());
+		sp.body_type = static_cast<int16_t>(npc->GetBodyType());
+		sp.cur_hp    = 100; // full HP (percent)
+		sp.GuildID   = static_cast<uint16_t>(0xFFFF); // no guild
+
+		sp.race      = static_cast<int8_t>(npc->GetRace());
+		sp.NPC       = 1; // NPC
+		sp.class_    = static_cast<int8_t>(npc->GetClass());
+		sp.gender    = static_cast<int8_t>(npc->GetGender());
+		sp.level     = static_cast<int8_t>(npc->GetLevel());
+
+		sp.npc_armor_graphic = static_cast<int8_t>(npc->GetTexture());
+		sp.npc_helm_graphic  = static_cast<int8_t>(npc->GetHelmTexture());
+		sp.guildrank         = static_cast<int8_t>(0xFF); // no guild rank
+
+		strncpy(sp.name,    npc->GetName(),    sizeof(sp.name) - 1);
+		strncpy(sp.Surname, npc->GetLastName(), sizeof(sp.Surname) - 1);
+
+		spawns.push_back(sp);
+	}
+
+	if (spawns.empty()) return;
+
+	uint32_t total = static_cast<uint32_t>(spawns.size() * sizeof(Trilogy::structs::Spawn_Struct));
+	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs ({} bytes)", spawns.size(), total);
+
+	SendApp(addr, port, s, ZN_OP_ZoneSpawns,
+	        reinterpret_cast<const uint8_t*>(spawns.data()), total);
 }
 
 // ============================================================
