@@ -16,10 +16,10 @@
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
-// EQNetwork world handler for Trilogy (EQ v29c/v30) clients.
+// EQNetwork zone handler for Trilogy (EQ v29c/v30) clients.
 // Receives raw UDP datagrams from DaybreakConnectionManager::OnUnknownPacket
-// and speaks the Verant EQNetwork protocol to handle char-select and zone
-// redirect for Trilogy clients connecting to UDP port 9000.
+// and speaks the Verant EQNetwork protocol to handle zone entry and gameplay
+// for Trilogy clients connecting to the zone's UDP port.
 
 #pragma once
 
@@ -30,15 +30,23 @@
 #include <string>
 #include <vector>
 
-class ClientListEntry;
-
-class TrilogyWorldServer {
+class TrilogyZoneServer {
 public:
 	void SetSendFn(std::function<void(const std::string&, int, const void*, size_t)> fn);
 	void OnRawPacket(const std::string& addr, int port, const char* data, size_t size);
 
 private:
+	enum ZoneState : uint8_t {
+		CONNECTING1 = 1,  // waiting for OP_SetDataRate (0xe821)
+		CONNECTING2,      // waiting for OP_ZoneEntry  (0x2a20) — sends PP + spawn
+		CONNECTING3,      // waiting for 0x5d20        — sends inventory
+		CONNECTING4,      // waiting for 0x0a20        — sends NewZone + spawns
+		CONNECTING5,      // waiting for 0xd820        — finalises zone-in
+		CONNECTED,        // fully in zone
+	};
+
 	struct Session {
+		ZoneState   state     = CONNECTING1;
 		uint16_t    gsq       = 0;
 		uint16_t    arq       = 0;
 		uint8_t     asq_hi    = 1;
@@ -48,19 +56,17 @@ private:
 		bool        sack_init = false;
 		bool        seq_sent  = false;
 		std::time_t last_pkt  = 0;
-		std::string source_addr; // IP address, used for auth recovery on port-change reconnect
+		std::string source_addr;
+		uint16_t    frag_seq  = 0;
 
-		// auth / char-select state
-		uint32_t        account_id   = 0;
-		char            account_name[32] = {};
-		ClientListEntry *cle         = nullptr;
+		// Character / zone info (populated during CONNECTING2)
+		char        char_name[31] = {};
+		char        zone_short[16] = {};
+		uint32_t    char_id       = 0;
+		uint32_t    account_id    = 0;
+		uint16_t    zone_id       = 0;
 
-		// enter-world state
-		char            char_name[30] = {};
-		uint32_t        zone_id       = 0;
-		uint32_t        char_id       = 0;
-		uint16_t        frag_seq      = 0; // outgoing EQNetwork fragment-group sequence
-		// EQNetwork fragment reassembly
+		// Fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;
 			bool                 received = false;
@@ -76,32 +82,26 @@ private:
 
 	void OnDatagram(const std::string& addr, int port, Session& s,
 	                const uint8_t* buf, int len);
-
 	void OnOpcode(const std::string& addr, int port, Session& s,
 	              uint16_t opcode, const uint8_t* payload, uint32_t plen);
 
-	void HandleLoginInfo(const std::string& addr, int port, Session& s,
+	// Zone-entry state handlers
+	void HandleSetDataRate(const std::string& addr, int port, Session& s);
+	void HandleZoneEntry(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
+	void HandlePostInventory(const std::string& addr, int port, Session& s);
+	void HandleZoneDataRequest(const std::string& addr, int port, Session& s);
+	void HandleZoneInComplete(const std::string& addr, int port, Session& s);
 
-	void HandleEnterWorld(const std::string& addr, int port, Session& s,
-	                      const uint8_t* payload, uint32_t plen);
-
-	void HandleNameApproval(const std::string& addr, int port, Session& s,
-	                        const uint8_t* payload, uint32_t plen);
-
-	void HandleCharCreate(const std::string& addr, int port, Session& s,
-	                      const uint8_t* payload, uint32_t plen);
-
-	void SendCharSelect(const std::string& addr, int port, Session& s);
-
-	void SendLoginApproved(const std::string& addr, int port, Session& s);
-	void SendEnterWorldAck(const std::string& addr, int port, Session& s);
-	void SendExpansionInfo(const std::string& addr, int port, Session& s);
+	// Packet builders
+	void SendPlayerProfile(const std::string& addr, int port, Session& s);
+	void SendZoneEntrySpawn(const std::string& addr, int port, Session& s);
+	void SendWeather(const std::string& addr, int port, Session& s);
+	void SendNewZone(const std::string& addr, int port, Session& s);
 
 	void SendApp(const std::string& addr, int port, Session& s,
 	             uint16_t opcode,
 	             const uint8_t* payload = nullptr, uint32_t plen = 0);
-
 	void SendAck(const std::string& addr, int port, Session& s);
 	void SendClose(const std::string& addr, int port, Session& s);
 

@@ -226,62 +226,6 @@ struct ClientZoneEntry_Struct
 };
 
 /*
-** ServerZoneEntry_Struct
-** Opcode:  OP_ZoneEntry = 0x2a20
-** Direction: zone server -> client
-** Source:  EQClassic Common/Include/eq_packet_structs.h :: ServerZoneEntry_Struct
-** Size:    312 bytes
-*/
-struct ServerZoneEntry_Struct
-{
-/*000*/	int8	checksum[4];
-/*004*/	int8	sze_unknown1;
-/*005*/	char	name[30];
-/*035*/	char	zone[15];
-/*050*/	int8	sze_unknown2[6];
-/*056*/	float	y;
-/*060*/	float	x;
-/*064*/	float	z;
-/*068*/	float	heading;
-/*072*/	int8	sze_unknown3[76];
-/*148*/	int16	guildeqid;
-/*150*/	int8	sze_unknown3_78[3];
-/*153*/	int8	sze_unknown_add[4];	// [3]: 0=ok, 1=name dead color, 2=death on zone-in
-/*157*/	int8	class_;
-/*158*/	int16	race;
-/*160*/	int8	gender;
-/*161*/	int8	level;
-/*162*/	int8	sze_unknown5[2];
-/*164*/	int8	pvp;
-/*165*/	int8	sze_unknown5_2_1[2];
-/*167*/	int8	face;
-/*168*/	int8	helmet;
-/*169*/	int8	sze_unknown5_2_2_0;
-/*170*/	int8	sze_unknown5_2_2_1;
-/*171*/	int8	sze_unknown5_2_2_2;
-/*172*/	int8	sze_unknown5_2_2_3;
-/*173*/	int8	sze_unknown5_2_2_4;
-/*174*/	int8	sze_unknown5_2_2_5;
-/*175*/	int8	left_hand;
-/*176*/	int8	right_hand;
-/*177*/	int8	sze_unknown5_2_2_6[3];
-/*180*/	uint32	helmcolor;
-/*184*/	int8	sze_unknown5_2_2_7[32];
-/*216*/	int8	npc_armor_graphic;	// 0xFF=Player, 0=none, 1=leather, 2=chain, 3=plate
-/*217*/	int8	sze_unknown5_2_2[19];
-/*236*/	float	walkspeed;
-/*240*/	float	runspeed;
-/*244*/	int8	sze_unknown6[12];
-/*256*/	int8	anon;
-/*257*/	int8	sze_unknown6_13[23];
-/*280*/	char	Surname[20];
-/*300*/	int8	sze_unknown_add2[2];
-/*302*/	int16	deity;
-/*304*/	int8	sze_unknown_add2_1[8];
-/*312*/
-};
-
-/*
 ** ZoneServerInfo_Struct
 ** Opcode:  OP_ZoneServerInfo = 0x0480
 ** Direction: world server -> client
@@ -299,6 +243,62 @@ struct ZoneServerInfo_Struct
 /*075*/	char	zone_name[53];	// zone short name, null-terminated
 /*128*/	uint16	port;		// host byte order (little-endian)
 /*130*/
+};
+
+/*
+** ServerZoneEntry_Struct
+** Opcode:  OP_ZoneEntry = 0x2a20
+** Direction: zone server -> client (and client -> zone server during zone-in)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ServerZoneEntry_Struct
+** Size:    312 bytes
+**
+** Server fills this after loading PlayerProfile and sends it to spawn the
+** entering character in the zone.  Client sends a matching payload on connect
+** (checksum[4] + name[30] at offset 4 in QuagmireGhostCheck).
+** SetEQChecksum() writes CRC of bytes [4..311] into bytes [0..3].
+*/
+struct ServerZoneEntry_Struct
+{
+/*000*/	int8	checksum[4];
+/*004*/	int8	sze_unknown1;
+/*005*/	char	name[30];
+/*035*/	char	zone[15];
+/*050*/	int8	sze_unknown2[6];
+/*056*/	float	y;
+/*060*/	float	x;
+/*064*/	float	z;
+/*068*/	float	heading;
+/*072*/	int8	sze_unknown3[76];
+/*148*/	int16	guildeqid;
+/*150*/	int8	sze_unknown3_78[3];
+/*153*/	int8	sze_unknown_add[4];	// [3]=0 normal, 1=name as dead, 2=death on zone-in
+/*157*/	int8	class_;
+/*158*/	int16	race;
+/*160*/	int8	gender;
+/*161*/	int8	level;
+/*162*/	int8	sze_unknown5[2];
+/*164*/	int8	pvp;
+/*165*/	int8	sze_unknown5_2_1[2];
+/*167*/	int8	face;
+/*168*/	int8	helmet;			// helmet material type
+/*169*/	int8	sze_unknown5_2_2[6];
+/*175*/	int8	left_hand;		// left weapon material
+/*176*/	int8	right_hand;		// right weapon material
+/*177*/	int8	sze_unknown5_2_3[3];
+/*180*/	uint32	helmcolor;		// RGBA
+/*184*/	int8	sze_unknown5_2_4[32];
+/*216*/	int8	npc_armor_graphic;	// 0xFF=Player, 0=none, 1=leather, 2=chain, 3=plate
+/*217*/	int8	sze_unknown5_2_5[19];
+/*236*/	float	walkspeed;
+/*240*/	float	runspeed;
+/*244*/	int8	sze_unknown6[12];
+/*256*/	int8	anon;
+/*257*/	int8	sze_unknown6_13[23];
+/*280*/	char	Surname[20];		// PC_SURNAME_LENGTH = 20
+/*300*/	int8	sze_unknown_add2[2];
+/*302*/	int16	deity;
+/*304*/	int8	sze_unknown_add2_1[8];
+/*312*/
 };
 
 /*

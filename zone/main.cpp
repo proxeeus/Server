@@ -57,6 +57,7 @@
 #include "npc_scale_manager.h"
 
 #include "../common/net/eqstream.h"
+#include "trilogy_zone.h"
 
 #include <signal.h>
 #include <chrono>
@@ -506,6 +507,8 @@ int main(int argc, char **argv)
 	bool eqsf_open               = false;
 	bool websocker_server_opened = false;
 
+	TrilogyZoneServer trilogy_zone;
+
 	Timer quest_timers(100);
 	UpdateWindowTitle(nullptr);
 	std::shared_ptr<EQStreamInterface>                 eqss;
@@ -549,6 +552,17 @@ int main(int argc, char **argv)
 			opts.daybreak_options.outgoing_data_rate  = RuleR(Network, ClientDataRate);
 			eqsm      = std::make_unique<EQ::Net::EQStreamManager>(opts);
 			eqsf_open = true;
+
+			// Hook Trilogy (EQNetwork) zone-entry protocol on the same port.
+			// Any UDP datagram not recognised by Daybreak is forwarded here.
+			eqsm->OnUnknownPacket([&trilogy_zone](const std::string& addr, int port,
+			                                       const char* data, size_t sz) {
+				trilogy_zone.OnRawPacket(addr, port, data, sz);
+			});
+			trilogy_zone.SetSendFn([&eqsm](const std::string& addr, int port,
+			                                const void* data, size_t sz) {
+				eqsm->SendRaw(addr, port, data, sz);
+			});
 
 			eqsm->OnNewConnection(
 				[&stream_identifier](std::shared_ptr<EQ::Net::EQStream> stream) {

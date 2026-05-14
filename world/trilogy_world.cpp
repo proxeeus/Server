@@ -150,6 +150,18 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		uint16_t fcurr  = ntohs(*reinterpret_cast<const uint16_t*>(data + o)); o += 2;
 		uint16_t ftotal = ntohs(*reinterpret_cast<const uint16_t*>(data + o)); o += 2;
 
+		// EQClassic wire order (EQNetwork.cpp ReturnPacket): fraginfo → ASQ → opcode.
+		// ASQ is only present in the first fragment (a4_ASQ set only when i==0 in MakeEQPacket).
+		// Must consume these bytes before reading the opcode or the opcode is misread.
+		if (fcurr == 0 && (hdr0 & HDR0_ASQ)) {
+			if (o + 1 > size - 4) return;
+			o += 1; // dbASQ_high always present when a4_ASQ is set
+			if (has_arq) {
+				if (o + 1 > size - 4) return;
+				o += 1; // dbASQ_low present only when a1_ARQ is also set
+			}
+		}
+
 		uint16_t fopcode = 0;
 		if (fcurr == 0) {
 			if (o + 2 > size - 4) return;
@@ -410,8 +422,26 @@ void TrilogyWorldServer::SendExpansionInfo(const std::string& addr, int port, Se
 
 void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Session& s)
 {
+	Trilogy::structs::CharacterSelect_Struct cs{};
+	memset(&cs, 0, sizeof(cs));
+
+	// EQClassic initializes all 10 slots to "<none>" before filling real characters.
+	// The Trilogy client checks for this sentinel to decide whether a slot shows a character
+	// or a "Create new Character" button. An empty string ("") leaves the slot visually blank.
+	for (int i = 0; i < 10; ++i) {
+		strncpy(cs.name[i], "<none>", sizeof(cs.name[i]) - 1);
+	}
+
+	// Slot-identity markers in unknown3 (EQClassic database.cpp GetCharSelectInfo, Tazadar comment):
+	// "you must let that in order to let us know what character you are selecting when client sends packet"
+	// Two groups of 8×4 bytes (values 1..8) at offsets 0 and 40 within unknown3[216].
+	for (int i = 0; i < 8; ++i) {
+		memset(cs.unknown3 +      4 * i, static_cast<uint8_t>(i + 1), 4);
+		memset(cs.unknown3 + 40 + 4 * i, static_cast<uint8_t>(i + 1), 4);
+	}
+
 	auto query = fmt::format(
-		"SELECT cd.`name`, cd.`level`, cd.`class`, cd.`race`, cd.`gender`, cd.`face`,"
+		"SELECT cd.`id`, cd.`name`, cd.`level`, cd.`class`, cd.`race`, cd.`gender`, cd.`face`,"
 		" COALESCE(z.`short_name`, '') "
 		"FROM `character_data` cd "
 		"LEFT JOIN `zone` z ON z.`zoneidnumber` = cd.`zone_id` "
@@ -425,8 +455,6 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 	LogInfo("[TrilogyWorld] SendCharSelect | account_id [{}] rows [{}]", s.account_id, results.RowCount());
 
 	if (results.RowCount() == 0) {
-		// Diagnostic: check whether chars exist under this account but are soft-deleted,
-		// or whether they exist under a completely different account_id (LS/EQEmu mapping issue).
 		auto diag = database.QueryDatabase(fmt::format(
 			"SELECT COUNT(*) AS total,"
 			" COALESCE(SUM(deleted_at IS NOT NULL AND deleted_at != '0000-00-00 00:00:00'), 0) AS hard_deleted"
@@ -441,18 +469,46 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
-	Trilogy::structs::CharacterSelect_Struct cs{};
-	memset(&cs, 0, sizeof(cs));
-
 	int slot = 0;
 	for (auto row = results.begin(); row != results.end() && slot < 10; ++row, ++slot) {
-		strncpy(cs.name[slot],  row[0], 29);
-		cs.level[slot]  = static_cast<int8_t>(Strings::ToInt(row[1]));
-		cs.class_[slot] = static_cast<int8_t>(Strings::ToInt(row[2]));
-		cs.race[slot]   = static_cast<int16_t>(Strings::ToInt(row[3]));
-		cs.gender[slot] = static_cast<int8_t>(Strings::ToInt(row[4]));
-		cs.face[slot]   = static_cast<int8_t>(Strings::ToInt(row[5]));
-		strncpy(cs.zone[slot],  row[6], 19);
+		uint32_t char_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
+		strncpy(cs.name[slot],  row[1], sizeof(cs.name[slot]) - 1);
+		cs.level[slot]  = static_cast<int8_t>(Strings::ToInt(row[2]));
+		cs.class_[slot] = static_cast<int8_t>(Strings::ToInt(row[3]));
+		cs.race[slot]   = static_cast<int16_t>(Strings::ToInt(row[4]));
+		cs.gender[slot] = static_cast<int8_t>(Strings::ToInt(row[5]));
+		cs.face[slot]   = static_cast<int8_t>(Strings::ToInt(row[6]));
+		strncpy(cs.zone[slot],  row[7], sizeof(cs.zone[slot]) - 1);
+
+		// Populate armor appearance and colors for the paperdoll.
+		// EQClassic slot mapping (inventory[] indices → equip[] index):
+		//   2=head→0, 17=chest→1, 7=arms→2, 10=wrist→3, 12=hands→4, 18=legs→5, 19=feet→6
+		// Values are item material types: 0=none,1=leather,2=chain,3=plate,4=monk straps
+		auto eq = database.QueryDatabase(fmt::format(
+			"SELECT ci.`slotid`, i.`material`, i.`color` "
+			"FROM `character_items` ci "
+			"JOIN `items` i ON i.`id` = ci.`itemid` "
+			"WHERE ci.`id` = {} AND ci.`slotid` IN (2,7,10,12,17,18,19)",
+			char_id));
+		for (auto erow = eq.begin(); erow != eq.end(); ++erow) {
+			int      slotid = Strings::ToInt(erow[0]);
+			uint8_t  mat    = static_cast<uint8_t>(Strings::ToInt(erow[1]));
+			uint32_t clr    = static_cast<uint32_t>(Strings::ToInt(erow[2]));
+			int eqidx = -1;
+			switch (slotid) {
+				case 2:  eqidx = 0; break; // head
+				case 17: eqidx = 1; break; // chest
+				case 7:  eqidx = 2; break; // arms
+				case 10: eqidx = 3; break; // wrist
+				case 12: eqidx = 4; break; // hands
+				case 18: eqidx = 5; break; // legs
+				case 19: eqidx = 6; break; // feet
+			}
+			if (eqidx >= 0) {
+				cs.equip[slot][eqidx]     = static_cast<int8_t>(mat);
+				cs.cs_colors[slot][eqidx] = clr;
+			}
+		}
 	}
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
@@ -836,7 +892,90 @@ void TrilogyWorldServer::SendApp(const std::string& addr, int port, Session& s,
 	bool first = !s.seq_sent;
 	s.seq_sent = true;
 
-	uint8_t buf[4096];
+	// EQNetwork fragments packets whose payload exceeds 512 bytes (EQClassic MakeEQPacket:
+	// frags = app->size >> 9). Sending large packets unfragmented causes clients to show
+	// empty character select (CharSelect=1248 bytes) or miss opcodes entirely.
+	int frags = static_cast<int>(plen >> 9); // number of extra fragments (total = frags+1)
+
+	if (frags > 0) {
+		// Fragmented send: EQClassic wire order per fragment is:
+		//   hdr0|hdr1, SEQ, [ARSP], ARQ, fraginfo(seq/curr/total),
+		//   [ASQ_hi+ASQ_lo on frag 0 only], [opcode on frag 0 only], payload, CRC
+		uint16_t frag_group_seq = s.frag_seq++;
+		const uint8_t* src = payload;
+		uint32_t remaining  = plen;
+
+		for (int i = 0; i <= frags; ++i) {
+			uint8_t buf[600]; // max: ~40 header + 512 payload + 4 CRC
+			int o = 0;
+
+			bool seq_start = first && (i == 0);
+			bool has_asq   = (i == 0);  // ASQ only in first fragment
+			bool has_arsp  = (i == 0) && s.ack_due;
+
+			uint8_t hdr0 = HDR0_ARQ | HDR0_FRAGMENT
+			             | (seq_start ? HDR0_SEQSTART : 0u)
+			             | (has_asq   ? HDR0_ASQ      : 0u);
+			uint8_t hdr1 = has_arsp ? HDR1_ARSP : 0u;
+
+			buf[o++] = hdr0;
+			buf[o++] = hdr1;
+
+			{ uint16_t seq = htons(s.gsq++); memcpy(buf + o, &seq, 2); o += 2; }
+
+			if (has_arsp) {
+				uint16_t arsp = htons(s.cli_arq);
+				memcpy(buf + o, &arsp, 2); o += 2;
+				s.ack_due = false;
+			}
+
+			{ uint16_t arq = htons(s.arq++); memcpy(buf + o, &arq, 2); o += 2; }
+
+			// fraginfo: dwSeq, dwCurr, dwTotal
+			{ uint16_t fs = htons(frag_group_seq);            memcpy(buf + o, &fs, 2); o += 2; }
+			{ uint16_t fc = htons(static_cast<uint16_t>(i));  memcpy(buf + o, &fc, 2); o += 2; }
+			{ uint16_t ft = htons(static_cast<uint16_t>(frags + 1)); memcpy(buf + o, &ft, 2); o += 2; }
+
+			// ASQ: hi+lo only in first fragment (ARQ always set, so both bytes present)
+			if (has_asq) {
+				buf[o++] = s.asq_hi;
+				buf[o++] = s.asq_lo++;
+			}
+
+			// opcode only in first fragment
+			if (i == 0) {
+				uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2;
+			}
+
+			// payload chunk sizes match EQClassic: 510 for frag0, 512 for middle, remainder for last
+			uint32_t chunk;
+			if (i == frags) {
+				chunk = remaining;
+			} else if (i == 0) {
+				chunk = 510;
+			} else {
+				chunk = 512;
+			}
+			if (chunk > remaining) chunk = remaining;
+
+			memcpy(buf + o, src, chunk);
+			o       += static_cast<int>(chunk);
+			src     += chunk;
+			remaining -= chunk;
+
+			{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
+			  memcpy(buf + o, &crc, 4); o += 4; }
+
+			LogNetcode("[TrilogyWorld] tx FRAG {}/{} opcode={:04X} chunk={} SEQ={} arq={:04X}",
+			           i, frags, (i == 0 ? opcode : 0u), chunk, s.gsq - 1, s.arq - 1);
+
+			m_send_fn(addr, port, buf, static_cast<size_t>(o));
+		}
+		return;
+	}
+
+	// Non-fragmented single-datagram send (plen <= 512 bytes)
+	uint8_t buf[600];
 	int     o = 0;
 
 	uint8_t hdr0 = HDR0_ARQ | HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
@@ -879,7 +1018,7 @@ void TrilogyWorldServer::SendApp(const std::string& addr, int port, Session& s,
 			snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
 			hex += tmp;
 		}
-		LogNetcode("[TrilogyWorld] tx bytes[0..{}]: {}", dump_len - 1, hex);
+		LogNetcode("[TrilogyWorld] tx [bytes0..{}:] {}", dump_len - 1, hex);
 	}
 
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
