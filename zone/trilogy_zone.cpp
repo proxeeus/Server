@@ -52,7 +52,7 @@ static constexpr uint16_t ZN_OP_ZoneEntry    = 0x2a20; // bidirectional: client 
 static constexpr uint16_t ZN_OP_PlayerProfile= 0x2d20; // zone -> client: PlayerProfile_Struct (deflated+encrypted)
 static constexpr uint16_t ZN_OP_Weather      = 0x3621; // zone -> client: 8 bytes
 static constexpr uint16_t ZN_OP_NewZone      = 0x5b20; // zone -> client: NewZone_Struct
-static constexpr uint16_t ZN_OP_ZoneSpawns   = 0x6121; // zone -> client: bulk spawns (array of Spawn_Struct)
+static constexpr uint16_t ZN_OP_ZoneSpawns   = 0x6121; // zone -> client: bulk spawns (deflated+encrypted NewSpawn_Struct[])
 static constexpr uint16_t ZN_OP_NewSpawn     = 0x4921; // zone -> client: single NewSpawn_Struct (encrypted)
 static constexpr uint16_t ZN_OP_Appearance   = 0xf520; // zone -> client: SpawnAppearance_Struct
 static constexpr uint16_t ZN_OP_ClientUpdate = 0xf320; // client -> zone: SpawnPositionUpdate_Struct (fire-and-forget)
@@ -88,6 +88,30 @@ static void EncryptProfilePacket(uint8_t* buf, uint32_t size)
 		int32_t next_crypt = crypt + data[i] - 0x37a9;
 		data[i] = ((data[i] << 7) | (static_cast<uint32_t>(data[i]) >> 25)) + 0x37a9;
 		data[i] = (data[i] << 15) | (static_cast<uint32_t>(data[i]) >> 17);
+		data[i] = data[i] - crypt;
+		crypt   = next_crypt;
+	}
+}
+
+// ============================================================
+// EncryptZoneSpawnPacket — cipher applied to the zlib-compressed
+// OP_ZoneSpawns payload (EQClassic packet_functions.cpp :: EncryptZoneSpawnPacket).
+// Same stream as EncryptSpawnPacket but with an initial dword swap.
+// 'size' must be a multiple of 4 before calling.
+// ============================================================
+static void EncryptZoneSpawnPacket(uint8_t* buf, uint32_t size)
+{
+	int32_t* data  = reinterpret_cast<int32_t*>(buf);
+	int32_t  crypt = 0;
+
+	int32_t tmp      = data[0];
+	data[0]          = data[size / 8];
+	data[size / 8]   = tmp;
+
+	for (uint32_t i = 0; i < size / 4; ++i) {
+		int32_t next_crypt = crypt + data[i] - 0x65e7;
+		data[i] = ((data[i] << 9) | (static_cast<uint32_t>(data[i]) >> 23)) + 0x65e7;
+		data[i] = (data[i] << 13) | (static_cast<uint32_t>(data[i]) >> 19);
 		data[i] = data[i] - crypt;
 		crypt   = next_crypt;
 	}
@@ -453,7 +477,10 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 
 // ============================================================
 // CONNECTING4 → CONNECTING5: client requests zone data
-//   server sends NewZone + 0xd820 (empty) + 0 spawns
+//   EQClassic order (client_process.cpp Process_ClientConnection4):
+//     NewZone → 0xd820 → ZoneSpawnsBulk → Doors → Objects
+//   The 0xd820 MUST precede ZoneSpawnsBulk; the Trilogy client only
+//   processes spawn packets received after this first d820 marker.
 // ============================================================
 
 void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port, Session& s)
@@ -461,11 +488,14 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 	LogInfo("[TrilogyZone] ZoneDataRequest (0x0a20) — sending NewZone + zone data, advancing to CONNECTING5");
 
 	SendNewZone(addr, port, s);
+
+	// 0xd820 FIRST: signals "NewZone done, spawns incoming".
+	// EQClassic sends this before ZoneSpawnsBulk.  The client ignores
+	// spawn packets that arrive before this marker.
+	SendApp(addr, port, s, 0xd820, nullptr, 0);
+
 	SendZoneSpawns(addr, port, s);
 	SendTimeOfDay(addr, port, s);
-
-	// 0xd820 with 0 bytes — signals end of zone data
-	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	s.state = CONNECTING5;
 }
@@ -523,8 +553,13 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}] (numclients={})", s.char_name, s.zone_short, numclients);
 
-	// NPCs were delivered via ZN_OP_ZoneSpawns in SendZoneSpawns (before the first
-	// D820), so the client had them buffered during zone-load. Nothing to send here.
+	// EQClassic Process_ClientConnection5 sends 0xc321 (8 zeroed bytes) immediately
+	// before the final 0xd820.  Purpose unknown, but the Trilogy client requires it
+	// to finalize entity rendering after zone-in.
+	{
+		uint8_t unknown_8[8]{};
+		SendApp(addr, port, s, 0xc321, unknown_8, 8);
+	}
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	// Prime the heartbeat: first A120 sent immediately so the client's ARQ timer starts.
@@ -958,11 +993,17 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 }
 
 // ============================================================
-// SendZoneSpawns — iterate entity_list NPCs, fill Trilogy
-//   Spawn_Struct (164 bytes each), and send as OP_ZoneSpawns.
-// Called from HandleZoneDataRequest (CONNECTING4) before 0xd820.
-// Coordinate scale: x,y = int16 cast; z = int16(float*10)
-// Heading: EQEmu 0-512 float → int8 (divide by 2)
+// SendZoneSpawns — build ONE batched OP_ZoneSpawns (0x6121) packet.
+//
+// Wire format (per EQClassic Zone Source EntityList::SendZoneSpawnsBulk):
+//   raw: NewSpawn_Struct[] (168 bytes per NPC: 4-byte ns_unknown1 + 164-byte Spawn_Struct)
+//   then: DeflatePacket (zlib) on the raw array
+//   then: EncryptZoneSpawnPacket cipher on the compressed bytes
+//
+// The client decrypts → decompresses → parses 168-byte NewSpawn_Struct entries.
+// ns_unknown1 is always 0 and is skipped by the client.
+//
+// Called from HandleZoneDataRequest (CONNECTING4) after 0xd820.
 // ============================================================
 
 void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Session& s)
@@ -973,14 +1014,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		return;
 	}
 
-	// Deliver all zone NPCs as individual ZN_OP_ZoneSpawns (0x6121) packets.
-	// Each is a single NewSpawn_Struct (168 bytes) — well below the 512-byte
-	// fragmentation threshold, so every packet is a single datagram.
-	//
-	// This MUST be called before the first D820 (end-of-zone-data signal) so
-	// the client is still in zone-load mode and buffers the entities for
-	// rendering on zone-in completion.  Sending them as OP_NewSpawn (0x4921)
-	// after the client's D820 (gameplay mode) is silently ignored.
+	// Build raw NewSpawn_Struct[] array (168 bytes per NPC).
+	std::vector<uint8_t> raw;
+	raw.reserve(npc_map.size() * sizeof(Trilogy::structs::NewSpawn_Struct));
+
 	uint32_t sent = 0;
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
@@ -988,12 +1025,14 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 
 		Trilogy::structs::NewSpawn_Struct ns{};
 		memset(&ns, 0, sizeof(ns));
+		// ns.ns_unknown1 = 0 (padding, ignored by client)
 		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
 
 		sp.size      = npc->GetSize();
+		if (sp.size <= 0.0f) sp.size = 6.0f;
 		sp.walkspeed = 0.7f;
 		sp.runspeed  = 1.4f;
-		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+		sp.heading   = static_cast<int8_t>(npc->GetHeading());
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());
 		sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
@@ -1006,19 +1045,47 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.class_    = static_cast<int8_t>(npc->GetClass());
 		sp.gender    = static_cast<int8_t>(npc->GetGender());
 		sp.level     = static_cast<int8_t>(npc->GetLevel());
-		sp.anim_type         = static_cast<int8_t>(0x64);
-		sp.npc_armor_graphic = static_cast<int8_t>(npc->GetTexture());
+		sp.anim_type         = 0x64; // standing animation (EQClassic hardcodes 100)
+		uint8_t tex = npc->GetTexture();
+		sp.npc_armor_graphic = (tex == 0 || tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
 		sp.npc_helm_graphic  = static_cast<int8_t>(npc->GetHelmTexture());
 		sp.guildrank         = static_cast<int8_t>(0xFF);
-		strncpy(sp.name,    npc->GetName(),    sizeof(sp.name) - 1);
-		strncpy(sp.Surname, npc->GetLastName(), sizeof(sp.Surname) - 1);
+		strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);
 
-		CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&ns), sizeof(ns));
-		SendApp(addr, port, s, ZN_OP_ZoneSpawns,
-		        reinterpret_cast<const uint8_t*>(&ns), sizeof(ns));
+		if (sent < 5) {
+			LogInfo("[TrilogyZone] NPC[{}] name='{}' id={} race={} size={:.1f} "
+			        "x={} y={} z={} body={} class={} level={}",
+			        sent, npc->GetCleanName(), npc->GetID(), npc->GetRace(),
+			        npc->GetSize(), sp.x_pos, sp.y_pos, sp.z_pos,
+			        sp.body_type, sp.class_, sp.level);
+		}
+
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+		raw.insert(raw.end(), p, p + sizeof(ns));
 		++sent;
 	}
-	LogInfo("[TrilogyZone] SendZoneSpawns: sent {} NPC packets (opcode=6121) before D820", sent);
+
+	// Compress (zlib deflate)
+	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
+	std::vector<uint8_t> cbuf(max_clen + 4, 0); // +4 for encrypt alignment
+	uint32_t clen = EQ::DeflateData(
+		reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+		reinterpret_cast<char*>(cbuf.data()), max_clen
+	);
+	if (clen == 0) {
+		LogError("[TrilogyZone] SendZoneSpawns: deflate failed ({} NPCs)", sent);
+		return;
+	}
+
+	// Pad to multiple of 4 (EncryptZoneSpawnPacket operates on int32 values)
+	while (clen % 4 != 0) cbuf[clen++] = 0;
+
+	EncryptZoneSpawnPacket(cbuf.data(), clen);
+
+	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs → raw={} compressed={} (~{} fragments)",
+	        sent, raw.size(), clen, clen >> 9);
+	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 }
 
 // ============================================================
