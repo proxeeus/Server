@@ -85,8 +85,9 @@ void TrilogyWorldServer::SetSendFn(std::function<void(const std::string&, int, c
 void TrilogyWorldServer::OnRawPacket(const std::string& addr, int port,
                                       const char* data, size_t size)
 {
-	OnDatagram(addr, port, m_sessions[SessionKey(addr, port)],
-	           reinterpret_cast<const uint8_t*>(data), static_cast<int>(size));
+	Session& s = m_sessions[SessionKey(addr, port)];
+	s.source_addr = addr;
+	OnDatagram(addr, port, s, reinterpret_cast<const uint8_t*>(data), static_cast<int>(size));
 }
 
 // ============================================================
@@ -128,9 +129,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 	if (o + 2 > size - 4) return;
 	o += 2; // SEQ
 
-	// HDR1 optional fields
+	// HDR1 optional fields (per EQClassic DecodePacket; b3/0x08 skips no bytes)
 	if (hdr1 & HDR1_ARSP) { if (o + 2 > size - 4) return; o += 2; }
-	if (hdr1 & 0x08)       { if (o + 2 > size - 4) return; o += 2; }
 	if (hdr1 & 0x10)       { if (o + 1 > size - 4) return; o += 1; }
 	if (hdr1 & 0x20)       { if (o + 2 > size - 4) return; o += 2; }
 	if (hdr1 & 0x40)       { if (o + 4 > size - 4) return; o += 4; }
@@ -205,16 +205,15 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		}
 	}
 
-	// a2_Closing + a6_Closing: client signals graceful close (may precede CharCreate on new session).
-	// ACK the ARQ to stop retransmits but preserve the session — CharCreate arrives shortly after.
+	// a2_Closing + a6_Closing: EQNetwork graceful-close signal.
+	// EQClassic (EQPacketManager.cpp PM_FINISHING): responds with a2_Closing|a6_Closing|server_ARQ
+	// — no ARSP. Client waits for this before proceeding (e.g. sending OP_CHAR_CREATE).
 	bool is_close = (hdr0 & 0x04) && (hdr0 & 0x40);
 	if (is_close) {
 		uint64_t key = SessionKey(addr, port);
 		auto it = m_sessions.find(key);
-		if (it != m_sessions.end() && has_arq) {
-			it->second.cli_arq = cli_arq;
-			it->second.ack_due = true;
-			SendAck(addr, port, it->second);
+		if (it != m_sessions.end()) {
+			SendClose(addr, port, it->second);
 		}
 		return;
 	}
@@ -416,7 +415,7 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		" COALESCE(z.`short_name`, '') "
 		"FROM `character_data` cd "
 		"LEFT JOIN `zone` z ON z.`zoneidnumber` = cd.`zone_id` "
-		"WHERE cd.`account_id` = {} AND cd.`deleted_at` IS NULL "
+		"WHERE cd.`account_id` = {} AND (cd.`deleted_at` IS NULL OR cd.`deleted_at` = '0000-00-00 00:00:00') "
 		"ORDER BY cd.`name` LIMIT 10",
 		s.account_id
 	);
@@ -424,6 +423,23 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 	auto results = database.QueryDatabase(query);
 
 	LogInfo("[TrilogyWorld] SendCharSelect | account_id [{}] rows [{}]", s.account_id, results.RowCount());
+
+	if (results.RowCount() == 0) {
+		// Diagnostic: check whether chars exist under this account but are soft-deleted,
+		// or whether they exist under a completely different account_id (LS/EQEmu mapping issue).
+		auto diag = database.QueryDatabase(fmt::format(
+			"SELECT COUNT(*) AS total,"
+			" COALESCE(SUM(deleted_at IS NOT NULL AND deleted_at != '0000-00-00 00:00:00'), 0) AS hard_deleted"
+			" FROM `character_data` WHERE `account_id` = {}",
+			s.account_id
+		));
+		if (diag.RowCount() > 0) {
+			auto dr = diag.begin();
+			LogInfo("[TrilogyWorld] SendCharSelect | account_id [{}] total_chars_in_db [{}] hard_deleted [{}]"
+			        " — if total=0 the account_id does not match character_data (check lsaccount_id/ls_id linkage)",
+			        s.account_id, dr[0], dr[1]);
+		}
+	}
 
 	Trilogy::structs::CharacterSelect_Struct cs{};
 	memset(&cs, 0, sizeof(cs));
@@ -466,7 +482,7 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	// Look up character's zone
 	auto query = fmt::format(
 		"SELECT `id`, `zone_id` FROM `character_data` "
-		"WHERE `name` = '{}' AND `account_id` = {} AND `deleted_at` IS NULL LIMIT 1",
+		"WHERE `name` = '{}' AND `account_id` = {} AND (deleted_at IS NULL OR deleted_at = '0000-00-00 00:00:00') LIMIT 1",
 		Strings::Escape(char_name), s.account_id
 	);
 
@@ -571,8 +587,35 @@ static const struct { uint8_t str, sta, cha, dex, intel, agi, wis; } kRaceBaseSt
 void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, Session& s,
                                              const uint8_t* payload, uint32_t plen)
 {
-	if (plen < 1 || s.account_id == 0) {
-		SendAck(addr, port, s);
+	// Auth recovery: if this session has no auth (port changed between login and char-create),
+	// look for a recent authenticated session from the same IP to inherit credentials from.
+	if (s.account_id == 0) {
+		const std::time_t now = std::time(nullptr);
+		for (auto& [k, other] : m_sessions) {
+			if (&other != &s && other.account_id != 0 &&
+			    other.source_addr == addr &&
+			    now - other.last_pkt < 300) {
+				LogInfo("[TrilogyWorld] NameApproval: recovering auth for account [{}] id [{}] from stale session on {}",
+				        other.account_name, other.account_id, addr);
+				s.account_id = other.account_id;
+				strncpy(s.account_name, other.account_name, sizeof(s.account_name) - 1);
+				s.cle = other.cle;
+				break;
+			}
+		}
+	}
+
+	if (s.account_id == 0) {
+		LogInfo("[TrilogyWorld] NameApproval: account_id=0 (no auth, no recoverable session) from {}:{} — sending rejection", addr, port);
+		uint8_t reject[1] = { 0u };
+		SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
+		return;
+	}
+
+	if (plen < 1) {
+		LogInfo("[TrilogyWorld] NameApproval: plen=0 from {}:{} — sending rejection", addr, port);
+		uint8_t reject[1] = { 0u };
+		SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
 		return;
 	}
 
@@ -633,9 +676,27 @@ void TrilogyWorldServer::HandleNameApproval(const std::string& addr, int port, S
 void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Session& s,
                                            const uint8_t* payload, uint32_t plen)
 {
+	// Auth recovery: OP_CHAR_CREATE may arrive in a fresh session (new port after close handshake).
+	if (s.account_id == 0) {
+		const std::time_t now = std::time(nullptr);
+		for (auto& [k, other] : m_sessions) {
+			if (&other != &s && other.account_id != 0 &&
+			    other.source_addr == addr &&
+			    now - other.last_pkt < 300) {
+				LogInfo("[TrilogyWorld] CharCreate: recovering auth for account [{}] id [{}] from stale session on {}",
+				        other.account_name, other.account_id, addr);
+				s.account_id = other.account_id;
+				strncpy(s.account_name, other.account_name, sizeof(s.account_name) - 1);
+				s.cle        = other.cle;
+				break;
+			}
+		}
+	}
+
 	LogInfo("[TrilogyWorld] HandleCharCreate | account_id [{}] account_name [{}] from {}:{}",
 	        s.account_id, s.account_name, addr, port);
 	if (s.account_id == 0) {
+		LogInfo("[TrilogyWorld] CharCreate: no auth (no recoverable session) from {}:{} — dropping", addr, port);
 		SendAck(addr, port, s);
 		return;
 	}
@@ -851,5 +912,37 @@ void TrilogyWorldServer::SendAck(const std::string& addr, int port, Session& s)
 	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
+	m_send_fn(addr, port, buf, static_cast<size_t>(o));
+}
+
+// EQClassic close handshake response (mirrors PM_FINISHING in EQPacketManager.cpp):
+// a2_Closing(0x04)|a6_Closing(0x40)|a1_ARQ(0x02), server's own ARQ, no ARSP.
+// Client waits for this before sending OP_CHAR_CREATE.
+void TrilogyWorldServer::SendClose(const std::string& addr, int port, Session& s)
+{
+	if (!m_send_fn) return;
+
+	if (!s.sack_init) {
+		s.sack_init = true;
+		s.gsq    = 1;
+		s.arq    = static_cast<uint16_t>(rand() % 0x3FFF);
+		s.asq_hi = 1;
+		s.asq_lo = 0;
+	}
+
+	uint8_t buf[16];
+	int     o = 0;
+
+	// hdr0: a1_ARQ(0x02) | a2_Closing(0x04) | a6_Closing(0x40) = 0x46
+	buf[o++] = 0x46;
+	buf[o++] = 0x00; // hdr1: no ARSP
+
+	{ uint16_t seq = htons(s.gsq++); memcpy(buf + o, &seq, 2); o += 2; }
+	{ uint16_t arq = htons(s.arq++); memcpy(buf + o, &arq, 2); o += 2; }
+
+	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
+	  memcpy(buf + o, &crc, 4); o += 4; }
+
+	LogNetcode("[TrilogyWorld] tx CLOSE SEQ={} server_arq={:04X}", s.gsq - 1, s.arq - 1);
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }

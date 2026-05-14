@@ -48,6 +48,7 @@ private:
 		bool        sack_init = false;
 		bool        seq_sent  = false;
 		std::time_t last_pkt  = 0;
+		std::string source_addr; // IP address, used for auth recovery on port-change reconnect
 
 		// auth / char-select state
 		uint32_t        account_id   = 0;
@@ -101,6 +102,7 @@ private:
 	             const uint8_t* payload = nullptr, uint32_t plen = 0);
 
 	void SendAck(const std::string& addr, int port, Session& s);
+	void SendClose(const std::string& addr, int port, Session& s);
 
 	static uint64_t SessionKey(const std::string& addr, int port);
 
