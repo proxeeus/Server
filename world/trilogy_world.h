@@ -31,6 +31,7 @@
 #include <vector>
 
 class ClientListEntry;
+class ZoneServer;
 
 class TrilogyWorldServer {
 public:
@@ -60,6 +61,11 @@ private:
 		uint32_t        zone_id       = 0;
 		uint32_t        char_id       = 0;
 		uint16_t        frag_seq      = 0; // outgoing EQNetwork fragment-group sequence
+
+		// deferred zone entry — set when zone is still booting at EnterWorld time
+		bool            pending_zone_entry = false;
+		uint32_t        pending_zone_id    = 0;
+		std::time_t     pending_zone_time  = 0;
 		// EQNetwork fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;
@@ -85,6 +91,9 @@ private:
 
 	void HandleEnterWorld(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
+
+	void SendZoneServerInfo(const std::string& addr, int port, Session& s, ZoneServer* zs);
+	void CheckPendingZoneEntry(const std::string& addr, int port, Session& s);
 
 	void HandleNameApproval(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);

@@ -99,6 +99,7 @@ void TrilogyZoneServer::SetSendFn(std::function<void(const std::string&, int, co
 void TrilogyZoneServer::OnRawPacket(const std::string& addr, int port,
                                      const char* data, size_t size)
 {
+	LogInfo("[TrilogyZone] OnRawPacket {} bytes from {}:{}", size, addr, port);
 	Session& s = m_sessions[SessionKey(addr, port)];
 	s.source_addr = addr;
 	OnDatagram(addr, port, s, reinterpret_cast<const uint8_t*>(data), static_cast<int>(size));
@@ -113,26 +114,29 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 {
 	{
 		std::string hex;
-		int dump_len = std::min(size, 24);
+		int dump_len = std::min(size, 32);
 		for (int i = 0; i < dump_len; ++i) {
 			char tmp[4];
 			snprintf(tmp, sizeof(tmp), "%02X ", data[i]);
 			hex += tmp;
 		}
-		LogNetcode("[TrilogyZone] raw rx {} bytes hdr0={:02X}: {}", size, (unsigned)data[0], hex);
+		LogInfo("[TrilogyZone] datagram {} bytes hdr={:02X}: {}", size, (unsigned)data[0], hex);
 	}
 
-	if (size < 8)
+	if (size < 8) {
+		LogInfo("[TrilogyZone] datagram too short ({}), ignoring", size);
 		return;
+	}
 
 	// CRC32 verification (covers bytes [0 .. size-5])
 	{
 		uint32_t stored = ntohl(*reinterpret_cast<const uint32_t*>(data + size - 4));
 		uint32_t calc   = CRC32::Generate(data, static_cast<uint32_t>(size - 4));
 		if (stored != calc) {
-			LogNetcode("[TrilogyZone] CRC MISMATCH size={} stored={:08X} calc={:08X}", size, stored, calc);
+			LogInfo("[TrilogyZone] CRC MISMATCH size={} stored={:08X} calc={:08X} — dropping", size, stored, calc);
 			return;
 		}
+		LogInfo("[TrilogyZone] CRC ok size={}", size);
 	}
 
 	uint8_t hdr0 = data[0];
@@ -181,7 +185,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		int fdata_len = static_cast<int>(size - 4) - o;
 		if (fdata_len < 0) fdata_len = 0;
 
-		LogNetcode("[TrilogyZone] rx FRAGMENT fseq={} fcurr={}/{} opcode={:04X} dlen={}", fseq, fcurr, ftotal, fopcode, fdata_len);
+		LogInfo("[TrilogyZone] rx FRAGMENT fseq={} fcurr={}/{} opcode={:04X} dlen={}", fseq, fcurr, ftotal, fopcode, fdata_len);
 
 		auto& fg = s.frag_groups[fseq];
 		if (fcurr == 0) fg.opcode = fopcode;
@@ -205,7 +209,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 				full.insert(full.end(), fe.data.begin(), fe.data.end());
 			uint16_t ropcode = fg.opcode;
 			s.frag_groups.erase(fseq);
-			LogNetcode("[TrilogyZone] rx FRAGMENT COMPLETE opcode={:04X} plen={}", ropcode, full.size());
+			LogInfo("[TrilogyZone] rx FRAGMENT COMPLETE opcode={:04X} plen={}", ropcode, full.size());
 			OnOpcode(addr, port, s, ropcode, full.data(), static_cast<uint32_t>(full.size()));
 		}
 		return;
@@ -238,6 +242,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		m_sessions[key] = Session{};
 	} else if (seqstart) {
 		Session& existing = m_sessions[key];
+		existing.state      = CONNECTING1;
 		existing.sack_init  = false;
 		existing.seq_sent   = false;
 		existing.gsq        = 0;
@@ -246,6 +251,11 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		existing.asq_lo     = 0;
 		existing.ack_due    = false;
 		existing.frag_groups.clear();
+		existing.char_name[0] = '\0';
+		existing.zone_short[0] = '\0';
+		existing.char_id    = 0;
+		existing.account_id = 0;
+		existing.zone_id    = 0;
 	}
 
 	Session& session = m_sessions[key];
@@ -255,7 +265,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 
 	int remaining = size - o - 4;
 	if (remaining <= 0) {
-		LogNetcode("[TrilogyZone] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X}", hdr0, has_arq, cli_arq);
+		LogInfo("[TrilogyZone] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X}", hdr0, has_arq, cli_arq);
 		if (session.ack_due) SendAck(addr, port, session);
 		return;
 	}
@@ -267,8 +277,8 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	const uint8_t* payload = data + o;
 	uint32_t       plen    = static_cast<uint32_t>(size - o - 4);
 
-	LogNetcode("[TrilogyZone] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} plen={} state={}",
-	           hdr0, hdr1, has_arq, cli_arq, opcode, plen, static_cast<int>(session.state));
+	LogInfo("[TrilogyZone] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} plen={} state={}",
+	        hdr0, hdr1, has_arq, cli_arq, opcode, plen, static_cast<int>(session.state));
 	OnOpcode(addr, port, session, opcode, payload, plen);
 }
 
@@ -279,8 +289,8 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
                                   uint16_t opcode, const uint8_t* payload, uint32_t plen)
 {
-	LogNetcode("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
-	           opcode, plen, static_cast<int>(s.state), addr, port);
+	LogInfo("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
+	        opcode, plen, static_cast<int>(s.state), addr, port);
 
 	switch (s.state) {
 	case CONNECTING1:
@@ -344,14 +354,15 @@ void TrilogyZoneServer::HandleSetDataRate(const std::string& addr, int port, Ses
 void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Session& s,
                                          const uint8_t* payload, uint32_t plen)
 {
-	// ClientZoneEntry_Struct = char name[30] at offset 0
-	if (plen < 1) {
+	// EQClassic ClientZoneEntry: uint32 unknown[0..3] + char name[4..33]
+	// Confirmed by EQClassic QuagmireGhostCheck: strncpy(tmp, &app->pBuffer[4], 16)
+	if (plen < 5) {
 		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
 
 	char char_name[31] = {};
-	strncpy(char_name, reinterpret_cast<const char*>(payload), std::min(30u, plen));
+	strncpy(char_name, reinterpret_cast<const char*>(payload + 4), std::min(30u, plen - 4));
 	char_name[30] = '\0';
 
 	LogInfo("[TrilogyZone] ZoneEntry | char_name [{}] from {}:{}", char_name, addr, port);
@@ -475,7 +486,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	// ---- character_data ----
 	{
 		auto q = fmt::format(
-			"SELECT `name`, `last_name`, `gender`, `deity`, `race`, `class_`,"
+			"SELECT `name`, `last_name`, `gender`, `deity`, `race`, `class`,"
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
@@ -674,7 +685,7 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 
 	// Load character appearance + position
 	auto q = fmt::format(
-		"SELECT `name`, `last_name`, `race`, `class_`, `gender`, `level`,"
+		"SELECT `name`, `last_name`, `race`, `class`, `gender`, `level`,"
 		" `face`, `y`, `x`, `z`, `heading`, `anon`, `deity` "
 		"FROM `character_data` WHERE `id` = {} LIMIT 1",
 		s.char_id
@@ -878,7 +889,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 			{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 			  memcpy(buf + o, &crc, 4); o += 4; }
 
-			LogNetcode("[TrilogyZone] tx FRAG {}/{} opcode={:04X} chunk={}", i, frags, (i == 0 ? opcode : 0u), chunk);
+			LogInfo("[TrilogyZone] tx FRAG {}/{} opcode={:04X} chunk={}", i, frags, (i == 0 ? opcode : 0u), chunk);
 			m_send_fn(addr, port, buf, static_cast<size_t>(o));
 		}
 		return;
@@ -891,8 +902,8 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	uint8_t hdr0 = HDR0_ARQ | HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
 	uint8_t hdr1 = s.ack_due ? HDR1_ARSP : 0u;
 
-	LogNetcode("[TrilogyZone] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
-	           opcode, s.gsq, s.ack_due, s.cli_arq);
+	LogInfo("[TrilogyZone] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
+	        opcode, s.gsq, s.ack_due, s.cli_arq);
 
 	buf[o++] = hdr0;
 	buf[o++] = hdr1;
@@ -932,7 +943,7 @@ void TrilogyZoneServer::SendAck(const std::string& addr, int port, Session& s)
 	uint8_t buf[16];
 	int     o = 0;
 
-	LogNetcode("[TrilogyZone] tx ACK SEQ={} cli_arq={:04X}", s.gsq, s.cli_arq);
+	LogInfo("[TrilogyZone] tx ACK SEQ={} cli_arq={:04X}", s.gsq, s.cli_arq);
 
 	buf[o++] = 0x00;
 	buf[o++] = HDR1_ARSP;
@@ -969,6 +980,6 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
-	LogNetcode("[TrilogyZone] tx CLOSE SEQ={}", s.gsq - 1);
+	LogInfo("[TrilogyZone] tx CLOSE SEQ={}", s.gsq - 1);
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }

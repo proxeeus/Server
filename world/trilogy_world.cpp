@@ -262,10 +262,14 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	int remaining = size - o - 4;
 	if (remaining <= 0) {
-		LogNetcode("[TrilogyWorld] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X} size={} o={}",
-		           hdr0, has_arq, cli_arq, size, o);
+		LogNetcode("[TrilogyWorld] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X} size={} o={} pending={}",
+		           hdr0, has_arq, cli_arq, size, o, session.pending_zone_entry);
 		if (session.ack_due)
 			SendAck(addr, port, session);
+		if (session.pending_zone_entry) {
+			LogInfo("[TrilogyWorld] Keepalive with pending zone [{}] — checking boot status", session.pending_zone_id);
+		}
+		CheckPendingZoneEntry(addr, port, session);
 		return;
 	}
 
@@ -279,6 +283,7 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 	LogNetcode("[TrilogyWorld] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} size={}",
 	           hdr0, hdr1, has_arq, cli_arq, opcode, size);
 	OnOpcode(addr, port, session, opcode, payload, plen);
+	CheckPendingZoneEntry(addr, port, session);
 }
 
 // ============================================================
@@ -485,10 +490,10 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		//   2=head→0, 17=chest→1, 7=arms→2, 10=wrist→3, 12=hands→4, 18=legs→5, 19=feet→6
 		// Values are item material types: 0=none,1=leather,2=chain,3=plate,4=monk straps
 		auto eq = database.QueryDatabase(fmt::format(
-			"SELECT ci.`slotid`, i.`material`, i.`color` "
-			"FROM `character_items` ci "
-			"JOIN `items` i ON i.`id` = ci.`itemid` "
-			"WHERE ci.`id` = {} AND ci.`slotid` IN (2,7,10,12,17,18,19)",
+			"SELECT inv.`slotid`, i.`material`, COALESCE(NULLIF(inv.`color`,0), i.`color`) "
+			"FROM `inventory` inv "
+			"JOIN `items` i ON i.`id` = inv.`itemid` "
+			"WHERE inv.`charid` = {} AND inv.`slotid` IN (2,7,10,12,13,14,17,18,19)",
 			char_id));
 		for (auto erow = eq.begin(); erow != eq.end(); ++erow) {
 			int      slotid = Strings::ToInt(erow[0]);
@@ -503,6 +508,8 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 				case 12: eqidx = 4; break; // hands
 				case 18: eqidx = 5; break; // legs
 				case 19: eqidx = 6; break; // feet
+				case 13: eqidx = 7; break; // primary weapon
+				case 14: eqidx = 8; break; // secondary/offhand
 			}
 			if (eqidx >= 0) {
 				cs.equip[slot][eqidx]     = static_cast<int8_t>(mat);
@@ -567,7 +574,6 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 			SendAck(addr, port, s);
 			return;
 		}
-		// Wait briefly and try again — if still unavailable, acknowledge and let client retry
 		zs = zoneserver_list.FindByZoneID(zone_id);
 		if (!zs) {
 			SendAck(addr, port, s);
@@ -575,8 +581,25 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 		}
 	}
 
-	// Build ZoneServerInfo: 130-byte packet (EQClassic ClientNetwork.cpp layout)
-	// ip[75] at offset 0, zone_name[53] at offset 75, port (LE) at offset 128
+	if (zs->IsBootingUp()) {
+		LogInfo("[TrilogyWorld] Zone [{}] is still booting — deferring ZoneServerInfo for {}:{}",
+		        zone_id, addr, port);
+		s.pending_zone_entry = true;
+		s.pending_zone_id    = zone_id;
+		s.pending_zone_time  = std::time(nullptr);
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	SendZoneServerInfo(addr, port, s, zs);
+}
+
+// ============================================================
+// Build and send TRI_OP_ZoneServerInfo (0x0480) to the client
+// ============================================================
+
+void TrilogyWorldServer::SendZoneServerInfo(const std::string& addr, int port, Session& s, ZoneServer* zs)
+{
 	Trilogy::structs::ZoneServerInfo_Struct zsi{};
 	memset(&zsi, 0, sizeof(zsi));
 
@@ -587,10 +610,9 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 		strncpy(zsi.ip, WorldConfig::get()->WorldAddress.c_str(), sizeof(zsi.ip) - 1);
 	}
 
-	// zone_name field — look up the short name for the zone_id
 	{
 		auto zq = fmt::format(
-			"SELECT `short_name` FROM `zone` WHERE `zoneidnumber` = {} LIMIT 1", zone_id);
+			"SELECT `short_name` FROM `zone` WHERE `zoneidnumber` = {} LIMIT 1", s.zone_id);
 		auto zr = database.QueryDatabase(zq);
 		if (zr.RowCount() > 0) {
 			auto zrow = zr.begin();
@@ -598,20 +620,50 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 		}
 	}
 
-	// Port in host byte order (little-endian) — matches EQClassic ntohs(GetCPort())
-	// where GetCPort() returned network-order; EQEmu GetCPort() is already host-order
-	zsi.port = zs->GetCPort();
+	// EQClassic wire format: port in network byte order (confirmed: ClientNetwork.cpp *temp = ntohs(port))
+	zsi.port = htons(zs->GetCPort());
 
-	LogInfo("[TrilogyWorld] Sending zone info [{}:{}] for zone [{}] to {}:{}",
-	        zsi.ip, zsi.port, zone_id, addr, port);
+	LogInfo("[TrilogyWorld] Sending ZoneServerInfo ip=[{}] port=[{}] zone_name=[{}] zone_id=[{}] to {}:{}",
+	        zsi.ip, zs->GetCPort(), zsi.zone_name, s.zone_id, addr, port);
 
 	if (s.cle) {
-		s.cle->SetChar(char_id, char_name);
+		s.cle->SetChar(s.char_id, s.char_name);
 		s.cle->SetOnline(CLE_Status::Zoning);
 	}
 
 	SendApp(addr, port, s, TRI_OP_ZoneServerInfo,
 	        reinterpret_cast<const uint8_t*>(&zsi), sizeof(zsi));
+}
+
+// ============================================================
+// Check if a deferred zone entry is now ready to send
+// Called on keepalives and after opcode dispatch
+// ============================================================
+
+void TrilogyWorldServer::CheckPendingZoneEntry(const std::string& addr, int port, Session& s)
+{
+	if (!s.pending_zone_entry) return;
+
+	auto age = static_cast<long>(std::time(nullptr) - s.pending_zone_time);
+	if (age > 60) {
+		LogInfo("[TrilogyWorld] CheckPending: zone [{}] TIMED OUT age={}s for {}:{}",
+		        s.pending_zone_id, age, addr, port);
+		s.pending_zone_entry = false;
+		return;
+	}
+
+	ZoneServer* zs = zoneserver_list.FindByZoneID(s.pending_zone_id);
+	LogInfo("[TrilogyWorld] CheckPending: zone [{}] age={}s zs={} booting={} for {}:{}",
+	        s.pending_zone_id, age,
+	        zs ? "found" : "null",
+	        (zs && zs->IsBootingUp()) ? "yes" : "no",
+	        addr, port);
+	if (!zs || zs->IsBootingUp()) return;
+
+	s.pending_zone_entry = false;
+	LogInfo("[TrilogyWorld] Zone [{}] boot complete — sending ZoneServerInfo to {}:{}",
+	        s.pending_zone_id, addr, port);
+	SendZoneServerInfo(addr, port, s, zs);
 }
 
 // ============================================================

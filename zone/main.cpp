@@ -563,6 +563,7 @@ int main(int argc, char **argv)
 			                                const void* data, size_t sz) {
 				eqsm->SendRaw(addr, port, data, sz);
 			});
+			LogInfo("[TrilogyZone] Trilogy (EQNetwork) zone hook registered on zone port");
 
 			eqsm->OnNewConnection(
 				[&stream_identifier](std::shared_ptr<EQ::Net::EQStream> stream) {

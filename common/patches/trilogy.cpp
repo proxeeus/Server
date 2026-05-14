@@ -78,10 +78,11 @@ namespace Trilogy
 		signature.first_eq_opcode  = opcodes->EmuToEQ(OP_SendLoginInfo);
 		into.RegisterPatch(signature, pname.c_str(), &opcodes, &struct_strategy);
 
-		// Zone server: first app-layer packet is the character name (ClientZoneEntry_Struct).
+		// Zone server: Trilogy uses EQNetwork (handled by TrilogyZoneServer via OnUnknownPacket).
+		// This signature is a fallback — TrilogyZoneServer intercepts zone packets before Daybreak.
 		pname = std::string(name) + "_zone";
 		signature.ignore_eq_opcode = opcodes->EmuToEQ(OP_AckPacket);
-		signature.first_length     = sizeof(structs::ClientZoneEntry_Struct);
+		signature.first_length     = sizeof(structs::ClientZoneEntry_Struct); // 34 bytes
 		signature.first_eq_opcode  = opcodes->EmuToEQ(OP_ZoneEntry);
 		into.RegisterPatch(signature, pname.c_str(), &opcodes, &struct_strategy);
 
@@ -300,7 +301,9 @@ namespace Trilogy
 
 	DECODE(OP_ZoneEntry)
 	{
-		// Phase 5: translate Trilogy::structs::ClientZoneEntry_Struct → EQEmu ClientZoneEntry_Struct
+		// Dead code path — Trilogy zone connections are handled entirely by TrilogyZoneServer
+		// (EQNetwork protocol via DaybreakConnectionManager::OnUnknownPacket).
+		// This decoder is never invoked for Trilogy clients.
 	}
 
 } /*Trilogy*/

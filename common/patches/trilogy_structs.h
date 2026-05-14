@@ -216,13 +216,16 @@ struct NameApproval_Struct
 /*
 ** ClientZoneEntry_Struct
 ** Opcode:  OP_ZoneEntry = 0x2a20
-** Direction: client -> zone server (first packet after Daybreak handshake)
-** Used by Register() to identify Trilogy zone connections by packet size.
+** Direction: client -> zone server
+** Source:  EQClassic QuagmireGhostCheck: strncpy(tmp, &app->pBuffer[4], 16)
+**          EQMacEmuTrilogy structs: uint32 unknown00 + char char_name[32]
+** Size:    34 bytes
 */
 struct ClientZoneEntry_Struct
 {
-/*000*/	char	name[30];	// character name
-/*030*/
+/*000*/	uint32	unknown00;	// 4-byte prefix before name
+/*004*/	char	name[30];	// character name (null-terminated)
+/*034*/
 };
 
 /*
@@ -235,13 +238,15 @@ struct ClientZoneEntry_Struct
 ** Layout from EQClassic SendZoneServerInfo:
 **   strcpy(buf+0,  zs->GetCAddress());   // IP string
 **   strcpy(buf+75, zone_name);           // zone short name
-**   *(int16*)(buf+128) = ntohs(port);    // port in host (little-endian) byte order
+**   *(int16*)(buf+128) = ntohs(port);    // port in NETWORK byte order (big-endian)
+**                                        // ntohs(host_port) on LE = htons(host_port) = byte-swap
+**                                        // Client reads with ntohs() to recover host port value
 */
 struct ZoneServerInfo_Struct
 {
 /*000*/	char	ip[75];		// dotted-decimal ASCII e.g. "127.0.0.1\0"
 /*075*/	char	zone_name[53];	// zone short name, null-terminated
-/*128*/	uint16	port;		// host byte order (little-endian)
+/*128*/	uint16	port;		// NETWORK byte order (big-endian); use htons(host_port) when setting
 /*130*/
 };
 
@@ -1066,7 +1071,7 @@ struct TradeSkillCombine_Struct
 #pragma pack()
 
 // -------------------------------------------------------------------------
-// Phase 2: Session signature collision check (Task 2.2)
+// Session signature collision check
 //
 // EQStreamIdentifier selects a patch by matching the first application-layer
 // packet's (opcode, payload_size) pair.  These assertions confirm that the
@@ -1075,16 +1080,19 @@ struct TradeSkillCombine_Struct
 //
 //   World: Trilogy  LoginInfo_Struct  = 40  bytes
 //          Titanium LoginInfo_Struct  = 488 bytes   → no collision
-//   Zone:  Trilogy  ClientZoneEntry_Struct = 30 bytes
+//   Zone:  Trilogy  ClientZoneEntry_Struct = 34 bytes (uint32 + name[30])
 //          Titanium ClientZoneEntry_Struct = 68 bytes  → no collision
+//   Note: Zone connections are handled by TrilogyZoneServer (EQNetwork/OnUnknownPacket);
+//         the Daybreak patch signature is a dead-code fallback.
 // -------------------------------------------------------------------------
 static_assert(sizeof(LoginInfo_Struct)       == 40,
 	"Trilogy LoginInfo_Struct must be 40 bytes "
 	"(world-stream discriminator vs Titanium 488 bytes)");
 
-static_assert(sizeof(ClientZoneEntry_Struct) == 30,
-	"Trilogy ClientZoneEntry_Struct must be 30 bytes "
-	"(zone-stream discriminator vs Titanium 68 bytes)");
+static_assert(sizeof(ClientZoneEntry_Struct) == 34,
+	"Trilogy ClientZoneEntry_Struct must be 34 bytes "
+	"(uint32 unknown00 + char name[30])");
+
 
 static_assert(sizeof(CharacterSelect_Struct) == 1248,
 	"Trilogy CharacterSelect_Struct must be 1248 bytes");
