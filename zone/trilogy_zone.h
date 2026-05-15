@@ -137,6 +137,8 @@ private:
 	void HandleZoneInComplete(const std::string& addr, int port, Session& s);
 	void HandleClientUpdate(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);
+	void HandleChannelMessage(const std::string& addr, int port, Session& s,
+	                          const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);

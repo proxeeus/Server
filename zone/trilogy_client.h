@@ -149,4 +149,6 @@ private:
 	void HandleNewSpawn(const EQApplicationPacket* app);
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
 	void HandleClientUpdate(const EQApplicationPacket* app);
+	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
+	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 };

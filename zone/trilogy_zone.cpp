@@ -28,6 +28,7 @@
 #include "../common/eqemu_logsys.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/eq_packet_structs.h"
+#include "../common/eq_constants.h"
 #include "../common/strings.h"
 
 extern Zone*       zone;
@@ -52,6 +53,7 @@ extern EntityList  entity_list;
 // ============================================================
 static constexpr uint16_t ZN_OP_SetDataRate  = 0xe821; // client -> zone: first packet
 static constexpr uint16_t ZN_OP_ZoneEntry    = 0x2a20; // bidirectional: client name / ServerZoneEntry
+static constexpr uint16_t ZN_OP_ChannelMsg   = 0x0721; // bidirectional: ChannelMessage_Struct
 static constexpr uint16_t ZN_OP_PlayerProfile= 0x2d20; // zone -> client: PlayerProfile_Struct (deflated+encrypted)
 static constexpr uint16_t ZN_OP_Weather      = 0x3621; // zone -> client: 8 bytes
 static constexpr uint16_t ZN_OP_NewZone      = 0x5b20; // zone -> client: NewZone_Struct
@@ -411,6 +413,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case CONNECTED:
 		if (opcode == ZN_OP_ClientUpdate)
 			HandleClientUpdate(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ChannelMsg)
+			HandleChannelMessage(addr, port, s, payload, plen);
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -1131,6 +1135,44 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	database.QueryDatabase(q);
 	LogInfo("[TrilogyZone] Position saved char_id={} ({:.1f},{:.1f},{:.1f}) heading={:.1f}",
 	        s.char_id, x, y, z, heading);
+}
+
+// ============================================================
+// HandleChannelMessage — client sent 0x0721 (chat)
+// Translate Trilogy ChannelMessage_Struct to EQEmu internal and dispatch.
+// ============================================================
+
+void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, Session& s,
+                                              const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+
+	// Need at least the fixed header plus one null byte for message.
+	if (plen < sizeof(Trilogy::structs::ChannelMessage_Struct) + 1) return;
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::ChannelMessage_Struct*>(payload);
+
+	if (s.trilogy_client->IsAIControlled() && !s.trilogy_client->GetGM()) {
+		s.trilogy_client->Message(Chat::Red, "You try to speak but can't move your mouth!");
+		return;
+	}
+
+	// Message payload follows the fixed struct.
+	const char* msg    = reinterpret_cast<const char*>(payload + sizeof(Trilogy::structs::ChannelMessage_Struct));
+	uint8_t     lang   = static_cast<uint8_t>(tri->language);
+	uint8_t     chan   = static_cast<uint8_t>(tri->chan_num);
+	char        target[33] = {};
+	strncpy(target, tri->targetname, sizeof(target) - 1);
+
+	// Language skill — TrilogyClient inherits Client::m_pp so this is safe.
+	uint8_t lang_skill = Language::MaxValue;
+	if (lang <= Language::Unknown27)
+		lang_skill = s.trilogy_client->GetPP().languages[lang];
+
+	LogInfo("[TrilogyZone] ChannelMessage chan={} lang={} msg='{}' from {}",
+	        chan, lang, msg, s.char_name);
+
+	s.trilogy_client->ChannelMessageReceived(chan, lang, lang_skill, msg, target[0] ? target : nullptr);
 }
 
 // ============================================================

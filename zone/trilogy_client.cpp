@@ -209,6 +209,12 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		if (app->size == 8)
 			m_tzs->SendToSession(m_session_key, 0x3621, app->pBuffer, 8);
 		break;
+	case OP_ChannelMessage:
+		HandleOutgoingChannelMessage(app);
+		break;
+	case OP_SpecialMesg:
+		HandleOutgoingSpecialMesg(app);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -363,4 +369,112 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	GetPP().y       = y;
 	GetPP().z       = z;
 	GetPP().heading = heading;
+}
+
+// ============================================================
+// HandleOutgoingChannelMessage — OP_ChannelMessage (server → client)
+//
+// EQEmu internal ChannelMessage_Struct uses 64-byte name fields and
+// uint32 language/chan_num.  Trilogy wire format uses smaller fields
+// and int16 for both.  Translate and send opcode 0x0721.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::ChannelMessage_Struct)) return;
+
+	const auto* cm_in = reinterpret_cast<const ::ChannelMessage_Struct*>(app->pBuffer);
+
+	// Message tail immediately follows the fixed struct.
+	uint32_t msg_offset = static_cast<uint32_t>(sizeof(::ChannelMessage_Struct));
+	uint32_t msg_bytes  = (app->size > msg_offset) ? (app->size - msg_offset) : 0;
+	if (msg_bytes == 0) msg_bytes = 1; // always include null terminator
+
+	uint32_t out_size = static_cast<uint32_t>(sizeof(Trilogy::structs::ChannelMessage_Struct)) + msg_bytes;
+	auto* buf = new uint8_t[out_size]();
+	auto* cm_out = reinterpret_cast<Trilogy::structs::ChannelMessage_Struct*>(buf);
+
+	strncpy(cm_out->targetname, cm_in->targetname, sizeof(cm_out->targetname) - 1);
+	strncpy(cm_out->sender,     cm_in->sender,     sizeof(cm_out->sender)     - 1);
+	cm_out->language       = static_cast<int16_t>(cm_in->language);
+	cm_out->chan_num        = static_cast<int16_t>(cm_in->chan_num);
+	cm_out->cm_unknown4[0] = static_cast<int8_t>(0xFF); // language skill masking per EQClassic server
+	cm_out->cm_unknown4[1] = static_cast<int8_t>(0xFF);
+
+	if (app->size > msg_offset)
+		memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
+		       app->pBuffer + msg_offset, app->size - msg_offset);
+
+	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
+	delete[] buf;
+}
+
+// ============================================================
+// HandleOutgoingSpecialMesg — OP_SpecialMesg (server → client)
+//
+// EQEmu uses OP_SpecialMesg (Titanium wire format) for colored text.
+// EQClassic uses opcode 0x8021 with a much simpler layout:
+//   int32  msg_type  — EQClassic MESSAGETYPE_* (256+)
+//   char   message[] — null-terminated text
+//
+// EQEmu OP_SpecialMesg SerializeBuffer layout (Client::Message):
+//   int8  speak_mode  [0]
+//   int8  journal_mode [1]
+//   int8  language     [2]
+//   uint32 type        [3..6]  — Chat::* color code
+//   uint32 target_id   [7..10]
+//   string sender      [11..]  null-terminated (empty = 1 null byte)
+//   int32  x           follows sender
+//   int32  y
+//   int32  z
+//   string message     actual text
+//
+// EQEmu Chat::* ≥ 256 and EQClassic MESSAGETYPE_* share the same values.
+// EQEmu Chat::* 0-255 (raw color codes) map to MESSAGETYPE_Broadcasts (269).
+// ============================================================
+
+// Map EQEmu Chat::* type to EQClassic MESSAGETYPE_* (from MessageTypes.h).
+// EQEmu Chat::* values ≥ 256 are identical to EQClassic MESSAGETYPE_* values
+// (Say=256, Tell=257, YouHitOther=265, Broadcasts=269, etc.) — pass through directly.
+// Values 0-255 are raw color codes with no EQClassic MESSAGETYPE equivalent;
+// map those to MESSAGETYPE_Broadcasts (269) so text stays visible.
+static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
+{
+	return (chat_type >= 256) ? chat_type : 269u; // 269 = MESSAGETYPE_Broadcasts
+}
+
+void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
+{
+	if (!app || app->size < 25) return;
+
+	const uint8_t* buf  = app->pBuffer;
+	uint32_t       size = app->size;
+
+	// Extract EQEmu Chat::* type at offset 3 (after 3 int8 header bytes).
+	uint32_t eqemu_type = *reinterpret_cast<const uint32_t*>(buf + 3);
+
+	// Skip speak_mode(1) + journal_mode(1) + language(1) + type(4) + target_id(4) = 11 bytes.
+	uint32_t o = 11;
+
+	// Skip null-terminated sender string.
+	while (o < size && buf[o] != 0) ++o;
+	++o; // consume null
+	if (o + 12 >= size) return; // need x(4)+y(4)+z(4) + at least 1 message byte
+
+	// Skip x(4) + y(4) + z(4).
+	o += 12;
+	if (o >= size) return;
+
+	const char* msg       = reinterpret_cast<const char*>(buf + o);
+	uint32_t    msg_bytes = size - o;
+	if (msg_bytes == 0) msg_bytes = 1;
+
+	// Build EQClassic OP_SpecialMesg (0x8021): int32 msg_type + message[].
+	uint32_t out_size = 4 + msg_bytes;
+	auto* out = new uint8_t[out_size]();
+	*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(eqemu_type);
+	memcpy(out + 4, msg, msg_bytes);
+
+	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	delete[] out;
 }
