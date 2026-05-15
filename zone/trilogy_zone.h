@@ -30,12 +30,17 @@
 #include <string>
 #include <vector>
 
+class TrilogyClient;
+
 class TrilogyZoneServer {
 public:
 	void SetSendFn(std::function<void(const std::string&, int, const void*, size_t)> fn);
 	void OnRawPacket(const std::string& addr, int port, const char* data, size_t size);
 	void Tick();
 	bool HasConnectedSession() const;
+
+	void SendToSession(uint64_t session_key, uint16_t opcode,
+	                   const uint8_t* data, uint32_t size);
 
 private:
 	enum ZoneState : uint8_t {
@@ -90,6 +95,16 @@ private:
 
 		// True while this session has incremented the global numclients counter.
 		bool        counted_in_zone = false;
+
+		// Character appearance stats (populated during SendPlayerProfile).
+		uint16_t    char_race    = 0;
+		uint8_t     char_class_  = 0;
+		uint8_t     char_gender  = 0;
+		uint8_t     char_level   = 0;
+
+		// Non-null once the player has fully entered the zone (HandleZoneInComplete).
+		// Owned by entity_list; do NOT delete directly — use entity_list.RemoveClient/Mob.
+		TrilogyClient* trilogy_client = nullptr;
 
 		// Fragment reassembly
 		struct FragEntry {

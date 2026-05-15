@@ -18,6 +18,8 @@
 
 #include "../common/global_define.h"
 #include "trilogy_zone.h"
+#include "trilogy_client.h"
+#include "entity.h"
 #include "zonedb.h"
 #include "zone.h"
 #include "npc.h"
@@ -28,8 +30,9 @@
 #include "../common/eq_packet_structs.h"
 #include "../common/strings.h"
 
-extern Zone*   zone;
-extern uint32  numclients;
+extern Zone*       zone;
+extern uint32      numclients;
+extern EntityList  entity_list;
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -123,11 +126,26 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 {
 	auto it = m_sessions.find(key);
 	if (it == m_sessions.end()) return;
-	if (it->second.counted_in_zone && numclients > 0) {
+	Session& s = it->second;
+	if (s.trilogy_client) {
+		uint16 id = s.trilogy_client->GetID();
+		s.trilogy_client = nullptr;
+		entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
+	} else if (s.counted_in_zone && numclients > 0) {
 		--numclients;
-		LogInfo("[TrilogyZone] Session removed, numclients={}", numclients);
 	}
+	LogInfo("[TrilogyZone] Session removed, numclients={}", numclients);
 	m_sessions.erase(it);
+}
+
+void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
+                                      const uint8_t* data, uint32_t size)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	Session& s = it->second;
+	if (s.state != CONNECTED) return;
+	SendApp(s.source_addr, s.source_port, s, opcode, data, size);
 }
 
 uint64_t TrilogyZoneServer::SessionKey(const std::string& addr, int port)
@@ -291,10 +309,14 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		m_sessions[key] = Session{};
 	} else if (seqstart) {
 		Session& existing = m_sessions[key];
-		if (existing.counted_in_zone && numclients > 0) {
+		if (existing.trilogy_client) {
+			uint16 id = existing.trilogy_client->GetID();
+			existing.trilogy_client = nullptr;
+			entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
+		} else if (existing.counted_in_zone && numclients > 0) {
 			--numclients;
-			LogInfo("[TrilogyZone] Session restarted, numclients={}", numclients);
 		}
+		LogInfo("[TrilogyZone] Session restarted, numclients={}", numclients);
 		existing.state      = CONNECTING1;
 		existing.sack_init  = false;
 		existing.seq_sent   = false;
@@ -547,11 +569,54 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 
 	s.state = CONNECTED;
-	if (!s.counted_in_zone) {
-		++numclients;
-		s.counted_in_zone = true;
+
+	// Create a TrilogyClient entity and add it to the entity_list so:
+	//   - Titanium clients see this player via OP_NewSpawn broadcasts
+	//   - NPC aggro / hate lists include this player
+	//   - QueueClients broadcasts translate and reach this client
+	// Client() constructor increments numclients; s.counted_in_zone is no longer needed.
+	if (!s.trilogy_client) {
+		// Look up account name for the InitTrilogyFields call.
+		char acct_name[32] = {};
+		{
+			auto q = fmt::format("SELECT `name` FROM `account` WHERE `id`={} LIMIT 1",
+			                     s.account_id);
+			auto r = database.QueryDatabase(q);
+			if (r.RowCount() > 0) {
+				auto row = r.begin();
+				strncpy(acct_name, row[0], sizeof(acct_name) - 1);
+			}
+		}
+
+		uint64_t skey = SessionKey(s.source_addr, s.source_port);
+		TrilogyClient* tc = new TrilogyClient(
+			this, skey, s.player_spawn_id,
+			s.char_id, s.account_id, acct_name, s.char_name,
+			s.char_race, s.char_class_, s.char_gender, s.char_level,
+			s.pos_x, s.pos_y, s.pos_z, s.pos_heading,
+			s.source_addr, static_cast<uint16_t>(s.source_port)
+		);
+		entity_list.AddClient(tc);
+		s.trilogy_client  = tc;
+		s.counted_in_zone = true; // legacy fallback if tc ever becomes null post-init
+
+		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
+		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
+		// which translates what it can and silently drops the rest.
+		tc->CompleteConnect();
+
+		// Broadcast this player's appearance to existing Titanium clients.
+		{
+			EQApplicationPacket* ns_app = new EQApplicationPacket();
+			tc->CreateSpawnPacket(ns_app, static_cast<Mob*>(nullptr));
+			ns_app->priority = 6;
+			entity_list.QueueClients(tc, ns_app, true); // true = ignore self
+			safe_delete(ns_app);
+		}
 	}
-	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}] (numclients={})", s.char_name, s.zone_short, numclients);
+
+	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}] (numclients={})",
+	        s.char_name, s.zone_short, numclients);
 
 	// EQClassic Process_ClientConnection5 sends 0xc321 (8 zeroed bytes) immediately
 	// before the final 0xd820.  Purpose unknown, but the Trilogy client requires it
@@ -628,6 +693,17 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
+
+		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
+		s.char_race   = static_cast<uint16_t>(pp.race);
+		s.char_class_ = static_cast<uint8_t>(pp.class_);
+		s.char_gender = static_cast<uint8_t>(pp.gender);
+		s.char_level  = static_cast<uint8_t>(pp.level);
+		// Set initial session position from DB; ClientUpdate packets override later.
+		s.pos_x       = pp.x;
+		s.pos_y       = pp.y;
+		s.pos_z       = pp.z;
+		s.pos_heading = pp.heading;
 	}
 
 	// ---- character_currency ----
@@ -975,6 +1051,10 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	float heading = static_cast<float>(static_cast<uint8_t>(upd.heading)) * 2.0f;
 
 	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
+
+	// Update entity_list position so NPC aggro, proximity, and Titanium broadcasts work.
+	if (s.trilogy_client)
+		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
 
 	// Heartbeat (A120) is now sent by SendMobHeartbeat(), called for every CONNECTED packet.
 

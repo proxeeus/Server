@@ -81,6 +81,7 @@ public:
 	virtual bool IsBeacon()			    const { return false; }
 	virtual bool IsEncounter()		    const { return false; }
 	virtual bool IsBot()                const { return false; }
+	virtual bool IsTrilogyClient()      const { return false; }
 	virtual bool IsAura()			    const { return false; }
 	virtual bool IsOfClientBot()        const { return false; }
 	virtual bool IsOfClientBotMerc()    const { return false; }

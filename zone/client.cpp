@@ -507,6 +507,24 @@ Client::~Client() {
 	UninitializeBuffSlots();
 }
 
+void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
+{
+	character_id    = char_id;
+	account_id      = acct_id;
+	strn0cpy(account_name, acct_name, sizeof(account_name));
+	client_state    = CLIENT_CONNECTED;
+	conn_state      = ClientConnectFinished;
+	client_data_loaded = true;
+
+	// Trilogy clients do not go through the normal EQStream zone-entry handshake;
+	// set client version directly from the stream adapter.
+	m_ClientVersion    = eqs->ClientVersion();
+	m_ClientVersionBit = EQ::versions::ConvertClientVersionToClientVersionBit(m_ClientVersion);
+
+	// Apply name at Mob level so GetName() / FillSpawnStruct() work correctly.
+	SetName(char_name);
+}
+
 void Client::SendZoneInPackets()
 {
 

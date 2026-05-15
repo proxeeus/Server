@@ -149,6 +149,7 @@ SET(zone_sources
     task_manager.cpp
     tasks.cpp
     titles.cpp
+    trilogy_client.cpp
     trilogy_zone.cpp
     tradeskills.cpp
     trading.cpp
