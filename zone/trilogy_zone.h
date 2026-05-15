@@ -93,6 +93,9 @@ private:
 		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion
 		uint64_t    last_stamina_ms   = 0;
 
+		// TimeOfDay re-sync — F220 sent every 180s (1 EQ hour) matching world server broadcast
+		uint64_t    last_time_of_day_ms = 0;
+
 		// True while this session has incremented the global numclients counter.
 		bool        counted_in_zone = false;
 
@@ -145,7 +148,8 @@ private:
 
 	void SendApp(const std::string& addr, int port, Session& s,
 	             uint16_t opcode,
-	             const uint8_t* payload = nullptr, uint32_t plen = 0);
+	             const uint8_t* payload = nullptr, uint32_t plen = 0,
+	             bool ack_req = true);
 	void SendMobHeartbeat(const std::string& addr, int port, Session& s);
 	void SendAck(const std::string& addr, int port, Session& s);
 	void SendClose(const std::string& addr, int port, Session& s);

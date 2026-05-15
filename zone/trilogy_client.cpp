@@ -34,6 +34,7 @@
 #endif
 
 #include <cstring>
+#include <cmath>
 
 extern EntityList entity_list;
 
@@ -176,6 +177,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_DeleteSpawn:
 		HandleDeleteSpawn(app);
 		break;
+	case OP_ClientUpdate:
+		HandleClientUpdate(app);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -288,6 +292,70 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 }
 
 // ============================================================
+// HandleClientUpdate — translate OP_ClientUpdate (NPC/mob position
+// broadcast from EQEmu's movement manager) to Trilogy wire format 0xa120.
+//
+// spu->animation holds EQEmu's internal speed value (GetRunspeed() or
+// GetWalkspeed(), i.e. float_speed * 40).  We convert to Trilogy's
+// velocity factor format and derive delta_x/y so the client can
+// interpolate position smoothly between updates.
+// ============================================================
+
+void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::PlayerPositionUpdateServer_Struct)) return;
+
+	const auto* spu = reinterpret_cast<const ::PlayerPositionUpdateServer_Struct*>(app->pBuffer);
+	uint16 spawn_id = static_cast<uint16>(spu->spawn_id);
+
+	// Don't echo position updates for our own entity back to ourselves.
+	if (spawn_id == GetID()) return;
+
+	Mob* mob = entity_list.GetMob(spawn_id);
+	if (!mob) return;
+
+	uint8_t buf[4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)];
+	memset(buf, 0, sizeof(buf));
+
+	int32_t n = 1;
+	memcpy(buf, &n, 4);
+
+	auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(buf + 4);
+	upd->spawn_id = static_cast<int16_t>(spawn_id);
+
+	// spu->animation = GetRunspeed() when running, GetWalkspeed() when walking, 0 when stopped.
+	// Convert to Trilogy velocity factor: running uses *7/40, walking uses *4/40.
+	int8_t trilogy_anim = 0;
+	int raw_anim = static_cast<int>(spu->animation);
+	if (raw_anim > 0) {
+		if (raw_anim >= mob->GetRunspeed())
+			trilogy_anim = static_cast<int8_t>(std::max(1, raw_anim * 7 / 40));
+		else
+			trilogy_anim = static_cast<int8_t>(std::max(1, raw_anim * 4 / 40));
+	}
+	upd->anim_type = trilogy_anim;
+
+	float heading = mob->GetHeading();
+	upd->heading       = static_cast<int8_t>(static_cast<uint8_t>(heading / 2.0f));
+	upd->delta_heading = 0;
+	upd->y_pos         = static_cast<int16_t>(mob->GetY());
+	upd->x_pos         = static_cast<int16_t>(mob->GetX());
+	upd->z_pos         = static_cast<int16_t>(mob->GetZ() * 10.0f);
+
+	// Provide velocity vector so the client can interpolate position between updates.
+	// Scale matches anim_type (velocity factor * direction component).
+	if (trilogy_anim != 0) {
+		float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
+		int32_t dx = static_cast<int32_t>(trilogy_anim * std::sin(heading_rad));
+		int32_t dy = static_cast<int32_t>(trilogy_anim * std::cos(heading_rad));
+		upd->delta_x = std::max(-511, std::min(511, dx));
+		upd->delta_y = std::max(-511, std::min(511, dy));
+	}
+
+	m_tzs->SendToSession(m_session_key, 0xa120, buf, static_cast<uint32_t>(sizeof(buf)));
+}
+
+// ============================================================
 // TrilogyPositionUpdate — called from TrilogyZoneServer when
 // the client sends a 0xF320 ClientUpdate datagram.
 //
@@ -298,5 +366,11 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 
 void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float heading)
 {
-	GMMove(x, y, z, heading);
+	// GMMove would crash inside MobMovementManager::FillCommandStruct when it
+	// tries to broadcast position to clients (mob->IsBot() on TrilogyClient
+	// triggers an access violation in the movement manager).
+	// SetPosition + SetHeading update the mob's world position for NPC aggro
+	// and proximity checks without triggering the movement manager broadcast.
+	SetPosition(x, y, z);
+	SetHeading(heading);
 }

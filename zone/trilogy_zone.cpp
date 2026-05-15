@@ -476,7 +476,13 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	LogInfo("[TrilogyZone] ZoneEntry | char_id={} account_id={} zone_id={} zone={} player_spawn_id={}",
 	        s.char_id, s.account_id, s.zone_id, s.zone_short, s.player_spawn_id);
 
-	// Server sends: PlayerProfile → ServerZoneEntry → Weather
+	// Server sends: TimeOfDay → PlayerProfile → ServerZoneEntry → Weather
+	// F220 must arrive before PlayerProfile so the client has the correct EQ
+	// time before it begins rendering the zone.  In EQClassic the world server
+	// broadcasts F220 to all clients every EQ hour; Trilogy clients connecting
+	// directly to the zone port never receive that broadcast, so we send it
+	// here (matching the LS-zone variant of EQClassic which does the same).
+	SendTimeOfDay(addr, port, s);
 	SendPlayerProfile(addr, port, s);
 	SendZoneEntrySpawn(addr, port, s);
 	SendWeather(addr, port, s);
@@ -517,7 +523,6 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	SendZoneSpawns(addr, port, s);
-	SendTimeOfDay(addr, port, s);
 
 	s.state = CONNECTING5;
 }
@@ -627,7 +632,7 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
-	// Prime the heartbeat: first A120 sent immediately so the client's ARQ timer starts.
+	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.
 	SendMobHeartbeat(addr, port, s);
 }
 
@@ -1211,6 +1216,14 @@ void TrilogyZoneServer::Tick()
 			SendApp(s.source_addr, s.source_port, s, ZN_OP_Stamina,
 			        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
 		}
+
+		// Re-sync EQ clock every 180s (1 EQ hour), matching the world server's
+		// periodic broadcast.  This keeps the client's sky/lighting updated as
+		// EQ time advances.
+		if (now_ms - s.last_time_of_day_ms >= 180000) {
+			s.last_time_of_day_ms = now_ms;
+			SendTimeOfDay(s.source_addr, s.source_port, s);
+		}
 	}
 }
 
@@ -1221,21 +1234,19 @@ bool TrilogyZoneServer::HasConnectedSession() const
 	return false;
 }
 
-// SendMobHeartbeat — send OP_MobUpdate (0xa120) containing the
-//   first NPC's current position.  Called on every incoming
-//   CONNECTED-state packet (F320, WearChange, keep-alive, etc.)
-//   to maintain the client's connection meter.
+// SendMobHeartbeat — send OP_MobUpdate (0xa120) containing current
+//   NPC positions.  Called every 250ms by Tick() for all CONNECTED
+//   sessions.  Fire-and-forget (no ARQ), matching EQClassic's
+//   EntityList::SendPositionUpdates which uses QueuePacket(false).
 //
-// Sending this as ARQ'd is intentional: the client's 500ms
-// no_ack_sent_timer fires after each A120 and sends a pure ACK
-// back to us.  Our keep-alive handler (remaining==0 path) then
-// calls SendMobHeartbeat again, creating a self-sustaining
-// heartbeat chain that keeps the meter green even while idle.
+// IMPORTANT: must NOT include player_spawn_id.  EQClassic broadcasts
+//   position updates with iIgnoreSender=true — the player never
+//   receives their own echo.  Sending player_spawn_id here would
+//   rubber-band (override) the player's local movement.
 //
-// IMPORTANT: must NOT use player_spawn_id.  EQClassic broadcasts
-// position updates with iIgnoreSender=true — the player never
-// receives their own echo.  Sending player_spawn_id here would
-// rubber-band (override) the player's local movement.
+// anim_type in SpawnPositionUpdate_Struct is a movement-speed factor
+//   (EQClassic: runspeed*7 ≈ 9 when running, 0 when idle).  It is
+//   NOT the same as Spawn_Struct.anim_type (which is 0x64=standing).
 // ============================================================
 
 void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Session& s)
@@ -1249,11 +1260,65 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	if (now_ms - s.last_heartbeat_ms < 250) return;
 	s.last_heartbeat_ms = now_ms;
 
-	// Always send n=0 (empty) keepalive — NPC position data in A120 (n>0)
-	// appears to break the client's heartbeat chain until the format is confirmed.
+	// Build batched A120 packets containing current NPC positions.
+	// EQClassic caps at MAX_SPAWN_UPDATES_PER_PACKET (25) entries per packet so that
+	// each datagram stays under 512 bytes (4 + 25*15 = 379 B) and is never fragmented.
+	// Fragmented A120 through our ARQ machinery confuses the Trilogy client.
+	// entity_list.GetNPCList() returns only NPC* — never TrilogyClient — so no filter needed.
+	static constexpr int32_t MAX_UPDATES_PER_PKT = 25;
+
+	const auto& npc_map = entity_list.GetNPCList();
+
+	// buf holds one in-progress packet: [int32 count][SpawnPositionUpdate_Struct * n]
+	uint8_t pkt[4 + MAX_UPDATES_PER_PKT * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)];
 	int32_t n = 0;
-	SendApp(addr, port, s, ZN_OP_MobUpdate,
-	        reinterpret_cast<const uint8_t*>(&n), 4);
+
+	auto flush_packet = [&]() {
+		if (n == 0) return;
+		memcpy(pkt, &n, 4);
+		SendApp(addr, port, s, ZN_OP_MobUpdate,
+		        pkt, static_cast<uint32_t>(4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)));
+		n = 0;
+	};
+
+	for (const auto& kv : npc_map) {
+		NPC* npc = kv.second;
+		if (!npc) continue;
+
+		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
+		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
+		memset(upd, 0, sizeof(*upd));
+
+		upd->spawn_id  = static_cast<int16_t>(npc->GetID());
+		upd->heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+		upd->y_pos     = static_cast<int16_t>(npc->GetY());
+		upd->x_pos     = static_cast<int16_t>(npc->GetX());
+		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
+		// delta_y/z/x remain zero here; velocity for moving NPCs is supplied by
+		// TrilogyClient::HandleClientUpdate which fires on movement-manager events.
+
+		// anim_type: EQClassic velocity factor (running: runspeed*7, walking: walkspeed*4).
+		// EQEmu speeds are int = float_speed * 40, so divide by 40 to recover.
+		if (npc->IsMoving()) {
+			if (npc->IsRunning())
+				upd->anim_type = static_cast<int8_t>(std::max(1, npc->GetRunspeed() * 7 / 40));
+			else
+				upd->anim_type = static_cast<int8_t>(std::max(1, npc->GetWalkspeed() * 4 / 40));
+		}
+		// else anim_type = 0 (idle, already zeroed by memset)
+
+		if (++n == MAX_UPDATES_PER_PKT)
+			flush_packet();
+	}
+
+	if (n > 0)
+		flush_packet();
+	else {
+		// Empty zone: still send n=0 to keep the heartbeat ARQ chain alive.
+		int32_t zero = 0;
+		SendApp(addr, port, s, ZN_OP_MobUpdate,
+		        reinterpret_cast<const uint8_t*>(&zero), 4);
+	}
 }
 
 // ============================================================
@@ -1263,7 +1328,8 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
                                  uint16_t opcode,
-                                 const uint8_t* payload, uint32_t plen)
+                                 const uint8_t* payload, uint32_t plen,
+                                 bool ack_req)
 {
 	if (!m_send_fn) return;
 
@@ -1281,6 +1347,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	int frags = static_cast<int>(plen >> 9);
 
 	if (frags > 0) {
+		// Fragment path always uses ARQ (fire-and-forget packets should never fragment).
 		uint16_t frag_group_seq = s.frag_seq++;
 		const uint8_t* src = payload;
 		uint32_t remaining  = plen;
@@ -1339,12 +1406,16 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	uint8_t buf[600];
 	int     o = 0;
 
-	uint8_t hdr0 = HDR0_ARQ | HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
+	// ack_req=false: fire-and-forget (matches EQClassic A120 QueuePacket(false)).
+	// We still piggyback an ACK (HDR1_ARSP) if one is pending — the client needs
+	// it regardless of whether this packet itself requires acknowledgement.
+	uint8_t hdr0 = HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
+	if (ack_req) hdr0 |= HDR0_ARQ;
 	uint8_t hdr1 = s.ack_due ? HDR1_ARSP : 0u;
 
-	if (opcode != ZN_OP_NewSpawn)
-		LogInfo("[TrilogyZone] tx opcode={:04X} SEQ={} ack_due={} cli_arq={:04X}",
-		        opcode, s.gsq, s.ack_due, s.cli_arq);
+	if (opcode != ZN_OP_NewSpawn && opcode != ZN_OP_MobUpdate)
+		LogInfo("[TrilogyZone] tx opcode={:04X} SEQ={} arq={} ack_due={} cli_arq={:04X}",
+		        opcode, s.gsq, ack_req, s.ack_due, s.cli_arq);
 
 	buf[o++] = hdr0;
 	buf[o++] = hdr1;
@@ -1354,7 +1425,10 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 		memcpy(buf + o, &arsp, 2); o += 2;
 		s.ack_due = false;
 	}
-	{ uint16_t arq = htons(s.arq++); memcpy(buf + o, &arq, 2); o += 2; }
+	if (ack_req) {
+		uint16_t arq = htons(s.arq++);
+		memcpy(buf + o, &arq, 2); o += 2;
+	}
 	buf[o++] = s.asq_hi;
 	buf[o++] = s.asq_lo++;
 	if (s.asq_lo == 0) ++s.asq_hi;

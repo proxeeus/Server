@@ -148,4 +148,5 @@ private:
 	// TrilogyZoneServer::SendToSession.
 	void HandleNewSpawn(const EQApplicationPacket* app);
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
+	void HandleClientUpdate(const EQApplicationPacket* app);
 };
