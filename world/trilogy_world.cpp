@@ -54,6 +54,7 @@ static constexpr uint16_t TRI_OP_ZoneServerInfo  = 0x0480; // world -> client: Z
 static constexpr uint16_t OP_GUILDS_LIST         = 0x9221; // client -> world: request guilds (4 bytes)
 static constexpr uint16_t OP_NAME_APPROVAL       = 0x8B20; // bidirectional: name approval
 static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: PlayerProfile (EQClassic)
+static constexpr uint16_t WS_OP_TimeOfDay        = 0xf220; // world -> client: TimeOfDay_Struct (6 bytes, Trilogy wire)
 
 // EQNetwork header flags
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -620,6 +621,33 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 }
 
 // ============================================================
+// Send OP_TimeOfDay (0xf220) — 6-byte Trilogy wire struct.
+// Called just before ZoneServerInfo so the client's EQ clock is
+// set before it opens a connection to the zone server.
+// ============================================================
+
+void TrilogyWorldServer::SendTimeOfDay(const std::string& addr, int port, Session& s)
+{
+	Trilogy::structs::TimeOfDay_Struct tod{};
+	memset(&tod, 0, sizeof(tod));
+
+	TimeOfDay_Struct zt{};
+	zoneserver_list.worldclock.GetCurrentEQTimeOfDay(time(nullptr), &zt);
+	tod.hour   = static_cast<int8_t>(zt.hour);
+	tod.minute = static_cast<int8_t>(zt.minute);
+	tod.day    = static_cast<int8_t>(zt.day);
+	tod.month  = static_cast<int8_t>(zt.month);
+	tod.year   = static_cast<int16_t>(zt.year);
+
+	LogInfo("[TrilogyWorld] SendTimeOfDay | hour={} (daytime={}) minute={} day={} month={} year={}",
+	        (int)tod.hour, (tod.hour >= 7 && tod.hour < 21) ? "YES" : "NO",
+	        (int)tod.minute, (int)tod.day, (int)tod.month, (int)tod.year);
+
+	SendApp(addr, port, s, WS_OP_TimeOfDay,
+	        reinterpret_cast<const uint8_t*>(&tod), sizeof(tod));
+}
+
+// ============================================================
 // Build and send TRI_OP_ZoneServerInfo (0x0480) to the client
 // ============================================================
 
@@ -655,6 +683,10 @@ void TrilogyWorldServer::SendZoneServerInfo(const std::string& addr, int port, S
 		s.cle->SetChar(s.char_id, s.char_name);
 		s.cle->SetOnline(CLE_Status::Zoning);
 	}
+
+	// Send EQ time before redirecting to the zone so the client's sky/lighting
+	// is initialised before it connects to the zone server.
+	SendTimeOfDay(addr, port, s);
 
 	SendApp(addr, port, s, TRI_OP_ZoneServerInfo,
 	        reinterpret_cast<const uint8_t*>(&zsi), sizeof(zsi));

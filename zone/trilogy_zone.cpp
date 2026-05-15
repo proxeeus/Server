@@ -477,12 +477,10 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	LogInfo("[TrilogyZone] ZoneEntry | char_id={} account_id={} zone_id={} zone={} player_spawn_id={}",
 	        s.char_id, s.account_id, s.zone_id, s.zone_short, s.player_spawn_id);
 
-	// Server sends: TimeOfDay → PlayerProfile → ServerZoneEntry → Weather
-	// F220 must arrive before PlayerProfile so the client has the correct EQ
-	// time before it begins rendering the zone.  In EQClassic the world server
-	// broadcasts F220 to all clients every EQ hour; Trilogy clients connecting
-	// directly to the zone port never receive that broadcast, so we send it
-	// here (matching the LS-zone variant of EQClassic which does the same).
+	// Send TimeOfDay first so the client has the correct EQ clock before any
+	// rendering state is set.  The world server sends TimeOfDay before ZoneServerInfo,
+	// but sending it again here guarantees the client holds the current time even if
+	// the world's packet was processed before the zone connection was established.
 	SendTimeOfDay(addr, port, s);
 	SendPlayerProfile(addr, port, s);
 	SendZoneEntrySpawn(addr, port, s);
@@ -506,10 +504,11 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 
 // ============================================================
 // CONNECTING4 → CONNECTING5: client requests zone data
-//   EQClassic order (client_process.cpp Process_ClientConnection4):
-//     NewZone → 0xd820 → ZoneSpawnsBulk → Doors → Objects
-//   The 0xd820 MUST precede ZoneSpawnsBulk; the Trilogy client only
-//   processes spawn packets received after this first d820 marker.
+//   Order: NewZone → TimeOfDay → 0xd820 → ZoneSpawnsBulk
+//   0xd820 (OP_SendExpZonein) tells the client to start rendering the
+//   scene; the sky is initialised at that moment.  TimeOfDay must
+//   arrive after NewZone (so the zone 3D scene exists) but before
+//   0xd820 (so the sky uses the correct hour rather than midnight).
 // ============================================================
 
 void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port, Session& s)
@@ -518,9 +517,22 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 
 	SendNewZone(addr, port, s);
 
-	// 0xd820 FIRST: signals "NewZone done, spawns incoming".
-	// EQClassic sends this before ZoneSpawnsBulk.  The client ignores
-	// spawn packets that arrive before this marker.
+	// TimeOfDay BEFORE 0xd820: 0xd820 (OP_SendExpZonein) signals the client to
+	// begin scene rendering.  The sky is initialised at that moment using whatever
+	// EQ time the client currently holds.  TimeOfDay must arrive before 0xd820 so
+	// the sky initialises with the correct hour, not the client's default (midnight).
+	SendTimeOfDay(addr, port, s);
+	s.last_time_of_day_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	// Weather paired with TimeOfDay: EQClassic LS zone sends them in sequence before
+	// the scene-activation signal.  Resending here reaffirms clear/current weather
+	// at the same moment the client initialises sky state from the TimeOfDay.
+	SendWeather(addr, port, s);
+
+	// 0xd820: signals "scene ready, spawns incoming".
+	// EQClassic sends this before ZoneSpawnsBulk; the client ignores spawn
+	// packets that arrive before this marker.
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	SendZoneSpawns(addr, port, s);
@@ -631,7 +643,26 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		uint8_t unknown_8[8]{};
 		SendApp(addr, port, s, 0xc321, unknown_8, 8);
 	}
+
+	// TimeOfDay + Weather BEFORE the final 0xd820.
+	// The final 0xd820 completes zone loading and triggers sky lighting initialisation.
+	// TimeOfDay must be in the client's queue at that moment so the sky renders with
+	// the correct hour.  Weather is paired with TimeOfDay (EQClassic LS zone sequence).
+	SendTimeOfDay(addr, port, s);
+	SendWeather(addr, port, s);
+
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
+
+	// Diagnostic: schedule the first periodic TimeOfDay 5 seconds after zone-in.
+	// If the sky transitions from night to day ~5s after entering the zone, the
+	// Tick()-driven send works but the zone-in sends are not arriving at the right
+	// moment.  If it stays night for 3+ minutes, timing is not the root cause.
+	{
+		uint64_t now_ms = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+		s.last_time_of_day_ms = now_ms - 175000; // first periodic fires in ~5s
+	}
 
 	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.
 	SendMobHeartbeat(addr, port, s);
@@ -918,7 +949,11 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 void TrilogyZoneServer::SendWeather(const std::string& addr, int port, Session& s)
 {
 	uint8_t buf[8] = {};
-	// byte 6 = weather indicator; 0 = clear (no rain)
+	// Wire format matches Zone::weatherSend(): buf[0]=type-1, buf[4]=intensity; both 0=clear.
+	if (zone && zone->zone_weather > 0) {
+		buf[0] = static_cast<uint8_t>(zone->zone_weather - 1);
+		buf[4] = zone->weather_intensity;
+	}
 	SendApp(addr, port, s, ZN_OP_Weather, buf, sizeof(buf));
 }
 
@@ -934,25 +969,17 @@ void TrilogyZoneServer::SendTimeOfDay(const std::string& addr, int port, Session
 	Trilogy::structs::TimeOfDay_Struct tod{};
 	memset(&tod, 0, sizeof(tod));
 
-	// Use zone's authoritative EQ clock (same source as EQClassic/EQMacEmuTrilogy)
-	if (zone) {
-		TimeOfDay_Struct zt{};
-		zone->zone_time.GetCurrentEQTimeOfDay(time(nullptr), &zt);
-		tod.hour   = static_cast<int8_t>(zt.hour);
-		tod.minute = static_cast<int8_t>(zt.minute);
-		tod.day    = static_cast<int8_t>(zt.day);
-		tod.month  = static_cast<int8_t>(zt.month);
-		tod.year   = static_cast<int16_t>(zt.year);
-	} else {
-		// Fallback when zone not yet initialised
-		tod.hour  = 8;
-		tod.minute = 0;
-		tod.day   = 1;
-		tod.month = 1;
-		tod.year  = 3100;
-	}
+	::TimeOfDay_Struct eqtod{};
+	zone->zone_time.GetCurrentEQTimeOfDay(time(0), &eqtod);
+	tod.hour   = static_cast<int8_t>(eqtod.hour);
+	tod.minute = static_cast<int8_t>(eqtod.minute);
+	tod.day    = static_cast<int8_t>(eqtod.day);
+	tod.month  = static_cast<int8_t>(eqtod.month);
+	tod.year   = static_cast<int16_t>(eqtod.year);
 
-	LogInfo("[TrilogyZone] SendTimeOfDay | EQ time {:02d}:{:02d}", tod.hour, tod.minute);
+	LogInfo("[TrilogyZone] SendTimeOfDay | hour={} (daytime={}) minute={} day={} month={} year={}",
+	        (int)tod.hour, (tod.hour >= 7 && tod.hour < 21) ? "YES" : "NO",
+	        (int)tod.minute, (int)tod.day, (int)tod.month, (int)tod.year);
 	SendApp(addr, port, s, ZN_OP_TimeOfDay,
 	        reinterpret_cast<const uint8_t*>(&tod), sizeof(tod));
 }
@@ -976,7 +1003,7 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 		" `fog_red1`, `fog_green1`, `fog_blue1`, `fog_minclip1`, `fog_maxclip1`,"
 		" `fog_red2`, `fog_green2`, `fog_blue2`, `fog_minclip2`, `fog_maxclip2`,"
 		" `fog_red3`, `fog_green3`, `fog_blue3`, `fog_minclip3`, `fog_maxclip3`,"
-		" `sky`, `safe_x`, `safe_y`, `safe_z`, `underworld`, `minclip`, `maxclip`, `gravity` "
+		" `sky`, `safe_x`, `safe_y`, `safe_z`, `underworld`, `minclip`, `maxclip`, `gravity`, `ztype` "
 		"FROM `zone` WHERE `short_name` = '{}' LIMIT 1",
 		Strings::Escape(s.zone_short)
 	);
@@ -1018,6 +1045,10 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 		nz.maxclip   = Strings::ToFloat(row[27]);
 		nz.gravity   = Strings::ToFloat(row[28]);
 		if (nz.gravity == 0.0f) nz.gravity = 0.4f; // 0 in DB means "use default"
+		// zonetype: EQClassic sends the DB value as-is (int8_t cast).
+		// ecommons has ztype=255 in both EQClassic and EQEmu DBs; EQClassic sends
+		// int8_t(255)=-1 and the Trilogy client handles it correctly.
+		nz.zonetype  = static_cast<int8_t>(Strings::ToInt(row[29]));
 	} else {
 		LogInfo("[TrilogyZone] SendNewZone: zone [{}] not found in DB — using defaults", s.zone_short);
 		nz.minclip  = 10.0f;
@@ -1025,12 +1056,36 @@ void TrilogyZoneServer::SendNewZone(const std::string& addr, int port, Session& 
 		nz.gravity  = 0.4f;
 	}
 
+	// EQClassic fills bytes 230-371 of NewZone_Struct from a hardcoded zhdr_data[]
+	// array (via ntohs on LE).  The DB query above overwrites named fog/safe/clip
+	// fields, but these unknown regions are never touched by the DB and must match
+	// EQClassic's pattern.  Sending all-zeros causes the Trilogy client to render
+	// night sky regardless of TimeOfDay — unknown280 is the primary sky-state driver.
+	static const uint8_t zhdr_unknown280[50] = {
+	    0x02, 0x0A, 0x0A, 0x0A, 0x0A, 0x18, 0x06, 0x02,  // bytes 280-287
+	    0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  // bytes 288-295
+	    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // bytes 296-303
+	    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // bytes 304-311
+	    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // bytes 312-319
+	    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,  // bytes 320-327
+	    0xFF, 0x00                                        // bytes 328-329
+	};
+	memcpy(nz.unknown280, zhdr_unknown280, sizeof(zhdr_unknown280));
+	// unknown335[9]: decoded from zhdr_data[52-56]; last two bytes are non-zero.
+	static const uint8_t zhdr_unknown335[9] = {
+	    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x3F
+	};
+	memcpy(nz.unknown335, zhdr_unknown335, sizeof(zhdr_unknown335));
+	// unknown356[4]: decoded from zhdr_data[63-64]; last two bytes are non-zero.
+	static const uint8_t zhdr_unknown356[4] = { 0x00, 0x00, 0xD8, 0x41 };
+	memcpy(nz.unknown356, zhdr_unknown356, sizeof(zhdr_unknown356));
+
 	// unknown331 MUST be 0.4f — if zero, player cannot move after zoning in
 	// (EQClassic: NewZone_Struct.unknown331 = 0.4f, hardcoded in zone init)
 	nz.unknown331 = 0.4f;
 
-	LogInfo("[TrilogyZone] SendNewZone | zone [{}] sky={} safe=({:.1f},{:.1f},{:.1f})",
-	        s.zone_short, nz.sky, nz.safe_x, nz.safe_y, nz.safe_z);
+	LogInfo("[TrilogyZone] SendNewZone | zone [{}] sky={} zonetype={} safe=({:.1f},{:.1f},{:.1f})",
+	        s.zone_short, nz.sky, nz.zonetype, nz.safe_x, nz.safe_y, nz.safe_z);
 
 	SendApp(addr, port, s, ZN_OP_NewZone,
 	        reinterpret_cast<const uint8_t*>(&nz), sizeof(nz));

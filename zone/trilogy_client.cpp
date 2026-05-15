@@ -187,6 +187,28 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ClientUpdate:
 		HandleClientUpdate(app);
 		break;
+	case OP_TimeOfDay:
+		// Internal TimeOfDay_Struct has uint32 year; Trilogy wire wants int16 year.
+		// Re-pack into the 6-byte Trilogy struct before forwarding.
+		if (app->size >= sizeof(::TimeOfDay_Struct)) {
+			const auto* tod_in = reinterpret_cast<const ::TimeOfDay_Struct*>(app->pBuffer);
+			Trilogy::structs::TimeOfDay_Struct tod_out{};
+			tod_out.hour   = static_cast<int8_t>(tod_in->hour);
+			tod_out.minute = static_cast<int8_t>(tod_in->minute);
+			tod_out.day    = static_cast<int8_t>(tod_in->day);
+			tod_out.month  = static_cast<int8_t>(tod_in->month);
+			tod_out.year   = static_cast<int16_t>(tod_in->year);
+			m_tzs->SendToSession(m_session_key, 0xf220,
+			                     reinterpret_cast<const uint8_t*>(&tod_out),
+			                     static_cast<uint32_t>(sizeof(tod_out)));
+		}
+		break;
+	case OP_Weather:
+		// Wire format is already correct (Zone::weatherSend writes raw bytes
+		// matching the Trilogy 8-byte layout); forward as-is.
+		if (app->size == 8)
+			m_tzs->SendToSession(m_session_key, 0x3621, app->pBuffer, 8);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
