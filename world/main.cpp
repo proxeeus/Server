@@ -480,6 +480,7 @@ int main(int argc, char **argv)
 			}
 		}
 
+		trilogy_world.Tick();
 		zoneserver_list.Process();
 		launcher_list.Process();
 		LFPGroupList.Process();

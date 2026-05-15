@@ -37,6 +37,7 @@ class TrilogyWorldServer {
 public:
 	void SetSendFn(std::function<void(const std::string&, int, const void*, size_t)> fn);
 	void OnRawPacket(const std::string& addr, int port, const char* data, size_t size);
+	void Tick();
 
 private:
 	struct Session {
@@ -48,8 +49,9 @@ private:
 		bool        ack_due   = false;
 		bool        sack_init = false;
 		bool        seq_sent  = false;
-		std::time_t last_pkt  = 0;
+		std::time_t last_pkt    = 0;
 		std::string source_addr; // IP address, used for auth recovery on port-change reconnect
+		int         source_port = 0;
 
 		// auth / char-select state
 		uint32_t        account_id   = 0;

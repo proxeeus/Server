@@ -192,7 +192,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 			s.cli_arq = cli_arq;
 			s.ack_due = true;
 		}
-		s.last_pkt = std::time(nullptr);
+		s.last_pkt    = std::time(nullptr);
+		s.source_port = port;
 		if (s.ack_due) SendAck(addr, port, s);
 
 		if (fg.count == fg.total) {
@@ -252,8 +253,9 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		existing.frag_groups.clear();
 	}
 
-	Session& session   = m_sessions[key];
-	session.last_pkt   = std::time(nullptr);
+	Session& session      = m_sessions[key];
+	session.last_pkt      = std::time(nullptr);
+	session.source_port   = port;
 
 	if (has_arq) {
 		session.cli_arq = cli_arq;
@@ -574,11 +576,16 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 			SendAck(addr, port, s);
 			return;
 		}
-		zs = zoneserver_list.FindByZoneID(zone_id);
-		if (!zs) {
-			SendAck(addr, port, s);
-			return;
-		}
+		// Zone boot was triggered — defer until it finishes registering.
+		// FindByZoneID returns null immediately after TriggerBootup (race),
+		// so always set pending here and let Tick() poll for readiness.
+		LogInfo("[TrilogyWorld] Zone [{}] boot triggered — deferring ZoneServerInfo for {}:{}",
+		        zone_id, addr, port);
+		s.pending_zone_entry = true;
+		s.pending_zone_id    = zone_id;
+		s.pending_zone_time  = std::time(nullptr);
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
 	}
 
 	if (zs->IsBootingUp()) {
@@ -636,8 +643,23 @@ void TrilogyWorldServer::SendZoneServerInfo(const std::string& addr, int port, S
 }
 
 // ============================================================
+// Tick — called from the world main loop (~32ms).
+// Polls pending zone entries so the client receives ZoneServerInfo
+// even when it sends no further world packets while waiting.
+// ============================================================
+
+void TrilogyWorldServer::Tick()
+{
+	for (auto& kv : m_sessions) {
+		Session& s = kv.second;
+		if (!s.pending_zone_entry) continue;
+		CheckPendingZoneEntry(s.source_addr, s.source_port, s);
+	}
+}
+
+// ============================================================
 // Check if a deferred zone entry is now ready to send
-// Called on keepalives and after opcode dispatch
+// Called on keepalives, after opcode dispatch, and from Tick()
 // ============================================================
 
 void TrilogyWorldServer::CheckPendingZoneEntry(const std::string& addr, int port, Session& s)
