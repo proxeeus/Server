@@ -1291,6 +1291,12 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		NPC* npc = kv.second;
 		if (!npc) continue;
 
+		// Stationary NPCs don't need position updates — the client already has their
+		// position from ZoneSpawns or the last movement update.  Only moving NPCs
+		// generate A120 entries, which keeps the per-heartbeat burst small and prevents
+		// the client's ARQ queue from spiking.
+		if (!npc->IsMoving()) continue;
+
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
 		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
@@ -1299,23 +1305,30 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
 		memset(upd, 0, sizeof(*upd));
 
+		float heading = npc->GetHeading();
 		upd->spawn_id  = static_cast<int16_t>(npc->GetID());
-		upd->heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+		upd->heading   = static_cast<int8_t>(static_cast<uint8_t>(heading / 2.0f));
 		upd->y_pos     = static_cast<int16_t>(npc->GetY());
 		upd->x_pos     = static_cast<int16_t>(npc->GetX());
 		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
-		// delta_y/z/x remain zero here; velocity for moving NPCs is supplied by
-		// TrilogyClient::HandleClientUpdate which fires on movement-manager events.
 
 		// anim_type: EQClassic velocity factor (running: runspeed*7, walking: walkspeed*4).
 		// EQEmu speeds are int = float_speed * 40, so divide by 40 to recover.
-		if (npc->IsMoving()) {
-			if (npc->IsRunning())
-				upd->anim_type = static_cast<int8_t>(std::max(1, npc->GetRunspeed() * 7 / 40));
-			else
-				upd->anim_type = static_cast<int8_t>(std::max(1, npc->GetWalkspeed() * 4 / 40));
-		}
-		// else anim_type = 0 (idle, already zeroed by memset)
+		int8_t anim;
+		if (npc->IsRunning())
+			anim = static_cast<int8_t>(std::max(1, npc->GetRunspeed() * 7 / 40));
+		else
+			anim = static_cast<int8_t>(std::max(1, npc->GetWalkspeed() * 4 / 40));
+		upd->anim_type = anim;
+
+		// Velocity deltas: let the client interpolate position between heartbeat ticks.
+		// TrilogyClient::HandleClientUpdate no longer sends per-event A120s (it was
+		// flooding the client's ARQ queue), so the heartbeat is the sole position source.
+		float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
+		int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
+		int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
+		upd->delta_x = std::max(-511, std::min(511, ddx));
+		upd->delta_y = std::max(-511, std::min(511, ddy));
 
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
@@ -1323,12 +1336,10 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 	if (n > 0)
 		flush_packet();
-	else {
-		// Empty zone: still send n=0 so the client sees the zone is alive.
-		int32_t zero = 0;
-		SendApp(addr, port, s, ZN_OP_MobUpdate,
-		        reinterpret_cast<const uint8_t*>(&zero), 4);
-	}
+	// When no moving NPCs are nearby, skip the send entirely.  The connection is
+	// kept alive by the client's own F320 stream, ACK responses, and the 5-second
+	// stamina packet.  Sending an empty ARQ A120 every 250ms (4/sec) for nothing
+	// was consuming a significant fraction of the client's ARQ budget.
 }
 
 // ============================================================

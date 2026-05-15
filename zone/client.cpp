@@ -523,6 +523,12 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 
 	// Apply name at Mob level so GetName() / FillSpawnStruct() work correctly.
 	SetName(char_name);
+
+	// Mirror name and zone into m_pp so SaveCharacterData() writes correct values on
+	// disconnect.  Without these, the DB row gets name="" and zone_id=0 on every logout.
+	strn0cpy(m_pp.name, char_name, sizeof(m_pp.name));
+	if (zone)
+		m_pp.zone_id = static_cast<uint16>(zone->GetZoneID());
 }
 
 void Client::SendZoneInPackets()
