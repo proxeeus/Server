@@ -226,6 +226,7 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		uint64_t key = SessionKey(addr, port);
 		auto it = m_sessions.find(key);
 		if (it != m_sessions.end()) {
+			LogInfo("[TrilogyWorld] CLIENT sent CLOSE from {}:{} (client-initiated disconnect)", addr, port);
 			SendClose(addr, port, it->second);
 		}
 		return;
@@ -336,6 +337,14 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
                                           const uint8_t* payload, uint32_t plen)
 {
 	if (plen < 4) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	// Retransmit guard: if the client is already authenticated this session,
+	// just ACK — re-running the full handler would send CharSelect again and
+	// confuse the client's state machine.
+	if (s.account_id != 0) {
 		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
@@ -536,6 +545,15 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 		return;
 	}
 
+	// Retransmit guard: if a zone entry is already pending, the client is just
+	// retransmitting OP_ENTERWORLD while waiting.  Re-running the handler would
+	// reset pending_zone_time (restarting the 60 s timeout) and call
+	// TriggerBootup a second time.
+	if (s.pending_zone_entry) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
 	// Parse character name (30-byte null-terminated string)
 	char char_name[31] = {};
 	strncpy(char_name, reinterpret_cast<const char*>(payload), std::min(30u, plen));
@@ -652,6 +670,16 @@ void TrilogyWorldServer::Tick()
 {
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
+
+		// Prevent the CLE from going stale: the standard login server sends
+		// ServerOP_KeepAlive for CLEs it owns, but Trilogy CLEs are added
+		// directly and never get those keepalives.  Without a periodic reset,
+		// CLCheckStale() removes the entry after ~3.5 min (stale > 20 at 10 s
+		// intervals) which turns s.cle into a dangling pointer.
+		if (s.cle) {
+			s.cle->KeepAlive();
+		}
+
 		if (!s.pending_zone_entry) continue;
 		CheckPendingZoneEntry(s.source_addr, s.source_port, s);
 	}
@@ -668,18 +696,20 @@ void TrilogyWorldServer::CheckPendingZoneEntry(const std::string& addr, int port
 
 	auto age = static_cast<long>(std::time(nullptr) - s.pending_zone_time);
 	if (age > 60) {
-		LogInfo("[TrilogyWorld] CheckPending: zone [{}] TIMED OUT age={}s for {}:{}",
+		LogInfo("[TrilogyWorld] CheckPending: zone [{}] TIMED OUT age={}s for {}:{} — sending ACK so client can retry",
 		        s.pending_zone_id, age, addr, port);
 		s.pending_zone_entry = false;
+		// ACK whatever the client last sent so its transport layer doesn't hang.
+		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
 
 	ZoneServer* zs = zoneserver_list.FindByZoneID(s.pending_zone_id);
-	LogInfo("[TrilogyWorld] CheckPending: zone [{}] age={}s zs={} booting={} for {}:{}",
-	        s.pending_zone_id, age,
-	        zs ? "found" : "null",
-	        (zs && zs->IsBootingUp()) ? "yes" : "no",
-	        addr, port);
+	LogNetcode("[TrilogyWorld] CheckPending: zone [{}] age={}s zs={} booting={} for {}:{}",
+	           s.pending_zone_id, age,
+	           zs ? "found" : "null",
+	           (zs && zs->IsBootingUp()) ? "yes" : "no",
+	           addr, port);
 	if (!zs || zs->IsBootingUp()) return;
 
 	s.pending_zone_entry = false;

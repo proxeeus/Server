@@ -164,7 +164,7 @@ void TrilogyZoneServer::SetSendFn(std::function<void(const std::string&, int, co
 void TrilogyZoneServer::OnRawPacket(const std::string& addr, int port,
                                      const char* data, size_t size)
 {
-	LogInfo("[TrilogyZone] OnRawPacket {} bytes from {}:{}", size, addr, port);
+	LogNetcode("[TrilogyZone] OnRawPacket {} bytes from {}:{}", size, addr, port);
 	Session& s = m_sessions[SessionKey(addr, port)];
 	s.source_addr = addr;
 	OnDatagram(addr, port, s, reinterpret_cast<const uint8_t*>(data), static_cast<int>(size));
@@ -185,11 +185,11 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 			snprintf(tmp, sizeof(tmp), "%02X ", data[i]);
 			hex += tmp;
 		}
-		LogInfo("[TrilogyZone] datagram {} bytes hdr={:02X}: {}", size, (unsigned)data[0], hex);
+		LogNetcode("[TrilogyZone] datagram {} bytes hdr={:02X}: {}", size, (unsigned)data[0], hex);
 	}
 
 	if (size < 8) {
-		LogInfo("[TrilogyZone] datagram too short ({}), ignoring", size);
+		LogNetcode("[TrilogyZone] datagram too short ({}), ignoring", size);
 		return;
 	}
 
@@ -198,10 +198,10 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		uint32_t stored = ntohl(*reinterpret_cast<const uint32_t*>(data + size - 4));
 		uint32_t calc   = CRC32::Generate(data, static_cast<uint32_t>(size - 4));
 		if (stored != calc) {
-			LogInfo("[TrilogyZone] CRC MISMATCH size={} stored={:08X} calc={:08X} — dropping", size, stored, calc);
+			LogNetcode("[TrilogyZone] CRC MISMATCH size={} stored={:08X} calc={:08X} — dropping", size, stored, calc);
 			return;
 		}
-		LogInfo("[TrilogyZone] CRC ok size={}", size);
+		LogNetcode("[TrilogyZone] CRC ok size={}", size);
 	}
 
 	uint8_t hdr0 = data[0];
@@ -294,6 +294,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		uint64_t key = SessionKey(addr, port);
 		auto it = m_sessions.find(key);
 		if (it != m_sessions.end()) {
+			LogInfo("[TrilogyZone] CLIENT sent CLOSE from {}:{} (client-initiated disconnect)", addr, port);
 			SendClose(addr, port, it->second);
 			RemoveSession(key);
 		}
@@ -343,7 +344,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 
 	int remaining = size - o - 4;
 	if (remaining <= 0) {
-		LogInfo("[TrilogyZone] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X}", hdr0, has_arq, cli_arq);
+		LogNetcode("[TrilogyZone] rx keep-alive/ack-only hdr0={:02X} has_arq={} cli_arq={:04X}", hdr0, has_arq, cli_arq);
 		if (session.ack_due) SendAck(addr, port, session);
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick() on a 250ms timer.
 		return;
@@ -356,7 +357,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	const uint8_t* payload = data + o;
 	uint32_t       plen    = static_cast<uint32_t>(size - o - 4);
 
-	LogInfo("[TrilogyZone] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} plen={} state={}",
+	LogNetcode("[TrilogyZone] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} plen={} state={}",
 	        hdr0, hdr1, has_arq, cli_arq, opcode, plen, static_cast<int>(session.state));
 	OnOpcode(addr, port, session, opcode, payload, plen);
 }
@@ -368,7 +369,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
                                   uint16_t opcode, const uint8_t* payload, uint32_t plen)
 {
-	LogInfo("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
+	LogNetcode("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
 	        opcode, plen, static_cast<int>(s.state), addr, port);
 
 	switch (s.state) {
@@ -1281,9 +1282,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		n = 0;
 	};
 
+	// Only heartbeat NPCs within 600 EQ units of the player.  Sending A120 for
+	// every NPC in a large zone (e.g. 334 in ecommons) produces ~56 ARQ packets/sec
+	// which overflows the Trilogy v29c client's ARQ queue and causes a disconnect.
+	static constexpr float CULL_RADIUS_SQ = 600.0f * 600.0f;
+
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
 		if (!npc) continue;
+
+		float dx = npc->GetX() - s.pos_x;
+		float dy = npc->GetY() - s.pos_y;
+		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -1314,7 +1324,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	if (n > 0)
 		flush_packet();
 	else {
-		// Empty zone: still send n=0 to keep the heartbeat ARQ chain alive.
+		// Empty zone: still send n=0 so the client sees the zone is alive.
 		int32_t zero = 0;
 		SendApp(addr, port, s, ZN_OP_MobUpdate,
 		        reinterpret_cast<const uint8_t*>(&zero), 4);
@@ -1406,9 +1416,6 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	uint8_t buf[600];
 	int     o = 0;
 
-	// ack_req=false: fire-and-forget (matches EQClassic A120 QueuePacket(false)).
-	// We still piggyback an ACK (HDR1_ARSP) if one is pending — the client needs
-	// it regardless of whether this packet itself requires acknowledgement.
 	uint8_t hdr0 = HDR0_ASQ | (first ? HDR0_SEQSTART : 0u);
 	if (ack_req) hdr0 |= HDR0_ARQ;
 	uint8_t hdr1 = s.ack_due ? HDR1_ARSP : 0u;
@@ -1459,7 +1466,7 @@ void TrilogyZoneServer::SendAck(const std::string& addr, int port, Session& s)
 	uint8_t buf[16];
 	int     o = 0;
 
-	LogInfo("[TrilogyZone] tx ACK SEQ={} cli_arq={:04X}", s.gsq, s.cli_arq);
+	LogNetcode("[TrilogyZone] tx ACK SEQ={} cli_arq={:04X}", s.gsq, s.cli_arq);
 
 	buf[o++] = 0x00;
 	buf[o++] = HDR1_ARSP;
