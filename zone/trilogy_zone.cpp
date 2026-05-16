@@ -1527,8 +1527,11 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
 
 		// anim_type: EQClassic formula is speed*11 (from MobAI.cpp pRunAnimSpeed = speed*11).
-		// EQEmu stores speed as int = float_speed * 40, so: anim = GetMovespeed() * 11 / 40.
-		int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(npc->GetMovespeed() * 11.0f / 40.0f)));
+		// EQEmu stores speed as int = float_speed*40 so anim = speed_int * 11 / 40.
+		// IsRunning() is only set by quest scripts, never by AI — use IsEngaged() to
+		// distinguish combat-chasing (run speed) from waypoint-patrolling (walk speed).
+		int speed_int = npc->IsEngaged() ? npc->GetRunspeed() : npc->GetWalkspeed();
+		int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(speed_int * 11.0f / 40.0f)));
 		upd->anim_type = anim;
 
 		// Velocity deltas: let the client interpolate position between heartbeat ticks.
