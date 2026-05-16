@@ -1264,28 +1264,27 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		{
 			const uint8_t tex     = npc->GetTexture();
 			const uint8_t helmtex = npc->GetHelmTexture();
-			// Check if NPC has individually equipped armor items (lootable gear)
-			bool has_item_armor = false;
-			for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
-				if (npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)) != 0) {
-					has_item_armor = true;
-					break;
-				}
-			}
-			if (has_item_armor) {
-				// Individual items equipped: player-mode so equipment[] drives appearance
+			if (IsPlayerRace(npc->GetRace())) {
+				// Player-race NPCs (humans, elves, dwarves, …): player-mode so equipment[] drives per-slot appearance
 				sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 				sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 				for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 					sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 					sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
 				}
+				// Face / hair appearance bytes — same layout as player Spawn_Struct
+				sp.s_unknown1a[0] = static_cast<int8_t>(npc->GetHairColor());
+				sp.s_unknown1a[1] = static_cast<int8_t>(npc->GetBeardColor());
+				sp.s_unknown1a[2] = static_cast<int8_t>(npc->GetEyeColor1());
+				sp.s_unknown1a[3] = static_cast<int8_t>(npc->GetEyeColor2());
+				sp.s_unknown1a[4] = static_cast<int8_t>(npc->GetHairStyle());
+				sp.s_unknown1a[6] = static_cast<int8_t>(npc->GetLuclinFace());
 			} else {
-				// Uniform texture: 0=no armor, 1=leather, 2=chain, 3=plate; >7 fall back to player-mode
+				// Creature NPCs (wolves, elementals, skeletons, …): uniform texture; weapons only from equipment[]
 				sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
 				sp.npc_helm_graphic  = (helmtex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(helmtex);
 			}
-			// Weapon slots always come from equipped items
+			// Weapon slots always come from equipped items for all NPCs
 			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 		}
