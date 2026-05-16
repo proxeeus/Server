@@ -25,6 +25,8 @@
 #include "../common/crc32.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/emu_versions.h"
+#include "../common/races.h"
+#include "../common/textures.h"
 #include "string_ids.h"
 
 #ifndef _WINDOWS
@@ -220,6 +222,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_FormattedMessage:
 		HandleOutgoingFormattedMessage(app);
 		break;
+	case OP_Illusion:
+		HandleIllusion(app);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -249,12 +254,18 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	Mob* mob = entity_list.GetMob(spawn_id);
 	if (!mob) return;
 
-	// Players are sent via 0x6121 (ZN_OP_ZoneSpawns) so the Trilogy client
-	// treats them as zone-permanent and never applies a staleness timeout.
-	// NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they appear in
-	// the A120 heartbeat whenever they move.
+	// Players and Playerbots are sent via 0x6121 (ZN_OP_ZoneSpawns) so the
+	// Trilogy client treats them as zone-permanent and never stales them out.
+	// Regular NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they
+	// appear in the A120 heartbeat whenever they move.
+	bool is_playerbot = mob->IsNPC() &&
+	                    mob->CastToNPC()->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
 	if (mob->IsClient()) {
 		m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
+		return;
+	}
+	if (is_playerbot) {
+		m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
 		return;
 	}
 
@@ -277,7 +288,7 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	sp.cur_hp    = static_cast<int16_t>(mob->GetHPRatio());
 	sp.GuildID   = static_cast<uint16_t>(0xFFFF); // no guild by default
 	sp.race      = static_cast<int8_t>(mob->GetRace());
-	sp.NPC       = mob->IsClient() ? 0 : 1; // 0=player, 1=NPC
+	sp.NPC       = 1; // regular NPC (players and Playerbots returned early above)
 	sp.class_    = static_cast<int8_t>(mob->GetClass());
 	sp.gender    = static_cast<int8_t>(mob->GetGender());
 	sp.level     = static_cast<int8_t>(mob->GetLevel());
@@ -285,21 +296,21 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	sp.light     = static_cast<int8_t>(mob->GetEquipmentLightType());
 	sp.guildrank = static_cast<int8_t>(0xFF);
 
-	if (mob->IsClient()) {
-		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC
+	if (IsPlayerRace(mob->GetRace())) {
+		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
-		Client* c = mob->CastToClient();
-		sp.GuildID = static_cast<uint16_t>(c->GuildID());
-		if (c->IsInAGuild())
-			sp.guildrank = static_cast<int8_t>(c->GuildRank());
-		sp.anon = static_cast<int8_t>(c->GetAnon());
+		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+			sp.equipment[mi]   = static_cast<int8_t>(mob->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(mob->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		}
 	} else {
-		uint8_t tex = mob->GetTexture();
-		sp.npc_armor_graphic = (tex == 0 || tex > 7)
-		                       ? static_cast<int8_t>(0xFF)
-		                       : static_cast<int8_t>(tex);
-		sp.npc_helm_graphic  = static_cast<int8_t>(mob->GetHelmTexture());
+		uint8_t tex     = mob->GetTexture();
+		uint8_t helmtex = mob->GetHelmTexture();
+		sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
+		sp.npc_helm_graphic  = (helmtex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(helmtex);
 	}
+	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 
 	strncpy(sp.name,    mob->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, mob->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -338,6 +349,42 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x2b20,
 	                     reinterpret_cast<const uint8_t*>(&ds_out),
 	                     static_cast<uint32_t>(sizeof(ds_out)));
+}
+
+// ============================================================
+// HandleIllusion — translate OP_Illusion (EQEmu internal) to the
+// 20-byte EQClassic wire format (opcode 0x9140) so the Trilogy
+// client applies live appearance changes (face, hair, texture, etc.)
+// without requiring a full respawn.
+// ============================================================
+
+void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Illusion_Struct)) return;
+
+	const auto* emu = reinterpret_cast<const ::Illusion_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Illusion_Struct out{};
+	memset(&out, 0, sizeof(out));
+
+	out.spawnid      = static_cast<int16_t>(emu->spawnid);
+	out.race         = static_cast<int16_t>(emu->race);
+	out.gender       = static_cast<int8_t>(emu->gender);
+	out.texture      = static_cast<int8_t>(emu->texture);
+	out.helmtexture  = static_cast<int8_t>(emu->helmtexture);
+	out.unknown_26   = 26;
+	out.haircolor    = static_cast<int8_t>(emu->haircolor);
+	out.beardcolor   = static_cast<int8_t>(emu->beardcolor);
+	out.eyecolor1    = static_cast<int8_t>(emu->eyecolor1);
+	out.eyecolor2    = static_cast<int8_t>(emu->eyecolor2);
+	out.hairstyle    = static_cast<int8_t>(emu->hairstyle);
+	// title = wode (face overlay, barbarians only) — not in EQEmu internal struct, leave 0
+	out.luclinface   = static_cast<int8_t>(emu->face);
+	out.unknown016   = static_cast<int32_t>(0xFFFFFFFF);
+
+	m_tzs->SendToSession(m_session_key, 0x9140,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================

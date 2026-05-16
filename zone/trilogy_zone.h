@@ -32,6 +32,7 @@
 
 class TrilogyClient;
 class Client;
+class NPC;
 
 class TrilogyZoneServer {
 public:
@@ -46,6 +47,11 @@ public:
 	// Send a single player as a zone-permanent spawn (0x6121) so the Trilogy
 	// client never applies a staleness timeout to the entity.
 	void SendPlayerSpawnPermanent(uint64_t session_key, Client* c);
+
+	// Send a Playerbot NPC as a zone-permanent spawn (0x6121) so the Trilogy
+	// client never stales it out.  Playerbots use NPC=0 (blue nameplate) and
+	// the player-race armor/appearance path.
+	void SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* npc);
 
 private:
 	enum ZoneState : uint8_t {

@@ -457,6 +457,33 @@ struct SpawnAppearance_Struct
 };
 
 /*
+** Illusion_Struct
+** Opcode:  OP_Illusion = 0x9140
+** Direction: zone server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: Illusion_Struct
+** Size:    20 bytes
+*/
+struct Illusion_Struct
+{
+/*000*/	int16	spawnid;
+/*002*/	int16	race;
+/*004*/	int8	gender;
+/*005*/	int8	texture;
+/*006*/	int8	helmtexture;
+/*007*/	int8	unknown_26;		// always 26
+/*008*/	int8	haircolor;
+/*009*/	int8	beardcolor;
+/*010*/	int8	eyecolor1;
+/*011*/	int8	eyecolor2;
+/*012*/	int8	hairstyle;
+/*013*/	int8	title;			// face overlay (wode, barbarians only)
+/*014*/	int8	luclinface;
+/*015*/	int8	unknown015;
+/*016*/	int32	unknown016;		// always 0xFFFFFFFF
+/*020*/
+};
+
+/*
 ** SpawnPositionUpdate_Struct
 ** Used as element of SpawnPositionUpdates_Struct (OP_MobUpdate = 0xa120)
 ** and as the payload for OP_ClientUpdate = 0xf320.

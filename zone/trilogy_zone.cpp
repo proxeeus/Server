@@ -1256,7 +1256,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.cur_hp    = 100;
 		sp.GuildID   = static_cast<uint16_t>(0xFFFF);
 		sp.race      = static_cast<int8_t>(npc->GetRace());
-		sp.NPC       = 1;
+		// Playerbots appear as player characters (blue nameplate, client behaviour)
+		sp.NPC       = (npc->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId))) ? 0 : 1;
 		sp.class_    = static_cast<int8_t>(npc->GetClass());
 		sp.gender    = static_cast<int8_t>(npc->GetGender());
 		sp.level     = static_cast<int8_t>(npc->GetLevel());
@@ -1272,13 +1273,15 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 					sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 					sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
 				}
-				// Face / hair appearance bytes — same layout as player Spawn_Struct
-				sp.s_unknown1a[0] = static_cast<int8_t>(npc->GetHairColor());
-				sp.s_unknown1a[1] = static_cast<int8_t>(npc->GetBeardColor());
-				sp.s_unknown1a[2] = static_cast<int8_t>(npc->GetEyeColor1());
-				sp.s_unknown1a[3] = static_cast<int8_t>(npc->GetEyeColor2());
-				sp.s_unknown1a[4] = static_cast<int8_t>(npc->GetHairStyle());
-				sp.s_unknown1a[6] = static_cast<int8_t>(npc->GetLuclinFace());
+				// Face / hair appearance bytes — in Spawn_Struct these sit in unknown163[0..6],
+				// after name+Surname (mirrors EQClassic offsets 207–213 after name+lastname)
+				sp.unknown163[0] = static_cast<int8_t>(npc->GetHairColor());
+				sp.unknown163[1] = static_cast<int8_t>(npc->GetBeardColor());
+				sp.unknown163[2] = static_cast<int8_t>(npc->GetEyeColor1());
+				sp.unknown163[3] = static_cast<int8_t>(npc->GetEyeColor2());
+				sp.unknown163[4] = static_cast<int8_t>(npc->GetHairStyle());
+				// unknown163[5] = wode / title (face overlay, barbarians only)
+				sp.unknown163[6] = static_cast<int8_t>(npc->GetLuclinFace());
 			} else {
 				// Creature NPCs (wolves, elementals, skeletons, …): uniform texture; weapons only from equipment[]
 				sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
@@ -1344,15 +1347,14 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 		strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
-		// Appearance: s_unknown1a[0..6] = haircolor,beardcolor,eyecolor1,eyecolor2,hairstyle,wode,face
-		// Layout matches ChangeLooks_Struct from EQClassic eq_packet_structs.h
-		sp.s_unknown1a[0] = static_cast<int8_t>(c->GetHairColor());
-		sp.s_unknown1a[1] = static_cast<int8_t>(c->GetBeardColor());
-		sp.s_unknown1a[2] = static_cast<int8_t>(c->GetEyeColor1());
-		sp.s_unknown1a[3] = static_cast<int8_t>(c->GetEyeColor2());
-		sp.s_unknown1a[4] = static_cast<int8_t>(c->GetHairStyle());
-		// s_unknown1a[5] = wode (face overlay, barbarians only) - 0 for most races
-		sp.s_unknown1a[6] = static_cast<int8_t>(c->GetLuclinFace());
+		// Face / hair — unknown163[0..6] mirrors EQClassic offsets 207–213 (after name+lastname)
+		sp.unknown163[0] = static_cast<int8_t>(c->GetHairColor());
+		sp.unknown163[1] = static_cast<int8_t>(c->GetBeardColor());
+		sp.unknown163[2] = static_cast<int8_t>(c->GetEyeColor1());
+		sp.unknown163[3] = static_cast<int8_t>(c->GetEyeColor2());
+		sp.unknown163[4] = static_cast<int8_t>(c->GetHairStyle());
+		// unknown163[5] = wode / title (face overlay, barbarians only)
+		sp.unknown163[6] = static_cast<int8_t>(c->GetLuclinFace());
 		// Equipment textures and armor tints
 		for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
 			sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
@@ -1390,6 +1392,34 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs → raw={} compressed={} (~{} fragments)",
 	        sent, raw.size(), clen, clen >> 9);
 	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+
+	// Send Illusion packets (OP_Illusion = 0x9140) for all player-race NPCs so the
+	// Trilogy client applies correct face/hair appearance.  The Spawn_Struct itself
+	// does not carry luclinface for NPCs (per EQClassic FillSpawnStruct — that field
+	// is commented out there); appearance is driven entirely by Illusion packets.
+	for (const auto& kv : npc_map) {
+		NPC* npc = kv.second;
+		if (!npc || !IsPlayerRace(npc->GetRace())) continue;
+
+		Trilogy::structs::Illusion_Struct il{};
+		memset(&il, 0, sizeof(il));
+		il.spawnid     = static_cast<int16_t>(npc->GetID());
+		il.race        = static_cast<int16_t>(npc->GetRace());
+		il.gender      = static_cast<int8_t>(npc->GetGender());
+		il.texture     = static_cast<int8_t>(npc->GetTexture());
+		il.helmtexture = static_cast<int8_t>(npc->GetHelmTexture());
+		il.unknown_26  = 26;
+		il.haircolor   = static_cast<int8_t>(npc->GetHairColor());
+		il.beardcolor  = static_cast<int8_t>(npc->GetBeardColor());
+		il.eyecolor1   = static_cast<int8_t>(npc->GetEyeColor1());
+		il.eyecolor2   = static_cast<int8_t>(npc->GetEyeColor2());
+		il.hairstyle   = static_cast<int8_t>(npc->GetHairStyle());
+		il.luclinface  = static_cast<int8_t>(npc->GetLuclinFace());
+		il.unknown016  = static_cast<int32_t>(0xFFFFFFFF);
+		SendApp(addr, port, s, 0x9140,
+		        reinterpret_cast<const uint8_t*>(&il),
+		        static_cast<uint32_t>(sizeof(il)));
+	}
 }
 
 // ============================================================
@@ -1436,13 +1466,14 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 	strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
-	// Appearance: s_unknown1a[0..6] = haircolor,beardcolor,eyecolor1,eyecolor2,hairstyle,wode,face
-	sp.s_unknown1a[0] = static_cast<int8_t>(c->GetHairColor());
-	sp.s_unknown1a[1] = static_cast<int8_t>(c->GetBeardColor());
-	sp.s_unknown1a[2] = static_cast<int8_t>(c->GetEyeColor1());
-	sp.s_unknown1a[3] = static_cast<int8_t>(c->GetEyeColor2());
-	sp.s_unknown1a[4] = static_cast<int8_t>(c->GetHairStyle());
-	sp.s_unknown1a[6] = static_cast<int8_t>(c->GetLuclinFace());
+	// Face / hair — unknown163[0..6] mirrors EQClassic offsets 207–213 (after name+lastname)
+	sp.unknown163[0] = static_cast<int8_t>(c->GetHairColor());
+	sp.unknown163[1] = static_cast<int8_t>(c->GetBeardColor());
+	sp.unknown163[2] = static_cast<int8_t>(c->GetEyeColor1());
+	sp.unknown163[3] = static_cast<int8_t>(c->GetEyeColor2());
+	sp.unknown163[4] = static_cast<int8_t>(c->GetHairStyle());
+	// unknown163[5] = wode / title (face overlay, barbarians only)
+	sp.unknown163[6] = static_cast<int8_t>(c->GetLuclinFace());
 	// Equipment textures and armor tints
 	for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
 		sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
@@ -1465,6 +1496,98 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	EncryptZoneSpawnPacket(cbuf.data(), clen);
 
 	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+}
+
+// ============================================================
+// SendPlayerbotSpawnPermanent — send a Playerbot NPC as a 0x6121 zone-spawn
+// packet so the Trilogy client treats it as a zone-permanent entity and never
+// stales it out.  Playerbots are player-race NPCs that show as NPC=0 (blue
+// nameplate); without the permanent path they disappear after ~10s because the
+// client's staleness timer fires when no movement updates arrive.
+// ============================================================
+
+void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* npc)
+{
+	if (!npc) return;
+
+	Trilogy::structs::NewSpawn_Struct ns{};
+	memset(&ns, 0, sizeof(ns));
+	Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+	sp.size      = npc->GetSize();
+	if (sp.size <= 0.0f) sp.size = 6.0f;
+	sp.walkspeed = 0.7f;
+	sp.runspeed  = 1.4f;
+	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+	sp.y_pos     = static_cast<int16_t>(npc->GetY());
+	sp.x_pos     = static_cast<int16_t>(npc->GetX());
+	sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
+	sp.spawn_id  = static_cast<int16_t>(npc->GetID());
+	sp.body_type = static_cast<int16_t>(npc->GetBodyType());
+	sp.cur_hp    = static_cast<int16_t>(npc->GetHPRatio());
+	sp.GuildID   = static_cast<uint16_t>(0xFFFF);
+	sp.race      = static_cast<int8_t>(npc->GetRace());
+	sp.NPC       = 0; // player nameplate
+	sp.class_    = static_cast<int8_t>(npc->GetClass());
+	sp.gender    = static_cast<int8_t>(npc->GetGender());
+	sp.level     = static_cast<int8_t>(npc->GetLevel());
+	sp.anim_type         = 0x64; // standing
+	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+	sp.guildrank         = static_cast<int8_t>(0xFF);
+	sp.light = static_cast<int8_t>(npc->GetEquipmentLightType());
+	strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
+	strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);
+	// Face / hair bytes — same layout as player unknown163[0..6]
+	sp.unknown163[0] = static_cast<int8_t>(npc->GetHairColor());
+	sp.unknown163[1] = static_cast<int8_t>(npc->GetBeardColor());
+	sp.unknown163[2] = static_cast<int8_t>(npc->GetEyeColor1());
+	sp.unknown163[3] = static_cast<int8_t>(npc->GetEyeColor2());
+	sp.unknown163[4] = static_cast<int8_t>(npc->GetHairStyle());
+	sp.unknown163[6] = static_cast<int8_t>(npc->GetLuclinFace());
+	// Armor slots (player-race path)
+	for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+		sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+		sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+	}
+	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+	std::vector<uint8_t> raw(p, p + sizeof(ns));
+
+	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
+	std::vector<uint8_t> cbuf(max_clen + 4, 0);
+	uint32_t clen = EQ::DeflateData(
+		reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+		reinterpret_cast<char*>(cbuf.data()), max_clen
+	);
+	if (clen == 0) return;
+	while (clen % 4 != 0) cbuf[clen++] = 0;
+	EncryptZoneSpawnPacket(cbuf.data(), clen);
+
+	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+
+	// Follow up with an Illusion packet to set face/hair appearance — the
+	// Spawn_Struct luclinface field is ignored for NPCs by the Trilogy client.
+	Trilogy::structs::Illusion_Struct il{};
+	memset(&il, 0, sizeof(il));
+	il.spawnid     = static_cast<int16_t>(npc->GetID());
+	il.race        = static_cast<int16_t>(npc->GetRace());
+	il.gender      = static_cast<int8_t>(npc->GetGender());
+	il.texture     = static_cast<int8_t>(npc->GetTexture());
+	il.helmtexture = static_cast<int8_t>(npc->GetHelmTexture());
+	il.unknown_26  = 26;
+	il.haircolor   = static_cast<int8_t>(npc->GetHairColor());
+	il.beardcolor  = static_cast<int8_t>(npc->GetBeardColor());
+	il.eyecolor1   = static_cast<int8_t>(npc->GetEyeColor1());
+	il.eyecolor2   = static_cast<int8_t>(npc->GetEyeColor2());
+	il.hairstyle   = static_cast<int8_t>(npc->GetHairStyle());
+	il.luclinface  = static_cast<int8_t>(npc->GetLuclinFace());
+	il.unknown016  = static_cast<int32_t>(0xFFFFFFFF);
+	SendToSession(session_key, 0x9140,
+	              reinterpret_cast<const uint8_t*>(&il),
+	              static_cast<uint32_t>(sizeof(il)));
 }
 
 // ============================================================
@@ -1580,15 +1703,30 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// which overflows the Trilogy v29c client's ARQ queue and causes a disconnect.
 	static constexpr float CULL_RADIUS_SQ = 600.0f * 600.0f;
 
+	const uint32_t playerbot_type_id = static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
+
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
 		if (!npc) continue;
+
+		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
 		// Stationary NPCs don't need position updates — the client already has their
 		// position from ZoneSpawns or the last movement update.  Only moving NPCs
 		// generate A120 entries, which keeps the per-heartbeat burst small and prevents
 		// the client's ARQ queue from spiking.
-		if (!npc->IsMoving()) continue;
+		// Playerbots (NPC=0) are exempt: NPC=0 entities have a ~10-15s player presence
+		// timeout in the Trilogy client that fires when no position refresh arrives.
+		// We refresh stationary Playerbots at 1 Hz (every 4th 250ms tick) — well below
+		// the timeout threshold without inflating per-heartbeat packet count at 4 Hz.
+		if (!npc->IsMoving()) {
+			if (!is_playerbot) continue;
+			// Refresh stationary Playerbots at ~1 Hz instead of 4 Hz.
+			// The Trilogy client times out NPC=0 entities after ~10-15s; once per
+			// second is a 10× safety margin and cuts Playerbot A120 entries by 75%.
+			// (now_ms / 1000) changes once per second — include only on that tick.
+			if ((now_ms / 250) % 4 != 0) continue;
+		}
 
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
@@ -1605,22 +1743,23 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->x_pos     = static_cast<int16_t>(npc->GetX());
 		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
 
-		// anim_type: EQClassic formula is speed*11 (from MobAI.cpp pRunAnimSpeed = speed*11).
-		// EQEmu stores speed as int = float_speed*40 so anim = speed_int * 11 / 40.
-		// IsRunning() is only set by quest scripts, never by AI — use IsEngaged() to
-		// distinguish combat-chasing (run speed) from waypoint-patrolling (walk speed).
-		int speed_int = npc->IsEngaged() ? npc->GetRunspeed() : npc->GetWalkspeed();
-		int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(speed_int * 11.0f / 40.0f)));
-		upd->anim_type = anim;
+		if (npc->IsMoving()) {
+			// anim_type: EQClassic formula is speed*11 (from MobAI.cpp pRunAnimSpeed = speed*11).
+			// EQEmu stores speed as int = float_speed*40 so anim = speed_int * 11 / 40.
+			// IsRunning() is only set by quest scripts, never by AI — use IsEngaged() to
+			// distinguish combat-chasing (run speed) from waypoint-patrolling (walk speed).
+			int speed_int = npc->IsEngaged() ? npc->GetRunspeed() : npc->GetWalkspeed();
+			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(speed_int * 11.0f / 40.0f)));
+			upd->anim_type = anim;
 
-		// Velocity deltas: let the client interpolate position between heartbeat ticks.
-		// TrilogyClient::HandleClientUpdate no longer sends per-event A120s (it was
-		// flooding the client's ARQ queue), so the heartbeat is the sole position source.
-		float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
-		int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
-		int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
-		upd->delta_x = std::max(-511, std::min(511, ddx));
-		upd->delta_y = std::max(-511, std::min(511, ddy));
+			// Velocity deltas: let the client interpolate position between heartbeat ticks.
+			float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
+			int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
+			int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
+			upd->delta_x = std::max(-511, std::min(511, ddx));
+			upd->delta_y = std::max(-511, std::min(511, ddy));
+		}
+		// else (stationary Playerbot): anim_type=0, delta=0 — confirms position without moving
 
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
