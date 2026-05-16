@@ -367,22 +367,28 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 
 	const auto* emu = reinterpret_cast<const ::Illusion_Struct*>(app->pBuffer);
 
-	Trilogy::structs::Illusion_Struct out{};
-	memset(&out, 0, sizeof(out));
+	// Build a raw 72-byte buffer so the name can exceed the 15-char struct field
+	// limit.  EQClassic's SendIllusionPacket uses strcpy (no length limit), which
+	// means the Trilogy client reads the name as null-terminated from offset 0.
+	// Names up to 29 chars safely fit before the target field at offset 30.
+	uint8_t out[72];
+	memset(out, 0, 72);
+	size_t nlen = strlen(emu->charname);
+	memcpy(out,      emu->charname, nlen < 29 ? nlen : 29); // name at offset 0
+	memcpy(out + 30, emu->charname, nlen < 15 ? nlen : 15); // target at offset 30
+	out[48] = 24; out[49] = 0;                               // jackbauer = 24 LE
+	int16_t race = static_cast<int16_t>(emu->race);
+	int16_t gender = static_cast<int16_t>(emu->gender);
+	int16_t texture = static_cast<int16_t>(emu->texture);
+	int16_t helm = static_cast<int16_t>(emu->helmtexture);
+	int16_t face = static_cast<int16_t>(emu->face);
+	out[62] = static_cast<uint8_t>(static_cast<uint16_t>(race));    out[63] = static_cast<uint8_t>(static_cast<uint16_t>(race)    >> 8);
+	out[64] = static_cast<uint8_t>(static_cast<uint16_t>(gender));  out[65] = static_cast<uint8_t>(static_cast<uint16_t>(gender)  >> 8);
+	out[66] = static_cast<uint8_t>(static_cast<uint16_t>(texture)); out[67] = static_cast<uint8_t>(static_cast<uint16_t>(texture) >> 8);
+	out[68] = static_cast<uint8_t>(static_cast<uint16_t>(helm));    out[69] = static_cast<uint8_t>(static_cast<uint16_t>(helm)    >> 8);
+	out[70] = static_cast<uint8_t>(static_cast<uint16_t>(face));    out[71] = static_cast<uint8_t>(static_cast<uint16_t>(face)    >> 8);
 
-	// The client matches by name — copy charname, truncate to 15 chars.
-	strncpy(out.name,   emu->charname, sizeof(out.name)   - 1);
-	strncpy(out.target, emu->charname, sizeof(out.target) - 1);
-	out.jackbauer = 24;
-	out.race      = static_cast<int16_t>(emu->race);
-	out.gender    = static_cast<int16_t>(emu->gender);
-	out.texture   = static_cast<int16_t>(emu->texture);
-	out.helm      = static_cast<int16_t>(emu->helmtexture);
-	out.face      = static_cast<int16_t>(emu->face);
-
-	m_tzs->SendToSession(m_session_key, 0x9120,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x9120, out, 72);
 }
 
 // ============================================================

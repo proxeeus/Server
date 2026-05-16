@@ -464,7 +464,12 @@ struct SpawnAppearance_Struct
 **          EQClassic Common/Include/eq_packet_structs.h :: Illusion_Struct
 ** Size:    72 bytes
 **
-** The client identifies the target entity by NAME (not spawn_id).
+** The client identifies the target entity by NAME (not spawn_id), reading the
+** name field as a null-terminated string from offset 0.  EQClassic's own
+** SendIllusionPacket uses strcpy (no length limit), so names longer than 15
+** chars overflow into unknown016-028 — the client handles this gracefully.
+** Do NOT use strncpy to fill name; use the raw-buffer helper to write the full
+** null-terminated name so long-named NPCs (e.g. "Priest of Discord") match.
 ** jackbauer at offset 48 must always be 24 or the client ignores the packet.
 ** race/gender/texture/helm/face are int16.
 */

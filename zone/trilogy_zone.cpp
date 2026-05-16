@@ -74,6 +74,32 @@ static constexpr uint8_t HDR0_SEQSTART = 0x20;
 static constexpr uint8_t HDR1_ARSP     = 0x04;
 
 // ============================================================
+// FillIllusionBuf — build a 72-byte Trilogy Illusion packet.
+//
+// EQClassic's SendIllusionPacket uses strcpy (no length limit), so names
+// longer than 15 chars overflow the name[16] field into the adjacent unknown
+// bytes.  The Trilogy client reads the name as a null-terminated string from
+// offset 0, so we replicate that behaviour: copy the full name (up to 29
+// chars before the target field at offset 30) without truncating.
+// ============================================================
+static void FillIllusionBuf(uint8_t* buf, const char* name,
+                              int16_t race, int16_t gender,
+                              int16_t texture, int16_t helm, int16_t face)
+{
+	memset(buf, 0, 72);
+	size_t len = strlen(name);
+	memcpy(buf,      name, len < 29 ? len : 29); // name at offset 0, up to 29 chars
+	memcpy(buf + 30, name, len < 15 ? len : 15); // target at offset 30, up to 15 chars
+	buf[48] = 24; buf[49] = 0;                   // jackbauer = 24 (int16 LE)
+	// Cast to uint16_t before shifting to avoid UB on negative (sentinel) values.
+	buf[62] = static_cast<uint8_t>(static_cast<uint16_t>(race));     buf[63] = static_cast<uint8_t>(static_cast<uint16_t>(race)    >> 8);
+	buf[64] = static_cast<uint8_t>(static_cast<uint16_t>(gender));   buf[65] = static_cast<uint8_t>(static_cast<uint16_t>(gender)  >> 8);
+	buf[66] = static_cast<uint8_t>(static_cast<uint16_t>(texture));  buf[67] = static_cast<uint8_t>(static_cast<uint16_t>(texture) >> 8);
+	buf[68] = static_cast<uint8_t>(static_cast<uint16_t>(helm));     buf[69] = static_cast<uint8_t>(static_cast<uint16_t>(helm)    >> 8);
+	buf[70] = static_cast<uint8_t>(static_cast<uint16_t>(face));     buf[71] = static_cast<uint8_t>(static_cast<uint16_t>(face)    >> 8);
+}
+
+// ============================================================
 // EncryptProfilePacket — rolling-key stream cipher applied
 // to the zlib-compressed PlayerProfile buffer (EQClassic
 // packet_functions.cpp :: EncryptProfilePacket).
@@ -1401,19 +1427,18 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		NPC* npc = kv.second;
 		if (!npc || !IsPlayerRace(npc->GetRace())) continue;
 
-		Trilogy::structs::Illusion_Struct il{};
-		memset(&il, 0, sizeof(il));
-		strncpy(il.name,   npc->GetCleanName(), sizeof(il.name)   - 1);
-		strncpy(il.target, npc->GetCleanName(), sizeof(il.target) - 1);
-		il.jackbauer = 24;
-		il.race      = static_cast<int16_t>(npc->GetRace());
-		il.gender    = static_cast<int16_t>(npc->GetGender());
-		il.texture   = static_cast<int16_t>(npc->GetTexture());
-		il.helm      = static_cast<int16_t>(npc->GetHelmTexture());
-		il.face      = static_cast<int16_t>(npc->GetLuclinFace());
-		SendApp(addr, port, s, 0x9120,
-		        reinterpret_cast<const uint8_t*>(&il),
-		        static_cast<uint32_t>(sizeof(il)));
+		uint8_t il_buf[72];
+		// Spawn_Struct for player-race NPCs uses npc_armor_graphic=0xFF
+		// (player-equipment mode).  texture/helm must be 0xFFFF (-1) —
+		// EQClassic's "keep current" sentinel — so the Illusion does not
+		// switch the client to a flat body-texture and hide equipped armor.
+		FillIllusionBuf(il_buf, npc->GetCleanName(),
+		    static_cast<int16_t>(npc->GetRace()),
+		    static_cast<int16_t>(npc->GetGender()),
+		    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
+		    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
+		    static_cast<int16_t>(npc->GetLuclinFace()));
+		SendApp(addr, port, s, 0x9120, il_buf, 72);
 	}
 }
 
@@ -1563,21 +1588,19 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 
 	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 
-	// Follow up with an Illusion packet (0x9120, 72-byte Zone format) to apply
-	// face/texture — Spawn_Struct does not carry face for NPCs in Trilogy.
-	Trilogy::structs::Illusion_Struct il{};
-	memset(&il, 0, sizeof(il));
-	strncpy(il.name,   npc->GetCleanName(), sizeof(il.name)   - 1);
-	strncpy(il.target, npc->GetCleanName(), sizeof(il.target) - 1);
-	il.jackbauer = 24;
-	il.race      = static_cast<int16_t>(npc->GetRace());
-	il.gender    = static_cast<int16_t>(npc->GetGender());
-	il.texture   = static_cast<int16_t>(npc->GetTexture());
-	il.helm      = static_cast<int16_t>(npc->GetHelmTexture());
-	il.face      = static_cast<int16_t>(npc->GetLuclinFace());
-	SendToSession(session_key, 0x9120,
-	              reinterpret_cast<const uint8_t*>(&il),
-	              static_cast<uint32_t>(sizeof(il)));
+	// Follow up with an Illusion packet (0x9120, 72-byte Zone format) to set
+	// face — Spawn_Struct does not carry face for NPCs in Trilogy.
+	// texture/helm use 0xFFFF (-1), EQClassic's "keep current" sentinel, so
+	// the Illusion does not switch the client to a flat body-texture mode and
+	// hide the Playerbot's equipped armor.
+	uint8_t il_buf[72];
+	FillIllusionBuf(il_buf, npc->GetCleanName(),
+	    static_cast<int16_t>(npc->GetRace()),
+	    static_cast<int16_t>(npc->GetGender()),
+	    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
+	    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
+	    static_cast<int16_t>(npc->GetLuclinFace()));
+	SendToSession(session_key, 0x9120, il_buf, 72);
 }
 
 // ============================================================
