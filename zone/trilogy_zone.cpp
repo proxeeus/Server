@@ -1526,13 +1526,9 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->x_pos     = static_cast<int16_t>(npc->GetX());
 		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
 
-		// anim_type: EQClassic velocity factor (running: runspeed*7, walking: walkspeed*4).
-		// EQEmu speeds are int = float_speed * 40, so divide by 40 to recover.
-		int8_t anim;
-		if (npc->IsRunning())
-			anim = static_cast<int8_t>(std::max(1, npc->GetRunspeed() * 7 / 40));
-		else
-			anim = static_cast<int8_t>(std::max(1, npc->GetWalkspeed() * 4 / 40));
+		// anim_type: EQClassic formula is speed*11 (from MobAI.cpp pRunAnimSpeed = speed*11).
+		// EQEmu stores speed as int = float_speed * 40, so: anim = GetMovespeed() * 11 / 40.
+		int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(npc->GetMovespeed() * 11.0f / 40.0f)));
 		upd->anim_type = anim;
 
 		// Velocity deltas: let the client interpolate position between heartbeat ticks.
@@ -1576,11 +1572,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
 
 		if (c->IsMoving()) {
-			int8_t anim;
-			if (c->IsRunning())
-				anim = static_cast<int8_t>(std::max(1, c->GetRunspeed() * 7 / 40));
-			else
-				anim = static_cast<int8_t>(std::max(1, c->GetWalkspeed() * 4 / 40));
+			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(c->GetMovespeed() * 11.0f / 40.0f)));
 			upd->anim_type = anim;
 
 			float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
