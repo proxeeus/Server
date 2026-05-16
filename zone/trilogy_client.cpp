@@ -249,6 +249,15 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	Mob* mob = entity_list.GetMob(spawn_id);
 	if (!mob) return;
 
+	// Players are sent via 0x6121 (ZN_OP_ZoneSpawns) so the Trilogy client
+	// treats them as zone-permanent and never applies a staleness timeout.
+	// NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they appear in
+	// the A120 heartbeat whenever they move.
+	if (mob->IsClient()) {
+		m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
+		return;
+	}
+
 	Trilogy::structs::NewSpawn_Struct out{};
 	memset(&out, 0, sizeof(out));
 	// out.ns_unknown1 will be filled by CRC32::SetEQChecksum below.

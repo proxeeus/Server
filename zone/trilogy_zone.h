@@ -31,6 +31,7 @@
 #include <vector>
 
 class TrilogyClient;
+class Client;
 
 class TrilogyZoneServer {
 public:
@@ -41,6 +42,10 @@ public:
 
 	void SendToSession(uint64_t session_key, uint16_t opcode,
 	                   const uint8_t* data, uint32_t size);
+
+	// Send a single player as a zone-permanent spawn (0x6121) so the Trilogy
+	// client never applies a staleness timeout to the entity.
+	void SendPlayerSpawnPermanent(uint64_t session_key, Client* c);
 
 private:
 	enum ZoneState : uint8_t {

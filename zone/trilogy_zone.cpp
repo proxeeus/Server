@@ -627,6 +627,11 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
 
+		// Mark as spawned so SendZoneSpawnsBulk includes this client when future
+		// Titanium clients zone in.  The normal Titanium path sets this inside
+		// SendZoneInPackets(), which TrilogyClient bypasses entirely.
+		tc->SetSpawned();
+
 		// Broadcast this player's appearance to existing Titanium clients.
 		{
 			EQApplicationPacket* ns_app = new EQApplicationPacket();
@@ -1191,15 +1196,17 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 
 void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Session& s)
 {
-	const auto& npc_map = entity_list.GetNPCList();
-	if (npc_map.empty()) {
-		LogInfo("[TrilogyZone] SendZoneSpawns: zone has no NPCs");
+	const auto& npc_map    = entity_list.GetNPCList();
+	const auto& client_map = entity_list.GetClientList();
+
+	if (npc_map.empty() && client_map.empty()) {
+		LogInfo("[TrilogyZone] SendZoneSpawns: zone has no spawns");
 		return;
 	}
 
-	// Build raw NewSpawn_Struct[] array (168 bytes per NPC).
+	// Build raw NewSpawn_Struct[] array (168 bytes per entry: NPCs + players).
 	std::vector<uint8_t> raw;
-	raw.reserve(npc_map.size() * sizeof(Trilogy::structs::NewSpawn_Struct));
+	raw.reserve((npc_map.size() + client_map.size()) * sizeof(Trilogy::structs::NewSpawn_Struct));
 
 	uint32_t sent = 0;
 	for (const auto& kv : npc_map) {
@@ -1249,6 +1256,55 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		++sent;
 	}
 
+	// Include other players already in the zone.
+	// At this point in zone-in (CONNECTING4) this client's TrilogyClient entity has not
+	// been created yet, so all entries in the client list are other players.
+	for (const auto& kv : client_map) {
+		Client* c = kv.second;
+		if (!c || !c->InZone()) continue;
+
+		Trilogy::structs::NewSpawn_Struct ns{};
+		memset(&ns, 0, sizeof(ns));
+		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+		sp.size      = c->GetSize();
+		if (sp.size <= 0.0f) sp.size = 6.0f;
+		sp.walkspeed = 0.7f;
+		sp.runspeed  = 1.4f;
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(c->GetHeading() / 2.0f));
+		sp.y_pos     = static_cast<int16_t>(c->GetY());
+		sp.x_pos     = static_cast<int16_t>(c->GetX());
+		sp.z_pos     = static_cast<int16_t>(c->GetZ() * 10.0f);
+		sp.spawn_id  = static_cast<int16_t>(c->GetID());
+		sp.body_type = static_cast<int16_t>(c->GetBodyType());
+		sp.cur_hp    = static_cast<int16_t>(c->GetHPRatio());
+		sp.GuildID   = static_cast<uint16_t>(c->GuildID());
+		sp.race      = static_cast<int8_t>(c->GetRace());
+		sp.NPC       = 0; // player
+		sp.class_    = static_cast<int8_t>(c->GetClass());
+		sp.gender    = static_cast<int8_t>(c->GetGender());
+		sp.level     = static_cast<int8_t>(c->GetLevel());
+		sp.anim_type         = 0x64; // standing
+		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC — no NPC armor graphic
+		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+		sp.anon              = static_cast<int8_t>(c->GetAnon());
+		if (c->IsInAGuild())
+			sp.guildrank = static_cast<int8_t>(c->GuildRank());
+		else
+			sp.guildrank = static_cast<int8_t>(0xFF);
+		sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
+		strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
+
+		LogInfo("[TrilogyZone] Player[{}] name='{}' id={} race={} x={} y={} z={}",
+		        sent, c->GetCleanName(), c->GetID(), c->GetRace(),
+		        sp.x_pos, sp.y_pos, sp.z_pos);
+
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+		raw.insert(raw.end(), p, p + sizeof(ns));
+		++sent;
+	}
+
 	// Compress (zlib deflate)
 	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
 	std::vector<uint8_t> cbuf(max_clen + 4, 0); // +4 for encrypt alignment
@@ -1269,6 +1325,67 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs → raw={} compressed={} (~{} fragments)",
 	        sent, raw.size(), clen, clen >> 9);
 	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+}
+
+// ============================================================
+// SendPlayerSpawnPermanent — send a single player as a 0x6121 zone-spawn
+// packet so the Trilogy client treats them as a zone-permanent entity and
+// never applies a staleness timeout.  Called from TrilogyClient::HandleNewSpawn
+// when the incoming spawn is a player (NPC == 0) so that players who enter the
+// zone after this Trilogy client is already in-zone don't disappear after ~10s.
+// ============================================================
+
+void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c)
+{
+	if (!c) return;
+
+	Trilogy::structs::NewSpawn_Struct ns{};
+	memset(&ns, 0, sizeof(ns));
+	Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+	sp.size      = c->GetSize();
+	if (sp.size <= 0.0f) sp.size = 6.0f;
+	sp.walkspeed = 0.7f;
+	sp.runspeed  = 1.4f;
+	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(c->GetHeading() / 2.0f));
+	sp.y_pos     = static_cast<int16_t>(c->GetY());
+	sp.x_pos     = static_cast<int16_t>(c->GetX());
+	sp.z_pos     = static_cast<int16_t>(c->GetZ() * 10.0f);
+	sp.spawn_id  = static_cast<int16_t>(c->GetID());
+	sp.body_type = static_cast<int16_t>(c->GetBodyType());
+	sp.cur_hp    = static_cast<int16_t>(c->GetHPRatio());
+	sp.GuildID   = static_cast<uint16_t>(c->GuildID());
+	sp.race      = static_cast<int8_t>(c->GetRace());
+	sp.NPC       = 0; // player
+	sp.class_    = static_cast<int8_t>(c->GetClass());
+	sp.gender    = static_cast<int8_t>(c->GetGender());
+	sp.level     = static_cast<int8_t>(c->GetLevel());
+	sp.anim_type         = 0x64; // standing
+	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+	sp.anon              = static_cast<int8_t>(c->GetAnon());
+	if (c->IsInAGuild())
+		sp.guildrank = static_cast<int8_t>(c->GuildRank());
+	else
+		sp.guildrank = static_cast<int8_t>(0xFF);
+	sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
+	strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
+	strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
+
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+	std::vector<uint8_t> raw(p, p + sizeof(ns));
+
+	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
+	std::vector<uint8_t> cbuf(max_clen + 4, 0);
+	uint32_t clen = EQ::DeflateData(
+		reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+		reinterpret_cast<char*>(cbuf.data()), max_clen
+	);
+	if (clen == 0) return;
+	while (clen % 4 != 0) cbuf[clen++] = 0;
+	EncryptZoneSpawnPacket(cbuf.data(), clen);
+
+	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 }
 
 // ============================================================
@@ -1431,12 +1548,58 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			flush_packet();
 	}
 
+	// Include all in-range players in the heartbeat.  Idle players need a periodic
+	// A120 to prevent the Trilogy client's staleness timeout (~5-10 s); zone-permanent
+	// status from 0x6121 is only honoured during the initial zone-load sequence.
+	// For moving players we compute proper velocity so the client interpolates
+	// smoothly; for idle players anim=0/delta=0 is a no-op position confirmation
+	// that does not cause visible jitter (same integer coords every tick, no drift).
+	const auto& client_map = entity_list.GetClientList();
+	for (const auto& kv : client_map) {
+		Client* c = kv.second;
+		if (!c || !c->InZone()) continue;
+		if (s.trilogy_client && c == s.trilogy_client) continue; // no self-echo
+
+		float dx = c->GetX() - s.pos_x;
+		float dy = c->GetY() - s.pos_y;
+		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
+
+		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
+		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
+		memset(upd, 0, sizeof(*upd));
+
+		float heading = c->GetHeading();
+		upd->spawn_id = static_cast<int16_t>(c->GetID());
+		upd->heading  = static_cast<int8_t>(static_cast<uint8_t>(heading / 2.0f));
+		upd->y_pos    = static_cast<int16_t>(c->GetY());
+		upd->x_pos    = static_cast<int16_t>(c->GetX());
+		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
+
+		if (c->IsMoving()) {
+			int8_t anim;
+			if (c->IsRunning())
+				anim = static_cast<int8_t>(std::max(1, c->GetRunspeed() * 7 / 40));
+			else
+				anim = static_cast<int8_t>(std::max(1, c->GetWalkspeed() * 4 / 40));
+			upd->anim_type = anim;
+
+			float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
+			int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
+			int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
+			upd->delta_x = std::max(-511, std::min(511, ddx));
+			upd->delta_y = std::max(-511, std::min(511, ddy));
+		}
+		// else: anim_type=0, delta=0 — client confirms position without moving
+
+		if (++n == MAX_UPDATES_PER_PKT)
+			flush_packet();
+	}
+
 	if (n > 0)
 		flush_packet();
-	// When no moving NPCs are nearby, skip the send entirely.  The connection is
-	// kept alive by the client's own F320 stream, ACK responses, and the 5-second
-	// stamina packet.  Sending an empty ARQ A120 every 250ms (4/sec) for nothing
-	// was consuming a significant fraction of the client's ARQ budget.
+	// When no moving mobs are nearby, skip the send entirely.
+	// The connection is kept alive by the client's own F320 stream, ACK responses,
+	// and the 5-second stamina packet.
 }
 
 // ============================================================
