@@ -153,6 +153,7 @@ private:
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
+	void SendInventoryItems(const std::string& addr, int port, Session& s);
 	void SendZoneEntrySpawn(const std::string& addr, int port, Session& s);
 	void SendWeather(const std::string& addr, int port, Session& s);
 	void SendNewZone(const std::string& addr, int port, Session& s);

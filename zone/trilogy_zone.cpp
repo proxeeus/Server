@@ -65,6 +65,9 @@ static constexpr uint16_t ZN_OP_MobUpdate    = 0xa120; // zone -> client: SpawnP
 static constexpr uint16_t ZN_OP_TimeOfDay    = 0xf220; // zone -> client: TimeOfDay_Struct (6 bytes)
 static constexpr uint16_t ZN_OP_Stamina      = 0x5721; // zone -> client: Stamina_Struct (8 bytes)
 static constexpr uint16_t ZN_OP_SetAvatar    = 0x6f20; // zone -> client: MSG_SET_AVATAR (1 byte, zeroed) — signals gameplay mode start
+static constexpr uint16_t ZN_OP_ItemTradeIn  = 0x3120; // zone -> client: single item (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: bulk item packet — unused at zone-in (EQClassic uses 0x3120 per-item)
+static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -418,6 +421,12 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case CONNECTING3:
 		if (opcode == 0x5d20)
 			HandlePostInventory(addr, port, s);
+		else if (opcode == ZN_OP_WearChange) {
+			// EQClassic CONNECTING3: echo WearChange back so the client confirms
+			// each item it receives and updates its character model correctly.
+			if (s.ack_due) SendAck(addr, port, s);
+			SendApp(addr, port, s, ZN_OP_WearChange, payload, plen);
+		}
 		else if (s.ack_due)
 			SendAck(addr, port, s);
 		break;
@@ -425,6 +434,21 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case CONNECTING4:
 		if (opcode == 0x0a20)
 			HandleZoneDataRequest(addr, port, s);
+		else if (opcode == ZN_OP_WearChange) {
+			// EQClassic CONNECTING4: echo WearChange back so the client knows all
+			// equipped items are confirmed before it advances to zone-data state.
+			// Without this, the client sends 0x0a20 prematurely (before all items
+			// arrive), causing ZoneSpawns to interleave with in-flight item packets
+			// and crash the client.
+			if (s.ack_due) SendAck(addr, port, s);
+			SendApp(addr, port, s, ZN_OP_WearChange, payload, plen);
+		}
+		else if (opcode == 0x4721) {
+			// EQClassic CONNECTING4: echo OP_ClientError back to let the client
+			// retry any item that reported an error (stackable without charges, etc.)
+			if (s.ack_due) SendAck(addr, port, s);
+			SendApp(addr, port, s, 0x4721, payload, plen);
+		}
 		else if (s.ack_due)
 			SendAck(addr, port, s);
 		break;
@@ -432,6 +456,20 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case CONNECTING5:
 		if (opcode == 0xd820)
 			HandleZoneInComplete(addr, port, s);
+		else if (opcode == ZN_OP_WearChange || opcode == ZN_OP_Appearance) {
+			// EQClassic Process_ClientConnection5: echo WearChange and SpawnAppearance back
+			// to the sender (QueuePacket on the client object = send to this client only).
+			// The client sends these BEFORE D820 to register its own appearance in the zone.
+			// Without echoes, the client keeps retrying the whole WearChange+F520+D820 sequence
+			// and the splash screen never clears.
+			if (s.ack_due) SendAck(addr, port, s);
+			SendApp(addr, port, s, opcode, payload, plen);
+		}
+		else if (opcode == 0x4721) {
+			// EQClassic Process_ClientConnection5: echo ClientError back (same as CONNECTING4).
+			if (s.ack_due) SendAck(addr, port, s);
+			SendApp(addr, port, s, 0x4721, payload, plen);
+		}
 		else if (s.ack_due)
 			SendAck(addr, port, s);
 		break;
@@ -521,15 +559,284 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 
 // ============================================================
 // CONNECTING3 → CONNECTING4: client requests inventory
-//   MVP: send no inventory items
 // ============================================================
 
 void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, Session& s)
 {
-	LogInfo("[TrilogyZone] PostInventory (0x5d20) — sending empty inventory, advancing to CONNECTING4");
-	// MVP: no items — just ACK and advance
+	LogInfo("[TrilogyZone] PostInventory (0x5d20) — sending inventory, advancing to CONNECTING4");
 	if (s.ack_due) SendAck(addr, port, s);
+	SendInventoryItems(addr, port, s);
 	s.state = CONNECTING4;
+}
+
+// ============================================================
+// SendInventoryItems — query worn equipment items (slots 0-21) and send
+// each as a separate OP_ItemTradeIn (0x3120) packet.
+//
+// Wire format per packet (EQClassic Zone/Source/client_process.cpp :: SendInventoryItems):
+//   APPLAYER(OP_ItemTradeIn, sizeof(Item_Struct))
+//   pBuffer = raw Item_Struct (292 bytes), equipSlot set to Trilogy slot ID
+//
+// Trilogy v29c OP_ItemTradeIn (0x3120) only processes equipment slots 0-21.
+// Personal inventory (22-29) and bag contents (250+) are carried in the
+// PlayerProfile packet and must NOT be sent via 0x3120 — doing so crashes
+// the 2001-era client.
+//
+// DEBUG: set TRILOGY_ITEM_TEST_ID > 0 to send ONLY that item ID.
+//        Set to 0 for normal behaviour.
+// DEBUG: set TRILOGY_SKIP_SPAWNS = true to suppress SendZoneSpawns entirely.
+// TRILOGY_MAX_ICON: safe icon index ceiling for the v29c client.
+//   Icons above ~900 may index out-of-bounds in the client's texture atlas.
+//   Set to 0 to suppress all clamping (for testing).
+// ============================================================
+static constexpr int32  TRILOGY_ITEM_TEST_ID = 0;
+static constexpr bool   TRILOGY_SKIP_SPAWNS  = false;
+static constexpr uint16 TRILOGY_MAX_ICON     = 900;
+
+static inline int32 clamp_i8(int32 v) {
+	return v < -128 ? -128 : (v > 127 ? 127 : v);
+}
+
+void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Session& s)
+{
+	auto q = fmt::format(
+		"SELECT inv.slotid, inv.charges,"
+		" it.id, it.name, it.lore, it.idfile, it.weight, it.norent, it.nodrop, it.size, it.itemclass,"
+		" it.icon, it.slots, it.price,"
+		" it.astr, it.asta, it.acha, it.adex, it.aint, it.aagi, it.awis,"
+		" it.mr, it.fr, it.cr, it.dr, it.pr, it.hp, it.mana, it.ac,"
+		" it.stackable, it.light, it.delay, it.damage,"
+		" it.clicktype, it.`range`, it.itemtype, it.magic, it.clicklevel, it.material, it.color,"
+		" it.clickeffect, it.classes, it.races,"
+		" it.proceffect, it.proctype, it.proclevel,"
+		" it.worneffect, it.worntype, it.wornlevel,"
+		" it.scrolleffect, it.scrolltype, it.scrolllevel,"
+		" it.casttime, it.sellrate,"
+		" it.skillmodtype, it.skillmodvalue,"
+		" it.banedmgrace, it.banedmgbody, it.banedmgamt,"
+		" it.reclevel, it.recskill, it.procrate,"
+		" it.elemdmgtype, it.elemdmgamt,"
+		" it.factionmod1, it.factionmod2, it.factionmod3, it.factionmod4,"
+		" it.factionamt1, it.factionamt2, it.factionamt3, it.factionamt4,"
+		" it.deity,"
+		" it.bagtype, it.bagslots, it.bagsize, it.bagwr,"
+		" it.book, it.booktype, it.filename"
+		" FROM `inventory` inv"
+		" INNER JOIN `items` it ON inv.itemid = it.id"
+		" WHERE inv.charid = {} AND inv.slotid BETWEEN 0 AND 21"
+		" ORDER BY inv.slotid",
+		s.char_id
+	);
+
+	auto r = database.QueryDatabase(q);
+	if (!r.Success()) {
+		LogError("[TrilogyZone] SendInventoryItems: query failed for char_id={}", s.char_id);
+		return;
+	}
+
+	int32 db_rows   = static_cast<int32>(r.RowCount());
+	int32 skipped   = 0;
+	int32 sent_count = 0;
+
+	for (auto row = r.begin(); row != r.end(); ++row) {
+		int16  slot_id = static_cast<int16>(Strings::ToInt(row[0]));
+		int    charges = Strings::ToInt(row[1]);
+
+		int32  item_id    = Strings::ToInt(row[2]);
+		if (item_id > 32767) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
+		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
+		if (slot_id > 21) { ++skipped; continue; } // SQL should already exclude these; guard in case
+
+		Trilogy::structs::ClassicItem_Struct ci{};
+		memset(&ci, 0, sizeof(ci));
+
+		// --- header fields ---
+		if (row[3]) strncpy(ci.name,   row[3], sizeof(ci.name)   - 1);
+		if (row[4]) strncpy(ci.lore,   row[4], sizeof(ci.lore)   - 1);
+		if (row[5]) strncpy(ci.idfile, row[5], sizeof(ci.idfile)  - 1);
+
+		ci.weight    = static_cast<uint8>(std::min(255, Strings::ToInt(row[6])));
+		ci.norent    = static_cast<int8>(Strings::ToInt(row[7]));   // 1=normal, 0=norent
+		ci.nodrop    = static_cast<int8>(Strings::ToInt(row[8]));   // 1=normal, 0=nodrop
+		ci.size      = static_cast<uint8>(Strings::ToInt(row[9]));
+		ci.itemclass = static_cast<int8>(Strings::ToInt(row[10]));
+		ci.id        = static_cast<uint16>(item_id);
+		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
+		if (TRILOGY_MAX_ICON > 0 && ci.icon > TRILOGY_MAX_ICON) ci.icon = 0;
+		ci.equipslot = static_cast<int16>(slot_id); // slots 0-21 only; SQL and guard above enforce this
+		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
+		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
+
+		// flag — type discriminator read by the Trilogy client
+		int32 clickeff  = Strings::ToInt(row[40]);
+		int32 proceff   = Strings::ToInt(row[43]);
+		int32 worneff   = Strings::ToInt(row[46]);
+		int32 scrolleff = Strings::ToInt(row[49]);
+		bool has_effect = (clickeff  > 0 && clickeff  < 3000) ||
+		                  (proceff   > 0 && proceff   < 3000) ||
+		                  (worneff   > 0 && worneff   < 3000) ||
+		                  (scrolleff > 0 && scrolleff < 3000);
+
+		if (ci.itemclass == 2) {               // book
+			ci.flag = 0x7669;
+		} else if (ci.itemclass == 1) {        // container
+			int32 bagtype = Strings::ToInt(row[73]);
+			ci.flag = (bagtype > 8) ? 0x3d00 : 0x5450;
+		} else {                               // common
+			ci.flag = has_effect ? 0x0036 : 0x315f;
+		}
+
+		if (ci.itemclass == 2) {
+			// Book
+			ci.book_data.book     = static_cast<int8>(Strings::ToInt(row[77]));
+			ci.book_data.booktype = static_cast<int16>(Strings::ToInt(row[78]));
+			if (row[79]) strncpy(ci.book_data.filename, row[79], sizeof(ci.book_data.filename) - 1);
+		} else {
+			ci.common.unknown0282 = static_cast<int8>(0xFF);
+			ci.common.unknown0283 = static_cast<int8>(0xFF);
+
+			ci.common.astr    = static_cast<int8>(clamp_i8(Strings::ToInt(row[14])));
+			ci.common.asta    = static_cast<int8>(clamp_i8(Strings::ToInt(row[15])));
+			ci.common.acha    = static_cast<int8>(clamp_i8(Strings::ToInt(row[16])));
+			ci.common.adex    = static_cast<int8>(clamp_i8(Strings::ToInt(row[17])));
+			ci.common.aint_   = static_cast<int8>(clamp_i8(Strings::ToInt(row[18])));
+			ci.common.aagi    = static_cast<int8>(clamp_i8(Strings::ToInt(row[19])));
+			ci.common.awis    = static_cast<int8>(clamp_i8(Strings::ToInt(row[20])));
+			ci.common.mr      = static_cast<int8>(clamp_i8(Strings::ToInt(row[21])));
+			ci.common.fr      = static_cast<int8>(clamp_i8(Strings::ToInt(row[22])));
+			ci.common.cr      = static_cast<int8>(clamp_i8(Strings::ToInt(row[23])));
+			ci.common.dr      = static_cast<int8>(clamp_i8(Strings::ToInt(row[24])));
+			ci.common.pr      = static_cast<int8>(clamp_i8(Strings::ToInt(row[25])));
+			ci.common.hp      = static_cast<int8>(clamp_i8(Strings::ToInt(row[26])));
+			ci.common.mana    = static_cast<int8>(clamp_i8(Strings::ToInt(row[27])));
+			ci.common.ac      = static_cast<int8>(clamp_i8(Strings::ToInt(row[28])));
+
+			int32 stackable    = Strings::ToInt(row[29]);
+			ci.common.stackable = (stackable == 1) ? 1 : 0;
+
+			ci.common.light     = static_cast<uint8>(Strings::ToInt(row[30]));
+			ci.common.delay     = static_cast<uint8>(Strings::ToInt(row[31]));
+			ci.common.damage    = static_cast<uint8>(Strings::ToInt(row[32]));
+
+			int32 clicktype    = Strings::ToInt(row[33]);
+			ci.common.range_   = static_cast<uint8>(Strings::ToInt(row[34]));
+			ci.common.itemtype = static_cast<uint8>(Strings::ToInt(row[35]));
+			ci.common.magic    = static_cast<int8>(Strings::ToInt(row[36]));
+			int32 clicklevel   = Strings::ToInt(row[37]);
+			ci.common.material = static_cast<uint8>(Strings::ToInt(row[38]));
+			ci.common.color    = static_cast<uint32>(Strings::ToUnsignedInt(row[39]));
+			ci.common.classes  = static_cast<uint16>(Strings::ToInt(row[41]));
+
+			// Effect slots: click > scroll > proc > worn (priority order)
+			int32 proctype    = Strings::ToInt(row[44]);
+			int32 proclevel   = Strings::ToInt(row[45]);
+			int32 worntype    = Strings::ToInt(row[47]);
+			int32 wornlevel   = Strings::ToInt(row[48]);
+			int32 scrolltype  = Strings::ToInt(row[50]);
+			int32 scrolllevel = Strings::ToInt(row[51]);
+
+			uint16 eff_id    = 0;
+			int8   eff_type  = 0;
+			int8   eff_level = 0;
+
+			if (clickeff > 0 && clickeff < 3000) {
+				eff_id    = static_cast<uint16>(clickeff);
+				eff_type  = static_cast<int8>(clicktype);
+				eff_level = static_cast<int8>(clicklevel);
+			} else if (scrolleff > 0 && scrolleff < 3000) {
+				eff_id    = static_cast<uint16>(scrolleff);
+				eff_type  = static_cast<int8>(scrolltype);
+				eff_level = static_cast<int8>(scrolllevel);
+			} else if (proceff > 0 && proceff < 3000) {
+				eff_id    = static_cast<uint16>(proceff);
+				eff_type  = static_cast<int8>(worntype > 0 ? worntype : proctype);
+				eff_level = static_cast<int8>(proclevel);
+			} else if (worneff > 0 && worneff < 3000) {
+				eff_id    = static_cast<uint16>(worneff);
+				eff_type  = static_cast<int8>(worntype);
+				eff_level = static_cast<int8>(wornlevel);
+			}
+
+			ci.common.effect1      = eff_id;
+			ci.common.effect2      = eff_id;
+			ci.common.effecttype1  = eff_type;
+			ci.common.effecttype2  = eff_type;
+			ci.common.effectlevel1 = static_cast<uint8>(eff_level);
+			ci.common.effectlevel2 = static_cast<uint8>(eff_level);
+
+			ci.common.casttime     = static_cast<uint32>(Strings::ToInt(row[52]));
+			ci.common.sellrate     = static_cast<float>(Strings::ToFloat(row[53]));
+
+			ci.common.skillmodtype  = static_cast<uint16>(Strings::ToInt(row[54]));
+			ci.common.skillmodvalue = static_cast<int16>(Strings::ToInt(row[55]));
+			ci.common.banedmgrace   = static_cast<int16>(Strings::ToInt(row[56]));
+			ci.common.banedmgbody   = static_cast<int16>(Strings::ToInt(row[57]));
+			ci.common.banedmgamt    = static_cast<uint8>(Strings::ToInt(row[58]));
+			ci.common.reclevel      = static_cast<uint8>(Strings::ToInt(row[59]));
+			ci.common.recskill      = static_cast<uint8>(Strings::ToInt(row[60]));
+			ci.common.procrate      = static_cast<uint16>(Strings::ToInt(row[61]));
+			ci.common.elemdmgtype   = static_cast<uint8>(Strings::ToInt(row[62]));
+			ci.common.elemdmgamt    = static_cast<uint8>(Strings::ToInt(row[63]));
+			ci.common.factionmod1   = static_cast<uint16>(Strings::ToInt(row[64]));
+			ci.common.factionmod2   = static_cast<uint16>(Strings::ToInt(row[65]));
+			ci.common.factionmod3   = static_cast<uint16>(Strings::ToInt(row[66]));
+			ci.common.factionmod4   = static_cast<uint16>(Strings::ToInt(row[67]));
+			ci.common.factionamt1   = static_cast<uint16>(Strings::ToInt(row[68]));
+			ci.common.factionamt2   = static_cast<uint16>(Strings::ToInt(row[69]));
+			ci.common.factionamt3   = static_cast<uint16>(Strings::ToInt(row[70]));
+			ci.common.factionamt4   = static_cast<uint16>(Strings::ToInt(row[71]));
+			ci.common.deity         = static_cast<uint16>(Strings::ToInt(row[72]));
+
+			if (ci.itemclass == 1) {
+				// Container
+				ci.common.container.bagtype   = static_cast<uint8>(Strings::ToInt(row[73]));
+				ci.common.container.bagslots  = static_cast<uint8>(Strings::ToInt(row[74]));
+				ci.common.container.isbagopen = 0;
+				ci.common.container.bagsize   = static_cast<int8>(Strings::ToInt(row[75]));
+				ci.common.container.bagwr     = static_cast<uint8>(Strings::ToInt(row[76]));
+			} else {
+				// Common item — normal races/click_effect_type union
+				ci.common.normal.races = static_cast<uint16>(Strings::ToInt(row[42]));
+
+				// click_effect_type drives how the client treats the effect slot
+				if (clickeff > 0 && clickeff < 3000) {
+					ci.common.normal.click_effect_type = (clicktype == 5) ? 3 : static_cast<int8>(clicktype);
+				} else if (worneff > 0 && worneff < 3000) {
+					ci.common.normal.click_effect_type = static_cast<int8>(worntype);
+				} else if (scrolleff > 0 && scrolleff < 3000) {
+					ci.common.normal.click_effect_type = static_cast<int8>(scrolltype);
+				} else if (proceff > 0 && proceff < 3000) {
+					ci.common.normal.click_effect_type = 2; // latent/worn
+				}
+			}
+
+			// Charges: from inventory row, not from items table
+			ci.common.charges = (charges == 0) ? static_cast<int8>(-1) : static_cast<int8>(std::min(charges, 127));
+		}
+
+		// Detailed diagnostic log — visible in zone log at INFO level.
+		LogInfo("[TrilogyZone] ITEM id={} slot={}->{} cls={} flag={:#06x} "
+		        "icon={} mat={} stackable={} charges={} "
+		        "etype1={} eff1={} etype2={} eff2={} "
+		        "casttime={} sellrate={:.3f} "
+		        "name=[{}]",
+		        item_id, slot_id, (int)ci.equipslot,
+		        (int)ci.itemclass, (unsigned)ci.flag,
+		        (unsigned)ci.icon, (unsigned)ci.common.material,
+		        (int)ci.common.stackable, (int)ci.common.charges,
+		        (int)ci.common.effecttype1, (unsigned)ci.common.effect1,
+		        (int)ci.common.effecttype2, (unsigned)ci.common.effect2,
+		        ci.common.casttime, ci.common.sellrate,
+		        ci.name);
+
+		// EQClassic: send each item as a separate OP_ItemTradeIn (0x3120) packet (raw ClassicItem_Struct).
+		SendApp(addr, port, s, ZN_OP_ItemTradeIn,
+		        reinterpret_cast<const uint8_t*>(&ci), sizeof(ci));
+		++sent_count;
+	}
+
+	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped_id={} sent={}",
+	        s.char_name, db_rows, skipped, sent_count);
 }
 
 // ============================================================
@@ -565,27 +872,24 @@ void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port,
 	// packets that arrive before this marker.
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
-	SendZoneSpawns(addr, port, s);
+	if (!TRILOGY_SKIP_SPAWNS)
+		SendZoneSpawns(addr, port, s);
+	else
+		LogInfo("[TrilogyZone] SendZoneSpawns SKIPPED (TRILOGY_SKIP_SPAWNS=true)");
 
 	s.state = CONNECTING5;
 }
 
 // ============================================================
 // CONNECTING5 → CONNECTED: client signals zone-in complete
-//   server sends SpawnAppearance(type=0x10) + Stamina + 0xd820
+//   Sequence matches EQClassic Process_ClientConnection5 exactly:
+//     SpawnAppearance(type=0x10) → 0xc321 → 0xd820
+//   Stamina, TimeOfDay, Weather are sent AFTER the final 0xd820.
 // ============================================================
 
 void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, Session& s)
 {
 	LogInfo("[TrilogyZone] ZoneInComplete (0xd820) — finalising zone-in, CONNECTED");
-
-	// MSG_SET_AVATAR (0x6f40 on EQClassic/EQMac → 0x6f20 on Trilogy v29c/v30)
-	// EQClassic sends this 1-byte zeroed packet immediately before SpawnAppearance(type=0x10).
-	// Signals the client to enter gameplay mode.
-	{
-		uint8_t avatar_byte = 0;
-		SendApp(addr, port, s, ZN_OP_SetAvatar, &avatar_byte, 1);
-	}
 
 	// SpawnAppearance type=0x10 tells the client which entity ID is its own player.
 	// EQClassic client_process.cpp: sa->type = 0x10; sa->parameter = GetID();
@@ -597,23 +901,6 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		sa.parameter = static_cast<int32_t>(s.player_spawn_id);
 		SendApp(addr, port, s, ZN_OP_Appearance,
 		        reinterpret_cast<const uint8_t*>(&sa), sizeof(sa));
-	}
-
-	// OP_Stamina — food/water/fatigue (6000=full, 0=hungry; fatigue 0=rested)
-	{
-		Trilogy::structs::Stamina_Struct sta{};
-		memset(&sta, 0, sizeof(sta));
-		sta.food    = 6000;
-		sta.water   = 6000;
-		sta.fatigue = 0;
-		SendApp(addr, port, s, ZN_OP_Stamina,
-		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
-		// Seed the timer so Tick() waits the full 5s before the next refresh.
-		// Sending Stamina immediately after D820 (when the client just entered gameplay
-		// mode) causes a CTD — the stamina UI hasn't finished initialising yet.
-		s.last_stamina_ms = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
 	}
 
 	s.state = CONNECTED;
@@ -672,21 +959,58 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	        s.char_name, s.zone_short, numclients);
 
 	// EQClassic Process_ClientConnection5 sends 0xc321 (8 zeroed bytes) immediately
-	// before the final 0xd820.  Purpose unknown, but the Trilogy client requires it
-	// to finalize entity rendering after zone-in.
+	// before the final 0xd820.
 	{
 		uint8_t unknown_8[8]{};
 		SendApp(addr, port, s, 0xc321, unknown_8, 8);
 	}
 
-	// TimeOfDay + Weather BEFORE the final 0xd820.
-	// The final 0xd820 completes zone loading and triggers sky lighting initialisation.
-	// TimeOfDay must be in the client's queue at that moment so the sky renders with
-	// the correct hour.  Weather is paired with TimeOfDay (EQClassic LS zone sequence).
+	// Final 0xd820 — matches EQClassic Process_ClientConnection5 exactly.
+	// Nothing between 0xc321 and this; extra packets here prevent the client from
+	// recognising this as the zone-in complete signal.
+	SendApp(addr, port, s, 0xd820, nullptr, 0);
+
+	// ---- Post-D820 sends ----
+	// EQClassic sends HP/mana updates after the final D820.  We send Stamina here
+	// for the same reason: the stamina UI is not initialised until after D820.
+	{
+		Trilogy::structs::Stamina_Struct sta{};
+		memset(&sta, 0, sizeof(sta));
+		sta.food    = 6000;
+		sta.water   = 6000;
+		sta.fatigue = 0;
+		SendApp(addr, port, s, ZN_OP_Stamina,
+		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
+		// Seed the timer so Tick() waits the full interval before the next refresh.
+		s.last_stamina_ms = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+	}
+
+	// TimeOfDay and Weather after D820 so sky lighting initialises with correct values.
 	SendTimeOfDay(addr, port, s);
 	SendWeather(addr, port, s);
 
-	SendApp(addr, port, s, 0xd820, nullptr, 0);
+	// Illusion packets (OP_Illusion = 0x9120) for all player-race NPCs.
+	// Sent HERE — after the client's 0xd820 ACK confirms ZoneSpawns is fully
+	// reassembled and all entities are registered — rather than immediately after
+	// the fragmented ZoneSpawns send.  Sending before entity registration caused
+	// a client CTD when Illusions tried to modify not-yet-created entities.
+	{
+		const auto& npc_map = entity_list.GetNPCList();
+		for (const auto& kv : npc_map) {
+			NPC* npc = kv.second;
+			if (!npc || !IsPlayerRace(npc->GetRace())) continue;
+			uint8_t il_buf[72];
+			FillIllusionBuf(il_buf, npc->GetCleanName(),
+			    static_cast<int16_t>(npc->GetRace()),
+			    static_cast<int16_t>(npc->GetGender()),
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
+			    static_cast<int16_t>(npc->GetLuclinFace()));
+			SendApp(addr, port, s, 0x9120, il_buf, 72);
+		}
+	}
 
 	// Diagnostic: schedule the first periodic TimeOfDay 5 seconds after zone-in.
 	// If the sky transitions from night to day ~5s after entering the zone, the
@@ -858,6 +1182,29 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		}
 	}
 
+	// ---- bag contents (containerinv[0..79]) ----
+	// EQClassic: containerinv[i] = item ID for bag-content slot (250+i client-side).
+	// EQEmu stores bag contents at slotid 251-330 (Titanium base=251), so index = slotid-251.
+	{
+		auto q = fmt::format(
+			"SELECT `slotid`, `itemid`, `charges` FROM `inventory` "
+			"WHERE `charid` = {} AND `slotid` BETWEEN 251 AND 330",
+			s.char_id
+		);
+		auto r = database.QueryDatabase(q);
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			int slotid = Strings::ToInt(row[0]);
+			int idx = slotid - 251; // containerinv index 0-79
+			if (idx >= 0 && idx < 80) {
+				pp.containerinv[idx] = static_cast<uint16_t>(Strings::ToUnsignedInt(row[1]));
+				int charges = Strings::ToInt(row[2]);
+				pp.bagItemProprieties[idx].charges = (charges == 0)
+					? static_cast<int8_t>(-1)
+					: static_cast<int8_t>(std::min(charges, 127));
+			}
+		}
+	}
+
 	// ---- character_spells (spell book) ----
 	{
 		auto q = fmt::format(
@@ -986,6 +1333,22 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 
 	// 0xFF = PC (player character) — not an NPC armor graphic
 	sze.npc_armor_graphic = static_cast<int8_t>(0xFF);
+
+	// EQClassic: set helm material + color from the equipped helm item (pp.inventory[2] = helm slot)
+	{
+		auto hq = fmt::format(
+			"SELECT it.material, it.color FROM `inventory` inv"
+			" INNER JOIN `items` it ON inv.itemid = it.id"
+			" WHERE inv.charid = {} AND inv.slotid = 2 LIMIT 1",
+			s.char_id
+		);
+		auto hr = database.QueryDatabase(hq);
+		if (hr.RowCount() > 0) {
+			auto hrow = hr.begin();
+			sze.helmet   = static_cast<int8_t>(Strings::ToInt(hrow[0]));
+			sze.helmcolor = static_cast<uint32_t>(Strings::ToUnsignedInt(hrow[1]));
+		}
+	}
 
 	// Walk/run speeds (EQClassic: 0.7 / 1.4 are base values for a player)
 	sze.walkspeed = 0.7f;
@@ -1435,28 +1798,11 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs → raw={} compressed={} (~{} fragments)",
 	        sent, raw.size(), clen, clen >> 9);
 	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
-
-	// Send Illusion packets (OP_Illusion = 0x9120, 72-byte EQClassic Zone format)
-	// for all player-race NPCs so the Trilogy client applies correct face/texture.
-	// The Spawn_Struct does not carry face for NPCs; appearance is set only via
-	// Illusion.  The client matches by name (not spawn_id); jackbauer must be 24.
-	for (const auto& kv : npc_map) {
-		NPC* npc = kv.second;
-		if (!npc || !IsPlayerRace(npc->GetRace())) continue;
-
-		uint8_t il_buf[72];
-		// Spawn_Struct for player-race NPCs uses npc_armor_graphic=0xFF
-		// (player-equipment mode).  texture/helm must be 0xFFFF (-1) —
-		// EQClassic's "keep current" sentinel — so the Illusion does not
-		// switch the client to a flat body-texture and hide equipped armor.
-		FillIllusionBuf(il_buf, npc->GetCleanName(),
-		    static_cast<int16_t>(npc->GetRace()),
-		    static_cast<int16_t>(npc->GetGender()),
-		    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
-		    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
-		    static_cast<int16_t>(npc->GetLuclinFace()));
-		SendApp(addr, port, s, 0x9120, il_buf, 72);
-	}
+	// Illusion packets are deferred to HandleZoneInComplete (after client's 0xd820 ACK)
+	// so the client has fully reassembled and registered ZoneSpawns entities before
+	// Illusions attempt to modify them.  Sending Illusions here caused a client CTD
+	// because the 18-fragment ZoneSpawns blob was still being reassembled when the
+	// 116 Illusions arrived, resulting in Illusions targeting non-existent entities.
 }
 
 // ============================================================

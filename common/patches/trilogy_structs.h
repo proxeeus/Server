@@ -954,6 +954,140 @@ struct WearChange_Struct
 // -------------------------------------------------------------------------
 
 /*
+** ClassicItem_Struct  (292 bytes)
+** Opcode:  OP_CharInventory = 0xf621 (bulk, deflated), OP_SummonedItem = 0x7821 (single)
+** Direction: zone server -> client
+** Source:  EQMacEmuTrilogy common/patches/trilogy_structs.h :: Item_Struct
+** Size:    292 bytes
+**
+** Sent during zone-in (CONNECTING3 handshake) as a deflated array inside
+** OP_CharInventory (0xf621).  Wire format:
+**   uint8  item_count          [pBuffer+0]
+**   uint8  _pad                [pBuffer+1] = 0
+**   uint8  deflated_items[]    [pBuffer+2..] — zlib-deflated ClassicItem_Struct[]
+*/
+struct ClassicItem_Struct
+{
+/*0000*/	char	name[35];
+/*0035*/	char	lore[60];
+/*0095*/	char	idfile[6];
+/*0101*/	uint16	flag;
+/*0103*/	int8	unknown0103[22];
+/*0125*/	uint8	weight;
+/*0126*/	int8	norent;         // 1=normal, 0=no-rent
+/*0127*/	int8	nodrop;         // 1=normal, 0=no-drop
+/*0128*/	uint8	size;
+/*0129*/	int8	itemclass;      // 0=common, 1=container, 2=book
+/*0130*/	uint16	id;
+/*0132*/	uint16	icon;
+/*0134*/	int16	equipslot;      // EQ slot ID (0-21 worn, 22-29 general, 251-330 bag contents)
+/*0136*/	uint32	slots;          // bitmask of equippable slots
+/*0140*/	int32	price;
+/*0144*/	float	cur_x;
+/*0148*/	float	cur_y;
+/*0152*/	float	cur_z;
+/*0156*/	float	heading;
+/*0160*/	uint32	inv_refnum;
+/*0164*/	int16	log_;
+/*0166*/	int16	loot_log;
+/*0168*/	uint16	avatar_level;
+/*0170*/	uint16	bottom_feed;
+// Union at 0172: book_data (120 bytes) OR common (120 bytes) — total 120 bytes → struct ends at 292
+union {
+	struct {
+/*0172*/	int8	book;
+/*0173*/	int16	booktype;
+/*0175*/	char	filename[15];
+/*0190*/	uint8	buffer1[102];   // pad to 120 bytes
+	} book_data;
+	struct {
+/*0172*/	int8	astr;
+/*0173*/	int8	asta;
+/*0174*/	int8	acha;
+/*0175*/	int8	adex;
+/*0176*/	int8	aint_;
+/*0177*/	int8	aagi;
+/*0178*/	int8	awis;
+/*0179*/	int8	mr;
+/*0180*/	int8	fr;
+/*0181*/	int8	cr;
+/*0182*/	int8	dr;
+/*0183*/	int8	pr;
+/*0184*/	int8	hp;
+/*0185*/	int8	mana;
+/*0186*/	int8	ac;
+/*0187*/	uint8	stackable;      // 1=stackable, 0=not stackable
+/*0188*/	int8	gmflag;         // 0=normal, -1=GM item
+/*0189*/	uint8	light;
+/*0190*/	uint8	delay;
+/*0191*/	uint8	damage;
+/*0192*/	int8	effecttype1;    // 0=combat proc, 1=click no-class, 2=latent/worn, 3=expendable, 4=click worn, 5=click w/class, -1=none
+/*0193*/	uint8	range_;
+/*0194*/	uint8	itemtype;       // weapon skill type
+/*0195*/	int8	magic;
+/*0196*/	int8	effectlevel1;
+/*0197*/	uint8	material;
+/*0198*/	uint8	unknown3f[2];
+/*0200*/	uint32	color;
+/*0204*/	uint16	faction;
+/*0206*/	uint16	effect1;
+/*0208*/	uint16	classes;
+/*0210*/	uint8	unknown23[2];
+		union {
+			struct {
+/*0212*/		uint16	races;
+/*0214*/		uint16	unknown0214;
+/*0216*/		int8	click_effect_type;
+			} normal;
+			struct {
+/*0212*/		uint8	bagtype;
+/*0213*/		uint8	bagslots;
+/*0214*/		int8	isbagopen;
+/*0215*/		int8	bagsize;
+/*0216*/		uint8	bagwr;
+			} container;
+		};
+/*0217*/	uint8	effectlevel2;
+/*0218*/	int8	charges;
+/*0219*/	int8	effecttype2;
+/*0220*/	uint16	effect2;
+/*0222*/	int8	unknown0282;    // must be 0xFF
+/*0223*/	int8	unknown0283;    // must be 0xFF
+/*0224*/	uint8	unknown0284[4];
+/*0228*/	float	sellrate;
+/*0232*/	uint32	casttime;
+/*0236*/	uint8	unknown0296[16];
+/*0252*/	uint16	skillmodtype;
+/*0254*/	int16	skillmodvalue;
+/*0256*/	int16	banedmgrace;
+/*0258*/	int16	banedmgbody;
+/*0260*/	uint8	banedmgamt;
+/*0261*/	uint8	unknown0321[3];
+/*0264*/	uint8	reclevel;
+/*0265*/	uint8	recskill;
+/*0266*/	uint16	procrate;
+/*0268*/	uint8	elemdmgtype;
+/*0269*/	uint8	elemdmgamt;
+/*0270*/	uint16	factionmod1;
+/*0272*/	uint16	factionmod2;
+/*0274*/	uint16	factionmod3;
+/*0276*/	uint16	factionmod4;
+/*0278*/	uint16	factionamt1;
+/*0280*/	uint16	factionamt2;
+/*0282*/	uint16	factionamt3;
+/*0284*/	uint16	factionamt4;
+/*0286*/	uint16	void346;
+/*0288*/	uint16	deity;
+/*0290*/	uint16	unknown290;
+/*0292*/
+	} common;
+};
+};
+
+static_assert(sizeof(ClassicItem_Struct) == 292,
+	"Trilogy ClassicItem_Struct must be 292 bytes");
+
+/*
 ** MoveItem_Struct
 ** Opcode:  OP_MoveItem = 0x2c21
 ** Direction: client -> zone server
