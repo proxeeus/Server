@@ -529,6 +529,10 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	strn0cpy(m_pp.name, char_name, sizeof(m_pp.name));
 	if (zone)
 		m_pp.zone_id = static_cast<uint16>(zone->GetZoneID());
+
+	// Load language skills from DB so ChannelMessageSend can correctly determine
+	// whether the player understands a given language (skill ≥ 24 = understood).
+	database.LoadCharacterLanguages(char_id, &m_pp);
 }
 
 void Client::SendZoneInPackets()

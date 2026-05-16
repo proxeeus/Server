@@ -151,4 +151,5 @@ private:
 	void HandleClientUpdate(const EQApplicationPacket* app);
 	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
+	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 };

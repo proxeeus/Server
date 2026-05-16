@@ -25,6 +25,7 @@
 #include "../common/crc32.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/emu_versions.h"
+#include "string_ids.h"
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -35,6 +36,7 @@
 
 #include <cstring>
 #include <cmath>
+#include <string>
 
 extern EntityList entity_list;
 
@@ -215,6 +217,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_SpecialMesg:
 		HandleOutgoingSpecialMesg(app);
 		break;
+	case OP_FormattedMessage:
+		HandleOutgoingFormattedMessage(app);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -372,6 +377,40 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 }
 
 // ============================================================
+// StripSayLinks — remove SayLink markup for Trilogy clients.
+//
+// SayLink wire format: '\x12' + <body: EQ::constants::SAY_LINK_BODY_SIZE bytes>
+//                      + <display text> + '\x12'
+// Trilogy has no SayLink support — discard the opaque body and keep
+// only the human-readable display text.
+// ============================================================
+
+static std::string StripSayLinks(const char* msg, size_t len)
+{
+	// Fast path: no SayLink delimiters present.
+	if (!memchr(msg, '\x12', len))
+		return std::string(msg, len);
+
+	std::string out;
+	out.reserve(len);
+
+	for (size_t i = 0; i < len; ) {
+		if (static_cast<unsigned char>(msg[i]) == 0x12) {
+			++i; // skip opener \x12
+			// Skip fixed-size link body.
+			i += EQ::constants::SAY_LINK_BODY_SIZE;
+			// Append display text until closing \x12 or end of buffer.
+			while (i < len && static_cast<unsigned char>(msg[i]) != 0x12)
+				out += msg[i++];
+			if (i < len) ++i; // skip closer \x12
+		} else {
+			out += msg[i++];
+		}
+	}
+	return out;
+}
+
+// ============================================================
 // HandleOutgoingChannelMessage — OP_ChannelMessage (server → client)
 //
 // EQEmu internal ChannelMessage_Struct uses 64-byte name fields and
@@ -385,12 +424,17 @@ void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
 
 	const auto* cm_in = reinterpret_cast<const ::ChannelMessage_Struct*>(app->pBuffer);
 
-	// Message tail immediately follows the fixed struct.
+	// Strip SayLinks from message tail before forwarding to Trilogy client.
 	uint32_t msg_offset = static_cast<uint32_t>(sizeof(::ChannelMessage_Struct));
-	uint32_t msg_bytes  = (app->size > msg_offset) ? (app->size - msg_offset) : 0;
-	if (msg_bytes == 0) msg_bytes = 1; // always include null terminator
+	std::string msg_str;
+	if (app->size > msg_offset) {
+		const char* raw = reinterpret_cast<const char*>(app->pBuffer + msg_offset);
+		msg_str = StripSayLinks(raw, app->size - msg_offset);
+	}
+	if (msg_str.empty() || msg_str.back() != '\0') msg_str += '\0';
 
-	uint32_t out_size = static_cast<uint32_t>(sizeof(Trilogy::structs::ChannelMessage_Struct)) + msg_bytes;
+	uint32_t out_size = static_cast<uint32_t>(sizeof(Trilogy::structs::ChannelMessage_Struct))
+	                    + static_cast<uint32_t>(msg_str.size());
 	auto* buf = new uint8_t[out_size]();
 	auto* cm_out = reinterpret_cast<Trilogy::structs::ChannelMessage_Struct*>(buf);
 
@@ -401,9 +445,8 @@ void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
 	cm_out->cm_unknown4[0] = static_cast<int8_t>(0xFF); // language skill masking per EQClassic server
 	cm_out->cm_unknown4[1] = static_cast<int8_t>(0xFF);
 
-	if (app->size > msg_offset)
-		memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
-		       app->pBuffer + msg_offset, app->size - msg_offset);
+	memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
+	       msg_str.data(), msg_str.size());
 
 	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
 	delete[] buf;
@@ -465,16 +508,79 @@ void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
 	o += 12;
 	if (o >= size) return;
 
-	const char* msg       = reinterpret_cast<const char*>(buf + o);
-	uint32_t    msg_bytes = size - o;
-	if (msg_bytes == 0) msg_bytes = 1;
+	std::string msg_str = StripSayLinks(reinterpret_cast<const char*>(buf + o), size - o);
+	if (msg_str.empty() || msg_str.back() != '\0') msg_str += '\0';
 
 	// Build EQClassic OP_SpecialMesg (0x8021): int32 msg_type + message[].
-	uint32_t out_size = 4 + msg_bytes;
+	uint32_t out_size = 4 + static_cast<uint32_t>(msg_str.size());
 	auto* out = new uint8_t[out_size]();
 	*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(eqemu_type);
-	memcpy(out + 4, msg, msg_bytes);
+	memcpy(out + 4, msg_str.data(), msg_str.size());
 
 	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 	delete[] out;
+}
+
+// ============================================================
+// HandleOutgoingFormattedMessage — OP_FormattedMessage (server → client)
+//
+// EQEmu uses OP_FormattedMessage for NPC speech (say/shout) and many
+// system messages.  The packet carries a string_id (resolved client-side
+// from eqstr_us.txt) plus null-terminated parameter strings.
+//
+// Trilogy has no OP_FormattedMessage equivalent.  For the two NPC speech
+// string IDs we know the parameter layout (param0=speaker, param1=text)
+// and can re-encode them as OP_ChannelMessage (0x0721) on the correct
+// channel so the client formats and colours them properly.
+//   GENERIC_SAY   (1032, "%1 says '%2'")   → chan_num 8 (SAY)
+//   GENERIC_SHOUT (1034, "%1 shouts '%2'") → chan_num 3 (SHOUT)
+// All other string IDs are silently dropped.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(FormattedMessage_Struct)) return;
+
+	const auto* fm = reinterpret_cast<const FormattedMessage_Struct*>(app->pBuffer);
+
+	uint8_t chan_num;
+	if (fm->string_id == GENERIC_SHOUT)
+		chan_num = 3; // SHOUT in EQClassic
+	else if (fm->string_id == GENERIC_SAY)
+		chan_num = 8; // SAY in EQClassic
+	else
+		return;
+
+	const char* base      = fm->message;
+	uint32_t    remaining = app->size - static_cast<uint32_t>(sizeof(FormattedMessage_Struct));
+	if (remaining < 2) return;
+
+	// param0 = speaker name (first null-terminated string)
+	const char* param0 = base;
+	size_t      p0len  = strnlen(param0, remaining);
+	if (p0len >= remaining) return;
+
+	// param1 = message text (second null-terminated string)
+	const char* param1      = base + p0len + 1;
+	uint32_t    p1remaining = remaining - static_cast<uint32_t>(p0len + 1);
+	if (p1remaining < 1) return;
+
+	std::string msg_str = StripSayLinks(param1, p1remaining);
+	if (msg_str.empty() || msg_str.back() != '\0') msg_str += '\0';
+
+	uint32_t out_size = static_cast<uint32_t>(sizeof(Trilogy::structs::ChannelMessage_Struct))
+	                    + static_cast<uint32_t>(msg_str.size());
+	auto* buf = new uint8_t[out_size]();
+	auto* cm_out = reinterpret_cast<Trilogy::structs::ChannelMessage_Struct*>(buf);
+
+	strncpy(cm_out->sender, param0, sizeof(cm_out->sender) - 1);
+	cm_out->language       = 0; // CommonTongue
+	cm_out->chan_num       = static_cast<int16_t>(chan_num);
+	cm_out->cm_unknown4[0] = static_cast<int8_t>(0xFF);
+	cm_out->cm_unknown4[1] = static_cast<int8_t>(0xFF);
+	memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
+	       msg_str.data(), msg_str.size());
+
+	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
+	delete[] buf;
 }
