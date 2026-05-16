@@ -1292,13 +1292,30 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			const uint8_t tex     = npc->GetTexture();
 			const uint8_t helmtex = npc->GetHelmTexture();
 			if (IsPlayerRace(npc->GetRace())) {
-				// Player-race NPCs (humans, elves, dwarves, …): player-mode so equipment[] drives per-slot appearance
+				// Player-race NPCs always use player-equipment mode (0xFF) so per-slot
+				// materials drive appearance.  Playerbots carry actual items; other
+				// player-race NPCs (guards, quest NPCs, …) may have a body texture
+				// set in npc_types.texture (e.g. 2 = chainmail) but only partial loot
+				// equipped, leaving other slots at material 0 (naked).  Fill those
+				// empty slots with the body/helm texture as a fallback so the Trilogy
+				// client sees a complete uniform appearance rather than partial coverage.
+				// Helm (slot 0) falls back to helmtex; all other armor slots fall back to tex.
 				sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 				sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+				const bool is_playerbot_npc = (sp.NPC == 0);
+				// Armor slots (helm through boot)
 				for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
-					sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+					uint8_t mat = npc->GetEquipmentMaterial(static_cast<uint8_t>(mi));
+					if (!is_playerbot_npc && mat == 0) {
+						const uint8_t fb = (mi == 0) ? helmtex : tex; // slot 0 = helm
+						if (fb > 0 && fb < 0xFF) mat = fb;
+					}
+					sp.equipment[mi]   = static_cast<int8_t>(mat);
 					sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
 				}
+				// Weapon slots (Melee1, Melee2) — use equipped item material as-is
+				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 				// Face / hair appearance bytes — in Spawn_Struct these sit in unknown163[0..6],
 				// after name+Surname (mirrors EQClassic offsets 207–213 after name+lastname)
 				sp.unknown163[0] = static_cast<int8_t>(npc->GetHairColor());
@@ -1309,13 +1326,13 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 				// unknown163[5] = wode / title (face overlay, barbarians only)
 				sp.unknown163[6] = static_cast<int8_t>(npc->GetLuclinFace());
 			} else {
-				// Creature NPCs (wolves, elementals, skeletons, …): uniform texture; weapons only from equipment[]
-				sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
-				sp.npc_helm_graphic  = (helmtex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(helmtex);
+				// Creature NPCs (wolves, elementals, skeletons, …): uniform texture
+				sp.npc_armor_graphic = static_cast<int8_t>(tex);
+				sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
+				// Weapon slots from equipped items
+				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 			}
-			// Weapon slots always come from equipped items for all NPCs
-			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 		}
 		sp.guildrank = static_cast<int8_t>(0xFF);
 		strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
