@@ -807,6 +807,31 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		}
 	}
 
+	// ---- inventory (worn + main bag slots) ----
+	// Populates inventory[0..29]: slots 0-21 = equipment, 22-29 = general bags.
+	// Item IDs are capped to uint16 (classic clients use 16-bit item IDs).
+	{
+		auto q = fmt::format(
+			"SELECT `slotid`, `itemid`, `charges` FROM `inventory` "
+			"WHERE `charid` = {} AND `slotid` BETWEEN 0 AND 29",
+			s.char_id
+		);
+		auto r = database.QueryDatabase(q);
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			int slot = Strings::ToInt(row[0]);
+			if (slot >= 0 && slot < 30) {
+				pp.inventory[slot] = static_cast<uint16_t>(Strings::ToUnsignedInt(row[1]));
+				int charges = Strings::ToInt(row[2]);
+				// charges=0 in DB → uncharged gear → PP -1 (unlimited); else clamp to int8 range
+				if (charges == 0) {
+					pp.invItemProprieties[slot].charges = static_cast<int8_t>(-1);
+				} else {
+					pp.invItemProprieties[slot].charges = static_cast<int8_t>(std::min(charges, 127));
+				}
+			}
+		}
+	}
+
 	// ---- character_spells (spell book) ----
 	{
 		auto q = fmt::format(
@@ -1235,11 +1260,36 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.class_    = static_cast<int8_t>(npc->GetClass());
 		sp.gender    = static_cast<int8_t>(npc->GetGender());
 		sp.level     = static_cast<int8_t>(npc->GetLevel());
-		sp.anim_type         = 0x64; // standing animation (EQClassic hardcodes 100)
-		uint8_t tex = npc->GetTexture();
-		sp.npc_armor_graphic = (tex == 0 || tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
-		sp.npc_helm_graphic  = static_cast<int8_t>(npc->GetHelmTexture());
-		sp.guildrank         = static_cast<int8_t>(0xFF);
+		sp.anim_type = 0x64; // standing animation (EQClassic hardcodes 100)
+		{
+			const uint8_t tex     = npc->GetTexture();
+			const uint8_t helmtex = npc->GetHelmTexture();
+			// Check if NPC has individually equipped armor items (lootable gear)
+			bool has_item_armor = false;
+			for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+				if (npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)) != 0) {
+					has_item_armor = true;
+					break;
+				}
+			}
+			if (has_item_armor) {
+				// Individual items equipped: player-mode so equipment[] drives appearance
+				sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+				sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+				for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+					sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+					sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+				}
+			} else {
+				// Uniform texture: 0=no armor, 1=leather, 2=chain, 3=plate; >7 fall back to player-mode
+				sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
+				sp.npc_helm_graphic  = (helmtex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(helmtex);
+			}
+			// Weapon slots always come from equipped items
+			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+		}
+		sp.guildrank = static_cast<int8_t>(0xFF);
 		strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);
 
@@ -1295,6 +1345,22 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 		strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
+		// Appearance: s_unknown1a[0..6] = haircolor,beardcolor,eyecolor1,eyecolor2,hairstyle,wode,face
+		// Layout matches ChangeLooks_Struct from EQClassic eq_packet_structs.h
+		sp.s_unknown1a[0] = static_cast<int8_t>(c->GetHairColor());
+		sp.s_unknown1a[1] = static_cast<int8_t>(c->GetBeardColor());
+		sp.s_unknown1a[2] = static_cast<int8_t>(c->GetEyeColor1());
+		sp.s_unknown1a[3] = static_cast<int8_t>(c->GetEyeColor2());
+		sp.s_unknown1a[4] = static_cast<int8_t>(c->GetHairStyle());
+		// s_unknown1a[5] = wode (face overlay, barbarians only) - 0 for most races
+		sp.s_unknown1a[6] = static_cast<int8_t>(c->GetLuclinFace());
+		// Equipment textures and armor tints
+		for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
+			sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+		}
+		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+			sp.equipcolors[mi] = static_cast<int32_t>(c->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		}
 
 		LogInfo("[TrilogyZone] Player[{}] name='{}' id={} race={} x={} y={} z={}",
 		        sent, c->GetCleanName(), c->GetID(), c->GetRace(),
@@ -1371,6 +1437,20 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 	strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
+	// Appearance: s_unknown1a[0..6] = haircolor,beardcolor,eyecolor1,eyecolor2,hairstyle,wode,face
+	sp.s_unknown1a[0] = static_cast<int8_t>(c->GetHairColor());
+	sp.s_unknown1a[1] = static_cast<int8_t>(c->GetBeardColor());
+	sp.s_unknown1a[2] = static_cast<int8_t>(c->GetEyeColor1());
+	sp.s_unknown1a[3] = static_cast<int8_t>(c->GetEyeColor2());
+	sp.s_unknown1a[4] = static_cast<int8_t>(c->GetHairStyle());
+	sp.s_unknown1a[6] = static_cast<int8_t>(c->GetLuclinFace());
+	// Equipment textures and armor tints
+	for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
+		sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+	}
+	for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+		sp.equipcolors[mi] = static_cast<int32_t>(c->GetEquipmentColor(static_cast<uint8_t>(mi)));
+	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 	std::vector<uint8_t> raw(p, p + sizeof(ns));
