@@ -458,29 +458,37 @@ struct SpawnAppearance_Struct
 
 /*
 ** Illusion_Struct
-** Opcode:  OP_Illusion = 0x9140
+** Opcode:  OP_Illusion = 0x9120
 ** Direction: zone server -> client
-** Source:  EQClassic Common/Include/eq_packet_structs.h :: Illusion_Struct
-** Size:    20 bytes
+** Source:  EQClassic Zone/Source/mob.cpp :: SendIllusionPacket
+**          EQClassic Common/Include/eq_packet_structs.h :: Illusion_Struct
+** Size:    72 bytes
+**
+** The client identifies the target entity by NAME (not spawn_id).
+** jackbauer at offset 48 must always be 24 or the client ignores the packet.
+** race/gender/texture/helm/face are int16.
 */
 struct Illusion_Struct
 {
-/*000*/	int16	spawnid;
-/*002*/	int16	race;
-/*004*/	int8	gender;
-/*005*/	int8	texture;
-/*006*/	int8	helmtexture;
-/*007*/	int8	unknown_26;		// always 26
-/*008*/	int8	haircolor;
-/*009*/	int8	beardcolor;
-/*010*/	int8	eyecolor1;
-/*011*/	int8	eyecolor2;
-/*012*/	int8	hairstyle;
-/*013*/	int8	title;			// face overlay (wode, barbarians only)
-/*014*/	int8	luclinface;
-/*015*/	int8	unknown015;
-/*016*/	int32	unknown016;		// always 0xFFFFFFFF
-/*020*/
+/*000*/	char	name[16];		// name of entity to re-skin
+/*016*/	int8	unknown016[4];
+/*020*/	int8	unknown020[4];
+/*024*/	int8	unknown024[4];
+/*028*/	int8	unknown028[2];
+/*030*/	char	target[16];		// same as name (self-cast illusion design)
+/*046*/	int8	unknown046[2];
+/*048*/	int16	jackbauer;		// always 24
+/*050*/	int16	unknown050;
+/*052*/	int16	unknown052;
+/*054*/	int16	unknown054;
+/*056*/	int8	unknown056[4];
+/*060*/	int8	unknown060[2];
+/*062*/	int16	race;
+/*064*/	int16	gender;
+/*066*/	int16	texture;
+/*068*/	int16	helm;
+/*070*/	int16	face;
+/*072*/
 };
 
 /*
@@ -1190,6 +1198,9 @@ static_assert(sizeof(DeleteSpawn_Struct)      ==   6,
 
 static_assert(sizeof(SpawnPositionUpdate_Struct) == 15,
 	"Trilogy SpawnPositionUpdate_Struct must be 15 bytes");
+
+static_assert(sizeof(Illusion_Struct) == 72,
+	"Trilogy Illusion_Struct must be 72 bytes (EQClassic Zone/Common format)");
 
 	} /*structs*/
 } /*Trilogy*/

@@ -353,9 +353,12 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 
 // ============================================================
 // HandleIllusion — translate OP_Illusion (EQEmu internal) to the
-// 20-byte EQClassic wire format (opcode 0x9140) so the Trilogy
-// client applies live appearance changes (face, hair, texture, etc.)
+// 72-byte EQClassic Zone wire format (opcode 0x9120) so the Trilogy
+// client applies live appearance changes (face, texture, etc.)
 // without requiring a full respawn.
+//
+// The Trilogy client identifies the target entity by NAME, not spawn_id.
+// jackbauer (offset 48) must be 24 or the client ignores the packet.
 // ============================================================
 
 void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
@@ -367,22 +370,17 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 	Trilogy::structs::Illusion_Struct out{};
 	memset(&out, 0, sizeof(out));
 
-	out.spawnid      = static_cast<int16_t>(emu->spawnid);
-	out.race         = static_cast<int16_t>(emu->race);
-	out.gender       = static_cast<int8_t>(emu->gender);
-	out.texture      = static_cast<int8_t>(emu->texture);
-	out.helmtexture  = static_cast<int8_t>(emu->helmtexture);
-	out.unknown_26   = 26;
-	out.haircolor    = static_cast<int8_t>(emu->haircolor);
-	out.beardcolor   = static_cast<int8_t>(emu->beardcolor);
-	out.eyecolor1    = static_cast<int8_t>(emu->eyecolor1);
-	out.eyecolor2    = static_cast<int8_t>(emu->eyecolor2);
-	out.hairstyle    = static_cast<int8_t>(emu->hairstyle);
-	// title = wode (face overlay, barbarians only) — not in EQEmu internal struct, leave 0
-	out.luclinface   = static_cast<int8_t>(emu->face);
-	out.unknown016   = static_cast<int32_t>(0xFFFFFFFF);
+	// The client matches by name — copy charname, truncate to 15 chars.
+	strncpy(out.name,   emu->charname, sizeof(out.name)   - 1);
+	strncpy(out.target, emu->charname, sizeof(out.target) - 1);
+	out.jackbauer = 24;
+	out.race      = static_cast<int16_t>(emu->race);
+	out.gender    = static_cast<int16_t>(emu->gender);
+	out.texture   = static_cast<int16_t>(emu->texture);
+	out.helm      = static_cast<int16_t>(emu->helmtexture);
+	out.face      = static_cast<int16_t>(emu->face);
 
-	m_tzs->SendToSession(m_session_key, 0x9140,
+	m_tzs->SendToSession(m_session_key, 0x9120,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 }

@@ -1393,30 +1393,25 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 	        sent, raw.size(), clen, clen >> 9);
 	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 
-	// Send Illusion packets (OP_Illusion = 0x9140) for all player-race NPCs so the
-	// Trilogy client applies correct face/hair appearance.  The Spawn_Struct itself
-	// does not carry luclinface for NPCs (per EQClassic FillSpawnStruct — that field
-	// is commented out there); appearance is driven entirely by Illusion packets.
+	// Send Illusion packets (OP_Illusion = 0x9120, 72-byte EQClassic Zone format)
+	// for all player-race NPCs so the Trilogy client applies correct face/texture.
+	// The Spawn_Struct does not carry face for NPCs; appearance is set only via
+	// Illusion.  The client matches by name (not spawn_id); jackbauer must be 24.
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
 		if (!npc || !IsPlayerRace(npc->GetRace())) continue;
 
 		Trilogy::structs::Illusion_Struct il{};
 		memset(&il, 0, sizeof(il));
-		il.spawnid     = static_cast<int16_t>(npc->GetID());
-		il.race        = static_cast<int16_t>(npc->GetRace());
-		il.gender      = static_cast<int8_t>(npc->GetGender());
-		il.texture     = static_cast<int8_t>(npc->GetTexture());
-		il.helmtexture = static_cast<int8_t>(npc->GetHelmTexture());
-		il.unknown_26  = 26;
-		il.haircolor   = static_cast<int8_t>(npc->GetHairColor());
-		il.beardcolor  = static_cast<int8_t>(npc->GetBeardColor());
-		il.eyecolor1   = static_cast<int8_t>(npc->GetEyeColor1());
-		il.eyecolor2   = static_cast<int8_t>(npc->GetEyeColor2());
-		il.hairstyle   = static_cast<int8_t>(npc->GetHairStyle());
-		il.luclinface  = static_cast<int8_t>(npc->GetLuclinFace());
-		il.unknown016  = static_cast<int32_t>(0xFFFFFFFF);
-		SendApp(addr, port, s, 0x9140,
+		strncpy(il.name,   npc->GetCleanName(), sizeof(il.name)   - 1);
+		strncpy(il.target, npc->GetCleanName(), sizeof(il.target) - 1);
+		il.jackbauer = 24;
+		il.race      = static_cast<int16_t>(npc->GetRace());
+		il.gender    = static_cast<int16_t>(npc->GetGender());
+		il.texture   = static_cast<int16_t>(npc->GetTexture());
+		il.helm      = static_cast<int16_t>(npc->GetHelmTexture());
+		il.face      = static_cast<int16_t>(npc->GetLuclinFace());
+		SendApp(addr, port, s, 0x9120,
 		        reinterpret_cast<const uint8_t*>(&il),
 		        static_cast<uint32_t>(sizeof(il)));
 	}
@@ -1568,24 +1563,19 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 
 	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 
-	// Follow up with an Illusion packet to set face/hair appearance — the
-	// Spawn_Struct luclinface field is ignored for NPCs by the Trilogy client.
+	// Follow up with an Illusion packet (0x9120, 72-byte Zone format) to apply
+	// face/texture — Spawn_Struct does not carry face for NPCs in Trilogy.
 	Trilogy::structs::Illusion_Struct il{};
 	memset(&il, 0, sizeof(il));
-	il.spawnid     = static_cast<int16_t>(npc->GetID());
-	il.race        = static_cast<int16_t>(npc->GetRace());
-	il.gender      = static_cast<int8_t>(npc->GetGender());
-	il.texture     = static_cast<int8_t>(npc->GetTexture());
-	il.helmtexture = static_cast<int8_t>(npc->GetHelmTexture());
-	il.unknown_26  = 26;
-	il.haircolor   = static_cast<int8_t>(npc->GetHairColor());
-	il.beardcolor  = static_cast<int8_t>(npc->GetBeardColor());
-	il.eyecolor1   = static_cast<int8_t>(npc->GetEyeColor1());
-	il.eyecolor2   = static_cast<int8_t>(npc->GetEyeColor2());
-	il.hairstyle   = static_cast<int8_t>(npc->GetHairStyle());
-	il.luclinface  = static_cast<int8_t>(npc->GetLuclinFace());
-	il.unknown016  = static_cast<int32_t>(0xFFFFFFFF);
-	SendToSession(session_key, 0x9140,
+	strncpy(il.name,   npc->GetCleanName(), sizeof(il.name)   - 1);
+	strncpy(il.target, npc->GetCleanName(), sizeof(il.target) - 1);
+	il.jackbauer = 24;
+	il.race      = static_cast<int16_t>(npc->GetRace());
+	il.gender    = static_cast<int16_t>(npc->GetGender());
+	il.texture   = static_cast<int16_t>(npc->GetTexture());
+	il.helm      = static_cast<int16_t>(npc->GetHelmTexture());
+	il.face      = static_cast<int16_t>(npc->GetLuclinFace());
+	SendToSession(session_key, 0x9120,
 	              reinterpret_cast<const uint8_t*>(&il),
 	              static_cast<uint32_t>(sizeof(il)));
 }
