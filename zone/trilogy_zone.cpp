@@ -678,13 +678,11 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.id        = static_cast<uint16>(item_id);
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
 		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
-		// Trilogy v29c has no charm items, but slot indices match EQEmu for all
-		// other slots (equipment 1-21, personal bags 22-29).  Only bag contents
-		// differ: EQEmu uses base 251, EQClassic client expects base 250.
-		// EQClassic parent-bag formula: parent = 22 + (equipSlot-250)/10 — so bags
-		// MUST stay at 22-29, otherwise content→parent linkage crashes the client.
+		// Trilogy v29c predates the charm slot, so its SLOT_PERSONAL_BEGIN=21 (not 22).
+		// Apply -1 to ALL slots >= 22: personal bags 22-29 → wire 21-28, contents
+		// 251-330 → wire 250-329.  Client parent formula: 21 + (equipSlot-250)/10.
 		if (slot_id == 0) { ++skipped; continue; }   // charm: no v29c equivalent
-		ci.equipslot = static_cast<int16>(slot_id >= 251 ? slot_id - 1 : slot_id);
+		ci.equipslot = static_cast<int16>(slot_id >= 22 ? slot_id - 1 : slot_id);
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
 
@@ -1224,12 +1222,13 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			uint32_t item_id = Strings::ToUnsignedInt(row[1]);
 			if (item_id > 32767 || item_id == 0) continue;
 			if (slot >= 0 && slot <= 29) {
-				pp.inventory[slot] = static_cast<uint16_t>(item_id);
+				int pp_slot = (slot >= 22) ? slot - 1 : slot; // v29c SLOT_PERSONAL_BEGIN=21
+				pp.inventory[pp_slot] = static_cast<uint16_t>(item_id);
 				int charges = Strings::ToInt(row[2]);
 				if (charges == 0) {
-					pp.invItemProprieties[slot].charges = static_cast<int8_t>(-1);
+					pp.invItemProprieties[pp_slot].charges = static_cast<int8_t>(-1);
 				} else {
-					pp.invItemProprieties[slot].charges = static_cast<int8_t>(std::min(charges, 127));
+					pp.invItemProprieties[pp_slot].charges = static_cast<int8_t>(std::min(charges, 127));
 				}
 			}
 		}
@@ -1252,8 +1251,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			int idx = slotid - 251; // containerinv index 0-79
 			if (idx >= 0 && idx < 80) {
 				// Skip orphaned bag contents: parent bag slot must exist in inventory.
-				int bag_idx = idx / 10; // 0-7 → pp.inventory[22..29]
-				if (pp.inventory[22 + bag_idx] == 0xFFFF) continue;
+				int bag_idx = idx / 10; // 0-7 → pp.inventory[21..28] (v29c SLOT_PERSONAL_BEGIN=21)
+				if (pp.inventory[21 + bag_idx] == 0xFFFF) continue;
 				pp.containerinv[idx] = static_cast<uint16_t>(item_id);
 				int charges = Strings::ToInt(row[2]);
 				pp.bagItemProprieties[idx].charges = (charges == 0)
