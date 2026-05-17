@@ -120,6 +120,10 @@ private:
 		// Owned by entity_list; do NOT delete directly — use entity_list.RemoveClient/Mob.
 		TrilogyClient* trilogy_client = nullptr;
 
+		// Cursor slot tracking for two-step move (unequip/equip via wire slot 0).
+		// Set to the DB slot of the item picked up; cleared after it lands.
+		int cursor_from_db = -1;
+
 		// Fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;
@@ -150,6 +154,10 @@ private:
 	                        const uint8_t* payload, uint32_t plen);
 	void HandleChannelMessage(const std::string& addr, int port, Session& s,
 	                          const uint8_t* payload, uint32_t plen);
+	void HandleMoveItem(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
+	                               const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);

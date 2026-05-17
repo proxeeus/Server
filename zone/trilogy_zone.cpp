@@ -71,6 +71,7 @@ static constexpr uint16_t ZN_OP_CPlayerBook  = 0x6521; // zone -> client: single
 static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single container at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
+static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -482,6 +483,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleClientUpdate(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ChannelMsg)
 			HandleChannelMessage(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_MoveItem)
+			HandleMoveItem(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_WearChange)
+			HandleConnectedWearChange(addr, port, s, payload, plen);
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -580,11 +585,11 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 //   (int16 opcode + ClassicItem_Struct)[count]
 //   Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container
 //
-// Slot mapping (equipment and bag indices identical to EQEmu; only content base differs):
-//   EQEmu 0      → skipped          (charm; no v29c equivalent)
-//   EQEmu 1-21   → equipSlot 1-21   (equipment; worn display handled by WearChange)
-//   EQEmu 22-29  → equipSlot 22-29  (personal bags; MUST match for content→parent link)
-//   EQEmu 251-330→ equipSlot 250-329 (bag contents; EQClassic base=250, EQEmu base=251)
+// Slot mapping (v29c SLOT_PERSONAL_BEGIN=21, no charm slot):
+//   EQEmu 0      → skipped           (charm; no v29c equivalent)
+//   EQEmu 1-21   → equipSlot 1-21    (equipment; worn display handled by WearChange)
+//   EQEmu 22-29  → equipSlot 21-28   (personal bags; -1 shift, v29c SLOT_PERSONAL_BEGIN=21)
+//   EQEmu 251-330→ equipSlot 250-329 (bag contents; -1 shift, client parent: 21+(slot-250)/10)
 //
 // Bank (2000+) and cursor bag (330+) are skipped — not needed at zone-in.
 //
@@ -2422,4 +2427,186 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 
 	LogInfo("[TrilogyZone] tx CLOSE SEQ={}", s.gsq - 1);
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
+}
+
+// ============================================================
+// HandleMoveItem — client moved an item (0x2c21)
+//
+// Wire slot semantics (client-side, with our -1 bag shift applied):
+//   1-20    worn equipment         → DB slotid same as wire
+//   21-28   personal bags          → DB slotid = wire + 1  (reverse -1 shift)
+//   250-329 bag contents           → DB slotid = wire + 1  (reverse -1 shift)
+//   0xFFFFFFFF                     → destroy (delete from inventory)
+//
+// For bag-to-bag swaps we also migrate bag content slotids so orphan
+// tracking on subsequent zone-ins remains correct.
+// ============================================================
+
+void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Session& s,
+                                        const uint8_t* payload, uint32_t plen)
+{
+	if (plen < sizeof(Trilogy::structs::MoveItem_Struct)) return;
+	const auto* mi = reinterpret_cast<const Trilogy::structs::MoveItem_Struct*>(payload);
+
+	const uint32_t from_wire = mi->from_slot;
+	const uint32_t to_wire   = mi->to_slot;
+
+	if (from_wire == to_wire) return;
+
+	// Wire → EQEmu DB slotid.  Personal bags and contents both get +1 to reverse
+	// the -1 shift we applied when sending per-item packets at zone-in.
+	// Wire slot 0 = cursor (item held by mouse) — NOT mapped here; handled separately.
+	auto wire_to_db = [](uint32_t w) -> int {
+		if (w == 0xFFFFFFFFu)        return -1;  // destroy
+		if (w >= 1  && w <= 20)      return (int)w;        // worn, no shift
+		if (w >= 21 && w <= 28)      return (int)w + 1;    // personal bags 22-29
+		if (w >= 250 && w <= 329)    return (int)w + 1;    // bag contents 251-330
+		return -1;
+	};
+
+	// Trilogy unequip/equip is a two-step move through the cursor (wire slot 0):
+	//   Step 1: worn_slot → 0  (pick up)   — save DB slot in cursor_from_db, no DB write
+	//   Step 2: 0 → dest_slot  (place)     — use cursor_from_db as source, then clear it
+	// Destroy from cursor: 0 → 0xFFFFFFFF  — delete cursor_from_db row from DB.
+
+	if (to_wire == 0) {
+		// Picking up to cursor.  Resolve the DB slot now and park it.
+		const int from_db = wire_to_db(from_wire);
+		if (from_db < 0) return;
+		LogInfo("[TrilogyZone] MoveItem (pick up) char={} from_wire={} → cursor, cursor_from_db={}",
+		        s.char_id, from_wire, from_db);
+		s.cursor_from_db = from_db;
+		return;
+	}
+
+	// Determine the effective source DB slot.
+	int from_db;
+	if (from_wire == 0) {
+		// Placing from cursor — use the slot we saved in step 1.
+		if (s.cursor_from_db < 0) {
+			LogInfo("[TrilogyZone] MoveItem from cursor but cursor_from_db is unset, ignoring");
+			return;
+		}
+		from_db = s.cursor_from_db;
+		s.cursor_from_db = -1;
+	} else {
+		from_db = wire_to_db(from_wire);
+		if (from_db < 0) return;
+	}
+
+	LogInfo("[TrilogyZone] MoveItem char={} from_wire={} to_wire={} from_db={}",
+	        s.char_id, from_wire, to_wire, from_db);
+
+	if (to_wire == 0xFFFFFFFFu) {
+		// Destroy
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, from_db));
+		return;
+	}
+
+	const int to_db = wire_to_db(to_wire);
+	if (to_db < 0) return; // unknown destination
+
+	LogInfo("[TrilogyZone] MoveItem char={} from_db={} to_db={}", s.char_id, from_db, to_db);
+
+	// Determine if either slot is a personal-bag position (DB 22-29).
+	// If so, we need to migrate bag contents when the bags themselves swap.
+	// from_wire may be 0 (cursor); use from_db range to detect bag slot.
+	const bool from_is_bag_slot = (from_db >= 22 && from_db <= 29);
+	const bool to_is_bag_slot   = (to_wire >= 21 && to_wire <= 28);
+
+	// DB slotid base for the 10 content slots of each bag position.
+	// bag at DB 22 → contents 251-260; bag at DB 23 → contents 261-270; etc.
+	const int from_cont_base = from_is_bag_slot ? 251 + (from_db - 22) * 10 : -1;
+	const int to_cont_base   = to_is_bag_slot   ? 251 + (to_db   - 22) * 10 : -1;
+
+	// ---- persist bag/item row swap ----
+	// Determine if the destination is occupied so we know whether to swap or move.
+	bool to_occupied = false;
+	{
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT COUNT(*) FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, to_db));
+		if (r.Success() && r.RowCount() > 0)
+			to_occupied = (Strings::ToInt(r.begin()[0]) > 0);
+	}
+
+	if (!to_occupied) {
+		// Simple move: from → to (no item at destination)
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+		    to_db, s.char_id, from_db));
+
+		// Migrate bag contents if the item being moved is a bag container
+		if (from_cont_base >= 0 && to_cont_base >= 0) {
+			// Move contents from_cont_base..+9 → to_cont_base..+9 via temp range 9000-9009
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`+{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+			    9000 - from_cont_base, s.char_id, from_cont_base, from_cont_base + 9));
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`-{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN 9000 AND 9009",
+			    9000 - to_cont_base, s.char_id));
+		}
+	} else {
+		// Swap: both slots occupied — use temp slotid 9999 to avoid unique-key conflict
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`=9999 WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, from_db));
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+		    from_db, s.char_id, to_db));
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`=9999",
+		    to_db, s.char_id));
+
+		// Swap bag contents if both slots are bag positions
+		if (from_cont_base >= 0 && to_cont_base >= 0) {
+			const int diff = to_cont_base - from_cont_base;
+			// Step 1: from_cont → temp 9000-9009
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`+{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+			    9000 - from_cont_base, s.char_id, from_cont_base, from_cont_base + 9));
+			// Step 2: to_cont → from_cont (subtract diff)
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`-{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+			    diff, s.char_id, to_cont_base, to_cont_base + 9));
+			// Step 3: temp 9000-9009 → to_cont
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`-{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN 9000 AND 9009",
+			    9000 - to_cont_base, s.char_id));
+		}
+	}
+}
+
+// ============================================================
+// HandleConnectedWearChange — client changed its equipment appearance (0x9220)
+//
+// Broadcast to all clients in the zone:
+//   • Titanium clients: via s.trilogy_client->WearChange() → entity_list.QueueClients
+//   • Trilogy clients:  via TrilogyClient::HandleOutgoingWearChange (called from
+//                       QueueClients → TrilogyClient::QueuePacket → TranslateAndSend)
+// ============================================================
+
+void TrilogyZoneServer::HandleConnectedWearChange(const std::string& addr, int port, Session& s,
+                                                   const uint8_t* payload, uint32_t plen)
+{
+	if (plen < sizeof(Trilogy::structs::WearChange_Struct)) return;
+	if (!s.trilogy_client) return;
+
+	const auto* wc = reinterpret_cast<const Trilogy::structs::WearChange_Struct*>(payload);
+
+	// Translate Trilogy WearChange to EQEmu material values and broadcast to all
+	// clients in the zone (Titanium via entity_list.QueueClients; Trilogy via
+	// TrilogyClient::HandleOutgoingWearChange in TranslateAndSend).
+	const uint8_t  material_slot = static_cast<uint8_t>(wc->wear_slot_id);
+	const uint32_t texture       = static_cast<uint32_t>(static_cast<uint8_t>(wc->slot_graphic));
+	const uint32_t color         = static_cast<uint32_t>(wc->color);
+
+	s.trilogy_client->WearChange(material_slot, texture, color, 0);
 }

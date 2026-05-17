@@ -225,6 +225,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Illusion:
 		HandleIllusion(app);
 		break;
+	case OP_WearChange:
+		HandleOutgoingWearChange(app);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -510,6 +513,43 @@ void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
 
 	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
 	delete[] buf;
+}
+
+// ============================================================
+// HandleOutgoingWearChange — translate EQEmu OP_WearChange (Titanium format,
+// 27 bytes) to Trilogy WearChange_Struct (0x9220, 16 bytes) and send.
+//
+// Called whenever any mob in the zone changes its worn appearance — including
+// when a Trilogy player equips/unequips (via WearChange() in the zone server)
+// and when a Titanium player equips.  This ensures all Trilogy clients see
+// appearance changes regardless of the source client type.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::WearChange_Struct)) return;
+
+	const auto* src = reinterpret_cast<const ::WearChange_Struct*>(app->pBuffer);
+
+	// EQClassic's ProcessOP_WearChange uses QueueClients(this, pApp, ignore_sender=true).
+	// Mob::WearChange() uses ignore_sender=false (default), so OP_WearChange for our own
+	// appearance change comes back here.  Sending 0x9220 to the Trilogy client for its
+	// own equipment change causes a feedback loop — the client re-sends 0x9220.
+	if (src->spawn_id == GetID()) return;
+
+	using TrilWC = Trilogy::structs::WearChange_Struct;
+	TrilWC wc{};
+	wc.spawn_id     = static_cast<int32_t>(src->spawn_id);
+	wc.wear_slot_id = static_cast<int8_t>(src->wear_slot_id);
+	wc.slot_graphic = static_cast<int8_t>(src->material & 0xFF);
+	wc.sub_op       = 0;
+	wc.color        = static_cast<int32_t>(src->color.Color);
+	wc.wc_unknown3  = 0;
+	wc.flag         = 0;
+
+	m_tzs->SendToSession(m_session_key, 0x9220,
+	                     reinterpret_cast<const uint8_t*>(&wc),
+	                     static_cast<uint32_t>(sizeof(wc)));
 }
 
 // ============================================================
