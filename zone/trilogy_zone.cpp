@@ -580,9 +580,10 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 //   (int16 opcode + ClassicItem_Struct)[count]
 //   Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container
 //
-// Slot mapping:
-//   EQEmu 0-21   → equipSlot 0-21   (equipment)
-//   EQEmu 22-29  → equipSlot 22-29  (personal bags; container items)
+// Slot mapping (equipment and bag indices identical to EQEmu; only content base differs):
+//   EQEmu 0      → skipped          (charm; no v29c equivalent)
+//   EQEmu 1-21   → equipSlot 1-21   (equipment; worn display handled by WearChange)
+//   EQEmu 22-29  → equipSlot 22-29  (personal bags; MUST match for content→parent link)
 //   EQEmu 251-330→ equipSlot 250-329 (bag contents; EQClassic base=250, EQEmu base=251)
 //
 // Bank (2000+) and cursor bag (330+) are skipped — not needed at zone-in.
@@ -590,13 +591,9 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 // DEBUG: set TRILOGY_ITEM_TEST_ID > 0 to send ONLY that item ID.
 //        Set to 0 for normal behaviour.
 // DEBUG: set TRILOGY_SKIP_SPAWNS = true to suppress SendZoneSpawns entirely.
-// TRILOGY_MAX_ICON: safe icon index ceiling for the v29c client.
-//   Icons above ~900 may index out-of-bounds in the client's texture atlas.
-//   Set to 0 to suppress all clamping (for testing).
 // ============================================================
 static constexpr int32  TRILOGY_ITEM_TEST_ID = 0;
 static constexpr bool   TRILOGY_SKIP_SPAWNS  = false;
-static constexpr uint16 TRILOGY_MAX_ICON     = 900;
 
 static inline int32 clamp_i8(int32 v) {
 	return v < -128 ? -128 : (v > 127 ? 127 : v);
@@ -680,9 +677,13 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.itemclass = static_cast<int8>(Strings::ToInt(row[10]));
 		ci.id        = static_cast<uint16>(item_id);
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
-		if (TRILOGY_MAX_ICON > 0 && ci.icon > TRILOGY_MAX_ICON) ci.icon = 0;
-		// EQEmu bag-content slots are 251-330; EQClassic expects equipSlot 250-329 (base=250).
-		// Subtract 1 to convert. Worn/bag slots 0-29 map 1:1.
+		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
+		// Trilogy v29c has no charm items, but slot indices match EQEmu for all
+		// other slots (equipment 1-21, personal bags 22-29).  Only bag contents
+		// differ: EQEmu uses base 251, EQClassic client expects base 250.
+		// EQClassic parent-bag formula: parent = 22 + (equipSlot-250)/10 — so bags
+		// MUST stay at 22-29, otherwise content→parent linkage crashes the client.
+		if (slot_id == 0) { ++skipped; continue; }   // charm: no v29c equivalent
 		ci.equipslot = static_cast<int16>(slot_id >= 251 ? slot_id - 1 : slot_id);
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
@@ -868,36 +869,16 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		++sent_count;
 	}
 
-	// Send individual per-item packets — primary mechanism for inventory window display.
+	// Send individual per-item packets — one per item, primary mechanism for inventory display.
 	// Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container (matches EQMacEmuTrilogy BulkSendItems).
 	// Payload: raw ClassicItem_Struct (292 bytes), no count prefix.
+	// NOTE: do NOT also send the bulk F621 — the client crashes on inventory open if both are sent.
 	for (const auto& ci : items) {
 		uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
 		               (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
 		SendApp(addr, port, s, opc,
 		        reinterpret_cast<const uint8_t*>(&ci),
 		        static_cast<uint32_t>(sizeof(ci)));
-	}
-
-	// Also send F621 bulk packet (EQClassic uncompressed: int16 count + BulkedItem_Struct[]).
-	if (!items.empty()) {
-		uint16_t count    = static_cast<uint16_t>(items.size());
-		uint32_t pkt_size = 2u + static_cast<uint32_t>(count) *
-		                    (2u + static_cast<uint32_t>(sizeof(Trilogy::structs::ClassicItem_Struct)));
-		std::vector<uint8_t> pkt(pkt_size, 0);
-		pkt[0] = static_cast<uint8_t>(count & 0xFF);
-		pkt[1] = static_cast<uint8_t>((count >> 8) & 0xFF);
-		uint32_t off = 2;
-		for (const auto& ci : items) {
-			uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
-			               (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
-			pkt[off]   = static_cast<uint8_t>(opc & 0xFF);
-			pkt[off+1] = static_cast<uint8_t>((opc >> 8) & 0xFF);
-			off += 2;
-			memcpy(pkt.data() + off, &ci, sizeof(ci));
-			off += static_cast<uint32_t>(sizeof(ci));
-		}
-		SendApp(addr, port, s, ZN_OP_CharInventory, pkt.data(), pkt_size);
 	}
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} sent={}",
