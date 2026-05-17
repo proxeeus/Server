@@ -683,11 +683,18 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.id        = static_cast<uint16>(item_id);
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
 		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
-		// Trilogy v29c predates the charm slot, so its SLOT_PERSONAL_BEGIN=21 (not 22).
-		// Apply -1 to ALL slots >= 22: personal bags 22-29 → wire 21-28, contents
-		// 251-330 → wire 250-329.  Client parent formula: 21 + (equipSlot-250)/10.
+		// Trilogy v29c: SLOT_PERSONAL_BEGIN=21 (no charm slot).
+		// Personal bags (DB 22-30) sent as wire 21-29 (-1 shift).
+		// Bag contents (DB 251-340) sent as wire 240-329 (-11 shift):
+		//   client formula: wire = 250 + (bag_wire - 22)*10 + slot_idx
+		//   DB 261-270 (bag at DB 23, wire 22) → wire 250-259  (261-11=250) ✓
 		if (slot_id == 0) { ++skipped; continue; }   // charm: no v29c equivalent
-		ci.equipslot = static_cast<int16>(slot_id >= 22 ? slot_id - 1 : slot_id);
+		if (slot_id >= 251)
+			ci.equipslot = static_cast<int16>(slot_id - 11);  // bag contents → wire 240-329
+		else if (slot_id >= 22)
+			ci.equipslot = static_cast<int16>(slot_id - 1);   // personal bags → wire 21-29
+		else
+			ci.equipslot = static_cast<int16>(slot_id);        // worn 1-20
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
 
@@ -2432,11 +2439,15 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 // ============================================================
 // HandleMoveItem — client moved an item (0x2c21)
 //
-// Wire slot semantics (client-side, with our -1 bag shift applied):
+// Wire slot semantics (client-side):
 //   1-20    worn equipment         → DB slotid same as wire
-//   21-28   personal bags          → DB slotid = wire + 1  (reverse -1 shift)
-//   250-329 bag contents           → DB slotid = wire + 1  (reverse -1 shift)
+//   21-29   personal bags          → DB slotid = wire + 1   (reverse -1 shift)
+//   240-329 bag contents           → DB slotid = wire + 11  (reverse -11 shift)
 //   0xFFFFFFFF                     → destroy (delete from inventory)
+//
+// Bag content client formula: wire = 250 + (bag_wire - 22) * 10 + slot_idx
+//   bag at wire 22 (DB 23) → content wire 250-259 → DB 261-270
+//   bag at wire 21 (DB 22) → content wire 240-249 → DB 251-260
 //
 // For bag-to-bag swaps we also migrate bag content slotids so orphan
 // tracking on subsequent zone-ins remains correct.
@@ -2460,7 +2471,7 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		if (w == 0xFFFFFFFFu)        return -1;  // destroy
 		if (w >= 1  && w <= 20)      return (int)w;        // worn, no shift
 		if (w >= 21 && w <= 29)      return (int)w + 1;    // personal bags 22-30
-		if (w >= 250 && w <= 329)    return (int)w + 1;    // bag contents 251-330
+		if (w >= 240 && w <= 329)    return (int)w + 11;   // bag contents 251-340
 		return -1;
 	};
 
