@@ -630,7 +630,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.book, it.booktype, it.filename"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
-		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 340)"
+		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 29 OR inv.slotid BETWEEN 251 AND 330)"
 		" ORDER BY inv.slotid",
 		s.char_id
 	);
@@ -644,7 +644,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	int32 db_rows   = static_cast<int32>(r.RowCount());
 	int32 skipped   = 0;
 	int32 sent_count = 0;
-	bool bag_sent[9] = {}; // tracks which of inventory slots 22-30 were actually sent
+	bool bag_sent[8] = {}; // tracks which of inventory slots 22-29 were actually sent
 
 	std::vector<Trilogy::structs::ClassicItem_Struct> items;
 	items.reserve(static_cast<size_t>(db_rows));
@@ -654,17 +654,17 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		int    charges = Strings::ToInt(row[1]);
 
 		int32  item_id    = Strings::ToInt(row[2]);
-		if (item_id > 32767) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
+		if (item_id > 65535) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
 		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
 		if (slot_id > 30 && slot_id < 251) { ++skipped; continue; } // skip invalid range 31-250
-		if (slot_id > 340) { ++skipped; continue; }
+		if (slot_id > 330) { ++skipped; continue; }               // v29c has 8 bags (22-29); no slot 9 contents
 		// Skip bag contents whose parent bag was never sent (orphaned items crash the client)
 		if (slot_id >= 251) {
-			int bag_idx = (slot_id - 251) / 10; // 0-8 → parent bag at slot 22-30
-			if (bag_idx >= 9 || !bag_sent[bag_idx]) { ++skipped; continue; }
+			int bag_idx = (slot_id - 251) / 10; // 0-7 → parent bag at wire/DB slot 22-29
+			if (bag_idx >= 8 || !bag_sent[bag_idx]) { ++skipped; continue; }
 		}
 		// Track that this bag slot was sent so its contents can follow
-		if (slot_id >= 22 && slot_id <= 30)
+		if (slot_id >= 22 && slot_id <= 29)
 			bag_sent[slot_id - 22] = true;
 
 		Trilogy::structs::ClassicItem_Struct ci{};
@@ -683,18 +683,13 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.id        = static_cast<uint16>(item_id);
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
 		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
-		// Trilogy v29c: SLOT_PERSONAL_BEGIN=21 (no charm slot).
-		// Personal bags (DB 22-30) sent as wire 21-29 (-1 shift).
-		// Bag contents (DB 251-340) sent as wire 240-329 (-11 shift):
-		//   client formula: wire = 250 + (bag_wire - 22)*10 + slot_idx
-		//   DB 261-270 (bag at DB 23, wire 22) → wire 250-259  (261-11=250) ✓
 		if (slot_id == 0) { ++skipped; continue; }   // charm: no v29c equivalent
+		// v29c: personal bags wire 22-29 == DB 22-29 (no shift).
+		// Bag contents: client formula = 250+(bag_wire-22)*10+k → wire 250-329 (DB-1).
 		if (slot_id >= 251)
-			ci.equipslot = static_cast<int16>(slot_id - 11);  // bag contents → wire 240-329
-		else if (slot_id >= 22)
-			ci.equipslot = static_cast<int16>(slot_id - 1);   // personal bags → wire 21-29
+			ci.equipslot = static_cast<int16>(slot_id - 1);  // DB 251-330 → wire 250-329
 		else
-			ci.equipslot = static_cast<int16>(slot_id);        // worn 1-20
+			ci.equipslot = static_cast<int16>(slot_id);       // worn 1-21, bags 22-29
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
 
@@ -2465,14 +2460,14 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 
 	if (from_wire == to_wire) return;
 
-	// Wire → EQEmu DB slotid.  Personal bags and contents both get +1 to reverse
-	// the -1 shift we applied when sending per-item packets at zone-in.
+	// Wire → EQEmu DB slotid.
+	// Personal bags: wire 22-29 == DB 22-29 (no shift).
+	// Bag contents: wire 250-329 → DB 251-330 (+1 shift; client formula 250+(bag-22)*10+k).
 	// Wire slot 0 = cursor (item held by mouse) — NOT mapped here; handled separately.
 	auto wire_to_db = [](uint32_t w) -> int {
-		if (w == 0xFFFFFFFFu)        return -1;  // destroy
-		if (w >= 1  && w <= 20)      return (int)w;        // worn, no shift
-		if (w >= 21 && w <= 29)      return (int)w + 1;    // personal bags 22-30
-		if (w >= 240 && w <= 329)    return (int)w + 11;   // bag contents 251-340
+		if (w == 0xFFFFFFFFu)        return -1;    // destroy
+		if (w >= 1  && w <= 29)      return (int)w;   // worn 1-21 + personal bags 22-29
+		if (w >= 250 && w <= 329)    return (int)w + 1; // bag contents → DB 251-330
 		return -1;
 	};
 
