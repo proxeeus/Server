@@ -988,6 +988,7 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			s.source_addr, static_cast<uint16_t>(s.source_port)
 		);
 		entity_list.AddClient(tc);
+		database.LoadPetInfo(tc);
 		s.trilogy_client  = tc;
 		s.counted_in_zone = true; // legacy fallback if tc ever becomes null post-init
 
