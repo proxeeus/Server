@@ -630,7 +630,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.book, it.booktype, it.filename"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
-		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 29 OR inv.slotid BETWEEN 251 AND 330)"
+		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 340)"
 		" ORDER BY inv.slotid",
 		s.char_id
 	);
@@ -644,7 +644,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	int32 db_rows   = static_cast<int32>(r.RowCount());
 	int32 skipped   = 0;
 	int32 sent_count = 0;
-	bool bag_sent[8] = {}; // tracks which of inventory slots 22-29 were actually sent
+	bool bag_sent[9] = {}; // tracks which of inventory slots 22-30 were actually sent
 
 	std::vector<Trilogy::structs::ClassicItem_Struct> items;
 	items.reserve(static_cast<size_t>(db_rows));
@@ -656,15 +656,15 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		int32  item_id    = Strings::ToInt(row[2]);
 		if (item_id > 32767) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
 		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
-		if (slot_id > 29 && slot_id < 251) { ++skipped; continue; } // skip invalid range 30-250
-		if (slot_id > 330) { ++skipped; continue; }
+		if (slot_id > 30 && slot_id < 251) { ++skipped; continue; } // skip invalid range 31-250
+		if (slot_id > 340) { ++skipped; continue; }
 		// Skip bag contents whose parent bag was never sent (orphaned items crash the client)
 		if (slot_id >= 251) {
-			int bag_idx = (slot_id - 251) / 10; // 0-7 → parent bag at slot 22-29
-			if (bag_idx >= 8 || !bag_sent[bag_idx]) { ++skipped; continue; }
+			int bag_idx = (slot_id - 251) / 10; // 0-8 → parent bag at slot 22-30
+			if (bag_idx >= 9 || !bag_sent[bag_idx]) { ++skipped; continue; }
 		}
 		// Track that this bag slot was sent so its contents can follow
-		if (slot_id >= 22 && slot_id <= 29)
+		if (slot_id >= 22 && slot_id <= 30)
 			bag_sent[slot_id - 22] = true;
 
 		Trilogy::structs::ClassicItem_Struct ci{};
@@ -2459,7 +2459,7 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	auto wire_to_db = [](uint32_t w) -> int {
 		if (w == 0xFFFFFFFFu)        return -1;  // destroy
 		if (w >= 1  && w <= 20)      return (int)w;        // worn, no shift
-		if (w >= 21 && w <= 28)      return (int)w + 1;    // personal bags 22-29
+		if (w >= 21 && w <= 29)      return (int)w + 1;    // personal bags 22-30
 		if (w >= 250 && w <= 329)    return (int)w + 1;    // bag contents 251-330
 		return -1;
 	};
@@ -2510,11 +2510,11 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 
 	LogInfo("[TrilogyZone] MoveItem char={} from_db={} to_db={}", s.char_id, from_db, to_db);
 
-	// Determine if either slot is a personal-bag position (DB 22-29).
+	// Determine if either slot is a personal-bag position (DB 22-30).
 	// If so, we need to migrate bag contents when the bags themselves swap.
 	// from_wire may be 0 (cursor); use from_db range to detect bag slot.
-	const bool from_is_bag_slot = (from_db >= 22 && from_db <= 29);
-	const bool to_is_bag_slot   = (to_wire >= 21 && to_wire <= 28);
+	const bool from_is_bag_slot = (from_db >= 22 && from_db <= 30);
+	const bool to_is_bag_slot   = (to_wire >= 21 && to_wire <= 29);
 
 	// DB slotid base for the 10 content slots of each bag position.
 	// bag at DB 22 → contents 251-260; bag at DB 23 → contents 261-270; etc.
