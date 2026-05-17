@@ -65,8 +65,11 @@ static constexpr uint16_t ZN_OP_MobUpdate    = 0xa120; // zone -> client: SpawnP
 static constexpr uint16_t ZN_OP_TimeOfDay    = 0xf220; // zone -> client: TimeOfDay_Struct (6 bytes)
 static constexpr uint16_t ZN_OP_Stamina      = 0x5721; // zone -> client: Stamina_Struct (8 bytes)
 static constexpr uint16_t ZN_OP_SetAvatar    = 0x6f20; // zone -> client: MSG_SET_AVATAR (1 byte, zeroed) — signals gameplay mode start
-static constexpr uint16_t ZN_OP_ItemTradeIn  = 0x3120; // zone -> client: single item (raw ClassicItem_Struct, 292 bytes)
-static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: bulk item packet — unused at zone-in (EQClassic uses 0x3120 per-item)
+static constexpr uint16_t ZN_OP_MerchantItem = 0x3120; // zone -> client: merchant item (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_CPlayerItem  = 0x6421; // zone -> client: single normal item at zone-in (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_CPlayerBook  = 0x6521; // zone -> client: single book item at zone-in (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single container at zone-in (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 
 // EQNetwork header flags (identical to world handler)
@@ -457,13 +460,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		if (opcode == 0xd820)
 			HandleZoneInComplete(addr, port, s);
 		else if (opcode == ZN_OP_WearChange || opcode == ZN_OP_Appearance) {
-			// EQClassic Process_ClientConnection5: echo WearChange and SpawnAppearance back
-			// to the sender (QueuePacket on the client object = send to this client only).
-			// The client sends these BEFORE D820 to register its own appearance in the zone.
-			// Without echoes, the client keeps retrying the whole WearChange+F520+D820 sequence
-			// and the splash screen never clears.
-			if (s.ack_due) SendAck(addr, port, s);
-			SendApp(addr, port, s, opcode, payload, plen);
+			// EQClassic QueuePacket forces ack_req=true for all outgoing packets.
+			// The Trilogy client requires ARQ (reliable) echoes here to advance past
+			// WearChange and send SpawnAppearance (F520). Non-ARQ echoes are silently
+			// ignored by the client's CONNECTING5 state machine, causing infinite retry.
+			// ARSP is embedded in the echo itself (s.ack_due still set) — one packet,
+			// matching EQClassic's single-QueuePacket-per-echo behavior.
+			SendApp(addr, port, s, opcode, payload, plen, true);
 		}
 		else if (opcode == 0x4721) {
 			// EQClassic Process_ClientConnection5: echo ClientError back (same as CONNECTING4).
@@ -552,35 +555,37 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	SendTimeOfDay(addr, port, s);
 	SendPlayerProfile(addr, port, s);
 	SendZoneEntrySpawn(addr, port, s);
+	SendInventoryItems(addr, port, s);
 	SendWeather(addr, port, s);
 
 	s.state = CONNECTING3;
 }
 
 // ============================================================
-// CONNECTING3 → CONNECTING4: client requests inventory
+// CONNECTING3 → CONNECTING4: client sends OP_ReqNewZone (0x5d20)
 // ============================================================
 
 void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, Session& s)
 {
-	LogInfo("[TrilogyZone] PostInventory (0x5d20) — sending inventory, advancing to CONNECTING4");
+	LogInfo("[TrilogyZone] ReqNewZone (0x5d20) — advancing to CONNECTING4");
 	if (s.ack_due) SendAck(addr, port, s);
-	SendInventoryItems(addr, port, s);
 	s.state = CONNECTING4;
 }
 
 // ============================================================
-// SendInventoryItems — query worn equipment items (slots 0-21) and send
-// each as a separate OP_ItemTradeIn (0x3120) packet.
+// SendInventoryItems — query all carried items and send as OP_CharInventory (0xf621).
 //
-// Wire format per packet (EQClassic Zone/Source/client_process.cpp :: SendInventoryItems):
-//   APPLAYER(OP_ItemTradeIn, sizeof(Item_Struct))
-//   pBuffer = raw Item_Struct (292 bytes), equipSlot set to Trilogy slot ID
+// Wire format (EQClassic uncompressed):
+//   int16 count
+//   (int16 opcode + ClassicItem_Struct)[count]
+//   Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container
 //
-// Trilogy v29c OP_ItemTradeIn (0x3120) only processes equipment slots 0-21.
-// Personal inventory (22-29) and bag contents (250+) are carried in the
-// PlayerProfile packet and must NOT be sent via 0x3120 — doing so crashes
-// the 2001-era client.
+// Slot mapping:
+//   EQEmu 0-21   → equipSlot 0-21   (equipment)
+//   EQEmu 22-29  → equipSlot 22-29  (personal bags; container items)
+//   EQEmu 251-330→ equipSlot 250-329 (bag contents; EQClassic base=250, EQEmu base=251)
+//
+// Bank (2000+) and cursor bag (330+) are skipped — not needed at zone-in.
 //
 // DEBUG: set TRILOGY_ITEM_TEST_ID > 0 to send ONLY that item ID.
 //        Set to 0 for normal behaviour.
@@ -623,7 +628,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.book, it.booktype, it.filename"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
-		" WHERE inv.charid = {} AND inv.slotid BETWEEN 0 AND 21"
+		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 29 OR inv.slotid BETWEEN 251 AND 330)"
 		" ORDER BY inv.slotid",
 		s.char_id
 	);
@@ -637,6 +642,10 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	int32 db_rows   = static_cast<int32>(r.RowCount());
 	int32 skipped   = 0;
 	int32 sent_count = 0;
+	bool bag_sent[8] = {}; // tracks which of inventory slots 22-29 were actually sent
+
+	std::vector<Trilogy::structs::ClassicItem_Struct> items;
+	items.reserve(static_cast<size_t>(db_rows));
 
 	for (auto row = r.begin(); row != r.end(); ++row) {
 		int16  slot_id = static_cast<int16>(Strings::ToInt(row[0]));
@@ -645,7 +654,16 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		int32  item_id    = Strings::ToInt(row[2]);
 		if (item_id > 32767) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
 		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
-		if (slot_id > 21) { ++skipped; continue; } // SQL should already exclude these; guard in case
+		if (slot_id > 29 && slot_id < 251) { ++skipped; continue; } // skip invalid range 30-250
+		if (slot_id > 330) { ++skipped; continue; }
+		// Skip bag contents whose parent bag was never sent (orphaned items crash the client)
+		if (slot_id >= 251) {
+			int bag_idx = (slot_id - 251) / 10; // 0-7 → parent bag at slot 22-29
+			if (bag_idx >= 8 || !bag_sent[bag_idx]) { ++skipped; continue; }
+		}
+		// Track that this bag slot was sent so its contents can follow
+		if (slot_id >= 22 && slot_id <= 29)
+			bag_sent[slot_id - 22] = true;
 
 		Trilogy::structs::ClassicItem_Struct ci{};
 		memset(&ci, 0, sizeof(ci));
@@ -663,7 +681,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.id        = static_cast<uint16>(item_id);
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
 		if (TRILOGY_MAX_ICON > 0 && ci.icon > TRILOGY_MAX_ICON) ci.icon = 0;
-		ci.equipslot = static_cast<int16>(slot_id); // slots 0-21 only; SQL and guard above enforce this
+		// EQEmu bag-content slots are 251-330; EQClassic expects equipSlot 250-329 (base=250).
+		// Subtract 1 to convert. Worn/bag slots 0-29 map 1:1.
+		ci.equipslot = static_cast<int16>(slot_id >= 251 ? slot_id - 1 : slot_id);
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
 
@@ -788,11 +808,11 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			ci.common.deity         = static_cast<uint16>(Strings::ToInt(row[72]));
 
 			if (ci.itemclass == 1) {
-				// Container
+				// Container — enforce non-zero capacity/size so client doesn't CTD on zero-slot bags
 				ci.common.container.bagtype   = static_cast<uint8>(Strings::ToInt(row[73]));
-				ci.common.container.bagslots  = static_cast<uint8>(Strings::ToInt(row[74]));
+				ci.common.container.bagslots  = static_cast<uint8>(std::max(1, Strings::ToInt(row[74])));
 				ci.common.container.isbagopen = 0;
-				ci.common.container.bagsize   = static_cast<int8>(Strings::ToInt(row[75]));
+				ci.common.container.bagsize   = static_cast<int8>(std::max(1, Strings::ToInt(row[75])));
 				ci.common.container.bagwr     = static_cast<uint8>(Strings::ToInt(row[76]));
 			} else {
 				// Common item — normal races/click_effect_type union
@@ -810,32 +830,77 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 				}
 			}
 
-			// Charges: from inventory row, not from items table
-			ci.common.charges = (charges == 0) ? static_cast<int8>(-1) : static_cast<int8>(std::min(charges, 127));
+			// Charges: containers always have 0 (no charges); -1 on a container
+			// confuses the Trilogy client (it may interpret -1 as unlimited items).
+			if (ci.itemclass == 1) {
+				ci.common.charges = 0;
+			} else {
+				ci.common.charges = (charges == 0) ? static_cast<int8>(-1) : static_cast<int8>(std::min(charges, 127));
+			}
 		}
 
 		// Detailed diagnostic log — visible in zone log at INFO level.
-		LogInfo("[TrilogyZone] ITEM id={} slot={}->{} cls={} flag={:#06x} "
-		        "icon={} mat={} stackable={} charges={} "
-		        "etype1={} eff1={} etype2={} eff2={} "
-		        "casttime={} sellrate={:.3f} "
-		        "name=[{}]",
-		        item_id, slot_id, (int)ci.equipslot,
-		        (int)ci.itemclass, (unsigned)ci.flag,
-		        (unsigned)ci.icon, (unsigned)ci.common.material,
-		        (int)ci.common.stackable, (int)ci.common.charges,
-		        (int)ci.common.effecttype1, (unsigned)ci.common.effect1,
-		        (int)ci.common.effecttype2, (unsigned)ci.common.effect2,
-		        ci.common.casttime, ci.common.sellrate,
-		        ci.name);
+		if (ci.itemclass == 1) {
+			LogInfo("[TrilogyZone] CONTAINER id={} slot={}->{} flag={:#06x} "
+			        "bagtype={} bagslots={} bagsize={} bagwr={} open={} charges={} idfile=[{}] name=[{}]",
+			        item_id, slot_id, (int)ci.equipslot, (unsigned)ci.flag,
+			        (int)ci.common.container.bagtype, (int)ci.common.container.bagslots,
+			        (int)ci.common.container.bagsize, (int)ci.common.container.bagwr,
+			        (int)ci.common.container.isbagopen, (int)ci.common.charges,
+			        ci.idfile, ci.name);
+		} else {
+			LogInfo("[TrilogyZone] ITEM id={} slot={}->{} cls={} flag={:#06x} "
+			        "icon={} mat={} stackable={} charges={} "
+			        "etype1={} eff1={} etype2={} eff2={} "
+			        "casttime={} sellrate={:.3f} "
+			        "name=[{}]",
+			        item_id, slot_id, (int)ci.equipslot,
+			        (int)ci.itemclass, (unsigned)ci.flag,
+			        (unsigned)ci.icon, (unsigned)ci.common.material,
+			        (int)ci.common.stackable, (int)ci.common.charges,
+			        (int)ci.common.effecttype1, (unsigned)ci.common.effect1,
+			        (int)ci.common.effecttype2, (unsigned)ci.common.effect2,
+			        ci.common.casttime, ci.common.sellrate,
+			        ci.name);
+		}
 
-		// EQClassic: send each item as a separate OP_ItemTradeIn (0x3120) packet (raw ClassicItem_Struct).
-		SendApp(addr, port, s, ZN_OP_ItemTradeIn,
-		        reinterpret_cast<const uint8_t*>(&ci), sizeof(ci));
+		items.push_back(ci);
 		++sent_count;
 	}
 
-	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped_id={} sent={}",
+	// Send individual per-item packets — primary mechanism for inventory window display.
+	// Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container (matches EQMacEmuTrilogy BulkSendItems).
+	// Payload: raw ClassicItem_Struct (292 bytes), no count prefix.
+	for (const auto& ci : items) {
+		uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
+		               (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
+		SendApp(addr, port, s, opc,
+		        reinterpret_cast<const uint8_t*>(&ci),
+		        static_cast<uint32_t>(sizeof(ci)));
+	}
+
+	// Also send F621 bulk packet (EQClassic uncompressed: int16 count + BulkedItem_Struct[]).
+	if (!items.empty()) {
+		uint16_t count    = static_cast<uint16_t>(items.size());
+		uint32_t pkt_size = 2u + static_cast<uint32_t>(count) *
+		                    (2u + static_cast<uint32_t>(sizeof(Trilogy::structs::ClassicItem_Struct)));
+		std::vector<uint8_t> pkt(pkt_size, 0);
+		pkt[0] = static_cast<uint8_t>(count & 0xFF);
+		pkt[1] = static_cast<uint8_t>((count >> 8) & 0xFF);
+		uint32_t off = 2;
+		for (const auto& ci : items) {
+			uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
+			               (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
+			pkt[off]   = static_cast<uint8_t>(opc & 0xFF);
+			pkt[off+1] = static_cast<uint8_t>((opc >> 8) & 0xFF);
+			off += 2;
+			memcpy(pkt.data() + off, &ci, sizeof(ci));
+			off += static_cast<uint32_t>(sizeof(ci));
+		}
+		SendApp(addr, port, s, ZN_OP_CharInventory, pkt.data(), pkt_size);
+	}
+
+	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} sent={}",
 	        s.char_name, db_rows, skipped, sent_count);
 }
 
@@ -850,7 +915,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 
 void TrilogyZoneServer::HandleZoneDataRequest(const std::string& addr, int port, Session& s)
 {
-	LogInfo("[TrilogyZone] ZoneDataRequest (0x0a20) — sending NewZone + zone data, advancing to CONNECTING5");
+	LogInfo("[TrilogyZone] ReqClientSpawn (0x0a20) — sending zone data, advancing to CONNECTING5");
 
 	SendNewZone(addr, port, s);
 
@@ -1037,6 +1102,14 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	Trilogy::structs::PlayerProfile_Struct pp{};
 	memset(&pp, 0, sizeof(pp));
 
+	// EQClassic/Trilogy sentinel for "no item" is 0xFFFF (not 0).
+	// If an inventory[] or containerinv[] slot is 0, the client treats it as
+	// "item with ID 0" and tries to dereference a null item pointer → crash.
+	// Pre-fill all slots with 0xFFFF; actual item IDs overwrite below.
+	memset(pp.inventory,          0xFF, sizeof(pp.inventory));
+	memset(pp.containerinv,       0xFF, sizeof(pp.containerinv));
+	memset(pp.cursorbaginventory, 0xFF, sizeof(pp.cursorbaginventory));
+
 	// Initialise spell slots to "empty" (-1 = 0xFFFF)
 	memset(pp.spell_book,   0xFF, sizeof(pp.spell_book));
 	memset(pp.spell_memory, 0xFF, sizeof(pp.spell_memory));
@@ -1157,9 +1230,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		}
 	}
 
-	// ---- inventory (worn + main bag slots) ----
-	// Populates inventory[0..29]: slots 0-21 = equipment, 22-29 = general bags.
-	// Item IDs are capped to uint16 (classic clients use 16-bit item IDs).
+	// ---- inventory (worn equipment + personal bag slots 0..29) ----
 	{
 		auto q = fmt::format(
 			"SELECT `slotid`, `itemid`, `charges` FROM `inventory` "
@@ -1169,10 +1240,11 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		auto r = database.QueryDatabase(q);
 		for (auto row = r.begin(); row != r.end(); ++row) {
 			int slot = Strings::ToInt(row[0]);
-			if (slot >= 0 && slot < 30) {
-				pp.inventory[slot] = static_cast<uint16_t>(Strings::ToUnsignedInt(row[1]));
+			uint32_t item_id = Strings::ToUnsignedInt(row[1]);
+			if (item_id > 32767 || item_id == 0) continue;
+			if (slot >= 0 && slot <= 29) {
+				pp.inventory[slot] = static_cast<uint16_t>(item_id);
 				int charges = Strings::ToInt(row[2]);
-				// charges=0 in DB → uncharged gear → PP -1 (unlimited); else clamp to int8 range
 				if (charges == 0) {
 					pp.invItemProprieties[slot].charges = static_cast<int8_t>(-1);
 				} else {
@@ -1194,9 +1266,14 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		auto r = database.QueryDatabase(q);
 		for (auto row = r.begin(); row != r.end(); ++row) {
 			int slotid = Strings::ToInt(row[0]);
+			uint32_t item_id = Strings::ToUnsignedInt(row[1]);
+			if (item_id > 32767 || item_id == 0) continue;
 			int idx = slotid - 251; // containerinv index 0-79
 			if (idx >= 0 && idx < 80) {
-				pp.containerinv[idx] = static_cast<uint16_t>(Strings::ToUnsignedInt(row[1]));
+				// Skip orphaned bag contents: parent bag slot must exist in inventory.
+				int bag_idx = idx / 10; // 0-7 → pp.inventory[22..29]
+				if (pp.inventory[22 + bag_idx] == 0xFFFF) continue;
+				pp.containerinv[idx] = static_cast<uint16_t>(item_id);
 				int charges = Strings::ToInt(row[2]);
 				pp.bagItemProprieties[idx].charges = (charges == 0)
 					? static_cast<int8_t>(-1)
