@@ -136,6 +136,14 @@ public:
 
 	uint16_t GetPlayerSpawnId() const { return m_player_spawn_id; }
 
+	// Translate an EQEmu entity ID to the Trilogy wire ID for this client.
+	// EQEmu assigns GetID() via entity_list; Trilogy knows this client as
+	// m_player_spawn_id.  All other IDs pass through unchanged.
+	uint32_t TranslateId(uint32_t id) const {
+		return (id == static_cast<uint32_t>(GetID()))
+		       ? static_cast<uint32_t>(m_player_spawn_id) : id;
+	}
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;

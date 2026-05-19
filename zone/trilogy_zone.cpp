@@ -2719,7 +2719,11 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 	emu->slot          = static_cast<uint32>(tri->slot);
 	emu->spell_id      = static_cast<uint32>(tri->spell_id);
 	emu->inventoryslot = static_cast<uint32>(static_cast<uint16>(tri->inventoryslot));
-	emu->target_id     = static_cast<uint32>(tri->target_id);
+	// player_spawn_id is what we sent in SpawnAppearance type=0x10; translate to EQEmu entity ID.
+	uint16 raw_target  = static_cast<uint16>(tri->target_id);
+	emu->target_id     = (raw_target == s.player_spawn_id)
+	                   ? static_cast<uint32>(s.trilogy_client->GetID())
+	                   : static_cast<uint32>(raw_target);
 	// Trilogy CastSpell does not carry target-ring coordinates; use caster position.
 	emu->y_pos = s.pos_y;
 	emu->x_pos = s.pos_x;

@@ -753,7 +753,7 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 	const auto* emu = reinterpret_cast<const ::BeginCast_Struct*>(app->pBuffer);
 
 	Trilogy::structs::BeginCast_Struct out{};
-	out.caster_id = static_cast<int32_t>(emu->caster_id);
+	out.caster_id = static_cast<int32_t>(TranslateId(emu->caster_id));
 	out.spell_id  = static_cast<int32_t>(emu->spell_id);
 	out.cast_time = static_cast<int32_t>(emu->cast_time);
 
@@ -787,8 +787,8 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	if (emu->type == 231) {
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
-		caston.target_id        = static_cast<int32_t>(emu->target);
-		caston.source_id        = static_cast<int32_t>(emu->source);
+		caston.target_id        = static_cast<int32_t>(TranslateId(emu->target));
+		caston.source_id        = static_cast<int32_t>(TranslateId(emu->source));
 		caston.source_level     = static_cast<int8_t>(emu->level);
 		caston.unknown1[1]      = static_cast<int8_t>(0x41);
 		caston.heading          = emu->hit_heading * 2.0f;
@@ -805,8 +805,8 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
-	out.target = static_cast<int32_t>(emu->target);
-	out.source = static_cast<int32_t>(emu->source);
+	out.target = static_cast<int32_t>(TranslateId(emu->target));
+	out.source = static_cast<int32_t>(TranslateId(emu->source));
 	out.type   = static_cast<int8_t>(emu->type);
 	out.spell  = static_cast<int16_t>(emu->spell);
 
@@ -834,8 +834,8 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
-	out.target = static_cast<int32_t>(emu->target);
-	out.source = static_cast<int32_t>(emu->source);
+	out.target = static_cast<int32_t>(TranslateId(emu->target));
+	out.source = static_cast<int32_t>(TranslateId(emu->source));
 	out.type   = static_cast<int8_t>(emu->type);
 	out.spell  = static_cast<int16_t>(emu->spellid);
 	out.damage = static_cast<int32_t>(emu->damage > static_cast<uint32_t>(INT32_MAX)
@@ -883,7 +883,7 @@ void TrilogyClient::HandleHPUpdate(const EQApplicationPacket* app)
 	const auto* emu = reinterpret_cast<const ::SpawnHPUpdate_Struct*>(app->pBuffer);
 
 	Trilogy::structs::SpawnHPUpdate_Struct out{};
-	out.spawn_id = static_cast<int32_t>(emu->spawn_id);
+	out.spawn_id = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(static_cast<uint16_t>(emu->spawn_id))));
 	out.cur_hp   = static_cast<int32_t>(emu->cur_hp);
 	out.max_hp   = emu->max_hp;
 
@@ -912,7 +912,7 @@ void TrilogyClient::HandleMobHealth(const EQApplicationPacket* app)
 	if (!mob) return;
 
 	Trilogy::structs::SpawnHPUpdate_Struct out{};
-	out.spawn_id = static_cast<int32_t>(emu->spawn_id);
+	out.spawn_id = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(static_cast<uint16_t>(emu->spawn_id))));
 	out.cur_hp   = static_cast<int32_t>(mob->GetHP());
 	out.max_hp   = static_cast<int32_t>(mob->GetMaxHP());
 
@@ -961,7 +961,7 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
-	out.target_id = emu->entityid;
+	out.target_id = TranslateId(emu->entityid);
 	out.spell_id  = static_cast<uint16_t>(emu->buff.spellid);
 	out.buff_slot = emu->slotid;
 
@@ -990,8 +990,8 @@ void TrilogyClient::HandleDeath(const EQApplicationPacket* app)
 
 	Trilogy::structs::Death_Struct out{};
 	memset(&out, 0, sizeof(out));
-	out.spawn_id     = static_cast<int32_t>(emu->spawn_id);
-	out.killer_id    = static_cast<int32_t>(emu->killer_id);
+	out.spawn_id     = static_cast<int32_t>(TranslateId(emu->spawn_id));
+	out.killer_id    = static_cast<int32_t>(TranslateId(emu->killer_id));
 	out.corpseid     = static_cast<int32_t>(emu->corpseid);
 	out.attack_skill = static_cast<int8_t>(emu->attack_skill);
 	out.damage       = static_cast<int16_t>(
@@ -1020,7 +1020,7 @@ void TrilogyClient::HandleAnimation(const EQApplicationPacket* app)
 
 	Trilogy::structs::Attack_Struct out{};
 	memset(&out, 0, sizeof(out));
-	out.spawn_id         = static_cast<int32_t>(emu->spawnid);
+	out.spawn_id         = static_cast<int32_t>(TranslateId(emu->spawnid));
 	out.type             = static_cast<int8_t>(emu->action);
 	out.a_unknown2[5]    = static_cast<int8_t>(0x80);
 	out.a_unknown2[6]    = static_cast<int8_t>(0x3F);
