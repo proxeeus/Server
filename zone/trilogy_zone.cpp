@@ -74,6 +74,11 @@ static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 
+// Spell opcodes (bidirectional)
+// Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
+static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
+static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
+
 // GM command opcodes (client -> zone, CONNECTED state)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
@@ -559,6 +564,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
+			HandleCastSpell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
+			HandleMemorizeSpell(addr, port, s, payload, plen);
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -2685,4 +2694,73 @@ void TrilogyZoneServer::HandleConnectedWearChange(const std::string& addr, int p
 	const uint32_t color         = static_cast<uint32_t>(wc->color);
 
 	s.trilogy_client->WearChange(material_slot, texture, color, 0);
+}
+
+// ============================================================
+// HandleCastSpell — client sent 0x7e21 (CastSpell_Struct, 16 bytes).
+// Translate Trilogy wire format to EQEmu CastSpell_Struct and
+// dispatch to Client::Handle_OP_CastSpell for normal spell processing.
+// ============================================================
+
+void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Session& s,
+                                         const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::CastSpell_Struct)) return;
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::CastSpell_Struct*>(payload);
+
+	// Build EQEmu CastSpell_Struct. The Trilogy wire uses smaller integer types;
+	// inventoryslot 0xFFFF (int16 -1) must map to uint32 0xFFFF, not 0xFFFFFFFF.
+	auto* app = new EQApplicationPacket(OP_CastSpell, sizeof(::CastSpell_Struct));
+	auto* emu = reinterpret_cast<::CastSpell_Struct*>(app->pBuffer);
+	memset(emu, 0, sizeof(::CastSpell_Struct));
+
+	emu->slot          = static_cast<uint32>(tri->slot);
+	emu->spell_id      = static_cast<uint32>(tri->spell_id);
+	emu->inventoryslot = static_cast<uint32>(static_cast<uint16>(tri->inventoryslot));
+	emu->target_id     = static_cast<uint32>(tri->target_id);
+	// Trilogy CastSpell does not carry target-ring coordinates; use caster position.
+	emu->y_pos = s.pos_y;
+	emu->x_pos = s.pos_x;
+	emu->z_pos = s.pos_z;
+
+	LogInfo("[TrilogyZone] CastSpell: char={} slot={} spell={} target={}",
+	        s.char_name, emu->slot, emu->spell_id, emu->target_id);
+
+	s.trilogy_client->Handle_OP_CastSpell(app);
+	delete app;
+}
+
+// ============================================================
+// HandleMemorizeSpell — client sent 0x8221 (MemorizeSpell_Struct, 12 bytes).
+// Translate Trilogy scribing values to EQEmu and dispatch to
+// Client::Handle_OP_MemorizeSpell for normal memorize/scribe/forget processing.
+//
+// Trilogy scribing: 0=scribe to book, 1=memorize to gem, 3=forget gem.
+// EQEmu scribing:   0=scribe to book, 1=memorize to gem, 2=forget gem.
+// ============================================================
+
+void TrilogyZoneServer::HandleMemorizeSpell(const std::string& addr, int port, Session& s,
+                                              const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::MemorizeSpell_Struct)) return;
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::MemorizeSpell_Struct*>(payload);
+
+	auto* app = new EQApplicationPacket(OP_MemorizeSpell, sizeof(::MemorizeSpell_Struct));
+	auto* emu = reinterpret_cast<::MemorizeSpell_Struct*>(app->pBuffer);
+	memset(emu, 0, sizeof(::MemorizeSpell_Struct));
+
+	emu->slot     = static_cast<uint32>(tri->slot);
+	emu->spell_id = static_cast<uint32>(tri->spell_id);
+	emu->scribing = (tri->scribing == 3) ? 2u : static_cast<uint32>(tri->scribing);
+	emu->reduction = 0;
+
+	LogInfo("[TrilogyZone] MemorizeSpell: char={} slot={} spell={} scribing={}",
+	        s.char_name, emu->slot, emu->spell_id, emu->scribing);
+
+	s.trilogy_client->Handle_OP_MemorizeSpell(app);
+	delete app;
 }

@@ -229,6 +229,36 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_WearChange:
 		HandleOutgoingWearChange(app);
 		break;
+	case OP_Animation:
+		HandleAnimation(app);
+		break;
+	case OP_BeginCast:
+		HandleBeginCast(app);
+		break;
+	case OP_Action:
+		HandleAction(app);
+		break;
+	case OP_Damage:
+		HandleDamage(app);
+		break;
+	case OP_ManaChange:
+		HandleManaChange(app);
+		break;
+	case OP_HPUpdate:
+		HandleHPUpdate(app);
+		break;
+	case OP_MobHealth:
+		HandleMobHealth(app);
+		break;
+	case OP_MemorizeSpell:
+		HandleMemorizeSpellOut(app);
+		break;
+	case OP_Buff:
+		HandleBuff(app);
+		break;
+	case OP_Death:
+		HandleDeath(app);
+		break;
 	case OP_RequestClientZoneChange: {
 		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
 		// The Trilogy client automatically zones or intra-zone teleports based on whether the
@@ -705,4 +735,294 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 
 	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
 	delete[] buf;
+}
+
+// ============================================================
+// HandleBeginCast — OP_BeginCast (server → Trilogy client).
+//
+// Shows the casting animation and cast bar for any entity in range.
+// EQEmu sends this to all nearby clients when anyone begins casting.
+//
+// EQEmu BeginCast_Struct: { uint16 caster_id, uint16 spell_id, uint32 cast_time }
+// Trilogy BeginCast_Struct: { int32 caster_id, int32 spell_id, int32 cast_time }
+// ============================================================
+
+void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::BeginCast_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::BeginCast_Struct*>(app->pBuffer);
+
+	Trilogy::structs::BeginCast_Struct out{};
+	out.caster_id = static_cast<int32_t>(emu->caster_id);
+	out.spell_id  = static_cast<int32_t>(emu->spell_id);
+	out.cast_time = static_cast<int32_t>(emu->cast_time);
+
+	m_tzs->SendToSession(m_session_key, 0xa920,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleAction — OP_Action (server → Trilogy client).
+//
+// For spells (type == 231 / 0xE7):
+//   Sends OP_Action (0x5820) for target particle effects, then ALSO sends
+//   OP_CastOn (0x4620 / CastOn_Struct) which is the Trilogy-specific packet
+//   that drives the caster body animation.  EQClassic's zone server sends
+//   OP_CastOn from SpellEffect(); EQEmu merges both into a single OP_Action
+//   for Titanium clients.
+// For melee types (type != 231):
+//   Sends only OP_Action (0x5820).
+// ============================================================
+
+void TrilogyClient::HandleAction(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Action_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::Action_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Action_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.target = static_cast<int32_t>(emu->target);
+	out.source = static_cast<int32_t>(emu->source);
+	out.type   = static_cast<int8_t>(emu->type);
+	out.spell  = static_cast<int16_t>(emu->spell);
+
+	m_tzs->SendToSession(m_session_key, 0x5820,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+
+	// For spells, also send CastOn_Struct (0x4620) so the Trilogy client
+	// plays the caster body animation.  Values based on EQClassic SpellEffect().
+	if (emu->type == 231) {
+		Trilogy::structs::CastOn_Struct caston{};
+		memset(&caston, 0, sizeof(caston));
+		caston.target_id     = static_cast<int32_t>(emu->target);
+		caston.source_id     = static_cast<int32_t>(emu->source);
+		caston.source_level  = static_cast<int8_t>(emu->level);
+		caston.unknown1[1]   = static_cast<int8_t>(0x41);
+		caston.heading       = emu->hit_heading * 2.0f;
+		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
+		caston.action        = 231;
+		caston.spell_id      = static_cast<int16_t>(emu->spell);
+		caston.unknown2[1]   = static_cast<int8_t>(0x04);
+
+		m_tzs->SendToSession(m_session_key, 0x4620,
+		                     reinterpret_cast<const uint8_t*>(&caston),
+		                     static_cast<uint32_t>(sizeof(caston)));
+	}
+}
+
+// ============================================================
+// HandleDamage — OP_Damage (server → Trilogy client).
+//
+// Sends the melee/spell damage number. Trilogy uses the same opcode
+// (0x5820) and Action_Struct for both OP_Action and OP_Damage; the
+// presence of a non-zero damage field distinguishes them client-side.
+//
+// EQEmu CombatDamage_Struct: { uint16 target, uint16 source, uint8 type,
+//   uint16 spellid, uint32 damage, float force, float hit_heading,
+//   float hit_pitch, uint32 special }
+// ============================================================
+
+void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::CombatDamage_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::CombatDamage_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Action_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.target = static_cast<int32_t>(emu->target);
+	out.source = static_cast<int32_t>(emu->source);
+	out.type   = static_cast<int8_t>(emu->type);
+	out.spell  = static_cast<int16_t>(emu->spellid);
+	out.damage = static_cast<int32_t>(emu->damage > static_cast<uint32_t>(INT32_MAX)
+	                                  ? INT32_MAX : emu->damage);
+
+	m_tzs->SendToSession(m_session_key, 0x5820,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleManaChange — OP_ManaChange (server → Trilogy client).
+//
+// Sent after a spell is cast to update the caster's displayed mana bar.
+// Trilogy ManaChange_Struct is 4 bytes: { uint16 new_mana, uint16 spell_id }.
+// ============================================================
+
+void TrilogyClient::HandleManaChange(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::ManaChange_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::ManaChange_Struct*>(app->pBuffer);
+
+	Trilogy::structs::ManaChange_Struct out{};
+	out.new_mana = static_cast<uint16_t>(
+	    emu->new_mana > 0xFFFFu ? 0xFFFFu : emu->new_mana);
+	out.spell_id = static_cast<uint16_t>(emu->spell_id);
+
+	m_tzs->SendToSession(m_session_key, 0x7f21,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleHPUpdate — OP_HPUpdate (server → Trilogy client, self-only).
+//
+// Sent by the server to the player themselves to update their own HP display.
+//
+// EQEmu SpawnHPUpdate_Struct: { uint32 cur_hp, int32 max_hp, int16 spawn_id }
+// Trilogy SpawnHPUpdate_Struct: { int32 spawn_id, int32 cur_hp, int32 max_hp }
+// ============================================================
+
+void TrilogyClient::HandleHPUpdate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::SpawnHPUpdate_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::SpawnHPUpdate_Struct*>(app->pBuffer);
+
+	Trilogy::structs::SpawnHPUpdate_Struct out{};
+	out.spawn_id = static_cast<int32_t>(emu->spawn_id);
+	out.cur_hp   = static_cast<int32_t>(emu->cur_hp);
+	out.max_hp   = emu->max_hp;
+
+	m_tzs->SendToSession(m_session_key, 0xb220,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleMobHealth — OP_MobHealth (server → Trilogy client).
+//
+// Sent by QueueClientsByTarget when a targeted mob's HP changes.
+// EQEmu sends a percentage-only struct (SpawnHPUpdate_Struct2); Trilogy
+// needs absolute HP values, so look up the mob in the entity list.
+//
+// EQEmu SpawnHPUpdate_Struct2: { int16 spawn_id, uint8 hp_percent }
+// Trilogy SpawnHPUpdate_Struct: { int32 spawn_id, int32 cur_hp, int32 max_hp }
+// ============================================================
+
+void TrilogyClient::HandleMobHealth(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::SpawnHPUpdate_Struct2)) return;
+	const auto* emu = reinterpret_cast<const ::SpawnHPUpdate_Struct2*>(app->pBuffer);
+
+	Mob* mob = entity_list.GetMob(static_cast<uint16>(emu->spawn_id));
+	if (!mob) return;
+
+	Trilogy::structs::SpawnHPUpdate_Struct out{};
+	out.spawn_id = static_cast<int32_t>(emu->spawn_id);
+	out.cur_hp   = static_cast<int32_t>(mob->GetHP());
+	out.max_hp   = static_cast<int32_t>(mob->GetMaxHP());
+
+	m_tzs->SendToSession(m_session_key, 0xb220,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleMemorizeSpellOut — OP_MemorizeSpell (server → Trilogy client).
+//
+// Server sends this to confirm spell memorization, book scribing, or
+// gem un-memorization after processing a client request.
+//
+// EQEmu scribing: 0=scribe, 1=memorize, 2=forget.
+// Trilogy scribing: 0=scribe, 1=memorize, 3=gray-out gem (forget).
+// ============================================================
+
+void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::MemorizeSpell_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::MemorizeSpell_Struct*>(app->pBuffer);
+
+	Trilogy::structs::MemorizeSpell_Struct out{};
+	out.slot     = static_cast<int32_t>(emu->slot);
+	out.spell_id = static_cast<int32_t>(emu->spell_id);
+	out.scribing = (emu->scribing == 2) ? 3 : static_cast<int32_t>(emu->scribing);
+
+	m_tzs->SendToSession(m_session_key, 0x8221,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleBuff — OP_Buff (server → Trilogy client).
+//
+// Sent when a buff is applied or removed to update buff icons.
+// EQEmu SpellBuffPacket_Struct has a nested SpellBuff_Struct with
+// the spell ID; Trilogy Buff_Struct is a flat 20-byte layout.
+// ============================================================
+
+void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::SpellBuffPacket_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::SpellBuffPacket_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Buff_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.target_id = emu->entityid;
+	out.spell_id  = static_cast<uint16_t>(emu->buff.spellid);
+	out.buff_slot = emu->slotid;
+
+	m_tzs->SendToSession(m_session_key, 0x3221,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleDeath — OP_Death (server → Trilogy client).
+//
+// Sent when any entity in the zone dies. Causes the Trilogy client to
+// play the death animation and remove the entity from the world.
+//
+// EQEmu Death_Struct: { uint32 spawn_id, killer_id, corpseid, bindzoneid,
+//   spell_id, attack_skill, damage, unknown028 }
+// Trilogy Death_Struct: { int32 spawn_id, killer_id, corpseid,
+//   int16 unknown12, int8 attack_skill, int8 unknown15,
+//   int16 damage, int16 unknown18 }
+// ============================================================
+
+void TrilogyClient::HandleDeath(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Death_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::Death_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Death_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.spawn_id     = static_cast<int32_t>(emu->spawn_id);
+	out.killer_id    = static_cast<int32_t>(emu->killer_id);
+	out.corpseid     = static_cast<int32_t>(emu->corpseid);
+	out.attack_skill = static_cast<int8_t>(emu->attack_skill);
+	out.damage       = static_cast<int16_t>(
+	    emu->damage > static_cast<uint32_t>(INT16_MAX) ? INT16_MAX : emu->damage);
+
+	m_tzs->SendToSession(m_session_key, 0x4a20,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleAnimation — OP_Animation (server → Trilogy client).
+//
+// Sent by Mob::DoAnim to broadcast entity animations (spell casting
+// body gesture, melee swings, etc.) to nearby clients.
+//
+// EQEmu Animation_Struct: { uint16 spawnid, uint8 speed, uint8 action } = 4 bytes
+// Trilogy Attack_Struct (OP_Attack 0x9f20): { int32 spawn_id, int8 type, int8[7] unknown } = 12 bytes
+//
+// EQClassic sets unknown[5]=0x80 and unknown[6]=0x3F in DoAnim.
+// ============================================================
+void TrilogyClient::HandleAnimation(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Animation_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::Animation_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Attack_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.spawn_id         = static_cast<int32_t>(emu->spawnid);
+	out.type             = static_cast<int8_t>(emu->action);
+	out.a_unknown2[5]    = static_cast<int8_t>(0x80);
+	out.a_unknown2[6]    = static_cast<int8_t>(0x3F);
+
+	m_tzs->SendToSession(m_session_key, 0x9f20,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }

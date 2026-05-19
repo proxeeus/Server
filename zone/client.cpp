@@ -545,6 +545,15 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 		if (r.RowCount() > 0)
 			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
 	}
+
+	// Trilogy clients never send OP_SetServerFilter so ClientFilters[] stays
+	// zero-initialized (= FilterHide) unless we seed it here.  With FilterHide,
+	// QueueCloseClients drops every FilterNPCSpells / FilterPCSpells packet
+	// (OP_Action for spell effects, OP_Damage, OP_Death, etc.) before they even
+	// reach TranslateAndSend.  Set all filters to FilterShow so the Trilogy
+	// client sees combat and spell activity exactly like a fresh Titanium client.
+	for (int i = 0; i < _FilterCount; ++i)
+		ClientFilters[i] = FilterShow;
 }
 
 void Client::SendZoneInPackets()

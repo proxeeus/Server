@@ -154,4 +154,15 @@ private:
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingWearChange(const EQApplicationPacket* app);
+	// Spell / combat translators (server → Trilogy client)
+	void HandleAnimation(const EQApplicationPacket* app);
+	void HandleBeginCast(const EQApplicationPacket* app);
+	void HandleAction(const EQApplicationPacket* app);
+	void HandleDamage(const EQApplicationPacket* app);
+	void HandleManaChange(const EQApplicationPacket* app);
+	void HandleHPUpdate(const EQApplicationPacket* app);
+	void HandleMobHealth(const EQApplicationPacket* app);
+	void HandleMemorizeSpellOut(const EQApplicationPacket* app);
+	void HandleBuff(const EQApplicationPacket* app);
+	void HandleDeath(const EQApplicationPacket* app);
 };
