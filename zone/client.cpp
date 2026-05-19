@@ -534,6 +534,12 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// whether the player understands a given language (skill ≥ 24 = understood).
 	database.LoadCharacterLanguages(char_id, &m_pp);
 
+	// Load spell book and memorized spells so HasSpellScribed() and MemSpell() work.
+	// Without these, OPMemorizeSpell rejects every memorize attempt as a "possible hack"
+	// because m_pp.spell_book[] stays zero-initialized.
+	database.LoadCharacterSpellBook(char_id, &m_pp);
+	database.LoadCharacterMemmedSpells(char_id, &m_pp);
+
 	// Load account status so Admin() returns the correct level for GM command authorization.
 	admin = database.GetAccountStatus(acct_id);
 
