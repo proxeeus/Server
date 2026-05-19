@@ -630,7 +630,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.book, it.booktype, it.filename"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
-		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 340)"
+		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 330)"
 		" ORDER BY inv.slotid",
 		s.char_id
 	);
@@ -656,13 +656,8 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		int32  item_id    = Strings::ToInt(row[2]);
 		if (item_id > 65535) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
 		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
-		if (slot_id > 30 && slot_id < 251) { ++skipped; continue; } // skip invalid range 31-250
-		if (slot_id > 340) { ++skipped; continue; }               // beyond valid range
-		// Skip bag contents whose parent bag was never sent (orphaned items crash the client)
-		if (slot_id >= 251) {
-			int bag_idx = (slot_id - 251) / 10; // 0-8 → parent at wire 21-29 (DB 22-30)
-			if (bag_idx >= 9 || !bag_sent[bag_idx]) { ++skipped; continue; }
-		}
+		if (slot_id > 30 && slot_id < 251) { ++skipped; continue; } // skip gap 31-250 (not valid inventory)
+		if (slot_id > 330) { ++skipped; continue; }               // beyond bag content range
 		// Track that this bag slot was sent so its contents can follow
 		if (slot_id >= 22 && slot_id <= 30)
 			bag_sent[slot_id - 22] = true; // DB 22-30 → indices 0-8 (wire 21-29)
@@ -684,13 +679,12 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		ci.icon      = static_cast<uint16>(Strings::ToInt(row[11]));
 		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
 		if (slot_id == 0)  { ++skipped; continue; }   // charm: no v29c equivalent
-		if (slot_id == 21) { ++skipped; continue; }   // ammo: no v29c equivalent (wire 21 = SLOT_PERSONAL_BEGIN)
-		// v29c SLOT_PERSONAL_BEGIN=21: bags DB 22-30 → wire 21-29; contents DB 251-340 → wire 250-339.
-		// All personal slots use -1 shift (DB N → wire N-1).
+		if (slot_id == 21) { ++skipped; continue; }   // ammo: no v29c wire mapping (wire 21 = SLOT_PERSONAL_BEGIN)
+		// v29c: bags DB 22-30 → wire 21-29, content DB 251-330 → wire 250-329 (both -1 shift).
 		if (slot_id >= 22)
-			ci.equipslot = static_cast<int16>(slot_id - 1);  // bags + contents: DB N → wire N-1
+			ci.equipslot = static_cast<int16>(slot_id - 1);
 		else
-			ci.equipslot = static_cast<int16>(slot_id);      // worn 0-21
+			ci.equipslot = static_cast<int16>(slot_id);
 		ci.slots     = static_cast<uint32>(Strings::ToUnsignedInt(row[12]));
 		ci.price     = static_cast<int32>(Strings::ToInt(row[13]));
 
@@ -1245,8 +1239,9 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	}
 
 	// ---- bag contents (containerinv[0..79]) ----
-	// EQClassic: containerinv[i] = item ID for bag-content slot (250+i client-side).
-	// EQEmu stores bag contents at slotid 251-330 (Titanium base=251), so index = slotid-251.
+	// v29c SLOT_PERSONAL_BEGIN=21; bags at pp.inventory[21..28] (DB 22-29 with -1 shift).
+	// containerinv[K*10..K*10+9] = content of pp.inventory[21+K].
+	// Content DB 251-330; bag at DB 22 → pp.inventory[21] → content at DB 251-260 → idx 0-9.
 	{
 		auto q = fmt::format(
 			"SELECT `slotid`, `itemid`, `charges` FROM `inventory` "
@@ -1258,10 +1253,10 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			int slotid = Strings::ToInt(row[0]);
 			uint32_t item_id = Strings::ToUnsignedInt(row[1]);
 			if (item_id > 65535 || item_id == 0) continue;
-			int idx = slotid - 251; // containerinv index 0-79
+			int idx = slotid - 251; // containerinv index 0-79: DB251→idx0, DB261→idx10
 			if (idx >= 0 && idx < 80) {
-				// Skip orphaned bag contents: parent bag slot must exist in inventory.
-				int bag_idx = idx / 10; // 0-7 → pp.inventory[21..28] (v29c SLOT_PERSONAL_BEGIN=21)
+				// Skip orphaned bag contents: parent bag slot must exist in pp.inventory.
+				int bag_idx = idx / 10; // 0-7 → parent at pp.inventory[21+K]
 				if (pp.inventory[21 + bag_idx] == 0xFFFF) continue;
 				pp.containerinv[idx] = static_cast<uint16_t>(item_id);
 				int charges = Strings::ToInt(row[2]);
@@ -2462,9 +2457,8 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 
 	if (from_wire == to_wire) return;
 
-	// Wire → EQEmu DB slotid. v29c SLOT_PERSONAL_BEGIN=21.
-	// Worn: wire 1-20 (no shift). Personal bags: wire 21-29 → DB 22-30 (+1). Contents: wire 250-339 → DB 251-340 (+1).
-	// Wire slot 0 = cursor (item held by mouse) — NOT mapped here; handled separately.
+	// Wire → EQEmu DB slotid. v29c: bags wire 21-29 → DB 22-30 (+1), content wire 250-339 → DB 251-340 (+1).
+	// Worn wire 1-20 → DB 1-20 (no shift). Wire slot 0 = cursor — NOT mapped here.
 	auto wire_to_db = [](uint32_t w) -> int {
 		if (w == 0xFFFFFFFFu)        return -1;       // destroy
 		if (w >= 1  && w <= 20)      return (int)w;   // worn slots 1-20 (no shift)
