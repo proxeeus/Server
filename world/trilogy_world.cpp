@@ -245,6 +245,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 		// Client reconnected with SEQSTART on an existing session (e.g. after the close handshake).
 		// Reset transport state but preserve auth fields so CharCreate can still identify the account.
 		Session& existing = m_sessions[key];
+		if (existing.account_id != 0)
+			existing.returning_from_zone = true;
 		existing.sack_init = false;
 		existing.seq_sent  = false;
 		existing.gsq       = 0;
@@ -345,10 +347,13 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 	// Retransmit guard: if the client is already authenticated this session,
 	// just ACK — re-running the full handler would send CharSelect again and
 	// confuse the client's state machine.
-	if (s.account_id != 0) {
+	// Exception: if the client reconnected with SEQSTART after camping (returning_from_zone),
+	// allow the full re-auth so it lands on the character select screen.
+	if (s.account_id != 0 && !s.returning_from_zone) {
 		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
+	s.returning_from_zone = false;
 
 	// Payload: session_id\0key\0  (plaintext, NOT DES-encrypted)
 	const char* sid = reinterpret_cast<const char*>(payload);

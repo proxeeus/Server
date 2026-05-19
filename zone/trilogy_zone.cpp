@@ -31,6 +31,7 @@
 #include "../common/eq_constants.h"
 #include "../common/strings.h"
 #include "command.h"
+#include "guild_mgr.h"
 
 extern Zone*       zone;
 extern uint32      numclients;
@@ -73,6 +74,7 @@ static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single
 static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
+static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
 
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
@@ -568,6 +570,11 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleCastSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
 			HandleMemorizeSpell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Camp && s.trilogy_client && !s.camping) {
+			s.camping    = true;
+			s.camp_start = std::time(nullptr);
+			LogInfo("[TrilogyZone] Camp initiated for {}", s.char_name);
+		}
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -2137,9 +2144,31 @@ void TrilogyZoneServer::Tick()
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
+	std::vector<uint64_t> camp_complete;
+
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
 		if (s.state != CONNECTED) continue;
+
+		// Camp completion: 29s after OP_Camp was received, save + disconnect.
+		if (s.camping && s.trilogy_client && now - s.camp_start >= 29) {
+			LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
+			Raid* raid = entity_list.GetRaidByClient(s.trilogy_client);
+			if (raid) raid->MemberZoned(s.trilogy_client);
+			s.trilogy_client->LeaveGroup();
+			if (s.trilogy_client->IsInAGuild()) {
+				guild_mgr.UpdateDbMemberOnline(s.trilogy_client->CharacterID(), false);
+				guild_mgr.SendToWorldSendGuildMembersList(s.trilogy_client->GuildID());
+			}
+			if (s.trilogy_client->GetMerc()) {
+				s.trilogy_client->GetMerc()->Save();
+				s.trilogy_client->GetMerc()->Depop();
+			}
+			s.trilogy_client->Save();
+			SendClose(s.source_addr, s.source_port, s);
+			camp_complete.push_back(kv.first);
+			continue;
+		}
 
 		SendMobHeartbeat(s.source_addr, s.source_port, s);
 
@@ -2162,6 +2191,9 @@ void TrilogyZoneServer::Tick()
 			SendTimeOfDay(s.source_addr, s.source_port, s);
 		}
 	}
+
+	for (uint64_t key : camp_complete)
+		RemoveSession(key);
 }
 
 bool TrilogyZoneServer::HasConnectedSession() const

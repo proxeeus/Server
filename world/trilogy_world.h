@@ -65,9 +65,12 @@ private:
 		uint16_t        frag_seq      = 0; // outgoing EQNetwork fragment-group sequence
 
 		// deferred zone entry — set when zone is still booting at EnterWorld time
-		bool            pending_zone_entry = false;
-		uint32_t        pending_zone_id    = 0;
-		std::time_t     pending_zone_time  = 0;
+		bool            pending_zone_entry    = false;
+		uint32_t        pending_zone_id       = 0;
+		std::time_t     pending_zone_time     = 0;
+		// Set on SEQSTART for an already-authed session; allows HandleLoginInfo to re-run
+		// the full auth+char-select sequence so the client returns to character selection.
+		bool            returning_from_zone   = false;
 		// EQNetwork fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;

@@ -120,6 +120,10 @@ private:
 		// Owned by entity_list; do NOT delete directly — use entity_list.RemoveClient/Mob.
 		TrilogyClient* trilogy_client = nullptr;
 
+		// Camp-out tracking: set when client sends OP_Camp (0x0722); session removed after 29s.
+		bool        camping    = false;
+		std::time_t camp_start = 0;
+
 		// Cursor slot tracking for two-step move (unequip/equip via wire slot 0).
 		// Set to the DB slot of the item picked up; cleared after it lands.
 		int cursor_from_db = -1;
