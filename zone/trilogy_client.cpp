@@ -780,6 +780,29 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::Action_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::Action_Struct*>(app->pBuffer);
 
+	// Spells (type 231) use OP_CastOn (0x4620) exclusively — that packet carries
+	// both the caster animation and the "surrounded by aura" message in Trilogy.
+	// OP_Action (0x5820) is only for melee/non-spell combat.  Sending both would
+	// duplicate the buff-land message.
+	if (emu->type == 231) {
+		Trilogy::structs::CastOn_Struct caston{};
+		memset(&caston, 0, sizeof(caston));
+		caston.target_id        = static_cast<int32_t>(emu->target);
+		caston.source_id        = static_cast<int32_t>(emu->source);
+		caston.source_level     = static_cast<int8_t>(emu->level);
+		caston.unknown1[1]      = static_cast<int8_t>(0x41);
+		caston.heading          = emu->hit_heading * 2.0f;
+		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
+		caston.action           = 231;
+		caston.spell_id         = static_cast<int16_t>(emu->spell);
+		caston.unknown2[1]      = static_cast<int8_t>(0x04);
+
+		m_tzs->SendToSession(m_session_key, 0x4620,
+		                     reinterpret_cast<const uint8_t*>(&caston),
+		                     static_cast<uint32_t>(sizeof(caston)));
+		return;
+	}
+
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
 	out.target = static_cast<int32_t>(emu->target);
@@ -790,26 +813,6 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x5820,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
-
-	// For spells, also send CastOn_Struct (0x4620) so the Trilogy client
-	// plays the caster body animation.  Values based on EQClassic SpellEffect().
-	if (emu->type == 231) {
-		Trilogy::structs::CastOn_Struct caston{};
-		memset(&caston, 0, sizeof(caston));
-		caston.target_id     = static_cast<int32_t>(emu->target);
-		caston.source_id     = static_cast<int32_t>(emu->source);
-		caston.source_level  = static_cast<int8_t>(emu->level);
-		caston.unknown1[1]   = static_cast<int8_t>(0x41);
-		caston.heading       = emu->hit_heading * 2.0f;
-		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
-		caston.action        = 231;
-		caston.spell_id      = static_cast<int16_t>(emu->spell);
-		caston.unknown2[1]   = static_cast<int8_t>(0x04);
-
-		m_tzs->SendToSession(m_session_key, 0x4620,
-		                     reinterpret_cast<const uint8_t*>(&caston),
-		                     static_cast<uint32_t>(sizeof(caston)));
-	}
 }
 
 // ============================================================
