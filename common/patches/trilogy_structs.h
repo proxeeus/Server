@@ -1273,6 +1273,29 @@ struct TradeSkillCombine_Struct
 /*032*/
 };
 
+/*
+** TeleportPC_Struct
+** Opcode:  OP_TeleportPC = 0x4d21
+** Direction: zone server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: TeleportPC_Struct
+** Size:    48 bytes
+**
+** The Trilogy client automatically decides whether to zone or intra-zone teleport
+** based on whether zone[] matches the current zone short name.
+** heading is sent *2 by the server; the client divides by 2.
+** If zPos == 0, send 0.1f instead (EQClassic client bug with exact 0 z).
+*/
+struct TeleportPC_Struct
+{
+/*0000*/ char  zone[16];   // destination zone short name
+/*0016*/ int8  unknown[16];
+/*0032*/ float yPos;
+/*0036*/ float xPos;
+/*0040*/ float zPos;
+/*0044*/ float heading;    // send heading*2; client divides by 2
+/*0048*/
+};
+
 // -------------------------------------------------------------------------
 // Restore structure packing to default
 // -------------------------------------------------------------------------

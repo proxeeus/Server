@@ -533,6 +533,18 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// Load language skills from DB so ChannelMessageSend can correctly determine
 	// whether the player understands a given language (skill ≥ 24 = understood).
 	database.LoadCharacterLanguages(char_id, &m_pp);
+
+	// Load account status so Admin() returns the correct level for GM command authorization.
+	admin = database.GetAccountStatus(acct_id);
+
+	// Load the character's GM flag so GetGM() works for things like immunity to hunger,
+	// and so the server correctly treats this character as a GM in all internal checks.
+	{
+		auto q = fmt::format("SELECT `gm` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
+		auto r = database.QueryDatabase(q);
+		if (r.RowCount() > 0)
+			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
+	}
 }
 
 void Client::SendZoneInPackets()

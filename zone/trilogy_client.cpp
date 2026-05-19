@@ -28,6 +28,7 @@
 #include "../common/races.h"
 #include "../common/textures.h"
 #include "string_ids.h"
+#include "../common/zone_store.h"
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -228,6 +229,27 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_WearChange:
 		HandleOutgoingWearChange(app);
 		break;
+	case OP_RequestClientZoneChange: {
+		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
+		// The Trilogy client automatically zones or intra-zone teleports based on whether the
+		// zone name in TeleportPC matches the current zone.
+		if (app->size < sizeof(RequestClientZoneChange_Struct)) break;
+		const auto* rc = reinterpret_cast<const RequestClientZoneChange_Struct*>(app->pBuffer);
+		const char* zone_name = ZoneName(static_cast<uint32>(rc->zone_id));
+		if (!zone_name) break;
+		Trilogy::structs::TeleportPC_Struct tpc{};
+		memset(&tpc, 0, sizeof(tpc));
+		strncpy(tpc.zone, zone_name, sizeof(tpc.zone) - 1);
+		tpc.yPos    = rc->y;
+		tpc.xPos    = rc->x;
+		tpc.zPos    = (rc->z == 0.0f) ? 0.1f : rc->z;
+		// EQClassic convention: server sends heading*2, client divides by 2.
+		tpc.heading = (rc->heading != 0.0f) ? rc->heading * 2.0f : 0.0f;
+		m_tzs->SendToSession(m_session_key, 0x4d21,
+		                     reinterpret_cast<const uint8_t*>(&tpc),
+		                     static_cast<uint32_t>(sizeof(tpc)));
+		break;
+	}
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;

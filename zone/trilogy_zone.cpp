@@ -30,6 +30,7 @@
 #include "../common/eq_packet_structs.h"
 #include "../common/eq_constants.h"
 #include "../common/strings.h"
+#include "command.h"
 
 extern Zone*       zone;
 extern uint32      numclients;
@@ -72,6 +73,14 @@ static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single
 static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
+
+// GM command opcodes (client -> zone, CONNECTED state)
+// Source: EQClassic/Common/Include/eq_opcodes.h
+static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
+static constexpr uint16_t ZN_OP_GMGoto        = 0x6e20; // gotoname[30]+myname[30]+unknown[48]
+static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[30]+...
+static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
+static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+unknown[1]
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -487,6 +496,69 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleMoveItem(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_WearChange)
 			HandleConnectedWearChange(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
+			// charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
+			if (plen >= 46) {
+				char zonename[17] = {};
+				strncpy(zonename, reinterpret_cast<const char*>(payload + 30), 16);
+				if (zonename[0]) {
+					LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}'", s.char_name, zonename);
+					command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_GMGoto && s.trilogy_client) {
+			// gotoname[30] + myname[30] + unknown[48] = 108 bytes
+			if (plen >= 30) {
+				char target[31] = {};
+				strncpy(target, reinterpret_cast<const char*>(payload), 30);
+				if (target[0]) {
+					LogInfo("[TrilogyZone] GM Goto: {} -> '{}'", s.char_name, target);
+					command_dispatch(s.trilogy_client, std::string("#goto ") + target, false);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_GMSummon && s.trilogy_client) {
+			// charname[30] + gmname[30] + unknown1[1] + zonename[15] + unknown2[16] + y,x,z,unknown = 104 bytes
+			if (plen >= 30) {
+				char charname[31] = {};
+				strncpy(charname, reinterpret_cast<const char*>(payload), 30);
+				if (charname[0]) {
+					LogInfo("[TrilogyZone] GM Summon: {} summons '{}'", s.char_name, charname);
+					command_dispatch(s.trilogy_client, std::string("#summon ") + charname, false);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_GMKill && s.trilogy_client) {
+			// name[30] + gmname[30] + unknown[1] = 61 bytes
+			if (plen >= 30) {
+				char target[31] = {};
+				strncpy(target, reinterpret_cast<const char*>(payload), 30);
+				if (target[0]) {
+					LogInfo("[TrilogyZone] GM Kill: {} kills '{}'", s.char_name, target);
+					Mob* mob = entity_list.GetMob(target);
+					if (mob) {
+						Mob* old_target = s.trilogy_client->GetTarget();
+						s.trilogy_client->SetTarget(mob);
+						command_dispatch(s.trilogy_client, "#kill", false);
+						s.trilogy_client->SetTarget(old_target);
+					} else {
+						s.trilogy_client->Message(Chat::Red, "Target '%s' not found in zone.", target);
+					}
+				}
+			}
+		}
+		else if (opcode == ZN_OP_GMKick && s.trilogy_client) {
+			// name[30] + gmname[30] + unknown[1] = 61 bytes
+			if (plen >= 30) {
+				char target[31] = {};
+				strncpy(target, reinterpret_cast<const char*>(payload), 30);
+				if (target[0]) {
+					LogInfo("[TrilogyZone] GM Kick: {} kicks '{}'", s.char_name, target);
+					command_dispatch(s.trilogy_client, std::string("#kick ") + target, false);
+				}
+			}
+		}
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -1106,7 +1178,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
-			" `hunger_level`, `thirst_level`, `anon`, `points` "
+			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -1143,6 +1215,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.thirstlevel     = static_cast<int32_t>(Strings::ToInt(row[24]));
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
+		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
