@@ -1356,6 +1356,10 @@ bool Client::CanEnterZone(const std::string& zone_short_name, int16 instance_ver
 		return true;
 	}
 
+	if (!zone) {
+		return true;
+	}
+
 	auto z = GetZoneVersionWithFallback(
 		zone_short_name.empty() ? ZoneID(zone->GetShortName()) : ZoneID(zone_short_name),
 		instance_version == -1 ? zone->GetInstanceVersion() : instance_version

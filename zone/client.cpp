@@ -1823,6 +1823,9 @@ void Client::UpdateWho(uint8 remove)
 	if (!worldserver.Connected()) {
 		return;
 	}
+	if (!zone) {
+		return;
+	}
 
 	auto pack = new ServerPacket(ServerOP_ClientList, sizeof(ServerClientList_Struct));
 	auto *s   = (ServerClientList_Struct *) pack->pBuffer;
@@ -6946,6 +6949,9 @@ int Client::AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_sc
 
 void Client::SendAlternateCurrencyValues()
 {
+	if (!zone) {
+		return;
+	}
 	for (const auto& alternate_currency : zone->AlternateCurrencies) {
 		SendAlternateCurrencyValue(alternate_currency.id, false);
 	}

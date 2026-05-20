@@ -328,6 +328,7 @@ public:
 	void StartShutdownTimer(uint32 set_time = (RuleI(Zone, AutoShutdownDelay)));
 	void ResetShutdownTimer();
 	void StopShutdownTimer();
+	void SetHasActiveTrilogySessions(bool v) { m_has_active_trilogy_sessions = v; }
 	void UpdateQGlobal(uint32 qid, QGlobal newGlobal);
 	void weatherSend(Client *client = nullptr);
 	void ClearSpawnTimers();
@@ -502,6 +503,7 @@ private:
 	Timer                               autoshutdown_timer;
 	Timer                               clientauth_timer;
 	Timer                               initgrids_timer;
+	bool                                m_has_active_trilogy_sessions = false;
 	Timer                               qglobal_purge_timer;
 	ZoneSpellsBlocked                   *blocked_spells;
 

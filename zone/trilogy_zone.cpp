@@ -187,6 +187,7 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	}
 	LogInfo("[TrilogyZone] Session removed, numclients={}", numclients);
 	m_sessions.erase(it);
+	if (zone) zone->SetHasActiveTrilogySessions(!m_sessions.empty());
 }
 
 void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
@@ -359,6 +360,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	if (is_new && !seqstart) return;
 	if (is_new) {
 		m_sessions[key] = Session{};
+		if (zone) zone->SetHasActiveTrilogySessions(true);
 	} else if (seqstart) {
 		Session& existing = m_sessions[key];
 		if (existing.trilogy_client) {
@@ -369,6 +371,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 			--numclients;
 		}
 		LogInfo("[TrilogyZone] Session restarted, numclients={}", numclients);
+		if (zone) zone->SetHasActiveTrilogySessions(true);
 		existing.state      = CONNECTING1;
 		existing.sack_init  = false;
 		existing.seq_sent   = false;
@@ -1544,7 +1547,12 @@ void TrilogyZoneServer::SendTimeOfDay(const std::string& addr, int port, Session
 	memset(&tod, 0, sizeof(tod));
 
 	::TimeOfDay_Struct eqtod{};
-	zone->zone_time.GetCurrentEQTimeOfDay(time(0), &eqtod);
+	if (zone) {
+		zone->zone_time.GetCurrentEQTimeOfDay(time(0), &eqtod);
+	} else {
+		EQTime default_time;
+		default_time.GetCurrentEQTimeOfDay(time(0), &eqtod);
+	}
 	tod.hour   = static_cast<int8_t>(eqtod.hour);
 	tod.minute = static_cast<int8_t>(eqtod.minute);
 	tod.day    = static_cast<int8_t>(eqtod.day);
@@ -2198,9 +2206,7 @@ void TrilogyZoneServer::Tick()
 
 bool TrilogyZoneServer::HasConnectedSession() const
 {
-	for (const auto& kv : m_sessions)
-		if (kv.second.state == CONNECTED) return true;
-	return false;
+	return !m_sessions.empty();
 }
 
 // SendMobHeartbeat — send OP_MobUpdate (0xa120) containing current

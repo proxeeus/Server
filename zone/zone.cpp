@@ -1576,7 +1576,7 @@ bool Zone::Process() {
 	if (!staticzone) {
 		if (autoshutdown_timer.Check()) {
 			ResetShutdownTimer();
-			if (numclients == 0) {
+			if (numclients == 0 && !m_has_active_trilogy_sessions) {
 				return false;
 			}
 		}

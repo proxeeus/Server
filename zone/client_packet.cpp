@@ -674,7 +674,7 @@ void Client::CompleteConnect()
 				break;
 			}
 			case SE_SummonHorse: {
-				if (RuleB(Character, PreventMountsFromZoning) || !zone->CanCastOutdoor()) {
+				if (!zone || RuleB(Character, PreventMountsFromZoning) || !zone->CanCastOutdoor()) {
 					BuffFadeByEffect(SE_SummonHorse);
 				} else {
 					SummonHorse(buffs[j1].spellid);
@@ -704,7 +704,7 @@ void Client::CompleteConnect()
 			}
 			case SE_Levitate:
 			{
-				if (!zone->CanLevitate()) {
+				if (!zone || !zone->CanLevitate()) {
 					if (!GetGM()) {
 						SendAppearancePacket(AppearanceType::FlyMode, 0);
 						BuffFadeByEffect(SE_Levitate);
@@ -852,7 +852,7 @@ void Client::CompleteConnect()
 	CalcItemScale();
 	DoItemEnterZone();
 
-	if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
+	if (zone && zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 		GuildBanks->SendGuildBank(this);
 
 	if (ClientVersion() >= EQ::versions::ClientVersion::SoD)
@@ -864,7 +864,7 @@ void Client::CompleteConnect()
 			guild_mgr.SendToWorldSendGuildMembersList(GuildID());
 		}
 
-		guild_mgr.SendGuildMemberUpdateToWorld(GetName(), GuildID(), zone->GetZoneID(), time(nullptr));
+		guild_mgr.SendGuildMemberUpdateToWorld(GetName(), GuildID(), zone ? zone->GetZoneID() : 0, time(nullptr));
 
 		SendGuildList();
 		if (GetGuildListDirty()) {
