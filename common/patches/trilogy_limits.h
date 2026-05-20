@@ -63,9 +63,11 @@ namespace Trilogy
 	}
 
 	namespace invslot {
-		static const uint64 EQUIPMENT_BITMASK   = 0x000001FFFFULL; // 22 equipment slots
-		static const uint64 GENERAL_BITMASK     = 0x000000FF00ULL; // 8 general slots
-		static const uint64 CURSOR_BITMASK      = 0x0000010000ULL;
+		// Mirror Titanium bitmasks: no powersource (bit 21), equipment bits 0-20+22,
+		// general slots at server bits 23-30, cursor at server bit 33.
+		static const uint64 EQUIPMENT_BITMASK   = 0x00000000005FFFFFULL;
+		static const uint64 GENERAL_BITMASK     = 0x000000007F800000ULL;
+		static const uint64 CURSOR_BITMASK      = 0x0000000200000000ULL;
 		static const uint64 POSSESSIONS_BITMASK = EQUIPMENT_BITMASK | GENERAL_BITMASK | CURSOR_BITMASK;
 		static const uint64 CORPSE_BITMASK      = POSSESSIONS_BITMASK;
 	}

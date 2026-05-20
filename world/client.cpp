@@ -1820,7 +1820,7 @@ bool Client::OPCharCreate(char *name, CharCreate_Struct *cc)
 	/* Set Racial and Class specific language and skills */
 	SetRacialLanguages(&pp);
 	SetRaceStartingSkills(&pp);
-	SetClassStartingSkills(&pp);
+	SetClassStartingSkills(&pp, cle->GetClientVersion());
 	SetClassLanguages(&pp);
 
 	memset(pp.spell_book, std::numeric_limits<uint8>::max(), (sizeof(uint32) * EQ::spells::SPELLBOOK_SIZE));
@@ -2200,7 +2200,7 @@ bool CheckCharCreateInfoTitanium(CharCreate_Struct *cc)
 	return Charerrors == 0;
 }
 
-void Client::SetClassStartingSkills(PlayerProfile_Struct *pp)
+void Client::SetClassStartingSkills(PlayerProfile_Struct *pp, uint8 client_version)
 {
 	for (uint32 i = 0; i <= EQ::skills::HIGHEST_SKILL; ++i) {
 		if (pp->skills[i] == 0) {
@@ -2214,7 +2214,7 @@ void Client::SetClassStartingSkills(PlayerProfile_Struct *pp)
 		}
 	}
 
-	if (cle->GetClientVersion() < static_cast<uint8>(EQ::versions::ClientVersion::RoF2) && pp->class_ == Class::Berserker) {
+	if (client_version < static_cast<uint8>(EQ::versions::ClientVersion::RoF2) && pp->class_ == Class::Berserker) {
 		pp->skills[EQ::skills::Skill1HPiercing] = pp->skills[EQ::skills::Skill2HPiercing];
 		pp->skills[EQ::skills::Skill2HPiercing] = 0;
 	}

@@ -135,7 +135,7 @@ TrilogyClient::TrilogyClient(
 	SetBaseClass(class_);
 	SetBaseGender(gender);
 	GetPP().level  = level;
-	GetPP().deity  = 0;
+	SetDeity(GetPP().deity); // use DB-loaded value; SetDeity sets both m_pp.deity and Mob::deity
 
 	// Set initial world position without broadcasting (entity not yet in entity_list).
 	SetPosition(x, y, z);
@@ -147,6 +147,16 @@ TrilogyClient::TrilogyClient(
 	GetPP().y       = y;
 	GetPP().z       = z;
 	GetPP().heading = heading;
+
+	// Initialize HP/mana from DB-loaded m_pp values. The normal EQStream zone-entry path in
+	// client_packet.cpp calls SetHP(m_pp.cur_hp) after CalcBonuses(), but Trilogy clients bypass
+	// that path entirely. CalcBonuses() must come after Mob::SetLevel() so GetLevel()/GetSTA()
+	// return correct values for CalcBaseHP().
+	CalcBonuses();
+	if (GetPP().cur_hp <= 0)
+		GetPP().cur_hp = GetMaxHP();
+	SetHP(GetPP().cur_hp);
+	Mob::SetMana(GetPP().mana);
 
 	LogInfo("[TrilogyClient] Created: char='{}' id={} race={} class={} level={} pos=({:.1f},{:.1f},{:.1f})",
 	        char_name, char_id, race, static_cast<int>(class_), static_cast<int>(level), x, y, z);

@@ -36,6 +36,10 @@
 #endif
 
 #include "../common/rulesys.h"
+#include "../common/skill_caps.h"
+#include "../common/skills.h"
+#include "../common/repositories/inventory_repository.h"
+#include "client.h"
 
 #include <algorithm>
 #include <cstring>
@@ -919,21 +923,49 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	//   payload[54]      class_          (struct[58])
 	//   payload[68]      face            (struct[72])
 	//   payload[119..125] STR STA CHA DEX INT AGI WIS (struct[123..129])
-	const uint8_t  gender  = payload[50];
-	const uint8_t  deity   = payload[51];
-	const uint16_t race    = *reinterpret_cast<const uint16_t*>(payload + 52); // LE
-	const uint8_t  class_  = payload[54];
-	const uint8_t  face    = payload[68];
-	const uint8_t  str_v   = payload[119];
-	const uint8_t  sta_v   = payload[120];
-	const uint8_t  cha_v   = payload[121];
-	const uint8_t  dex_v   = payload[122];
-	const uint8_t  int_v   = payload[123];
-	const uint8_t  agi_v   = payload[124];
-	const uint8_t  wis_v   = payload[125];
+	const uint8_t  gender    = payload[50];
+	const uint8_t  wire_deity = payload[51]; // Trilogy wire: 0=Agnostic, 1-16 map to EQEmu 216-201
+	const uint16_t race      = *reinterpret_cast<const uint16_t*>(payload + 52); // LE
+	const uint8_t  class_    = payload[54];
+	const uint8_t  face      = payload[68];
+	const uint8_t  str_v     = payload[119];
+	const uint8_t  sta_v     = payload[120];
+	const uint8_t  cha_v     = payload[121];
+	const uint8_t  dex_v     = payload[122];
+	const uint8_t  int_v     = payload[123];
+	const uint8_t  agi_v     = payload[124];
+	const uint8_t  wis_v     = payload[125];
 
-	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] from {}:{}",
-	        s.account_name, name, race, class_, gender, addr, port);
+	// Decode Trilogy wire deity → EQEmu deity ID.
+	// Wire uses reverse-alphabetical order: 16=Bertoxxolous (0x10 confirmed), 1=Veeshan.
+	// Bristlebane(wire 14) and Cazic/Erollisi are NOT at the positions 217-id would give
+	// because EQEmu 204=Erollisi before 205=Bristlebane, but alphabetically Bristlebane > Cazic > Erollisi.
+	// Wire=0 means Agnostic or "not set by client" (Trilogy UI may not transmit deity).
+	static const uint32_t kWireToEQEmu[17] = {
+		  0, // 0  = Agnostic/none
+		216, // 1  = Veeshan
+		215, // 2  = Tunare
+		214, // 3  = The Tribunal
+		213, // 4  = Solusek Ro
+		212, // 5  = Rodcet Nife
+		211, // 6  = Rallos Zek
+		210, // 7  = Quellious
+		209, // 8  = Prexus
+		208, // 9  = Mithaniel Marr
+		207, // 10 = Karana
+		206, // 11 = Innoruuk
+		204, // 12 = Erollisi Marr
+		203, // 13 = Cazic-Thule
+		205, // 14 = Bristlebane
+		202, // 15 = Brell Serilis
+		201, // 16 = Bertoxxolous (0x10, confirmed)
+	};
+	uint32_t eqemu_deity = (wire_deity <= 16) ? kWireToEQEmu[wire_deity] : 0;
+
+	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] wire_deity [{}] eqemu_deity [{}] STR/STA/CHA/DEX/INT/AGI/WIS [{}/{}/{}/{}/{}/{}/{}] from {}:{}",
+	        s.account_name, name, race, (int)class_, (int)gender, (int)wire_deity, eqemu_deity,
+	        (int)str_v, (int)sta_v, (int)cha_v, (int)dex_v, (int)int_v, (int)agi_v, (int)wis_v,
+	        addr, port);
 
 	// Get char_id from the row created by ReserveName
 	uint32_t char_id = database.GetCharacterID(name);
@@ -951,7 +983,7 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	pp.race   = race;
 	pp.class_ = class_;
 	pp.gender = gender;
-	pp.deity  = deity;
+	pp.deity  = eqemu_deity;
 	pp.face   = face;
 	pp.STR    = str_v;
 	pp.STA    = sta_v;
@@ -974,14 +1006,18 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	memset(pp.spell_book, 0xFF, sizeof(pp.spell_book));
 	memset(pp.mem_spells, 0xFF, sizeof(pp.mem_spells));
 
-	// Look up starting zone via start_zones table (class/race/deity, Trilogy has no player_choice)
+	// Look up starting zone via start_zones table (class/race/deity, Trilogy has no player_choice).
+	// Priority: exact deity match > any non-zero deity > deity=0 (generic) row.
+	// If deity is unknown from client (eqemu_deity==0), also infer it from the matched row.
 	{
 		auto zq = fmt::format(
-			"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+			"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`, sz.`player_deity`"
 			" FROM `start_zones` sz"
 			" WHERE sz.`player_class`={} AND sz.`player_race`={}"
-			" ORDER BY (sz.`player_deity`={}) DESC, sz.`player_deity` ASC LIMIT 1",
-			class_, race, deity);
+			" ORDER BY (sz.`player_deity`={}) DESC,"
+			"          (sz.`player_deity` > 0) DESC,"
+			"          sz.`player_deity` ASC LIMIT 1",
+			class_, race, pp.deity);
 		auto zr = content_db.QueryDatabase(zq);
 		if (zr.RowCount() > 0) {
 			auto zrow = zr.begin();
@@ -990,10 +1026,19 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			pp.z       = Strings::ToFloat(zrow[2]);
 			pp.heading = Strings::ToFloat(zrow[3]);
 			pp.zone_id = static_cast<uint16_t>(Strings::ToInt(zrow[4]));
+			// If the Trilogy client didn't supply a deity (wire=0), infer from start_zones row.
+			if (pp.deity == 0) {
+				uint32_t zone_deity = static_cast<uint32_t>(Strings::ToInt(zrow[5]));
+				if (zone_deity > 0)
+					pp.deity = zone_deity;
+				else
+					pp.deity = 140; // DEITY_AGNOSTIC
+			}
 		} else {
 			int titan_zone = RuleI(World, TitaniumStartZoneID);
 			pp.zone_id = (titan_zone > 0) ? static_cast<uint16_t>(titan_zone) : 1;
 			pp.x = 0.0f; pp.y = 0.0f; pp.z = 0.0f; pp.heading = 0.0f;
+			if (pp.deity == 0) pp.deity = 140; // DEITY_AGNOSTIC
 		}
 	}
 
@@ -1004,7 +1049,61 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 		pp.binds[i].z = pp.z; pp.binds[i].heading = pp.heading;
 	}
 
+	// Set default skills
+	pp.skills[EQ::skills::SkillSwimming]     = RuleI(Skills, SwimmingStartValue);
+	pp.skills[EQ::skills::SkillSenseHeading] = RuleI(Skills, SenseHeadingStartValue);
+
+	// Set racial and class languages and skills
+	Client::SetRacialLanguages(&pp);
+	Client::SetRaceStartingSkills(&pp);
+	Client::SetClassStartingSkills(&pp, static_cast<uint8>(EQ::versions::ClientVersion::Trilogy));
+	Client::SetClassLanguages(&pp);
+
+	// Build and persist starting inventory
+	EQ::InventoryProfile inv;
+	inv.SetInventoryVersion(EQ::versions::ClientVersion::Trilogy);
+	inv.SetGMInventory(false);
+	bool has_starting_items = content_db.SetStartingItems(&pp, &inv, pp.race, pp.class_, pp.deity, pp.zone_id, pp.name, 0);
+	LogInfo("[TrilogyWorld] CharCreate | effective deity [{}] zone [{}] starting_items result [{}]",
+	        pp.deity, pp.zone_id, has_starting_items);
+
 	database.SaveCharacterCreate(char_id, s.account_id, &pp);
+
+	{
+		std::vector<InventoryRepository::Inventory> v;
+		auto e = InventoryRepository::NewEntity();
+		e.charid = char_id;
+		for (int16 slot_id = EQ::invslot::EQUIPMENT_BEGIN; slot_id <= EQ::invbag::BANK_BAGS_END;) {
+			const auto* inst = inv.GetItem(slot_id);
+			if (inst) {
+				e.slotid   = slot_id;
+				e.itemid   = inst->GetItem()->ID;
+				e.charges  = inst->GetCharges();
+				e.color    = inst->GetColor();
+				e.augslot1 = inst->GetAugmentItemID(EQ::invaug::SOCKET_BEGIN);
+				e.augslot2 = inst->GetAugmentItemID(EQ::invaug::SOCKET_BEGIN + 1);
+				e.augslot3 = inst->GetAugmentItemID(EQ::invaug::SOCKET_BEGIN + 2);
+				e.augslot4 = inst->GetAugmentItemID(EQ::invaug::SOCKET_BEGIN + 3);
+				e.augslot5 = inst->GetAugmentItemID(EQ::invaug::SOCKET_BEGIN + 4);
+				e.augslot6 = inst->GetAugmentItemID(EQ::invaug::SOCKET_END);
+				v.emplace_back(e);
+			}
+			if (slot_id == EQ::invslot::slotCursor) {
+				slot_id = EQ::invbag::GENERAL_BAGS_BEGIN;
+				continue;
+			} else if (slot_id == EQ::invbag::CURSOR_BAG_END) {
+				slot_id = EQ::invslot::BANK_BEGIN;
+				continue;
+			} else if (slot_id == EQ::invslot::BANK_END) {
+				slot_id = EQ::invbag::BANK_BAGS_BEGIN;
+				continue;
+			}
+			slot_id++;
+		}
+		if (!v.empty()) {
+			InventoryRepository::InsertMany(database, v);
+		}
+	}
 
 	LogInfo("[TrilogyWorld] Character [{}] created in zone [{}] for account [{}]",
 	        name, pp.zone_id, s.account_name);

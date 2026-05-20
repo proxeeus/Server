@@ -1109,8 +1109,28 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	SendApp(addr, port, s, 0xd820, nullptr, 0);
 
 	// ---- Post-D820 sends ----
-	// EQClassic sends HP/mana updates after the final D820.  We send Stamina here
-	// for the same reason: the stamina UI is not initialised until after D820.
+	// EQClassic Process_ClientConnection5 sends HP/mana/stamina after D820.
+	// The UI is not fully initialised until after D820, so these must come after.
+	if (s.trilogy_client) {
+		// HP update (OP_HPUpdate = 0xb220): actual HP values, NOT percentage.
+		Trilogy::structs::SpawnHPUpdate_Struct hpu{};
+		memset(&hpu, 0, sizeof(hpu));
+		hpu.spawn_id = static_cast<int32_t>(s.player_spawn_id);
+		hpu.cur_hp   = static_cast<int32_t>(s.trilogy_client->GetHP());
+		hpu.max_hp   = static_cast<int32_t>(s.trilogy_client->GetMaxHP());
+		SendApp(addr, port, s, 0xb220,
+		        reinterpret_cast<const uint8_t*>(&hpu), sizeof(hpu));
+
+		// Mana update (OP_ManaChange = 0x7f21)
+		Trilogy::structs::ManaChange_Struct mana{};
+		memset(&mana, 0, sizeof(mana));
+		mana.new_mana = static_cast<uint16_t>(
+			std::min(static_cast<int32_t>(s.trilogy_client->GetMana()), 32767));
+		mana.spell_id = 0xFFFF; // no spell
+		SendApp(addr, port, s, 0x7f21,
+		        reinterpret_cast<const uint8_t*>(&mana), sizeof(mana));
+	}
+
 	{
 		Trilogy::structs::Stamina_Struct sta{};
 		memset(&sta, 0, sizeof(sta));
@@ -1165,6 +1185,33 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	SendMobHeartbeat(addr, port, s);
 }
 
+// EQEmu deity ID → Trilogy wire value (reverse-alphabetical order).
+// Bertoxxolous=0x10=16 confirmed by EQClassic PlayerProfile.h comment.
+// EQEmu assigns Erollisi(204) before Bristlebane(205), breaking the simple
+// 217-id formula for those two; a lookup table gives the correct mapping.
+static int8_t EQEmuDeityToTrilogyWire(uint32_t eq_deity)
+{
+	switch (eq_deity) {
+		case 201: return 16; // Bertoxxolous
+		case 202: return 15; // Brell Serilis
+		case 205: return 14; // Bristlebane   (alphabetically between Brell and Cazic)
+		case 203: return 13; // Cazic-Thule
+		case 204: return 12; // Erollisi Marr
+		case 206: return 11; // Innoruuk
+		case 207: return 10; // Karana
+		case 208: return  9; // Mithaniel Marr
+		case 209: return  8; // Prexus
+		case 210: return  7; // Quellious
+		case 211: return  6; // Rallos Zek
+		case 212: return  5; // Rodcet Nife
+		case 213: return  4; // Solusek Ro
+		case 214: return  3; // The Tribunal
+		case 215: return  2; // Tunare
+		case 216: return  1; // Veeshan
+		default:  return  0; // Agnostic / unknown
+	}
+}
+
 // ============================================================
 // SendPlayerProfile — build Trilogy PP from DB, compress,
 //   encrypt, and send as OP_PlayerProfile (0x2d20)
@@ -1210,7 +1257,12 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		strncpy(pp.name,    row[0], sizeof(pp.name) - 1);
 		strncpy(pp.Surname, row[1], sizeof(pp.Surname) - 1);
 		pp.gender          = static_cast<int8_t>(Strings::ToInt(row[2]));
-		pp.deity           = static_cast<int8_t>(Strings::ToInt(row[3]));
+		// Convert EQEmu deity ID → Trilogy wire value (reverse-alphabetical, 1-16).
+		{
+			uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[3]));
+			pp.deity = EQEmuDeityToTrilogyWire(eq_deity);
+			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} wire={}", eq_deity, (int)pp.deity);
+		}
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
 		pp.level           = static_cast<int8_t>(Strings::ToInt(row[6]));
@@ -1482,7 +1534,11 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.z         = Strings::ToFloat(row[9]);
 	sze.heading   = Strings::ToFloat(row[10]);
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
-	sze.deity     = static_cast<int16_t>(Strings::ToInt(row[12]));
+	// EQEmu deity → Trilogy wire value (reuse same lookup as PlayerProfile)
+	{
+		uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[12]));
+		sze.deity = static_cast<int16_t>(EQEmuDeityToTrilogyWire(eq_deity));
+	}
 	sze.guildeqid = 0xFFFF; // no guild
 
 	// 0xFF = PC (player character) — not an NPC armor graphic
