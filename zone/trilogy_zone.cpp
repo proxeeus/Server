@@ -1185,32 +1185,6 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	SendMobHeartbeat(addr, port, s);
 }
 
-// EQEmu deity ID → Trilogy wire value (reverse-alphabetical order).
-// Bertoxxolous=0x10=16 confirmed by EQClassic PlayerProfile.h comment.
-// EQEmu assigns Erollisi(204) before Bristlebane(205), breaking the simple
-// 217-id formula for those two; a lookup table gives the correct mapping.
-static int8_t EQEmuDeityToTrilogyWire(uint32_t eq_deity)
-{
-	switch (eq_deity) {
-		case 201: return 16; // Bertoxxolous
-		case 202: return 15; // Brell Serilis
-		case 205: return 14; // Bristlebane   (alphabetically between Brell and Cazic)
-		case 203: return 13; // Cazic-Thule
-		case 204: return 12; // Erollisi Marr
-		case 206: return 11; // Innoruuk
-		case 207: return 10; // Karana
-		case 208: return  9; // Mithaniel Marr
-		case 209: return  8; // Prexus
-		case 210: return  7; // Quellious
-		case 211: return  6; // Rallos Zek
-		case 212: return  5; // Rodcet Nife
-		case 213: return  4; // Solusek Ro
-		case 214: return  3; // The Tribunal
-		case 215: return  2; // Tunare
-		case 216: return  1; // Veeshan
-		default:  return  0; // Agnostic / unknown
-	}
-}
 
 // ============================================================
 // SendPlayerProfile — build Trilogy PP from DB, compress,
@@ -1257,11 +1231,20 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		strncpy(pp.name,    row[0], sizeof(pp.name) - 1);
 		strncpy(pp.Surname, row[1], sizeof(pp.Surname) - 1);
 		pp.gender          = static_cast<int8_t>(Strings::ToInt(row[2]));
-		// Convert EQEmu deity ID → Trilogy wire value (reverse-alphabetical, 1-16).
+		// pp.deity compact encoding for the Trilogy wire.
+		// EQEmu IDs 201-216 → compact 1-16 (simple 1-based sequential index).
+		// The EQClassic PlayerProfile.h comment "Bertoxxolous=0x10" was most likely a
+		// misidentification: 0x10=16 is Erollisi Marr's item deity_mask bit (powers of 2),
+		// not Bertoxxolous.  A 1-based encoding (1=Bertox,…,16=Veeshan) is consistent
+		// with the client always showing Agnostic for values 16-31 (our old range).
+		// compact = eq_deity - 200  →  201→1, 202→2, …, 216→16.  Agnostic = 0.
 		{
 			uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[3]));
-			pp.deity = EQEmuDeityToTrilogyWire(eq_deity);
-			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} wire={}", eq_deity, (int)pp.deity);
+			uint8_t compact = (eq_deity >= 201 && eq_deity <= 216)
+				? static_cast<uint8_t>(eq_deity - 200)
+				: 0; // Agnostic or unrecognised
+			pp.deity = static_cast<int8_t>(compact);
+			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact=0x{:02x}", eq_deity, compact);
 		}
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
@@ -1475,6 +1458,19 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	}
 
 	// ---- CRC, compress, encrypt, send ----
+	// Byte-dump PP region around deity (offset 55) to verify the value before compression.
+	// Layout: [50..53]=unknown, [54]=gender, [55]=deity, [56..57]=race, [58]=class_, [59..62]=unknown
+	{
+		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, deity) == 55,
+		              "PP deity offset changed — update compact encoding formula");
+		const uint8_t* b = reinterpret_cast<const uint8_t*>(&pp);
+		LogInfo("[TrilogyZone] SendPlayerProfile | PP bytes[50..62]:"
+		        " {:02x} {:02x} {:02x} {:02x}  {:02x}[54=gender] {:02x}[55=deity] {:02x}{:02x}[56=race]"
+		        "  {:02x}[58=class] {:02x} {:02x} {:02x} {:02x}",
+		        b[50], b[51], b[52], b[53],
+		        b[54], b[55], b[56], b[57],
+		        b[58], b[59], b[60], b[61], b[62]);
+	}
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&pp), sizeof(pp));
 
 	uint32_t max_clen = EQ::EstimateDeflateBuffer(sizeof(pp));
@@ -1534,10 +1530,14 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.z         = Strings::ToFloat(row[9]);
 	sze.heading   = Strings::ToFloat(row[10]);
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
-	// EQEmu deity → Trilogy wire value (reuse same lookup as PlayerProfile)
+	// sze.deity uses same compact encoding as pp.deity: EQEmu 201-216 → compact 1-16.
 	{
 		uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[12]));
-		sze.deity = static_cast<int16_t>(EQEmuDeityToTrilogyWire(eq_deity));
+		int16_t compact = (eq_deity >= 201 && eq_deity <= 216)
+			? static_cast<int16_t>(eq_deity - 200)
+			: 0;
+		sze.deity = compact;
+		LogInfo("[TrilogyZone] SendZoneEntrySpawn | deity db={} compact={}", eq_deity, (int)compact);
 	}
 	sze.guildeqid = 0xFFFF; // no guild
 
