@@ -22,6 +22,8 @@
 #include "entity.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
+#include "../common/item_instance.h"
+#include "../common/item_data.h"
 #include "../common/crc32.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/emu_versions.h"
@@ -268,6 +270,33 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_Death:
 		HandleDeath(app);
+		break;
+	case OP_Consider:
+		HandleOutgoingConsider(app);
+		break;
+	case OP_ExpUpdate:
+		HandleExpUpdate(app);
+		break;
+	case OP_LevelUpdate:
+		HandleLevelUpdate(app);
+		break;
+	case OP_MoneyOnCorpse:
+		HandleMoneyOnCorpse(app);
+		break;
+	case OP_LootComplete:
+		// 0 bytes — signals the client to close the loot window.
+		m_tzs->SendToSession(m_session_key, 0x4421, nullptr, 0);
+		break;
+	case OP_LootRequest:
+		// Server echoes the 4-byte corpse ID back to the client.
+		if (app->size >= 4)
+			m_tzs->SendToSession(m_session_key, 0x4e20, app->pBuffer, 4);
+		break;
+	case OP_LootItem:
+		HandleOutgoingLootItem(app);
+		break;
+	case OP_ItemPacket:
+		HandleItemPacket(app);
 		break;
 	case OP_RequestClientZoneChange: {
 		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
@@ -1038,4 +1067,367 @@ void TrilogyClient::HandleAnimation(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x9f20,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleOutgoingConsider — OP_Consider (server → Trilogy client).
+//
+// EQEmu sends Consider_Struct: { uint32 playerid, targetid, faction (1-9
+// post-swap), level (con color), int32 cur_hp, max_hp, uint8 pvpcon }.
+// Trilogy expects: { int32 playerid, targetid, faction (hex), unknown_c[3],
+//   unworthy }.
+//
+// After EQEmu's swap, factions 1-9 map 1:1 to EQClassic FACTION_VALUE.
+// EQClassic encodes faction as: ally=0x500, warmly=0x300, kindly=0x200,
+// amiable=0x100, indifferent=0x0, apprehensive=0xFFFFFFFF, dubious=0xFFFFFF00,
+// threatening=0xFFFFFE00, scowls=0xFFFFFD00.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingConsider(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Consider_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::Consider_Struct*>(app->pBuffer);
+
+	static const int32_t kFactionHex[10] = {
+		0x00000000, // 0 = unused
+		0x00000500, // 1 = ally
+		0x00000300, // 2 = warmly
+		0x00000200, // 3 = kindly
+		0x00000100, // 4 = amiable
+		0x00000000, // 5 = indifferent
+		(int32_t)0xFFFFFD00, // 6 = scowls (EQClassic)
+		(int32_t)0xFFFFFE00, // 7 = threatening
+		(int32_t)0xFFFFFF00, // 8 = dubious
+		(int32_t)0xFFFFFFFF, // 9 = apprehensive (EQClassic)
+	};
+
+	uint32_t fac = emu->faction;
+	int32_t hex_faction = (fac < 10) ? kFactionHex[fac] : 0;
+
+	Trilogy::structs::Consider_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.playerid = static_cast<int32_t>(TranslateId(emu->playerid));
+	out.targetid = static_cast<int32_t>(emu->targetid);
+	out.faction  = hex_faction;
+
+	m_tzs->SendToSession(m_session_key, 0x3721,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleExpUpdate — OP_ExpUpdate (server → Trilogy client).
+//
+// EQEmu ExpUpdate_Struct: { uint32 exp, uint32 aaxp } = 8 bytes.
+// Trilogy ExpUpdate_Struct: { uint32 exp } = 4 bytes.
+// Just drop the aaxp field; exp scale 0-330 is identical.
+// ============================================================
+
+void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::ExpUpdate_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::ExpUpdate_Struct*>(app->pBuffer);
+
+	Trilogy::structs::ExpUpdate_Struct out{};
+	out.exp = emu->exp;
+
+	m_tzs->SendToSession(m_session_key, 0x9921,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleLevelUpdate — OP_LevelUpdate (server → Trilogy client).
+//
+// EQEmu LevelUpdate_Struct: { uint32 level, level_old, exp } = 12 bytes.
+// Trilogy LevelUpdate_Struct: { int8 level, can_delevel } = 2 bytes.
+// ============================================================
+
+void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::LevelUpdate_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::LevelUpdate_Struct*>(app->pBuffer);
+
+	Trilogy::structs::LevelUpdate_Struct out{};
+	out.level       = static_cast<int8_t>(emu->level);
+	out.can_delevel = (emu->level < emu->level_old) ? static_cast<int8_t>(1) : static_cast<int8_t>(0);
+
+	m_tzs->SendToSession(m_session_key, 0x9821,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleMoneyOnCorpse — OP_MoneyOnCorpse (server → Trilogy client).
+//
+// EQEmu moneyOnCorpseStruct and Trilogy MoneyOnCorpse_Struct are
+// byte-for-byte identical (20 bytes) — pass through directly.
+// ============================================================
+
+void TrilogyClient::HandleMoneyOnCorpse(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::moneyOnCorpseStruct)) return;
+
+	m_tzs->SendToSession(m_session_key, 0x5020, app->pBuffer,
+	                     static_cast<uint32_t>(sizeof(::moneyOnCorpseStruct)));
+}
+
+// ============================================================
+// HandleOutgoingLootItem — OP_LootItem echo (server → Trilogy client).
+//
+// EQEmu echoes LootingItem_Struct after processing a loot request.
+// The Trilogy client expects the same 16-byte struct on opcode 0xa020.
+// Translate entity IDs (lootee/looter) using TranslateId.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::LootingItem_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::LootingItem_Struct*>(app->pBuffer);
+
+	Trilogy::structs::LootingItem_Struct out{};
+	out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
+	out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
+	out.slot_id   = emu->slot_id;
+	out.auto_loot = static_cast<int32_t>(emu->auto_loot);
+
+	m_tzs->SendToSession(m_session_key, 0xa020,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// BuildClassicItemFromInst — shared helper used by HandleItemPacket.
+//
+// Fills a Trilogy::structs::ClassicItem_Struct from a live EQ::ItemInstance*.
+// Returns false if inst or its ItemData is null.
+// loot_slot is stored in ci.equipslot (pass -1 for cursor, slot ID otherwise).
+// ============================================================
+
+static inline int8_t clamp_i8_tc(int32_t v) {
+	return static_cast<int8_t>(v < -128 ? -128 : (v > 127 ? 127 : v));
+}
+
+static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
+                                     Trilogy::structs::ClassicItem_Struct& ci,
+                                     int16_t equip_slot)
+{
+	if (!inst) return false;
+	const EQ::ItemData* it = inst->GetItem();
+	if (!it) return false;
+
+	memset(&ci, 0, sizeof(ci));
+
+	strncpy(ci.name,   it->Name,   sizeof(ci.name)   - 1);
+	strncpy(ci.lore,   it->Lore,   sizeof(ci.lore)   - 1);
+	strncpy(ci.idfile, it->IDFile, sizeof(ci.idfile)  - 1);
+
+	ci.weight    = static_cast<uint8>(std::min(255, it->Weight > 0 ? it->Weight : 0));
+	ci.norent    = static_cast<int8>(it->NoRent);
+	ci.nodrop    = static_cast<int8>(it->NoDrop);
+	ci.size      = static_cast<uint8>(it->Size);
+	ci.itemclass = static_cast<int8>(it->ItemClass);
+	if (it->ID > 65535) return false;
+	ci.id        = static_cast<uint16>(it->ID);
+	ci.icon      = static_cast<uint16>(it->Icon ? it->Icon : 1);
+	ci.equipslot = equip_slot;
+	ci.slots     = static_cast<uint32>(it->Slots);
+	ci.price     = static_cast<int32>(it->Price);
+
+	bool has_click  = (it->Click.Effect  > 0 && it->Click.Effect  < 3000);
+	bool has_proc   = (it->Proc.Effect   > 0 && it->Proc.Effect   < 3000);
+	bool has_worn   = (it->Worn.Effect   > 0 && it->Worn.Effect   < 3000);
+	bool has_scroll = (it->Scroll.Effect > 0 && it->Scroll.Effect < 3000);
+	bool has_effect = has_click || has_proc || has_worn || has_scroll;
+
+	if (it->ItemClass == 2) {
+		ci.flag = 0x7669;
+	} else if (it->ItemClass == 1) {
+		ci.flag = (it->BagType > 8) ? 0x3d00 : 0x5450;
+	} else {
+		ci.flag = has_effect ? 0x0036 : 0x315f;
+	}
+
+	if (it->ItemClass == 2) {
+		ci.book_data.book     = static_cast<int8>(it->Book);
+		ci.book_data.booktype = static_cast<int16>(it->BookType);
+		if (it->Filename[0])
+			strncpy(ci.book_data.filename, it->Filename, sizeof(ci.book_data.filename) - 1);
+	} else {
+		ci.common.unknown0282 = static_cast<int8>(0xFF);
+		ci.common.unknown0283 = static_cast<int8>(0xFF);
+
+		ci.common.astr    = clamp_i8_tc(it->AStr);
+		ci.common.asta    = clamp_i8_tc(it->ASta);
+		ci.common.acha    = clamp_i8_tc(it->ACha);
+		ci.common.adex    = clamp_i8_tc(it->ADex);
+		ci.common.aint_   = clamp_i8_tc(it->AInt);
+		ci.common.aagi    = clamp_i8_tc(it->AAgi);
+		ci.common.awis    = clamp_i8_tc(it->AWis);
+		ci.common.mr      = clamp_i8_tc(it->MR);
+		ci.common.fr      = clamp_i8_tc(it->FR);
+		ci.common.cr      = clamp_i8_tc(it->CR);
+		ci.common.dr      = clamp_i8_tc(it->DR);
+		ci.common.pr      = clamp_i8_tc(it->PR);
+		ci.common.hp      = clamp_i8_tc(it->HP);
+		ci.common.mana    = clamp_i8_tc(it->Mana);
+		ci.common.ac      = clamp_i8_tc(it->AC);
+		ci.common.stackable = it->Stackable ? 1 : 0;
+		ci.common.light   = static_cast<uint8>(it->Light);
+		ci.common.delay   = static_cast<uint8>(it->Delay);
+		ci.common.damage  = static_cast<uint8>(it->Damage > 255 ? 255 : it->Damage);
+		ci.common.range_  = static_cast<uint8>(it->Range);
+		ci.common.itemtype= static_cast<uint8>(it->ItemType);
+		ci.common.magic   = it->Magic ? 1 : 0;
+		ci.common.material= static_cast<uint8>(it->Material);
+		ci.common.color   = static_cast<uint32>(it->Color);
+		ci.common.classes = static_cast<uint16>(it->Classes);
+
+		uint16 eff_id    = 0;
+		int8   eff_type  = 0;
+		int8   eff_level = 0;
+
+		if (has_click) {
+			eff_id    = static_cast<uint16>(it->Click.Effect);
+			eff_type  = static_cast<int8>(it->Click.Type);
+			eff_level = static_cast<int8>(it->Click.Level);
+		} else if (has_scroll) {
+			eff_id    = static_cast<uint16>(it->Scroll.Effect);
+			eff_type  = static_cast<int8>(it->Scroll.Type);
+			eff_level = static_cast<int8>(it->Scroll.Level);
+		} else if (has_proc) {
+			eff_id    = static_cast<uint16>(it->Proc.Effect);
+			eff_type  = static_cast<int8>(it->Worn.Type > 0 ? it->Worn.Type : it->Proc.Type);
+			eff_level = static_cast<int8>(it->Proc.Level);
+		} else if (has_worn) {
+			eff_id    = static_cast<uint16>(it->Worn.Effect);
+			eff_type  = static_cast<int8>(it->Worn.Type);
+			eff_level = static_cast<int8>(it->Worn.Level);
+		}
+
+		ci.common.effect1      = eff_id;
+		ci.common.effect2      = eff_id;
+		ci.common.effecttype1  = eff_type;
+		ci.common.effecttype2  = eff_type;
+		ci.common.effectlevel1 = static_cast<uint8>(eff_level);
+		ci.common.effectlevel2 = static_cast<uint8>(eff_level);
+
+		ci.common.casttime     = static_cast<uint32>(it->CastTime_);
+		ci.common.sellrate     = static_cast<float>(it->SellRate);
+		ci.common.skillmodtype = static_cast<uint16>(it->SkillModType);
+		ci.common.skillmodvalue= static_cast<int16>(it->SkillModValue);
+		ci.common.banedmgrace  = static_cast<int16>(it->BaneDmgRace);
+		ci.common.banedmgbody  = static_cast<int16>(it->BaneDmgBody);
+		ci.common.banedmgamt   = static_cast<uint8>(it->BaneDmgAmt > 255 ? 255 : it->BaneDmgAmt);
+		ci.common.reclevel     = static_cast<uint8>(it->RecLevel);
+		ci.common.recskill     = static_cast<uint8>(it->RecSkill);
+		ci.common.procrate     = static_cast<uint16>(it->ProcRate < 0 ? 0 : it->ProcRate);
+		ci.common.elemdmgtype  = static_cast<uint8>(it->ElemDmgType);
+		ci.common.elemdmgamt   = static_cast<uint8>(it->ElemDmgAmt);
+		ci.common.factionmod1  = static_cast<uint16>(it->FactionMod1 < 0 ? 0 : it->FactionMod1);
+		ci.common.factionmod2  = static_cast<uint16>(it->FactionMod2 < 0 ? 0 : it->FactionMod2);
+		ci.common.factionmod3  = static_cast<uint16>(it->FactionMod3 < 0 ? 0 : it->FactionMod3);
+		ci.common.factionmod4  = static_cast<uint16>(it->FactionMod4 < 0 ? 0 : it->FactionMod4);
+		ci.common.factionamt1  = static_cast<uint16>(it->FactionAmt1 < 0 ? 0 : it->FactionAmt1);
+		ci.common.factionamt2  = static_cast<uint16>(it->FactionAmt2 < 0 ? 0 : it->FactionAmt2);
+		ci.common.factionamt3  = static_cast<uint16>(it->FactionAmt3 < 0 ? 0 : it->FactionAmt3);
+		ci.common.factionamt4  = static_cast<uint16>(it->FactionAmt4 < 0 ? 0 : it->FactionAmt4);
+		ci.common.deity        = static_cast<uint16>(it->Deity);
+
+		if (it->ItemClass == 1) {
+			ci.common.container.bagtype   = it->BagType;
+			ci.common.container.bagslots  = it->BagSlots > 0 ? it->BagSlots : 1;
+			ci.common.container.isbagopen = 0;
+			ci.common.container.bagsize   = static_cast<int8>(it->BagSize > 0 ? it->BagSize : 1);
+			ci.common.container.bagwr     = it->BagWR;
+			ci.common.charges             = 0;
+		} else {
+			ci.common.normal.races = static_cast<uint16>(it->Races);
+			if (has_click)
+				ci.common.normal.click_effect_type = (it->Click.Type == 5) ? 3 : static_cast<int8>(it->Click.Type);
+			else if (has_worn)
+				ci.common.normal.click_effect_type = static_cast<int8>(it->Worn.Type);
+			else if (has_scroll)
+				ci.common.normal.click_effect_type = static_cast<int8>(it->Scroll.Type);
+			else if (has_proc)
+				ci.common.normal.click_effect_type = 2;
+
+			int16_t ch = inst->GetCharges();
+			ci.common.charges = (ch == 0) ? static_cast<int8>(-1) :
+			                    static_cast<int8>(ch > 127 ? 127 : ch);
+		}
+	}
+
+	return true;
+}
+
+// ============================================================
+// HandleItemPacket — OP_ItemPacket (server → Trilogy client).
+//
+// The server sends OP_ItemPacket with a serialised item for loot window
+// display (ItemPacketLoot), cursor delivery (ItemPacketLimbo), or
+// inventory display (ItemPacketCharInventory).
+//
+// The packet is: { ItemPacketType PacketType (4 bytes) } followed by
+// the binary bytes of InternalSerializedItem_Struct { int16 slot_id;
+// const void* inst; } — inst is a live pointer to EQ::ItemInstance.
+//
+// We extract the pointer, build a ClassicItem_Struct, and send it:
+//   ItemPacketLoot      → 0x5220 (OP_ItemOnCorpse), slot_id = loot slot
+//   ItemPacketLimbo     → itemclass opcode (6421/6521/6621), slot 0 (cursor)
+//   ItemPacketCharInventory → itemclass opcode, translated slot
+// ============================================================
+
+void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	// Minimum size: ItemPacketType (4) + InternalSerializedItem_Struct (>=10 with pointer)
+	if (app->size < 4 + sizeof(EQ::InternalSerializedItem_Struct)) return;
+
+	const auto pkt_type = static_cast<ItemPacketType>(
+	    *reinterpret_cast<const int32_t*>(app->pBuffer));
+
+	const auto* isi = reinterpret_cast<const EQ::InternalSerializedItem_Struct*>(
+	    app->pBuffer + 4);
+
+	const auto* inst = reinterpret_cast<const EQ::ItemInstance*>(isi->inst);
+	if (!inst) return;
+
+	int16_t slot_id = isi->slot_id;
+
+	// Determine output equip_slot for the ClassicItem_Struct.
+	// Trilogy loot slots pass through; cursor (limbo) is slot 0 in v29c.
+	int16_t equip_slot;
+	uint16_t wire_opcode;
+
+	switch (pkt_type) {
+	case ItemPacketLoot:
+		// Loot window: use the loot slot as-is (EQEmu loot slots start at 23).
+		equip_slot   = slot_id;
+		wire_opcode  = 0x5220; // OP_ItemOnCorpse
+		break;
+	case ItemPacketLimbo:
+		// Item going to cursor — slot 0 in Trilogy.
+		equip_slot  = 0;
+		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
+		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;
+		break;
+	case ItemPacketCharInventory:
+		// General inventory delivery: translate EQEmu slot to Trilogy slot.
+		// Slots 0-21 pass through; 22-30 → 21-29 (no charm slot in v29c).
+		equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1) : slot_id;
+		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
+		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;
+		break;
+	default:
+		return; // Other item packet types not yet translated.
+	}
+
+	Trilogy::structs::ClassicItem_Struct ci{};
+	if (!BuildClassicItemFromInst(inst, ci, equip_slot)) return;
+
+	m_tzs->SendToSession(m_session_key, wire_opcode,
+	                     reinterpret_cast<const uint8_t*>(&ci),
+	                     static_cast<uint32_t>(sizeof(ci)));
 }

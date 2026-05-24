@@ -76,6 +76,16 @@ static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearCha
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
 
+// Combat / looting opcodes
+// Source: EQClassic/Common/Include/eq_opcodes.h
+static constexpr uint16_t ZN_OP_AutoAttack     = 0x5121; // client -> zone: 4 bytes, [0]=0 off / 1 on
+static constexpr uint16_t ZN_OP_AutoAttack2    = 0x6021; // client -> zone: same as above (dual-wield follow-up)
+static constexpr uint16_t ZN_OP_ClientTarget   = 0x6221; // client -> zone: ClientTarget_Struct (4 bytes)
+static constexpr uint16_t ZN_OP_Consider       = 0x3721; // bidirectional: Consider_Struct (28 bytes)
+static constexpr uint16_t ZN_OP_LootRequest    = 0x4e20; // client -> zone: int32 corpse entity ID
+static constexpr uint16_t ZN_OP_LootItem       = 0xa020; // bidirectional: LootingItem_Struct (16 bytes)
+static constexpr uint16_t ZN_OP_EndLootRequest = 0x4F20; // client -> zone: int32 corpse entity ID
+
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
@@ -594,6 +604,80 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			s.camping    = true;
 			s.camp_start = std::time(nullptr);
 			LogInfo("[TrilogyZone] Camp initiated for {}", s.char_name);
+		}
+		else if ((opcode == ZN_OP_AutoAttack || opcode == ZN_OP_AutoAttack2) && s.trilogy_client) {
+			// 4-byte payload: pBuffer[0] = 0 (off) or 1 (on).
+			// Directly construct and queue a 4-byte OP_AutoAttack packet for Client::Handle_OP_AutoAttack.
+			if (plen >= 1) {
+				EQApplicationPacket atkpkt(OP_AutoAttack, 4);
+				memset(atkpkt.pBuffer, 0, 4);
+				atkpkt.pBuffer[0] = payload[0];
+				s.trilogy_client->Handle_OP_AutoAttack(&atkpkt);
+			}
+		}
+		else if (opcode == ZN_OP_ClientTarget && s.trilogy_client) {
+			// Trilogy ClientTarget_Struct: { int16 new_target; int16 pad } = 4 bytes.
+			// EQEmu ClientTarget_Struct: { uint32 new_target } = 4 bytes.
+			// Sign-extend int16 → uint32 so negative entity IDs are preserved.
+			// Must use Handle_OP_TargetMouse, NOT Handle_OP_TargetCommand:
+			// TargetCommand only validates range and echoes the packet — it never
+			// calls SetTarget().  TargetMouse calls SetTarget() and pClientSideTarget,
+			// which is required for autoattack and combat to function.
+			if (plen >= 2) {
+				int16_t tgt16;
+				memcpy(&tgt16, payload, 2);
+				uint32_t tgt32 = static_cast<uint32_t>(static_cast<int32_t>(tgt16));
+				EQApplicationPacket tgtpkt(OP_TargetMouse, sizeof(::ClientTarget_Struct));
+				memset(tgtpkt.pBuffer, 0, sizeof(::ClientTarget_Struct));
+				memcpy(tgtpkt.pBuffer, &tgt32, 4);
+				s.trilogy_client->Handle_OP_TargetMouse(&tgtpkt);
+			}
+		}
+		else if (opcode == ZN_OP_Consider && s.trilogy_client) {
+			// Client sends Consider_Struct with targetid only; playerid is ignored.
+			// EQEmu Handle_OP_Consider expects Consider_Struct with playerid + targetid (both uint32).
+			if (plen >= 8) {
+				int32_t  target_classic = static_cast<int32_t>(
+				    payload[4] | (static_cast<uint32_t>(payload[5]) << 8) |
+				    (static_cast<uint32_t>(payload[6]) << 16) | (static_cast<uint32_t>(payload[7]) << 24));
+				::Consider_Struct con_emu{};
+				memset(&con_emu, 0, sizeof(con_emu));
+				con_emu.playerid = static_cast<uint32_t>(s.trilogy_client->GetID());
+				con_emu.targetid = static_cast<uint32_t>(target_classic);
+				EQApplicationPacket conpkt(OP_Consider, sizeof(::Consider_Struct));
+				memcpy(conpkt.pBuffer, &con_emu, sizeof(con_emu));
+				s.trilogy_client->Handle_OP_Consider(&conpkt);
+			}
+		}
+		else if (opcode == ZN_OP_LootRequest && s.trilogy_client) {
+			// Payload: int32 corpse entity ID.
+			if (plen >= 4) {
+				uint32_t corpse_id = static_cast<uint32_t>(
+				    payload[0] | (static_cast<uint32_t>(payload[1]) << 8) |
+				    (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24));
+				EQApplicationPacket lootreqpkt(OP_LootRequest, 4);
+				memcpy(lootreqpkt.pBuffer, &corpse_id, 4);
+				s.trilogy_client->Handle_OP_LootRequest(&lootreqpkt);
+			}
+		}
+		else if (opcode == ZN_OP_LootItem && s.trilogy_client) {
+			// LootingItem_Struct (16 bytes) — compatible with EQEmu LootingItem_Struct.
+			if (plen >= 16) {
+				EQApplicationPacket lootitempkt(OP_LootItem, 16);
+				memcpy(lootitempkt.pBuffer, payload, 16);
+				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
+			}
+		}
+		else if (opcode == ZN_OP_EndLootRequest && s.trilogy_client) {
+			// Payload: int32 corpse entity ID.
+			if (plen >= 4) {
+				uint32_t corpse_id = static_cast<uint32_t>(
+				    payload[0] | (static_cast<uint32_t>(payload[1]) << 8) |
+				    (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24));
+				EQApplicationPacket endlootpkt(OP_EndLootRequest, 4);
+				memcpy(endlootpkt.pBuffer, &corpse_id, 4);
+				s.trilogy_client->Handle_OP_EndLootRequest(&endlootpkt);
+			}
 		}
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
@@ -2472,13 +2556,9 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			int speed_int = npc->IsEngaged() ? npc->GetRunspeed() : npc->GetWalkspeed();
 			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(speed_int * 11.0f / 40.0f)));
 			upd->anim_type = anim;
-
-			// Velocity deltas: let the client interpolate position between heartbeat ticks.
-			float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
-			int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
-			int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
-			upd->delta_x = std::max(-511, std::min(511, ddx));
-			upd->delta_y = std::max(-511, std::min(511, ddy));
+			// delta_x/delta_y left at 0: client-side dead-reckoning extrapolation causes mobs
+			// to "ghost" past their actual position when the scale doesn't match exactly.
+			// Position corrections arrive every 250ms — small hops at melee range are invisible.
 		}
 		// else (stationary Playerbot): anim_type=0, delta=0 — confirms position without moving
 
@@ -2516,12 +2596,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		if (c->IsMoving()) {
 			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(c->GetMovespeed() * 11.0f / 40.0f)));
 			upd->anim_type = anim;
-
-			float heading_rad = heading * static_cast<float>(M_PI) / 256.0f;
-			int32_t ddx = static_cast<int32_t>(anim * std::sin(heading_rad));
-			int32_t ddy = static_cast<int32_t>(anim * std::cos(heading_rad));
-			upd->delta_x = std::max(-511, std::min(511, ddx));
-			upd->delta_y = std::max(-511, std::min(511, ddy));
+			// delta_x/delta_y left at 0 — see NPC block above.
 		}
 		// else: anim_type=0, delta=0 — client confirms position without moving
 

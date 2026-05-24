@@ -558,6 +558,16 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
 	}
 
+	// Load equipment inventory so weapon/armor type lookups (GetWeaponDamage,
+	// CalcBonuses, attack skill selection) work correctly.  Without this,
+	// m_inv.GetItem(slotPrimary) always returns null → every attack defaults
+	// to Hand-to-Hand regardless of what weapon is equipped.
+	// SetGMInventory(true) before load allows all slot ranges to be populated
+	// (mirrors the normal zone-entry path in client_packet.cpp:1310-1311).
+	m_inv.SetGMInventory(true);
+	database.GetInventory(char_id, &m_inv);
+	m_inv.SetGMInventory((bool)m_pp.gm);
+
 	// Trilogy clients never send OP_SetServerFilter so ClientFilters[] stays
 	// zero-initialized (= FilterHide) unless we seed it here.  With FilterHide,
 	// QueueCloseClients drops every FilterNPCSpells / FilterPCSpells packet

@@ -173,4 +173,12 @@ private:
 	void HandleMemorizeSpellOut(const EQApplicationPacket* app);
 	void HandleBuff(const EQApplicationPacket* app);
 	void HandleDeath(const EQApplicationPacket* app);
+	// Consider / exp / leveling
+	void HandleOutgoingConsider(const EQApplicationPacket* app);
+	void HandleExpUpdate(const EQApplicationPacket* app);
+	void HandleLevelUpdate(const EQApplicationPacket* app);
+	// Loot / item delivery
+	void HandleMoneyOnCorpse(const EQApplicationPacket* app);
+	void HandleOutgoingLootItem(const EQApplicationPacket* app);
+	void HandleItemPacket(const EQApplicationPacket* app);
 };

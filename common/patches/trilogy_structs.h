@@ -1296,6 +1296,62 @@ struct TeleportPC_Struct
 /*0048*/
 };
 
+/*
+** ClientTarget_Struct
+** Opcode:  OP_ClientTarget = 0x6221
+** Direction: client -> zone server
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ClientTarget_Struct
+** Size:    4 bytes
+*/
+struct ClientTarget_Struct
+{
+/*000*/	int16	new_target;		// entity ID of targeted mob/player
+/*002*/	int16	ct_unknown1;
+/*004*/
+};
+
+/*
+** MoneyOnCorpse_Struct
+** Opcode:  OP_MoneyOnCorpse = 0x5020
+** Direction: zone server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: MoneyOnCorpse_Struct
+** Size:    20 bytes
+**
+** Identical layout to EQEmu moneyOnCorpseStruct — pass-through.
+*/
+struct MoneyOnCorpse_Struct
+{
+/*000*/	uint8	response;		// 0=deny, 1=ok, 2=corpse empty, 3=too far
+/*001*/	uint8	unknown1;
+/*002*/	uint8	unknown2;
+/*003*/	uint8	unknown3;
+/*004*/	uint32	platinum;
+/*008*/	uint32	gold;
+/*012*/	uint32	silver;
+/*016*/	uint32	copper;
+/*020*/
+};
+
+/*
+** LootingItem_Struct
+** Opcode:  OP_LootItem = 0xa020
+** Direction: client -> server (request), server -> client (echo)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: LootingItem_Struct
+** Size:    16 bytes
+**
+** Compatible with EQEmu LootingItem_Struct (same field order/sizes).
+** slot_id is the corpse loot slot (starting at CORPSE_BEGIN=23).
+*/
+struct LootingItem_Struct
+{
+/*000*/	int32	lootee;			// entity ID of corpse
+/*004*/	int32	looter;			// entity ID of looter (player)
+/*008*/	int16	slot_id;		// corpse loot slot index
+/*010*/	int8	unknown3[2];
+/*012*/	int32	auto_loot;		// 0=manual, non-zero=auto
+/*016*/
+};
+
 // -------------------------------------------------------------------------
 // Restore structure packing to default
 // -------------------------------------------------------------------------
@@ -1363,6 +1419,15 @@ static_assert(sizeof(SpawnPositionUpdate_Struct) == 15,
 
 static_assert(sizeof(Illusion_Struct) == 72,
 	"Trilogy Illusion_Struct must be 72 bytes (EQClassic Zone/Common format)");
+
+static_assert(sizeof(ClientTarget_Struct)   ==   4,
+	"Trilogy ClientTarget_Struct must be 4 bytes");
+
+static_assert(sizeof(MoneyOnCorpse_Struct)  ==  20,
+	"Trilogy MoneyOnCorpse_Struct must be 20 bytes");
+
+static_assert(sizeof(LootingItem_Struct)    ==  16,
+	"Trilogy LootingItem_Struct must be 16 bytes");
 
 	} /*structs*/
 } /*Trilogy*/
