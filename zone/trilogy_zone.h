@@ -115,6 +115,7 @@ private:
 		uint8_t     char_class_  = 0;
 		uint8_t     char_gender  = 0;
 		uint8_t     char_level   = 0;
+		uint32_t    char_deity   = 0; // EQEmu deity ID (201-216) or 0 for agnostic
 
 		// Non-null once the player has fully entered the zone (HandleZoneInComplete).
 		// Owned by entity_list; do NOT delete directly — use entity_list.RemoveClient/Mob.

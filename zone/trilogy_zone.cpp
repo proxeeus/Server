@@ -171,6 +171,23 @@ static void EncryptZoneSpawnPacket(uint8_t* buf, uint32_t size)
 	}
 }
 
+// EncryptNewSpawnPacket — cipher for individual OP_NewSpawn (0x4921) packets.
+// Same stream as EncryptZoneSpawnPacket but WITHOUT the initial dword swap.
+// Named differently from EncryptSpawnPacket to avoid the macro in packet_functions.h:
+//   #define EncryptSpawnPacket EncryptZoneSpawnPacket
+static void EncryptNewSpawnPacket(uint8_t* buf, uint32_t size)
+{
+	int32_t* data  = reinterpret_cast<int32_t*>(buf);
+	int32_t  crypt = 0;
+	for (uint32_t i = 0; i < size / 4; ++i) {
+		int32_t next_crypt = crypt + data[i] - 0x65e7;
+		data[i] = ((data[i] << 9) | (static_cast<uint32_t>(data[i]) >> 23)) + 0x65e7;
+		data[i] = (data[i] << 13) | (static_cast<uint32_t>(data[i]) >> 19);
+		data[i] = data[i] - crypt;
+		crypt   = next_crypt;
+	}
+}
+
 // ============================================================
 
 void TrilogyZoneServer::RemoveSession(uint64_t key)
@@ -1096,6 +1113,68 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	LogInfo("[TrilogyZone] Player [{}] fully connected to zone [{}] (numclients={})",
 	        s.char_name, s.zone_short, numclients);
 
+	// Send the entering player their own NewSpawn (0x4921) with deity populated.
+	// EQClassic Process_ClientConnection5 does: CreateSpawnPacket → QueueClients(this, outapp, false)
+	// (iIgnoreSender=false → sent to self).  Our QueueClients call above uses true (ignore self)
+	// so we send it manually here, matching EQClassic's ordering (before 0xc321 / final 0xd820).
+	if (s.trilogy_client) {
+		TrilogyClient* tc = s.trilogy_client;
+		Trilogy::structs::NewSpawn_Struct ns{};
+		memset(&ns, 0, sizeof(ns));
+		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+		sp.size      = tc->GetSize();
+		if (sp.size <= 0.0f) sp.size = 6.0f;
+		sp.walkspeed = 0.7f;
+		sp.runspeed  = 1.4f;
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(tc->GetHeading() / 2.0f));
+		sp.y_pos     = static_cast<int16_t>(tc->GetY());
+		sp.x_pos     = static_cast<int16_t>(tc->GetX());
+		sp.z_pos     = static_cast<int16_t>(tc->GetZ() * 10.0f);
+		sp.spawn_id  = static_cast<int16_t>(s.player_spawn_id);
+		sp.body_type = static_cast<int16_t>(tc->GetBodyType());
+		sp.cur_hp    = 100;
+		sp.GuildID   = static_cast<uint16_t>(tc->GuildID());
+		sp.race      = static_cast<int8_t>(tc->GetRace());
+		sp.NPC       = 0; // player
+		sp.class_    = static_cast<int8_t>(tc->GetClass());
+		sp.gender    = static_cast<int8_t>(tc->GetGender());
+		sp.level     = static_cast<int8_t>(tc->GetLevel());
+		sp.anim_type = 0x64;
+		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+		if (tc->IsInAGuild()) {
+			sp.guildrank = static_cast<int8_t>(tc->GuildRank());
+			sp.GuildID   = static_cast<uint16_t>(tc->GuildID());
+		} else {
+			sp.guildrank = static_cast<int8_t>(0xFF);
+		}
+		sp.light = static_cast<int8_t>(tc->GetEquipmentLightType());
+		strncpy(sp.name,    tc->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.Surname, tc->GetLastName(),  sizeof(sp.Surname) - 1);
+		sp.unknown163[0] = static_cast<int8_t>(tc->GetHairColor());
+		sp.unknown163[1] = static_cast<int8_t>(tc->GetBeardColor());
+		sp.unknown163[2] = static_cast<int8_t>(tc->GetEyeColor1());
+		sp.unknown163[3] = static_cast<int8_t>(tc->GetEyeColor2());
+		sp.unknown163[4] = static_cast<int8_t>(tc->GetHairStyle());
+		sp.unknown163[6] = static_cast<int8_t>(tc->GetLuclinFace());
+		for (int mi = 0; mi < EQ::textures::materialCount; ++mi)
+			sp.equipment[mi] = static_cast<int8_t>(tc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi)
+			sp.equipcolors[mi] = static_cast<int32_t>(tc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		// Deity: EQClassic DEITY_* constants match EQEmu IDs (201-216); DEITY_AGNOSTIC=140.
+		uint8_t deity_wire = (s.char_deity >= 201 && s.char_deity <= 216)
+			? static_cast<uint8_t>(s.char_deity) : 140;
+		sp.deity = static_cast<int8_t>(deity_wire);
+
+		uint8_t ns_buf[sizeof(ns)];
+		memcpy(ns_buf, &ns, sizeof(ns));
+		EncryptNewSpawnPacket(ns_buf, sizeof(ns_buf));
+		LogInfo("[TrilogyZone] SelfNewSpawn | spawn_id={} deity_db={} deity_wire={} name='{}'",
+		        s.player_spawn_id, s.char_deity, deity_wire, tc->GetCleanName());
+		SendApp(addr, port, s, ZN_OP_NewSpawn, ns_buf, sizeof(ns_buf));
+	}
+
 	// EQClassic Process_ClientConnection5 sends 0xc321 (8 zeroed bytes) immediately
 	// before the final 0xd820.
 	{
@@ -1231,20 +1310,49 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		strncpy(pp.name,    row[0], sizeof(pp.name) - 1);
 		strncpy(pp.Surname, row[1], sizeof(pp.Surname) - 1);
 		pp.gender          = static_cast<int8_t>(Strings::ToInt(row[2]));
-		// pp.deity compact encoding for the Trilogy wire.
-		// EQEmu IDs 201-216 → compact 1-16 (simple 1-based sequential index).
-		// The EQClassic PlayerProfile.h comment "Bertoxxolous=0x10" was most likely a
-		// misidentification: 0x10=16 is Erollisi Marr's item deity_mask bit (powers of 2),
-		// not Bertoxxolous.  A 1-based encoding (1=Bertox,…,16=Veeshan) is consistent
-		// with the client always showing Agnostic for values 16-31 (our old range).
-		// compact = eq_deity - 200  →  201→1, 202→2, …, 216→16.  Agnostic = 0.
+		// PP deity: the Windows Trilogy client (eqgame.exe) reads its character-sheet deity
+		// from the WORD at player-object offset 0x1038 = PP byte 4152, which in our
+		// PlayerProfile_Struct maps to bank_cont_inv[78].  Confirmed by binary analysis of
+		// the deity-name function at VA 0x4c9c6d: callers load
+		//   MOV EAX, [global_player_ptr]
+		//   MOV AX, WORD PTR [EAX + 0x1038]
+		//   PUSH EAX; CALL deity_name_fn
+		// The function subtracts 201 and indexes a 16-entry table → raw EQEmu IDs 201-216.
+		// pp.deity at byte 55 is set to the compact value for any legacy readers,
+		// but bank_cont_inv[78] at byte 4152 is what the character sheet actually reads.
 		{
 			uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[3]));
+			static const uint8_t kDeityCompact[16] = {
+				16, // 201 Bertoxxolous
+				15, // 202 Brell Serilis
+				13, // 203 Cazic-Thule    (EQEmu out of alpha)
+				12, // 204 Erollisi Marr  (EQEmu out of alpha)
+				14, // 205 Bristlebane    (EQEmu out of alpha)
+				11, // 206 Innoruuk
+				10, // 207 Karana
+				 9, // 208 Mithaniel Marr
+				 8, // 209 Prexus
+				 7, // 210 Quellious
+				 6, // 211 Rallos Zek
+				 5, // 212 Rodcet Nife
+				 4, // 213 Solusek Ro
+				 3, // 214 The Tribunal
+				 2, // 215 Tunare
+				 1, // 216 Veeshan
+			};
 			uint8_t compact = (eq_deity >= 201 && eq_deity <= 216)
-				? static_cast<uint8_t>(eq_deity - 200)
-				: 0; // Agnostic or unrecognised
-			pp.deity = static_cast<int8_t>(compact);
-			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact=0x{:02x}", eq_deity, compact);
+				? kDeityCompact[eq_deity - 201]
+				: 0;
+			pp.deity = static_cast<int8_t>(compact); // byte 55 — compact, not read by char sheet
+
+			// PP byte 4152 = bank_cont_inv[78]: raw EQEmu deity ID read by the char sheet.
+			pp.bank_cont_inv[78] = (eq_deity >= 201 && eq_deity <= 216)
+				? static_cast<int16_t>(eq_deity)
+				: static_cast<int16_t>(0);
+
+			s.char_deity = eq_deity; // cache for HandleZoneInComplete self-NewSpawn
+			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact={} wire4152={}",
+			        eq_deity, compact, (int)pp.bank_cont_inv[78]);
 		}
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
@@ -1458,18 +1566,15 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	}
 
 	// ---- CRC, compress, encrypt, send ----
-	// Byte-dump PP region around deity (offset 55) to verify the value before compression.
-	// Layout: [50..53]=unknown, [54]=gender, [55]=deity, [56..57]=race, [58]=class_, [59..62]=unknown
 	{
 		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, deity) == 55,
-		              "PP deity offset changed — update compact encoding formula");
+		              "PP deity offset changed");
 		const uint8_t* b = reinterpret_cast<const uint8_t*>(&pp);
-		LogInfo("[TrilogyZone] SendPlayerProfile | PP bytes[50..62]:"
-		        " {:02x} {:02x} {:02x} {:02x}  {:02x}[54=gender] {:02x}[55=deity] {:02x}{:02x}[56=race]"
-		        "  {:02x}[58=class] {:02x} {:02x} {:02x} {:02x}",
-		        b[50], b[51], b[52], b[53],
-		        b[54], b[55], b[56], b[57],
-		        b[58], b[59], b[60], b[61], b[62]);
+		// PP byte 4152 = bank_cont_inv[78] = deity wire field read by the Trilogy char sheet.
+		uint16_t deity_wire = static_cast<uint16_t>(pp.bank_cont_inv[78]);
+		LogInfo("[TrilogyZone] SendPlayerProfile | PP[54=gender]={:02x} PP[55=deity_compact]={:02x}"
+		        " PP[56-57=race]={:02x}{:02x} PP[58=class]={:02x} PP[4152-4153=deity_wire]={:04x}",
+		        b[54], b[55], b[56], b[57], b[58], deity_wire);
 	}
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&pp), sizeof(pp));
 
@@ -1530,14 +1635,16 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.z         = Strings::ToFloat(row[9]);
 	sze.heading   = Strings::ToFloat(row[10]);
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
-	// sze.deity uses same compact encoding as pp.deity: EQEmu 201-216 → compact 1-16.
+	// sze.deity: the client reads character sheet deity from ZoneEntry, not pp.deity.
+	// EQClassic sends DEITY_AGNOSTIC=140 in NewSpawn → full EQEmu IDs, not compact.
+	// Hypothesis: sze.deity uses full EQEmu ID (203=Cazic, 0=Agnostic).
 	{
 		uint32_t eq_deity = static_cast<uint32_t>(Strings::ToInt(row[12]));
-		int16_t compact = (eq_deity >= 201 && eq_deity <= 216)
-			? static_cast<int16_t>(eq_deity - 200)
+		int16_t wire_deity = (eq_deity >= 201 && eq_deity <= 216)
+			? static_cast<int16_t>(eq_deity)
 			: 0;
-		sze.deity = compact;
-		LogInfo("[TrilogyZone] SendZoneEntrySpawn | deity db={} compact={}", eq_deity, (int)compact);
+		sze.deity = wire_deity;
+		LogInfo("[TrilogyZone] SendZoneEntrySpawn | deity db={} sze_wire={}", eq_deity, (int)wire_deity);
 	}
 	sze.guildeqid = 0xFFFF; // no guild
 
