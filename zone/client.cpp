@@ -576,6 +576,11 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// client sees combat and spell activity exactly like a fresh Titanium client.
 	for (int i = 0; i < _FilterCount; ++i)
 		ClientFilters[i] = FilterShow;
+
+	// Trilogy clients bypass the normal zone-entry handshake where CompleteConnect()
+	// calls SetEXPEnabled(true).  Without this, AddEXP() returns immediately on the
+	// !IsEXPEnabled() guard → no XP ever awarded from kills.
+	m_exp_enabled = true;
 }
 
 void Client::SendZoneInPackets()

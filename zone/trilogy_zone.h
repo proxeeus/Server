@@ -98,7 +98,7 @@ private:
 		float       pos_heading   = 0.0f;
 		std::time_t pos_save_time = 0;
 
-		// Heartbeat rate limiting — A120 sent at most once per 250ms
+		// Heartbeat rate limiting — A120 sent at most once per 100ms
 		uint64_t    last_heartbeat_ms = 0;
 
 		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion

@@ -280,6 +280,18 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_LevelUpdate:
 		HandleLevelUpdate(app);
 		break;
+	case OP_SkillUpdate: {
+		if (app->size >= sizeof(::SkillUpdate_Struct)) {
+			const auto* emu = reinterpret_cast<const ::SkillUpdate_Struct*>(app->pBuffer);
+			Trilogy::structs::SkillUpdate_Struct sk{};
+			sk.skillId = static_cast<uint8_t>(emu->skillId);
+			sk.value   = static_cast<uint8_t>(emu->value);
+			m_tzs->SendToSession(m_session_key, 0x8921,
+			                     reinterpret_cast<const uint8_t*>(&sk),
+			                     static_cast<uint32_t>(sizeof(sk)));
+		}
+		break;
+	}
 	case OP_MoneyOnCorpse:
 		HandleMoneyOnCorpse(app);
 		break;
@@ -1120,7 +1132,8 @@ void TrilogyClient::HandleOutgoingConsider(const EQApplicationPacket* app)
 //
 // EQEmu ExpUpdate_Struct: { uint32 exp, uint32 aaxp } = 8 bytes.
 // Trilogy ExpUpdate_Struct: { uint32 exp } = 4 bytes.
-// Just drop the aaxp field; exp scale 0-330 is identical.
+// EQEmu exp is raw cumulative (e.g. 100 000 at level 5); Trilogy expects 0-330
+// progress within the current level.  Same formula as SendPlayerProfile uses.
 // ============================================================
 
 void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
@@ -1129,7 +1142,12 @@ void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
 	const auto* emu = reinterpret_cast<const ::ExpUpdate_Struct*>(app->pBuffer);
 
 	Trilogy::structs::ExpUpdate_Struct out{};
-	out.exp = emu->exp;
+	uint32 base_exp = GetEXPForLevel(GetLevel());
+	uint32 next_exp = GetEXPForLevel(static_cast<uint16>(GetLevel() + 1));
+	uint32 in_lv    = (emu->exp > base_exp) ? (emu->exp - base_exp) : 0;
+	uint32 for_lv   = (next_exp > base_exp) ? (next_exp - base_exp) : 1u;
+	float  frac     = std::min(1.0f, static_cast<float>(in_lv) / static_cast<float>(for_lv));
+	out.exp = static_cast<uint32>(330.0f * frac);
 
 	m_tzs->SendToSession(m_session_key, 0x9921,
 	                     reinterpret_cast<const uint8_t*>(&out),
@@ -1188,7 +1206,8 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	Trilogy::structs::LootingItem_Struct out{};
 	out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
 	out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
-	out.slot_id   = emu->slot_id;
+	// Mirror the loot-slot translation from HandleItemPacket: EQEmu slot 22 → Trilogy slot 1.
+	out.slot_id   = static_cast<int16_t>(emu->slot_id - 21);
 	out.auto_loot = static_cast<int32_t>(emu->auto_loot);
 
 	m_tzs->SendToSession(m_session_key, 0xa020,
@@ -1403,8 +1422,10 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 
 	switch (pkt_type) {
 	case ItemPacketLoot:
-		// Loot window: use the loot slot as-is (EQEmu loot slots start at 23).
-		equip_slot   = slot_id;
+		// EQEmu corpse slots start at slotGeneral1 = 22.  EQClassic loot window
+		// uses 1-based indices (counter starts at 1 in MakeLootRequestPackets).
+		// Subtract 21 so EQEmu slot 22 → Trilogy slot 1, slot 23 → 2, etc.
+		equip_slot   = static_cast<int16_t>(slot_id - 21);
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
 		break;
 	case ItemPacketLimbo:

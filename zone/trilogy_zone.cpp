@@ -658,13 +658,25 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket lootreqpkt(OP_LootRequest, 4);
 				memcpy(lootreqpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_LootRequest(&lootreqpkt);
+				// EQClassic server echoes the LootRequest packet back after sending all
+				// OP_ItemOnCorpse packets.  The Trilogy client requires this echo to
+				// finalise ("unlock") the loot window and render the item list.
+				// Without it the client receives MoneyOnCorpse + ItemOnCorpse packets
+				// but displays an empty loot window (comment: "Client seems to require
+				// that we send the packet back" — EQClassic PlayerCorpse.cpp line 656).
+				SendApp(addr, port, s, ZN_OP_LootRequest,
+				        reinterpret_cast<const uint8_t*>(&corpse_id), 4);
 			}
 		}
 		else if (opcode == ZN_OP_LootItem && s.trilogy_client) {
 			// LootingItem_Struct (16 bytes) — compatible with EQEmu LootingItem_Struct.
+			// Translate Trilogy slot (1-based, from MakeLootRequestPackets counter=1) back to
+			// EQEmu corpse slot (22-based, slotGeneral1 = CORPSE_BEGIN).
 			if (plen >= 16) {
 				EQApplicationPacket lootitempkt(OP_LootItem, 16);
 				memcpy(lootitempkt.pBuffer, payload, 16);
+				auto* li = reinterpret_cast<Trilogy::structs::LootingItem_Struct*>(lootitempkt.pBuffer);
+				li->slot_id = static_cast<int16_t>(li->slot_id + 21);
 				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
 			}
 		}
@@ -1441,7 +1453,41 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
 		pp.level           = static_cast<int8_t>(Strings::ToInt(row[6]));
-		pp.exp             = static_cast<int32_t>(Strings::ToInt(row[7]));
+		{
+			// EQEmu stores cumulative exp; Trilogy PP.exp is a 0-330 progress value within
+			// the current level.  Raw EQEmu exp (e.g. 100 000 for a low-level char) makes
+			// the bar appear full.  Compute the fraction using EQEmu's own level-exp formula
+			// and clamp to [0, 330].
+			auto eqemu_exp_for_level = [](uint8_t lv) -> uint32_t {
+				if (lv <= 1) return 0;
+				uint32_t lm1 = static_cast<uint32_t>(lv - 1);
+				float base = static_cast<float>(lm1 * lm1 * lm1);
+				float mod =
+					(lv >= 61) ? 3.1f :
+					(lv >= 60) ? 3.0f :
+					(lv >= 59) ? 2.7f :
+					(lv >= 58) ? 2.5f :
+					(lv >= 57) ? 2.3f :
+					(lv >= 56) ? 2.1f :
+					(lv >= 55) ? 1.9f :
+					(lv >= 54) ? 1.7f :
+					(lv >= 53) ? 1.6f :
+					(lv >= 52) ? 1.5f :
+					(lv >= 46) ? 1.4f :
+					(lv >= 41) ? 1.3f :
+					(lv >= 36) ? 1.2f :
+					(lv >= 31) ? 1.1f : 1.0f;
+				return static_cast<uint32_t>(base * mod * 1000.0f);
+			};
+			uint32_t raw_exp  = static_cast<uint32_t>(Strings::ToInt(row[7]));
+			uint8_t  lv       = static_cast<uint8_t>(pp.level);
+			uint32_t base_exp = eqemu_exp_for_level(lv);
+			uint32_t next_exp = eqemu_exp_for_level(static_cast<uint8_t>(lv + 1));
+			uint32_t in_lv    = (raw_exp > base_exp) ? (raw_exp - base_exp) : 0;
+			uint32_t for_lv   = (next_exp > base_exp) ? (next_exp - base_exp) : 1;
+			float    frac     = std::min(1.0f, static_cast<float>(in_lv) / static_cast<float>(for_lv));
+			pp.exp = static_cast<int32_t>(330.0f * frac);
+		}
 		pp.mana            = static_cast<int16_t>(Strings::ToInt(row[8]));
 		pp.face            = static_cast<int8_t>(Strings::ToInt(row[9]));
 		pp.cur_hp          = static_cast<int16_t>(Strings::ToInt(row[10]));
@@ -2479,7 +2525,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
-	if (now_ms - s.last_heartbeat_ms < 250) return;
+	if (now_ms - s.last_heartbeat_ms < 100) return;
 	s.last_heartbeat_ms = now_ms;
 
 	// Build batched A120 packets containing current NPC positions.
@@ -2516,21 +2562,14 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
-		// Stationary NPCs don't need position updates — the client already has their
-		// position from ZoneSpawns or the last movement update.  Only moving NPCs
-		// generate A120 entries, which keeps the per-heartbeat burst small and prevents
-		// the client's ARQ queue from spiking.
-		// Playerbots (NPC=0) are exempt: NPC=0 entities have a ~10-15s player presence
-		// timeout in the Trilogy client that fires when no position refresh arrives.
-		// We refresh stationary Playerbots at 1 Hz (every 4th 250ms tick) — well below
-		// the timeout threshold without inflating per-heartbeat packet count at 4 Hz.
+		// All NPCs — including stationary ones — must appear in A120 periodically.
+		// The Trilogy client has a staleness timeout for non-permanent spawns: a mob
+		// absent from A120 for ~5-10s disappears even if it was sent correctly at zone-in.
+		// Moving NPCs are sent every 100ms tick.  Stationary NPCs are refreshed at ~2 Hz
+		// (every 5th tick) — enough safety margin against the staleness timer without
+		// flooding the ARQ queue on zones with many idle NPCs.
 		if (!npc->IsMoving()) {
-			if (!is_playerbot) continue;
-			// Refresh stationary Playerbots at ~1 Hz instead of 4 Hz.
-			// The Trilogy client times out NPC=0 entities after ~10-15s; once per
-			// second is a 10× safety margin and cuts Playerbot A120 entries by 75%.
-			// (now_ms / 1000) changes once per second — include only on that tick.
-			if ((now_ms / 250) % 4 != 0) continue;
+			if ((now_ms / 100) % 5 != 0) continue;
 		}
 
 		float dx = npc->GetX() - s.pos_x;
@@ -2541,26 +2580,25 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
 		memset(upd, 0, sizeof(*upd));
 
-		float heading = npc->GetHeading();
-		upd->spawn_id  = static_cast<int16_t>(npc->GetID());
-		upd->heading   = static_cast<int8_t>(static_cast<uint8_t>(heading / 2.0f));
-		upd->y_pos     = static_cast<int16_t>(npc->GetY());
-		upd->x_pos     = static_cast<int16_t>(npc->GetX());
-		upd->z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
+		float nx = npc->GetX();
+		float ny = npc->GetY();
 
+		upd->spawn_id = static_cast<int16_t>(npc->GetID());
+		upd->heading  = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
+		upd->y_pos    = static_cast<int16_t>(ny);
+		upd->x_pos    = static_cast<int16_t>(nx);
+		upd->z_pos    = static_cast<int16_t>(npc->GetZ() * 10.0f);
+
+		// delta_x/delta_y stay 0 (EQClassic NPC behaviour); position snaps to
+		// server coords each tick without client-side dead-reckoning.
+		// anim_type>0 only when moving — stationary mobs send anim_type=0 which
+		// plays the idle/stand animation.  The periodic A120 refresh above keeps
+		// the staleness timer from firing even with anim_type=0.
 		if (npc->IsMoving()) {
-			// anim_type: EQClassic formula is speed*11 (from MobAI.cpp pRunAnimSpeed = speed*11).
-			// EQEmu stores speed as int = float_speed*40 so anim = speed_int * 11 / 40.
-			// IsRunning() is only set by quest scripts, never by AI — use IsEngaged() to
-			// distinguish combat-chasing (run speed) from waypoint-patrolling (walk speed).
-			int speed_int = npc->IsEngaged() ? npc->GetRunspeed() : npc->GetWalkspeed();
-			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(speed_int * 11.0f / 40.0f)));
-			upd->anim_type = anim;
-			// delta_x/delta_y left at 0: client-side dead-reckoning extrapolation causes mobs
-			// to "ghost" past their actual position when the scale doesn't match exactly.
-			// Position corrections arrive every 250ms — small hops at melee range are invisible.
+			float float_sp = static_cast<float>(npc->GetRunspeed()) / 40.0f;
+			int   anim     = static_cast<int>(float_sp * 7.0f);
+			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 		}
-		// else (stationary Playerbot): anim_type=0, delta=0 — confirms position without moving
 
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
