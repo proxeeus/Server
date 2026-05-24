@@ -1206,8 +1206,8 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	Trilogy::structs::LootingItem_Struct out{};
 	out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
 	out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
-	// Mirror the loot-slot translation from HandleItemPacket: EQEmu slot 22 → Trilogy slot 1.
-	out.slot_id   = static_cast<int16_t>(emu->slot_id - 21);
+	// Mirror the loot-slot translation from HandleItemPacket: EQEmu slot 23 → Trilogy slot 1.
+	out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
 	out.auto_loot = static_cast<int32_t>(emu->auto_loot);
 
 	m_tzs->SendToSession(m_session_key, 0xa020,
@@ -1399,19 +1399,25 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 
 void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 {
+	LogInfo("[TrilogyLoot] HandleItemPacket called, app->size={}", app ? (int)app->size : -1);
 	if (!app) return;
 
 	// Minimum size: ItemPacketType (4) + InternalSerializedItem_Struct (>=10 with pointer)
-	if (app->size < 4 + sizeof(EQ::InternalSerializedItem_Struct)) return;
+	if (app->size < 4 + sizeof(EQ::InternalSerializedItem_Struct)) {
+		LogInfo("[TrilogyLoot] size check FAILED: {} < {}", (int)app->size, (int)(4 + sizeof(EQ::InternalSerializedItem_Struct)));
+		return;
+	}
 
 	const auto pkt_type = static_cast<ItemPacketType>(
 	    *reinterpret_cast<const int32_t*>(app->pBuffer));
+	LogInfo("[TrilogyLoot] pkt_type={}", (int)pkt_type);
 
 	const auto* isi = reinterpret_cast<const EQ::InternalSerializedItem_Struct*>(
 	    app->pBuffer + 4);
 
 	const auto* inst = reinterpret_cast<const EQ::ItemInstance*>(isi->inst);
-	if (!inst) return;
+	LogInfo("[TrilogyLoot] slot_id={} inst={}", (int)isi->slot_id, (void*)inst);
+	if (!inst) { LogInfo("[TrilogyLoot] inst is null, returning"); return; }
 
 	int16_t slot_id = isi->slot_id;
 
@@ -1422,10 +1428,10 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 
 	switch (pkt_type) {
 	case ItemPacketLoot:
-		// EQEmu corpse slots start at slotGeneral1 = 22.  EQClassic loot window
+		// EQEmu corpse slots start at slotGeneral1 = 23.  EQClassic loot window
 		// uses 1-based indices (counter starts at 1 in MakeLootRequestPackets).
-		// Subtract 21 so EQEmu slot 22 → Trilogy slot 1, slot 23 → 2, etc.
-		equip_slot   = static_cast<int16_t>(slot_id - 21);
+		// Subtract 22 so EQEmu slot 23 → Trilogy slot 1, slot 24 → 2, etc.
+		equip_slot   = static_cast<int16_t>(slot_id - 22);
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
 		break;
 	case ItemPacketLimbo:
@@ -1445,9 +1451,15 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		return; // Other item packet types not yet translated.
 	}
 
+	LogInfo("[TrilogyLoot] equip_slot={} wire_opcode={:04X}", (int)equip_slot, (unsigned)wire_opcode);
 	Trilogy::structs::ClassicItem_Struct ci{};
-	if (!BuildClassicItemFromInst(inst, ci, equip_slot)) return;
+	if (!BuildClassicItemFromInst(inst, ci, equip_slot)) {
+		LogInfo("[TrilogyLoot] BuildClassicItemFromInst FAILED");
+		return;
+	}
 
+	LogInfo("[TrilogyLoot] Sending 0x{:04X} sizeof(ci)={} name='{}' id={} equipslot={}",
+	        (unsigned)wire_opcode, (int)sizeof(ci), ci.name, (int)ci.id, (int)ci.equipslot);
 	m_tzs->SendToSession(m_session_key, wire_opcode,
 	                     reinterpret_cast<const uint8_t*>(&ci),
 	                     static_cast<uint32_t>(sizeof(ci)));

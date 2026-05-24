@@ -658,25 +658,22 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket lootreqpkt(OP_LootRequest, 4);
 				memcpy(lootreqpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_LootRequest(&lootreqpkt);
-				// EQClassic server echoes the LootRequest packet back after sending all
-				// OP_ItemOnCorpse packets.  The Trilogy client requires this echo to
-				// finalise ("unlock") the loot window and render the item list.
-				// Without it the client receives MoneyOnCorpse + ItemOnCorpse packets
-				// but displays an empty loot window (comment: "Client seems to require
-				// that we send the packet back" — EQClassic PlayerCorpse.cpp line 656).
-				SendApp(addr, port, s, ZN_OP_LootRequest,
-				        reinterpret_cast<const uint8_t*>(&corpse_id), 4);
+				// The echo back to the Trilogy client is handled inside
+				// MakeLootRequestPackets → c->QueuePacket(app) → TrilogyClient::
+				// TranslateAndSend → case OP_LootRequest → SendToSession(0x4e20).
+				// A second explicit echo here caused the client to reinitialise
+				// the loot window (empty), hiding all the items that had just been sent.
 			}
 		}
 		else if (opcode == ZN_OP_LootItem && s.trilogy_client) {
 			// LootingItem_Struct (16 bytes) — compatible with EQEmu LootingItem_Struct.
 			// Translate Trilogy slot (1-based, from MakeLootRequestPackets counter=1) back to
-			// EQEmu corpse slot (22-based, slotGeneral1 = CORPSE_BEGIN).
+			// EQEmu corpse slot (23-based, slotGeneral1 = CORPSE_BEGIN).
 			if (plen >= 16) {
 				EQApplicationPacket lootitempkt(OP_LootItem, 16);
 				memcpy(lootitempkt.pBuffer, payload, 16);
 				auto* li = reinterpret_cast<Trilogy::structs::LootingItem_Struct*>(lootitempkt.pBuffer);
-				li->slot_id = static_cast<int16_t>(li->slot_id + 21);
+				li->slot_id = static_cast<int16_t>(li->slot_id + 22);
 				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
 			}
 		}
