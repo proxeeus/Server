@@ -20,6 +20,7 @@
 
 #include "client.h"
 #include "../common/eq_stream_intf.h"
+#include "../common/patches/trilogy_structs.h"
 
 class TrilogyZoneServer;
 
@@ -181,4 +182,10 @@ private:
 	void HandleMoneyOnCorpse(const EQApplicationPacket* app);
 	void HandleOutgoingLootItem(const EQApplicationPacket* app);
 	void HandleItemPacket(const EQApplicationPacket* app);
+	void FlushPendingLootEcho();
+
+	// EQClassic sends item delivery before the loot echo; we defer the echo
+	// until after the item packet so the client processes them in the right order.
+	bool m_pending_loot_echo = false;
+	Trilogy::structs::LootingItem_Struct m_pending_echo_out{};
 };

@@ -1463,8 +1463,11 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 		return;
 	}
 
-	/* To prevent item loss for a player using 'Loot All' who doesn't have inventory space for all their items. */
-	if (RuleB(Character, CheckCursorEmptyWhenLooting) && !c->GetInv().CursorEmpty()) {
+	/* To prevent item loss for a player using 'Loot All' who doesn't have inventory space for all their items.
+	 * Skip for Trilogy clients: zone-in never sends the cursor item (slotid 33 is excluded from SendInventoryItems),
+	 * so the server may believe the cursor is occupied even though the client sees it as empty. */
+	if (RuleB(Character, CheckCursorEmptyWhenLooting) && !c->GetInv().CursorEmpty()
+	    && c->ClientVersion() != EQ::versions::ClientVersion::Trilogy) {
 		c->Message(Chat::Red, "You may not loot an item while you have an item on your cursor.");
 		c->QueuePacket(app);
 		SendEndLootErrorPacket(c);
@@ -1541,6 +1544,8 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 
 	if (c && inst) {
 		if (c->CheckLoreConflict(item)) {
+			LogInfo("[TrilogyLoot] Lore conflict: item_id={} ({}) already in {}'s inventory",
+			        item->ID, item->Name, c->GetName());
 			c->MessageString(Chat::White, LOOT_LORE_ERROR);
 			c->QueuePacket(app);
 			SendEndLootErrorPacket(c);

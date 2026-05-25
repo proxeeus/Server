@@ -296,8 +296,19 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		HandleMoneyOnCorpse(app);
 		break;
 	case OP_LootComplete:
-		// 0 bytes — signals the client to close the loot window.
-		m_tzs->SendToSession(m_session_key, 0x4421, nullptr, 0);
+		if (m_pending_loot_echo) {
+			// Error path (lore conflict, corpse locked, etc.) — EQClassic sends only
+			// the loot echo and returns; it does NOT send LootComplete (4421).
+			// Sending 4421 here freezes the client.  Flush the echo only and let the
+			// client keep the loot window open; the player closes it via Escape which
+			// sends EndLootRequest → EndLoot → another OP_LootComplete (no pending
+			// echo at that point) → we send 4421 and close the window cleanly.
+			FlushPendingLootEcho();
+		} else {
+			// Normal end-of-loot (EndLootRequest → EndLoot path, or success path where
+			// the echo was already flushed by HandleItemPacket) — close the window.
+			m_tzs->SendToSession(m_session_key, 0x4421, nullptr, 0);
+		}
 		break;
 	case OP_LootRequest:
 		// Server echoes the 4-byte corpse ID back to the client.
@@ -746,6 +757,47 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 
 	const auto* fm = reinterpret_cast<const FormattedMessage_Struct*>(app->pBuffer);
 
+	const char* base      = fm->message;
+	uint32_t    remaining = app->size - static_cast<uint32_t>(sizeof(FormattedMessage_Struct));
+	if (remaining < 2) return;
+
+	// param0 = first null-terminated parameter string
+	const char* param0 = base;
+	size_t      p0len  = strnlen(param0, remaining);
+
+	// Loot messages: string_id 467 ("--You have looted a %1--"), param0 = item link.
+	// string_id 466 ("-- %1 has looted a %2--"), param0 = player name, param1 = item link.
+	if (fm->string_id == LOOTED_MESSAGE) {
+		std::string item_name = StripSayLinks(param0, static_cast<uint32_t>(p0len));
+		while (!item_name.empty() && item_name.back() == '\0') item_name.pop_back();
+		std::string msg = fmt::format("--You have looted a {}--", item_name);
+		msg += '\0';
+		uint32_t out_size = 4 + static_cast<uint32_t>(msg.size());
+		auto* out = new uint8_t[out_size]();
+		*reinterpret_cast<uint32_t*>(out) = 4u; // DARK_BLUE — Trilogy MessageFormat color
+		memcpy(out + 4, msg.data(), msg.size());
+		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		delete[] out;
+		return;
+	}
+
+	if (fm->string_id == OTHER_LOOTED_MESSAGE && p0len < remaining) {
+		const char* param1  = base + p0len + 1;
+		uint32_t    p1rem   = remaining - static_cast<uint32_t>(p0len + 1);
+		std::string item_name = StripSayLinks(param1, p1rem);
+		while (!item_name.empty() && item_name.back() == '\0') item_name.pop_back();
+		std::string player_name(param0, p0len);
+		std::string msg = fmt::format("--{} has looted a {}--", player_name, item_name);
+		msg += '\0';
+		uint32_t out_size = 4 + static_cast<uint32_t>(msg.size());
+		auto* out = new uint8_t[out_size]();
+		*reinterpret_cast<uint32_t*>(out) = 4u; // DARK_BLUE — Trilogy MessageFormat color
+		memcpy(out + 4, msg.data(), msg.size());
+		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		delete[] out;
+		return;
+	}
+
 	uint8_t chan_num;
 	if (fm->string_id == GENERIC_SHOUT)
 		chan_num = 3; // SHOUT in EQClassic
@@ -754,16 +806,8 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 	else
 		return;
 
-	const char* base      = fm->message;
-	uint32_t    remaining = app->size - static_cast<uint32_t>(sizeof(FormattedMessage_Struct));
-	if (remaining < 2) return;
-
-	// param0 = speaker name (first null-terminated string)
-	const char* param0 = base;
-	size_t      p0len  = strnlen(param0, remaining);
+	// param1 = message text (second null-terminated string after param0)
 	if (p0len >= remaining) return;
-
-	// param1 = message text (second null-terminated string)
 	const char* param1      = base + p0len + 1;
 	uint32_t    p1remaining = remaining - static_cast<uint32_t>(p0len + 1);
 	if (p1remaining < 1) return;
@@ -1203,16 +1247,24 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::LootingItem_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::LootingItem_Struct*>(app->pBuffer);
 
-	Trilogy::structs::LootingItem_Struct out{};
-	out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
-	out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
-	// Mirror the loot-slot translation from HandleItemPacket: EQEmu slot 23 → Trilogy slot 1.
-	out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
-	out.auto_loot = static_cast<int32_t>(emu->auto_loot);
+	m_pending_echo_out = {};
+	m_pending_echo_out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
+	m_pending_echo_out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
+	m_pending_echo_out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
+	m_pending_echo_out.auto_loot = static_cast<int32_t>(emu->auto_loot);
+	m_pending_loot_echo = true;
+	// Echo is sent by FlushPendingLootEcho() — either after the item delivery
+	// packet (success path) or at OP_LootComplete (error / no-item path).
+	// EQClassic sends item first then echo; we match that order.
+}
 
+void TrilogyClient::FlushPendingLootEcho()
+{
+	if (!m_pending_loot_echo) return;
+	m_pending_loot_echo = false;
 	m_tzs->SendToSession(m_session_key, 0xa020,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	                     reinterpret_cast<const uint8_t*>(&m_pending_echo_out),
+	                     static_cast<uint32_t>(sizeof(m_pending_echo_out)));
 }
 
 // ============================================================
@@ -1435,10 +1487,23 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
 		break;
 	case ItemPacketLimbo:
-		// Item going to cursor — slot 0 in Trilogy.
+		// Cursor delivery when cursor was already occupied (pre-RoF path in PutLootInInventory).
+		// Treat identically to ItemPacketTrade at slotCursor: send OP_SummonedItem (0x7821)
+		// so the EQClassic client receives the item on cursor.
 		equip_slot  = 0;
-		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
-		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;
+		wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
+		break;
+	case ItemPacketTrade:
+		// Looted item delivery.
+		// • slotCursor (33): item went to cursor — send OP_SummonedItem (0x7821), equip_slot=0.
+		// • bag/general slots (251-330 or 23-30): send OP_ItemTradeIn (0x3120), equip_slot=slot-1.
+		if (slot_id == EQ::invslot::slotCursor) {
+			equip_slot  = 0;
+			wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
+		} else {
+			equip_slot  = static_cast<int16_t>(slot_id - 1);
+			wire_opcode = 0x3120; // OP_ItemTradeIn — bag/inventory slot delivery
+		}
 		break;
 	case ItemPacketCharInventory:
 		// General inventory delivery: translate EQEmu slot to Trilogy slot.
@@ -1463,4 +1528,11 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, wire_opcode,
 	                     reinterpret_cast<const uint8_t*>(&ci),
 	                     static_cast<uint32_t>(sizeof(ci)));
+
+	// EQClassic order: item delivery → loot echo (0xa020).
+	// Flush the deferred echo now so the client receives it after the item.
+	// ItemPacketTrade = inventory slot delivery; ItemPacketLimbo = cursor delivery
+	// (sent when cursor was occupied — PutLootInInventory pre-RoF path).
+	if (pkt_type == ItemPacketTrade || pkt_type == ItemPacketLimbo)
+		FlushPendingLootEcho();
 }
