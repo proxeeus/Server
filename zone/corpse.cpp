@@ -1351,6 +1351,11 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 	auto loot_slot   = EQ::invslot::CORPSE_BEGIN;
 	auto corpse_mask = c->GetInv().GetLookup()->CorpseBitmask;
 
+	LogInfo("[TrilogyLoot] MakeLootRequestPackets: item_count={} corpse_mask=0x{:016X} CORPSE_BEGIN={} CORPSE_END={} inv_version={}",
+	        m_item_list.size(), corpse_mask,
+	        (int)EQ::invslot::CORPSE_BEGIN, (int)EQ::invslot::CORPSE_END,
+	        (int)c->GetInv().InventoryVersion());
+
 	for (auto i: m_item_list) {
 		// every loot session must either set all items' lootslots to 'invslot::SLOT_INVALID'
 		// or to a valid enumerated client-versioned corpse slot (lootslot is not equip_slot)

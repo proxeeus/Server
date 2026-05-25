@@ -520,6 +520,7 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// set client version directly from the stream adapter.
 	m_ClientVersion    = eqs->ClientVersion();
 	m_ClientVersionBit = EQ::versions::ConvertClientVersionToClientVersionBit(m_ClientVersion);
+	m_inv.SetInventoryVersion(m_ClientVersion);
 
 	// Apply name at Mob level so GetName() / FillSpawnStruct() work correctly.
 	SetName(char_name);
