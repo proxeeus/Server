@@ -1501,15 +1501,21 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
 		break;
 	case ItemPacketTrade:
-		// Looted item delivery.
-		// • slotCursor (33): item went to cursor — send OP_SummonedItem (0x7821), equip_slot=0.
-		// • bag/general slots (251-330 or 23-30): send OP_ItemTradeIn (0x3120), equip_slot=slot-1.
+		// Looted item delivery.  Same slot translation as ItemPacketCharInventory and
+		// SendInventoryItems: EQEmu slots 0-21 (equipment) share the same numbering as
+		// EQClassic, while slot 22+ (ammo, general, bags) are shifted down by 1 because
+		// EQClassic has no charm slot (EQEmu slot 0) and no power-source slot (EQEmu slot 21).
+		// Using slot_id-1 for equipment slots would put an item in the wrong worn slot
+		// (e.g. slotPrimary=13 → 12=hands) and overwrite whatever is displayed there.
+		// • slotCursor (33): cursor delivery via OP_SummonedItem (0x7821), equip_slot=0.
+		// • all other slots: OP_ItemTradeIn (0x3120) with the correct EQClassic equip_slot.
 		if (slot_id == EQ::invslot::slotCursor) {
 			equip_slot  = 0;
 			wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
 		} else {
-			equip_slot  = static_cast<int16_t>(slot_id - 1);
-			wire_opcode = 0x3120; // OP_ItemTradeIn — bag/inventory slot delivery
+			equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1)
+			                              : static_cast<int16_t>(slot_id);
+			wire_opcode = 0x3120; // OP_ItemTradeIn — inventory/bag/worn slot delivery
 		}
 		break;
 	case ItemPacketCharInventory:
