@@ -933,8 +933,15 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 	out.source = static_cast<int32_t>(TranslateId(emu->source));
 	out.type   = static_cast<int8_t>(emu->type);
 	out.spell  = static_cast<int16_t>(emu->spellid);
-	out.damage = static_cast<int32_t>(emu->damage > static_cast<uint32_t>(INT32_MAX)
-	                                  ? INT32_MAX : emu->damage);
+	// Reinterpret as signed int32.  EQEmu stores miss/block/parry/dodge/riposte/rune
+	// as negative sentinels (DMG_BLOCKED=-1, DMG_PARRIED=-2, … DMG_RUNE=-6) in an
+	// int64 that then gets packed into CombatDamage_Struct::damage as uint32.
+	// Those values arrive here as 0xFFFFFFFF, 0xFFFFFFFE … — all > INT32_MAX.
+	// The old clamp to INT32_MAX turned every miss/block/etc. into a displayed hit
+	// of 2,147,483,647 pts that appeared to one-shot the player.
+	// Action_Struct::damage is signed (see trilogy_structs.h), so negative values
+	// are exactly what the client expects for non-hit outcomes.
+	out.damage = static_cast<int32_t>(emu->damage);
 
 	m_tzs->SendToSession(m_session_key, 0x5820,
 	                     reinterpret_cast<const uint8_t*>(&out),
