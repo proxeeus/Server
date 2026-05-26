@@ -321,6 +321,17 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ItemPacket:
 		HandleItemPacket(app);
 		break;
+	case OP_GroundSpawn:
+		HandleGroundSpawn(app);
+		break;
+	case OP_ClickObject:
+		// Remove a ground item from the client's view (pickup despawn broadcast).
+		// EQClassic uses the same ClickObject_Struct layout; opcode 0x3620 = OP_PickupItem.
+		if (app->size >= sizeof(::ClickObject_Struct))
+			m_tzs->SendToSession(m_session_key, 0x3620,
+			                     app->pBuffer,
+			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
+		break;
 	case OP_RequestClientZoneChange: {
 		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
 		// The Trilogy client automatically zones or intra-zone teleports based on whether the
@@ -1272,6 +1283,51 @@ void TrilogyClient::FlushPendingLootEcho()
 	m_tzs->SendToSession(m_session_key, 0xa020,
 	                     reinterpret_cast<const uint8_t*>(&m_pending_echo_out),
 	                     static_cast<uint32_t>(sizeof(m_pending_echo_out)));
+}
+
+// ============================================================
+// HandleGroundSpawn — translate OP_GroundSpawn (EQEmu internal) to the
+// EQClassic ground-item spawn packet (opcode 0x3520, 240 bytes).
+//
+// EQEmu's Object_Struct carries object_name (IT*_ACTORDEF), position,
+// and drop_id.  The EQClassic client renders the 3D model from objectname
+// and uses dropid to identify the object for pickup (OP_PickupItem 0x3620).
+// ============================================================
+
+void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Object_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::Object_Struct*>(app->pBuffer);
+
+	// EQClassic Object_Struct layout (240 bytes):
+	//   [0]   int8[4]  unknown_4b
+	//   [4]   int8[4]  client_address
+	//   [8]   int32    itemid          (0 = let client derive from model)
+	//   [12]  int32    dropid          (entity ID used for pickup)
+	//   [16]  int8[24] unknown_24
+	//   [40]  float    ypos
+	//   [44]  float    xpos
+	//   [48]  float    zpos
+	//   [52]  float    heading
+	//   [56]  char[16] objectname      (e.g. "IT63_ACTORDEF\0")
+	//   ...   (zeros for bag/item detail fields)
+	//   [238] int16    type            (1 = OT_DROPPEDITEM)
+	//   total = 240 bytes
+	static constexpr uint32_t CLASSIC_OBJ_SIZE = 240;
+	uint8_t buf[CLASSIC_OBJ_SIZE];
+	memset(buf, 0, sizeof(buf));
+
+	*reinterpret_cast<int32_t*>(buf + 12)  = static_cast<int32_t>(emu->drop_id);
+	*reinterpret_cast<float*>  (buf + 40)  = emu->y;
+	*reinterpret_cast<float*>  (buf + 44)  = emu->x;
+	*reinterpret_cast<float*>  (buf + 48)  = emu->z;
+	*reinterpret_cast<float*>  (buf + 52)  = emu->heading;
+	strncpy(reinterpret_cast<char*>(buf + 56), emu->object_name, 15);
+	buf[56 + 15] = '\0';
+	*reinterpret_cast<int16_t*>(buf + 238) = 1; // OT_DROPPEDITEM
+
+	m_tzs->SendToSession(m_session_key, 0x3520,
+	                     buf, static_cast<uint32_t>(sizeof(buf)));
 }
 
 // ============================================================

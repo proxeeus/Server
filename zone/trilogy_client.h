@@ -183,6 +183,8 @@ private:
 	void HandleOutgoingLootItem(const EQApplicationPacket* app);
 	void HandleItemPacket(const EQApplicationPacket* app);
 	void FlushPendingLootEcho();
+	// Ground items
+	void HandleGroundSpawn(const EQApplicationPacket* app);
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.

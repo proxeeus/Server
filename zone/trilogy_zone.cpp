@@ -20,6 +20,7 @@
 #include "trilogy_zone.h"
 #include "trilogy_client.h"
 #include "entity.h"
+#include "object.h"
 #include "zonedb.h"
 #include "zone.h"
 #include "npc.h"
@@ -75,6 +76,7 @@ static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
+static constexpr uint16_t ZN_OP_PickupItem  = 0x3620; // client -> zone: player clicks ground item to pick it up
 static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
 
 // Combat / looting opcodes
@@ -538,13 +540,48 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleMoveItem(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_DropItem && s.trilogy_client)
 		{
-			// Player dropped cursor item on ground — remove it from the DB.
+			// Player dropped cursor item on ground.
+			// Load item from DB, spawn as a ground object, then remove from inventory.
 			const int slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
+
+			EQ::ItemInstance* inst = nullptr;
+			{
+				auto r = database.QueryDatabase(fmt::format(
+				    "SELECT `itemid`, `charges` FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+				    s.char_id, slot));
+				if (r.Success() && r.RowCount() > 0) {
+					const uint32_t item_id = static_cast<uint32_t>(Strings::ToInt(r.begin()[0]));
+					const int16_t  charges = static_cast<int16_t>(Strings::ToInt(r.begin()[1]));
+					inst = database.CreateItem(item_id, charges);
+				}
+			}
+
 			database.QueryDatabase(fmt::format(
 			    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 			    s.char_id, slot));
-			LogInfo("[TrilogyZone] DropItem: removed slot {} for char={}", slot, s.char_id);
 			s.cursor_from_db = -1;
+
+			if (inst) {
+				auto* obj = new Object(s.trilogy_client, inst);
+				entity_list.AddObject(obj, true);
+				obj->StartDecay();
+				safe_delete(inst);
+			}
+		}
+		else if (opcode == ZN_OP_PickupItem && s.trilogy_client)
+		{
+			// Player clicked a ground item to pick it up.
+			// payload = ClickObject_Struct: objectID(uint32) + playerID(uint32)
+			if (plen >= sizeof(ClickObject_Struct)) {
+				const auto* co_in = reinterpret_cast<const ClickObject_Struct*>(payload);
+				Entity* ent = entity_list.GetID(static_cast<uint16>(co_in->drop_id));
+				if (ent && ent->IsObject()) {
+					ClickObject_Struct co{};
+					co.drop_id   = co_in->drop_id;
+					co.player_id = static_cast<uint32>(s.trilogy_client->GetID());
+					ent->CastToObject()->HandleClick(s.trilogy_client, &co);
+				}
+			}
 		}
 		else if (opcode == ZN_OP_WearChange)
 			HandleConnectedWearChange(addr, port, s, payload, plen);
