@@ -39,6 +39,12 @@ public:
 	void OnRawPacket(const std::string& addr, int port, const char* data, size_t size);
 	void Tick();
 
+	// Called from the world server's ZoneToZone handler when a Trilogy client's
+	// inter-zone request is approved.  Finds the session by character name and
+	// sends TRI_OP_ZoneServerInfo (0x0480) with the new zone's IP:port.
+	// If zs is null or still booting the send is deferred via pending_zone_entry.
+	void SendZoneServerInfoForChar(const char* char_name, uint32_t zone_id, ZoneServer* zs);
+
 private:
 	struct Session {
 		uint16_t    gsq       = 0;

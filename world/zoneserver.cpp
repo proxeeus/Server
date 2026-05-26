@@ -50,8 +50,10 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../zone/data_bucket.h"
 #include "../common/repositories/guild_tributes_repository.h"
 #include "../common/skill_caps.h"
+#include "trilogy_world.h"
 
 extern ClientList client_list;
+extern TrilogyWorldServer* g_trilogy_world;
 extern GroupLFPList LFPGroupList;
 extern ZSList zoneserver_list;
 extern LoginServerList loginserverlist;
@@ -878,9 +880,28 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 					client->LSZoneChange(ztz);
 				}
 
+				// Send 0x0480 to the Trilogy client BEFORE the TCP ZTZ response to the
+				// egress zone.  The egress zone's ZTZ handler sends 0xa320 (ZoneChange
+				// approval) to the client, which causes the client to look up the
+				// destination zone in its connection table.  If 0x0480 arrives first,
+				// the table entry is fresh; if 0xa320 arrives first the entry is still
+				// stale (freed pointer at +0x82) → crash at 0x004c7752 / 0xff000082.
+				if (g_trilogy_world && ztz->response > 0) {
+					g_trilogy_world->SendZoneServerInfoForChar(
+						ztz->name, ztz->requested_zone_id, ingress_server);
+				}
+
 				SendPacket(pack);	// send back to egress server
 				if (ingress_server) {
 					ingress_server->SendPacket(pack);	// inform target server
+
+					// Tell the destination zone a Trilogy client is on its way so it
+					// doesn't autoshutdown before the UDP handshake completes.
+					if (g_trilogy_world && ztz->response > 0) {
+						auto* grace = new ServerPacket(ServerOP_TrilogyClientExpected, 0);
+						ingress_server->SendPacket(grace);
+						safe_delete(grace);
+					}
 				}
 			} else {
 				LogZoning(

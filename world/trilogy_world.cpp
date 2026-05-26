@@ -71,6 +71,10 @@ extern ClientList  client_list;
 extern ZSList      zoneserver_list;
 extern WorldDatabase database;
 
+// Global pointer set by main.cpp so the world ZoneToZone handler can notify
+// Trilogy sessions of their new zone without depending on include order.
+TrilogyWorldServer* g_trilogy_world = nullptr;
+
 // ============================================================
 
 uint64_t TrilogyWorldServer::SessionKey(const std::string& addr, int port)
@@ -1433,6 +1437,30 @@ void TrilogyWorldServer::SendAck(const std::string& addr, int port, Session& s)
 // EQClassic close handshake response (mirrors PM_FINISHING in EQPacketManager.cpp):
 // a2_Closing(0x04)|a6_Closing(0x40)|a1_ARQ(0x02), server's own ARQ, no ARSP.
 // Client waits for this before sending OP_CHAR_CREATE.
+void TrilogyWorldServer::SendZoneServerInfoForChar(const char* char_name, uint32_t zone_id, ZoneServer* zs)
+{
+	for (auto& [key, s] : m_sessions) {
+		if (s.account_id != 0 && strcmp(s.char_name, char_name) == 0) {
+			if (!zs) {
+				s.pending_zone_entry = true;
+				s.pending_zone_id    = zone_id;
+				s.pending_zone_time  = std::time(nullptr);
+				LogInfo("[TrilogyWorld] ZoneToZone: char [{}] zone [{}] not yet registered, deferring ZoneServerInfo",
+				        char_name, zone_id);
+				return;
+			}
+			// Send immediately even if IsBootingUp() — the zone's UDP port is live
+			// from startup.  Deferring until boot-complete would race with the 0xa320
+			// the egress zone sends after its ZTZ reply, causing the Trilogy client to
+			// dereference a stale freed pointer → crash at 0x004c7752 / 0xff000082.
+			s.zone_id = zone_id;
+			SendZoneServerInfo(s.source_addr, s.source_port, s, zs);
+			return;
+		}
+	}
+	// No Trilogy session found — not a Trilogy client, ignore.
+}
+
 void TrilogyWorldServer::SendClose(const std::string& addr, int port, Session& s)
 {
 	if (!m_send_fn) return;

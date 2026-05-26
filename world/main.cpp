@@ -376,6 +376,8 @@ int main(int argc, char **argv)
 
 	// Intercept raw EQNetwork packets from Trilogy clients (port 9000, data[0] != 0)
 	TrilogyWorldServer trilogy_world;
+	extern TrilogyWorldServer* g_trilogy_world;
+	g_trilogy_world = &trilogy_world;
 	eqsm.OnUnknownPacket(
 		[&trilogy_world](const std::string& a, int p, const char* d, size_t s) {
 			trilogy_world.OnRawPacket(a, p, d, s);

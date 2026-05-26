@@ -78,6 +78,7 @@ static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveIte
 static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
 static constexpr uint16_t ZN_OP_PickupItem  = 0x3620; // client -> zone: player clicks ground item to pick it up
 static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
+static constexpr uint16_t ZN_OP_ZoneChange  = 0xa320; // bidirectional: ZoneChange_Struct (68 bytes)
 
 // Combat / looting opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
@@ -594,12 +595,26 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_WearChange)
 			HandleConnectedWearChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
-			// charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
+			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
 			if (plen >= 46) {
 				char zonename[17] = {};
 				strncpy(zonename, reinterpret_cast<const char*>(payload + 30), 16);
 				if (zonename[0]) {
 					LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}'", s.char_name, zonename);
+					// Send back success=1 (EQClassic ProcessOP_GMZoneRequest behaviour) before issuing
+					// the zone command.  The Trilogy client expects this ACK to advance its state.
+					uint8_t resp[84] = {};
+					strncpy(reinterpret_cast<char*>(resp),      s.char_name, 29);
+					strncpy(reinterpret_cast<char*>(resp + 30), zonename,    15);
+					static const uint8_t kGMZoneUnk[32] = {
+						0xe8, 0xf0, 0x58, 0x00, 0x70, 0xef, 0xad, 0x0e,
+						0x74, 0xf3, 0xad, 0x0e, 0xc7, 0x01, 0x4c, 0x00,
+						0x00, 0xa0, 0x04, 0xc5, 0x00, 0x20, 0x5f, 0xc5,
+						0x00, 0x00, 0xba, 0xc2, 0x00, 0x00, 0x00, 0x00
+					};
+					memcpy(resp + 46, kGMZoneUnk, 32);
+					resp[78] = 1; // success
+					SendApp(addr, port, s, ZN_OP_GMZoneRequest, resp, 84);
 					command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
 				}
 			}
@@ -656,6 +671,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
+			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
 			HandleCastSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
@@ -3145,4 +3162,67 @@ void TrilogyZoneServer::HandleMemorizeSpell(const std::string& addr, int port, S
 
 	s.trilogy_client->Handle_OP_MemorizeSpell(app);
 	delete app;
+}
+
+// ============================================================
+// HandleZoneChange — client sent ZN_OP_ZoneChange (0xa320).
+//
+// The Trilogy client sends this opcode in two situations:
+//   1. Zone-line crossing: client detected a zone boundary and
+//      sends the destination zone short name unsolicited.
+//   2. In response to OP_TeleportPC (0x4d21): after the server
+//      told the client to zone (spell, GM command, death bind),
+//      the client confirms with this packet.
+//
+// In both cases we translate the 68-byte Trilogy struct into
+// the 88-byte EQEmu ZoneChange_Struct and dispatch to the
+// standard Handle_OP_ZoneChange handler.  That handler uses
+// zone_mode (set to ZoneSolicited by CheckTraditionalZonePoints
+// before sending 0x4d21, or left as ZoneUnsolicited for organic
+// zone-line crossings) to resolve the destination coordinates.
+// On success it calls DoZoneSuccess() which saves the character
+// and notifies the world server; the resulting OP_ZoneChange
+// response packet is translated back to Trilogy format by
+// TrilogyClient::TranslateAndSend.
+// ============================================================
+
+void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Session& s,
+                                          const uint8_t* payload, uint32_t plen)
+{
+	if (s.ack_due) SendAck(addr, port, s);
+
+	// Trilogy ZoneChange_Struct: char_name[32] + zone_name[16] + unknown[20] = 68 bytes.
+	// We need at least char_name[32] + zone_name[16] = 48 bytes to extract the zone name.
+	if (plen < 48) return;
+
+	const auto* zc = reinterpret_cast<const Trilogy::structs::ZoneChange_Struct*>(payload);
+
+	char zone_name[17] = {};
+	strncpy(zone_name, zc->zone_name, 16);
+
+	uint32_t zone_id = ZoneID(zone_name);
+	LogInfo("[TrilogyZone] ZoneChange: {} -> '{}' (zone_id={})", s.char_name, zone_name, zone_id);
+
+	if (zone_id == 0) {
+		LogError("[TrilogyZone] ZoneChange: unknown zone '{}'", zone_name);
+		return;
+	}
+
+	// Build EQEmu ZoneChange_Struct (88 bytes) and hand it to the standard handler.
+	// Supply last-known position so GetClosestZonePoint works correctly for
+	// unsolicited (zone-line) requests.
+	::ZoneChange_Struct emu_zc{};
+	memset(&emu_zc, 0, sizeof(emu_zc));
+	strncpy(emu_zc.char_name, s.char_name, sizeof(emu_zc.char_name) - 1);
+	emu_zc.zoneID      = static_cast<uint16>(zone_id);
+	emu_zc.instanceID  = 0;
+	emu_zc.y           = s.pos_y;
+	emu_zc.x           = s.pos_x;
+	emu_zc.z           = s.pos_z;
+	emu_zc.zone_reason = 0;
+	emu_zc.success     = 0; // 0 = client → server direction
+
+	EQApplicationPacket zc_pkt(OP_ZoneChange, sizeof(::ZoneChange_Struct));
+	memcpy(zc_pkt.pBuffer, &emu_zc, sizeof(emu_zc));
+	s.trilogy_client->Handle_OP_ZoneChange(&zc_pkt);
 }

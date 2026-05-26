@@ -549,6 +549,7 @@ public:
 	inline void ClearAllProximities() { entity_list.ProcessMove(this, glm::vec3(FLT_MAX, FLT_MAX, FLT_MAX)); m_Proximity = glm::vec3(FLT_MAX,FLT_MAX,FLT_MAX); }
 
 	void CheckVirtualZoneLines();
+	void CheckTraditionalZonePoints();
 
 	/*
 			Begin client modifiers
@@ -2184,6 +2185,11 @@ private:
 	glm::vec3 m_quest_compass;
 	bool m_has_quest_compass = false;
 	std::vector<uint32_t> m_dynamic_zone_ids;
+
+	// Trilogy zone-point grace period: ms timestamp set at zone-in; zone point
+	// detection is suppressed for 3 s to avoid immediate re-trigger when the
+	// player spawns right on a zone boundary.  Zero = disabled (non-Trilogy path).
+	uint32 m_zone_entry_time = 0;
 
 public:
 	enum BotOwnerOption : size_t {

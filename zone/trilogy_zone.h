@@ -167,6 +167,8 @@ private:
 	                     const uint8_t* payload, uint32_t plen);
 	void HandleMemorizeSpell(const std::string& addr, int port, Session& s,
 	                         const uint8_t* payload, uint32_t plen);
+	void HandleZoneChange(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);

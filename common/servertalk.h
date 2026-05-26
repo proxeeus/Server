@@ -86,6 +86,7 @@
 #define ServerOP_SpawnStatusChange	0x0040
 #define ServerOP_DropClient         0x0041	// DropClient
 #define ServerOP_IsOwnerOnline		0x0042
+#define ServerOP_TrilogyClientExpected	0x0043	// World→Zone: a Trilogy client is about to connect; extend shutdown timer
 #define ServerOP_DepopAllPlayersCorpses	0x0060
 #define ServerOP_QGlobalUpdate		0x0061
 #define ServerOP_QGlobalDelete		0x0062

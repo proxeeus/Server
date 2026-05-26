@@ -582,6 +582,10 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// calls SetEXPEnabled(true).  Without this, AddEXP() returns immediately on the
 	// !IsEXPEnabled() guard → no XP ever awarded from kills.
 	m_exp_enabled = true;
+
+	// Suppress zone-point detection for 3 s after zone-in to prevent an
+	// immediate re-trigger when the player spawns right on a zone boundary.
+	m_zone_entry_time = Timer::GetCurrentTime();
 }
 
 void Client::SendZoneInPackets()
@@ -9423,6 +9427,79 @@ void Client::CheckVirtualZoneLines()
 				ZoneLongName(virtual_zone_point.target_zone_id)
 			);
 		}
+	}
+}
+
+// Server-side zone point detection for Trilogy clients.  The Trilogy client
+// doesn't send OP_ZoneChange autonomously; instead the server detects proximity
+// and sends OP_RequestClientZoneChange (0x4d21) to the client.  The client then
+// enters "zoning state" and sends 0xa320 back, which HandleZoneChange picks up
+// and routes through the standard Handle_OP_ZoneChange → DoZoneSuccess → ZTZ
+// path.  This is the only way the client will act on the subsequent 0x0480
+// (zone server info) from the world server.
+// Called from TrilogyClient::TrilogyPositionUpdate.
+void Client::CheckTraditionalZonePoints()
+{
+	if (!zone || zone_mode != ZoneUnsolicited || bZoning) return;
+	// Grace period: skip zone-point detection for 3 s after zone-in so a
+	// player who spawns right on a zone boundary isn't immediately sent back out.
+	if (m_zone_entry_time != 0 && Timer::GetCurrentTime() - m_zone_entry_time < 3000) return;
+	static constexpr float kRadius2 = 10.0f * 10.0f;
+	static constexpr float kZRange  = 50.0f;
+	LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
+	iter.Reset();
+	while (iter.MoreElements()) {
+		ZonePoint* zp = iter.GetData();
+		if (!(zp->client_version_mask & ClientVersionBit())) {
+			iter.Advance();
+			continue;
+		}
+		// Skip zone points with no positional trigger (both axes wildcard).
+		// These are server-side lookup entries, not walk-through zone lines.
+		bool xWild = (zp->x == 999999 || zp->x == -999999);
+		bool yWild = (zp->y == 999999 || zp->y == -999999);
+		if (xWild && yWild) {
+			iter.Advance();
+			continue;
+		}
+		float dx = xWild ? 0.0f : (zp->x - GetX());
+		float dy = yWild ? 0.0f : (zp->y - GetY());
+		float dz = zp->z - GetZ();
+		if (dx*dx + dy*dy < kRadius2 && std::fabs(dz) < kZRange) {
+			float dest_x       = (zp->target_x       == 999999) ? GetX()       : zp->target_x;
+			float dest_y       = (zp->target_y       == 999999) ? GetY()       : zp->target_y;
+			float dest_z       = (zp->target_z       == 999999) ? GetZ()       : zp->target_z;
+			float dest_heading = (zp->target_heading == 999)    ? GetHeading() : zp->target_heading;
+
+			// Pre-set ZoneSolicited mode so that when HandleZoneChange receives
+			// the client's 0xa320 response, Handle_OP_ZoneChange uses the correct
+			// destination zone and coordinates rather than re-resolving via zone
+			// point lookup.  This also prevents CheckTraditionalZonePoints from
+			// re-firing on subsequent position updates while the client is
+			// responding (zone_mode != ZoneUnsolicited guard at top).
+			zone_mode            = ZoneSolicited;
+			zonesummon_id        = zp->target_zone_id;
+			m_ZoneSummonLocation = glm::vec4(dest_x, dest_y, dest_z, dest_heading);
+			zonesummon_ignorerestrictions = 0;
+
+			// Send 0x4d21 (TeleportPC) to put the Trilogy client in "zoning state".
+			// The client will respond with 0xa320 (ZoneChange), which HandleZoneChange
+			// routes through Handle_OP_ZoneChange → DoZoneSuccess → ZTZ.  Only after
+			// the client sends 0xa320 will it act on the 0x0480 that the world sends
+			// on ZTZ approval.
+			auto* rc_app = new EQApplicationPacket(OP_RequestClientZoneChange, sizeof(RequestClientZoneChange_Struct));
+			auto* rc     = reinterpret_cast<RequestClientZoneChange_Struct*>(rc_app->pBuffer);
+			rc->zone_id     = zp->target_zone_id;
+			rc->instance_id = zp->target_zone_instance;
+			rc->x           = dest_x;
+			rc->y           = dest_y;
+			rc->z           = dest_z;
+			rc->heading     = dest_heading;
+			rc->type        = 0x01;
+			FastQueuePacket(&rc_app);
+			return;
+		}
+		iter.Advance();
 	}
 }
 

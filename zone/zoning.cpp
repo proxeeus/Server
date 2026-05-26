@@ -40,6 +40,10 @@ extern Zone* zone;
 
 
 void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
+	// Guard against being called twice for the same zone-change attempt (e.g.
+	// Trilogy client responds to 0x4d21 AND detects the zone line concurrently).
+	if (bZoning) return;
+
 	if (RuleB(Bots, Enabled)) {
 		Bot::ProcessClientZoneChange(this);
 	}

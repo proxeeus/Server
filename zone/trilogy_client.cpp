@@ -353,6 +353,68 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		                     static_cast<uint32_t>(sizeof(tpc)));
 		break;
 	}
+	case OP_ZonePlayerToBind: {
+		// Death / bind-point zoning: convert to Trilogy OP_TeleportPC (0x4d21).
+		// ZonePlayerToBind_Struct has a variable-length zone_name tail; we only need
+		// the fixed header (bind_zone_id, coords, heading).
+		if (app->size < sizeof(::ZonePlayerToBind_Struct)) break;
+		const auto* zpb = reinterpret_cast<const ::ZonePlayerToBind_Struct*>(app->pBuffer);
+		const char* zname = nullptr;
+		if (zpb->bind_zone_id != 0) {
+			zname = ZoneName(static_cast<uint32>(zpb->bind_zone_id));
+		} else {
+			// bind_zone_id == 0 means the bind point is in the current zone
+			zname = ZoneName(static_cast<uint32>(GetZoneID()));
+		}
+		if (!zname) break;
+		Trilogy::structs::TeleportPC_Struct tpc{};
+		memset(&tpc, 0, sizeof(tpc));
+		strncpy(tpc.zone, zname, sizeof(tpc.zone) - 1);
+		tpc.yPos    = zpb->y;
+		tpc.xPos    = zpb->x;
+		tpc.zPos    = (zpb->z == 0.0f) ? 0.1f : zpb->z;
+		tpc.heading = (zpb->heading != 0.0f) ? zpb->heading * 2.0f : 0.0f;
+		m_tzs->SendToSession(m_session_key, 0x4d21,
+		                     reinterpret_cast<const uint8_t*>(&tpc),
+		                     static_cast<uint32_t>(sizeof(tpc)));
+		break;
+	}
+	case OP_ZoneChange: {
+		// Server→client zone-change approval: translate EQEmu's 88-byte Titanium
+		// ZoneChange_Struct to the 68-byte Trilogy ZoneChange_Struct (opcode 0xa320).
+		// On receipt the Trilogy client disconnects from the current zone server and
+		// connects to the zone whose IP:port it received in 0x0480 from the world server.
+		//
+		// zone_name is intentionally left EMPTY.  When zone_name is non-empty the client
+		// looks up its connection table by zone_name; if the entry has a stale freed pointer
+		// (0xff000000, set when a previous connection to that zone was closed), it
+		// dereferences the sentinel → crash at 0x004c7752 / 0xff000082.
+		// With an empty zone_name the client skips the table lookup and uses the IP:port
+		// from the most-recently-received 0x0480 instead.  The world server guarantees
+		// 0x0480 arrives before this 0xa320 (world/zoneserver.cpp sends 0x0480 via direct
+		// UDP before the TCP ZTZ response that causes this packet to be queued).
+		if (app->size < sizeof(::ZoneChange_Struct)) break;
+		const auto* emu = reinterpret_cast<const ::ZoneChange_Struct*>(app->pBuffer);
+		if (emu->success < 0) break; // denied — Trilogy has no error display for this
+		// Verify zone exists (don't send a bad ZoneChange for an unknown zone).
+		if (!ZoneName(static_cast<uint32>(emu->zoneID))) break;
+		Trilogy::structs::ZoneChange_Struct trio_zc{};
+		memset(&trio_zc, 0, sizeof(trio_zc));
+		strncpy(trio_zc.char_name, emu->char_name, sizeof(trio_zc.char_name) - 1);
+		// zone_name left empty — see comment above.
+		// Magic bytes observed in EQClassic ProcessOP_ZoneChange success responses.
+		static const uint8_t kMagic[20] = {
+			0x10, 0x00, 0x00, 0x00, 0x04, 0xb5, 0x01, 0x02, 0x43, 0x58,
+			0x4f, 0x00, 0xb0, 0xa5, 0xc7, 0x0d, 0x01, 0x00, 0x00, 0x00
+		};
+		memcpy(trio_zc.zc_unknown1, kMagic, sizeof(kMagic));
+		// EQClassic sends an empty 0x1020 packet immediately before the A320 approval.
+		m_tzs->SendToSession(m_session_key, 0x1020, nullptr, 0);
+		m_tzs->SendToSession(m_session_key, 0xa320,
+		                     reinterpret_cast<const uint8_t*>(&trio_zc),
+		                     static_cast<uint32_t>(sizeof(trio_zc)));
+		break;
+	}
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -562,6 +624,12 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	GetPP().y       = y;
 	GetPP().z       = z;
 	GetPP().heading = heading;
+
+	// Trilogy clients never receive zone point data (OP_ZonePoints) and never
+	// send OP_ZoneChange autonomously, so both types of zone lines must be
+	// checked server-side on every position update.
+	CheckVirtualZoneLines();
+	CheckTraditionalZonePoints();
 }
 
 // ============================================================
