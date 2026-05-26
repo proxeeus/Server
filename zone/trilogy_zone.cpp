@@ -74,6 +74,7 @@ static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single
 static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
+static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
 static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
 
 // Combat / looting opcodes
@@ -531,6 +532,16 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleChannelMessage(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MoveItem)
 			HandleMoveItem(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_DropItem && s.trilogy_client)
+		{
+			// Player dropped cursor item on ground — remove it from the DB.
+			const int slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
+			database.QueryDatabase(fmt::format(
+			    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+			    s.char_id, slot));
+			LogInfo("[TrilogyZone] DropItem: removed slot {} for char={}", slot, s.char_id);
+			s.cursor_from_db = -1;
+		}
 		else if (opcode == ZN_OP_WearChange)
 			HandleConnectedWearChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
@@ -2879,12 +2890,14 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	int from_db;
 	if (from_wire == 0) {
 		// Placing from cursor — use the slot we saved in step 1.
+		// If cursor_from_db is unset the item arrived via loot/summon, not inventory pick-up;
+		// EQEmu stores cursor items at slot 33.
 		if (s.cursor_from_db < 0) {
-			LogInfo("[TrilogyZone] MoveItem from cursor but cursor_from_db is unset, ignoring");
-			return;
+			from_db = 33;
+		} else {
+			from_db = s.cursor_from_db;
+			s.cursor_from_db = -1;
 		}
-		from_db = s.cursor_from_db;
-		s.cursor_from_db = -1;
 	} else {
 		from_db = wire_to_db(from_wire);
 		if (from_db < 0) return;
