@@ -247,6 +247,10 @@ void TrilogyZoneServer::OnRawPacket(const std::string& addr, int port,
 	LogNetcode("[TrilogyZone] OnRawPacket {} bytes from {}:{}", size, addr, port);
 	Session& s = m_sessions[SessionKey(addr, port)];
 	s.source_addr = addr;
+	// Stamp last_pkt here so stray/CRC-bad packets don't leave a ghost session with
+	// last_pkt=0 that would fire the timeout 120s later.  OnDatagram may return early
+	// (CRC mismatch) before reaching its own last_pkt update at line ~422.
+	s.last_pkt = std::time(nullptr);
 	OnDatagram(addr, port, s, reinterpret_cast<const uint8_t*>(data), static_cast<int>(size));
 }
 
@@ -2438,10 +2442,15 @@ void TrilogyZoneServer::Tick()
 {
 	std::time_t now = std::time(nullptr);
 
-	// Collect stale sessions (no packet in 120s) before iterating for heartbeats.
+	// Collect stale sessions before iterating for heartbeats.
+	// CONNECTING* sessions: 120 s (they should complete quickly or be abandoned).
+	// CONNECTED sessions:   300 s (client can be quiet during inventory management
+	//                              without generating any outbound packets for many seconds).
 	std::vector<uint64_t> to_remove;
 	for (const auto& kv : m_sessions) {
-		if (now - kv.second.last_pkt > 120)
+		const Session& cs = kv.second;
+		std::time_t limit = (cs.state == CONNECTED) ? 300 : 120;
+		if (now - cs.last_pkt > limit)
 			to_remove.push_back(kv.first);
 	}
 	for (uint64_t key : to_remove) {
