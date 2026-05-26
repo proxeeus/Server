@@ -1514,25 +1514,20 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 
 void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 {
-	LogInfo("[TrilogyLoot] HandleItemPacket called, app->size={}", app ? (int)app->size : -1);
 	if (!app) return;
 
 	// Minimum size: ItemPacketType (4) + InternalSerializedItem_Struct (>=10 with pointer)
-	if (app->size < 4 + sizeof(EQ::InternalSerializedItem_Struct)) {
-		LogInfo("[TrilogyLoot] size check FAILED: {} < {}", (int)app->size, (int)(4 + sizeof(EQ::InternalSerializedItem_Struct)));
+	if (app->size < 4 + sizeof(EQ::InternalSerializedItem_Struct))
 		return;
-	}
 
 	const auto pkt_type = static_cast<ItemPacketType>(
 	    *reinterpret_cast<const int32_t*>(app->pBuffer));
-	LogInfo("[TrilogyLoot] pkt_type={}", (int)pkt_type);
 
 	const auto* isi = reinterpret_cast<const EQ::InternalSerializedItem_Struct*>(
 	    app->pBuffer + 4);
 
 	const auto* inst = reinterpret_cast<const EQ::ItemInstance*>(isi->inst);
-	LogInfo("[TrilogyLoot] slot_id={} inst={}", (int)isi->slot_id, (void*)inst);
-	if (!inst) { LogInfo("[TrilogyLoot] inst is null, returning"); return; }
+	if (!inst) return;
 
 	int16_t slot_id = isi->slot_id;
 
@@ -1585,15 +1580,10 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		return; // Other item packet types not yet translated.
 	}
 
-	LogInfo("[TrilogyLoot] equip_slot={} wire_opcode={:04X}", (int)equip_slot, (unsigned)wire_opcode);
 	Trilogy::structs::ClassicItem_Struct ci{};
-	if (!BuildClassicItemFromInst(inst, ci, equip_slot)) {
-		LogInfo("[TrilogyLoot] BuildClassicItemFromInst FAILED");
+	if (!BuildClassicItemFromInst(inst, ci, equip_slot))
 		return;
-	}
 
-	LogInfo("[TrilogyLoot] Sending 0x{:04X} sizeof(ci)={} name='{}' id={} equipslot={}",
-	        (unsigned)wire_opcode, (int)sizeof(ci), ci.name, (int)ci.id, (int)ci.equipslot);
 	m_tzs->SendToSession(m_session_key, wire_opcode,
 	                     reinterpret_cast<const uint8_t*>(&ci),
 	                     static_cast<uint32_t>(sizeof(ci)));

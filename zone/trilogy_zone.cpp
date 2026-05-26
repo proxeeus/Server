@@ -540,22 +540,30 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleMoveItem(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_DropItem && s.trilogy_client)
 		{
-			// Player dropped cursor item on ground.
-			// Load item from DB, spawn as a ground object, then remove from inventory.
-			const int slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
-
-			EQ::ItemInstance* inst = nullptr;
-			{
-				auto r = database.QueryDatabase(fmt::format(
-				    "SELECT `itemid`, `charges` FROM `inventory` WHERE `charid`={} AND `slotid`={}",
-				    s.char_id, slot));
-				if (r.Success() && r.RowCount() > 0) {
-					const uint32_t item_id = static_cast<uint32_t>(Strings::ToInt(r.begin()[0]));
-					const int16_t  charges = static_cast<int16_t>(Strings::ToInt(r.begin()[1]));
-					inst = database.CreateItem(item_id, charges);
-				}
+			// The Trilogy client sends a 240-byte EQClassic Object_Struct.
+			// itemid  (int32) is at offset  8 — the EQEmu item ID the client received
+			//                                   via ClassicItem_Struct.id when the item
+			//                                   was delivered (always fits in uint16).
+			// stack_size (int8) is at offset 118 — quantity / charges.
+			//
+			// Using the payload item_id (rather than a DB query) avoids the cursor-queue
+			// ordering pitfall: EQ::InventoryProfile::PushCursor appends to the BACK of
+			// the cursor deque, so slot 33 in the DB is the FRONT item (potentially an
+			// older item), not necessarily the one the player just looted.
+			if (plen < 240) {
+				s.cursor_from_db = -1;
+				break;
 			}
 
+			const uint32_t item_id = *reinterpret_cast<const uint32_t*>(payload + 8);
+			const int16_t  charges = static_cast<int16_t>(static_cast<int8_t>(payload[118]));
+
+			EQ::ItemInstance* inst = (item_id > 0) ? database.CreateItem(item_id, charges) : nullptr;
+
+			// Remove the item from the inventory DB at the cursor slot.
+			// cursor_from_db is set if the player picked this item up from a bag slot
+			// (two-step move) before dropping; otherwise the item is at slot 33 (cursor).
+			const int slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
 			database.QueryDatabase(fmt::format(
 			    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 			    s.char_id, slot));

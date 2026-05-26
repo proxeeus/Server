@@ -1351,11 +1351,6 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 	auto loot_slot   = EQ::invslot::CORPSE_BEGIN;
 	auto corpse_mask = c->GetInv().GetLookup()->CorpseBitmask;
 
-	LogInfo("[TrilogyLoot] MakeLootRequestPackets: item_count={} corpse_mask=0x{:016X} CORPSE_BEGIN={} CORPSE_END={} inv_version={}",
-	        m_item_list.size(), corpse_mask,
-	        (int)EQ::invslot::CORPSE_BEGIN, (int)EQ::invslot::CORPSE_END,
-	        (int)c->GetInv().InventoryVersion());
-
 	for (auto i: m_item_list) {
 		// every loot session must either set all items' lootslots to 'invslot::SLOT_INVALID'
 		// or to a valid enumerated client-versioned corpse slot (lootslot is not equip_slot)
@@ -1544,8 +1539,6 @@ void Corpse::LootCorpseItem(Client *c, const EQApplicationPacket *app)
 
 	if (c && inst) {
 		if (c->CheckLoreConflict(item)) {
-			LogInfo("[TrilogyLoot] Lore conflict: item_id={} ({}) already in {}'s inventory",
-			        item->ID, item->Name, c->GetName());
 			c->MessageString(Chat::White, LOOT_LORE_ERROR);
 			c->QueuePacket(app);
 			SendEndLootErrorPacket(c);
