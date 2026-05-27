@@ -42,6 +42,8 @@
 #include <cstring>
 #include <cmath>
 #include <string>
+#include <utility>
+#include <vector>
 
 extern EntityList entity_list;
 
@@ -385,23 +387,30 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// On receipt the Trilogy client disconnects from the current zone server and
 		// connects to the zone whose IP:port it received in 0x0480 from the world server.
 		//
-		// zone_name is intentionally left EMPTY.  When zone_name is non-empty the client
-		// looks up its connection table by zone_name; if the entry has a stale freed pointer
-		// (0xff000000, set when a previous connection to that zone was closed), it
-		// dereferences the sentinel → crash at 0x004c7752 / 0xff000082.
-		// With an empty zone_name the client skips the table lookup and uses the IP:port
-		// from the most-recently-received 0x0480 instead.  The world server guarantees
-		// 0x0480 arrives before this 0xa320 (world/zoneserver.cpp sends 0x0480 via direct
-		// UDP before the TCP ZTZ response that causes this packet to be queued).
+		// CRASH PREVENTION (0x004c7752 / 0xff000082):
+		// When 0xa320 arrives with zone_name="freportw", the Trilogy client looks up
+		// "freportw" in its EQNetwork connection table.  On a revisited zone, the entry
+		// holds a freed-pointer sentinel (0xff000000) left over from the previous visit.
+		// Reading entry+0x82 (the connection-object pointer) with this value crashes.
+		//
+		// Fix: send a server-initiated EQNetwork CLOSE immediately after 0xa320.
+		// CLOSE is ARQ-sequenced after 0xa320, so the client processes 0xa320 first
+		// (starts connecting to the new zone) and then CLOSE (cleanly nulls out this
+		// zone's connection-table entry, entry.connection = NULL).  On the next visit
+		// 0xa320 finds NULL → creates a fresh connection → no crash.
+		//
+		// Timed broadcasts (stamina, time-of-day) are also suppressed in Tick() while
+		// m_is_zoning=true; packets arriving during the close handshake can corrupt
+		// EQNetwork's cleanup and cause it to set the sentinel instead of NULL.
 		if (app->size < sizeof(::ZoneChange_Struct)) break;
 		const auto* emu = reinterpret_cast<const ::ZoneChange_Struct*>(app->pBuffer);
 		if (emu->success < 0) break; // denied — Trilogy has no error display for this
-		// Verify zone exists (don't send a bad ZoneChange for an unknown zone).
-		if (!ZoneName(static_cast<uint32>(emu->zoneID))) break;
+		const char* dest_zone = ZoneName(static_cast<uint32>(emu->zoneID));
+		if (!dest_zone) break;
 		Trilogy::structs::ZoneChange_Struct trio_zc{};
 		memset(&trio_zc, 0, sizeof(trio_zc));
 		strncpy(trio_zc.char_name, emu->char_name, sizeof(trio_zc.char_name) - 1);
-		// zone_name left empty — see comment above.
+		strncpy(trio_zc.zone_name,  dest_zone,      sizeof(trio_zc.zone_name)  - 1);
 		// Magic bytes observed in EQClassic ProcessOP_ZoneChange success responses.
 		static const uint8_t kMagic[20] = {
 			0x10, 0x00, 0x00, 0x00, 0x04, 0xb5, 0x01, 0x02, 0x43, 0x58,
@@ -413,6 +422,14 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		m_tzs->SendToSession(m_session_key, 0xa320,
 		                     reinterpret_cast<const uint8_t*>(&trio_zc),
 		                     static_cast<uint32_t>(sizeof(trio_zc)));
+		// ARQ-sequenced CLOSE: arrives at client after 0xa320, causes EQNetwork to
+		// null out this zone's connection-table entry cleanly (see comment above).
+		m_tzs->SendCloseToSession(m_session_key);
+		// Enter zoning state immediately: the client is tearing down its connection.
+		// Suppress further broadcast traffic (mob heartbeats, NPC spawns, ground items)
+		// so they don't corrupt the client's teardown state machine.
+		m_is_zoning = true;
+		m_deferred_spawns.clear(); // discard; this session won't deliver them
 		break;
 	}
 	default:
@@ -450,12 +467,18 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	// appear in the A120 heartbeat whenever they move.
 	bool is_playerbot = mob->IsNPC() &&
 	                    mob->CastToNPC()->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
-	if (mob->IsClient()) {
-		m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
-		return;
-	}
-	if (is_playerbot) {
-		m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
+
+	if (mob->IsClient() || is_playerbot) {
+		// Player/playerbot spawns require multi-packet sequences (ZoneSpawns bulk +
+		// illusion + WearChange) that cannot be trivially buffered as a single wire
+		// packet.  During zone transition, skip them; the client will see position
+		// updates for any players/bots who are already in the zone via heartbeat.
+		if (!m_is_zoning) {
+			if (mob->IsClient())
+				m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
+			else
+				m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
+		}
 		return;
 	}
 
@@ -510,6 +533,15 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 
 	// Encrypt in-place; 168 bytes is already a multiple of 4.
 	EncryptSpawnPacket(reinterpret_cast<uint8_t*>(&out), static_cast<uint32_t>(sizeof(out)));
+
+	if (m_is_zoning) {
+		if (m_deferred_spawns.size() < kMaxDeferredSpawns) {
+			m_deferred_spawns.emplace_back(uint16_t{0x4921},
+				std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(&out),
+				                     reinterpret_cast<const uint8_t*>(&out) + sizeof(out)));
+		}
+		return;
+	}
 
 	m_tzs->SendToSession(m_session_key, 0x4921,
 	                     reinterpret_cast<const uint8_t*>(&out),
@@ -598,6 +630,21 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 {
 	// Intentionally no-op: position updates flow through SendMobHeartbeat only.
+}
+
+// ============================================================
+// OnClientReady — called by TrilogyZoneServer on the client's
+// first ZN_OP_ClientUpdate, signalling the 3D world is up.
+// Clears the zoning flag and flushes any buffered spawn/ground
+// packets that were held back during zone-in or zone-out.
+// ============================================================
+void TrilogyClient::OnClientReady()
+{
+	LogInfo("[TrilogyClient] OnClientReady: flushing {} deferred spawn(s)", m_deferred_spawns.size());
+	m_is_zoning = false;
+	for (auto& [opcode, data] : m_deferred_spawns)
+		m_tzs->SendToSession(m_session_key, opcode, data.data(), static_cast<uint32_t>(data.size()));
+	m_deferred_spawns.clear();
 }
 
 // ============================================================
@@ -1393,6 +1440,13 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 	strncpy(reinterpret_cast<char*>(buf + 56), emu->object_name, 15);
 	buf[56 + 15] = '\0';
 	*reinterpret_cast<int16_t*>(buf + 238) = 1; // OT_DROPPEDITEM
+
+	if (m_is_zoning) {
+		if (m_deferred_spawns.size() < kMaxDeferredSpawns)
+			m_deferred_spawns.emplace_back(uint16_t{0x3520},
+				std::vector<uint8_t>(buf, buf + sizeof(buf)));
+		return;
+	}
 
 	m_tzs->SendToSession(m_session_key, 0x3520,
 	                     buf, static_cast<uint32_t>(sizeof(buf)));

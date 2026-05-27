@@ -44,6 +44,12 @@ public:
 	void SendToSession(uint64_t session_key, uint16_t opcode,
 	                   const uint8_t* data, uint32_t size);
 
+	// Send a server-initiated EQNetwork CLOSE to the session.  Called immediately
+	// after the 0xa320 zone-change approval so EQNetwork cleanly nulls out this
+	// zone's connection-table entry (entry.connection = NULL) before the player
+	// can zone back, preventing the 0xff000082 freed-pointer crash.
+	void SendCloseToSession(uint64_t session_key);
+
 	// Send a single player as a zone-permanent spawn (0x6121) so the Trilogy
 	// client never applies a staleness timeout to the entity.
 	void SendPlayerSpawnPermanent(uint64_t session_key, Client* c);

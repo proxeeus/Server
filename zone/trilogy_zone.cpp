@@ -231,6 +231,14 @@ void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
 	SendApp(s.source_addr, s.source_port, s, opcode, data, size);
 }
 
+void TrilogyZoneServer::SendCloseToSession(uint64_t session_key)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	Session& s = it->second;
+	SendClose(s.source_addr, s.source_port, s);
+}
+
 uint64_t TrilogyZoneServer::SessionKey(const std::string& addr, int port)
 {
 	uint64_t h = 5381;
@@ -2063,8 +2071,13 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
 
 	// Update entity_list position so NPC aggro, proximity, and Titanium broadcasts work.
-	if (s.trilogy_client)
+	if (s.trilogy_client) {
+		// First ZN_OP_ClientUpdate after zone-in (or zone-out) signals the client's 3D world
+		// is live.  Release any buffered spawn/ground packets and resume mob heartbeats.
+		if (s.trilogy_client->IsZoning())
+			s.trilogy_client->OnClientReady();
 		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
+	}
 
 	// Heartbeat (A120) is now sent by SendMobHeartbeat(), called for every CONNECTED packet.
 
@@ -2552,6 +2565,13 @@ void TrilogyZoneServer::Tick()
 
 		SendMobHeartbeat(s.source_addr, s.source_port, s);
 
+		// Skip timed broadcasts while the client is in zone-out transition.
+		// Stamina/TimeOfDay packets arriving during EQNetwork's CLOSE handshake
+		// can corrupt the connection-table cleanup, leaving a freed-pointer sentinel
+		// (0xff000000) instead of NULL — which causes the 0x004c7752 crash on the
+		// next zone-back to this zone.
+		if (s.trilogy_client && s.trilogy_client->IsZoning()) continue;
+
 		// Refresh stamina every 5s so client-side endurance never depletes to 0.
 		if (now_ms - s.last_stamina_ms >= 5000) {
 			s.last_stamina_ms = now_ms;
@@ -2598,6 +2618,14 @@ bool TrilogyZoneServer::HasConnectedSession() const
 
 void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Session& s)
 {
+	// Suppress position broadcasts while the client is in a zoning transition.
+	// During zone-in the 3D world isn't rendered yet; an A120 heartbeat arriving
+	// before ZoneSpawns are processed can corrupt the client state machine.
+	// During zone-out the client is tearing down its connection and any A120 can
+	// cause an unexpected ARQ response that confuses the close handshake.
+	// Mob positions are ephemeral so they are never buffered — just skip entirely.
+	if (s.trilogy_client && s.trilogy_client->IsZoning()) return;
+
 	// Rate-limit to 250ms (4 Hz) — matches EQClassic entity_list.SendPositionUpdates()
 	// interval. Without this every incoming packet (including 0x4121 responses to A120)
 	// triggers another A120, creating an unbounded feedback loop at ~1000+ pps.

@@ -135,6 +135,12 @@ public:
 	// and broadcast movement to nearby Titanium clients.
 	void TrilogyPositionUpdate(float x, float y, float z, float heading);
 
+	// Zoning state machine — called by TrilogyZoneServer on the client's first
+	// ZN_OP_ClientUpdate to signal that the 3D world is instantiated and buffered
+	// spawn/ground packets can be released.
+	bool IsZoning() const { return m_is_zoning; }
+	void OnClientReady();
+
 	uint16_t GetPlayerSpawnId() const { return m_player_spawn_id; }
 
 	// Translate an EQEmu entity ID to the Trilogy wire ID for this client.
@@ -190,4 +196,20 @@ private:
 	// until after the item packet so the client processes them in the right order.
 	bool m_pending_loot_echo = false;
 	Trilogy::structs::LootingItem_Struct m_pending_echo_out{};
+
+	// ---- Zoning state machine ----
+	// true from construction until the client sends its first ZN_OP_ClientUpdate
+	// (position packet), which signals that the 3D world is fully rendered.
+	// Also set true again when an OP_ZoneChange approval is sent (zone-out teardown).
+	//
+	// While true:
+	//   • OP_NewSpawn (NPC only) and OP_GroundSpawn are queued in m_deferred_spawns
+	//     rather than sent immediately, preventing spawn-data before zone data.
+	//   • ZN_OP_MobUpdate heartbeats are skipped at the SendMobHeartbeat layer so
+	//     stale/mid-teardown position blasts cannot confuse the client state machine.
+	//   • Player/playerbot OP_NewSpawn (multi-packet paths) are silently dropped;
+	//     they will be visible via the next ZoneSpawns bulk or heartbeat.
+	bool m_is_zoning = true;
+	static constexpr size_t kMaxDeferredSpawns = 64;
+	std::vector<std::pair<uint16_t, std::vector<uint8_t>>> m_deferred_spawns;
 };
