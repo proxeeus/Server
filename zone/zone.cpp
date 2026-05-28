@@ -2024,9 +2024,17 @@ ZonePoint* Zone::GetClosestZonePoint(const glm::vec3& location, uint32 to, Clien
 
 		if (zp->target_zone_id == to)
 		{
-            auto dist = Distance(glm::vec2(zp->x, zp->y), glm::vec2(location));
-			if ((zp->x == 999999 || zp->x == -999999) && (zp->y == 999999 || zp->y == -999999))
+			bool xWild = (zp->x == 999999 || zp->x == -999999);
+			bool yWild = (zp->y == 999999 || zp->y == -999999);
+			float dist;
+			if (xWild && yWild)
 				dist = 0;
+			else if (xWild)
+				dist = std::abs(zp->y - location.y);
+			else if (yWild)
+				dist = std::abs(zp->x - location.x);
+			else
+				dist = Distance(glm::vec2(zp->x, zp->y), glm::vec2(location));
 
 			if (dist < closest_dist)
 			{

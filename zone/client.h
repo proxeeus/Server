@@ -2023,6 +2023,15 @@ private:
 	uint8 zonesummon_ignorerestrictions;
 	ZoneMode zone_mode;
 
+	// Raw zone_point target values stored by CheckTraditionalZonePoints.
+	// Handle_OP_ZoneChange re-evaluates any 999999 wildcards using the player's
+	// current position so the destination reflects the actual zone-exit point,
+	// not the position captured at detection time (which may be the spawn location).
+	float m_trilogy_zone_raw_target_x = 0.f;
+	float m_trilogy_zone_raw_target_y = 0.f;
+	float m_trilogy_zone_raw_target_z = 0.f;
+	float m_trilogy_zone_raw_target_h = 0.f;
+
 	WaterRegionType last_region_type;
 
 	PTimerList p_timers; //persistent timers

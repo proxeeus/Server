@@ -9480,6 +9480,17 @@ void Client::CheckTraditionalZonePoints()
 			float dest_z       = (zp->target_z       == 999999) ? GetZ()       : zp->target_z;
 			float dest_heading = (zp->target_heading == 999)    ? GetHeading() : zp->target_heading;
 
+			LogInfo("[TrilogyZP] CheckTraditionalZonePoints FIRED: char [{}] zone [{}]"
+			        " | trigger ({:.1f},{:.1f},{:.1f}) player ({:.1f},{:.1f},{:.1f})"
+			        " | raw_target ({},{},{},{}) -> dest ({:.1f},{:.1f},{:.1f},{:.1f})"
+			        " | target_zone {}",
+			        GetCleanName(), zone ? zone->GetShortName() : "?",
+			        zp->x, zp->y, zp->z,
+			        GetX(), GetY(), GetZ(),
+			        zp->target_x, zp->target_y, zp->target_z, (int)zp->target_heading,
+			        dest_x, dest_y, dest_z, dest_heading,
+			        zp->target_zone_id);
+
 			// Pre-set ZoneSolicited mode so that when HandleZoneChange receives
 			// the client's 0xa320 response, Handle_OP_ZoneChange uses the correct
 			// destination zone and coordinates rather than re-resolving via zone
@@ -9490,6 +9501,14 @@ void Client::CheckTraditionalZonePoints()
 			zonesummon_id        = zp->target_zone_id;
 			m_ZoneSummonLocation = glm::vec4(dest_x, dest_y, dest_z, dest_heading);
 			zonesummon_ignorerestrictions = 0;
+
+			// Preserve raw zone_point target values (including 999999 wildcards) so
+			// Handle_OP_ZoneChange can re-evaluate them at zone-exit time using the
+			// player's actual position, not the detection position stored above.
+			m_trilogy_zone_raw_target_x = zp->target_x;
+			m_trilogy_zone_raw_target_y = zp->target_y;
+			m_trilogy_zone_raw_target_z = zp->target_z;
+			m_trilogy_zone_raw_target_h = zp->target_heading;
 
 			// Send 0x4d21 (TeleportPC) to put the Trilogy client in "zoning state".
 			// The client will respond with 0xa320 (ZoneChange), which HandleZoneChange

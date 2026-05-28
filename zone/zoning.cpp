@@ -307,11 +307,44 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 			ignore_restrictions = 1;	//can always get to our bind point? seems exploitable
 			break;
 		case ZoneSolicited: //we told the client to zone somewhere, so we know where they are going.
-			//recycle zonesummon variables
-			target_x = m_ZoneSummonLocation.x;
-			target_y = m_ZoneSummonLocation.y;
-			target_z = m_ZoneSummonLocation.z;
-			target_heading = m_ZoneSummonLocation.w;
+			// For Trilogy clients, CheckTraditionalZonePoints detects the zone line
+			// server-side.  If the zone point uses all-wildcard (999999) targets, the
+			// destination would be the player's current position in the source zone —
+			// which is wrong when the two zones use different coordinate systems (e.g.
+			// WFP/EC spawn coordinates don't map correctly into the other zone).
+			// Fall back to the target zone's safe coordinates in that case so the
+			// player always arrives at a valid location.
+			if (IsTrilogyClient()) {
+				bool all_wildcards = (m_trilogy_zone_raw_target_x == 999999 &&
+				                      m_trilogy_zone_raw_target_y == 999999 &&
+				                      m_trilogy_zone_raw_target_z == 999999);
+				if (all_wildcards) {
+					// Zone point has no explicit destination; use target zone safe point.
+					target_x       = safe_x;
+					target_y       = safe_y;
+					target_z       = safe_z;
+					target_heading = (m_trilogy_zone_raw_target_h == 999) ? safe_heading : m_ZoneSummonLocation.w;
+				} else {
+					target_x       = (m_trilogy_zone_raw_target_x == 999999) ? GetX()       : m_ZoneSummonLocation.x;
+					target_y       = (m_trilogy_zone_raw_target_y == 999999) ? GetY()       : m_ZoneSummonLocation.y;
+					target_z       = (m_trilogy_zone_raw_target_z == 999999) ? GetZ()       : m_ZoneSummonLocation.z;
+					target_heading = (m_trilogy_zone_raw_target_h == 999)    ? GetHeading() : m_ZoneSummonLocation.w;
+				}
+				LogInfo(
+					"[TrilogyZP] ZoneSolicited dest: char [{}] raw_target ({},{},{},{}) cur_pos ({:.1f},{:.1f},{:.1f}) all_wildcards={} -> dest ({:.1f},{:.1f},{:.1f},{:.1f})",
+					GetCleanName(),
+					m_trilogy_zone_raw_target_x, m_trilogy_zone_raw_target_y,
+					m_trilogy_zone_raw_target_z, m_trilogy_zone_raw_target_h,
+					GetX(), GetY(), GetZ(),
+					all_wildcards ? "yes" : "no",
+					target_x, target_y, target_z, target_heading
+				);
+			} else {
+				target_x       = m_ZoneSummonLocation.x;
+				target_y       = m_ZoneSummonLocation.y;
+				target_z       = m_ZoneSummonLocation.z;
+				target_heading = m_ZoneSummonLocation.w;
+			}
 			break;
 		case ZoneUnsolicited: //client came up with this on its own.
 			//client requested a zoning... what are the cases when this could happen?
@@ -538,6 +571,10 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 	m_pp.heading = dest_h;
 	m_pp.zone_id = zone_id;
 	m_pp.zoneInstance = instance_id;
+
+	LogInfo("[TrilogyZP] DoZoneSuccess: char [{}] dest zone {} ({}) dest_pos ({:.2f},{:.2f},{:.2f},{:.2f}) — writing to DB",
+	        GetCleanName(), ZoneName(zone_id) ? ZoneName(zone_id) : "?", zone_id,
+	        dest_x, dest_y, dest_z, dest_h);
 
 	//Force a save so its waiting for them when they zone
 	Save(2);

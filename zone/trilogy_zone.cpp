@@ -839,6 +839,20 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	LogInfo("[TrilogyZone] ZoneEntry | char_id={} account_id={} zone_id={} zone={} player_spawn_id={}",
 	        s.char_id, s.account_id, s.zone_id, s.zone_short, s.player_spawn_id);
 
+	// Evict any stale session for the same character (zone-out leaves the old entity alive
+	// until the CLOSE handshake completes, but the player may reconnect before that).
+	// Without this, numclients++ and the player sees a ghost copy of themselves.
+	{
+		uint64_t my_key = SessionKey(addr, port);
+		std::vector<uint64_t> to_evict;
+		for (const auto& [k, other] : m_sessions) {
+			if (k != my_key && other.char_id == s.char_id)
+				to_evict.push_back(k);
+		}
+		for (uint64_t k : to_evict)
+			RemoveSession(k);
+	}
+
 	// Send TimeOfDay first so the client has the correct EQ clock before any
 	// rendering state is set.  The world server sends TimeOfDay before ZoneServerInfo,
 	// but sending it again here guarantees the client holds the current time even if
@@ -1440,6 +1454,29 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 
 	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.
 	SendMobHeartbeat(addr, port, s);
+
+	// Force the client to the correct spawn position regardless of any per-zone position
+	// cache the client holds from a previous visit to this zone.  Sending a 4d21 with
+	// zone[] == current zone name triggers an intra-zone teleport without producing a
+	// 0xa320 response, so it doesn't disturb the zone-mode state machine.
+	if (s.trilogy_client) {
+		Trilogy::structs::TeleportPC_Struct tpc{};
+		memset(&tpc, 0, sizeof(tpc));
+		strncpy(tpc.zone, s.zone_short, sizeof(tpc.zone) - 1);
+		tpc.yPos    = s.pos_y;
+		tpc.xPos    = s.pos_x;
+		tpc.zPos    = (s.pos_z == 0.0f) ? 0.1f : s.pos_z;
+		tpc.heading = s.pos_heading * 2.0f;
+		LogInfo("[TrilogyZone] SpawnCorrect 4d21 | char [{}] zone [{}] pos ({:.1f},{:.1f},{:.1f}) hdg={:.1f}",
+		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading);
+		SendApp(addr, port, s, 0x4d21,
+		        reinterpret_cast<const uint8_t*>(&tpc), sizeof(tpc));
+	}
+
+	// Arm the position-save throttle so that the first HandleClientUpdate (which may
+	// carry the pre-teleport cached position) is suppressed.  Only position updates
+	// received after the 30-second window will write to DB.
+	s.pos_save_time = static_cast<std::time_t>(std::time(nullptr));
 }
 
 
@@ -1602,6 +1639,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		s.pos_y       = pp.y;
 		s.pos_z       = pp.z;
 		s.pos_heading = pp.heading;
+		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f})",
+		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading);
 	}
 
 	// ---- character_currency ----
@@ -2080,6 +2119,12 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	}
 
 	// Heartbeat (A120) is now sent by SendMobHeartbeat(), called for every CONNECTED packet.
+
+	// Only save position when the client entity is still active in this zone.
+	// After zone-out (trilogy_client == nullptr) DoZoneSuccess has already written the
+	// correct destination coordinates; a stale position update from the departing client
+	// must not overwrite them.
+	if (!s.trilogy_client) return;
 
 	std::time_t now = std::time(nullptr);
 	if (now - s.pos_save_time < 30) return;
@@ -3237,20 +3282,56 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 	}
 
 	// Build EQEmu ZoneChange_Struct (88 bytes) and hand it to the standard handler.
-	// Supply last-known position so GetClosestZonePoint works correctly for
-	// unsolicited (zone-line) requests.
+	// The Trilogy ZoneChange_Struct carries zone name only; leave x/y/z zero so the
+	// standard handler uses m_ZoneSummonLocation (set by CheckTraditionalZonePoints)
+	// for the destination rather than the player's current source-zone position.
 	::ZoneChange_Struct emu_zc{};
 	memset(&emu_zc, 0, sizeof(emu_zc));
 	strncpy(emu_zc.char_name, s.char_name, sizeof(emu_zc.char_name) - 1);
 	emu_zc.zoneID      = static_cast<uint16>(zone_id);
 	emu_zc.instanceID  = 0;
-	emu_zc.y           = s.pos_y;
-	emu_zc.x           = s.pos_x;
-	emu_zc.z           = s.pos_z;
 	emu_zc.zone_reason = 0;
 	emu_zc.success     = 0; // 0 = client → server direction
 
 	EQApplicationPacket zc_pkt(OP_ZoneChange, sizeof(::ZoneChange_Struct));
 	memcpy(zc_pkt.pBuffer, &emu_zc, sizeof(emu_zc));
 	s.trilogy_client->Handle_OP_ZoneChange(&zc_pkt);
+
+	// DoZoneSuccess (inside Handle_OP_ZoneChange) sets m_lock_save_position synchronously.
+	// However the OP_ZoneChange approval normally travels to the Trilogy client via
+	// the world-server round-trip (worldserver.SendPacket → ServerOP_ZoneChange →
+	// FastQueuePacket → TranslateAndSend), which is asynchronous — TrilogyClient::
+	// m_is_zoning is NOT yet true when we return here.  Without the fix below the
+	// IsZoning() guard below would always be false, the entity would be left alive,
+	// and its eventual ~Client() Save() would overwrite the destination zone's
+	// character_data row with the stale source-zone coordinates.
+	//
+	// Fix: when DoZoneSuccess ran (IsLockSavePosition=true) but the async world-server
+	// path has not yet set m_is_zoning, deliver the OP_ZoneChange approval directly so
+	// TranslateAndSend fires in this call frame, sends 0xa320 + CLOSE to the client,
+	// and sets m_is_zoning=true — allowing the entity cleanup below to fire correctly.
+	if (s.trilogy_client && s.trilogy_client->IsLockSavePosition()
+	    && !s.trilogy_client->IsZoning())
+	{
+		auto* resp    = new EQApplicationPacket(OP_ZoneChange, sizeof(::ZoneChange_Struct));
+		auto* resp_zc = reinterpret_cast<::ZoneChange_Struct*>(resp->pBuffer);
+		strncpy(resp_zc->char_name, s.char_name, sizeof(resp_zc->char_name) - 1);
+		resp_zc->zoneID     = static_cast<uint16>(zone_id);
+		resp_zc->instanceID = 0;
+		resp_zc->success    = 1;
+		resp->priority      = 6;
+		s.trilogy_client->FastQueuePacket(&resp);
+		// TranslateAndSend has now sent 0xa320 + CLOSE and set m_is_zoning = true.
+	}
+
+	// Remove the entity if the zone change was approved (m_is_zoning=true).
+	// The session stays in m_sessions (trilogy_client=nullptr) for the CLOSE
+	// retransmit window.
+	if (s.trilogy_client && s.trilogy_client->IsZoning()) {
+		uint16 id = s.trilogy_client->GetID();
+		s.trilogy_client = nullptr;
+		entity_list.RemoveMob(id);
+		s.counted_in_zone = false;
+		LogInfo("[TrilogyZone] {} entity removed on zone-out, numclients={}", s.char_name, numclients);
+	}
 }
