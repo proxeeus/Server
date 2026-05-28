@@ -319,32 +319,84 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 				                      m_trilogy_zone_raw_target_y == 999999 &&
 				                      m_trilogy_zone_raw_target_z == 999999);
 				if (all_wildcards) {
-					// Zone point has no explicit destination; use target zone safe point.
 					target_x       = safe_x;
 					target_y       = safe_y;
 					target_z       = safe_z;
 					target_heading = (m_trilogy_zone_raw_target_h == 999) ? safe_heading : m_ZoneSummonLocation.w;
+					LogInfo("[TrilogyZP] ZoneSolicited char [{}] | all_wildcards -> safe ({:.1f},{:.1f},{:.1f})",
+					        GetCleanName(), target_x, target_y, target_z);
 				} else {
-					target_x       = (m_trilogy_zone_raw_target_x == 999999) ? GetX()       : m_ZoneSummonLocation.x;
-					target_y       = (m_trilogy_zone_raw_target_y == 999999) ? GetY()       : m_ZoneSummonLocation.y;
-					target_z       = (m_trilogy_zone_raw_target_z == 999999) ? GetZ()       : m_ZoneSummonLocation.z;
-					target_heading = (m_trilogy_zone_raw_target_h == 999)    ? GetHeading() : m_ZoneSummonLocation.w;
-					// Gentle push along arrival heading to clear the return trigger.
-					// 15 units > 10-unit detection radius so the player won't be
-					// re-detected even if they stand still after zoning in.
+					float raw_tgt_x = (m_trilogy_zone_raw_target_x == 999999) ? GetX() : m_ZoneSummonLocation.x;
+					float raw_tgt_y = (m_trilogy_zone_raw_target_y == 999999) ? GetY() : m_ZoneSummonLocation.y;
+					target_z        = (m_trilogy_zone_raw_target_z == 999999) ? GetZ() : m_ZoneSummonLocation.z;
+					target_heading  = (m_trilogy_zone_raw_target_h == 999)    ? GetHeading() : m_ZoneSummonLocation.w;
+
+					// Determine traversal (strict target) vs sliding (delta/passthrough) axis.
+					// Primary: wildcard pattern on the SOURCE trigger identifies the wall axis.
+					//   !xWild && yWild → X wall, player crosses in X → traversal = X, sliding = Y
+					//   xWild && !yWild → Y wall, player crosses in Y → traversal = Y, sliding = X
+					// Fallback (both explicit or both wildcard): use arrival heading.
+					bool xWild = m_trilogy_zone_trig_x_wild;
+					bool yWild = m_trilogy_zone_trig_y_wild;
+					bool traversal_is_x;
+					if (!xWild && yWild)
+						traversal_is_x = true;
+					else if (xWild && !yWild)
+						traversal_is_x = false;
+					else {
+						float h_rad    = target_heading * (static_cast<float>(M_PI) / 256.0f);
+						traversal_is_x = (std::fabs(std::sin(h_rad)) > std::fabs(std::cos(h_rad)));
+					}
+
+					// Apply delta on the sliding axis, strict target on the traversal axis.
+					// When the source trigger axis is wildcard the zone-line spans the full
+					// axis — use the player's exit coordinate directly (passthrough).
+					// Clamp delta to ±1000 units as a sanity guard for skewed DB geometry.
+					static constexpr float kMaxDelta = 1000.0f;
+					float delta_x = 0.0f, delta_y = 0.0f;
+					if (traversal_is_x) {
+						target_x = raw_tgt_x;
+						if (yWild) {
+							target_y = GetY();
+						} else {
+							delta_y  = GetY() - m_trilogy_zone_trig_y;
+							if (std::fabs(delta_y) > kMaxDelta)
+								delta_y = delta_y > 0.0f ? kMaxDelta : -kMaxDelta;
+							target_y = raw_tgt_y + delta_y;
+						}
+					} else {
+						target_y = raw_tgt_y;
+						if (xWild) {
+							target_x = GetX();
+						} else {
+							delta_x  = GetX() - m_trilogy_zone_trig_x;
+							if (std::fabs(delta_x) > kMaxDelta)
+								delta_x = delta_x > 0.0f ? kMaxDelta : -kMaxDelta;
+							target_x = raw_tgt_x + delta_x;
+						}
+					}
+
+					// Gentle push to clear the return trigger (10-unit detection radius).
 					float push_rad = target_heading * (static_cast<float>(M_PI) / 256.0f);
 					target_x += 15.0f * std::sin(push_rad);
 					target_y += 15.0f * std::cos(push_rad);
+
+					LogInfo(
+						"[TrilogyZP DIAG] ZoneSolicited char [{}]"
+						" | db_trig ({:.2f},{:.2f}) xWild={} yWild={}"
+						" | player_exit ({:.2f},{:.2f})"
+						" | traversal={} delta_xy ({:.2f},{:.2f})"
+						" | raw_target_xy ({},{})"
+						" -> dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+						GetCleanName(),
+						m_trilogy_zone_trig_x, m_trilogy_zone_trig_y,
+						xWild ? 'Y' : 'N', yWild ? 'Y' : 'N',
+						GetX(), GetY(),
+						traversal_is_x ? "X" : "Y", delta_x, delta_y,
+						m_trilogy_zone_raw_target_x, m_trilogy_zone_raw_target_y,
+						target_x, target_y, target_z, target_heading
+					);
 				}
-				LogInfo(
-					"[TrilogyZP] ZoneSolicited dest: char [{}] raw_target ({},{},{},{}) cur_pos ({:.1f},{:.1f},{:.1f}) all_wildcards={} -> dest ({:.1f},{:.1f},{:.1f},{:.1f})",
-					GetCleanName(),
-					m_trilogy_zone_raw_target_x, m_trilogy_zone_raw_target_y,
-					m_trilogy_zone_raw_target_z, m_trilogy_zone_raw_target_h,
-					GetX(), GetY(), GetZ(),
-					all_wildcards ? "yes" : "no",
-					target_x, target_y, target_z, target_heading
-				);
 			} else {
 				target_x       = m_ZoneSummonLocation.x;
 				target_y       = m_ZoneSummonLocation.y;
@@ -360,10 +412,75 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 				//they are zoning using a valid zone point, figure out coords
 
 				//999999 is a placeholder for 'same as where they were from'
-				target_x = zone_point->target_x == 999999 ? GetX() : zone_point->target_x;
-				target_y = zone_point->target_y == 999999 ? GetY() : zone_point->target_y;
-				target_z = zone_point->target_z == 999999 ? GetZ() : zone_point->target_z;
-				target_heading = zone_point->target_heading == 999 ? GetHeading() : zone_point->target_heading;
+				if (IsTrilogyClient()) {
+					bool xWild = (zone_point->x == 999999.0f || zone_point->x == -999999.0f);
+					bool yWild = (zone_point->y == 999999.0f || zone_point->y == -999999.0f);
+					float trig_x    = xWild ? GetX() : zone_point->x;
+					float trig_y    = yWild ? GetY() : zone_point->y;
+					float raw_tgt_x = (zone_point->target_x == 999999) ? GetX() : zone_point->target_x;
+					float raw_tgt_y = (zone_point->target_y == 999999) ? GetY() : zone_point->target_y;
+					target_z        = (zone_point->target_z == 999999) ? GetZ() : zone_point->target_z;
+					target_heading  = (zone_point->target_heading == 999) ? GetHeading() : (float)zone_point->target_heading;
+
+					bool traversal_is_x;
+					if (!xWild && yWild)
+						traversal_is_x = true;
+					else if (xWild && !yWild)
+						traversal_is_x = false;
+					else {
+						float h_rad    = target_heading * (static_cast<float>(M_PI) / 256.0f);
+						traversal_is_x = (std::fabs(std::sin(h_rad)) > std::fabs(std::cos(h_rad)));
+					}
+
+					static constexpr float kMaxDeltaU = 1000.0f;
+					float delta_x = 0.0f, delta_y = 0.0f;
+					if (traversal_is_x) {
+						target_x = raw_tgt_x;
+						if (yWild) {
+							target_y = GetY();
+						} else {
+							delta_y  = GetY() - trig_y;
+							if (std::fabs(delta_y) > kMaxDeltaU)
+								delta_y = delta_y > 0.0f ? kMaxDeltaU : -kMaxDeltaU;
+							target_y = raw_tgt_y + delta_y;
+						}
+					} else {
+						target_y = raw_tgt_y;
+						if (xWild) {
+							target_x = GetX();
+						} else {
+							delta_x  = GetX() - trig_x;
+							if (std::fabs(delta_x) > kMaxDeltaU)
+								delta_x = delta_x > 0.0f ? kMaxDeltaU : -kMaxDeltaU;
+							target_x = raw_tgt_x + delta_x;
+						}
+					}
+
+					float push_rad = target_heading * (static_cast<float>(M_PI) / 256.0f);
+					target_x += 15.0f * std::sin(push_rad);
+					target_y += 15.0f * std::cos(push_rad);
+
+					LogInfo(
+						"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
+						" | db_trig ({:.2f},{:.2f}) xWild={} yWild={}"
+						" | player_exit ({:.2f},{:.2f})"
+						" | traversal={} delta_xy ({:.2f},{:.2f})"
+						" | raw_target_xy ({:.2f},{:.2f})"
+						" -> dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+						GetCleanName(),
+						trig_x, trig_y,
+						xWild ? 'Y' : 'N', yWild ? 'Y' : 'N',
+						GetX(), GetY(),
+						traversal_is_x ? "X" : "Y", delta_x, delta_y,
+						raw_tgt_x, raw_tgt_y,
+						target_x, target_y, target_z, target_heading
+					);
+				} else {
+					target_x       = zone_point->target_x == 999999 ? GetX() : zone_point->target_x;
+					target_y       = zone_point->target_y == 999999 ? GetY() : zone_point->target_y;
+					target_z       = zone_point->target_z == 999999 ? GetZ() : zone_point->target_z;
+					target_heading = zone_point->target_heading == 999 ? GetHeading() : zone_point->target_heading;
+				}
 				break;
 			}
 

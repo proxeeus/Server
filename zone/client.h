@@ -2031,6 +2031,10 @@ private:
 	float m_trilogy_zone_raw_target_y = 0.f;
 	float m_trilogy_zone_raw_target_z = 0.f;
 	float m_trilogy_zone_raw_target_h = 0.f;
+	float m_trilogy_zone_trig_x        = 0.f;  // trigger center X (zp->x, or GetX() if wildcard)
+	float m_trilogy_zone_trig_y        = 0.f;  // trigger center Y (zp->y, or GetY() if wildcard)
+	bool  m_trilogy_zone_trig_x_wild   = false; // zp->x was ±999999
+	bool  m_trilogy_zone_trig_y_wild   = false; // zp->y was ±999999
 
 	WaterRegionType last_region_type;
 
