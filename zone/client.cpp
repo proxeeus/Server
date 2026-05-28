@@ -9447,12 +9447,9 @@ void Client::CheckTraditionalZonePoints()
 
 	// Trilogy clients receive no OP_ZonePoints data, so zone-line detection is
 	// done server-side using a radius check against zone_point_list coordinates.
-	// The default 10-unit radius felt like a single point in corridor zones
-	// (e.g. the Freeport gates are ~30-40 EQ units wide).  Use a larger radius
-	// so the trigger feels like a proper wall rather than a tiny hotspot.
-	// Titanium (and all other) clients use client-side box detection and are not
-	// affected by this constant.
-	const float kDetectRadius = IsTrilogyClient() ? 30.0f : 10.0f;
+	// Match Titanium's effective trigger distance so zone lines fire at the same
+	// point the player visually crosses them.
+	const float kDetectRadius = IsTrilogyClient() ? 10.0f : 10.0f;
 	const float kRadius2      = kDetectRadius * kDetectRadius;
 	static constexpr float kZRange  = 50.0f;
 	LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);

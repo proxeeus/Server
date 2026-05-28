@@ -329,6 +329,12 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					target_y       = (m_trilogy_zone_raw_target_y == 999999) ? GetY()       : m_ZoneSummonLocation.y;
 					target_z       = (m_trilogy_zone_raw_target_z == 999999) ? GetZ()       : m_ZoneSummonLocation.z;
 					target_heading = (m_trilogy_zone_raw_target_h == 999)    ? GetHeading() : m_ZoneSummonLocation.w;
+					// Gentle push along arrival heading to clear the return trigger.
+					// 15 units > 10-unit detection radius so the player won't be
+					// re-detected even if they stand still after zoning in.
+					float push_rad = target_heading * (static_cast<float>(M_PI) / 256.0f);
+					target_x += 15.0f * std::sin(push_rad);
+					target_y += 15.0f * std::cos(push_rad);
 				}
 				LogInfo(
 					"[TrilogyZP] ZoneSolicited dest: char [{}] raw_target ({},{},{},{}) cur_pos ({:.1f},{:.1f},{:.1f}) all_wildcards={} -> dest ({:.1f},{:.1f},{:.1f},{:.1f})",
