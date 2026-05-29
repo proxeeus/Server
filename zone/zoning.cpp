@@ -353,20 +353,20 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					if (!is_sliding_boundary) {
 						target_x = raw_tgt_x;
 						target_y = raw_tgt_y;
-						// No lateral delta, but still nudge the player +4 units forward
+						// No lateral delta, but still nudge the player +5 units forward
 						// along target_heading so they clear the destination's return
 						// trigger volume — otherwise a door/tunnel spawns them inside it
 						// and the client immediately zones back (infinite loop).
 						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
 						// 128=+X/West): radians = (heading / 512) * 2*PI.
 						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
-						target_x += 4.0f * std::sin(radians);
-						target_y += 4.0f * std::cos(radians);
-						// +3 Z safety padding so the static DB floor coord never clips.
-						target_z += 3.0f;
+						target_x += 5.0f * std::sin(radians);
+						target_y += 5.0f * std::cos(radians);
+						// +5 Z safety bump so the static DB floor coord never stair-clips.
+						target_z += 5.0f;
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
-							" | NARROW (both trigger axes explicit) +4 push +3 z"
+							" | NARROW (both trigger axes explicit) +5 push +5 z"
 							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
 							GetCleanName(), target_x, target_y, target_z, target_heading);
 					} else {
@@ -489,20 +489,20 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					if (!is_sliding_boundary) {
 						target_x = raw_tgt_x;
 						target_y = raw_tgt_y;
-						// No lateral delta, but still nudge the player +4 units forward
+						// No lateral delta, but still nudge the player +5 units forward
 						// along target_heading so they clear the destination's return
 						// trigger volume — otherwise a door/tunnel spawns them inside it
 						// and the client immediately zones back (infinite loop).
 						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
 						// 128=+X/West): radians = (heading / 512) * 2*PI.
 						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
-						target_x += 4.0f * std::sin(radians);
-						target_y += 4.0f * std::cos(radians);
-						// +3 Z safety padding so the static DB floor coord never clips.
-						target_z += 3.0f;
+						target_x += 5.0f * std::sin(radians);
+						target_y += 5.0f * std::cos(radians);
+						// +5 Z safety bump so the static DB floor coord never stair-clips.
+						target_z += 5.0f;
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
-							" | NARROW (both trigger axes explicit) +4 push +3 z"
+							" | NARROW (both trigger axes explicit) +5 push +5 z"
 							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
 							GetCleanName(), target_x, target_y, target_z, target_heading);
 					} else {

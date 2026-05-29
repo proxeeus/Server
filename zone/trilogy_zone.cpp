@@ -1282,6 +1282,12 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		s.trilogy_client  = tc;
 		s.counted_in_zone = true; // legacy fallback if tc ever becomes null post-init
 
+		// Arm the zone-in loop guard at the spawn point so server-side zone-point
+		// detection is suppressed until the player walks clear — otherwise a
+		// narrow/corridor return trigger (within the detect radius of the spawn)
+		// would fire immediately and bounce them straight back (infinite loop).
+		tc->ArmTrilogyZoneInGuard(s.pos_x, s.pos_y);
+
 		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
 		// which translates what it can and silently drops the rest.

@@ -1988,6 +1988,14 @@ private:
 public:
 	bool IsLockSavePosition() const;
 	void SetLockSavePosition(bool lock_save_position);
+
+	// Arm the Trilogy zone-in loop guard at the spawn point (see members below).
+	// Called from HandleZoneInComplete once the player entity is created.
+	void ArmTrilogyZoneInGuard(float x, float y) {
+		m_trilogy_zonein_x     = x;
+		m_trilogy_zonein_y     = y;
+		m_trilogy_zonein_guard = true;
+	}
 private:
 
 	PlayerProfile_Struct m_pp;
@@ -2036,17 +2044,6 @@ private:
 	bool  m_trilogy_zone_trig_x_wild   = false; // zp->x was ±999999
 	bool  m_trilogy_zone_trig_y_wild   = false; // zp->y was ±999999
 
-	// Previous-position history for CheckTraditionalZonePoints line-crossing
-	// detection.  Wide zone lines (full-axis triggers) are detected by testing
-	// whether the player's movement segment crossed the trigger line since the
-	// last sample, so high-velocity players can never "run past" the boundary.
-	// Per-process / per-character: fresh on zone-in (separate zone process), and
-	// invalidated during the post-zone grace window so no stale pre-zone sample
-	// produces a spurious crossing.
-	float m_trilogy_zp_last_x          = 0.f;
-	float m_trilogy_zp_last_y          = 0.f;
-	bool  m_trilogy_zp_last_valid      = false;
-
 	// Wide-vs-narrow boundary decision for the destination zone's SpawnCorrect
 	// heading trap.  A "wide" boundary is one where a lateral sliding delta /
 	// axis passthrough is applied (at least one trigger axis is a ±999999
@@ -2058,6 +2055,17 @@ private:
 	// by DoZoneSuccess, persisted across the (separate-process) zone hop by
 	// sign-encoding the heading written to character_data.
 	bool  m_trilogy_wide_boundary      = false;
+
+	// Zone-in loop guard. A Trilogy client spawns AT the destination zone-in
+	// point, which sits inside the return zone line's server-side detection
+	// radius. Without this, CheckTraditionalZonePoints would fire immediately on
+	// spawn and bounce the player straight back (infinite zone loop). Armed on
+	// zone-in with the spawn coords; detection is suppressed until the player has
+	// moved clear of the spawn point, then the guard auto-clears so all normal
+	// zoning resumes. Per-process / per-character (fresh each zone hop).
+	float m_trilogy_zonein_x           = 0.f;
+	float m_trilogy_zonein_y           = 0.f;
+	bool  m_trilogy_zonein_guard       = false;
 
 	WaterRegionType last_region_type;
 

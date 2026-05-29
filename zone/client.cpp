@@ -9441,34 +9441,29 @@ void Client::CheckVirtualZoneLines()
 void Client::CheckTraditionalZonePoints()
 {
 	if (!zone || zone_mode != ZoneUnsolicited || bZoning) return;
-	// Grace period: skip zone-point detection for 3 s after zone-in so a
-	// player who spawns right on a zone boundary isn't immediately sent back out.
-	// Invalidate the crossing history so the first post-grace sample only seeds
-	// position — never registers a "crossing" against a stale pre-zone point.
-	if (m_zone_entry_time != 0 && Timer::GetCurrentTime() - m_zone_entry_time < 3000) {
-		m_trilogy_zp_last_valid = false;
-		return;
+
+	// Trilogy clients receive no OP_ZonePoints data, so zone-line detection is done
+	// server-side: iterate zone_point_list and use a planar distance/radius + Z
+	// bounding-box check to identify which zp (trigger volume) the player is touching.
+	// Wildcard axes (±999999) span the full axis and are ignored in the planar test.
+	const float kDetectRadius = 10.0f;
+
+	// Zone-in loop guard: the player spawns at the destination zone-in point, which
+	// lies inside the return zone line's detection radius. Suppress detection until
+	// they move clear of the spawn point. Releasing at 2x the detect radius
+	// guarantees (triangle inequality) they are also outside the return trigger
+	// (spawn is <=radius from it), so no immediate re-trigger. Auto-clears once they
+	// walk away, so all subsequent zoning works normally; no packets are dropped.
+	if (m_trilogy_zonein_guard) {
+		const float gdx = GetX() - m_trilogy_zonein_x;
+		const float gdy = GetY() - m_trilogy_zonein_y;
+		const float kGuardDist  = 2.0f * kDetectRadius;
+		if (gdx * gdx + gdy * gdy < kGuardDist * kGuardDist) {
+			return;
+		}
+		m_trilogy_zonein_guard = false; // moved clear — resume normal detection
 	}
 
-	// Snapshot the previous sample, then record the current one up-front so every
-	// path below leaves a fresh history point for the next call.
-	const bool  have_prev = m_trilogy_zp_last_valid;
-	const float prev_x    = m_trilogy_zp_last_x;
-	const float prev_y    = m_trilogy_zp_last_y;
-	m_trilogy_zp_last_x     = GetX();
-	m_trilogy_zp_last_y     = GetY();
-	m_trilogy_zp_last_valid = true;
-
-	// Trilogy clients receive no OP_ZonePoints data, so zone-line detection is
-	// done server-side against zone_point_list coordinates.  Boundary class is
-	// decided purely from the DATABASE trigger geometry (wildcard axes), never
-	// from how far the player moved:
-	//   wide / large boundary  (xWild || yWild) — a full-axis zone line. Fires on
-	//       a velocity-independent line-CROSSING test (prev vs current position),
-	//       so a fast player making a 60-unit step still triggers it.
-	//   narrow door / gate     (both axes explicit) — a localized point trigger,
-	//       kept on the small proximity radius so you must actually reach it.
-	const float kDetectRadius = 10.0f;
 	const float kRadius2      = kDetectRadius * kDetectRadius;
 	static constexpr float kZRange  = 50.0f;
 	LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
@@ -9488,42 +9483,13 @@ void Client::CheckTraditionalZonePoints()
 			continue;
 		}
 
+		// Planar distance to the trigger (the wildcard axis is ignored so a
+		// full-axis zone line matches anywhere along it) plus a Z bounding-box
+		// check identifies the zp the player is standing on.
+		float dx = xWild ? 0.0f : (zp->x - GetX());
+		float dy = yWild ? 0.0f : (zp->y - GetY());
 		float dz = zp->z - GetZ();
-		if (std::fabs(dz) >= kZRange) {
-			iter.Advance();
-			continue;
-		}
-
-		// DB-driven boundary classification — NOT based on player delta.
-		const bool is_large_boundary = (xWild || yWild);
-		bool fired = false;
-
-		if (is_large_boundary) {
-			// Full-axis line: the explicit axis is the traversal axis; fire when
-			// the movement segment crosses that line (or, on the first seeded
-			// sample, when we're already within the proximity band).
-			const float line = !yWild ? zp->x  : zp->y;          // explicit axis value
-			const float cur  = !yWild ? GetX() : GetY();
-			const float prev = !yWild ? prev_x : prev_y;
-			if (have_prev) {
-				const float a = prev - line;
-				const float b = cur  - line;
-				// Crossed the line (or landed exactly on it) → trust it, no delta cap.
-				if (a == 0.0f || b == 0.0f || (a < 0.0f) != (b < 0.0f)) {
-					fired = true;
-				}
-			}
-			if (!fired && std::fabs(cur - line) < kDetectRadius) {
-				fired = true;
-			}
-		} else {
-			// Narrow door/gate: localized point trigger, small proximity radius.
-			const float dx = zp->x - GetX();
-			const float dy = zp->y - GetY();
-			fired = (dx * dx + dy * dy < kRadius2);
-		}
-
-		if (fired) {
+		if (dx*dx + dy*dy < kRadius2 && std::fabs(dz) < kZRange) {
 			// Actual trigger center: explicit DB coord, or player's current pos for wildcards.
 			float trig_x = xWild ? GetX() : zp->x;
 			float trig_y = yWild ? GetY() : zp->y;
