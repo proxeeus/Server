@@ -319,6 +319,9 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 				                      m_trilogy_zone_raw_target_y == 999999 &&
 				                      m_trilogy_zone_raw_target_z == 999999);
 				if (all_wildcards) {
+					// Fixed safe-point arrival — no sliding delta, treat as narrow
+					// (DB heading is authoritative; do not arm the SpawnCorrect trap).
+					m_trilogy_wide_boundary = false;
 					target_x       = safe_x;
 					target_y       = safe_y;
 					target_z       = safe_z;
@@ -338,6 +341,12 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					// Fallback (both explicit or both wildcard): use arrival heading.
 					bool xWild = m_trilogy_zone_trig_x_wild;
 					bool yWild = m_trilogy_zone_trig_y_wild;
+
+					// Wide boundary = a lateral sliding delta / passthrough is applied
+					// on at least one axis (wildcard trigger). Narrow door/gate = both
+					// axes explicit → strict DB target, no delta → do NOT arm the trap.
+					m_trilogy_wide_boundary = (xWild || yWild);
+
 					bool traversal_is_x;
 					if (!xWild && yWild)
 						traversal_is_x = true;
@@ -415,6 +424,12 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 				if (IsTrilogyClient()) {
 					bool xWild = (zone_point->x == 999999.0f || zone_point->x == -999999.0f);
 					bool yWild = (zone_point->y == 999999.0f || zone_point->y == -999999.0f);
+
+					// Wide boundary = lateral sliding delta / passthrough applied
+					// (at least one wildcard trigger axis). Narrow door/gate (both
+					// explicit) → strict DB target → do NOT arm the heading trap.
+					m_trilogy_wide_boundary = (xWild || yWild);
+
 					float trig_x    = xWild ? GetX() : zone_point->x;
 					float trig_y    = yWild ? GetY() : zone_point->y;
 					float raw_tgt_x = (zone_point->target_x == 999999) ? GetX() : zone_point->target_x;
@@ -693,14 +708,29 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 	m_Position.x = dest_x; //these coordinates will now be saved when ~client is called
 	m_Position.y = dest_y;
 	m_Position.z = dest_z;
-	m_Position.w = dest_h; // Cripp: fix for zone heading
-	m_pp.heading = dest_h;
+
+	// Sign-encode the wide/narrow boundary bit into the heading persisted to
+	// character_data so it survives the (separate-process) zone hop.  The
+	// destination zone process can't see this zone's trigger geometry, so the
+	// SpawnCorrect heading trap there keys off the sign:
+	//   wide boundary   (sliding delta applied)  -> store +dest_h  (arm trap)
+	//   narrow door/gate (strict DB target)       -> store -(dest_h+1) (do NOT arm)
+	// The destination decodes back to the true heading in SendPlayerProfile and
+	// immediately normalizes the DB row, so no other reader sees a negative.
+	// dest_h is always >= 0, so -(dest_h+1) is strictly negative and the +0 / -0
+	// ambiguity at dest_h==0 is avoided by the +1 bias.
+	float persisted_h = dest_h;
+	if (IsTrilogyClient() && !m_trilogy_wide_boundary) {
+		persisted_h = -(dest_h + 1.0f);
+	}
+	m_Position.w = persisted_h; // Cripp: fix for zone heading
+	m_pp.heading = persisted_h;
 	m_pp.zone_id = zone_id;
 	m_pp.zoneInstance = instance_id;
 
-	LogInfo("[TrilogyZP] DoZoneSuccess: char [{}] dest zone {} ({}) dest_pos ({:.2f},{:.2f},{:.2f},{:.2f}) — writing to DB",
+	LogInfo("[TrilogyZP] DoZoneSuccess: char [{}] dest zone {} ({}) dest_pos ({:.2f},{:.2f},{:.2f},{:.2f}) wide_boundary={} persisted_h={:.2f} — writing to DB",
 	        GetCleanName(), ZoneName(zone_id) ? ZoneName(zone_id) : "?", zone_id,
-	        dest_x, dest_y, dest_z, dest_h);
+	        dest_x, dest_y, dest_z, dest_h, m_trilogy_wide_boundary ? "Y" : "N", persisted_h);
 
 	//Force a save so its waiting for them when they zone
 	Save(2);

@@ -1624,6 +1624,19 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.x               = Strings::ToFloat(row[19]);
 		pp.z               = Strings::ToFloat(row[20]);
 		pp.heading         = Strings::ToFloat(row[21]);
+
+		// Decode the wide/narrow boundary bit that DoZoneSuccess (zone A,
+		// separate process) sign-encoded into character_data.heading:
+		//   heading >= 0  -> wide boundary  (sliding delta) -> ARM heading trap
+		//   heading <  0  -> narrow door/gate (strict target) -> do NOT arm;
+		//                    true heading = -(stored) - 1
+		// Recover the real facing into pp.heading immediately so every later
+		// consumer (the PP packet, the spawn, SendZoneEntrySpawn) sees a clean,
+		// positive heading.
+		bool boundary_is_wide = (pp.heading >= 0.0f);
+		if (!boundary_is_wide) {
+			pp.heading = -pp.heading - 1.0f;
+		}
 		// zone_id at row[22] - use zone_short from session
 		pp.hungerlevel     = static_cast<int32_t>(Strings::ToInt(row[23]));
 		pp.thirstlevel     = static_cast<int32_t>(Strings::ToInt(row[24]));
@@ -1643,16 +1656,21 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		s.pos_z       = pp.z;
 		s.pos_heading = pp.heading;
 
-		// Arm the one-and-done SpawnCorrect heading trap.  DoZoneSuccess (zone A)
-		// wrote the player's exit heading into character_data.heading before zone B
-		// reads it here.  pending_heading_sync stays true until SendApp fires the
-		// first downstream 0x4d21, at which point it is cleared so no further
-		// positional packets are modified.
+		// Arm the one-and-done SpawnCorrect heading trap ONLY for wide boundaries.
+		// DoZoneSuccess (zone A) wrote the player's exit heading into
+		// character_data.heading before zone B reads it here.  For wide seamless
+		// boundaries we cache that heading and arm the trap so the late downstream
+		// 0x4d21 SpawnCorrect cannot snap the player's facing — preserving momentum.
+		// For narrow doors/gates the trap stays disarmed and EQEmu's natural
+		// SpawnCorrect (DB-designed facing away from the wall) passes through
+		// untouched.  pending_heading_sync clears the instant SendApp fires the
+		// first 0x4d21 so only that single packet is patched.
 		s.cached_exit_heading  = pp.heading;
-		s.pending_heading_sync = true;
+		s.pending_heading_sync = boundary_is_wide;
 
-		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f}",
-		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading);
+		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f} boundary={} arm_trap={}",
+		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading,
+		        boundary_is_wide ? "WIDE" : "NARROW", s.pending_heading_sync ? "Y" : "N");
 	}
 
 	// ---- character_currency ----
@@ -1897,6 +1915,12 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.x         = Strings::ToFloat(row[8]);
 	sze.z         = Strings::ToFloat(row[9]);
 	sze.heading   = Strings::ToFloat(row[10]);
+	// character_data.heading may carry the wide/narrow boundary bit sign-encoded
+	// by DoZoneSuccess (negative = narrow door, true heading = -(stored)-1).
+	// Recover the real facing so the entry spawn never sends a negative heading.
+	if (sze.heading < 0.0f) {
+		sze.heading = -sze.heading - 1.0f;
+	}
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
 	// sze.deity: the client reads character sheet deity from ZoneEntry, not pp.deity.
 	// EQClassic sends DEITY_AGNOSTIC=140 in NewSpawn → full EQEmu IDs, not compact.

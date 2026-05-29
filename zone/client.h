@@ -2036,6 +2036,18 @@ private:
 	bool  m_trilogy_zone_trig_x_wild   = false; // zp->x was ±999999
 	bool  m_trilogy_zone_trig_y_wild   = false; // zp->y was ±999999
 
+	// Wide-vs-narrow boundary decision for the destination zone's SpawnCorrect
+	// heading trap.  A "wide" boundary is one where a lateral sliding delta /
+	// axis passthrough is applied (at least one trigger axis is a ±999999
+	// wildcard) — those are seamless outdoor zone lines where the player's
+	// momentum/exit heading should be preserved against the late SpawnCorrect.
+	// A "narrow" boundary (door, gate, tunnel: both axes explicit) sends the
+	// player to the DB's hardcoded target and must NOT arm the heading trap, or
+	// the player spawns facing a wall.  Computed in Handle_OP_ZoneChange, read
+	// by DoZoneSuccess, persisted across the (separate-process) zone hop by
+	// sign-encoding the heading written to character_data.
+	bool  m_trilogy_wide_boundary      = false;
+
 	WaterRegionType last_region_type;
 
 	PTimerList p_timers; //persistent timers
