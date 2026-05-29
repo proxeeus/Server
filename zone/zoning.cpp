@@ -27,7 +27,6 @@
 #include "string_ids.h"
 #include "worldserver.h"
 #include "zone.h"
-#include "map.h" // FindBestZ / BEST_Z_INVALID for Trilogy terrain snapping
 
 #include "bot.h"
 
@@ -354,13 +353,43 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					if (!is_sliding_boundary) {
 						target_x = raw_tgt_x;
 						target_y = raw_tgt_y;
-						// target_z / target_heading already hold the DB values.
+						// No lateral delta, but still nudge the player +4 units forward
+						// along target_heading so they clear the destination's return
+						// trigger volume — otherwise a door/tunnel spawns them inside it
+						// and the client immediately zones back (infinite loop).
+						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
+						// 128=+X/West): radians = (heading / 512) * 2*PI.
+						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
+						target_x += 4.0f * std::sin(radians);
+						target_y += 4.0f * std::cos(radians);
+						// +3 Z safety padding so the static DB floor coord never clips.
+						target_z += 3.0f;
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
-							" | NARROW (both trigger axes explicit) -> static DB dest"
-							" ({:.2f},{:.2f},{:.2f},{:.2f})",
+							" | NARROW (both trigger axes explicit) +4 push +3 z"
+							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
 							GetCleanName(), target_x, target_y, target_z, target_heading);
 					} else {
+						// Anti-bounce momentum heading: preserve the player's exit heading
+						// so diagonal running angles carry across the seamless boundary, but
+						// the Trilogy client's local physics can bounce the player ~180° off
+						// the invisible zone wall the frame before OP_ZoneChange fires —
+						// capturing a backwards vector. Compare the captured heading to the
+						// DB-designed target_heading; if they oppose by >90° (128 on the 512
+						// compass) the client bounced, so flip 180° to face forward while
+						// keeping the diagonal angle intact.
+						{
+							float cached_exit_heading = GetHeading();
+							float db_design_heading   = target_heading;
+							float hdiff = std::fabs(cached_exit_heading - db_design_heading);
+							if (hdiff > 256.0f) hdiff = 512.0f - hdiff;
+							if (hdiff > 128.0f) {
+								cached_exit_heading += 256.0f;
+								if (cached_exit_heading >= 512.0f) cached_exit_heading -= 512.0f;
+							}
+							target_heading = cached_exit_heading;
+						}
+
 						bool traversal_is_x;
 						if (!xWild && yWild)
 							traversal_is_x = true;
@@ -398,18 +427,12 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						target_x += 15.0f * std::sin(push_rad);
 						target_y += 15.0f * std::cos(push_rad);
 
-						// Snap Z to terrain at the final XY using the server's native
-						// FindBestZ instead of a hardcoded bump, so the player lands on
-						// the ground on sloped outdoor boundaries. +1.0 padding keeps
-						// them just above the floor. Fall back to the DB target_z if the
-						// map has no geometry under the point (BEST_Z_INVALID).
-						if (zone && zone->zonemap) {
-							glm::vec3 best_in(target_x, target_y, target_z);
-							float best_z = zone->zonemap->FindBestZ(best_in, nullptr);
-							if (best_z != BEST_Z_INVALID) {
-								target_z = best_z + 1.0f;
-							}
-						}
+						// Skydrop: FindBestZ cannot be used here — this (departing) zone
+						// process has NOT loaded the destination zone's collision map, so
+						// any raycast would miss and spawn the player underground. Instead
+						// apply a static +25 bump to the DB target_z; the EQ client's own
+						// physics drops the player safely onto the sloped terrain on arrival.
+						target_z += 25.0f;
 
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
@@ -466,13 +489,43 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					if (!is_sliding_boundary) {
 						target_x = raw_tgt_x;
 						target_y = raw_tgt_y;
-						// target_z / target_heading already hold the DB values.
+						// No lateral delta, but still nudge the player +4 units forward
+						// along target_heading so they clear the destination's return
+						// trigger volume — otherwise a door/tunnel spawns them inside it
+						// and the client immediately zones back (infinite loop).
+						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
+						// 128=+X/West): radians = (heading / 512) * 2*PI.
+						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
+						target_x += 4.0f * std::sin(radians);
+						target_y += 4.0f * std::cos(radians);
+						// +3 Z safety padding so the static DB floor coord never clips.
+						target_z += 3.0f;
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
-							" | NARROW (both trigger axes explicit) -> static DB dest"
-							" ({:.2f},{:.2f},{:.2f},{:.2f})",
+							" | NARROW (both trigger axes explicit) +4 push +3 z"
+							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
 							GetCleanName(), target_x, target_y, target_z, target_heading);
 					} else {
+						// Anti-bounce momentum heading: preserve the player's exit heading
+						// so diagonal running angles carry across the seamless boundary, but
+						// the Trilogy client's local physics can bounce the player ~180° off
+						// the invisible zone wall the frame before OP_ZoneChange fires —
+						// capturing a backwards vector. Compare the captured heading to the
+						// DB-designed target_heading; if they oppose by >90° (128 on the 512
+						// compass) the client bounced, so flip 180° to face forward while
+						// keeping the diagonal angle intact.
+						{
+							float cached_exit_heading = GetHeading();
+							float db_design_heading   = target_heading;
+							float hdiff = std::fabs(cached_exit_heading - db_design_heading);
+							if (hdiff > 256.0f) hdiff = 512.0f - hdiff;
+							if (hdiff > 128.0f) {
+								cached_exit_heading += 256.0f;
+								if (cached_exit_heading >= 512.0f) cached_exit_heading -= 512.0f;
+							}
+							target_heading = cached_exit_heading;
+						}
+
 						bool traversal_is_x;
 						if (!xWild && yWild)
 							traversal_is_x = true;
@@ -508,15 +561,11 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						target_x += 15.0f * std::sin(push_rad);
 						target_y += 15.0f * std::cos(push_rad);
 
-						// Terrain-snap Z at the final XY via the server's native FindBestZ
-						// (+1.0 padding); fall back to DB target_z if no geometry below.
-						if (zone && zone->zonemap) {
-							glm::vec3 best_in(target_x, target_y, target_z);
-							float best_z = zone->zonemap->FindBestZ(best_in, nullptr);
-							if (best_z != BEST_Z_INVALID) {
-								target_z = best_z + 1.0f;
-							}
-						}
+						// Skydrop: the departing zone process has not loaded the
+						// destination zone's collision map, so FindBestZ would miss and
+						// spawn the player underground. Apply a static +25 bump to the DB
+						// target_z and let the EQ client's physics drop them onto the slope.
+						target_z += 25.0f;
 
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
