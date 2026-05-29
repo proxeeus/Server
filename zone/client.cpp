@@ -9479,7 +9479,13 @@ void Client::CheckTraditionalZonePoints()
 			float dest_x       = (zp->target_x       == 999999) ? GetX()       : zp->target_x;
 			float dest_y       = (zp->target_y       == 999999) ? GetY()       : zp->target_y;
 			float dest_z       = (zp->target_z       == 999999) ? GetZ()       : zp->target_z;
-			float dest_heading = (zp->target_heading == 999)    ? GetHeading() : zp->target_heading;
+			// Trilogy: use the DB-designed arrival heading for the destination zone.
+			// The DB target_heading encodes the correct facing direction relative to
+			// the destination zone's geometry (e.g. "face East into EC").  The lateral
+			// position delta is computed separately from player XY vs trigger XY and
+			// does not depend on heading at all.  Fall back to exit heading only when
+			// the DB value is the wildcard sentinel (999).
+			float dest_heading = (zp->target_heading == 999) ? GetHeading() : zp->target_heading;
 
 			LogInfo("[TrilogyZP] CheckTraditionalZonePoints FIRED: char [{}] zone [{}]"
 			        " | zp#={} db_xy ({:.1f},{:.1f},{:.1f}) xWild={} yWild={}"

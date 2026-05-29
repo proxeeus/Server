@@ -420,7 +420,10 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					float raw_tgt_x = (zone_point->target_x == 999999) ? GetX() : zone_point->target_x;
 					float raw_tgt_y = (zone_point->target_y == 999999) ? GetY() : zone_point->target_y;
 					target_z        = (zone_point->target_z == 999999) ? GetZ() : zone_point->target_z;
-					target_heading  = (zone_point->target_heading == 999) ? GetHeading() : (float)zone_point->target_heading;
+					// Use the DB-designed arrival heading: it encodes the correct facing
+					// direction relative to the destination zone's geometry.  Fall back to
+					// exit heading only when the DB value is the wildcard sentinel (999).
+					target_heading  = (zone_point->target_heading == 999) ? GetHeading() : zone_point->target_heading;
 
 					bool traversal_is_x;
 					if (!xWild && yWild)
