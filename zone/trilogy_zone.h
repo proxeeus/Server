@@ -104,6 +104,15 @@ private:
 		float       pos_heading   = 0.0f;
 		std::time_t pos_save_time = 0;
 
+		// One-and-done SpawnCorrect heading fix:
+		//   cached_exit_heading  — player's heading at zone-trigger time, read from DB
+		//                          in SendPlayerProfile (written there by DoZoneSuccess).
+		//   pending_heading_sync — armed in SendPlayerProfile; cleared by SendApp the
+		//                          instant it fires the first downstream 0x4d21 so that
+		//                          only that single SpawnCorrect is patched.
+		float       cached_exit_heading  = 0.0f;
+		bool        pending_heading_sync = false;
+
 		// Heartbeat rate limiting — A120 sent at most once per 100ms
 		uint64_t    last_heartbeat_ms = 0;
 

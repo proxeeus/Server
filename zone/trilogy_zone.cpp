@@ -1466,7 +1466,10 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		tpc.yPos    = s.pos_y;
 		tpc.xPos    = s.pos_x;
 		tpc.zPos    = (s.pos_z == 0.0f) ? 0.1f : s.pos_z;
-		tpc.heading = s.pos_heading * 2.0f;
+		// Wire convention: send EQEmu heading (0-512 range) directly.
+		// The Trilogy client divides by 2, giving the 0-255 client heading (matching
+		// the SpawnPositionUpdate byte encoding).  Do NOT multiply by 2 here.
+		tpc.heading = s.pos_heading;
 		LogInfo("[TrilogyZone] SpawnCorrect 4d21 | char [{}] zone [{}] pos ({:.1f},{:.1f},{:.1f}) hdg={:.1f}",
 		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading);
 		SendApp(addr, port, s, 0x4d21,
@@ -1639,8 +1642,17 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		s.pos_y       = pp.y;
 		s.pos_z       = pp.z;
 		s.pos_heading = pp.heading;
-		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f})",
-		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading);
+
+		// Arm the one-and-done SpawnCorrect heading trap.  DoZoneSuccess (zone A)
+		// wrote the player's exit heading into character_data.heading before zone B
+		// reads it here.  pending_heading_sync stays true until SendApp fires the
+		// first downstream 0x4d21, at which point it is cleared so no further
+		// positional packets are modified.
+		s.cached_exit_heading  = pp.heading;
+		s.pending_heading_sync = true;
+
+		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f}",
+		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading);
 	}
 
 	// ---- character_currency ----
@@ -2812,6 +2824,25 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
                                  bool ack_req)
 {
 	if (!m_send_fn) return;
+
+	// One-and-done SpawnCorrect heading fix.
+	// pending_heading_sync is armed by SendPlayerProfile and cleared here the
+	// instant the first downstream 0x4d21 (TeleportPC / SpawnCorrect) is sent.
+	// Every 0x4d21 after that passes through unmodified.
+	std::vector<uint8_t> patched_buf;
+	if (s.pending_heading_sync &&
+	    opcode == 0x4d21 &&
+	    payload && plen >= sizeof(Trilogy::structs::TeleportPC_Struct)) {
+		patched_buf.assign(payload, payload + plen);
+		auto* tpc    = reinterpret_cast<Trilogy::structs::TeleportPC_Struct*>(patched_buf.data());
+		float before = tpc->heading;
+		tpc->heading = s.cached_exit_heading; // EQEmu range — no *2 (client divides by 2)
+		payload      = patched_buf.data();
+		s.pending_heading_sync = false; // disarm — fires exactly once per zone-in
+		LogInfo("[TrilogyZone] [HEADING-INTERCEPT] 4d21 trap fired | char [{}]"
+		        " | wire_before={:.1f} wire_after={:.1f} cached_exit={:.1f}",
+		        s.char_name, before, tpc->heading, s.cached_exit_heading);
+	}
 
 	if (!s.sack_init) {
 		s.sack_init = true;

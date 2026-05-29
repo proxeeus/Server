@@ -348,8 +348,8 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		tpc.yPos    = rc->y;
 		tpc.xPos    = rc->x;
 		tpc.zPos    = (rc->z == 0.0f) ? 0.1f : rc->z;
-		// EQClassic convention: server sends heading*2, client divides by 2.
-		tpc.heading = (rc->heading != 0.0f) ? rc->heading * 2.0f : 0.0f;
+		// Send EQEmu heading (0-512) directly; client divides by 2 to get 0-255 range.
+		tpc.heading = rc->heading;
 		m_tzs->SendToSession(m_session_key, 0x4d21,
 		                     reinterpret_cast<const uint8_t*>(&tpc),
 		                     static_cast<uint32_t>(sizeof(tpc)));
@@ -375,7 +375,7 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		tpc.yPos    = zpb->y;
 		tpc.xPos    = zpb->x;
 		tpc.zPos    = (zpb->z == 0.0f) ? 0.1f : zpb->z;
-		tpc.heading = (zpb->heading != 0.0f) ? zpb->heading * 2.0f : 0.0f;
+		tpc.heading = zpb->heading;
 		m_tzs->SendToSession(m_session_key, 0x4d21,
 		                     reinterpret_cast<const uint8_t*>(&tpc),
 		                     static_cast<uint32_t>(sizeof(tpc)));
