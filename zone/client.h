@@ -2036,6 +2036,17 @@ private:
 	bool  m_trilogy_zone_trig_x_wild   = false; // zp->x was ±999999
 	bool  m_trilogy_zone_trig_y_wild   = false; // zp->y was ±999999
 
+	// Previous-position history for CheckTraditionalZonePoints line-crossing
+	// detection.  Wide zone lines (full-axis triggers) are detected by testing
+	// whether the player's movement segment crossed the trigger line since the
+	// last sample, so high-velocity players can never "run past" the boundary.
+	// Per-process / per-character: fresh on zone-in (separate zone process), and
+	// invalidated during the post-zone grace window so no stale pre-zone sample
+	// produces a spurious crossing.
+	float m_trilogy_zp_last_x          = 0.f;
+	float m_trilogy_zp_last_y          = 0.f;
+	bool  m_trilogy_zp_last_valid      = false;
+
 	// Wide-vs-narrow boundary decision for the destination zone's SpawnCorrect
 	// heading trap.  A "wide" boundary is one where a lateral sliding delta /
 	// axis passthrough is applied (at least one trigger axis is a ±999999

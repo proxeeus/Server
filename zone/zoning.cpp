@@ -360,8 +360,8 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 					// Apply delta on the sliding axis, strict target on the traversal axis.
 					// When the source trigger axis is wildcard the zone-line spans the full
 					// axis — use the player's exit coordinate directly (passthrough).
-					// Clamp delta to ±1000 units as a sanity guard for skewed DB geometry.
-					static constexpr float kMaxDelta = 1000.0f;
+					// No delta clamp: the Trilogy client's reported exit position is trusted
+					// verbatim. A high-velocity 60-unit lateral delta is applied as-is.
 					float delta_x = 0.0f, delta_y = 0.0f;
 					if (traversal_is_x) {
 						target_x = raw_tgt_x;
@@ -369,8 +369,6 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 							target_y = GetY();
 						} else {
 							delta_y  = GetY() - m_trilogy_zone_trig_y;
-							if (std::fabs(delta_y) > kMaxDelta)
-								delta_y = delta_y > 0.0f ? kMaxDelta : -kMaxDelta;
 							target_y = raw_tgt_y + delta_y;
 						}
 					} else {
@@ -379,8 +377,6 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 							target_x = GetX();
 						} else {
 							delta_x  = GetX() - m_trilogy_zone_trig_x;
-							if (std::fabs(delta_x) > kMaxDelta)
-								delta_x = delta_x > 0.0f ? kMaxDelta : -kMaxDelta;
 							target_x = raw_tgt_x + delta_x;
 						}
 					}
@@ -450,7 +446,8 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						traversal_is_x = (std::fabs(std::sin(h_rad)) > std::fabs(std::cos(h_rad)));
 					}
 
-					static constexpr float kMaxDeltaU = 1000.0f;
+					// No delta clamp: the client's reported exit position is trusted
+					// verbatim, however large the lateral slide.
 					float delta_x = 0.0f, delta_y = 0.0f;
 					if (traversal_is_x) {
 						target_x = raw_tgt_x;
@@ -458,8 +455,6 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 							target_y = GetY();
 						} else {
 							delta_y  = GetY() - trig_y;
-							if (std::fabs(delta_y) > kMaxDeltaU)
-								delta_y = delta_y > 0.0f ? kMaxDeltaU : -kMaxDeltaU;
 							target_y = raw_tgt_y + delta_y;
 						}
 					} else {
@@ -468,8 +463,6 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 							target_x = GetX();
 						} else {
 							delta_x  = GetX() - trig_x;
-							if (std::fabs(delta_x) > kMaxDeltaU)
-								delta_x = delta_x > 0.0f ? kMaxDeltaU : -kMaxDeltaU;
 							target_x = raw_tgt_x + delta_x;
 						}
 					}
