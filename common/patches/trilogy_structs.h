@@ -48,6 +48,27 @@ static const uint32 PC_MAX_NAME_LENGTH   = 30;
 static const uint32 PC_SURNAME_LENGTH    = 20;
 static const uint32 NPC_MAX_NAME_LENGTH  = 30;
 
+// Translate an EQEmu class id (Server/common/classes.h) to the Trilogy/EQClassic
+// class id (EQClassic Common/Include/classes.h).  Player classes 1-15 are
+// identical; NPC/special classes differ.  Most importantly Merchant
+// (EQEmu 41 → Trilogy 32): the client uses the spawn's class byte to decide an
+// NPC is a shoppable merchant on right-click, so without this the merchant
+// window never opens.  Banker (40 → 16) and the GM "trainer" classes
+// (EQEmu 20-34 → Trilogy 17-31) are mapped too.
+static inline uint8 TranslateClassToTrilogy(uint8 c)
+{
+	switch (c) {
+		case 41: return 32; // Merchant
+		case 40: return 16; // Banker
+		case 16: return 1;  // Berserker → Warrior (no Berserker in Velious-era)
+		default:
+			if (c >= 20 && c <= 34) return static_cast<uint8>(c - 3); // WarriorGM..BeastlordGM → 17..31
+			if (c == 35)            return 17; // BerserkerGM → WarriorGM
+			if (c >= 59 && c <= 71) return 32; // Discord/AltCurrency/etc. merchants → Merchant
+			return c; // player classes 1-15 (and anything unmapped) pass through
+	}
+}
+
 /*
 ** Compiler override to ensure byte-aligned structures.
 ** All Trilogy network structs must use #pragma pack(1).
@@ -1101,6 +1122,99 @@ struct MoveItem_Struct
 /*008*/	uint32	number_in_stack;
 /*012*/
 };
+
+// -------------------------------------------------------------------------
+// Merchant / vendor structs
+//   Source: EQClassic Common/Include/eq_packet_structs.h
+//           + Zone/Source/client_process.cpp (ProcessOP_Shop*)
+//   Opcodes: OP_ShopRequest 0x0b20, OP_ShopItem 0x0c20,
+//            OP_ShopPlayerBuy 0x2720, OP_ShopPlayerSell 0x2820,
+//            OP_ShopDelItem 0x3820, OP_ShopEnd 0x3720, OP_ShopEndConfirm 0x4521
+// -------------------------------------------------------------------------
+
+/*
+** Merchant_Click_Struct
+** Opcode:  OP_ShopRequest = 0x0b20
+** Direction: bidirectional (client requests open; server replies open/close)
+** Size:    16 bytes
+**
+** unknown[0] = action: 1 = open window, 0 = close (faction/busy/invis refusal)
+** unknown[1] = 0x03 (constant set by EQClassic server)
+** pricemultiplier = global buy markup; client shows buy = item.price * mult,
+**                   sell = item.price / mult.  We send EQEmu's merchant `rate`.
+*/
+struct Merchant_Click_Struct
+{
+/*000*/	int32	entityid;        // merchant NPC entity (spawn) id
+/*004*/	int32	playerid;        // requesting player's entity id
+/*008*/	int8	unknown[4];
+/*012*/	float	pricemultiplier;
+/*016*/
+};
+
+/*
+** Merchant_Purchase_Struct
+** Opcode:  OP_ShopPlayerBuy = 0x2720 / OP_ShopPlayerSell = 0x2820
+** Direction: bidirectional (request from client, confirm echoed back)
+** Size:    20 bytes
+**
+** itemslot: on BUY  = merchant window slot (index assigned in Item_Shop_Struct.equipslot)
+**           on SELL = player inventory wire slot
+** itemcost: total transaction cost in copper (server fills on confirm)
+*/
+struct Merchant_Purchase_Struct
+{
+/*000*/	int32	npcid;           // merchant NPC entity id
+/*004*/	int32	playerid;        // player's entity id
+/*008*/	int16	itemslot;
+/*010*/	int8	unknown001;
+/*011*/	int8	unknown002;
+/*012*/	int8	quantity;
+/*013*/	int8	unknown003;
+/*014*/	int8	unknown004;
+/*015*/	int8	unknown005;
+/*016*/	int32	itemcost;        // signed in EQClassic (sint32)
+/*020*/
+};
+
+/*
+** Merchant_DelItem_Struct
+** Opcode:  OP_ShopDelItem = 0x3820
+** Direction: server -> client (remove a depleted item from the open window)
+** Size:    12 bytes
+*/
+struct Merchant_DelItem_Struct
+{
+/*000*/	int32	npcid;
+/*004*/	int32	playerid;
+/*008*/	int8	itemslot;
+/*009*/	int8	unknown[3];
+/*012*/
+};
+
+/*
+** Item_Shop_Struct
+** Opcode:  OP_ShopItem = 0x0c20
+** Direction: server -> client (one item displayed in the merchant window)
+** Size:    301 bytes (4 + 1 + 292 + 4)
+**
+** item.equipslot = the window slot the client echoes back on buy/sell
+** item.price     = display cost (already divided by pricemultiplier so that
+**                  client buy display = cost * pricemultiplier = real price)
+*/
+struct Item_Shop_Struct
+{
+/*000*/	uint32				merchantid;  // merchant LIST id (NPC MerchantType)
+/*004*/	int8				itemtype;    // item->itemclass (0 common / 1 container / 2 book)
+/*005*/	ClassicItem_Struct	item;
+/*297*/	int8				iss_unknown001[4];
+/*301*/
+};
+
+static_assert(sizeof(Merchant_Click_Struct)    == 16,  "Trilogy Merchant_Click_Struct must be 16 bytes");
+static_assert(sizeof(Merchant_Purchase_Struct) == 20,  "Trilogy Merchant_Purchase_Struct must be 20 bytes");
+static_assert(sizeof(Merchant_DelItem_Struct)  == 12,  "Trilogy Merchant_DelItem_Struct must be 12 bytes");
+static_assert(sizeof(Item_Shop_Struct)         == 301, "Trilogy Item_Shop_Struct must be 301 bytes");
 
 /*
 ** Consume_Struct

@@ -217,6 +217,13 @@ private:
 	                         const uint8_t* payload, uint32_t plen);
 	void HandleZoneChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
+	// Merchant / vendor (client -> zone) handlers.  Buy/sell mutate the player
+	// inventory DB directly (m_inv goes stale after moves) while reusing EQEmu's
+	// zone merchant tables + money funcs.
+	void HandleShopPlayerBuy(const std::string& addr, int port, Session& s,
+	                         const uint8_t* payload, uint32_t plen);
+	void HandleShopPlayerSell(const std::string& addr, int port, Session& s,
+	                          const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);

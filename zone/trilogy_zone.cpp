@@ -48,6 +48,7 @@ extern EntityList  entity_list;
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -120,6 +121,16 @@ static constexpr uint16_t ZN_OP_TradeCoins   = 0xe420; // client -> zone: coin p
 static constexpr uint16_t ZN_OP_ClickGive    = 0xda20; // client -> zone: commit trade ("Give")
 static constexpr uint16_t ZN_OP_CloseTrade   = 0xdc20; // zone -> client: close trade window (no payload)
 static constexpr uint16_t ZN_OP_CancelTrade  = 0xdb20; // client -> zone: cancel trade
+
+// Merchant / vendor opcodes
+// Source: EQClassic/Common/Include/eq_opcodes.h
+static constexpr uint16_t ZN_OP_ShopRequest    = 0x0b20; // bidirectional: Merchant_Click_Struct (right-click → open/close)
+static constexpr uint16_t ZN_OP_ShopItem       = 0x0c20; // zone -> client: Item_Shop_Struct (one item in window)
+static constexpr uint16_t ZN_OP_ShopPlayerBuy  = 0x2720; // bidirectional: Merchant_Purchase_Struct (buy request / confirm)
+static constexpr uint16_t ZN_OP_ShopPlayerSell = 0x2820; // bidirectional: Merchant_Purchase_Struct (sell request / confirm)
+static constexpr uint16_t ZN_OP_ShopDelItem    = 0x3820; // zone -> client: Merchant_DelItem_Struct (remove depleted item)
+static constexpr uint16_t ZN_OP_ShopEnd        = 0x3720; // client -> zone: close merchant window
+static constexpr uint16_t ZN_OP_ShopEndConfirm = 0x4521; // zone -> client: close ack (2 bytes)
 
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -649,6 +660,38 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleTradeGive(addr, port, s);
 		else if (opcode == ZN_OP_CancelTrade && s.trilogy_client)
 			HandleTradeCancel(addr, port, s);
+		else if (opcode == ZN_OP_ShopRequest && s.trilogy_client)
+		{
+			// Right-click on a merchant.  Trilogy Merchant_Click_Struct (16B):
+			//   [0] int32 entityid  — merchant NPC entity id
+			// Route through EQEmu Client::Handle_OP_ShopRequest to reuse all of the
+			// merchant logic (range/faction/charm/engaged checks, price `rate`, and
+			// BulkSendMerchantInventory).  Its responses — OP_ShopRequest and
+			// OP_ItemPacket(ItemPacketMerchant) — are translated back to 0x0b20 /
+			// 0x0c20 by TrilogyClient.
+			if (plen >= sizeof(Trilogy::structs::Merchant_Click_Struct)) {
+				const auto* mc = reinterpret_cast<const Trilogy::structs::Merchant_Click_Struct*>(payload);
+				EQApplicationPacket pkt(OP_ShopRequest, sizeof(MerchantClick_Struct));
+				auto* mco = reinterpret_cast<MerchantClick_Struct*>(pkt.pBuffer);
+				memset(mco, 0, sizeof(MerchantClick_Struct));
+				mco->npc_id    = static_cast<uint32>(mc->entityid);
+				mco->player_id = static_cast<uint32>(s.trilogy_client->GetID());
+				mco->command   = 1; // open request
+				s.trilogy_client->ClearMerchantWindow();
+				s.trilogy_client->Handle_OP_ShopRequest(&pkt);
+			}
+		}
+		else if (opcode == ZN_OP_ShopPlayerBuy && s.trilogy_client)
+			HandleShopPlayerBuy(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ShopPlayerSell && s.trilogy_client)
+			HandleShopPlayerSell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ShopEnd && s.trilogy_client)
+		{
+			// Close the merchant window.  Drop the cached window contents and ack.
+			s.trilogy_client->ClearMerchantWindow();
+			uint8_t confirm[2] = {0, 0};
+			SendApp(addr, port, s, ZN_OP_ShopEndConfirm, confirm, sizeof(confirm));
+		}
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
 			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
 			if (plen >= 46) {
@@ -953,44 +996,83 @@ static inline int32 clamp_i8(int32 v) {
 
 void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Session& s)
 {
-	// ── Cursor-queue drain (Trilogy clients have no cursor queue) ─────────────────
-	// EQEmu keeps the front cursor at DB slot 33 and any extra "cursor queue" items at
-	// slots 8000+.  Velious-era clients render only a single cursor item, so queue
-	// entries are invisible and persist across sessions.  When m_inv reloads them, the
-	// next #si / quest-return stacks BEHIND the stale items and the client is handed an
-	// OLD item instead of the new one (the reported "old item comes back" bug).
-	// Relocate any front-cursor or queued item to a free general slot (DB 22-30) BEFORE
-	// the inventory query below and before m_inv loads at zone-in-complete, so the
-	// cursor is always clean.  Non-destructive: items move to visible inventory, never
-	// deleted.  If general slots are full the item is left in place (no loss).
+	// ── Self-healing inventory relocation (Trilogy clients have no cursor queue) ──
+	// EQEmu keeps the front cursor at DB slot 33 and a "cursor queue" at slots 8000+.
+	// Velious-era clients render only ONE cursor item, so queue entries are invisible
+	// and persist across sessions — surfacing one-at-a-time on relog as a free slot
+	// opens (the reported "old test/quest items keep coming back" bug).  Likewise,
+	// bag-content rows (251-330) can be ORPHANED if their parent general slot isn't a
+	// container (or the index is beyond the bag's capacity) — those are invisible too.
+	//
+	// Relocate ALL such items into free, visible slots BEFORE the inventory query and
+	// before m_inv loads at zone-in-complete: general (DB 23-30) first, then the
+	// contents of any equipped container (content base = 251 + (general-23)*10, the
+	// EQEmu-standard formula).  Non-destructive — items move into the pack, never
+	// deleted; only items with no free home are left in place.  Once a cursor-queue
+	// item is relocated into a normal slot, slots 8000+ empty and it stops resurfacing.
 	{
-		auto cur = database.QueryDatabase(fmt::format(
-		    "SELECT slotid FROM inventory WHERE charid={} AND (slotid=33 OR slotid BETWEEN 8000 AND 8010) ORDER BY slotid",
+		bool occ_gen[31]   = {}; // general DB 23..30 occupied
+		int  bagslots[31]  = {}; // container capacity at general DB 23..30 (0 = not a container)
+		bool occ_cont[331] = {}; // bag-content DB 251..330 occupied
+		std::vector<int> to_relocate; // cursor/queue + orphaned content slots, in drain order
+
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT i.`slotid`, it.`itemclass`, it.`bagslots` FROM `inventory` i "
+		    "LEFT JOIN `items` it ON i.`itemid` = it.`id` WHERE i.`charid`={} AND "
+		    "(i.`slotid` BETWEEN 23 AND 30 OR i.`slotid` BETWEEN 251 AND 330 OR i.`slotid`=33 "
+		    "OR i.`slotid` BETWEEN 8000 AND 8010) ORDER BY i.`slotid`",
 		    s.char_id));
-		if (cur.Success() && cur.RowCount() > 0) {
-			bool used[31] = {}; // general-slot occupancy, indices 22..30
-			auto occ = database.QueryDatabase(fmt::format(
-			    "SELECT slotid FROM inventory WHERE charid={} AND slotid BETWEEN 22 AND 30", s.char_id));
-			if (occ.Success())
-				for (auto o = occ.begin(); o != occ.end(); ++o) {
-					int sl = Strings::ToInt(o[0]);
-					if (sl >= 22 && sl <= 30) used[sl] = true;
+		if (r.Success())
+			for (auto row = r.begin(); row != r.end(); ++row) {
+				const int sl        = Strings::ToInt(row[0]);
+				const int itemclass = row[1] ? Strings::ToInt(row[1]) : 0;
+				const int bs        = row[2] ? Strings::ToInt(row[2]) : 0;
+				if (sl >= 23 && sl <= 30) {
+					occ_gen[sl] = true;
+					if (itemclass == 1 && bs > 0) bagslots[sl] = bs;
+				} else if (sl >= 251 && sl <= 330) {
+					occ_cont[sl] = true;
+				} else if (sl == 33 || (sl >= 8000 && sl <= 8010)) {
+					to_relocate.push_back(sl); // cursor + cursor-queue
 				}
-			for (auto row = cur.begin(); row != cur.end(); ++row) {
-				int from_slot = Strings::ToInt(row[0]);
-				int free_slot = -1;
-				for (int sl = 22; sl <= 30; ++sl) if (!used[sl]) { free_slot = sl; break; }
-				if (free_slot < 0) {
-					LogInfo("[TrilogyZone] CursorDrain char={}: no free general slot, leaving item at slotid={}",
+			}
+
+		// Orphaned bag-content rows: parent general slot isn't a container, or the
+		// content index is beyond that bag's capacity.  Detected after the scan so
+		// bagslots[] is fully populated.
+		for (int sl = 251; sl <= 330; ++sl) {
+			if (!occ_cont[sl]) continue;
+			const int g   = 23 + (sl - 251) / 10;
+			const int idx = (sl - 251) % 10;
+			if (g < 23 || g > 30 || bagslots[g] <= 0 || idx >= bagslots[g])
+				to_relocate.push_back(sl);
+		}
+
+		if (!to_relocate.empty()) {
+			// Ordered list of free visible target slots: general first, then bag contents.
+			std::vector<int> free_slots;
+			for (int g = 23; g <= 30; ++g) if (!occ_gen[g]) free_slots.push_back(g);
+			for (int g = 23; g <= 30; ++g) {
+				if (bagslots[g] <= 0) continue;
+				const int base = 251 + (g - 23) * 10;
+				const int n    = bagslots[g] > 10 ? 10 : bagslots[g];
+				for (int j = 0; j < n; ++j)
+					if (!occ_cont[base + j]) free_slots.push_back(base + j);
+			}
+
+			size_t fi = 0;
+			for (int from_slot : to_relocate) {
+				if (fi >= free_slots.size()) {
+					LogInfo("[TrilogyZone] InvRelocate char={}: no free slot, leaving item at slotid={}",
 					        s.char_id, from_slot);
 					continue;
 				}
+				const int to_slot = free_slots[fi++];
 				database.QueryDatabase(fmt::format(
 				    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
-				    free_slot, s.char_id, from_slot));
-				used[free_slot] = true;
-				LogInfo("[TrilogyZone] CursorDrain char={}: moved cursor item slotid={} -> {}",
-				        s.char_id, from_slot, free_slot);
+				    to_slot, s.char_id, from_slot));
+				LogInfo("[TrilogyZone] InvRelocate char={}: moved slotid={} -> {}",
+				        s.char_id, from_slot, to_slot);
 			}
 		}
 	}
@@ -2539,6 +2621,299 @@ void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Ses
 }
 
 // ============================================================
+// Merchant / vendor — buy / sell (client -> zone)
+//
+// ShopRequest is routed through EQEmu Client::Handle_OP_ShopRequest (reuses
+// faction/range checks, price `rate`, and BulkSendMerchantInventory).  Buy and
+// sell, however, mutate the player inventory DIRECTLY against the inventory
+// table — the TrilogyClient's m_inv is only loaded at zone-in and goes stale
+// after moves (all Trilogy inventory ops are direct-DB).  We still reuse EQEmu's
+// zone merchant tables (merchanttable / tmpmerchanttable, SaveTempItem) and the
+// player's money funcs; the open window's contents are cached on the
+// TrilogyClient (m_merchant_window) as ItemPacketMerchant packets are translated.
+// ============================================================
+
+// Find the first free player-inventory DB slot for a bought item.
+// EQEmu/RoF2 layout: DB 22 = AMMO (worn, wire 21), general = DB 23-30 (wire 22-29),
+// bag contents = DB 251-330.  The bag-content base MUST match EQEmu core
+// (m_inv / SaveInventory / GetInventory) AND the EQClassic client, both of which
+// use base 251 + (general_slot - 23) * 10  (Backpack@DB24 → 261-270, bag@DB25 →
+// 271-280, …).  An earlier base of (slot-22)*10 was one bag too high, so purchases
+// landed in orphaned slots (281-288, 251-252) that m_inv rejects (_PutItem Invalid
+// slot_id … parent …) and the client can't display.  With the correct base the
+// uniform wire = DB-1 mapping in SendInventoryItems shows them in the right bag.
+// Search free general slots (23-30) first, then any equipped container's contents.
+// Returns -1 if completely full.  (DB slot N → Trilogy wire N-1.)
+static int FindFreeTrilogyInvSlot(uint32 char_id)
+{
+	bool occ[331]     = {};
+	int  bagslots[31] = {}; // container capacity at general DB slots 23..30
+	auto r = database.QueryDatabase(fmt::format(
+	    "SELECT i.`slotid`, it.`bagslots`, it.`itemclass` FROM `inventory` i "
+	    "LEFT JOIN `items` it ON i.`itemid` = it.`id` "
+	    "WHERE i.`charid`={} AND ((i.`slotid` BETWEEN 23 AND 30) OR (i.`slotid` BETWEEN 251 AND 330))",
+	    char_id));
+	if (r.Success())
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			int sl = Strings::ToInt(row[0]);
+			if (sl >= 0 && sl <= 330) occ[sl] = true;
+			const int itemclass = row[2] ? Strings::ToInt(row[2]) : 0;
+			if (sl >= 23 && sl <= 30 && itemclass == 1 && row[1])
+				bagslots[sl] = Strings::ToInt(row[1]);
+		}
+	// 1) free top-level general slot (DB 23-30 → client general 22-29).
+	for (int sl = 23; sl <= 30; ++sl) if (!occ[sl]) return sl;
+	// 2) free slot inside an equipped container (EQEmu-standard content base).
+	for (int G = 23; G <= 30; ++G) {
+		if (bagslots[G] <= 0) continue;
+		const int base = 251 + (G - 23) * 10;
+		const int n    = bagslots[G] > 10 ? 10 : bagslots[G];
+		for (int j = 0; j < n; ++j)
+			if (base + j <= 330 && !occ[base + j]) return base + j;
+	}
+	return -1;
+}
+
+void TrilogyZoneServer::HandleShopPlayerBuy(const std::string& addr, int port, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Merchant_Purchase_Struct)) return;
+	const auto* mp = reinterpret_cast<const Trilogy::structs::Merchant_Purchase_Struct*>(payload);
+
+	Mob* m = entity_list.GetMob(static_cast<uint16>(mp->npcid));
+	if (!m || !m->IsNPC()) return;
+	NPC* npc = m->CastToNPC();
+
+	const int win_slot = static_cast<int>(mp->itemslot);
+	const auto* we = s.trilogy_client->GetMerchantWindowItem(win_slot);
+	if (!we || we->item_id == 0) return;
+	const TrilogyClient::MerchantWindowEntry e = *we; // copy (map may be mutated below)
+
+	const EQ::ItemData* item = database.GetItem(e.item_id);
+	if (!item) return;
+
+	int32 qty = mp->quantity;
+	if (qty < 1) qty = 1;
+
+	const bool temp = (e.merchant_count != -1); // finite player-sold/unique stock
+	if (temp && qty > e.merchant_count) qty = e.merchant_count;
+	if (item->Stackable && qty > item->StackSize) qty = item->StackSize;
+	// Non-stackable items are bought one unit per purchase (regular OR unique
+	// stock); only truly stackable items collapse `qty` into a single slot.
+	// This also avoids creating one non-stackable item with charges=qty.
+	if (!item->Stackable) qty = 1;
+	if (qty < 1) return;
+
+	// Check inventory space and funds BEFORE mutating anything (no refund paths).
+	int free_slot = FindFreeTrilogyInvSlot(s.char_id);
+	if (free_slot < 0) {
+		// Inventory + bags full — fall back to the cursor if it's empty (EQClassic
+		// does the same via SummonItem).  Only refuse if the cursor is also occupied.
+		auto cq = database.QueryDatabase(fmt::format(
+		    "SELECT COUNT(*) FROM `inventory` WHERE `charid`={} AND `slotid`=33", s.char_id));
+		const bool cursor_busy = cq.Success() && cq.RowCount() > 0 && Strings::ToInt(cq.begin()[0]) > 0;
+		if (cursor_busy) {
+			s.trilogy_client->Message(Chat::Red, "Your inventory appears full now!");
+			return;
+		}
+		free_slot = 33; // EQ::invslot::slotCursor — delivered via OP_SummonedItem (0x7821)
+	}
+
+	const uint64 cost = static_cast<uint64>(e.price) * static_cast<uint64>(qty);
+	if (cost > 0 && !s.trilogy_client->TakeMoneyFromPP(cost, false)) {
+		s.trilogy_client->Message(Chat::Red, "You cannot afford that.");
+		return;
+	}
+
+	// Buy confirm first (mirrors EQClassic order) — the client deducts `itemcost`
+	// from its coin display; the item delivery follows.
+	Trilogy::structs::Merchant_Purchase_Struct mpo{};
+	memset(&mpo, 0, sizeof(mpo));
+	mpo.npcid    = static_cast<int32_t>(mp->npcid);
+	mpo.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+	mpo.itemslot = static_cast<int16_t>(win_slot);
+	mpo.quantity = static_cast<int8_t>(qty);
+	mpo.itemcost = static_cast<int32_t>(cost > INT32_MAX ? INT32_MAX : cost);
+	SendApp(addr, port, s, ZN_OP_ShopPlayerBuy,
+	        reinterpret_cast<const uint8_t*>(&mpo), sizeof(mpo));
+
+	// Charges for the created instance (mirror Handle_OP_ShopPlayerBuy).
+	int16 charges = 0;
+	if (item->Stackable || temp)        charges = static_cast<int16>(qty);
+	else if (item->MaxCharges >= 1)     charges = static_cast<int16>(item->MaxCharges);
+
+	EQ::ItemInstance* inst = database.CreateItem(item, charges);
+	if (inst) {
+		// Persist + deliver (no m_inv involvement; HandleItemPacket translates the send).
+		// ItemPacketTrade is the mid-session "place item in this inventory slot" path
+		// (→ OP_ItemTradeIn 0x3120); ItemPacketCharInventory is zone-in only.
+		database.SaveInventory(s.char_id, inst, static_cast<int16>(free_slot));
+		s.trilogy_client->SendItemPacket(static_cast<int16>(free_slot), inst, ItemPacketTrade);
+		safe_delete(inst);
+	}
+
+	// Stock: regular merchantlist is infinite; temp/unique stock decrements.
+	if (temp) {
+		const int32 new_charges = e.merchant_count - qty;
+		zone->SaveTempItem(npc->MerchantType, npc->GetNPCTypeID(), e.item_id, new_charges, false);
+		if (new_charges <= 0) {
+			Trilogy::structs::Merchant_DelItem_Struct del{};
+			memset(&del, 0, sizeof(del));
+			del.npcid    = static_cast<int32_t>(mp->npcid);
+			del.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+			del.itemslot = static_cast<int8_t>(win_slot);
+			SendApp(addr, port, s, ZN_OP_ShopDelItem,
+			        reinterpret_cast<const uint8_t*>(&del), sizeof(del));
+			s.trilogy_client->EraseMerchantWindowItem(win_slot);
+		} else {
+			TrilogyClient::MerchantWindowEntry upd = e;
+			upd.merchant_count = new_charges;
+			upd.charges        = static_cast<int16_t>(new_charges);
+			s.trilogy_client->SetMerchantWindowItem(win_slot, upd);
+		}
+	}
+
+	// Keep Tick()'s money baseline current (money decreased + denominations rebalanced).
+	{
+		const auto& pp = s.trilogy_client->GetPP();
+		s.last_copper = pp.copper; s.last_silver = pp.silver;
+		s.last_gold   = pp.gold;   s.last_platinum = pp.platinum;
+		s.money_synced = true;
+	}
+
+	s.trilogy_client->Save();
+	LogInfo("[TrilogyZone] Buy: {} bought {}x item {} for {}cp (slot {})",
+	        s.char_name, qty, e.item_id, cost, win_slot);
+}
+
+void TrilogyZoneServer::HandleShopPlayerSell(const std::string& addr, int port, Session& s,
+                                             const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Merchant_Purchase_Struct)) return;
+	const auto* mp = reinterpret_cast<const Trilogy::structs::Merchant_Purchase_Struct*>(payload);
+
+	Mob* m = entity_list.GetMob(static_cast<uint16>(mp->npcid));
+	if (!m || !m->IsNPC()) return;
+	NPC* npc = m->CastToNPC();
+
+	// Wire → DB slot (mirror HandleMoveItem): worn 1-20 same, bags 21-29 → +1,
+	// bag contents 250-339 → +1, wire 0 = cursor (DB 33).
+	auto wire_to_db = [&s](uint32_t w) -> int {
+		if (w == 0)               return (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
+		if (w >= 1  && w <= 20)   return static_cast<int>(w);
+		if (w >= 21 && w <= 29)   return static_cast<int>(w) + 1;
+		if (w >= 250 && w <= 339) return static_cast<int>(w) + 1;
+		return -1;
+	};
+	const int db_slot = wire_to_db(static_cast<uint32_t>(static_cast<uint16_t>(mp->itemslot)));
+	if (db_slot < 0) return;
+
+	// Read the item currently at that slot directly from the DB.
+	uint32 item_id = 0;
+	int16  have    = 0;
+	{
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`, `charges` FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, db_slot));
+		if (r.Success() && r.RowCount() > 0) {
+			auto row = r.begin();
+			item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+			have    = static_cast<int16>(Strings::ToInt(row[1]));
+		}
+	}
+	if (item_id == 0) return;
+
+	const EQ::ItemData* item = database.GetItem(item_id);
+	if (!item) return;
+
+	// NoDrop == 0 means a No-Drop item, which cannot be sold to a merchant.
+	if (!item->NoDrop) {
+		s.trilogy_client->Message(Chat::Red, "You cannot sell a No Drop item.");
+		return;
+	}
+
+	int32 qty = mp->quantity;
+	if (qty < 1) qty = 1;
+	if (item->Stackable) {
+		if (have > 0 && qty > have) qty = have;
+	} else {
+		qty = 1; // non-stackable / charged item sells as a single unit
+	}
+
+	float rate = s.trilogy_client->GetMerchantRate();
+	if (rate < 0.0001f) rate = 1.0f;
+	// Sell-back price = base * qty / pricemultiplier — matches the client's
+	// displayed offer (item.price / pricemultiplier) and EQEmu's sell formula.
+	uint64 price = static_cast<uint64>(std::llround(
+	    static_cast<double>(item->Price) * static_cast<double>(qty) / static_cast<double>(rate)));
+	if (price > 0)
+		s.trilogy_client->AddMoneyToPP(price, false);
+
+	// Remove from player inventory (whole stack/item, or decrement a partial stack).
+	if (item->Stackable && qty < have) {
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
+		    have - qty, s.char_id, db_slot));
+	} else {
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, db_slot));
+	}
+	if (mp->itemslot == 0) s.cursor_from_db = -1; // sold from cursor — clear stale ref
+
+	// Add to the merchant's persistent unique stock so it (and other players) can
+	// buy it back.  SaveTempItem(sold=true) ADDS charges; returns the merchant slot
+	// (0 if the item is in the merchant's regular infinite list — already buyable).
+	if (npc->GetKeepsSoldItems()) {
+		const int mslot = zone->SaveTempItem(npc->MerchantType, npc->GetNPCTypeID(), item_id, qty, true);
+		if (mslot > 0) {
+			const uint32 total = zone->GetTempMerchantQuantity(npc->GetNPCTypeID(), static_cast<uint32>(mslot));
+			EQ::ItemInstance* shopinst = database.CreateItem(
+			    item, item->Stackable ? static_cast<int16>(total)
+			                          : (item->MaxCharges > 1 ? static_cast<int16>(item->MaxCharges) : 1));
+			if (shopinst) {
+				// Buy-back price baked into the inst like BulkSendMerchantInventory
+				// (Price*SellRate); HandleItemPacket divides by pricemultiplier for display.
+				uint32 buy_price = static_cast<uint32>(item->Price * item->SellRate);
+				if (buy_price == 0) buy_price = item->Price;
+				shopinst->SetPrice(buy_price);
+				shopinst->SetMerchantCount(static_cast<int32>(total));
+				shopinst->SetMerchantSlot(static_cast<uint32>(mslot));
+				// Window slot key = mslot-1, matching BulkSendMerchantInventory's
+				// SendItemPacket(ml.slot-1, ...) numbering for temp items.
+				s.trilogy_client->SendItemPacket(static_cast<int16>(mslot - 1), shopinst, ItemPacketMerchant);
+				safe_delete(shopinst);
+			}
+		}
+	}
+
+	// Sell confirm — the client adds `itemcost` to its coin display.
+	Trilogy::structs::Merchant_Purchase_Struct mpo{};
+	memset(&mpo, 0, sizeof(mpo));
+	mpo.npcid    = static_cast<int32_t>(mp->npcid);
+	mpo.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+	mpo.itemslot = mp->itemslot;
+	mpo.quantity = static_cast<int8_t>(qty);
+	mpo.itemcost = static_cast<int32_t>(price > INT32_MAX ? INT32_MAX : price);
+	SendApp(addr, port, s, ZN_OP_ShopPlayerSell,
+	        reinterpret_cast<const uint8_t*>(&mpo), sizeof(mpo));
+
+	// Keep Tick()'s money baseline current so the sell increase isn't re-relayed.
+	{
+		const auto& pp = s.trilogy_client->GetPP();
+		s.last_copper = pp.copper; s.last_silver = pp.silver;
+		s.last_gold   = pp.gold;   s.last_platinum = pp.platinum;
+		s.money_synced = true;
+	}
+
+	s.trilogy_client->Save();
+	LogInfo("[TrilogyZone] Sell: {} sold {}x item {} for {}cp (wire slot {})",
+	        s.char_name, qty, item_id, price, static_cast<int>(mp->itemslot));
+}
+
+// ============================================================
 // SendZoneSpawns — build ONE batched OP_ZoneSpawns (0x6121) packet.
 //
 // Wire format (per EQClassic Zone Source EntityList::SendZoneSpawnsBulk):
@@ -2591,7 +2966,9 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.race      = static_cast<int8_t>(npc->GetRace());
 		// Playerbots appear as player characters (blue nameplate, client behaviour)
 		sp.NPC       = (npc->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId))) ? 0 : 1;
-		sp.class_    = static_cast<int8_t>(npc->GetClass());
+		// Translate EQEmu class id → Trilogy (Merchant 41→32 so the client opens
+		// the shop on right-click, Banker 40→16, GM trainers 20-34→17-31).
+		sp.class_    = static_cast<int8_t>(Trilogy::structs::TranslateClassToTrilogy(npc->GetClass()));
 		sp.gender    = static_cast<int8_t>(npc->GetGender());
 		sp.level     = static_cast<int8_t>(npc->GetLevel());
 		sp.anim_type = 0x64; // standing animation (EQClassic hardcodes 100)
@@ -3396,15 +3773,16 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 // ============================================================
 // HandleMoveItem — client moved an item (0x2c21)
 //
-// Wire slot semantics (client-side):
-//   1-20    worn equipment         → DB slotid same as wire
-//   21-29   personal bags          → DB slotid = wire + 1   (reverse -1 shift)
-//   240-329 bag contents           → DB slotid = wire + 11  (reverse -11 shift)
-//   0xFFFFFFFF                     → destroy (delete from inventory)
+// Wire slot semantics (client-side) — a UNIFORM reverse -1 shift (DB = wire + 1)
+// for everything except worn slots, matching the Trilogy↔Titanium off-by-one:
+//   1-20     worn equipment   → DB slotid same as wire (no shift)
+//   21-29    ammo + 8 general → DB slotid = wire + 1   (wire 21 = ammo/DB 22; wire 22-29 = general/DB 23-30)
+//   250-329  bag contents     → DB slotid = wire + 1
+//   0xFFFFFFFF               → destroy (delete from inventory)
 //
-// Bag content client formula: wire = 250 + (bag_wire - 22) * 10 + slot_idx
-//   bag at wire 22 (DB 23) → content wire 250-259 → DB 261-270
-//   bag at wire 21 (DB 22) → content wire 240-249 → DB 251-260
+// Bag content base matches EQEmu core + the EQClassic client:
+//   EQEmu DB content base = 251 + (general_DB_slot - 23) * 10
+//   bag@DB23 → DB 251-260 (client wire 250-259), bag@DB24 → DB 261-270, …
 //
 // For bag-to-bag swaps we also migrate bag content slotids so orphan
 // tracking on subsequent zone-ins remains correct.
@@ -3489,16 +3867,17 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 
 	LogInfo("[TrilogyZone] MoveItem char={} from_db={} to_db={}", s.char_id, from_db, to_db);
 
-	// Determine if either slot is a personal-bag position (DB 22-30).
+	// Determine if either slot is a general bag position (DB 23-30; DB 22 = ammo).
 	// If so, we need to migrate bag contents when the bags themselves swap.
-	// from_wire may be 0 (cursor); use from_db range to detect bag slot.
-	const bool from_is_bag_slot = (from_db >= 22 && from_db <= 30);
-	const bool to_is_bag_slot   = (to_wire >= 21 && to_wire <= 29);
+	const bool from_is_bag_slot = (from_db >= 23 && from_db <= 30);
+	const bool to_is_bag_slot   = (to_db   >= 23 && to_db   <= 30);
 
-	// DB slotid base for the 10 content slots of each bag position.
-	// bag at DB 22 → contents 251-260; bag at DB 23 → contents 261-270; etc.
-	const int from_cont_base = from_is_bag_slot ? 251 + (from_db - 22) * 10 : -1;
-	const int to_cont_base   = to_is_bag_slot   ? 251 + (to_db   - 22) * 10 : -1;
+	// DB slotid base for the 10 content slots of each general bag position.  Must
+	// match EQEmu core + the client: base = 251 + (general_slot - 23) * 10
+	// (bag@DB23 → 251-260, bag@DB24 → 261-270, …).  (Previously (slot-22), one bag
+	// too high, which scrambled bag-swap content migration.)
+	const int from_cont_base = from_is_bag_slot ? 251 + (from_db - 23) * 10 : -1;
+	const int to_cont_base   = to_is_bag_slot   ? 251 + (to_db   - 23) * 10 : -1;
 
 	// ---- persist bag/item row swap ----
 	// Determine if the destination is occupied so we know whether to swap or move.

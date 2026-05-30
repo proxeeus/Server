@@ -22,6 +22,7 @@
 #include "entity.h"
 #include "doors.h"
 #include "object.h"
+#include "npc.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/item_instance.h"
@@ -344,6 +345,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_MoveDoor:
 		HandleMoveDoor(app);
 		break;
+	case OP_ShopRequest:
+		HandleOutgoingShopRequest(app);
+		break;
 	case OP_ClickObject:
 		// Remove a ground item from the client's view (pickup despawn broadcast).
 		// EQClassic uses the same ClickObject_Struct layout; opcode 0x3620 = OP_PickupItem.
@@ -520,7 +524,9 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	sp.GuildID   = static_cast<uint16_t>(0xFFFF); // no guild by default
 	sp.race      = static_cast<int8_t>(mob->GetRace());
 	sp.NPC       = 1; // regular NPC (players and Playerbots returned early above)
-	sp.class_    = static_cast<int8_t>(mob->GetClass());
+	// Translate EQEmu class id → Trilogy (Merchant 41→32 so the client opens the
+	// shop on right-click, Banker 40→16, GM trainers 20-34→17-31).
+	sp.class_    = static_cast<int8_t>(Trilogy::structs::TranslateClassToTrilogy(mob->GetClass()));
 	sp.gender    = static_cast<int8_t>(mob->GetGender());
 	sp.level     = static_cast<int8_t>(mob->GetLevel());
 	sp.anim_type = 0x64; // standing (EQClassic hardcodes 100)
@@ -1656,6 +1662,43 @@ void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
 }
 
 // ============================================================
+// HandleOutgoingShopRequest — OP_ShopRequest (server → Trilogy client).
+//
+// EQEmu's Handle_OP_ShopRequest replies with MerchantClick_Struct carrying the
+// open/close command and a price multiplier `rate` = 1/(buy_cost_mod * CalcPriceMod).
+// Translate to the 16-byte Trilogy Merchant_Click_Struct (opcode 0x0b20):
+//   unknown[0] = action (1 open / 0 close), unknown[1] = 0x03 (EQClassic constant),
+//   pricemultiplier = rate.  The client shows buy = item.price * mult and
+//   sell = item.price / mult, which our pricing in HandleItemPacket / the zone
+//   server's buy/sell handlers is built around.
+//
+// A fresh open also resets this client's merchant-window cache; the item rows
+// follow as OP_ItemPacket(ItemPacketMerchant) → 0x0c20 from BulkSendMerchantInventory.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingShopRequest(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::MerchantClick_Struct)) return;
+	const auto* mc = reinterpret_cast<const ::MerchantClick_Struct*>(app->pBuffer);
+
+	m_merchant_npc_id = static_cast<uint16_t>(mc->npc_id);
+	m_merchant_rate   = (mc->rate > 0.0001f) ? mc->rate : 1.0f;
+	m_merchant_window.clear(); // items for this open arrive next as 0x0c20
+
+	Trilogy::structs::Merchant_Click_Struct out{};
+	memset(&out, 0, sizeof(out));
+	out.entityid        = static_cast<int32_t>(mc->npc_id);
+	out.playerid        = static_cast<int32_t>(GetID());
+	out.unknown[0]      = static_cast<int8_t>(mc->command); // 1 = open, 0 = close
+	out.unknown[1]      = 0x03;
+	out.pricemultiplier = m_merchant_rate;
+
+	m_tzs->SendToSession(m_session_key, 0x0b20,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
 // SendDoorSpawns — send every door in the current zone to this client as
 // EQClassic OP_SpawnDoor (0x9520) packets, one per door.
 //
@@ -1968,6 +2011,59 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
 		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;
 		break;
+	case ItemPacketMerchant: {
+		// Merchant window item.  EQEmu's BulkSendMerchantInventory sends
+		// SendItemPacket(ml.slot - 1, inst, ItemPacketMerchant), so slot_id is the
+		// 0-based window slot the client echoes back on buy.  The full buy price is
+		// already baked into inst->GetPrice(); we divide by the price multiplier so
+		// the client's redisplay (cost * pricemultiplier) shows the real buy price.
+		Trilogy::structs::ClassicItem_Struct mci{};
+		if (!BuildClassicItemFromInst(inst, mci, slot_id))
+			return;
+
+		const float rate = (m_merchant_rate > 0.0001f) ? m_merchant_rate : 1.0f;
+		int64_t shown = static_cast<int64_t>(std::lround(static_cast<double>(inst->GetPrice()) / rate));
+		if (shown < 0) shown = 0;
+		mci.price = static_cast<int32_t>(shown > INT32_MAX ? INT32_MAX : shown);
+
+		const EQ::ItemData* mit = inst->GetItem();
+
+		// Finite player-sold/unique stock: surface the stocked quantity in the
+		// charges field so the client shows (and lets you buy back) more than one.
+		// The Trilogy ClassicItem has no separate merchant-quantity field; charges
+		// is the only place the client reads a count from.  (Regular stock has
+		// merchant_count == -1 and keeps BuildClassicItemFromInst's charges value.)
+		const int32_t mcount = inst->GetMerchantCount();
+		if (mit && mit->ItemClass == 0 /* common (has .common union) */ && mcount > 0) {
+			mci.common.charges = static_cast<int8_t>(mcount > 127 ? 127 : mcount);
+		}
+
+		// Record what the client now sees at this slot for the buy/sell handlers.
+		MerchantWindowEntry e{};
+		e.item_id        = mit ? mit->ID : 0;
+		e.price          = inst->GetPrice();   // charged as-is (per unit)
+		e.merchant_count = inst->GetMerchantCount(); // -1 = infinite regular stock
+		e.merchant_slot  = inst->GetMerchantSlot();
+		e.charges        = inst->GetCharges();
+		SetMerchantWindowItem(slot_id, e);
+
+		// Merchant LIST id (NPC MerchantType) for the Item_Shop_Struct header.
+		uint32_t merchant_list_id = 0;
+		if (Mob* mm = entity_list.GetMob(m_merchant_npc_id))
+			if (mm->IsNPC())
+				merchant_list_id = mm->CastToNPC()->MerchantType;
+
+		Trilogy::structs::Item_Shop_Struct iss{};
+		memset(&iss, 0, sizeof(iss));
+		iss.merchantid = merchant_list_id;
+		iss.itemtype   = mci.itemclass;
+		iss.item       = mci;
+
+		m_tzs->SendToSession(m_session_key, 0x0c20,
+		                     reinterpret_cast<const uint8_t*>(&iss),
+		                     static_cast<uint32_t>(sizeof(iss)));
+		return;
+	}
 	default:
 		return; // Other item packet types not yet translated.
 	}

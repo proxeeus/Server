@@ -22,6 +22,8 @@
 #include "../common/eq_stream_intf.h"
 #include "../common/patches/trilogy_structs.h"
 
+#include <map>
+
 class TrilogyZoneServer;
 
 // ============================================================
@@ -162,6 +164,27 @@ public:
 	// OP_TradeMoneyUpdate (0x3d21) per non-zero amount.
 	void SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
 
+	// ---- Merchant / vendor window state ----
+	// One open merchant window's contents, keyed by the window slot the client
+	// echoes back on buy.  Populated as OP_ItemPacket(ItemPacketMerchant) packets
+	// are translated; read by TrilogyZoneServer's buy/sell handlers.
+	struct MerchantWindowEntry {
+		uint32_t item_id        = 0;
+		uint32_t price          = 0;   // full per-unit buy price (copper) — charged as-is
+		int32_t  merchant_count = -1;  // -1 = infinite regular stock; >=0 = temp/unique stock
+		uint32_t merchant_slot  = 0;   // EQEmu merchant slot (for SaveTempItem on temp stock)
+		int16_t  charges        = 0;
+	};
+	const MerchantWindowEntry* GetMerchantWindowItem(int slot) const {
+		auto it = m_merchant_window.find(slot);
+		return (it == m_merchant_window.end()) ? nullptr : &it->second;
+	}
+	void SetMerchantWindowItem(int slot, const MerchantWindowEntry& e) { m_merchant_window[slot] = e; }
+	void EraseMerchantWindowItem(int slot) { m_merchant_window.erase(slot); }
+	void ClearMerchantWindow() { m_merchant_window.clear(); }
+	float    GetMerchantRate()  const { return m_merchant_rate; }
+	uint16_t GetMerchantNpcId() const { return m_merchant_npc_id; }
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;
@@ -205,6 +228,8 @@ private:
 	void HandleGroundSpawn(const EQApplicationPacket* app);
 	// Doors
 	void HandleMoveDoor(const EQApplicationPacket* app);
+	// Merchant window (server → Trilogy client): open/close + price multiplier.
+	void HandleOutgoingShopRequest(const EQApplicationPacket* app);
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.
@@ -224,6 +249,12 @@ private:
 	//   • Player/playerbot OP_NewSpawn (multi-packet paths) are silently dropped;
 	//     they will be visible via the next ZoneSpawns bulk or heartbeat.
 	bool m_is_zoning = true;
+
+	// ---- Merchant / vendor window state (see public accessors above) ----
+	float                            m_merchant_rate   = 1.0f; // EQEmu `rate` = pricemultiplier
+	uint16_t                         m_merchant_npc_id = 0;    // entity id of open merchant
+	std::map<int, MerchantWindowEntry> m_merchant_window;
+
 	// Holds deferred NPC spawns, doors, and ground/world objects during zone-in.
 	// A busy city zone can have many doors + tradeskill objects + transient NPC
 	// spawns, so this is generous to avoid silently dropping static world content.
