@@ -157,6 +157,11 @@ public:
 		       ? static_cast<uint32_t>(m_player_spawn_id) : id;
 	}
 
+	// Refresh the client's coin display by a positive per-denomination delta.
+	// Called by TrilogyZoneServer::Tick()'s money reconciliation; sends one
+	// OP_TradeMoneyUpdate (0x3d21) per non-zero amount.
+	void SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;

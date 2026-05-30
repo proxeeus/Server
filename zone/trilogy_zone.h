@@ -157,6 +157,18 @@ private:
 		TradeStageItem trade_items[8] = {};
 		uint32_t       trade_cp = 0, trade_sp = 0, trade_gp = 0, trade_pp = 0;
 
+		// ── Money-display reconciliation ─────────────────────────────────────
+		// The client's coin counter only refreshes from the PlayerProfile at zone-in.
+		// Tick() compares these last-pushed counts to the live PlayerProfile and relays
+		// any INCREASE via OP_TradeMoneyUpdate so quest coin (givecash / QuestReward /
+		// direct AddMoneyToPP) shows live without a relog.  money_synced is set on the
+		// first tick (baseline = current PP) so the initial money isn't re-sent.
+		bool    money_synced  = false;
+		int32_t last_copper   = 0;
+		int32_t last_silver   = 0;
+		int32_t last_gold     = 0;
+		int32_t last_platinum = 0;
+
 		// Fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;

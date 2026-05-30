@@ -243,11 +243,11 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		HandleOutgoingSimpleMessage(app);
 		break;
 	case OP_Sound: {
-		// quest::ding() / e.other:Ding() → Client::SendSound() (OP_Sound), which has
-		// no Trilogy equivalent.  The classic quest "fanfare" trumpet is delivered via
-		// OP_QuestCompletedMoney (0x8020) with a zeroed QuestCompletedMoney_Struct
-		// (npcID + unknown[16] + cp/sp/gp/pp = 36 bytes, all zero → trumpet, no money).
-		// Mirrors EQClassic Client::SendClientQuestCompletedFanfare().
+		// quest::ding()/e.other:Ding() → Client::SendSound(), and Client::QuestReward()
+		// also emits OP_Sound.  Map to the classic quest "fanfare" trumpet:
+		// OP_QuestCompletedMoney (0x8020) with a zeroed 36-byte struct (no money here —
+		// any coin reward is reflected by the money reconciliation in
+		// TrilogyZoneServer::Tick).  Mirrors EQClassic SendClientQuestCompletedFanfare().
 		uint8_t fanfare[36] = {};
 		m_tzs->SendToSession(m_session_key, 0x8020, fanfare, sizeof(fanfare));
 		break;
@@ -1063,6 +1063,30 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	memcpy(out + 4, text.data(), text.size());
 	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 	delete[] out;
+}
+
+// ============================================================
+// SendTrilogyMoneyDelta — refresh the client's money display by the given coin
+// delta via OP_TradeMoneyUpdate (0x3d21), one packet per non-zero denomination.
+//
+// EQClassic's SendClientMoneyUpdate(type, amount) is INCREMENTAL — the client adds
+// `amount` of denomination `type` (0=cp 1=sp 2=gp 3=pp) to its display.  Coin
+// rewards (givecash / QuestReward) are deltas the server already added to the
+// PlayerProfile, so relaying them here keeps the live display in sync without a relog.
+// ============================================================
+void TrilogyClient::SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum)
+{
+	struct TradeMoneyUpdate { int32_t trader; int32_t type; int32_t amount; };
+	auto push = [&](int32_t type, int32_t amount) {
+		if (amount <= 0) return;
+		TradeMoneyUpdate u{ 0, type, amount };
+		m_tzs->SendToSession(m_session_key, 0x3d21,
+		                     reinterpret_cast<const uint8_t*>(&u), sizeof(u));
+	};
+	push(0, static_cast<int32_t>(copper));
+	push(1, static_cast<int32_t>(silver));
+	push(2, static_cast<int32_t>(gold));
+	push(3, static_cast<int32_t>(platinum));
 }
 
 // ============================================================

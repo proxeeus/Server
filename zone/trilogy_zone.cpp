@@ -228,6 +228,11 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	if (s.trilogy_client) {
+		{
+			const auto& cpp = s.trilogy_client->GetPP();
+			LogInfo("[TrilogyMoney] RemoveSession (will ~Client::Save) char={} m_pp p={} g={} s={} c={}",
+			        s.char_id, cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
+		}
 		uint16 id = s.trilogy_client->GetID();
 		s.trilogy_client = nullptr;
 		entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
@@ -1764,6 +1769,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			pp.silver_cursor   = static_cast<int32_t>(Strings::ToInt(row[10]));
 			pp.copper_cursor   = static_cast<int32_t>(Strings::ToInt(row[11]));
 		}
+		LogInfo("[TrilogyMoney] ZoneIn DB read char={} pocket p={} g={} s={} c={}",
+		        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper);
 	}
 
 	// ---- character_skills ----
@@ -2471,6 +2478,13 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 		for (EQ::ItemInstance* inst : taken) safe_delete(inst);
 
+		{
+			const auto& cpp = s.trilogy_client->GetPP();
+			LogInfo("[TrilogyMoney] After EVENT_TRADE char={} staged(cp={} sp={} gp={} pp={}) | m_pp p={} g={} s={} c={}",
+			        s.char_id, s.trade_cp, s.trade_sp, s.trade_gp, s.trade_pp,
+			        cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
+		}
+
 		LogInfo("[TrilogyZone] EVENT_TRADE fired: {} -> NPC {}", s.char_name, npc_id);
 	}
 
@@ -2920,6 +2934,11 @@ void TrilogyZoneServer::Tick()
 				s.trilogy_client->GetMerc()->Save();
 				s.trilogy_client->GetMerc()->Depop();
 			}
+			{
+				const auto& cpp = s.trilogy_client->GetPP();
+				LogInfo("[TrilogyMoney] Camp Save char={} m_pp p={} g={} s={} c={}",
+				        s.char_id, cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
+			}
 			s.trilogy_client->Save();
 			SendClose(s.source_addr, s.source_port, s);
 			camp_complete.push_back(kv.first);
@@ -2934,6 +2953,47 @@ void TrilogyZoneServer::Tick()
 		// (0xff000000) instead of NULL — which causes the 0x004c7752 crash on the
 		// next zone-back to this zone.
 		if (s.trilogy_client && s.trilogy_client->IsZoning()) continue;
+
+		// Money-display reconciliation: the on-screen coin counter only refreshes from
+		// the PlayerProfile at zone-in.  Quest rewards (givecash / QuestReward / direct
+		// AddMoneyToPP) change the PlayerProfile without pushing a money update the
+		// Trilogy client understands, so detect any INCREASE per denomination and relay
+		// it as an incremental OP_TradeMoneyUpdate.  Decreases are left alone (the client
+		// already adjusts locally for trade-window coin; the PlayerProfile stays
+		// authoritative on relog) to avoid double-subtracting.
+		if (s.trilogy_client) {
+			const auto& pp = s.trilogy_client->GetPP();
+			if (!s.money_synced) {
+				s.last_copper   = pp.copper;
+				s.last_silver   = pp.silver;
+				s.last_gold     = pp.gold;
+				s.last_platinum = pp.platinum;
+				s.money_synced  = true;
+				LogInfo("[TrilogyMoney] Reconcile baseline char={} p={} g={} s={} c={}",
+				        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper);
+			} else if (pp.copper   != s.last_copper ||
+			           pp.silver   != s.last_silver ||
+			           pp.gold     != s.last_gold   ||
+			           pp.platinum != s.last_platinum) {
+				const int32_t dcp = pp.copper   - s.last_copper;
+				const int32_t dsp = pp.silver   - s.last_silver;
+				const int32_t dgp = pp.gold     - s.last_gold;
+				const int32_t dpp = pp.platinum - s.last_platinum;
+				LogInfo("[TrilogyMoney] Reconcile delta char={} pp now p={} g={} s={} c={} | delta dp={} dg={} ds={} dc={} (negatives NOT sent)",
+				        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper, dpp, dgp, dsp, dcp);
+				if (dcp > 0 || dsp > 0 || dgp > 0 || dpp > 0) {
+					s.trilogy_client->SendTrilogyMoneyDelta(
+					    dcp > 0 ? static_cast<uint32_t>(dcp) : 0u,
+					    dsp > 0 ? static_cast<uint32_t>(dsp) : 0u,
+					    dgp > 0 ? static_cast<uint32_t>(dgp) : 0u,
+					    dpp > 0 ? static_cast<uint32_t>(dpp) : 0u);
+				}
+				s.last_copper   = pp.copper;
+				s.last_silver   = pp.silver;
+				s.last_gold     = pp.gold;
+				s.last_platinum = pp.platinum;
+			}
+		}
 
 		// Refresh stamina every 5s so client-side endurance never depletes to 0.
 		if (now_ms - s.last_stamina_ms >= 5000) {

@@ -531,6 +531,13 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	database.LoadCharacterData(char_id, &m_pp, &m_epp);
 	database.LoadCharacterSkills(char_id, &m_pp);
 
+	// LoadCharacterData reads the character_data table only — currency lives in the
+	// separate character_currency table and must be loaded explicitly.  Without this,
+	// m_pp.platinum/gold/silver/copper stay 0 for the whole session, so every Save()
+	// (camp, zone-out, ~Client) and every AddMoneyToPP overwrites the player's real
+	// balance with only what was earned this session — silently destroying their money.
+	database.LoadCharacterCurrency(char_id, &m_pp);
+
 	// Mirror name and zone into m_pp so SaveCharacterData() writes correct values on
 	// disconnect.  Without these, the DB row gets name="" and zone_id=0 on every logout.
 	strn0cpy(m_pp.name, char_name, sizeof(m_pp.name));
