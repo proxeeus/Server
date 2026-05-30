@@ -929,11 +929,11 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		return;
 	}
 
-	uint8_t chan_num;
+	bool is_shout;
 	if (fm->string_id == GENERIC_SHOUT)
-		chan_num = 3; // SHOUT in EQClassic
+		is_shout = true;
 	else if (fm->string_id == GENERIC_SAY)
-		chan_num = 8; // SAY in EQClassic
+		is_shout = false;
 	else
 		return;
 
@@ -943,24 +943,29 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 	uint32_t    p1remaining = remaining - static_cast<uint32_t>(p0len + 1);
 	if (p1remaining < 1) return;
 
-	std::string msg_str = StripSayLinks(param1, p1remaining);
-	if (msg_str.empty() || msg_str.back() != '\0') msg_str += '\0';
+	std::string text = StripSayLinks(param1, p1remaining);
+	while (!text.empty() && text.back() == '\0') text.pop_back();
 
-	uint32_t out_size = static_cast<uint32_t>(sizeof(Trilogy::structs::ChannelMessage_Struct))
-	                    + static_cast<uint32_t>(msg_str.size());
-	auto* buf = new uint8_t[out_size]();
-	auto* cm_out = reinterpret_cast<Trilogy::structs::ChannelMessage_Struct*>(buf);
+	// Deliver NPC speech as a pre-formatted OP_SpecialMesg (0x8021) string rather
+	// than a chan-8 ChannelMessage (0x0721).  The PC Trilogy client's chan-8 SAY
+	// renderer truncates long lines and mangles [keyword] brackets (showing only the
+	// trailing ']'), but the SpecialMesg path — used for the #dev menu, combat
+	// records, etc. — renders long bracketed text verbatim.  EQClassic likewise
+	// formats NPC dialogue server-side ("<name> says, '<text>'") instead of letting
+	// the client wrap a chan-8 message.
+	std::string sender(param0, p0len);
+	std::string line = fmt::format("{} {}, '{}'", sender, is_shout ? "shouts" : "says", text);
+	line += '\0';
 
-	strncpy(cm_out->sender, param0, sizeof(cm_out->sender) - 1);
-	cm_out->language       = 0; // CommonTongue
-	cm_out->chan_num       = static_cast<int16_t>(chan_num);
-	cm_out->cm_unknown4[0] = static_cast<int8_t>(0xFF);
-	cm_out->cm_unknown4[1] = static_cast<int8_t>(0xFF);
-	memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
-	       msg_str.data(), msg_str.size());
+	const uint32_t msg_type = is_shout ? 262u   // MESSAGETYPE_Shout
+	                                   : 256u;  // MESSAGETYPE_Say
 
-	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
-	delete[] buf;
+	uint32_t out_size = 4 + static_cast<uint32_t>(line.size());
+	auto* out = new uint8_t[out_size]();
+	*reinterpret_cast<uint32_t*>(out) = msg_type;
+	memcpy(out + 4, line.data(), line.size());
+	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	delete[] out;
 }
 
 // ============================================================
