@@ -95,6 +95,12 @@ static constexpr uint16_t ZN_OP_EndLootRequest = 0x4F20; // client -> zone: int3
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
 
+// Door opcodes
+// Source: EQClassic/Common/Include/eq_opcodes.h
+static constexpr uint16_t ZN_OP_SpawnDoor   = 0x9520; // zone -> client: Door_Struct (44 bytes), one packet per door
+static constexpr uint16_t ZN_OP_ClickDoor   = 0x8d20; // client -> zone: ClickDoor_Struct (12 bytes)
+static constexpr uint16_t ZN_OP_OpenDoor    = 0x8e20; // zone -> client: DoorOpen_Struct (2 bytes: doorid, action)
+
 // GM command opcodes (client -> zone, CONNECTED state)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
@@ -598,6 +604,27 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					co.player_id = static_cast<uint32>(s.trilogy_client->GetID());
 					ent->CastToObject()->HandleClick(s.trilogy_client, &co);
 				}
+			}
+		}
+		else if (opcode == ZN_OP_ClickDoor && s.trilogy_client)
+		{
+			// Player clicked a door.  EQClassic ClickDoor_Struct (12 bytes):
+			//   [0] int8  doorid   — zone-local door id
+			//   [4] int16 keyinhand
+			//   [8] int8  playerid
+			// EQEmu's Doors::HandleClick reads keys/lockpick state from the player's
+			// inventory, so only the doorid needs to cross over.  Route through
+			// Client::Handle_OP_ClickDoor to reuse all of EQEmu's door logic
+			// (distance gate, EVENT_CLICK_DOOR, locks, keys, teleporters, triggers,
+			// guild/dz checks).  HandleClick emits OP_MoveDoor, which is intercepted
+			// by TrilogyClient::HandleMoveDoor and sent back as OP_OpenDoor (0x8e20).
+			if (plen >= 1) {
+				EQApplicationPacket doorpkt(OP_ClickDoor, sizeof(::ClickDoor_Struct));
+				auto* cd = reinterpret_cast<::ClickDoor_Struct*>(doorpkt.pBuffer);
+				memset(cd, 0, sizeof(::ClickDoor_Struct));
+				cd->doorid    = payload[0];
+				cd->player_id = static_cast<uint16>(s.trilogy_client->GetID());
+				s.trilogy_client->Handle_OP_ClickDoor(&doorpkt);
 			}
 		}
 		else if (opcode == ZN_OP_WearChange)
@@ -1456,6 +1483,17 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count());
 		s.last_time_of_day_ms = now_ms - 175000; // first periodic fires in ~5s
+	}
+
+	// Send zone doors and placed objects.  Both are buffered in the client's
+	// deferred-spawn queue (m_is_zoning is still true here) and released by
+	// OnClientReady() on the first ClientUpdate, once the 3D world is loaded and
+	// can place them.  Doors go out as OP_SpawnDoor (0x9520); SendZoneObjects
+	// routes each object through TrilogyClient::FastQueuePacket → OP_GroundSpawn
+	// → HandleGroundSpawn (0x3520).
+	if (s.trilogy_client) {
+		s.trilogy_client->SendDoorSpawns();
+		entity_list.SendZoneObjects(s.trilogy_client);
 	}
 
 	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.

@@ -143,6 +143,12 @@ public:
 
 	uint16_t GetPlayerSpawnId() const { return m_player_spawn_id; }
 
+	// Build and send every door in the current zone as an EQClassic OP_SpawnDoor
+	// (0x9520) packet — one packet per door.  Called from TrilogyZoneServer at
+	// zone-in completion.  While m_is_zoning is true the packets are buffered in
+	// m_deferred_spawns and released by OnClientReady() once the 3D world is up.
+	void SendDoorSpawns();
+
 	// Translate an EQEmu entity ID to the Trilogy wire ID for this client.
 	// EQEmu assigns GetID() via entity_list; Trilogy knows this client as
 	// m_player_spawn_id.  All other IDs pass through unchanged.
@@ -191,6 +197,8 @@ private:
 	void FlushPendingLootEcho();
 	// Ground items
 	void HandleGroundSpawn(const EQApplicationPacket* app);
+	// Doors
+	void HandleMoveDoor(const EQApplicationPacket* app);
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.

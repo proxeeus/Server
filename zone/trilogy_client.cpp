@@ -20,6 +20,8 @@
 #include "trilogy_client.h"
 #include "trilogy_zone.h"
 #include "entity.h"
+#include "doors.h"
+#include "object.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/item_instance.h"
@@ -325,6 +327,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_GroundSpawn:
 		HandleGroundSpawn(app);
+		break;
+	case OP_MoveDoor:
+		HandleMoveDoor(app);
 		break;
 	case OP_ClickObject:
 		// Remove a ground item from the client's view (pickup despawn broadcast).
@@ -1402,11 +1407,26 @@ void TrilogyClient::FlushPendingLootEcho()
 
 // ============================================================
 // HandleGroundSpawn — translate OP_GroundSpawn (EQEmu internal) to the
-// EQClassic ground-item spawn packet (opcode 0x3520, 240 bytes).
+// EQClassic object spawn packet (opcode 0x3520, 240 bytes).
 //
-// EQEmu's Object_Struct carries object_name (IT*_ACTORDEF), position,
-// and drop_id.  The EQClassic client renders the 3D model from objectname
-// and uses dropid to identify the object for pickup (OP_PickupItem 0x3620).
+// Handles BOTH player-dropped ground items AND static world objects /
+// tradeskill containers (forge, kiln, loom, oven, brew barrel, …), since
+// EQEmu serializes both through OP_GroundSpawn / Object_Struct.
+//
+// EQEmu's Object_Struct carries object_name (IT*_ACTORDEF), position, drop_id,
+// and object_type.  The EQClassic client renders the 3D model from objectname
+// and uses dropid to identify the object for interaction (OP_PickupItem 0x3620).
+//
+// EQEmu object_type values (object.h ObjectTypes): 0 = StaticLocked scenery and
+// player-dropped items (both leave the wire object_type at 0), 1 = Temporary,
+// and 10+ = tradeskill containers (ToolBox=10 … Forge=17 … PotteryKiln=22 …).
+// A wire object_type >= ToolBox marks a crafting container.
+//
+// CRITICAL: a crafting/world container needs MORE than a dropped item to render.
+// EQClassic's Object::CreateSpawnPacket (objecttype==0 path) sets a sentinel
+// itemid (17005) and several flag bytes to 0x01; a dropped item leaves those
+// zero.  Without them the client will NOT render the container model — which is
+// why setting only the "type" byte did nothing.  We replicate that path here.
 // ============================================================
 
 void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
@@ -1424,11 +1444,22 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 	//   [44]  float    xpos
 	//   [48]  float    zpos
 	//   [52]  float    heading
+	//   [0]   int8[4]  unknown_4b       (0x01 x4 for world containers)
+	//   [8]   int32    itemid          (0 for dropped item; 17005 for world container)
+	//   [12]  int32    dropid          (entity ID used for pickup/interaction)
+	//   [40]  float    ypos
+	//   [44]  float    xpos
+	//   [48]  float    zpos
+	//   [52]  float    heading
 	//   [56]  char[16] objectname      (e.g. "IT63_ACTORDEF\0")
-	//   ...   (zeros for bag/item detail fields)
-	//   [238] int16    type            (1 = OT_DROPPEDITEM)
+	//   [106] int8[6]  unknown_6        (0x01 x6 for world containers)
+	//   [122] int8[5]  unknown_5        (0x01 x5 for world containers)
+	//   [232] int8[4]  unknown_12       (0x01; EQClassic overruns into icon_nr/type)
+	//   [236] int16    icon_nr
+	//   [238] int16    type             (1 = OT_DROPPEDITEM)
 	//   total = 240 bytes
 	static constexpr uint32_t CLASSIC_OBJ_SIZE = 240;
+	static constexpr int16_t  OT_DROPPEDITEM   = 1;
 	uint8_t buf[CLASSIC_OBJ_SIZE];
 	memset(buf, 0, sizeof(buf));
 
@@ -1439,7 +1470,22 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 	*reinterpret_cast<float*>  (buf + 52)  = emu->heading;
 	strncpy(reinterpret_cast<char*>(buf + 56), emu->object_name, 15);
 	buf[56 + 15] = '\0';
-	*reinterpret_cast<int16_t*>(buf + 238) = 1; // OT_DROPPEDITEM
+
+	if (emu->object_type >= ObjectTypes::ToolBox) {
+		// World / tradeskill container — replicate EQClassic Object::CreateSpawnPacket
+		// (objecttype==0 path) verbatim.  Without the sentinel itemid and these 0x01
+		// flag bytes the client does not render the container model.
+		*reinterpret_cast<int32_t*>(buf + 8) = 17005; // sentinel world-object item id
+		memset(buf + 0,   0x01, 4);  // unknown_4b
+		memset(buf + 106, 0x01, 6);  // unknown_6
+		memset(buf + 122, 0x01, 5);  // unknown_5
+		// EQClassic writes 8 bytes to the 4-byte unknown_12, deliberately overrunning
+		// into icon_nr/type; replicated exactly (safe within the 240-byte buffer).
+		memset(buf + 232, 0x01, 8);
+	} else {
+		// Player-dropped ground item (unchanged, working path).
+		*reinterpret_cast<int16_t*>(buf + 238) = OT_DROPPEDITEM;
+	}
 
 	if (m_is_zoning) {
 		if (m_deferred_spawns.size() < kMaxDeferredSpawns)
@@ -1450,6 +1496,100 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 
 	m_tzs->SendToSession(m_session_key, 0x3520,
 	                     buf, static_cast<uint32_t>(sizeof(buf)));
+}
+
+// ============================================================
+// HandleMoveDoor — translate EQEmu OP_MoveDoor (MoveDoor_Struct, 2 bytes)
+// to the OP_OpenDoor packet (0x8e20) the Trilogy client expects.
+//
+// The wire layout is identical: { uint8 doorid, uint8 action }.  The Trilogy
+// client uses the same action convention as EQEmu/Titanium — OPEN_DOOR=0x02,
+// CLOSE_DOOR=0x03 (and the OPEN_INVDOOR/CLOSE_INVDOOR swap for inverted doors),
+// which is exactly what EQEmu's Doors::HandleClick already produces.  This was
+// verified against EQMacEmuTrilogy (doors.cpp), which targets the same client
+// and sends OPEN_DOOR=0x02 unaltered.  So the action byte is forwarded as-is —
+// no inversion (an earlier 0x02<->0x03 swap caused 2-3 clicks to open a door,
+// because it desynced the client's door state from the server's).
+// ============================================================
+
+void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::MoveDoor_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::MoveDoor_Struct*>(app->pBuffer);
+
+	// DoorOpen_Struct == MoveDoor_Struct on the wire: { int8 doorid, int8 action }.
+	uint8_t out[2];
+	out[0] = emu->doorid;
+	out[1] = emu->action;
+
+	m_tzs->SendToSession(m_session_key, 0x8e20, out, sizeof(out));
+}
+
+// ============================================================
+// SendDoorSpawns — send every door in the current zone to this client as
+// EQClassic OP_SpawnDoor (0x9520) packets, one per door.
+//
+// EQClassic Door_Struct wire layout (44 bytes — the portion the server sends;
+// server-only fields like keys/destination follow but are not transmitted):
+//   [0]   char[16] name        (model/filename, e.g. "DOOR101")
+//   [16]  float    yPos
+//   [20]  float    xPos
+//   [24]  float    zPos
+//   [28]  float    heading     (y rotation)
+//   [32]  float    incline     (x rotation)
+//   [36]  float    padding
+//   [40]  uint8    doorid      (zone-local door id, 0-255)
+//   [41]  uint8    opentype    (animation style)
+//   [42]  uint8    doorIsOpen  (spawn state)
+//   [43]  uint8    inverted    (door starts in inverted state)
+// ============================================================
+
+void TrilogyClient::SendDoorSpawns()
+{
+	const auto& doors = entity_list.GetDoorsList();
+
+	int sent = 0;
+	for (const auto& kv : doors) {
+		Doors* door = kv.second;
+		// Match the Titanium MakeDoorSpawnPacket filter: skip placeholder/blank
+		// door models (names of 3 chars or fewer are not real renderable doors).
+		if (!door || strlen(door->GetDoorName()) <= 3)
+			continue;
+
+		const glm::vec4& pos = door->GetPosition();
+		const int invert = door->GetInvertState();
+
+		uint8_t buf[44];
+		memset(buf, 0, sizeof(buf));
+
+		strncpy(reinterpret_cast<char*>(buf), door->GetDoorName(), 15);
+		buf[15] = '\0';
+		*reinterpret_cast<float*>(buf + 16) = pos.y;
+		*reinterpret_cast<float*>(buf + 20) = pos.x;
+		*reinterpret_cast<float*>(buf + 24) = pos.z;
+		*reinterpret_cast<float*>(buf + 28) = pos.w; // heading
+		*reinterpret_cast<float*>(buf + 32) = static_cast<float>(door->GetIncline());
+		// buf+36 padding stays 0
+		buf[40] = static_cast<uint8_t>(door->GetDoorID());
+		buf[41] = static_cast<uint8_t>(door->GetOpenType());
+		// Mirror the Titanium state_at_spawn formula: an inverted door reports the
+		// negated open state at spawn so its rest position renders correctly.
+		bool open_at_spawn = invert ? !door->IsDoorOpen() : door->IsDoorOpen();
+		buf[42] = open_at_spawn ? 1 : 0;
+		buf[43] = invert ? 1 : 0;
+
+		if (m_is_zoning) {
+			if (m_deferred_spawns.size() < kMaxDeferredSpawns)
+				m_deferred_spawns.emplace_back(uint16_t{0x9520},
+					std::vector<uint8_t>(buf, buf + sizeof(buf)));
+		} else {
+			m_tzs->SendToSession(m_session_key, 0x9520, buf, sizeof(buf));
+		}
+		++sent;
+	}
+
+	LogInfo("[TrilogyClient] SendDoorSpawns: {} door(s) {}", sent,
+	        m_is_zoning ? "deferred" : "sent");
 }
 
 // ============================================================
