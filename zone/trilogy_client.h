@@ -174,6 +174,7 @@ private:
 	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
+	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
 	void HandleOutgoingWearChange(const EQApplicationPacket* app);
 	// Spell / combat translators (server → Trilogy client)
 	void HandleAnimation(const EQApplicationPacket* app);

@@ -239,6 +239,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_FormattedMessage:
 		HandleOutgoingFormattedMessage(app);
 		break;
+	case OP_SimpleMessage:
+		HandleOutgoingSimpleMessage(app);
+		break;
 	case OP_Illusion:
 		HandleIllusion(app);
 		break;
@@ -831,6 +834,30 @@ static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
 	return (chat_type >= 256) ? chat_type : 269u; // 269 = MESSAGETYPE_Broadcasts
 }
 
+// Resolve a handful of common system string-ids (faction / experience / level) to
+// their English templates so they can be relayed to the Trilogy client, which has
+// no usable formatted-string path from us.  Arg-bearing ones (GAIN_LEVEL, FACTION_*)
+// arrive via OP_FormattedMessage (%1..%9 filled from the message args); the no-arg
+// XP ones arrive via OP_SimpleMessage.  Returns nullptr for string-ids we don't relay.
+static const char* TrilogySystemStringTemplate(uint32_t string_id)
+{
+	switch (string_id) {
+		case 138:   return "You gain experience!!";                                    // GAIN_XP
+		case 139:   return "You gain party experience!!";                             // GAIN_GROUPXP
+		case 447:   return "You have gained a level! Welcome to level %1!";           // GAIN_LEVEL
+		case 469:   return "Your faction standing with %1 could not possibly get any worse.";
+		case 470:   return "Your faction standing with %1 got worse.";
+		case 471:   return "Your faction standing with %1 could not possibly get any better.";
+		case 472:   return "Your faction standing with %1 got better.";
+		case 5085:  return "You gained raid experience!";                             // GAIN_RAIDEXP
+		case 9298:  return "You gain party experience (with a bonus)!";               // GAIN_GROUPXP_BONUS
+		case 9301:  return "You gain party experience (with a penalty)!";             // GAIN_GROUPXP_PENALTY
+		case 14541: return "You gain experience (with a bonus)!";                     // GAIN_XP_BONUS
+		case 14542: return "You gain experience (with a penalty)!";                   // GAIN_XP_PENALTY
+		default:    return nullptr;
+	}
+}
+
 void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
 {
 	if (!app || app->size < 25) return;
@@ -929,6 +956,40 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		return;
 	}
 
+	// Faction / experience / level system messages: resolve the template and relay
+	// as OP_SpecialMesg (verbatim) — the same path that works for the #dev menu /
+	// combat records.  %1..%9 are filled from the null-separated message args.
+	const char* tmpl = TrilogySystemStringTemplate(fm->string_id);
+	if (tmpl) {
+		// Gather up to 9 null-separated args.
+		std::vector<std::string> args;
+		const char* p   = base;
+		uint32_t    rem = remaining;
+		while (rem > 0 && args.size() < 9) {
+			size_t l = strnlen(p, rem);
+			args.emplace_back(p, l);
+			if (l >= rem) break;
+			p   += l + 1;
+			rem -= static_cast<uint32_t>(l + 1);
+		}
+
+		std::string out_text = StripSayLinks(tmpl, strlen(tmpl));
+		for (size_t i = 0; i < args.size(); ++i) {
+			const std::string token = "%" + std::to_string(i + 1);
+			for (size_t pos; (pos = out_text.find(token)) != std::string::npos; )
+				out_text.replace(pos, token.size(), args[i]);
+		}
+		out_text += '\0';
+
+		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
+		auto* out = new uint8_t[out_size]();
+		*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(fm->type);
+		memcpy(out + 4, out_text.data(), out_text.size());
+		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		delete[] out;
+		return;
+	}
+
 	bool is_shout;
 	if (fm->string_id == GENERIC_SHOUT)
 		is_shout = true;
@@ -964,6 +1025,32 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 	auto* out = new uint8_t[out_size]();
 	*reinterpret_cast<uint32_t*>(out) = msg_type;
 	memcpy(out + 4, line.data(), line.size());
+	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	delete[] out;
+}
+
+// ============================================================
+// HandleOutgoingSimpleMessage — OP_SimpleMessage (server → client)
+//
+// EQEmu sends no-argument system messages (e.g. GAIN_XP "You gain experience!!")
+// as OP_SimpleMessage: a bare string_id + color, no text.  The Trilogy client has
+// no equivalent, so resolve the known string-ids to text and relay as OP_SpecialMesg.
+// ============================================================
+void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(SimpleMessage_Struct)) return;
+
+	const auto* sm   = reinterpret_cast<const SimpleMessage_Struct*>(app->pBuffer);
+	const char* tmpl = TrilogySystemStringTemplate(sm->string_id);
+	if (!tmpl) return; // not a string-id we relay
+
+	std::string text = tmpl;
+	text += '\0';
+
+	uint32_t out_size = 4 + static_cast<uint32_t>(text.size());
+	auto* out = new uint8_t[out_size]();
+	*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(sm->color);
+	memcpy(out + 4, text.data(), text.size());
 	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 	delete[] out;
 }
