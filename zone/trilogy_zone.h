@@ -144,6 +144,19 @@ private:
 		// Set to the DB slot of the item picked up; cleared after it lands.
 		int cursor_from_db = -1;
 
+		// ── NPC trade window state ───────────────────────────────────────────
+		// trade_npc_id : entity id of the NPC the player is trading with (0 = none).
+		// trade_items  : items staged into the 8 client trade slots (wire 3000-3007).
+		//                Each item is removed from the inventory DB when staged, then
+		//                either consumed by the NPC's EVENT_TRADE handler (give) or
+		//                returned to the player's cursor (give-to-non-quest / cancel).
+		// trade_*p     : coins staged into the window (deducted from the player when
+		//                placed; spent on a quest give, refunded otherwise).
+		struct TradeStageItem { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
+		uint16_t       trade_npc_id  = 0;
+		TradeStageItem trade_items[8] = {};
+		uint32_t       trade_cp = 0, trade_sp = 0, trade_gp = 0, trade_pp = 0;
+
 		// Fragment reassembly
 		struct FragEntry {
 			std::vector<uint8_t> data;
@@ -176,6 +189,14 @@ private:
 	                          const uint8_t* payload, uint32_t plen);
 	void HandleMoveItem(const std::string& addr, int port, Session& s,
 	                    const uint8_t* payload, uint32_t plen);
+	// NPC trade window handlers
+	void HandleTradeRequest(const std::string& addr, int port, Session& s,
+	                        const uint8_t* payload, uint32_t plen);
+	void HandleTradeCoins(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+	void HandleTradeGive(const std::string& addr, int port, Session& s);
+	void HandleTradeCancel(const std::string& addr, int port, Session& s);
+	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleCastSpell(const std::string& addr, int port, Session& s,
