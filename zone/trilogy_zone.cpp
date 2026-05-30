@@ -228,11 +228,6 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	if (s.trilogy_client) {
-		{
-			const auto& cpp = s.trilogy_client->GetPP();
-			LogInfo("[TrilogyMoney] RemoveSession (will ~Client::Save) char={} m_pp p={} g={} s={} c={}",
-			        s.char_id, cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
-		}
 		uint16 id = s.trilogy_client->GetID();
 		s.trilogy_client = nullptr;
 		entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
@@ -958,6 +953,48 @@ static inline int32 clamp_i8(int32 v) {
 
 void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Session& s)
 {
+	// ── Cursor-queue drain (Trilogy clients have no cursor queue) ─────────────────
+	// EQEmu keeps the front cursor at DB slot 33 and any extra "cursor queue" items at
+	// slots 8000+.  Velious-era clients render only a single cursor item, so queue
+	// entries are invisible and persist across sessions.  When m_inv reloads them, the
+	// next #si / quest-return stacks BEHIND the stale items and the client is handed an
+	// OLD item instead of the new one (the reported "old item comes back" bug).
+	// Relocate any front-cursor or queued item to a free general slot (DB 22-30) BEFORE
+	// the inventory query below and before m_inv loads at zone-in-complete, so the
+	// cursor is always clean.  Non-destructive: items move to visible inventory, never
+	// deleted.  If general slots are full the item is left in place (no loss).
+	{
+		auto cur = database.QueryDatabase(fmt::format(
+		    "SELECT slotid FROM inventory WHERE charid={} AND (slotid=33 OR slotid BETWEEN 8000 AND 8010) ORDER BY slotid",
+		    s.char_id));
+		if (cur.Success() && cur.RowCount() > 0) {
+			bool used[31] = {}; // general-slot occupancy, indices 22..30
+			auto occ = database.QueryDatabase(fmt::format(
+			    "SELECT slotid FROM inventory WHERE charid={} AND slotid BETWEEN 22 AND 30", s.char_id));
+			if (occ.Success())
+				for (auto o = occ.begin(); o != occ.end(); ++o) {
+					int sl = Strings::ToInt(o[0]);
+					if (sl >= 22 && sl <= 30) used[sl] = true;
+				}
+			for (auto row = cur.begin(); row != cur.end(); ++row) {
+				int from_slot = Strings::ToInt(row[0]);
+				int free_slot = -1;
+				for (int sl = 22; sl <= 30; ++sl) if (!used[sl]) { free_slot = sl; break; }
+				if (free_slot < 0) {
+					LogInfo("[TrilogyZone] CursorDrain char={}: no free general slot, leaving item at slotid={}",
+					        s.char_id, from_slot);
+					continue;
+				}
+				database.QueryDatabase(fmt::format(
+				    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+				    free_slot, s.char_id, from_slot));
+				used[free_slot] = true;
+				LogInfo("[TrilogyZone] CursorDrain char={}: moved cursor item slotid={} -> {}",
+				        s.char_id, from_slot, free_slot);
+			}
+		}
+	}
+
 	auto q = fmt::format(
 		"SELECT inv.slotid, inv.charges,"
 		" it.id, it.name, it.lore, it.idfile, it.weight, it.norent, it.nodrop, it.size, it.itemclass,"
@@ -1769,8 +1806,6 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			pp.silver_cursor   = static_cast<int32_t>(Strings::ToInt(row[10]));
 			pp.copper_cursor   = static_cast<int32_t>(Strings::ToInt(row[11]));
 		}
-		LogInfo("[TrilogyMoney] ZoneIn DB read char={} pocket p={} g={} s={} c={}",
-		        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper);
 	}
 
 	// ---- character_skills ----
@@ -2478,13 +2513,6 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 		for (EQ::ItemInstance* inst : taken) safe_delete(inst);
 
-		{
-			const auto& cpp = s.trilogy_client->GetPP();
-			LogInfo("[TrilogyMoney] After EVENT_TRADE char={} staged(cp={} sp={} gp={} pp={}) | m_pp p={} g={} s={} c={}",
-			        s.char_id, s.trade_cp, s.trade_sp, s.trade_gp, s.trade_pp,
-			        cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
-		}
-
 		LogInfo("[TrilogyZone] EVENT_TRADE fired: {} -> NPC {}", s.char_name, npc_id);
 	}
 
@@ -2934,11 +2962,6 @@ void TrilogyZoneServer::Tick()
 				s.trilogy_client->GetMerc()->Save();
 				s.trilogy_client->GetMerc()->Depop();
 			}
-			{
-				const auto& cpp = s.trilogy_client->GetPP();
-				LogInfo("[TrilogyMoney] Camp Save char={} m_pp p={} g={} s={} c={}",
-				        s.char_id, cpp.platinum, cpp.gold, cpp.silver, cpp.copper);
-			}
 			s.trilogy_client->Save();
 			SendClose(s.source_addr, s.source_port, s);
 			camp_complete.push_back(kv.first);
@@ -2969,8 +2992,6 @@ void TrilogyZoneServer::Tick()
 				s.last_gold     = pp.gold;
 				s.last_platinum = pp.platinum;
 				s.money_synced  = true;
-				LogInfo("[TrilogyMoney] Reconcile baseline char={} p={} g={} s={} c={}",
-				        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper);
 			} else if (pp.copper   != s.last_copper ||
 			           pp.silver   != s.last_silver ||
 			           pp.gold     != s.last_gold   ||
@@ -2979,8 +3000,6 @@ void TrilogyZoneServer::Tick()
 				const int32_t dsp = pp.silver   - s.last_silver;
 				const int32_t dgp = pp.gold     - s.last_gold;
 				const int32_t dpp = pp.platinum - s.last_platinum;
-				LogInfo("[TrilogyMoney] Reconcile delta char={} pp now p={} g={} s={} c={} | delta dp={} dg={} ds={} dc={} (negatives NOT sent)",
-				        s.char_id, pp.platinum, pp.gold, pp.silver, pp.copper, dpp, dgp, dsp, dcp);
 				if (dcp > 0 || dsp > 0 || dgp > 0 || dpp > 0) {
 					s.trilogy_client->SendTrilogyMoneyDelta(
 					    dcp > 0 ? static_cast<uint32_t>(dcp) : 0u,
