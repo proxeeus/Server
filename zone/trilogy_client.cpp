@@ -242,6 +242,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_SimpleMessage:
 		HandleOutgoingSimpleMessage(app);
 		break;
+	case OP_Sound: {
+		// quest::ding() / e.other:Ding() → Client::SendSound() (OP_Sound), which has
+		// no Trilogy equivalent.  The classic quest "fanfare" trumpet is delivered via
+		// OP_QuestCompletedMoney (0x8020) with a zeroed QuestCompletedMoney_Struct
+		// (npcID + unknown[16] + cp/sp/gp/pp = 36 bytes, all zero → trumpet, no money).
+		// Mirrors EQClassic Client::SendClientQuestCompletedFanfare().
+		uint8_t fanfare[36] = {};
+		m_tzs->SendToSession(m_session_key, 0x8020, fanfare, sizeof(fanfare));
+		break;
+	}
 	case OP_Illusion:
 		HandleIllusion(app);
 		break;
@@ -983,7 +993,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 
 		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
 		auto* out = new uint8_t[out_size]();
-		*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(fm->type);
+		*reinterpret_cast<uint32_t*>(out) = 10u; // White — regular chat text (classic color palette)
 		memcpy(out + 4, out_text.data(), out_text.size());
 		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 		delete[] out;
@@ -1049,7 +1059,7 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 
 	uint32_t out_size = 4 + static_cast<uint32_t>(text.size());
 	auto* out = new uint8_t[out_size]();
-	*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(sm->color);
+	*reinterpret_cast<uint32_t*>(out) = 10u; // White — regular chat text (classic color palette)
 	memcpy(out + 4, text.data(), text.size());
 	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 	delete[] out;
