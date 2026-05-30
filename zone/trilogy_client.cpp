@@ -1487,10 +1487,20 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 		*reinterpret_cast<int16_t*>(buf + 238) = OT_DROPPEDITEM;
 	}
 
+	const bool is_container = (emu->object_type >= ObjectTypes::ToolBox);
+	LogInfo("[TrilogyClient] HandleGroundSpawn: name='{}' obj_type={} container={} drop_id={} pos=({:.1f},{:.1f},{:.1f}) {} (deferred_q={})",
+	        emu->object_name, static_cast<int>(emu->object_type), is_container,
+	        emu->drop_id, emu->x, emu->y, emu->z,
+	        m_is_zoning ? "deferred" : "sent", m_deferred_spawns.size());
+
 	if (m_is_zoning) {
-		if (m_deferred_spawns.size() < kMaxDeferredSpawns)
+		if (m_deferred_spawns.size() < kMaxDeferredSpawns) {
 			m_deferred_spawns.emplace_back(uint16_t{0x3520},
 				std::vector<uint8_t>(buf, buf + sizeof(buf)));
+		} else {
+			LogError("[TrilogyClient] HandleGroundSpawn: deferred queue FULL ({}), DROPPING object '{}'",
+			         kMaxDeferredSpawns, emu->object_name);
+		}
 		return;
 	}
 

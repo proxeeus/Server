@@ -218,6 +218,9 @@ private:
 	//   • Player/playerbot OP_NewSpawn (multi-packet paths) are silently dropped;
 	//     they will be visible via the next ZoneSpawns bulk or heartbeat.
 	bool m_is_zoning = true;
-	static constexpr size_t kMaxDeferredSpawns = 64;
+	// Holds deferred NPC spawns, doors, and ground/world objects during zone-in.
+	// A busy city zone can have many doors + tradeskill objects + transient NPC
+	// spawns, so this is generous to avoid silently dropping static world content.
+	static constexpr size_t kMaxDeferredSpawns = 512;
 	std::vector<std::pair<uint16_t, std::vector<uint8_t>>> m_deferred_spawns;
 };

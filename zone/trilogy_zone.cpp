@@ -1493,6 +1493,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	// → HandleGroundSpawn (0x3520).
 	if (s.trilogy_client) {
 		s.trilogy_client->SendDoorSpawns();
+		LogInfo("[TrilogyZone] Sending {} zone object(s) to '{}'",
+		        entity_list.GetObjectList().size(), s.char_name);
 		entity_list.SendZoneObjects(s.trilogy_client);
 	}
 
