@@ -132,6 +132,10 @@ static constexpr uint16_t ZN_OP_ShopDelItem    = 0x3820; // zone -> client: Merc
 static constexpr uint16_t ZN_OP_ShopEnd        = 0x3720; // client -> zone: close merchant window
 static constexpr uint16_t ZN_OP_ShopEndConfirm = 0x4521; // zone -> client: close ack (2 bytes)
 
+// Money move (banker deposit/withdraw, cursor coin)
+// Source: EQClassic/Common/Include/eq_opcodes.h :: OP_MoveCoin
+static constexpr uint16_t ZN_OP_MoveCoin       = 0x2d21; // client -> zone: MoveCoin_Struct (20 bytes)
+
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
 static constexpr uint8_t HDR0_FRAGMENT = 0x08;
@@ -692,6 +696,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			uint8_t confirm[2] = {0, 0};
 			SendApp(addr, port, s, ZN_OP_ShopEndConfirm, confirm, sizeof(confirm));
 		}
+		else if (opcode == ZN_OP_MoveCoin && s.trilogy_client)
+			HandleMoveCoin(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
 			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
 			if (plen >= 46) {
@@ -994,6 +1000,70 @@ static inline int32 clamp_i8(int32 v) {
 	return v < -128 ? -128 : (v > 127 ? 127 : v);
 }
 
+// ── Bank compaction (the v29c client packs bank items by ARRIVAL ORDER) ──
+// The client fills its 8 bank slots in the order it receives item packets and
+// ignores the equipSlot we send, and packs each bag's contents the same way.  A GAP
+// in the DB bank slots (e.g. items at 2000 and 2002 with 2001 empty) makes the client
+// show them packed at visual slots 0 and 1; a later move then reports the PACKED index
+// for an item stored at a different DB slot, so the wrong row moves and items
+// duplicate/vanish on relog.  A gap in a bank BAG's contents likewise mis-renders the
+// container.  Keep both gap-free so the client's packed view == the DB.
+//
+// CRITICAL: this must run BEFORE SendPlayerProfile snapshots the bank into
+// pp.bank_inv/bank_cont_inv.  Those PP arrays are read by the client (the deity byte
+// lives in bank_cont_inv[78]); if they reflect a pre-compaction (gappy) layout while
+// the per-item packets reflect the compacted layout, the two disagree and the bank
+// window mangles slots (a banked bag shows as a sibling item).
+//
+// Each move target is strictly below all not-yet-processed rows, so direct UPDATEs
+// never collide — no temp range needed.
+void TrilogyZoneServer::CompactTrilogyBank(uint32_t char_id)
+{
+	// Top-level bank slots 2000-2007: pull each occupied slot down to the next
+	// sequential slot, carrying its 10 bag-contents by the same delta (no-op for
+	// non-bags; bank-bag content base = 2031 + (slot-2000)*10, per HandleMoveItem).
+	auto br = database.QueryDatabase(fmt::format(
+	    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+	    "`slotid` BETWEEN 2000 AND 2007 ORDER BY `slotid`", char_id));
+	if (br.Success()) {
+		int target = 2000;
+		for (auto row = br.begin(); row != br.end(); ++row, ++target) {
+			const int cur = Strings::ToInt(row[0]);
+			if (cur == target) continue; // already packed
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+			    target, char_id, cur));
+			const int from_base = 2031 + (cur    - 2000) * 10;
+			const int to_base   = 2031 + (target - 2000) * 10;
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`-{} "
+			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+			    from_base - to_base, char_id, from_base, from_base + 9));
+			LogInfo("[TrilogyZone] BankCompact char={}: slot {} -> {} (contents {}->{})",
+			        char_id, cur, target, from_base, to_base);
+		}
+	}
+
+	// Each bank bag's 10 content slots [base, base+9]: pull occupied rows down to the
+	// start of the range, gap-free.
+	for (int bs = 2000; bs <= 2007; ++bs) {
+		const int base = 2031 + (bs - 2000) * 10;
+		auto cr = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+		    "`slotid` BETWEEN {} AND {} ORDER BY `slotid`", char_id, base, base + 9));
+		if (!cr.Success()) continue;
+		int ct = base;
+		for (auto row = cr.begin(); row != cr.end(); ++row, ++ct) {
+			const int cur = Strings::ToInt(row[0]);
+			if (cur == ct) continue;
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+			    ct, char_id, cur));
+			LogInfo("[TrilogyZone] BankBagCompact char={}: content {} -> {}", char_id, cur, ct);
+		}
+	}
+}
+
 void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Session& s)
 {
 	// ── Self-healing inventory relocation (Trilogy clients have no cursor queue) ──
@@ -1077,6 +1147,12 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 	}
 
+	// Keep the bank gap-free (top-level + each bag's contents) so the client's packed
+	// view matches the DB.  Normally already done in SendPlayerProfile (which runs
+	// first and must read the SAME compacted layout into the PP arrays); repeated here
+	// as a no-op safety net in case SendInventoryItems is ever reached on its own.
+	CompactTrilogyBank(s.char_id);
+
 	auto q = fmt::format(
 		"SELECT inv.slotid, inv.charges,"
 		" it.id, it.name, it.lore, it.idfile, it.weight, it.norent, it.nodrop, it.size, it.itemclass,"
@@ -1101,7 +1177,8 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.book, it.booktype, it.filename"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
-		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 330)"
+		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 330"
+		"   OR inv.slotid BETWEEN 2000 AND 2007 OR inv.slotid BETWEEN 2031 AND 2110)"
 		" ORDER BY inv.slotid",
 		s.char_id
 	);
@@ -1127,8 +1204,15 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		int32  item_id    = Strings::ToInt(row[2]);
 		if (item_id > 65535) { ++skipped; continue; } // Trilogy client uses uint16 item IDs
 		if (TRILOGY_ITEM_TEST_ID > 0 && item_id != TRILOGY_ITEM_TEST_ID) { ++skipped; continue; }
-		if (slot_id > 30 && slot_id < 251) { ++skipped; continue; } // skip gap 31-250 (not valid inventory)
-		if (slot_id > 330) { ++skipped; continue; }               // beyond bag content range
+		// Valid Trilogy-visible ranges: worn/general 0-30, bag contents 251-330,
+		// bank top 2000-2007, bank-bag contents 2031-2110.  Everything else
+		// (gaps, EQEmu bank slots 2008-2015, cursor queue, etc.) is skipped.
+		const bool valid_slot =
+		    (slot_id >= 0    && slot_id <= 30)   ||
+		    (slot_id >= 251  && slot_id <= 330)  ||
+		    (slot_id >= 2000 && slot_id <= 2007) ||
+		    (slot_id >= 2031 && slot_id <= 2110);
+		if (!valid_slot) { ++skipped; continue; }
 		// Track that this bag slot was sent so its contents can follow
 		if (slot_id >= 22 && slot_id <= 30)
 			bag_sent[slot_id - 22] = true; // DB 22-30 → indices 0-8 (wire 21-29)
@@ -1151,8 +1235,16 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		if (ci.icon == 0) ci.icon = 1; // icon 0 is a null texture slot — crashes the Trilogy client
 		if (slot_id == 0)  { ++skipped; continue; }   // charm: no v29c equivalent
 		if (slot_id == 21) { ++skipped; continue; }   // ammo: no v29c wire mapping (wire 21 = SLOT_PERSONAL_BEGIN)
-		// v29c: bags DB 22-30 → wire 21-29, content DB 251-330 → wire 250-329 (both -1 shift).
-		if (slot_id >= 22)
+		// v29c slot mapping:
+		//  • bank top-level (DB 2000-2007) → wire 2000-2007 (NO shift — bank slots align 1:1)
+		//  • bank-bag contents (DB 2031-2110) → wire 2030-2109 (-1; EQEmu BANK_BAGS_BEGIN=2031)
+		//  • worn/general/bags (DB 22-30, content 251-330) → wire -1 shift
+		//  • worn 1-20 → same
+		if (slot_id >= 2000 && slot_id <= 2007)
+			ci.equipslot = static_cast<int16>(slot_id);       // bank top-level: no shift
+		else if (slot_id >= 2031 && slot_id <= 2110)
+			ci.equipslot = static_cast<int16>(slot_id - 1);   // bank-bag content: -1
+		else if (slot_id >= 22)
 			ci.equipslot = static_cast<int16>(slot_id - 1);
 		else
 			ci.equipslot = static_cast<int16>(slot_id);
@@ -1344,9 +1436,31 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container (matches EQMacEmuTrilogy BulkSendItems).
 	// Payload: raw ClassicItem_Struct (292 bytes), no count prefix.
 	// NOTE: do NOT also send the bulk F621 — the client crashes on inventory open if both are sent.
+	//
+	// BANK items (equipslot >= 2000) MUST use the SAME itemclass-based opcodes as inventory.
+	// EQClassic's zone-in inventory send streams worn/general/bags AND bank through one
+	// consistent opcode scheme (SendInventoryItems() = OP_ItemTradeIn 0x3120 for everything;
+	// SendInventoryItems2() = 0x6621/0x6521/0x6421 by item type for everything, bank included
+	// — see client_process.cpp lines 1099-1104, 1133-1136).  The client renders bank slots
+	// from these per-item packets exactly like pack slots.  A MIXED stream (inventory via
+	// 0x6421 + bank via 0x3120) leaves the bank slots unrendered — they fall back to a
+	// placeholder bag icon and hard-crash on click.  So route bank items (top 2000-2007 +
+	// bag contents 2030-2109) through the identical itemclass opcode selection as inventory.
+	// BANK CONTAINER opcode exception: a container in a bank slot (equipslot >= 2000)
+	// sent via OP_CPlayerContainer (0x6621) mis-renders — its slot shows the NEXT
+	// item's appearance instead of the bag (observed: a banked bag displays as the
+	// sibling weapon). Bank non-container items render correctly via 0x6421, and the
+	// struct still carries itemclass=1 so the client treats it as an openable bag.
+	// Send bank containers via 0x6421 too; INVENTORY containers keep 0x6621 (works).
 	for (const auto& ci : items) {
-		uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
-		               (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
+		uint16_t opc;
+		if (ci.itemclass == 2) {
+			opc = ZN_OP_CPlayerBook;
+		} else if (ci.itemclass == 1) {
+			opc = (ci.equipslot >= 2000) ? ZN_OP_CPlayerItem : ZN_OP_CPlayerCont;
+		} else {
+			opc = ZN_OP_CPlayerItem;
+		}
 		SendApp(addr, port, s, opc,
 		        reinterpret_cast<const uint8_t*>(&ci),
 		        static_cast<uint32_t>(sizeof(ci)));
@@ -1690,6 +1804,54 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	memset(pp.inventory,          0xFF, sizeof(pp.inventory));
 	memset(pp.containerinv,       0xFF, sizeof(pp.containerinv));
 	memset(pp.cursorbaginventory, 0xFF, sizeof(pp.cursorbaginventory));
+	// Bank slot/bag-content ID arrays: 0xFFFF = "empty".  UNLIKE the main inventory
+	// (which the client renders purely from the CPlayerItem packets), the v29c bank
+	// WINDOW resolves each slot from these PP arrays — the item-data packets alone
+	// leave it drawing generic bag placeholders that crash on right-click.  So we
+	// must populate the real item IDs here (matching EQClassic, which maintains
+	// pp.bank_inv server-side); the per-item packets streamed in SendInventoryItems
+	// supply the full item data the client resolves these IDs against.
+	//   bank_inv[i]      = DB slot 2000+i   (8 bank slots)
+	//   bank_cont_inv[j] = DB slot 2031+j   (80 bank-bag content slots)
+	// NOTE: bank_cont_inv[78] is overwritten just below by the deity hack — that
+	// assignment MUST stay after this population.
+	//
+	// Compact the bank FIRST so the IDs we read here (and the per-item packets sent
+	// later by SendInventoryItems) describe the same gap-free layout.  Without this the
+	// PP arrays reflect the pre-compaction (gappy) DB while the packets reflect the
+	// compacted DB, and the bank window mis-renders (a banked bag shows as a sibling).
+	CompactTrilogyBank(s.char_id);
+	memset(pp.bank_inv,      0xFF, sizeof(pp.bank_inv));
+	memset(pp.bank_cont_inv, 0xFF, sizeof(pp.bank_cont_inv));
+	{
+		auto br = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid`, `itemid` FROM `inventory` WHERE `charid`={} AND "
+		    "(`slotid` BETWEEN 2000 AND 2007 OR `slotid` BETWEEN 2031 AND 2110)",
+		    s.char_id));
+		if (br.Success())
+			for (auto row = br.begin(); row != br.end(); ++row) {
+				const int sl = Strings::ToInt(row[0]);
+				const int id = Strings::ToInt(row[1]);
+				if (id <= 0 || id > 65535) continue; // Trilogy client uses uint16 item IDs
+				if (sl >= 2000 && sl <= 2007)
+					pp.bank_inv[sl - 2000]      = static_cast<int16_t>(id);
+				else if (sl >= 2031 && sl <= 2110)
+					pp.bank_cont_inv[sl - 2031] = static_cast<int16_t>(id);
+			}
+	}
+
+	// DIAGNOSTIC: dump the bank PP arrays exactly as the client will receive them, so
+	// we can compare against the per-item packets (which we already log).  bank_inv[i]
+	// is the top-row item ID for bank slot 2000+i; bank_cont_inv[j] is bag-content j.
+	LogInfo("[TrilogyZone] BankPP char={} bank_inv=[{} {} {} {} {} {} {} {}] "
+	        "cont[0-9]=[{} {} {} {} {} {} {} {} {} {}]",
+	        s.char_id,
+	        (uint16_t)pp.bank_inv[0], (uint16_t)pp.bank_inv[1], (uint16_t)pp.bank_inv[2], (uint16_t)pp.bank_inv[3],
+	        (uint16_t)pp.bank_inv[4], (uint16_t)pp.bank_inv[5], (uint16_t)pp.bank_inv[6], (uint16_t)pp.bank_inv[7],
+	        (uint16_t)pp.bank_cont_inv[0], (uint16_t)pp.bank_cont_inv[1], (uint16_t)pp.bank_cont_inv[2],
+	        (uint16_t)pp.bank_cont_inv[3], (uint16_t)pp.bank_cont_inv[4], (uint16_t)pp.bank_cont_inv[5],
+	        (uint16_t)pp.bank_cont_inv[6], (uint16_t)pp.bank_cont_inv[7], (uint16_t)pp.bank_cont_inv[8],
+	        (uint16_t)pp.bank_cont_inv[9]);
 
 	// Initialise spell slots to "empty" (-1 = 0xFFFF)
 	memset(pp.spell_book,   0xFF, sizeof(pp.spell_book));
@@ -2914,6 +3076,95 @@ void TrilogyZoneServer::HandleShopPlayerSell(const std::string& addr, int port, 
 }
 
 // ============================================================
+// HandleMoveCoin — client moved coins (OP_MoveCoin 0x2d21).
+//
+// Drives banker deposit/withdraw (and cursor coin pickup).  Money "slots":
+//   0 = cursor (transient), 1 = carried, 2 = bank, 3 = trade.
+// cointype 0/1/2/3 = copper/silver/gold/platinum.  The client has already
+// updated its own coin display from the move it sent; we mirror the change onto
+// the PlayerProfile (carried m_pp.{copper..platinum}, bank m_pp.*_bank) and
+// persist.  No reply packet (EQClassic sends none).  Bank denominations are kept
+// separate (not normalised), matching the client + EQClassic ProcessOP_MoveCoin.
+// ============================================================
+void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Session& s,
+                                       const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(::MoveCoin_Struct)) return;
+	const auto* mc = reinterpret_cast<const ::MoveCoin_Struct*>(payload);
+
+	const int32_t from_slot = mc->from_slot;
+	const int32_t to_slot   = mc->to_slot;
+	// Only carried(1) <-> bank(2) transfers persist; cursor(0)/trade(3)-only moves
+	// are display/transient and handled elsewhere (trade) or ignored.
+	if (from_slot != 1 && from_slot != 2 && to_slot != 1 && to_slot != 2)
+		return;
+
+	// Denomination conversion when dragging across coin types (EQClassic parity).
+	int64_t amount = static_cast<int64_t>(mc->amount);
+	const uint32_t ct1 = mc->cointype1;
+	const uint32_t ct2 = mc->cointype2; // resulting denomination
+	if (ct2 != ct1) {
+		const int p = static_cast<int>((ct2 < ct1) ? (ct1 - ct2) : (ct2 - ct1));
+		int64_t factor = 1; for (int i = 0; i < p; ++i) factor *= 10;
+		if (ct2 < ct1) amount *= factor;
+		else           amount /= factor;
+	}
+	if (amount <= 0) return;
+	const uint32_t denom = ct2;
+
+	auto& pp = s.trilogy_client->GetPP();
+
+	// Deduct from source (floor at 0).
+	if (from_slot == 1) {
+		switch (denom) {
+			case 0: pp.copper   = (static_cast<int64_t>(pp.copper)   > amount) ? static_cast<uint32>(pp.copper   - amount) : 0; break;
+			case 1: pp.silver   = (static_cast<int64_t>(pp.silver)   > amount) ? static_cast<uint32>(pp.silver   - amount) : 0; break;
+			case 2: pp.gold     = (static_cast<int64_t>(pp.gold)     > amount) ? static_cast<uint32>(pp.gold     - amount) : 0; break;
+			default: pp.platinum = (static_cast<int64_t>(pp.platinum) > amount) ? static_cast<uint32>(pp.platinum - amount) : 0; break;
+		}
+	} else if (from_slot == 2) {
+		switch (denom) {
+			case 0: pp.copper_bank   = (static_cast<int64_t>(pp.copper_bank)   > amount) ? static_cast<int32>(pp.copper_bank   - amount) : 0; break;
+			case 1: pp.silver_bank   = (static_cast<int64_t>(pp.silver_bank)   > amount) ? static_cast<int32>(pp.silver_bank   - amount) : 0; break;
+			case 2: pp.gold_bank     = (static_cast<int64_t>(pp.gold_bank)     > amount) ? static_cast<int32>(pp.gold_bank     - amount) : 0; break;
+			default: pp.platinum_bank = (static_cast<int64_t>(pp.platinum_bank) > amount) ? static_cast<int32>(pp.platinum_bank - amount) : 0; break;
+		}
+	}
+
+	// Add to destination.
+	if (to_slot == 1) {
+		switch (denom) {
+			case 0: pp.copper   += static_cast<uint32>(amount); break;
+			case 1: pp.silver   += static_cast<uint32>(amount); break;
+			case 2: pp.gold     += static_cast<uint32>(amount); break;
+			default: pp.platinum += static_cast<uint32>(amount); break;
+		}
+	} else if (to_slot == 2) {
+		switch (denom) {
+			case 0: pp.copper_bank   += static_cast<int32>(amount); break;
+			case 1: pp.silver_bank   += static_cast<int32>(amount); break;
+			case 2: pp.gold_bank     += static_cast<int32>(amount); break;
+			default: pp.platinum_bank += static_cast<int32>(amount); break;
+		}
+	}
+
+	s.trilogy_client->Save();
+
+	// Keep Tick()'s money baseline current so a withdraw's carried-money increase
+	// isn't ALSO relayed as a coin delta (same guard the merchant handlers use).
+	s.last_copper = pp.copper; s.last_silver = pp.silver;
+	s.last_gold   = pp.gold;   s.last_platinum = pp.platinum;
+	s.money_synced = true;
+
+	LogInfo("[TrilogyZone] MoveCoin char={} from={} to={} denom={} amount={} "
+	        "(carried p={} g={} s={} c={} | bank p={} g={} s={} c={})",
+	        s.char_id, from_slot, to_slot, denom, static_cast<long long>(amount),
+	        pp.platinum, pp.gold, pp.silver, pp.copper,
+	        pp.platinum_bank, pp.gold_bank, pp.silver_bank, pp.copper_bank);
+}
+
+// ============================================================
 // SendZoneSpawns — build ONE batched OP_ZoneSpawns (0x6121) packet.
 //
 // Wire format (per EQClassic Zone Source EntityList::SendZoneSpawnsBulk):
@@ -3812,10 +4063,12 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	// Wire → EQEmu DB slotid. v29c: bags wire 21-29 → DB 22-30 (+1), content wire 250-339 → DB 251-340 (+1).
 	// Worn wire 1-20 → DB 1-20 (no shift). Wire slot 0 = cursor — NOT mapped here.
 	auto wire_to_db = [](uint32_t w) -> int {
-		if (w == 0xFFFFFFFFu)        return -1;       // destroy
-		if (w >= 1  && w <= 20)      return (int)w;   // worn slots 1-20 (no shift)
-		if (w >= 21 && w <= 29)      return (int)w + 1; // personal bags → DB 22-30
-		if (w >= 250 && w <= 339)    return (int)w + 1; // bag contents → DB 251-340
+		if (w == 0xFFFFFFFFu)          return -1;       // destroy
+		if (w >= 1    && w <= 20)      return (int)w;   // worn slots 1-20 (no shift)
+		if (w >= 21   && w <= 29)      return (int)w + 1; // personal bags → DB 22-30
+		if (w >= 250  && w <= 339)     return (int)w + 1; // bag contents → DB 251-340
+		if (w >= 2000 && w <= 2007)    return (int)w;     // bank top-level (no shift)
+		if (w >= 2030 && w <= 2109)    return (int)w + 1; // bank-bag contents → DB 2031-2110
 		return -1;
 	};
 
@@ -3867,17 +4120,19 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 
 	LogInfo("[TrilogyZone] MoveItem char={} from_db={} to_db={}", s.char_id, from_db, to_db);
 
-	// Determine if either slot is a general bag position (DB 23-30; DB 22 = ammo).
-	// If so, we need to migrate bag contents when the bags themselves swap.
-	const bool from_is_bag_slot = (from_db >= 23 && from_db <= 30);
-	const bool to_is_bag_slot   = (to_db   >= 23 && to_db   <= 30);
-
-	// DB slotid base for the 10 content slots of each general bag position.  Must
-	// match EQEmu core + the client: base = 251 + (general_slot - 23) * 10
-	// (bag@DB23 → 251-260, bag@DB24 → 261-270, …).  (Previously (slot-22), one bag
-	// too high, which scrambled bag-swap content migration.)
-	const int from_cont_base = from_is_bag_slot ? 251 + (from_db - 23) * 10 : -1;
-	const int to_cont_base   = to_is_bag_slot   ? 251 + (to_db   - 23) * 10 : -1;
+	// DB slotid base for the 10 content slots of a container at a given slot, or -1
+	// if that slot can't hold a bag's contents.  Must match EQEmu core + the client:
+	//   general bag@DB 23-30   → 251  + (slot-23)  *10  (bag@23 → 251-260, …)
+	//   bank bag  @DB 2000-2007 → 2031 + (slot-2000)*10  (bank@2000 → 2031-2040, …)
+	// Used to migrate bag contents when a container itself is moved/swapped between
+	// inventory and bank slots, so the contents follow the bag.
+	auto cont_base_for = [](int db_slot) -> int {
+		if (db_slot >= 23   && db_slot <= 30)   return 251  + (db_slot - 23)   * 10;
+		if (db_slot >= 2000 && db_slot <= 2007) return 2031 + (db_slot - 2000) * 10;
+		return -1;
+	};
+	const int from_cont_base = cont_base_for(from_db);
+	const int to_cont_base   = cont_base_for(to_db);
 
 	// ---- persist bag/item row swap ----
 	// Determine if the destination is occupied so we know whether to swap or move.

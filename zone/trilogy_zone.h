@@ -224,6 +224,16 @@ private:
 	                         const uint8_t* payload, uint32_t plen);
 	void HandleShopPlayerSell(const std::string& addr, int port, Session& s,
 	                          const uint8_t* payload, uint32_t plen);
+	// Bank/cursor money move (OP_MoveCoin 0x2d21): deposit/withdraw between carried
+	// and bank money; applied directly to m_pp + persisted.
+	void HandleMoveCoin(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+
+	// Compacts a character's bank to be gap-free (top-level slots 2000-2007 and each
+	// bank bag's 10 content slots) directly in the DB.  Must run BEFORE SendPlayerProfile
+	// reads the bank into pp.bank_inv/bank_cont_inv, so the PlayerProfile arrays and the
+	// per-item packets sent later by SendInventoryItems describe the SAME slot layout.
+	void CompactTrilogyBank(uint32_t char_id);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
