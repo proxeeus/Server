@@ -229,12 +229,6 @@ private:
 	void HandleMoveCoin(const std::string& addr, int port, Session& s,
 	                    const uint8_t* payload, uint32_t plen);
 
-	// Compacts a character's bank to be gap-free (top-level slots 2000-2007 and each
-	// bank bag's 10 content slots) directly in the DB.  Must run BEFORE SendPlayerProfile
-	// reads the bank into pp.bank_inv/bank_cont_inv, so the PlayerProfile arrays and the
-	// per-item packets sent later by SendInventoryItems describe the SAME slot layout.
-	void CompactTrilogyBank(uint32_t char_id);
-
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
 	void SendInventoryItems(const std::string& addr, int port, Session& s);

@@ -1000,69 +1000,15 @@ static inline int32 clamp_i8(int32 v) {
 	return v < -128 ? -128 : (v > 127 ? 127 : v);
 }
 
-// ── Bank compaction (the v29c client packs bank items by ARRIVAL ORDER) ──
-// The client fills its 8 bank slots in the order it receives item packets and
-// ignores the equipSlot we send, and packs each bag's contents the same way.  A GAP
-// in the DB bank slots (e.g. items at 2000 and 2002 with 2001 empty) makes the client
-// show them packed at visual slots 0 and 1; a later move then reports the PACKED index
-// for an item stored at a different DB slot, so the wrong row moves and items
-// duplicate/vanish on relog.  A gap in a bank BAG's contents likewise mis-renders the
-// container.  Keep both gap-free so the client's packed view == the DB.
-//
-// CRITICAL: this must run BEFORE SendPlayerProfile snapshots the bank into
-// pp.bank_inv/bank_cont_inv.  Those PP arrays are read by the client (the deity byte
-// lives in bank_cont_inv[78]); if they reflect a pre-compaction (gappy) layout while
-// the per-item packets reflect the compacted layout, the two disagree and the bank
-// window mangles slots (a banked bag shows as a sibling item).
-//
-// Each move target is strictly below all not-yet-processed rows, so direct UPDATEs
-// never collide — no temp range needed.
-void TrilogyZoneServer::CompactTrilogyBank(uint32_t char_id)
-{
-	// Top-level bank slots 2000-2007: pull each occupied slot down to the next
-	// sequential slot, carrying its 10 bag-contents by the same delta (no-op for
-	// non-bags; bank-bag content base = 2031 + (slot-2000)*10, per HandleMoveItem).
-	auto br = database.QueryDatabase(fmt::format(
-	    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
-	    "`slotid` BETWEEN 2000 AND 2007 ORDER BY `slotid`", char_id));
-	if (br.Success()) {
-		int target = 2000;
-		for (auto row = br.begin(); row != br.end(); ++row, ++target) {
-			const int cur = Strings::ToInt(row[0]);
-			if (cur == target) continue; // already packed
-			database.QueryDatabase(fmt::format(
-			    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
-			    target, char_id, cur));
-			const int from_base = 2031 + (cur    - 2000) * 10;
-			const int to_base   = 2031 + (target - 2000) * 10;
-			database.QueryDatabase(fmt::format(
-			    "UPDATE `inventory` SET `slotid`=`slotid`-{} "
-			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
-			    from_base - to_base, char_id, from_base, from_base + 9));
-			LogInfo("[TrilogyZone] BankCompact char={}: slot {} -> {} (contents {}->{})",
-			        char_id, cur, target, from_base, to_base);
-		}
-	}
-
-	// Each bank bag's 10 content slots [base, base+9]: pull occupied rows down to the
-	// start of the range, gap-free.
-	for (int bs = 2000; bs <= 2007; ++bs) {
-		const int base = 2031 + (bs - 2000) * 10;
-		auto cr = database.QueryDatabase(fmt::format(
-		    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
-		    "`slotid` BETWEEN {} AND {} ORDER BY `slotid`", char_id, base, base + 9));
-		if (!cr.Success()) continue;
-		int ct = base;
-		for (auto row = cr.begin(); row != cr.end(); ++row, ++ct) {
-			const int cur = Strings::ToInt(row[0]);
-			if (cur == ct) continue;
-			database.QueryDatabase(fmt::format(
-			    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
-			    ct, char_id, cur));
-			LogInfo("[TrilogyZone] BankBagCompact char={}: content {} -> {}", char_id, cur, ct);
-		}
-	}
-}
+// NOTE: Bank slot compaction was REMOVED.  The v29c client addresses each bank slot
+// (and each bank-bag content slot) by a FIXED array index derived from the slot ID —
+// top row = slot-2000, bag contents = slot-2031 — and the per-item CPlayerItem packets
+// carry that same explicit equipslot.  Empty gaps are valid and expected.  The old
+// CompactTrilogyBank routine rewrote DB slot IDs to fill gaps, which broke the strict
+// 1:1 mapping between the server's DB slots and the client's matrix; the client then
+// drew a banked container as its sibling item and emitted "_PutItem Invalid slot_id"
+// upstream.  We now pass the server's slot IDs through blindly (see SendPlayerProfile
+// and SendInventoryItems): if the item is at offset 5, it is placed at index 5.
 
 void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Session& s)
 {
@@ -1147,11 +1093,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 	}
 
-	// Keep the bank gap-free (top-level + each bag's contents) so the client's packed
-	// view matches the DB.  Normally already done in SendPlayerProfile (which runs
-	// first and must read the SAME compacted layout into the PP arrays); repeated here
-	// as a no-op safety net in case SendInventoryItems is ever reached on its own.
-	CompactTrilogyBank(s.char_id);
+	// Bank items are sent at their true DB slot IDs (strict 1:1 — see SendPlayerProfile).
+	// No compaction: the client addresses each bank slot by fixed index and preserves
+	// empty gaps, so shifting slot IDs to fill gaps corrupts the matrix.
 
 	auto q = fmt::format(
 		"SELECT inv.slotid, inv.charges,"
@@ -1446,21 +1390,15 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// 0x6421 + bank via 0x3120) leaves the bank slots unrendered — they fall back to a
 	// placeholder bag icon and hard-crash on click.  So route bank items (top 2000-2007 +
 	// bag contents 2030-2109) through the identical itemclass opcode selection as inventory.
-	// BANK CONTAINER opcode exception: a container in a bank slot (equipslot >= 2000)
-	// sent via OP_CPlayerContainer (0x6621) mis-renders — its slot shows the NEXT
-	// item's appearance instead of the bag (observed: a banked bag displays as the
-	// sibling weapon). Bank non-container items render correctly via 0x6421, and the
-	// struct still carries itemclass=1 so the client treats it as an openable bag.
-	// Send bank containers via 0x6421 too; INVENTORY containers keep 0x6621 (works).
+	// Per-item delivery, itemclass-based opcode: 0x6421 item / 0x6521 book / 0x6621
+	// container.  This is the KNOWN-GOOD baseline: worn, general, general bags+contents,
+	// and non-container bank items all render, and login is stable.  (Two delivery
+	// alternatives were tried and FAILED on this client: bulk 0xf621 rendered nothing;
+	// 0x3120-for-everything crashed at load-in.)  Remaining defect: a CONTAINER in a
+	// bank slot draws as its sibling item — under investigation, NOT accepted as final.
 	for (const auto& ci : items) {
-		uint16_t opc;
-		if (ci.itemclass == 2) {
-			opc = ZN_OP_CPlayerBook;
-		} else if (ci.itemclass == 1) {
-			opc = (ci.equipslot >= 2000) ? ZN_OP_CPlayerItem : ZN_OP_CPlayerCont;
-		} else {
-			opc = ZN_OP_CPlayerItem;
-		}
+		const uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
+		                     (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
 		SendApp(addr, port, s, opc,
 		        reinterpret_cast<const uint8_t*>(&ci),
 		        static_cast<uint32_t>(sizeof(ci)));
@@ -1816,11 +1754,15 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	// NOTE: bank_cont_inv[78] is overwritten just below by the deity hack — that
 	// assignment MUST stay after this population.
 	//
-	// Compact the bank FIRST so the IDs we read here (and the per-item packets sent
-	// later by SendInventoryItems) describe the same gap-free layout.  Without this the
-	// PP arrays reflect the pre-compaction (gappy) DB while the packets reflect the
-	// compacted DB, and the bank window mis-renders (a banked bag shows as a sibling).
-	CompactTrilogyBank(s.char_id);
+	// STRICT 1:1 MATRIX MAPPING — DO NOT COMPACT OR SHIFT SLOT IDS.
+	// The v29c client's bank matrix is index-addressed: an item at DB bank slot S maps
+	// to a FIXED array index (S-2000 for the top row, S-2031 for bag contents) and the
+	// per-item CPlayerItem packets carry that same explicit equipslot.  Empty gaps are
+	// expected and must be preserved (0xFFFF).  A previous "CompactTrilogyBank" routine
+	// rewrote the DB slot IDs to fill gaps before this read; that broke the 1:1 mapping
+	// and made the client overwrite a banked container with its sibling item (the "dupe"
+	// bug) and emit upstream "_PutItem Invalid slot_id" errors.  Removed — we now trust
+	// the server's slot IDs blindly: if the item is at offset 5, it goes to index 5.
 	memset(pp.bank_inv,      0xFF, sizeof(pp.bank_inv));
 	memset(pp.bank_cont_inv, 0xFF, sizeof(pp.bank_cont_inv));
 	{
@@ -1916,13 +1858,19 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			pp.deity = static_cast<int8_t>(compact); // byte 55 — compact, not read by char sheet
 
 			// PP byte 4152 = bank_cont_inv[78]: raw EQEmu deity ID read by the char sheet.
-			pp.bank_cont_inv[78] = (eq_deity >= 201 && eq_deity <= 216)
-				? static_cast<int16_t>(eq_deity)
-				: static_cast<int16_t>(0);
+			// DIAGNOSTIC (banked-container render isolation): the deity hack normally
+			// writes the raw EQEmu deity ID into PP byte 4152 = bank_cont_inv[78].  That is
+			// the ONLY non-item value we place inside the bank-bag-contents array, something
+			// the working EQMacEmu/EQClassic reference NEVER does (they store only item IDs or
+			// 0xFFFF there).  Leaving it empty (0xFFFF) to test whether that pollution corrupts
+			// the bank window's container rendering.  Side effect during this test: char sheet
+			// shows the wrong deity (cosmetic, no login/inventory impact).  If the banked bag
+			// now renders correctly, the deity byte must be relocated off the bank array.
+			pp.bank_cont_inv[78] = static_cast<int16_t>(0xFFFF);
 
 			s.char_deity = eq_deity; // cache for HandleZoneInComplete self-NewSpawn
-			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact={} wire4152={}",
-			        eq_deity, compact, (int)pp.bank_cont_inv[78]);
+			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact={} wire4152=DISABLED(FFFF) [bank-render test]",
+			        eq_deity, compact);
 		}
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
