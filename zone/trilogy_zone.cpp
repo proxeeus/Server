@@ -1432,34 +1432,91 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// 0x3120-for-everything crashed at load-in.)  Remaining defect: a CONTAINER in a
 	// bank slot draws as its sibling item — under investigation, NOT accepted as final.
 	int sent_packets   = 0;
-	int deferred_count = 0;
-	for (const auto& ci : items) {
-		const uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
-		                     (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
+	int deferred_count = 0; // deferral removed; kept at 0 for the log line
 
-		// Bank-bag CONTENTS (wire equipslot 2030-2109): defer to OnClientReady AND send
-		// via OP_ItemTradeIn (0x3120), NOT the 0x6421 CPlayerItem opcode used for everything
-		// else.  CLIENTBANK 0x2e20 decode (2026-06-01) proved the discriminator: the SAME 8
-		// items render perfectly when sent as GENERAL-bag contents (wire 260-267, 0x6421) but
-		// vanish when sent as BANK-bag contents (wire 2030-2037, 0x6421) — so the client's
-		// 0x6421 handler places items into personal slots but NOT into bank-content slots.
-		// EQClassic streams bank-bag contents via 0x3120 (SendInventoryItems, equipSlot=2030+i,
-		// client_process.cpp:963); its 0x3120 handler is the one that addresses bank slots.
-		// Timing kept deferred (post-OnClientReady) to dodge the zone-in-burst phantom-bag bug
-		// and to mirror the known-good live-MoveItem path.  Stash with the 0x3120 opcode here;
-		// the flush in HandleClientUpdate sends each packet with its stashed opcode.
-		if (ci.equipslot >= 2030 && ci.equipslot <= 2109) {
-			const auto* bytes = reinterpret_cast<const uint8_t*>(&ci);
-			s.deferred_bank_content_packets.emplace_back(
-			    ZN_OP_MerchantItem, std::vector<uint8_t>(bytes, bytes + sizeof(ci)));
-			++deferred_count;
-			continue;
+	// Send one item with the right opcode: bank items (equipslot>=2000) via OP_ItemTradeIn
+	// (0x3120, the client's bank-slot ingestion opcode); general/worn via itemclass opcodes.
+	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
+		const bool     is_bank = (ci.equipslot >= 2000);
+		const uint16_t opc =
+		    is_bank             ? ZN_OP_MerchantItem :
+		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont  :
+		    (ci.itemclass == 2) ? ZN_OP_CPlayerBook  :
+		                          ZN_OP_CPlayerItem;
+
+		// ── Bank TOP-ROW per-item off-by-one fix — LOOSE ITEMS ONLY (2026-06-01) ──
+		// The v29c client's per-item bank handler indexes a TOP-ROW item one slot BELOW its
+		// equipslot (base 2001) while pp.bank_inv indexes off 2000, so each top item rendered at
+		// its slot AND the slot below — a phantom that clobbers whatever sits underneath (notably
+		// a bag at slot 0).  PROVEN by CLIENTBANK: sent bank_inv=[32601 .. 2426] (bag@0,
+		// naginata@7) → client returned [32601 .. 2426@6 2426@7] (naginata phantomed into idx6).
+		// Sending the per-item equipslot +1 lands it at the same index pp.bank_inv uses → phantom
+		// cancels (confirmed: with +1 the duplicate disappeared).  BUT this must NOT be applied to
+		// CONTAINERS: a bag's bag-contents are linked to it by the bag's slot, so bumping a bag's
+		// equipslot makes the client hunt for its contents at the wrong slot → CRASH on bag-open
+		// (observed).  A bag at slot 0 needs no bump anyway (its phantom index -1 is harmless).
+		// So: bump only NON-container loose items (itemclass != 1); leave containers at their true
+		// equipslot.  pp.bank_inv stays base 2000; HandleMoveItem inbound unchanged; contents
+		// (2030-2109) untouched.
+		// KNOWN EDGE: a CONTAINER at bank slot >0 would still phantom into slot-1 (can't be bumped
+		// without breaking content-linking) — revisit if that case matters in practice.
+		const bool bump_top =
+		    (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1);
+		if (bump_top) {
+			Trilogy::structs::ClassicItem_Struct ci_top = ci;
+			ci_top.equipslot = static_cast<int16_t>(ci.equipslot + 1);
+			SendApp(addr, port, s, opc,
+			        reinterpret_cast<const uint8_t*>(&ci_top),
+			        static_cast<uint32_t>(sizeof(ci_top)));
+		} else {
+			SendApp(addr, port, s, opc,
+			        reinterpret_cast<const uint8_t*>(&ci),
+			        static_cast<uint32_t>(sizeof(ci)));
 		}
-
-		SendApp(addr, port, s, opc,
-		        reinterpret_cast<const uint8_t*>(&ci),
-		        static_cast<uint32_t>(sizeof(ci)));
 		++sent_packets;
+	};
+
+	// ── Non-bank items first, in DB order (worn, general, general-bag contents) ──
+	for (const auto& ci : items)
+		if (ci.equipslot < 2000)
+			send_one(ci);
+
+	// ── DIAGNOSTIC (2026-06-01): skip ALL bank per-item packets ──
+	// RESULT: with NOTHING sent for the bank (empty PP + no per-item), the client STILL showed
+	// a belt in the bank — proving the client serves a CACHED bank model that survives a relog
+	// and is NOT rebuilt from our zone-in data.  That explains why opcode/timing/order/PP all
+	// produced the identical [13916 13916]: the client was reporting its cache, not our packets.
+	// So the corruption is sticky across camp→char-select→re-enter (client process stays alive).
+	// Set back to false for normal delivery; the real test is a FULL client-exe restart.
+	const bool kSkipBankSendDiagnostic = false;
+	if (kSkipBankSendDiagnostic) {
+		LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} built={} "
+		        "sent_packets={} deferred_bank_content={} [BANK-SEND SKIPPED for diagnostic]",
+		        s.char_name, db_rows, skipped, sent_count, sent_packets, deferred_count);
+		return;
+	}
+
+	// ── Bank items, INTERLEAVED: each top slot immediately followed by ITS OWN contents ──
+	// CLIENTBANK 0x2e20 decode (2026-06-01) proved the bug is the client's per-item bank
+	// ingestion of a container-with-a-sibling: a LONE banked bag renders (its contents arrive
+	// right after it), but bag(2000)+belt(2001)+contents → the client returns bank_inv=[13916
+	// 13916] with empty contents — the belt (sent between the bag and its contents) gets
+	// swallowed as the bag's first content and the matrix scrambles.  Opcode (0x6421/0x6621/
+	// 0x3120), inline-vs-deferred timing, and emptying the PP arrays ALL left it unchanged, so
+	// the lever is the STREAM ORDER: the client's OP_ItemTradeIn handler appears to attach the
+	// packets that FOLLOW a container as that container's contents (ignoring equipslot).  So
+	// emit each bank top slot, then immediately that bag's 10 content slots, before the next
+	// top slot — reproducing the lone-bag layout the client handles correctly.  A lone bag is
+	// unchanged by this (no sibling between bag and contents).  Bank content base for top wire
+	// slot T (2000-2007) is 2030+(T-2000)*10 (DB 2031+(T-2000)*10, wire = DB-1).
+	for (int top = 2000; top <= 2007; ++top) {
+		for (const auto& ci : items)
+			if (ci.equipslot == top)
+				send_one(ci);
+		const int cbase = 2030 + (top - 2000) * 10;
+		for (const auto& ci : items)
+			if (ci.equipslot >= cbase && ci.equipslot <= cbase + 9)
+				send_one(ci);
 	}
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} built={} "
@@ -1824,6 +1881,35 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	// the server's slot IDs blindly: if the item is at offset 5, it goes to index 5.
 	memset(pp.bank_inv,      0xFF, sizeof(pp.bank_inv));
 	memset(pp.bank_cont_inv, 0xFF, sizeof(pp.bank_cont_inv));
+	// ── EXPERIMENT (2026-06-01): leave the PP bank arrays EMPTY (all 0xFFFF) ──
+	// The bank is now streamed per-item via 0x3120 (OP_ItemTradeIn), the same opcode and
+	// inline ordering EQClassic uses — and that path renders a LONE banked bag's contents
+	// correctly on its own.  But a banked CONTAINER + a loose sibling comes back corrupted
+	// (CLIENTBANK bank_inv=[13916 13916], contents empty — the bag's LAST content leaks into
+	// slot 0 and the contents clear) regardless of per-item opcode or inline-vs-deferred
+	// timing.  The remaining variable is that we feed the client TWO sources: these PP bank
+	// arrays AND the per-item packets.  The leak pattern fits a client PP-array parse bug for
+	// a container with an occupied sibling, so test per-item-as-sole-source by NOT populating
+	// the PP bank arrays here.  (Deity write at bank_cont_inv[78] is already disabled for the
+	// bank-render test, so emptying these arrays doesn't disturb it.)
+	// RESULT (tested): emptying the PP arrays did NOT change the corruption — bag+sibling
+	// still came back [13916 13916] empty, built PURELY from the per-item 0x3120 packets.
+	// So the PP is NOT the cause; the bug is the client's per-item bank ingestion of a
+	// container-with-sibling.  PP population RESTORED (it's needed for the lone-bag render
+	// and harmless here); the real fix is the interleaved send order below.
+	//
+	// ── DECISIVE TEST (2026-06-01): SEND NOTHING for the bank ──
+	// Opcode, timing, order, and emptying-PP all produce the IDENTICAL [13916 13916] empty
+	// result — the output is invariant to everything we change about bank delivery.  That
+	// means the client may be reporting a STALE/CACHED bank model rather than rebuilding from
+	// this session's data.  To prove it: send NOTHING for the bank — PP arrays stay empty
+	// (this `if(false)`) AND the per-item bank packets are skipped (send loop below).  If
+	// CLIENTBANK then reads EMPTY → the client builds from our packets (bug is our packets).
+	// If it STILL reads [13916 13916] → the client serves a cached bank independent of this
+	// session (reframes the fix).
+	// RESULT: with nothing sent, a freshly-restarted client STILL showed a belt — the client
+	// keeps a bank model that our zone-in data doesn't cleanly replace.  PP population RESTORED
+	// for normal delivery; next we isolate the camp-relog confound with a clean fresh-login test.
 	{
 		auto br = database.QueryDatabase(fmt::format(
 		    "SELECT `slotid`, `itemid` FROM `inventory` WHERE `charid`={} AND "
