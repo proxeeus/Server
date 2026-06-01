@@ -869,6 +869,41 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				s.trilogy_client->Handle_OP_EndLootRequest(&endlootpkt);
 			}
 		}
+		else if (opcode == 0x2e20) {
+			// ── DIAGNOSTIC (CLIENTBANK): decode the client's OWN uploaded PlayerProfile ──
+			// The Trilogy client uploads its full, UNCOMPRESSED 8104-byte PP via 0x2e20 on
+			// camp / NPC-trade (never on bank open/close).  This is GROUND TRUTH for how the
+			// client actually laid out its bank matrix from the item packets we sent — the
+			// one artifact that distinguishes "contents never ingested" from "ingested but
+			// mis-indexed".  Payload is the raw struct (plen==sizeof, no deflate/encrypt on
+			// the inbound side), so we cast directly.  READ-ONLY: the DB stays authoritative,
+			// we never write the uploaded PP back.  Compare cont_nonempty[] here against the
+			// outbound BankPP log (what we sent).  Remove once the banked-bag-content path is
+			// settled.
+			if (plen >= sizeof(Trilogy::structs::PlayerProfile_Struct)) {
+				const auto* cpp =
+				    reinterpret_cast<const Trilogy::structs::PlayerProfile_Struct*>(payload);
+				std::string cont;
+				for (int i = 0; i < 80; ++i) {
+					const uint16_t v = static_cast<uint16_t>(cpp->bank_cont_inv[i]);
+					if (v != 0xFFFF)
+						cont += fmt::format("{}={} ", i, v);
+				}
+				if (cont.empty()) cont = "(all empty)";
+				LogInfo("[TrilogyZone] CLIENTBANK char={} bank_inv=[{} {} {} {} {} {} {} {}] "
+				        "cont_nonempty=[{}]",
+				        s.char_id,
+				        (uint16_t)cpp->bank_inv[0], (uint16_t)cpp->bank_inv[1],
+				        (uint16_t)cpp->bank_inv[2], (uint16_t)cpp->bank_inv[3],
+				        (uint16_t)cpp->bank_inv[4], (uint16_t)cpp->bank_inv[5],
+				        (uint16_t)cpp->bank_inv[6], (uint16_t)cpp->bank_inv[7],
+				        cont);
+			} else {
+				LogInfo("[TrilogyZone] CLIENTBANK char={} upload too small plen={} (need {})",
+				        s.char_id, plen,
+				        (unsigned)sizeof(Trilogy::structs::PlayerProfile_Struct));
+			}
+		}
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
 		break;
@@ -1402,19 +1437,21 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		const uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
 		                     (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
 
-		// Bank-bag CONTENTS (wire equipslot 2030-2109): defer to OnClientReady.
-		// Proven by single-item isolation test (2026-06-01): empty bag in bank
-		// renders cleanly; same bag WITH 5 content packets sent inline at zone-in
-		// renders 2 bags + crashes on close.  The v29c client's per-item bag-content
-		// ingestion path is buggy DURING the zone-in burst (synthesizes a phantom
-		// container).  After the 3D world is up (first OP_ClientUpdate), the client's
-		// item-packet handler builds the bank correctly — proven by the CLIENTBANK
-		// 0x2e20 PP upload showing a perfect model after in-game MoveItem ops.
-		// Stash here, flush from HandleClientUpdate right after OnClientReady fires.
+		// Bank-bag CONTENTS (wire equipslot 2030-2109): defer to OnClientReady AND send
+		// via OP_ItemTradeIn (0x3120), NOT the 0x6421 CPlayerItem opcode used for everything
+		// else.  CLIENTBANK 0x2e20 decode (2026-06-01) proved the discriminator: the SAME 8
+		// items render perfectly when sent as GENERAL-bag contents (wire 260-267, 0x6421) but
+		// vanish when sent as BANK-bag contents (wire 2030-2037, 0x6421) — so the client's
+		// 0x6421 handler places items into personal slots but NOT into bank-content slots.
+		// EQClassic streams bank-bag contents via 0x3120 (SendInventoryItems, equipSlot=2030+i,
+		// client_process.cpp:963); its 0x3120 handler is the one that addresses bank slots.
+		// Timing kept deferred (post-OnClientReady) to dodge the zone-in-burst phantom-bag bug
+		// and to mirror the known-good live-MoveItem path.  Stash with the 0x3120 opcode here;
+		// the flush in HandleClientUpdate sends each packet with its stashed opcode.
 		if (ci.equipslot >= 2030 && ci.equipslot <= 2109) {
 			const auto* bytes = reinterpret_cast<const uint8_t*>(&ci);
 			s.deferred_bank_content_packets.emplace_back(
-			    opc, std::vector<uint8_t>(bytes, bytes + sizeof(ci)));
+			    ZN_OP_MerchantItem, std::vector<uint8_t>(bytes, bytes + sizeof(ci)));
 			++deferred_count;
 			continue;
 		}
