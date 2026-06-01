@@ -1396,16 +1396,38 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// alternatives were tried and FAILED on this client: bulk 0xf621 rendered nothing;
 	// 0x3120-for-everything crashed at load-in.)  Remaining defect: a CONTAINER in a
 	// bank slot draws as its sibling item — under investigation, NOT accepted as final.
+	int sent_packets   = 0;
+	int deferred_count = 0;
 	for (const auto& ci : items) {
 		const uint16_t opc = (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
 		                     (ci.itemclass == 2) ? ZN_OP_CPlayerBook  : ZN_OP_CPlayerItem;
+
+		// Bank-bag CONTENTS (wire equipslot 2030-2109): defer to OnClientReady.
+		// Proven by single-item isolation test (2026-06-01): empty bag in bank
+		// renders cleanly; same bag WITH 5 content packets sent inline at zone-in
+		// renders 2 bags + crashes on close.  The v29c client's per-item bag-content
+		// ingestion path is buggy DURING the zone-in burst (synthesizes a phantom
+		// container).  After the 3D world is up (first OP_ClientUpdate), the client's
+		// item-packet handler builds the bank correctly — proven by the CLIENTBANK
+		// 0x2e20 PP upload showing a perfect model after in-game MoveItem ops.
+		// Stash here, flush from HandleClientUpdate right after OnClientReady fires.
+		if (ci.equipslot >= 2030 && ci.equipslot <= 2109) {
+			const auto* bytes = reinterpret_cast<const uint8_t*>(&ci);
+			s.deferred_bank_content_packets.emplace_back(
+			    opc, std::vector<uint8_t>(bytes, bytes + sizeof(ci)));
+			++deferred_count;
+			continue;
+		}
+
 		SendApp(addr, port, s, opc,
 		        reinterpret_cast<const uint8_t*>(&ci),
 		        static_cast<uint32_t>(sizeof(ci)));
+		++sent_packets;
 	}
 
-	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} sent={}",
-	        s.char_name, db_rows, skipped, sent_count);
+	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} built={} "
+	        "sent_packets={} deferred_bank_content={}",
+	        s.char_name, db_rows, skipped, sent_count, sent_packets, deferred_count);
 }
 
 // ============================================================
@@ -2449,9 +2471,24 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	if (s.trilogy_client) {
 		// First ZN_OP_ClientUpdate after zone-in (or zone-out) signals the client's 3D world
 		// is live.  Release any buffered spawn/ground packets and resume mob heartbeats.
-		if (s.trilogy_client->IsZoning())
+		const bool was_zoning = s.trilogy_client->IsZoning();
+		if (was_zoning)
 			s.trilogy_client->OnClientReady();
 		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
+
+		// Flush deferred bank-bag-content per-item packets now that the 3D world is up.
+		// These were stashed by SendInventoryItems (CONNECTING3) because sending them
+		// inline with the zone-in burst causes the client to phantom-create a container.
+		// After OnClientReady fires, the client's per-item handler builds the bank
+		// correctly — same path that MoveItem ops use during play.  Fires once per
+		// zone-in (gated by was_zoning, since OnClientReady clears m_is_zoning).
+		if (was_zoning && !s.deferred_bank_content_packets.empty()) {
+			LogInfo("[TrilogyZone] Flushing {} deferred bank-bag-content packet(s) | char [{}]",
+			        s.deferred_bank_content_packets.size(), s.char_name);
+			for (auto& [opc, bytes] : s.deferred_bank_content_packets)
+				SendApp(addr, port, s, opc, bytes.data(), static_cast<uint32_t>(bytes.size()));
+			s.deferred_bank_content_packets.clear();
+		}
 	}
 
 	// Heartbeat (A120) is now sent by SendMobHeartbeat(), called for every CONNECTED packet.

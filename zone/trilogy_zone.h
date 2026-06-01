@@ -144,6 +144,17 @@ private:
 		// Set to the DB slot of the item picked up; cleared after it lands.
 		int cursor_from_db = -1;
 
+		// Bank-bag-content per-item packets, deferred from SendInventoryItems
+		// (CONNECTING3 zone-in burst) to OnClientReady (first ClientUpdate after
+		// zone-in completes).  Sending these inline with the inventory burst
+		// causes the v29c client to synthesize a phantom container at the bag's
+		// top-slot index + crash on bank-window close — proven by single-item
+		// isolation test (lone empty bag in bank = clean; same bag with 5 contents
+		// at zone-in = phantom bag + crash; same bag with contents delivered post
+		// zone-in via this queue = correct render, no phantom, no crash).
+		// Each entry is (opcode, raw ClassicItem_Struct bytes).
+		std::vector<std::pair<uint16_t, std::vector<uint8_t>>> deferred_bank_content_packets;
+
 		// ── NPC trade window state ───────────────────────────────────────────
 		// trade_npc_id : entity id of the NPC the player is trading with (0 = none).
 		// trade_items  : items staged into the 8 client trade slots (wire 3000-3007).
