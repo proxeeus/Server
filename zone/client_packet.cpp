@@ -942,7 +942,7 @@ void Client::CompleteConnect()
 
 	entity_list.ScanCloseMobs(close_mobs, this, true);
 
-	if (GetGM() && IsDevToolsEnabled()) {
+	if (GetGM() && IsDevToolsEnabled() && !IsTrilogyClient()) {
 		ShowDevToolsMenu();
 	}
 
