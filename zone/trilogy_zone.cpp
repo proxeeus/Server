@@ -89,11 +89,15 @@ static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 
 // These two constants now ONLY gate the dormant PP-blanking diagnostic below; leave both at their
 // defaults (kInventoryMode==0, kBlankBankPP==false) so the PP stays fully populated.
 static constexpr int  kInventoryMode = 0;     // 0 = keep PP arrays populated (no blanking)
-static constexpr bool kBlankBankPP   = false; // PP bank_inv MUST stay populated — v29c client
-                                              // allocates bankbagitemPointers[i*10..i*10+9] during PP parse;
-                                              // without it, opening any bank bag (even empty) null-derefs.
-                                              // Confirmed via 2026-06-02 EQClassic source read
-                                              // (client_process.cpp:911-942 + binary inference of bag-open crash).
+static constexpr bool kBlankBankPP   = true;  // Blank PP bank arrays to PREVENT double-allocation.
+                                              // PP-populated triggers v29c local-DB lookup → allocates
+                                              // bankinvitemPointers[i] for items in local DB.  Our 0x3120
+                                              // then allocates a SECOND pointer (our struct ≠ local-DB
+                                              // struct, client sees "different item") → visible -1 shift
+                                              // + close-crash from duplicate cleanup.  With PP blanked,
+                                              // 0x3120 (loose) / 0x6621 (container) is sole allocator.
+                                              // Container's 0x6621 expected to also allocate the bag-
+                                              // content array (otherwise bag-open will crash — diagnostic).
 static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic; bulk is
                                               // separately gated below — bank items are excluded from 0xf621).
 
@@ -1518,7 +1522,20 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		++bank_3120;
 	};
 	for (const auto& ci : items) {
-		if (kBankVia3120 && is_bank_slot(ci.equipslot)) {
+		const bool is_bank_top     = (ci.equipslot >= 2000 && ci.equipslot <= 2007);
+		const bool is_bank_content = (ci.equipslot >= 2030 && ci.equipslot <= 2109);
+		if (kBankVia3120 && is_bank_top && ci.itemclass == 1) {
+			// Bank TOP CONTAINER: 0x6621 (CPlayerCont).  Hypothesis: this opcode allocates
+			// BOTH the slot pointer AND the bag-content array (bankbagitemPointers[k*10..]).
+			// With PP blanked, this is the SOLE allocator — no double, no shift.  If bag-open
+			// crashes after this change, the hypothesis is wrong and 0x6621 doesn't alloc
+			// the content array (we'd need a different mechanism).
+			send_one(ci); // send_one routes itemclass==1 → ZN_OP_CPlayerCont (0x6621)
+		} else if (kBankVia3120 && is_bank_top) {
+			// Bank TOP LOOSE: 0x3120 single-source (no PP double since kBlankBankPP=true).
+			send_bank_3120(ci);
+		} else if (kBankVia3120 && is_bank_content) {
+			// Bag CONTENT: 0x3120, writes into the array allocated by parent container's 0x6621.
 			send_bank_3120(ci);
 		} else if (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1) {
 			send_bank_trade(ci, static_cast<uint16_t>(ci.equipslot));
