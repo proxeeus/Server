@@ -1449,9 +1449,18 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// EQMacEmu's order — worn, general, general-bags, bank-top, bank-bags — so every parent
 	// container precedes its contents in BOTH passes.  [[project-trilogy-banker]]
 
-	// (1) INDIVIDUAL per-item packets — every item, inline, normal opcode by item class.
+	// (1) INDIVIDUAL per-item packets — every item, inline, in slot order.
+	// ONE deviation from EQMacEmu's plain-0x6421-for-everything: a LOOSE (non-container) item in a
+	// bank TOP slot (2000-2007) sent via 0x6421 places by equipSlot and BLEEDS DOWN one slot on the
+	// v29c client — item@N also draws a phantom copy at N-1 (proven: a lone naginata at bank slot 2
+	// rendered at slots 1 AND 2).  The 0xf621 bulk is a MERGE, not a replace: it adds bag contents
+	// but does NOT clear that phantom.  So send bank-top LOOSE items via OP_TradeItemPacket (0xdf20),
+	// which carries an EXPLICIT slotid — the client places by slotid, no bleed.  Containers (0x6621)
+	// only bleed down to slot 1999 (invalid → harmless) and bank-bag contents (2030+) do NOT bleed
+	// (their render was pixel-perfect), so both keep the normal opcode.
 	int sent_packets = 0;
-	for (const auto& ci : items) {
+	int bank_trade   = 0;
+	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
 		const uint16_t opc =
 		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
 		    (ci.itemclass == 2) ? ZN_OP_CPlayerBook :
@@ -1460,6 +1469,23 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		        reinterpret_cast<const uint8_t*>(&ci),
 		        static_cast<uint32_t>(sizeof(ci)));
 		++sent_packets;
+	};
+	auto send_bank_trade = [&](const Trilogy::structs::ClassicItem_Struct& ci, uint16_t slotid) {
+		// TradeItemsPacket: uint16 fromid; uint16 slotid; uint8 unknown; ClassicItem_Struct; uint8[5].
+		uint8_t buf[2 + 2 + 1 + sizeof(Trilogy::structs::ClassicItem_Struct) + 5];
+		std::memset(buf, 0, sizeof(buf));
+		const uint16_t fromid = 0;
+		std::memcpy(buf + 0, &fromid, 2);
+		std::memcpy(buf + 2, &slotid, 2);
+		std::memcpy(buf + 5, &ci, sizeof(ci));
+		SendApp(addr, port, s, ZN_OP_TradeItemPacket, buf, static_cast<uint32_t>(sizeof(buf)));
+		++bank_trade;
+	};
+	for (const auto& ci : items) {
+		if (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1)
+			send_bank_trade(ci, static_cast<uint16_t>(ci.equipslot));
+		else
+			send_one(ci);
 	}
 
 	// (2) DEFLATED 0xf621 bulk over the SAME items (authoritative snapshot — builds bag
@@ -1487,8 +1513,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	SendApp(addr, port, s, ZN_OP_CharInventory, out.data(), static_cast<uint32_t>(out.size()));
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} built={} individual={} "
-	        "bulk_items={} bulk_payload={} bulk_total={} (faithful EQMacEmu: per-item + deflated 0xf621)",
-	        s.char_name, db_rows, sent_count, sent_packets,
+	        "bank_trade={} bulk_items={} bulk_payload={} bulk_total={} "
+	        "(EQMacEmu: per-item + deflated 0xf621; bank-top loose via 0xdf20)",
+	        s.char_name, db_rows, sent_count, sent_packets, bank_trade,
 	        static_cast<int>(item_count), payload_bytes, out.size());
 }
 
