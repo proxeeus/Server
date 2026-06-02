@@ -73,10 +73,23 @@ static constexpr uint16_t ZN_OP_TimeOfDay    = 0xf220; // zone -> client: TimeOf
 static constexpr uint16_t ZN_OP_Stamina      = 0x5721; // zone -> client: Stamina_Struct (8 bytes)
 static constexpr uint16_t ZN_OP_SetAvatar    = 0x6f20; // zone -> client: MSG_SET_AVATAR (1 byte, zeroed) — signals gameplay mode start
 static constexpr uint16_t ZN_OP_MerchantItem = 0x3120; // zone -> client: merchant item (raw ClassicItem_Struct, 292 bytes)
+static constexpr uint16_t ZN_OP_TradeItemPacket = 0xdf20; // zone -> client: TradeItemsPacket (uint16 fromid + uint16 slotid + uint8 + ClassicItem_Struct + uint8[5]); places by EXPLICIT slotid (no equipSlot bleed) — EQMacEmu phantom-slot resync uses this
 static constexpr uint16_t ZN_OP_CPlayerItem  = 0x6421; // zone -> client: single normal item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerBook  = 0x6521; // zone -> client: single book item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single container at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
+
+// ── PP-blanking experiment knobs (test DB) — see SendInventoryItems / SendPlayerProfile ──
+// SUPERSEDED.  SendInventoryItems now does the faithful EQMacEmu zone-in unconditionally:
+// INDIVIDUAL per-item packets (0x6421/0x6521/0x6621) for every slot THEN the DEFLATED 0xf621
+// bulk over the same items (the authoritative snapshot that builds bag contents + reconciles
+// placement).  The earlier "bulk renders NOTHING" finding was a false negative: mode 1 was raw
+// (the client requires deflate) and mode 2 deflated but with the PP arrays blanked.  With the PP
+// populated AND the deflated bulk present — exactly what AK sent in 2001 — the client renders it.
+// These two constants now ONLY gate the dormant PP-blanking diagnostic below; leave both at their
+// defaults (kInventoryMode==0, kBlankBankPP==false) so the PP stays fully populated.
+static constexpr int  kInventoryMode = 0;     // 0 = keep PP arrays populated (no blanking)
+static constexpr bool kBlankBankPP   = false; // 0 = keep PP bank arrays populated (EQMacEmu does)
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
@@ -991,7 +1004,8 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	SendTimeOfDay(addr, port, s);
 	SendPlayerProfile(addr, port, s);
 	SendZoneEntrySpawn(addr, port, s);
-	SendInventoryItems(addr, port, s);
+	SendInventoryItems(addr, port, s);  // MUST be here (CONNECTING2): sending it after zone spawns
+	                                    // leaves the client naked (no worn/general) — tested & reverted.
 	SendWeather(addr, port, s);
 
 	s.state = CONNECTING3;
@@ -1411,117 +1425,71 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		++sent_count;
 	}
 
-	// Send individual per-item packets — one per item, primary mechanism for inventory display.
-	// Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container (matches EQMacEmuTrilogy BulkSendItems).
-	// Payload: raw ClassicItem_Struct (292 bytes), no count prefix.
-	// NOTE: do NOT also send the bulk F621 — the client crashes on inventory open if both are sent.
-	//
-	// BANK items (equipslot >= 2000) MUST use the SAME itemclass-based opcodes as inventory.
-	// EQClassic's zone-in inventory send streams worn/general/bags AND bank through one
-	// consistent opcode scheme (SendInventoryItems() = OP_ItemTradeIn 0x3120 for everything;
-	// SendInventoryItems2() = 0x6621/0x6521/0x6421 by item type for everything, bank included
-	// — see client_process.cpp lines 1099-1104, 1133-1136).  The client renders bank slots
-	// from these per-item packets exactly like pack slots.  A MIXED stream (inventory via
-	// 0x6421 + bank via 0x3120) leaves the bank slots unrendered — they fall back to a
-	// placeholder bag icon and hard-crash on click.  So route bank items (top 2000-2007 +
-	// bag contents 2030-2109) through the identical itemclass opcode selection as inventory.
-	// Per-item delivery, itemclass-based opcode: 0x6421 item / 0x6521 book / 0x6621
-	// container.  This is the KNOWN-GOOD baseline: worn, general, general bags+contents,
-	// and non-container bank items all render, and login is stable.  (Two delivery
-	// alternatives were tried and FAILED on this client: bulk 0xf621 rendered nothing;
-	// 0x3120-for-everything crashed at load-in.)  Remaining defect: a CONTAINER in a
-	// bank slot draws as its sibling item — under investigation, NOT accepted as final.
-	int sent_packets   = 0;
-	int deferred_count = 0; // deferral removed; kept at 0 for the log line
+	// ── FAITHFUL EQMacEmu (Al'Kabor) ZONE-IN INVENTORY DELIVERY ───────────────────────────
+	// Replicates the live Mac server's exact zone-in sequence.  EQMacEmuTrilogy
+	// Handle_Connect_OP_SendExpZonein does, in order (client_packet.cpp:1512-1514):
+	//   (1) BulkSendItems()          → one INDIVIDUAL per-item packet per occupied slot, inline:
+	//                                   0x6421 item / 0x6621 container / 0x6521 book.  Worn,
+	//                                   general, general-bag contents, BANK top, AND BANK-BAG
+	//                                   contents are ALL sent this way — bank is not special-cased
+	//                                   (client_process.cpp BulkSendItems, slots …→BANK_BAGS_END).
+	//   (2) BulkSendInventoryItems() → the single DEFLATED 0xf621 bulk over the SAME items.  This
+	//                                   is the AUTHORITATIVE inventory snapshot: it BUILDS each
+	//                                   bag's content structure (so bags open without crashing) and
+	//                                   reconciles per-item placement (kills the bank "bleed").
+	//                                   Wire format (ENCODE OP_CharInventory, trilogy.cpp:1779):
+	//                                     [uint8 itemcount][uint8 0][zlib-deflate(itemcount × 292B)]
+	//                                   EVERY entry is the FULL 292-byte item struct — containers
+	//                                   and books included (homogeneous, NOT the short forms).
+	// The PP bank arrays stay POPULATED (EQMacEmu populates them; kInventoryMode==0 keeps the
+	// SendPlayerProfile blanking dormant).  No 0xdf20, no deferral — both were workarounds for the
+	// MISSING bulk: without the authoritative snapshot the per-item bank packets bled a slot and
+	// bags had no content structure (→ empty bag / crash-on-open).  The bulk is the real fix.
+	// Items are iterated in DB-slot order (query is ORDER BY slotid), which already yields
+	// EQMacEmu's order — worn, general, general-bags, bank-top, bank-bags — so every parent
+	// container precedes its contents in BOTH passes.  [[project-trilogy-banker]]
 
-	// Send one item with the right opcode: bank items (equipslot>=2000) via OP_ItemTradeIn
-	// (0x3120, the client's bank-slot ingestion opcode); general/worn via itemclass opcodes.
-	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
-		const bool     is_bank = (ci.equipslot >= 2000);
+	// (1) INDIVIDUAL per-item packets — every item, inline, normal opcode by item class.
+	int sent_packets = 0;
+	for (const auto& ci : items) {
 		const uint16_t opc =
-		    is_bank             ? ZN_OP_MerchantItem :
-		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont  :
-		    (ci.itemclass == 2) ? ZN_OP_CPlayerBook  :
+		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
+		    (ci.itemclass == 2) ? ZN_OP_CPlayerBook :
 		                          ZN_OP_CPlayerItem;
-
-		// ── Bank TOP-ROW per-item off-by-one fix — LOOSE ITEMS ONLY (2026-06-01) ──
-		// The v29c client's per-item bank handler indexes a TOP-ROW item one slot BELOW its
-		// equipslot (base 2001) while pp.bank_inv indexes off 2000, so each top item rendered at
-		// its slot AND the slot below — a phantom that clobbers whatever sits underneath (notably
-		// a bag at slot 0).  PROVEN by CLIENTBANK: sent bank_inv=[32601 .. 2426] (bag@0,
-		// naginata@7) → client returned [32601 .. 2426@6 2426@7] (naginata phantomed into idx6).
-		// Sending the per-item equipslot +1 lands it at the same index pp.bank_inv uses → phantom
-		// cancels (confirmed: with +1 the duplicate disappeared).  BUT this must NOT be applied to
-		// CONTAINERS: a bag's bag-contents are linked to it by the bag's slot, so bumping a bag's
-		// equipslot makes the client hunt for its contents at the wrong slot → CRASH on bag-open
-		// (observed).  A bag at slot 0 needs no bump anyway (its phantom index -1 is harmless).
-		// So: bump only NON-container loose items (itemclass != 1); leave containers at their true
-		// equipslot.  pp.bank_inv stays base 2000; HandleMoveItem inbound unchanged; contents
-		// (2030-2109) untouched.
-		// KNOWN EDGE: a CONTAINER at bank slot >0 would still phantom into slot-1 (can't be bumped
-		// without breaking content-linking) — revisit if that case matters in practice.
-		const bool bump_top =
-		    (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1);
-		if (bump_top) {
-			Trilogy::structs::ClassicItem_Struct ci_top = ci;
-			ci_top.equipslot = static_cast<int16_t>(ci.equipslot + 1);
-			SendApp(addr, port, s, opc,
-			        reinterpret_cast<const uint8_t*>(&ci_top),
-			        static_cast<uint32_t>(sizeof(ci_top)));
-		} else {
-			SendApp(addr, port, s, opc,
-			        reinterpret_cast<const uint8_t*>(&ci),
-			        static_cast<uint32_t>(sizeof(ci)));
-		}
+		SendApp(addr, port, s, opc,
+		        reinterpret_cast<const uint8_t*>(&ci),
+		        static_cast<uint32_t>(sizeof(ci)));
 		++sent_packets;
-	};
-
-	// ── Non-bank items first, in DB order (worn, general, general-bag contents) ──
-	for (const auto& ci : items)
-		if (ci.equipslot < 2000)
-			send_one(ci);
-
-	// ── DIAGNOSTIC (2026-06-01): skip ALL bank per-item packets ──
-	// RESULT: with NOTHING sent for the bank (empty PP + no per-item), the client STILL showed
-	// a belt in the bank — proving the client serves a CACHED bank model that survives a relog
-	// and is NOT rebuilt from our zone-in data.  That explains why opcode/timing/order/PP all
-	// produced the identical [13916 13916]: the client was reporting its cache, not our packets.
-	// So the corruption is sticky across camp→char-select→re-enter (client process stays alive).
-	// Set back to false for normal delivery; the real test is a FULL client-exe restart.
-	const bool kSkipBankSendDiagnostic = false;
-	if (kSkipBankSendDiagnostic) {
-		LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} built={} "
-		        "sent_packets={} deferred_bank_content={} [BANK-SEND SKIPPED for diagnostic]",
-		        s.char_name, db_rows, skipped, sent_count, sent_packets, deferred_count);
-		return;
 	}
 
-	// ── Bank items, INTERLEAVED: each top slot immediately followed by ITS OWN contents ──
-	// CLIENTBANK 0x2e20 decode (2026-06-01) proved the bug is the client's per-item bank
-	// ingestion of a container-with-a-sibling: a LONE banked bag renders (its contents arrive
-	// right after it), but bag(2000)+belt(2001)+contents → the client returns bank_inv=[13916
-	// 13916] with empty contents — the belt (sent between the bag and its contents) gets
-	// swallowed as the bag's first content and the matrix scrambles.  Opcode (0x6421/0x6621/
-	// 0x3120), inline-vs-deferred timing, and emptying the PP arrays ALL left it unchanged, so
-	// the lever is the STREAM ORDER: the client's OP_ItemTradeIn handler appears to attach the
-	// packets that FOLLOW a container as that container's contents (ignoring equipslot).  So
-	// emit each bank top slot, then immediately that bag's 10 content slots, before the next
-	// top slot — reproducing the lone-bag layout the client handles correctly.  A lone bag is
-	// unchanged by this (no sibling between bag and contents).  Bank content base for top wire
-	// slot T (2000-2007) is 2030+(T-2000)*10 (DB 2031+(T-2000)*10, wire = DB-1).
-	for (int top = 2000; top <= 2007; ++top) {
-		for (const auto& ci : items)
-			if (ci.equipslot == top)
-				send_one(ci);
-		const int cbase = 2030 + (top - 2000) * 10;
-		for (const auto& ci : items)
-			if (ci.equipslot >= cbase && ci.equipslot <= cbase + 9)
-				send_one(ci);
+	// (2) DEFLATED 0xf621 bulk over the SAME items (authoritative snapshot — builds bag
+	//     contents + reconciles placement).  [uint8 count][uint8 0][deflate(count × 292B)].
+	std::vector<uint8_t> raw;
+	uint8_t item_count = 0;
+	for (const auto& ci : items) {
+		const auto* ip = reinterpret_cast<const uint8_t*>(&ci);
+		raw.insert(raw.end(), ip, ip + sizeof(ci));
+		++item_count;
 	}
+	std::vector<uint8_t> out;
+	out.push_back(item_count);   // [0] uint8 itemcount
+	out.push_back(0);            // [1] pad (EQMacEmu leaves byte[1]=0; deflate stream starts at [2])
+	uint32_t payload_bytes = 0;
+	{
+		const size_t hdr = out.size();
+		out.resize(hdr + EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size())) + 16, 0);
+		uint32_t clen = raw.empty() ? 0 : EQ::DeflateData(
+			reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+			reinterpret_cast<char*>(out.data() + hdr), static_cast<uint32_t>(out.size() - hdr));
+		out.resize(hdr + clen);
+		payload_bytes = clen;
+	}
+	SendApp(addr, port, s, ZN_OP_CharInventory, out.data(), static_cast<uint32_t>(out.size()));
 
-	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} skipped={} built={} "
-	        "sent_packets={} deferred_bank_content={}",
-	        s.char_name, db_rows, skipped, sent_count, sent_packets, deferred_count);
+	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} built={} individual={} "
+	        "bulk_items={} bulk_payload={} bulk_total={} (faithful EQMacEmu: per-item + deflated 0xf621)",
+	        s.char_name, db_rows, sent_count, sent_packets,
+	        static_cast<int>(item_count), payload_bytes, out.size());
 }
 
 // ============================================================
@@ -2302,6 +2270,21 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		        " PP[56-57=race]={:02x}{:02x} PP[58=class]={:02x} PP[4152-4153=deity_wire]={:04x}",
 		        b[54], b[55], b[56], b[57], b[58], deity_wire);
 	}
+	// Experiment blanking (done after population, before the CRC so the checksum is correct):
+	//   bulk mode (kInventoryMode!=0) → blank worn/general PP arrays (bulk would be sole source).
+	//   kBlankBankPP                  → blank the PP BANK arrays so the per-item bank packets are
+	//                                   the sole bank source (tests the bank double-source ghost).
+	if (kInventoryMode != 0) {
+		memset(pp.inventory,    0xFF, sizeof(pp.inventory));
+		memset(pp.containerinv, 0xFF, sizeof(pp.containerinv));
+	}
+	if (kInventoryMode != 0 || kBlankBankPP) {
+		memset(pp.bank_inv,      0xFF, sizeof(pp.bank_inv));
+		memset(pp.bank_cont_inv, 0xFF, sizeof(pp.bank_cont_inv));
+		LogInfo("[TrilogyZone] SendPlayerProfile | PP BANK arrays BLANKED "
+		        "(per-item bank packets are sole bank source; inv_mode={})", kInventoryMode);
+	}
+
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&pp), sizeof(pp));
 
 	uint32_t max_clen = EQ::EstimateDeflateBuffer(sizeof(pp));
