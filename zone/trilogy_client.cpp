@@ -1995,6 +1995,10 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		// (e.g. slotPrimary=13 → 12=hands) and overwrite whatever is displayed there.
 		// • slotCursor (33): cursor delivery via OP_SummonedItem (0x7821), equip_slot=0.
 		// • all other slots: OP_ItemTradeIn (0x3120) with the correct EQClassic equip_slot.
+		// Bank slots (DB 2000-2110) are owned by SendInventoryItems (EQClassic-faithful
+		// 0x3120 pass) — drop here so the engine's m_inv post-zone-in pump doesn't
+		// double-deliver bank top items.
+		if (slot_id >= 2000 && slot_id <= 2110) return;
 		if (slot_id == EQ::invslot::slotCursor) {
 			equip_slot  = 0;
 			wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
@@ -2007,6 +2011,8 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	case ItemPacketCharInventory:
 		// General inventory delivery: translate EQEmu slot to Trilogy slot.
 		// Slots 0-21 pass through; 22-30 → 21-29 (no charm slot in v29c).
+		// Bank slots owned by SendInventoryItems — see ItemPacketTrade comment.
+		if (slot_id >= 2000 && slot_id <= 2110) return;
 		equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1) : slot_id;
 		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
 		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;

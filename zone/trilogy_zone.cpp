@@ -89,7 +89,22 @@ static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 
 // These two constants now ONLY gate the dormant PP-blanking diagnostic below; leave both at their
 // defaults (kInventoryMode==0, kBlankBankPP==false) so the PP stays fully populated.
 static constexpr int  kInventoryMode = 0;     // 0 = keep PP arrays populated (no blanking)
-static constexpr bool kBlankBankPP   = false; // 0 = keep PP bank arrays populated (EQMacEmu does)
+static constexpr bool kBlankBankPP   = false; // PP bank_inv MUST stay populated — v29c client
+                                              // allocates bankbagitemPointers[i*10..i*10+9] during PP parse;
+                                              // without it, opening any bank bag (even empty) null-derefs.
+                                              // Confirmed via 2026-06-02 EQClassic source read
+                                              // (client_process.cpp:911-942 + binary inference of bag-open crash).
+static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic; bulk is
+                                              // separately gated below — bank items are excluded from 0xf621).
+
+// EQClassic-faithful bank zone-in: send each occupied bank slot (top 2000+i AND bag content
+// 2030+i) as a single 0x3120 (OP_ItemTradeIn = ZN_OP_MerchantItem) carrying the full
+// 292-byte ClassicItem_Struct.  Confirmed from EQClassic Zone/Source/client_process.cpp
+// lines 911-967.  EQClassic interleaves these with inventory delivery in one big function;
+// we replicate the same per-item delivery (NO bulk for bank — EQClassic doesn't send one)
+// while PP-bank arrays remain populated so the client's container-content arrays exist.
+static constexpr bool kBankVia3120 = true;    // route bank items to 0x3120 (EQClassic scheme)
+                                              // instead of EQMacEmu 0x6421/0x6621/0xdf20 mix
 static constexpr uint16_t ZN_OP_WearChange   = 0x9220; // bidirectional: WearChange_Struct (16 bytes); echoed back during zone-in
 static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveItem_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
@@ -1421,6 +1436,14 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			        ci.name);
 		}
 
+		// DIAG kSkipBankItems: drop bank-top (DB 2000-2007) and bank-bag content (DB 2031-2110)
+		// from the items vector — excludes them from both per-item passes AND the 0xf621 bulk.
+		if (kSkipBankItems && slot_id >= 2000) {
+			LogInfo("[TrilogyZone] DIAG kSkipBankItems: dropped slot {} (item {})",
+			        slot_id, item_id);
+			continue;
+		}
+
 		items.push_back(ci);
 		++sent_count;
 	}
@@ -1460,6 +1483,10 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	// (their render was pixel-perfect), so both keep the normal opcode.
 	int sent_packets = 0;
 	int bank_trade   = 0;
+	int bank_3120    = 0;
+	auto is_bank_slot = [](int16_t es) {
+		return (es >= 2000 && es <= 2007) || (es >= 2030 && es <= 2109);
+	};
 	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
 		const uint16_t opc =
 		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
@@ -1481,18 +1508,34 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		SendApp(addr, port, s, ZN_OP_TradeItemPacket, buf, static_cast<uint32_t>(sizeof(buf)));
 		++bank_trade;
 	};
+	// EQClassic-faithful bank delivery: send each occupied bank slot via 0x3120 with
+	// equipSlot already encoded (2000+i for top, 2030+i for bag content).  The
+	// ClassicItem_Struct.equipslot field is set to the same value during DB build above.
+	auto send_bank_3120 = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
+		SendApp(addr, port, s, ZN_OP_MerchantItem,
+		        reinterpret_cast<const uint8_t*>(&ci),
+		        static_cast<uint32_t>(sizeof(ci)));
+		++bank_3120;
+	};
 	for (const auto& ci : items) {
-		if (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1)
+		if (kBankVia3120 && is_bank_slot(ci.equipslot)) {
+			send_bank_3120(ci);
+		} else if (ci.equipslot >= 2000 && ci.equipslot <= 2007 && ci.itemclass != 1) {
 			send_bank_trade(ci, static_cast<uint16_t>(ci.equipslot));
-		else
+		} else {
 			send_one(ci);
+		}
 	}
 
 	// (2) DEFLATED 0xf621 bulk over the SAME items (authoritative snapshot — builds bag
 	//     contents + reconciles placement).  [uint8 count][uint8 0][deflate(count × 292B)].
+	// When kBankVia3120 is true: EXCLUDE bank items from the bulk — EQClassic doesn't send
+	// a bulk for bank, and including bank in 0xf621 alongside per-item 0x3120 may cause
+	// double-allocation in the v29c client's bank pointer arrays.
 	std::vector<uint8_t> raw;
 	uint8_t item_count = 0;
 	for (const auto& ci : items) {
+		if (kBankVia3120 && is_bank_slot(ci.equipslot)) continue;
 		const auto* ip = reinterpret_cast<const uint8_t*>(&ci);
 		raw.insert(raw.end(), ip, ip + sizeof(ci));
 		++item_count;
@@ -1513,9 +1556,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 	SendApp(addr, port, s, ZN_OP_CharInventory, out.data(), static_cast<uint32_t>(out.size()));
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} built={} individual={} "
-	        "bank_trade={} bulk_items={} bulk_payload={} bulk_total={} "
-	        "(EQMacEmu: per-item + deflated 0xf621; bank-top loose via 0xdf20)",
-	        s.char_name, db_rows, sent_count, sent_packets, bank_trade,
+	        "bank_trade={} bank_3120={} bulk_items={} bulk_payload={} bulk_total={} "
+	        "(bank via 0x3120 EQClassic-faithful; PP bank_inv populated)",
+	        s.char_name, db_rows, sent_count, sent_packets, bank_trade, bank_3120,
 	        static_cast<int>(item_count), payload_bytes, out.size());
 }
 
