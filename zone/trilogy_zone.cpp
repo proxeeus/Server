@@ -127,6 +127,31 @@ static constexpr uint16_t ZN_OP_LootItem       = 0xa020; // bidirectional: Looti
 static constexpr uint16_t ZN_OP_EndLootRequest = 0x4F20; // client -> zone: int32 corpse entity ID
 static constexpr uint16_t ZN_OP_CombatAbility  = 0x5f21; // client -> zone: CombatAbility_Struct (12 bytes: m_id,m_atk,m_type)
 
+// Empty-payload skill opcodes (client -> zone, no body)
+// Source: EQClassic/Common/Include/eq_opcodes.h "General / Class Skills" block.
+// Every entry below is a pure "I pressed the button" notification — the server
+// runs the timer / skill-check / RNG roll and emits its own response packets.
+static constexpr uint16_t ZN_OP_Forage      = 0x9420; // OP_Forage      -> OP_Forage
+static constexpr uint16_t ZN_OP_Hide        = 0x8621; // OP_Hide        -> OP_Hide
+static constexpr uint16_t ZN_OP_Sneak       = 0x8521; // OP_Sneak       -> OP_Sneak
+static constexpr uint16_t ZN_OP_Mend        = 0x9d21; // OP_Mend        -> OP_Mend
+static constexpr uint16_t ZN_OP_Track       = 0x8421; // OP_Track       -> OP_Track
+static constexpr uint16_t ZN_OP_Fishing     = 0x8f21; // OP_Fishing     -> OP_Fishing
+static constexpr uint16_t ZN_OP_SenseTraps  = 0x8821; // OP_SenseTraps  -> OP_SenseTraps
+static constexpr uint16_t ZN_OP_DisarmTraps = 0xf321; // OP_DisarmTraps -> OP_DisarmTraps
+
+// Payload-bearing skill opcodes (client -> zone, bespoke struct each).
+// Source: EQClassic/Common/Include/eq_opcodes.h + EQClassic Zone/Source
+// handlers (ProcessOP_*).  Wire sizes verified from the legacy struct
+// definitions and the matching size-checks in the EQClassic handlers.
+static constexpr uint16_t ZN_OP_ApplyPoison  = 0xba21; //  8 B {uint32 invSlot; uint32 success}
+static constexpr uint16_t ZN_OP_BindWound    = 0x9320; //  8 B {int16 to; int16 unk; int16 type; int16 unk}
+static constexpr uint16_t ZN_OP_FeignDeath   = 0xac20; //  1 B placeholder; payload ignored by legacy handler
+static constexpr uint16_t ZN_OP_PickPockets  = 0xad20; // 18 B {uint16 to; uint16 from; uint8 myskill; ...}
+static constexpr uint16_t ZN_OP_Beg          = 0x2521; // 18 B {int32 target; int32 begger; ...}
+static constexpr uint16_t ZN_OP_InstillDoubt = 0x9c21; // 12 B {12 × int8 — fields not consumed server-side}
+static constexpr uint16_t ZN_OP_Taunt        = 0x3b21; // 12 B {int16 tauntTarget; int16; int16 tauntUser; int8[6]}
+
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
@@ -410,6 +435,30 @@ static bool TranslateTrilogyCombatAbility(
 	out.m_atk    = static_cast<uint32_t>(m_atk);
 	out.m_skill  = static_cast<uint32_t>(skill);
 	return true;
+}
+
+// ============================================================
+// TrilogyWireSlotToEmuSlot — convert a v29c wire inventory slot
+// into its modern EQEmu (RoF2) slot equivalent.  Mirrors the
+// inline `wire_to_db` lambdas already used by the move-item /
+// drop-item paths in this file so we don't introduce a second
+// encoding.  Used by the ApplyPoison bridge below; safe to call
+// from any inbound path that carries an inventory-slot field.
+//
+// wire == 0          → cursor (session-tracked cursor_from_db when
+//                       set by a prior pickup, else 33 = slotCursor)
+// wire 1..20         → identity (head/chest/.../primary etc.)
+// wire 21..29        → +1 shift (general 21-29 ↔ EQEmu 22-30)
+// wire 250..339      → +1 shift (bag-content 250-339 ↔ 251-340)
+// anything else      → -1 (caller should drop the packet)
+// ============================================================
+static int TrilogyWireSlotToEmuSlot(uint32_t wire, int cursor_from_db)
+{
+	if (wire == 0)                  return (cursor_from_db >= 0) ? cursor_from_db : 33;
+	if (wire >= 1   && wire <= 20)  return static_cast<int>(wire);
+	if (wire >= 21  && wire <= 29)  return static_cast<int>(wire) + 1;
+	if (wire >= 250 && wire <= 339) return static_cast<int>(wire) + 1;
+	return -1;
 }
 
 // ============================================================
@@ -1085,6 +1134,216 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket capkt(OP_CombatAbility, sizeof(::CombatAbility_Struct));
 				memcpy(capkt.pBuffer, &ca_emu, sizeof(ca_emu));
 				s.trilogy_client->Handle_OP_CombatAbility(&capkt);
+			}
+		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_Forage      || opcode == ZN_OP_Hide       ||
+		          opcode == ZN_OP_Sneak       || opcode == ZN_OP_Mend       ||
+		          opcode == ZN_OP_Track       || opcode == ZN_OP_Fishing    ||
+		          opcode == ZN_OP_SenseTraps  || opcode == ZN_OP_DisarmTraps))
+		{
+			// Empty-payload skill notifications.  The v29c client sends a
+			// header-only packet on button press; the modern EQEmu Handle_OP_*
+			// does the entire job (timer check, skill roll, response packet).
+			// We forward a zero-length EQApplicationPacket built with the modern
+			// EmuOpcode and let the server-side dispatch run unchanged.
+			//
+			// Per-skill server response packets (forage cursor-add, hide/sneak
+			// SpawnAppearance, mend HP update, track mob list, fishing summoned
+			// item, sense/disarm-traps emotes) all ride existing outbound
+			// opcodes the proxy already translates — no extra outbound wiring
+			// required for this pass.
+			switch (opcode) {
+				case ZN_OP_Forage: {
+					EQApplicationPacket pkt(OP_Forage, 0);
+					s.trilogy_client->Handle_OP_Forage(&pkt);
+					break;
+				}
+				case ZN_OP_Hide: {
+					EQApplicationPacket pkt(OP_Hide, 0);
+					s.trilogy_client->Handle_OP_Hide(&pkt);
+					break;
+				}
+				case ZN_OP_Sneak: {
+					EQApplicationPacket pkt(OP_Sneak, 0);
+					s.trilogy_client->Handle_OP_Sneak(&pkt);
+					break;
+				}
+				case ZN_OP_Mend: {
+					EQApplicationPacket pkt(OP_Mend, 0);
+					s.trilogy_client->Handle_OP_Mend(&pkt);
+					break;
+				}
+				case ZN_OP_Track: {
+					EQApplicationPacket pkt(OP_Track, 0);
+					s.trilogy_client->Handle_OP_Track(&pkt);
+					break;
+				}
+				case ZN_OP_Fishing: {
+					EQApplicationPacket pkt(OP_Fishing, 0);
+					s.trilogy_client->Handle_OP_Fishing(&pkt);
+					break;
+				}
+				case ZN_OP_SenseTraps: {
+					EQApplicationPacket pkt(OP_SenseTraps, 0);
+					s.trilogy_client->Handle_OP_SenseTraps(&pkt);
+					break;
+				}
+				case ZN_OP_DisarmTraps: {
+					EQApplicationPacket pkt(OP_DisarmTraps, 0);
+					s.trilogy_client->Handle_OP_DisarmTraps(&pkt);
+					break;
+				}
+				default: break;
+			}
+		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_ApplyPoison || opcode == ZN_OP_BindWound ||
+		          opcode == ZN_OP_FeignDeath  || opcode == ZN_OP_PickPockets ||
+		          opcode == ZN_OP_Beg         || opcode == ZN_OP_InstillDoubt ||
+		          opcode == ZN_OP_Taunt))
+		{
+			// Payload-bearing skill bridges.  Each case deserializes the v29c
+			// legacy struct, extracts the field(s) the modern handler actually
+			// reads, builds the EQEmu struct sized to sizeof(ModernStruct) so
+			// server-side size validation passes, and dispatches via the same
+			// Handle_OP_* entry point a Titanium+ client would hit.
+			//
+			// Entity IDs are sign-extended (int16 → int32 → uint32) to preserve
+			// the v29c -1 "no target" sentinel, matching the proven pattern in
+			// the OP_ClientTarget bridge.
+			switch (opcode) {
+
+				// --------------------------------------------------------------
+				// Apply Poison — 8 B in, 8 B out.  Legacy and modern structs
+				// are byte-identical { uint32 inventorySlot; uint32 success };
+				// only the slot needs translation since v29c wire slots use the
+				// classic 1-29 / 250-339 layout while EQEmu uses RoF2 (+1 shift
+				// past slot 21, cursor at 33).
+				// --------------------------------------------------------------
+				case ZN_OP_ApplyPoison: {
+					if (plen < 8) break;
+					uint32_t wire_slot = 0;
+					memcpy(&wire_slot, payload, 4);
+					const int emu_slot =
+					    TrilogyWireSlotToEmuSlot(wire_slot, s.cursor_from_db);
+					if (emu_slot < 0) break;
+					::ApplyPoison_Struct ap{};
+					ap.inventorySlot = static_cast<uint32_t>(emu_slot);
+					ap.success       = 0; // server fills this in its response
+					EQApplicationPacket pkt(OP_ApplyPoison,
+					                        sizeof(::ApplyPoison_Struct));
+					memcpy(pkt.pBuffer, &ap, sizeof(ap));
+					s.trilogy_client->Handle_OP_ApplyPoison(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Bind Wound — 8 B in, 8 B out.  Legacy { int16 to; int16 unk;
+				// int16 type; int16 unk } and modern { uint16 to; uint16 unk;
+				// uint16 type; uint16 unk } share the same byte layout, so a
+				// direct memcpy preserves everything the modern handler reads
+				// (it only consumes `to`, but copying the trailing fields keeps
+				// the size check happy and any future server-side fields work).
+				// --------------------------------------------------------------
+				case ZN_OP_BindWound: {
+					if (plen < static_cast<int>(sizeof(::BindWound_Struct))) break;
+					EQApplicationPacket pkt(OP_Bind_Wound,
+					                        sizeof(::BindWound_Struct));
+					memcpy(pkt.pBuffer, payload, sizeof(::BindWound_Struct));
+					s.trilogy_client->Handle_OP_Bind_Wound(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Feign Death — payload ignored on both sides.  The legacy
+				// ProcessOP_FeignDeath never touches pApp->pBuffer; the modern
+				// Handle_OP_FeignDeath has no size check.  Forward empty.
+				// --------------------------------------------------------------
+				case ZN_OP_FeignDeath: {
+					EQApplicationPacket pkt(OP_FeignDeath, 0);
+					s.trilogy_client->Handle_OP_FeignDeath(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Pick Pockets — 18 B in, 18 B out.  Layouts differ enough that
+				// a direct memcpy would corrupt the target id (legacy uint16
+				// at offset 0, modern uint32 at offset 0).  Extract `to` and
+				// build the modern struct fresh, filling `from` with our own
+				// entity ID for any server-side validation that needs it.
+				// --------------------------------------------------------------
+				case ZN_OP_PickPockets: {
+					if (plen < 18) break;
+					uint16_t wire_to = 0;
+					memcpy(&wire_to, payload, 2);
+					::PickPocket_Struct pp{};
+					pp.to       = static_cast<uint32_t>(wire_to);
+					pp.from     = static_cast<uint32_t>(s.trilogy_client->GetID());
+					pp.myskill  = static_cast<uint16_t>(
+					    s.trilogy_client->GetSkill(EQ::skills::SkillPickPockets));
+					pp.type     = 0; // request marker; server sets on response
+					pp.unknown1 = 0;
+					pp.coin     = 0;
+					EQApplicationPacket pkt(OP_PickPocket,
+					                        sizeof(::PickPocket_Struct));
+					memcpy(pkt.pBuffer, &pp, sizeof(pp));
+					s.trilogy_client->Handle_OP_PickPocket(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Begging — 18 B in, 0 B out.  Modern Handle_OP_Begging is
+				// payload-free and reads GetTarget() exclusively.  The v29c
+				// client always sends OP_ClientTarget before the action and
+				// the proxy already wires that, so GetTarget() will be set
+				// when this fires.  We discard the legacy target/begger fields
+				// rather than re-validating them.
+				// --------------------------------------------------------------
+				case ZN_OP_Beg: {
+					EQApplicationPacket pkt(OP_Begging, 0);
+					s.trilogy_client->Handle_OP_Begging(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Intimidation — 12 B in (legacy Instill_Doubt_Struct, fields
+				// unused), 0 B out.  Modern Handle_OP_InstillDoubt is empty
+				// (comment in client_packet.cpp:9163 confirms "packet is empty
+				// as of 12/14/04") and reads GetTarget().  Same target
+				// invariant as Begging.  Note the opcode name retained from
+				// the legacy era — the skill itself is SkillIntimidation.
+				// --------------------------------------------------------------
+				case ZN_OP_InstillDoubt: {
+					EQApplicationPacket pkt(OP_InstillDoubt, 0);
+					s.trilogy_client->Handle_OP_InstillDoubt(&pkt);
+					break;
+				}
+
+				// --------------------------------------------------------------
+				// Taunt — 12 B in (ClientTaunt_Struct), 4 B out
+				// (ClientTarget_Struct).  Modern Handle_OP_Taunt size-checks
+				// against sizeof(ClientTarget_Struct) and then reads GetTarget(),
+				// so the new_target field is informational only — but we still
+				// populate it (sign-extended from the legacy int16) to keep the
+				// struct semantically meaningful and to defend against any
+				// future handler change that reads it.
+				// --------------------------------------------------------------
+				case ZN_OP_Taunt: {
+					if (plen < 2) break;
+					int16_t tgt16 = 0;
+					memcpy(&tgt16, payload, 2);
+					::ClientTarget_Struct ct{};
+					ct.new_target =
+					    static_cast<uint32_t>(static_cast<int32_t>(tgt16));
+					EQApplicationPacket pkt(OP_Taunt,
+					                        sizeof(::ClientTarget_Struct));
+					memcpy(pkt.pBuffer, &ct, sizeof(ct));
+					s.trilogy_client->Handle_OP_Taunt(&pkt);
+					break;
+				}
+
+				default: break;
 			}
 		}
 		else if (opcode == ZN_OP_LootRequest && s.trilogy_client) {
