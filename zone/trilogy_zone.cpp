@@ -125,6 +125,7 @@ static constexpr uint16_t ZN_OP_Consider       = 0x3721; // bidirectional: Consi
 static constexpr uint16_t ZN_OP_LootRequest    = 0x4e20; // client -> zone: int32 corpse entity ID
 static constexpr uint16_t ZN_OP_LootItem       = 0xa020; // bidirectional: LootingItem_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_EndLootRequest = 0x4F20; // client -> zone: int32 corpse entity ID
+static constexpr uint16_t ZN_OP_CombatAbility  = 0x5f21; // client -> zone: CombatAbility_Struct (12 bytes: m_id,m_atk,m_type)
 
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
@@ -199,6 +200,216 @@ static void FillIllusionBuf(uint8_t* buf, const char* name,
 	buf[66] = static_cast<uint8_t>(static_cast<uint16_t>(texture));  buf[67] = static_cast<uint8_t>(static_cast<uint16_t>(texture) >> 8);
 	buf[68] = static_cast<uint8_t>(static_cast<uint16_t>(helm));     buf[69] = static_cast<uint8_t>(static_cast<uint16_t>(helm)    >> 8);
 	buf[70] = static_cast<uint8_t>(static_cast<uint16_t>(face));     buf[71] = static_cast<uint8_t>(static_cast<uint16_t>(face)    >> 8);
+}
+
+// ============================================================
+// Trilogy → EQEmu skill-ID translation.
+//
+// Source: EQClassic/LS/zone/skills.h (HIGHEST_SKILL = 73; active
+// macro block at the top of the file — the commented "Socket
+// 12/28/01" variant is NOT in use).  The active EQClassic enum is
+// numerically identical to EQ::skills::SkillType for indices 0-73,
+// so the active-skill mapping is the identity function.  This
+// helper exists as the single chokepoint so:
+//   * passive skills the server resolves itself (defence, parry,
+//     dodge, riposte, block, meditate, channeling, swimming,
+//     sense-heading, safe-fall, specializations, alcohol-tolerance)
+//     are filtered out — the Trilogy client never sends an active
+//     opcode for them, and forwarding them as combat abilities
+//     would corrupt server state;
+//   * any future divergence (RoF2's Skill1HPiercing renumber,
+//     SoF+'s Frenzy/RemoveTraps/TripleAttack/2HPiercing tail) has
+//     one place to fix;
+//   * out-of-range values from a corrupt packet return -1 instead
+//     of falling through to a valid skill enum slot.
+//
+// Returns -1 when the skill is passive, out-of-range, or has no
+// modern equivalent — caller MUST treat -1 as "drop the packet".
+// ============================================================
+static int TranslateTrilogySkillId(uint8_t classic_skill)
+{
+	// EQClassic active skill IDs (skills.h, top block):
+	//   0  1H_BLUNT          25 FEIGN_DEATH       50 SWIMMING        (P)
+	//   1  1H_SLASHING       26 FLYING_KICK       51 THROWING
+	//   2  2H_BLUNT          27 FORAGE            52 TIGER_CLAW
+	//   3  2H_SLASHING       28 HAND_TO_HAND      53 TRACKING
+	//   4  ABJURE            29 HIDE              54 WIND_INSTRUMENTS
+	//   5  ALTERATION        30 KICK              55 FISHING
+	//   6  APPLY_POISON      31 MEDITATE      (P) 56 MAKE_POISON
+	//   7  ARCHERY           32 MEND              57 TINKERING
+	//   8  BACKSTAB          33 OFFENSE       (P) 58 RESEARCH
+	//   9  BIND_WOUND        34 PARRY         (P) 59 ALCHEMY
+	//  10  BASH              35 PICK_LOCK         60 BAKING
+	//  11  BLOCK         (P) 36 PIERCING          61 TAILORING
+	//  12  BRASS_INSTR       37 RIPOSTE       (P) 62 SENSE_TRAPS
+	//  13  CHANNELING    (P) 38 ROUND_KICK        63 BLACKSMITHING
+	//  14  CONJURATION       39 SAFE_FALL     (P) 64 FLETCHING
+	//  15  DEFENSE       (P) 40 SENSE_HEADING (P) 65 BREWING
+	//  16  DISARM            41 SINGING           66 ALCOHOL_TOL (P)
+	//  17  DISARM_TRAPS      42 SNEAK             67 BEGGING
+	//  18  DIVINATION        43 SPEC_ABJURE   (P) 68 JEWELRY_MAKING
+	//  19  DODGE         (P) 44 SPEC_ALTER    (P) 69 POTTERY
+	//  20  DOUBLE_ATTACK (P) 45 SPEC_CONJ     (P) 70 PERC_INSTR
+	//  21  DRAGON_PUNCH      46 SPEC_DIV      (P) 71 INTIMIDATION
+	//  22  DUAL_WIELD    (P) 47 SPEC_EVOC     (P) 72 BERSERKING
+	//  23  EAGLE_STRIKE      48 PICK_POCKETS      73 TAUNT
+	//  24  EVOCATION         49 STRINGED_INSTR
+	// (P) = passive — server-resolved on auto-attack / move / cast;
+	//       never triggered by an active client opcode in v29c.
+	//
+	// SAFE_FALL is marked passive here because the OP_SafeFallSuccess
+	// opcode (0xab21) is a status notification, not a "use" — the
+	// client tells the server "I fell"; the server does the absorb
+	// math.  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
+	// "client asks for heading text" ping, not a combat ability.
+	if (classic_skill > 73) {
+		return -1;
+	}
+	switch (classic_skill) {
+		// Passive — drop, server handles them in its own combat / move loop.
+		case 11: // BLOCK
+		case 13: // CHANNELING
+		case 15: // DEFENSE
+		case 19: // DODGE
+		case 20: // DOUBLE_ATTACK
+		case 22: // DUAL_WIELD
+		case 31: // MEDITATE
+		case 33: // OFFENSE
+		case 34: // PARRY
+		case 37: // RIPOSTE
+		case 39: // SAFE_FALL
+		case 40: // SENSE_HEADING
+		case 43: // SPECIALIZE_ABJURE
+		case 44: // SPECIALIZE_ALTERATION
+		case 45: // SPECIALIZE_CONJURATION
+		case 46: // SPECIALIZE_DIVINATION
+		case 47: // SPECIALIZE_EVOCATION
+		case 50: // SWIMMING
+		case 66: // ALCOHOL_TOLERANCE
+			return -1;
+		default:
+			// 0-73 identity: EQClassic and EQ::skills::SkillType share
+			// the same ordering through SkillTaunt.  Verified against
+			// Server/common/skills.h.
+			return static_cast<int>(classic_skill);
+	}
+}
+
+// ============================================================
+// HandleTrilogyCombatAbility — translate v29c OP_CombatAbility
+// (0x5f21) into the modern EQEmu OP_CombatAbility shape and feed
+// it to Client::Handle_OP_CombatAbility.
+//
+// Trilogy CombatAbility_Struct (12 bytes, EQClassic LS
+// eq_packet_structs.h):
+//     int32 m_id;    // target entity id
+//     int32 m_atk;   // attack-slot flag — 11 = ranged slot,
+//                    // 100 = SLAM / Backstab marker, else 0
+//     int32 m_type;  // for monks: raw EQClassic skill id
+//                    //   (FLYING_KICK=26, TIGER_CLAW=52,
+//                    //    EAGLE_STRIKE=23, DRAGON_PUNCH=21,
+//                    //    ROUND_KICK=38, KICK=30)
+//                    // for ranged: 7 = archery, 51 = throwing
+//                    // for SLAM:   10 = bash (matches m_atk=100)
+//                    // otherwise:  meaningless — class decides
+//
+// Modern EQEmu CombatAbility_Struct (12 bytes,
+// Server/common/eq_packet_structs.h):
+//     uint32 m_target;
+//     uint32 m_atk;     // forwarded unchanged
+//     uint32 m_skill;   // EQ::skills::SkillType
+//
+// The dispatch rules mirror EQClassic Zone/Source/client_process.cpp
+// :: Client::ProcessOP_CombatAbility (lines 2945-3234):
+//   1. SLAM   — m_atk == 100 && m_type == 10        → SkillBash
+//   2. ARCHER — m_atk == 11  && m_type == 7         → SkillArchery
+//   3. THROW  — m_atk == 11  && m_type == 51        → SkillThrowing
+//   4. Class fallback (no skill in payload):
+//        WARRIOR / RANGER / PALADIN / SHADOWKNIGHT  → SkillKick
+//        MONK                                       → m_type
+//                                                     (already an
+//                                                     EQClassic id)
+//        ROGUE  && m_atk == 100                     → SkillBackstab
+// Anything else → drop (returns false).
+// ============================================================
+static bool TranslateTrilogyCombatAbility(
+    Client* c, const uint8_t* payload, size_t plen,
+    ::CombatAbility_Struct& out)
+{
+	if (!c || plen < 12) {
+		return false;
+	}
+	int32_t m_id   = 0;
+	int32_t m_atk  = 0;
+	int32_t m_type = 0;
+	memcpy(&m_id,   payload + 0, 4);
+	memcpy(&m_atk,  payload + 4, 4);
+	memcpy(&m_type, payload + 8, 4);
+
+	int skill = -1;
+
+	// Rule 1: SLAM (bash without shield, large-race warrior special).
+	if (m_atk == 100 && m_type == 10) {
+		skill = static_cast<int>(EQ::skills::SkillBash);
+	}
+	// Rule 2: Ranged dispatch — m_atk == EQ::invslot::slotRange (11).
+	else if (m_atk == 11) {
+		if (m_type == 7) {
+			skill = static_cast<int>(EQ::skills::SkillArchery);
+		}
+		else if (m_type == 51) {
+			skill = static_cast<int>(EQ::skills::SkillThrowing);
+		}
+		else {
+			return false;
+		}
+	}
+	// Rule 3: Class-based fallback — payload carries no skill id.
+	else {
+		switch (c->GetClass()) {
+			case Class::Warrior:
+			case Class::Ranger:
+			case Class::Paladin:
+			case Class::ShadowKnight:
+				skill = static_cast<int>(EQ::skills::SkillKick);
+				break;
+			case Class::Monk: {
+				// Monk's m_type IS the EQClassic skill id; route it
+				// through the matrix so passive/garbage values get
+				// rejected.  All five monk specials (FLYING_KICK,
+				// TIGER_CLAW, EAGLE_STRIKE, DRAGON_PUNCH, ROUND_KICK)
+				// plus KICK are active and pass through unchanged.
+				if (m_type < 0 || m_type > 0xFF) {
+					return false;
+				}
+				skill = TranslateTrilogySkillId(static_cast<uint8_t>(m_type));
+				if (skill < 0) {
+					return false;
+				}
+				break;
+			}
+			case Class::Rogue:
+				if (m_atk == 100) {
+					skill = static_cast<int>(EQ::skills::SkillBackstab);
+				}
+				else {
+					return false;
+				}
+				break;
+			default:
+				return false;
+		}
+	}
+
+	if (skill < 0) {
+		return false;
+	}
+
+	memset(&out, 0, sizeof(out));
+	out.m_target = static_cast<uint32_t>(m_id);
+	out.m_atk    = static_cast<uint32_t>(m_atk);
+	out.m_skill  = static_cast<uint32_t>(skill);
+	return true;
 }
 
 // ============================================================
@@ -860,6 +1071,20 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket conpkt(OP_Consider, sizeof(::Consider_Struct));
 				memcpy(conpkt.pBuffer, &con_emu, sizeof(con_emu));
 				s.trilogy_client->Handle_OP_Consider(&conpkt);
+			}
+		}
+		else if (opcode == ZN_OP_CombatAbility && s.trilogy_client) {
+			// Trilogy v29c sends a 12-byte CombatAbility_Struct (m_id,m_atk,m_type
+			// — 3 × int32 LE).  TranslateTrilogyCombatAbility decodes the (m_atk,
+			// m_type, class) triple into a modern m_skill, builds the EQEmu shape,
+			// and we hand it straight to Client::Handle_OP_CombatAbility — same
+			// entry point Titanium+ uses, so all server-side timer / range /
+			// skill-check logic in OPCombatAbility runs unchanged.
+			::CombatAbility_Struct ca_emu{};
+			if (TranslateTrilogyCombatAbility(s.trilogy_client, payload, plen, ca_emu)) {
+				EQApplicationPacket capkt(OP_CombatAbility, sizeof(::CombatAbility_Struct));
+				memcpy(capkt.pBuffer, &ca_emu, sizeof(ca_emu));
+				s.trilogy_client->Handle_OP_CombatAbility(&capkt);
 			}
 		}
 		else if (opcode == ZN_OP_LootRequest && s.trilogy_client) {
