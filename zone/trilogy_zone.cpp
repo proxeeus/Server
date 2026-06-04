@@ -35,6 +35,7 @@
 #include "guild_mgr.h"
 #include "quest_parser_collection.h"
 #include "event_codes.h"
+#include "string_ids.h"
 #include <any>
 
 extern Zone*       zone;
@@ -1670,7 +1671,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.factionamt1, it.factionamt2, it.factionamt3, it.factionamt4,"
 		" it.deity,"
 		" it.bagtype, it.bagslots, it.bagsize, it.bagwr,"
-		" it.book, it.booktype, it.filename"
+		" it.book, it.booktype, it.filename,"
+		// Lore-marker source columns — see comment in the loop where ci.lore is filled.
+		" it.loregroup, it.summonedflag, it.artifactflag, it.pendingloreflag"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
 		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 330"
@@ -1718,8 +1721,40 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 
 		// --- header fields ---
 		if (row[3]) strncpy(ci.name,   row[3], sizeof(ci.name)   - 1);
-		if (row[4]) strncpy(ci.lore,   row[4], sizeof(ci.lore)   - 1);
 		if (row[5]) strncpy(ci.idfile, row[5], sizeof(ci.idfile)  - 1);
+
+		// Lore prefix.  EQClassic/Trilogy clients use the first character of
+		// the Lore string as a flag marker (confirmed in EQClassic source):
+		//   '*' = Lore, '&' = Summoned, '#' = Artifact, '~' = Pending Lore.
+		// EQEmu stores these as separate columns (loregroup / summonedflag /
+		// artifactflag / pendingloreflag) and a clean lore name, so reconstruct
+		// the marker — without this the Trilogy client never displays the
+		// "Lore" tag (NoDrop works because it has a dedicated wire field).
+		// Column indices: see SELECT above (80=loregroup, 81=summonedflag,
+		// 82=artifactflag, 83=pendingloreflag).
+		const char* src_lore = row[4] ? row[4] : "";
+		if (src_lore[0] == '*' || src_lore[0] == '#' ||
+		    src_lore[0] == '~' || src_lore[0] == '&') {
+			++src_lore; // skip embedded legacy marker
+		}
+
+		const int32 col_loregroup    = row[80] ? Strings::ToInt(row[80])  : 0;
+		const bool  col_summoned     = row[81] && Strings::ToBool(row[81]);
+		const bool  col_artifact     = row[82] && Strings::ToBool(row[82]);
+		const bool  col_pendinglore  = row[83] && Strings::ToBool(row[83]);
+
+		char lore_prefix = 0;
+		if      (col_artifact)            lore_prefix = '#';
+		else if (col_loregroup != 0)      lore_prefix = '*'; // LoreFlag = LoreGroup != 0
+		else if (col_pendinglore)         lore_prefix = '~';
+		else if (col_summoned)            lore_prefix = '&';
+
+		if (lore_prefix) {
+			ci.lore[0] = lore_prefix;
+			strncpy(ci.lore + 1, src_lore, sizeof(ci.lore) - 2);
+		} else {
+			strncpy(ci.lore, src_lore, sizeof(ci.lore) - 1);
+		}
 
 		ci.weight    = static_cast<uint8>(std::min(255, Strings::ToInt(row[6])));
 		ci.norent    = static_cast<int8>(Strings::ToInt(row[7]));   // 1=normal, 0=norent
@@ -3528,6 +3563,15 @@ void TrilogyZoneServer::HandleShopPlayerBuy(const std::string& addr, int port, S
 	// This also avoids creating one non-stackable item with charges=qty.
 	if (!item->Stackable) qty = 1;
 	if (qty < 1) return;
+
+	// Lore conflict — this path bypasses Handle_OP_ShopPlayerBuy (which is where
+	// EQEmu normally enforces lore), so we have to check here ourselves.  The
+	// TrilogyClient override of CheckLoreConflict queries the inventory DB
+	// directly so previously-bought lore items (never added to m_inv) are seen.
+	if (s.trilogy_client->CheckLoreConflict(item)) {
+		s.trilogy_client->MessageString(Chat::Red, DUP_LORE);
+		return;
+	}
 
 	// Check inventory space and funds BEFORE mutating anything (no refund paths).
 	int free_slot = FindFreeTrilogyInvSlot(s.char_id);

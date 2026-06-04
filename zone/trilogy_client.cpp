@@ -170,6 +170,47 @@ TrilogyClient::TrilogyClient(
 }
 
 // ============================================================
+// CheckLoreConflict — DB-authoritative override (see header comment)
+//
+// Trilogy direct-DB ops (buy/sell/bank/HandleMoveItem) bypass m_inv, so the
+// base Client::CheckLoreConflict (which queries m_inv) is unreliable for
+// Trilogy clients after the zone-in load.  We query the `inventory` table
+// directly using the same rules as EQ::ItemData::CheckLoreConflict:
+//   • LoreFlag must be set and LoreGroup != 0 on the candidate.
+//   • LoreGroup == -1 → conflict if an item with the same `itemid` already exists.
+//   • LoreGroup  >  0 → conflict if any owned item has that same loregroup.
+// Shared-bank slots (DB 2500-2999) are excluded to mirror the base behaviour;
+// Trilogy never uses shared bank but staying consistent keeps the rule simple.
+// ============================================================
+
+bool TrilogyClient::CheckLoreConflict(const EQ::ItemData* item)
+{
+	if (!item)             return false;
+	if (!item->LoreFlag)   return false;
+	if (item->LoreGroup == 0) return false;
+
+	std::string q;
+	if (item->LoreGroup == -1) {
+		// Standard "Lore Item" — any owned copy of the same item id collides.
+		q = fmt::format(
+		    "SELECT 1 FROM `inventory` "
+		    "WHERE `charid`={} AND `itemid`={} "
+		    "AND (`slotid` < 2500 OR `slotid` >= 3000) LIMIT 1",
+		    CharacterID(), item->ID);
+	} else {
+		// Lore group — any owned item sharing that group collides.
+		q = fmt::format(
+		    "SELECT 1 FROM `inventory` i JOIN `items` it ON i.`itemid` = it.`id` "
+		    "WHERE i.`charid`={} AND it.`loregroup`={} "
+		    "AND (i.`slotid` < 2500 OR i.`slotid` >= 3000) LIMIT 1",
+		    CharacterID(), item->LoreGroup);
+	}
+
+	auto r = database.QueryDatabase(q);
+	return r.Success() && r.RowCount() > 0;
+}
+
+// ============================================================
 // QueuePacket / FastQueuePacket — intercept all outgoing packets
 // ============================================================
 
@@ -1788,8 +1829,35 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 	memset(&ci, 0, sizeof(ci));
 
 	strncpy(ci.name,   it->Name,   sizeof(ci.name)   - 1);
-	strncpy(ci.lore,   it->Lore,   sizeof(ci.lore)   - 1);
 	strncpy(ci.idfile, it->IDFile, sizeof(ci.idfile)  - 1);
+
+	// Lore prefix.  EQClassic/Trilogy clients use the first character of the
+	// Lore string as a flag marker — confirmed in EQClassic source:
+	//   '*' = Lore, '&' = Summoned, '#' = Artifact, '~' = Pending Lore.
+	// EQEmu stores these as separate bool fields (LoreFlag / SummonedFlag /
+	// ArtifactFlag / PendingLoreFlag) with a clean Lore name, so we have to
+	// reconstruct the marker here or the client never shows the "Lore" tag
+	// (the NoDrop tag worked because it has a dedicated wire field).
+	const char* src_lore = it->Lore;
+	if (src_lore && (src_lore[0] == '*' || src_lore[0] == '#' ||
+	                 src_lore[0] == '~' || src_lore[0] == '&')) {
+		// Legacy data already carries an embedded prefix — skip it so we don't
+		// end up with "**name" when the flag is also set in modern columns.
+		++src_lore;
+	}
+
+	char lore_prefix = 0;
+	if      (it->ArtifactFlag)    lore_prefix = '#';
+	else if (it->LoreFlag)        lore_prefix = '*';
+	else if (it->PendingLoreFlag) lore_prefix = '~';
+	else if (it->SummonedFlag)    lore_prefix = '&';
+
+	if (lore_prefix) {
+		ci.lore[0] = lore_prefix;
+		strncpy(ci.lore + 1, src_lore ? src_lore : "", sizeof(ci.lore) - 2);
+	} else {
+		strncpy(ci.lore, src_lore ? src_lore : "", sizeof(ci.lore) - 1);
+	}
 
 	ci.weight    = static_cast<uint8>(std::min(255, it->Weight > 0 ? it->Weight : 0));
 	ci.norent    = static_cast<int8>(it->NoRent);

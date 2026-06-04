@@ -122,6 +122,15 @@ public:
 
 	bool IsTrilogyClient() const override { return true; }
 
+	// Lore conflict check (override).
+	//
+	// The base Client::CheckLoreConflict queries m_inv only.  Trilogy direct-DB
+	// ops (buy/sell/bank/HandleMoveItem) mutate the `inventory` table without
+	// touching m_inv, so it goes stale during a session and the base check can
+	// miss items the player actually owns.  Query DB authoritatively here so
+	// every caller (loot, summon, forage, the buy path, …) sees the real state.
+	bool CheckLoreConflict(const EQ::ItemData* item) override;
+
 	// Override both queue paths to intercept all outgoing packets.
 	void QueuePacket(const EQApplicationPacket* app,
 	                 bool               ack_req       = true,
