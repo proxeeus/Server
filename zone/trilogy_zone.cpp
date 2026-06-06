@@ -154,6 +154,17 @@ static constexpr uint16_t ZN_OP_Beg          = 0x2521; // 18 B {int32 target; in
 static constexpr uint16_t ZN_OP_InstillDoubt = 0x9c21; // 12 B {12 × int8 — fields not consumed server-side}
 static constexpr uint16_t ZN_OP_Taunt        = 0x3b21; // 12 B {int16 tauntTarget; int16; int16 tauntUser; int8[6]}
 
+// Item-consume opcodes (client -> zone).  V29c splits consume across two
+// opcodes; modern EQEmu has dedicated handlers for each:
+//   ZN_OP_ConsumeItem      → Handle_OP_DeleteItem (alcohol skill-up + stack
+//                            decrement; also covers arrow stack drain on
+//                            ranged use, which is harmless to forward).
+//   ZN_OP_ConsumeFoodDrink → Handle_OP_Consume   (hunger/thirst tick + stack
+//                            decrement; struct is byte-identical to legacy
+//                            Consume_Struct, only the slot needs translation).
+static constexpr uint16_t ZN_OP_ConsumeItem      = 0x4621; // 12 B {int16 slot; int8[2]; int32[2]} — right-click alcohol / arrow consumed
+static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; int32 auto; int8[4]; int8 type; int8[3]}
+
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
@@ -1348,6 +1359,79 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 
 				default: break;
+			}
+		}
+		else if (opcode == ZN_OP_ConsumeItem && s.trilogy_client) {
+			// V29c right-click consume (alcohol vials, arrow stacks, etc.).
+			// Legacy ConsumeItem_Struct { int16 slot; int8 other[2]; int32 filler[2] }
+			// = 12 B.  Modern EQEmu funnels equivalent traffic through
+			// OP_DeleteItem / Handle_OP_DeleteItem (client_packet.cpp:5779), which:
+			//   1. Looks up the item via GetInv().GetItem(from_slot).
+			//   2. If item.ItemType == ItemTypeAlcohol → CheckIncreaseSkill
+			//      (SkillAlcoholTolerance, nullptr, 25) + intoxication tick +
+			//      drinking-message broadcast.
+			//   3. DeleteItemInInventory(from_slot, 1) to decrement the stack.
+			//
+			// Without this bridge, alcohol-tolerance never skills up AND the
+			// inventory stack stays full server-side (m_inv-vs-DB desync on the
+			// next save).  Matches EQClassic ProcessOP_ConsumeItem semantics
+			// (client_process.cpp:5140-5168) — decrement on every consume,
+			// skill-up only when the item is flagged ItemTypeAlcohol.
+			if (plen < 12) {
+				// Drop silently — malformed packet, not worth logging.
+			}
+			else {
+				int16_t wire_slot = 0;
+				memcpy(&wire_slot, payload, 2);
+				const int emu_slot =
+				    TrilogyWireSlotToEmuSlot(
+				        static_cast<uint32_t>(static_cast<uint16_t>(wire_slot)),
+				        s.cursor_from_db);
+				if (emu_slot >= 0) {
+					::DeleteItem_Struct di{};
+					di.from_slot       = static_cast<uint32_t>(emu_slot);
+					di.to_slot         = 0;
+					di.number_in_stack = 1;
+					EQApplicationPacket pkt(OP_DeleteItem,
+					                        sizeof(::DeleteItem_Struct));
+					memcpy(pkt.pBuffer, &di, sizeof(di));
+					s.trilogy_client->Handle_OP_DeleteItem(&pkt);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_ConsumeFoodDrink && s.trilogy_client) {
+			// V29c auto/right-click food/drink consume.  Legacy + modern
+			// Consume_Struct are byte-identical (16 B):
+			//     uint32 slot
+			//     uint32 auto_consumed  // 0xffffffff = auto, else right-click
+			//     uint8  c_unknown1[4]
+			//     uint8  type           // 1 = food, 2 = drink
+			//     uint8  unknown13[3]
+			// Modern Handle_OP_Consume (client_packet.cpp:5450) reads
+			// pcs->slot as a RoF2 inventory slot, so the slot field is the only
+			// thing that needs translation; everything else passes through.
+			//
+			// The handler runs hunger_level / thirst_level deltas, decrements
+			// the stack via Consume(), clamps to 50000, and sends an OP_Stamina
+			// update back to the client.  Without this bridge the server
+			// hunger/thirst loop never ticks for v29c characters, food stacks
+			// don't decrement server-side (m_inv-vs-DB desync at save), and
+			// the auto-eat tick from the v29c client is dropped.
+			if (plen < sizeof(::Consume_Struct)) {
+				// Drop silently — malformed, not worth logging.
+			}
+			else {
+				::Consume_Struct cs{};
+				memcpy(&cs, payload, sizeof(::Consume_Struct));
+				const int emu_slot =
+				    TrilogyWireSlotToEmuSlot(cs.slot, s.cursor_from_db);
+				if (emu_slot >= 0) {
+					cs.slot = static_cast<uint32_t>(emu_slot);
+					EQApplicationPacket pkt(OP_Consume,
+					                        sizeof(::Consume_Struct));
+					memcpy(pkt.pBuffer, &cs, sizeof(cs));
+					s.trilogy_client->Handle_OP_Consume(&pkt);
+				}
 			}
 		}
 		else if (opcode == ZN_OP_LootRequest && s.trilogy_client) {
