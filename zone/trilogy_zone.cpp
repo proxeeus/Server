@@ -4369,6 +4369,18 @@ void TrilogyZoneServer::Tick()
 		Session& s = kv.second;
 		if (s.state != CONNECTED) continue;
 
+		// Camp interrupt: classic EQ behaviour cancels /camp the moment the
+		// player takes hostile attention (mob added them to its hate list).
+		// The Trilogy client already aborts its own camp UI and stands the
+		// player up when aggro hits; without this check the server's 29 s
+		// timer keeps ticking and force-disconnects a now-active player
+		// mid-combat.  Once cancelled, a fresh /camp can re-arm normally.
+		if (s.camping && s.trilogy_client && s.trilogy_client->GetAggroCount() > 0) {
+			LogInfo("[TrilogyZone] Camp aborted for {} — aggro'd during camp window", s.char_name);
+			s.camping    = false;
+			s.camp_start = 0;
+		}
+
 		// Camp completion: 29s after OP_Camp was received, save + disconnect.
 		if (s.camping && s.trilogy_client && now - s.camp_start >= 29) {
 			LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
@@ -4457,6 +4469,45 @@ void TrilogyZoneServer::Tick()
 
 	for (uint64_t key : camp_complete)
 		RemoveSession(key);
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Drain the per-session outbound rate-limiter queues.
+	//
+	// SendApp queues application packets when bursts exceed WINDOW_PACKETS
+	// per WINDOW_MS (see SendApp for rationale).  Here we pop up to the
+	// remaining budget and re-call SendApp with draining_outbound=true so it
+	// bypasses the queue check and just sends.
+	//
+	// Runs last so any session that was removed earlier in Tick (camp-out,
+	// timeout) has already vanished from m_sessions — its queue goes with it.
+	// ──────────────────────────────────────────────────────────────────────
+	{
+		constexpr uint32_t WINDOW_PACKETS = 50;
+		constexpr uint64_t WINDOW_MS      = 100;
+
+		for (auto& kv : m_sessions) {
+			Session& s = kv.second;
+			if (s.outbound_queue.empty()) continue;
+			if (s.state != CONNECTED) continue;
+
+			if (now_ms - s.outbound_window_start_ms >= WINDOW_MS) {
+				s.outbound_window_count    = 0;
+				s.outbound_window_start_ms = now_ms;
+			}
+
+			s.draining_outbound = true;
+			while (!s.outbound_queue.empty() && s.outbound_window_count < WINDOW_PACKETS) {
+				Session::QueuedAppPacket pkt = std::move(s.outbound_queue.front());
+				s.outbound_queue.pop_front();
+				SendApp(s.source_addr, s.source_port, s, pkt.opcode,
+				        pkt.payload.empty() ? nullptr : pkt.payload.data(),
+				        static_cast<uint32_t>(pkt.payload.size()),
+				        pkt.ack_req);
+				++s.outbound_window_count;
+			}
+			s.draining_outbound = false;
+		}
+	}
 }
 
 bool TrilogyZoneServer::HasConnectedSession() const
@@ -4489,13 +4540,54 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// Mob positions are ephemeral so they are never buffered — just skip entirely.
 	if (s.trilogy_client && s.trilogy_client->IsZoning()) return;
 
-	// Rate-limit to 250ms (4 Hz) — matches EQClassic entity_list.SendPositionUpdates()
-	// interval. Without this every incoming packet (including 0x4121 responses to A120)
-	// triggers another A120, creating an unbounded feedback loop at ~1000+ pps.
+	// Rate-limit heartbeats. Idle/exploration: 250 ms (4 Hz) — matches EQClassic
+	// entity_list.SendPositionUpdates() interval and keeps the inbound packet flood
+	// off the v29c receive buffer. Combat: 100 ms (10 Hz) — a charging mob can close
+	// 40+ ft between idle ticks, and the v29c client has no good way to interpolate
+	// that, so it visibly ghosts/warps on the final approach.
+	//
+	// Combat is detected two ways:
+	//   1. GetAggroCount() > 0 — at least one NPC has THIS player on hate. Cheapest
+	//      and most common case (player tanking / being chased).
+	//   2. Nearby-combat scan — any engaged NPC within visible range. Required for
+	//      NPC-vs-NPC fights (faction wars, charmed pets, summoned vs roaming),
+	//      which never bump AggroCount but still ghost animation-wise at 250 ms.
+	//      Scan is cached at ~2 Hz to keep the hot path cheap.
+	//
+	// Without rate-limiting, every inbound 0x4121 (client ACK of A120) would
+	// re-trigger a heartbeat send and the chain would feed back at ~1000+ pps.
 	uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
-	if (now_ms - s.last_heartbeat_ms < 100) return;
+
+	uint32_t throttle_ms = 250;
+	if (s.trilogy_client && s.trilogy_client->GetAggroCount() > 0) {
+		throttle_ms = 100;
+	}
+	else if (s.trilogy_client) {
+		// Refresh nearby-combat cache every 500 ms.
+		if (now_ms - s.last_combat_scan_ms >= 500) {
+			s.last_combat_scan_ms = now_ms;
+			s.nearby_combat       = false;
+			// 400 unit radius (~1.3× cull/2) — covers what the player can plausibly
+			// see; tighter than CULL_RADIUS so distant unrelated NPC fights don't
+			// force 100 ms on the entire zone.
+			constexpr float COMBAT_RADIUS_SQ = 400.0f * 400.0f;
+			for (const auto& kv : entity_list.GetNPCList()) {
+				NPC* npc = kv.second;
+				if (!npc || !npc->IsEngaged()) continue;
+				float dx = npc->GetX() - s.pos_x;
+				float dy = npc->GetY() - s.pos_y;
+				if (dx * dx + dy * dy <= COMBAT_RADIUS_SQ) {
+					s.nearby_combat = true;
+					break;
+				}
+			}
+		}
+		if (s.nearby_combat) throttle_ms = 100;
+	}
+
+	if (now_ms - s.last_heartbeat_ms < throttle_ms) return;
 	s.last_heartbeat_ms = now_ms;
 
 	// Build batched A120 packets containing current NPC positions.
@@ -4630,6 +4722,67 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
                                  bool ack_req)
 {
 	if (!m_send_fn) return;
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Per-session outbound rate limiter.
+	//
+	// Backstops burst events (#repop, mass-aggro, AoE) that synthesize
+	// hundreds of broadcast packets in one tick.  Without this the v29c
+	// client's UDP receive buffer overflows and it silently drops the
+	// session (the cli_arq-stuck-then-disconnect failure mode).
+	//
+	// Bypassed when:
+	//   - draining_outbound : Tick's drain loop re-entering SendApp; must send
+	//   - state != CONNECTED : handshake packets must flow immediately
+	//   - opcode == A120     : heartbeat is already self-throttled and skipping
+	//                          one is harmless (next tick fires anyway)
+	//   - fragmented packet  : its multiple datagrams must stay coherent on
+	//                          the wire for client-side reassembly
+	//
+	// Budget: WINDOW_PACKETS per WINDOW_MS.  At 500 pps this is ~6× a normal
+	// player's steady-state outbound rate, with plenty of headroom for
+	// concurrent NPC HP/spawn updates, but well under the burst rate that
+	// overwhelms v29c.
+	{
+		constexpr uint32_t WINDOW_PACKETS  = 50;     // 50 per 100ms → 500 pps cap
+		constexpr uint64_t WINDOW_MS       = 100;
+		constexpr size_t   QUEUE_HARD_CAP  = 10000;  // ~10MB worst case; #repop ≈ 3000
+
+		const int  frags        = static_cast<int>(plen >> 9);
+		const bool ratelimitable = !s.draining_outbound
+		                        && s.state == CONNECTED
+		                        && opcode != ZN_OP_MobUpdate
+		                        && frags == 0;
+
+		if (ratelimitable) {
+			uint64_t now_ms = static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count());
+
+			if (now_ms - s.outbound_window_start_ms >= WINDOW_MS) {
+				s.outbound_window_count    = 0;
+				s.outbound_window_start_ms = now_ms;
+			}
+
+			// Queue if over budget OR if there's already a backlog — preserving
+			// FIFO order matters so the client sees a coherent sequence.
+			if (!s.outbound_queue.empty() || s.outbound_window_count >= WINDOW_PACKETS) {
+				if (s.outbound_queue.size() >= QUEUE_HARD_CAP) {
+					LogInfo("[TrilogyZone] outbound queue at hard cap ({}), dropping opcode={:04X} for char [{}]",
+					        QUEUE_HARD_CAP, opcode, s.char_name);
+					return;
+				}
+				Session::QueuedAppPacket q;
+				q.opcode  = opcode;
+				if (plen > 0 && payload) q.payload.assign(payload, payload + plen);
+				q.ack_req = ack_req;
+				s.outbound_queue.push_back(std::move(q));
+				return;
+			}
+
+			++s.outbound_window_count;
+		}
+	}
 
 	// One-and-done SpawnCorrect heading fix.
 	// pending_heading_sync is armed by SendPlayerProfile and cleared here the

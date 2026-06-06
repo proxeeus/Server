@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <ctime>
+#include <deque>
 #include <functional>
 #include <map>
 #include <string>
@@ -115,6 +116,35 @@ private:
 
 		// Heartbeat rate limiting — A120 sent at most once per 100ms
 		uint64_t    last_heartbeat_ms = 0;
+
+		// Nearby-combat cache for adaptive heartbeat throttle.  GetAggroCount() only
+		// fires when mobs hate THIS player; NPC-vs-NPC fights (faction wars, charmed
+		// pets, summoned vs roaming) leave that at 0 even though the player visibly
+		// sees combatants moving and needs 100ms updates to avoid ghost/warp.  Scan
+		// is cached at ~2 Hz to keep the heartbeat path cheap.
+		uint64_t    last_combat_scan_ms  = 0;
+		bool        nearby_combat        = false;
+
+		// ── Per-session outbound rate limiter ────────────────────────────────
+		// v29c's UDP receive buffer is small and the client can't keep up with
+		// bursts of hundreds of broadcast packets in one tick (#repop, mass
+		// aggro, big AoE).  Without rate-limiting, the client silently drops
+		// the session — the classic "cli_arq stuck for thousands of SEQ, then
+		// disconnect" failure mode.  SendApp queues into outbound_queue when
+		// the per-window budget is exceeded; Tick drains it at a sustainable
+		// rate.  Heartbeats (A120), fragmented packets, and packets sent during
+		// the CONNECTING* handshake bypass this entirely.
+		struct QueuedAppPacket {
+			uint16_t             opcode  = 0;
+			std::vector<uint8_t> payload;
+			bool                 ack_req = true;
+		};
+		std::deque<QueuedAppPacket> outbound_queue;
+		uint32_t                    outbound_window_count    = 0;
+		uint64_t                    outbound_window_start_ms = 0;
+		// Set true by Tick's drain loop so the re-entrant SendApp call bypasses
+		// the queue check (it would otherwise immediately re-queue).
+		bool                        draining_outbound = false;
 
 		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion
 		uint64_t    last_stamina_ms   = 0;
