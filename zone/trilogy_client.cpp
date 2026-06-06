@@ -23,6 +23,7 @@
 #include "doors.h"
 #include "object.h"
 #include "npc.h"
+#include "water_map.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/item_instance.h"
@@ -772,6 +773,14 @@ void TrilogyClient::OnClientReady()
 
 void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float heading)
 {
+	// Capture the prior x/y BEFORE SetPosition so the moving flag can be derived
+	// from the actual delta — matching the modern Client::Handle_OP_ClientUpdate
+	// (client_packet.cpp:5013).  Without this, IsMoving() stays false for the
+	// entire session and every passive skill that gates on movement (swimming,
+	// mob-close aggro scan cadence, etc.) never fires.
+	const float prev_x = GetX();
+	const float prev_y = GetY();
+
 	// GMMove would crash inside MobMovementManager::FillCommandStruct when it
 	// tries to broadcast position to clients (mob->IsBot() on TrilogyClient
 	// triggers an access violation in the movement manager).
@@ -779,6 +788,7 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	// and proximity checks without triggering the movement manager broadcast.
 	SetPosition(x, y, z);
 	SetHeading(heading);
+	SetMoving(!(x == prev_x && y == prev_y));
 
 	// Keep m_pp in sync so SaveCharacterData writes the current position on disconnect.
 	GetPP().x       = x;
@@ -791,6 +801,23 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	// checked server-side on every position update.
 	CheckVirtualZoneLines();
 	CheckTraditionalZonePoints();
+
+	// Swimming skill-up + water-region transition.  Mirrors the watermap block
+	// in modern Client::Handle_OP_ClientUpdate (client_packet.cpp:5159-5170) —
+	// the proxy never enters that handler, so every gameplay effect that hangs
+	// off the watermap (swim skill-up, breath-timer reset on entering/leaving
+	// liquid, horse auto-dismount in water) was dead.
+	if (zone->watermap) {
+		if (zone->watermap->InLiquid(glm::vec3(GetPosition())) && IsMoving()) {
+			CheckIncreaseSkill(EQ::skills::SkillSwimming, nullptr, -17);
+
+			if (GetHorseId() && RuleB(Character, DismountWater)) {
+				SetHorseId(0);
+				BuffFadeByEffect(SE_SummonHorse);
+			}
+		}
+		CheckRegionTypeChanges();
+	}
 }
 
 // ============================================================
