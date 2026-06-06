@@ -31,6 +31,7 @@
 #include "../common/eq_packet_structs.h"
 #include "../common/eq_constants.h"
 #include "../common/strings.h"
+#include "../common/spdat.h"
 #include "command.h"
 #include "guild_mgr.h"
 #include "quest_parser_collection.h"
@@ -949,6 +950,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_WearChange)
 			HandleConnectedWearChange(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Appearance && s.trilogy_client)
+			HandleConnectedSpawnAppearance(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeCoins && s.trilogy_client)
@@ -4931,6 +4934,50 @@ void TrilogyZoneServer::HandleConnectedWearChange(const std::string& addr, int p
 }
 
 // ============================================================
+// HandleConnectedSpawnAppearance — client sent 0xf520 (SpawnAppearance_Struct, 12 bytes).
+//
+// The Trilogy client sends this for state transitions including sit/stand/crouch/lying
+// (type=0x0e Animation), invisibility toggle (type=0x03), anon/RP (type=0x15), GM hide,
+// AFK, sneak/hide, etc. Until this handler existed the entire packet was dropped, so
+// `playeraction` stayed at 0, `IsSitting()` always returned false, and the EQEmu mana
+// regen formula gave no sitting bonus → mana never regenerated and Mediate never ticked
+// (CheckIncreaseSkill in DoManaRegen is gated on IsSitting()).
+//
+// Translate to the 8-byte EQEmu SpawnAppearance_Struct and dispatch to
+// Client::Handle_OP_SpawnAppearance — it updates playeraction, sets appearance,
+// interrupts spells on sit/crouch/lying, and broadcasts to other clients in the zone
+// via entity_list.QueueClients (Titanium clients receive it directly; for Trilogy
+// clients an OP_SpawnAppearance translator in TrilogyClient::TranslateAndSend handles
+// re-encoding to 0xf520).
+//
+// Wire spawn_id is the Trilogy player_spawn_id (set at zone-in via SpawnAppearance
+// type=0x10); translate to the EQEmu entity GetID() so the equality check in
+// Handle_OP_SpawnAppearance (sa->spawn_id != GetID() → return) passes.
+// ============================================================
+
+void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
+                                                       const uint8_t* payload, uint32_t plen)
+{
+	if (plen < sizeof(Trilogy::structs::SpawnAppearance_Struct)) return;
+	if (!s.trilogy_client) return;
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::SpawnAppearance_Struct*>(payload);
+
+	EQApplicationPacket sapkt(OP_SpawnAppearance, sizeof(::SpawnAppearance_Struct));
+	auto* emu = reinterpret_cast<::SpawnAppearance_Struct*>(sapkt.pBuffer);
+	memset(emu, 0, sizeof(::SpawnAppearance_Struct));
+
+	const uint16 raw_id = static_cast<uint16>(tri->spawn_id);
+	emu->spawn_id  = (raw_id == s.player_spawn_id)
+	               ? static_cast<uint16>(s.trilogy_client->GetID())
+	               : raw_id;
+	emu->type      = static_cast<uint16>(tri->type);
+	emu->parameter = static_cast<uint32>(tri->parameter);
+
+	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
+}
+
+// ============================================================
 // HandleCastSpell — client sent 0x7e21 (CastSpell_Struct, 16 bytes).
 // Translate Trilogy wire format to EQEmu CastSpell_Struct and
 // dispatch to Client::Handle_OP_CastSpell for normal spell processing.
@@ -4972,11 +5019,22 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 
 // ============================================================
 // HandleMemorizeSpell — client sent 0x8221 (MemorizeSpell_Struct, 12 bytes).
-// Translate Trilogy scribing values to EQEmu and dispatch to
-// Client::Handle_OP_MemorizeSpell for normal memorize/scribe/forget processing.
 //
 // Trilogy scribing: 0=scribe to book, 1=memorize to gem, 3=forget gem.
 // EQEmu scribing:   0=scribe to book, 1=memorize to gem, 2=forget gem.
+//
+// Memorize/forget paths have no cursor involvement and are translated and
+// dispatched into Client::Handle_OP_MemorizeSpell unchanged.
+//
+// The scribe path is handled here directly: Trilogy inventory moves are
+// direct-DB and leave m_inv stale, so the cursor lookup in OPMemorizeSpell
+// (m_inv[slotCursor]) sees nothing and prints "Scribing a spell without an
+// Item Instance on your cursor?". We resolve the scroll from cursor_from_db
+// (set by HandleMoveItem on pickup, falls back to DB slot 33 for items that
+// arrived via loot/summon), validate level/class and scroll→spell match,
+// scribe the spell, delete the scroll from the inventory DB, and tell the
+// client to clear its cursor via OP_MoveItem(from=0, to=0xFFFFFFFF) —
+// matching the EQClassic reference's "consume cursor" pattern.
 // ============================================================
 
 void TrilogyZoneServer::HandleMemorizeSpell(const std::string& addr, int port, Session& s,
@@ -4987,17 +5045,86 @@ void TrilogyZoneServer::HandleMemorizeSpell(const std::string& addr, int port, S
 
 	const auto* tri = reinterpret_cast<const Trilogy::structs::MemorizeSpell_Struct*>(payload);
 
+	const uint32 spell_id   = static_cast<uint32>(tri->spell_id);
+	const uint32 spell_slot = static_cast<uint32>(tri->slot);
+	const uint32 scribing   = (tri->scribing == 3) ? 2u : static_cast<uint32>(tri->scribing);
+
+	LogInfo("[TrilogyZone] MemorizeSpell: char={} slot={} spell={} scribing={}",
+	        s.char_name, spell_slot, spell_id, scribing);
+
+	if (scribing == 0) {
+		// ---- Scribe path: resolve scroll from DB, validate, scribe, consume ----
+		if (!IsValidSpell(spell_id)) {
+			s.trilogy_client->Message(Chat::Red,
+			    fmt::format("Spell ID {} does not exist or is invalid.", spell_id).c_str());
+			return;
+		}
+
+		const uint8 cls = s.trilogy_client->GetClass();
+		if (!IsPlayerClass(cls) ||
+		    s.trilogy_client->GetLevel() < spells[spell_id].classes[cls - 1]) {
+			s.trilogy_client->MessageString(Chat::Red, SPELL_LEVEL_TO_LOW,
+			    std::to_string(spells[spell_id].classes[cls - 1]).c_str(),
+			    spells[spell_id].name);
+			return;
+		}
+
+		// cursor_from_db is set by HandleMoveItem when the player picks an item up
+		// off a bag/worn slot; for loot/summon the item lives at DB slot 33.
+		const int db_slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
+
+		uint32 item_id = 0;
+		{
+			auto r = database.QueryDatabase(fmt::format(
+			    "SELECT `itemid` FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+			    s.char_id, db_slot));
+			if (r.Success() && r.RowCount() > 0)
+				item_id = static_cast<uint32>(Strings::ToInt(r.begin()[0]));
+		}
+		if (item_id == 0) {
+			s.trilogy_client->Message(Chat::Red,
+			    "Scribing a spell without an item on your cursor?");
+			return;
+		}
+
+		const EQ::ItemData* item = database.GetItem(item_id);
+		if (!item || !item->IsClassCommon() ||
+		    item->Scroll.Effect != static_cast<int32>(spell_id)) {
+			s.trilogy_client->Message(Chat::Red,
+			    "Scribing spell: item on cursor is not the matching scroll.");
+			return;
+		}
+
+		s.trilogy_client->ScribeSpell(static_cast<uint16>(spell_id),
+		                              static_cast<int>(spell_slot));
+
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, db_slot));
+		s.cursor_from_db = -1;
+
+		// Tell the client to destroy the cursor item visually. The Trilogy client
+		// has no OP_DeleteItem; it expects OP_MoveItem(from=cursor, to=0xFFFFFFFF).
+		Trilogy::structs::MoveItem_Struct mv{};
+		mv.from_slot       = 0;
+		mv.to_slot         = 0xFFFFFFFFu;
+		mv.number_in_stack = 0;
+		SendApp(s.source_addr, s.source_port, s, ZN_OP_MoveItem,
+		        reinterpret_cast<const uint8_t*>(&mv), sizeof(mv));
+
+		s.trilogy_client->Save();
+		return;
+	}
+
+	// memSpellMemorize (1) / memSpellForget (2) — dispatch through the standard path.
 	auto* app = new EQApplicationPacket(OP_MemorizeSpell, sizeof(::MemorizeSpell_Struct));
 	auto* emu = reinterpret_cast<::MemorizeSpell_Struct*>(app->pBuffer);
 	memset(emu, 0, sizeof(::MemorizeSpell_Struct));
 
-	emu->slot     = static_cast<uint32>(tri->slot);
-	emu->spell_id = static_cast<uint32>(tri->spell_id);
-	emu->scribing = (tri->scribing == 3) ? 2u : static_cast<uint32>(tri->scribing);
+	emu->slot      = spell_slot;
+	emu->spell_id  = spell_id;
+	emu->scribing  = scribing;
 	emu->reduction = 0;
-
-	LogInfo("[TrilogyZone] MemorizeSpell: char={} slot={} spell={} scribing={}",
-	        s.char_name, emu->slot, emu->spell_id, emu->scribing);
 
 	s.trilogy_client->Handle_OP_MemorizeSpell(app);
 	delete app;

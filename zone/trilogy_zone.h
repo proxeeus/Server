@@ -222,6 +222,8 @@ private:
 	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
+	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
+	                                    const uint8_t* payload, uint32_t plen);
 	void HandleCastSpell(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
 	void HandleMemorizeSpell(const std::string& addr, int port, Session& s,

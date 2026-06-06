@@ -131,6 +131,16 @@ public:
 	// every caller (loot, summon, forage, the buy path, …) sees the real state.
 	bool CheckLoreConflict(const EQ::ItemData* item) override;
 
+	// Mana regen (override) — restore the classic 1999 EQ formula instead of the
+	// modern EQEmu one. The modern CalcManaRegen tops out at ~15/tic at high Mediate;
+	// Trilogy-era EQ gave ~5x more (e.g. skill 200 / level 50 ≈ 61/tic), which is
+	// what these clients were balanced for. See EQClassic LS/zone/client_process.cpp
+	// L6643-6669 for the reference. Mirrors the structure exactly:
+	//   standing → +2
+	//   sitting + below 50% mana → +(MEDITATE/10) + (Level - Level/4) + 4
+	//   sitting + at/above 50% mana → +(Level + 6)
+	int64 CalcManaRegen(bool bCombat = false) override;
+
 	// Override both queue paths to intercept all outgoing packets.
 	void QueuePacket(const EQApplicationPacket* app,
 	                 bool               ack_req       = true,
@@ -213,6 +223,7 @@ private:
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
 	void HandleOutgoingWearChange(const EQApplicationPacket* app);
+	void HandleOutgoingSpawnAppearance(const EQApplicationPacket* app);
 	// Spell / combat translators (server → Trilogy client)
 	void HandleAnimation(const EQApplicationPacket* app);
 	void HandleBeginCast(const EQApplicationPacket* app);

@@ -1887,7 +1887,7 @@ private:
 	int64 CalcMaxHP();
 	int64 CalcBaseHP();
 	int64 CalcHPRegen(bool bCombat = false);
-	int64 CalcManaRegen(bool bCombat = false);
+	virtual int64 CalcManaRegen(bool bCombat = false);
 	int64 CalcBaseManaRegen();
 	void DoHPRegen();
 	void DoManaRegen();

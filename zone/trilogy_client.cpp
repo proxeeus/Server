@@ -31,6 +31,7 @@
 #include "../common/eqemu_logsys.h"
 #include "../common/emu_versions.h"
 #include "../common/races.h"
+#include "../common/classes.h"
 #include "../common/textures.h"
 #include "string_ids.h"
 #include "../common/zone_store.h"
@@ -211,6 +212,51 @@ bool TrilogyClient::CheckLoreConflict(const EQ::ItemData* item)
 }
 
 // ============================================================
+// CalcManaRegen — classic 1999 EQ formula (override)
+//
+// EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:
+//   if (sitting && level > 0) medding = true;       // always true for live players
+//   if (medding):
+//     if (cur + skill/10 + level*3/4 + 4 < max/2):  // below half mana
+//       regen = skill/10 + (level - level/4) + 4
+//     else:                                         // approaching cap
+//       regen = level + 6
+//   else if (!sitting):
+//     regen = 2
+//
+// Bards historically did not med. Mediate skillups are handled by the base
+// DoManaRegen() (which calls CheckIncreaseSkill before SetMana) so we don't
+// duplicate that here — we just return the per-tick delta.
+//
+// AreaManaRegen and item/spell mana-regen bonuses are intentionally left out:
+// the user wants the classic feel, and those modifiers didn't exist in 1999.
+// We do honor IsStarved() (no regen while starved) since that's a basic gate.
+// ============================================================
+
+int64 TrilogyClient::CalcManaRegen(bool bCombat)
+{
+	if (IsStarved()) return 0;
+	if (GetClass() == Class::Bard) return 0;
+
+	const int level = static_cast<int>(GetLevel());
+
+	if (!IsSitting()) {
+		return 2;
+	}
+
+	const int skill = static_cast<int>(GetSkill(EQ::skills::SkillMeditate));
+	const int high_regen = (skill / 10) + (level - (level / 4)) + 4;
+	const int low_regen  = level + 6;
+
+	// Classic: if applying the full regen would still keep us under 50% mana,
+	// use the full formula; otherwise fall back to (level + 6).
+	if ((static_cast<int>(GetMana()) + high_regen) < (static_cast<int>(GetMaxMana()) / 2)) {
+		return high_regen;
+	}
+	return low_regen;
+}
+
+// ============================================================
 // QueuePacket / FastQueuePacket — intercept all outgoing packets
 // ============================================================
 
@@ -299,6 +345,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_WearChange:
 		HandleOutgoingWearChange(app);
+		break;
+	case OP_SpawnAppearance:
+		HandleOutgoingSpawnAppearance(app);
 		break;
 	case OP_Animation:
 		HandleAnimation(app);
@@ -855,6 +904,40 @@ void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x9220,
 	                     reinterpret_cast<const uint8_t*>(&wc),
 	                     static_cast<uint32_t>(sizeof(wc)));
+}
+
+// ============================================================
+// HandleOutgoingSpawnAppearance — translate EQEmu OP_SpawnAppearance
+// (8-byte ::SpawnAppearance_Struct) to Trilogy 0xf520 (12 bytes) and send.
+//
+// Fires when ANY mob in the zone changes appearance state (sit/stand/anon/AFK/
+// invisibility/etc.) — needed so this Trilogy client sees other players' state
+// transitions. The player's own change is broadcast with ignore_self=true by
+// Handle_OP_SpawnAppearance, so we don't usually echo back, but we still guard
+// against feedback loops by spawn_id since the type=0x10 self-id packet uses
+// spawn_id=0 and would harmlessly skip the check.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::SpawnAppearance_Struct)) return;
+	const auto* src = reinterpret_cast<const ::SpawnAppearance_Struct*>(app->pBuffer);
+
+	// Don't echo the player's own animation/state change — they already animated
+	// locally when sending it, and the broadcast that fed us already passed
+	// ignore_self=true. This guards belt-and-suspenders against any path that
+	// accidentally hits TranslateAndSend with our own spawn_id.
+	if (src->spawn_id == GetID()) return;
+
+	Trilogy::structs::SpawnAppearance_Struct out{};
+	// Trilogy entities use the spawn_id space we hand out via TranslateId.
+	out.spawn_id  = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(src->spawn_id)));
+	out.type      = static_cast<int16_t>(src->type);
+	out.parameter = static_cast<int32_t>(src->parameter);
+
+	m_tzs->SendToSession(m_session_key, 0xf520,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================
