@@ -19,6 +19,7 @@
 #include "../common/global_define.h"
 #include "trilogy_client.h"
 #include "trilogy_zone.h"
+#include "../common/eq_constants.h"
 #include "entity.h"
 #include "doors.h"
 #include "object.h"
@@ -790,6 +791,38 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	SetHeading(heading);
 	SetMoving(!(x == prev_x && y == prev_y));
 
+	// Hide-break on movement — mirrors modern Handle_OP_ClientUpdate
+	// (client_packet.cpp:4995-5011).  The proxy bypasses that handler entirely,
+	// so without this check `hidden` / `improved_hidden` persisted across every
+	// position update.  Effect: a non-sneaking rogue who pressed Hide once
+	// stayed server-side hidden forever, bypassing NPC aggro until they
+	// re-pressed Hide or zoned — a real stealth exploit, not just a visual gap.
+	//
+	// The sneak+hide combo (any class) intentionally falls through this guard:
+	// `(hidden) && !sneaking` keeps hidden true when both flags are set, which
+	// is the correct modern rogue mechanic.  Whether the v29c client renders
+	// the player as invisible while moving is a client-side decision the
+	// proxy cannot reach — but NPC aggro logic on the server reads `hidden`
+	// directly, so the gameplay effect (walking past a KOS NPC undetected)
+	// works regardless of what the local render shows.
+	if (IsMoving() && (hidden || improved_hidden) && !sneaking) {
+		hidden = false;
+		improved_hidden = false;
+		// Only broadcast the visibility change if the player wasn't already
+		// spell-invisible — otherwise the spell would lose its invis render to
+		// other observers prematurely.
+		if (!invisible) {
+			auto outapp = new EQApplicationPacket(
+			    OP_SpawnAppearance, sizeof(::SpawnAppearance_Struct));
+			auto* sa_out = reinterpret_cast<::SpawnAppearance_Struct*>(outapp->pBuffer);
+			sa_out->spawn_id  = GetID();
+			sa_out->type      = AppearanceType::Invisibility; // 0x03
+			sa_out->parameter = 0; // visible
+			entity_list.QueueClients(this, outapp, true); // ignore_self
+			safe_delete(outapp);
+		}
+	}
+
 	// Keep m_pp in sync so SaveCharacterData writes the current position on disconnect.
 	GetPP().x       = x;
 	GetPP().y       = y;
@@ -950,11 +983,28 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 	if (!app || app->size < sizeof(::SpawnAppearance_Struct)) return;
 	const auto* src = reinterpret_cast<const ::SpawnAppearance_Struct*>(app->pBuffer);
 
-	// Don't echo the player's own animation/state change — they already animated
-	// locally when sending it, and the broadcast that fed us already passed
-	// ignore_self=true. This guards belt-and-suspenders against any path that
-	// accidentally hits TranslateAndSend with our own spawn_id.
-	if (src->spawn_id == GetID()) return;
+	// Self-id filter: only drop Animation (sit/stand) echoes — the client
+	// animates locally on the button press and a server echo would cause a
+	// double-animate.  ALL other self-targeted state updates must reach the
+	// v29c client, because they drive local rendering and combo logic that
+	// the client cannot derive on its own:
+	//
+	//   Sneak (15)        — Handle_OP_Sneak QueuePacket → self.  Without
+	//                       this, the v29c client never knows the server
+	//                       thinks it's sneaking, so the rogue sneak+hide
+	//                       combo (move while invisible) never engages —
+	//                       movement locally breaks the hide render.
+	//                       EQClassic intentionally sends this to self via
+	//                       SendAppearancePacket(..., SAT_Sneaking, ..., true)
+	//                       at client_process.cpp:5472.
+	//   Invisibility (3)  — spell-invis casts broadcast to all incl. self.
+	//   FlyMode (19)      — levitate self-target.
+	//   Light (5), etc.   — appearance state the client needs to render.
+	//
+	// The earlier blanket self-id drop here was the cause of the broken
+	// rogue sneak+hide-while-moving mechanic, NOT the visual rendering
+	// path on movement.
+	if (src->spawn_id == GetID() && src->type == AppearanceType::Animation) return;
 
 	Trilogy::structs::SpawnAppearance_Struct out{};
 	// Trilogy entities use the spawn_id space we hand out via TranslateId.
@@ -1031,6 +1081,16 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 367:   return "You have not detected any traps.";                        // LDON_SENSE_TRAP2
 		case 368:   return "You are too far away from that trap to affect it.";       // TRAP_TOO_FAR
 		case 370:   return "You fail to disarm the detected trap.";                   // FAIL_DISARM_DETECTED_TRAP
+		// Rogue-only Hide / Sneak / Evade feedback — sent by Handle_OP_Hide and
+		// Handle_OP_Sneak via OP_SimpleMessage (FastQueuePacket → self).  Same
+		// drop pattern as the trap strings above.  Non-Rogue classes never get
+		// these so this only matters when the v29c client is a Rogue.
+		case 343:   return "You have momentarily ducked away from the main combat.";  // EVADE_SUCCESS
+		case 344:   return "Your attempts at ducking clear of combat fail.";          // EVADE_FAIL
+		case 345:   return "You failed to hide yourself.";                            // HIDE_FAIL
+		case 346:   return "You have hidden yourself from view.";                     // HIDE_SUCCESS
+		case 347:   return "You are as quiet as a cat stalking its prey.";            // SNEAK_SUCCESS
+		case 348:   return "You are as quiet as a herd of running elephants.";        // SNEAK_FAIL
 		default:    return nullptr;
 	}
 }
