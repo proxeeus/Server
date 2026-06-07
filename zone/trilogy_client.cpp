@@ -1209,6 +1209,24 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// Generic skill helpers — fire from Forage, Bind Wound and others.
 		case 290:   return "Duplicate lore items are not allowed.";                   // DUP_LORE
 		case 12393: return "You can not use this skill while on a mount.";            // NO_SKILL_WHILE_MOUNTED
+		// Fishing feedback — CanFish() validation + GoFish() outcome MessageString
+		// paths (forage.cpp:197-249, 355-408).  Without these the entire cast
+		// cycle is silent on the v29c side: no equip-pole nag, no land/lava
+		// rejection, no catch / miss / lost-bait line.  The successful catch
+		// also has a %1 variant (421) used when the item is a food type.
+		case 160:   return "You can't fish without a fishing pole, go buy one.";      // FISHING_NO_POLE
+		case 161:   return "You need to put your fishing pole in your primary hand."; // FISHING_EQUIP_POLE
+		case 162:   return "You can't fish without fishing bait, go buy some.";       // FISHING_NO_BAIT
+		case 163:   return "You cast your line.";                                     // FISHING_CAST
+		case 165:   return "You stop fishing and go on your way.";                    // FISHING_STOP
+		case 166:   return "Trying to catch land sharks perhaps?";                    // FISHING_LAND
+		case 167:   return "Trying to catch a fire elemental or something?";          // FISHING_LAVA
+		case 168:   return "You didn't catch anything.";                              // FISHING_FAILED
+		case 169:   return "Your fishing pole broke!";                                // FISHING_POLE_BROKE
+		case 170:   return "You caught, something...";                                // FISHING_SUCCESS
+		case 421:   return "You caught %1!";                                          // FISHING_SUCCESS_FISH_NAME
+		case 171:   return "You spill your beer while bringing in your line.";        // FISHING_SPILL_BEER
+		case 172:   return "You lost your bait!";                                     // FISHING_LOST_BAIT
 		default:    return nullptr;
 	}
 }
