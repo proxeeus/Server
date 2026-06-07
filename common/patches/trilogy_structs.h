@@ -1335,6 +1335,59 @@ struct SkillUpdate_Struct
 };
 
 /*
+** ClassTrain_Struct
+** Opcode:  OP_ClassTraining = 0x9c20 (bidirectional — client right-clicks GM trainer,
+**          server replies with the same opcode/size to open the training window).
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ClassTrain_Struct
+** Size:    148 bytes
+**
+** highesttrain[i]    = max value to which the trainer can raise skill i (0..72).
+**                      Value 0 hides the skill from the window.
+** unknown[32]        = MUST contain non-zero bytes (EQClassic reference sets every
+**                      byte to 1) or the trainer dialog never opens.  This is the
+**                      "magic flag block" the client checks before drawing the UI.
+** highesttrainLang[] = max value for each language (24 slots — Harakiri-era field;
+**                      v29c clients render the language list when populated).
+*/
+struct ClassTrain_Struct
+{
+/*000*/	int32	npcid;
+/*004*/	int32	playerid;
+/*008*/	int8	highesttrain[73];
+/*081*/	int8	unknown[32];          // must be non-zero or window won't open
+/*113*/	int8	highesttrainLang[24];
+/*137*/	int8	unknown2[11];
+/*148*/
+};
+
+/*
+** ClassSkillChange_Struct
+** Opcode:  OP_ClassTrainSkill = 0x4021 (client -> zone)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ClassSkillChange_Struct
+** Size:    12 bytes
+*/
+struct ClassSkillChange_Struct
+{
+/*000*/	int32	npcid;
+/*004*/	int32	skill_type;	// 0 = regular skill, 1 = language
+/*008*/	int32	skill_id;
+/*012*/
+};
+
+/*
+** ClassTrainEnd_Struct
+** Opcode:  OP_ClassEndTraining = 0x9d20 (client -> zone, when window is closed)
+** Source:  EQClassic LS/common/eq_packet_structs.h :: GMTrainEnd_Struct
+** Size:    4 bytes
+*/
+struct ClassTrainEnd_Struct
+{
+/*000*/	int16	npcid;
+/*002*/	int16	unknown;
+/*004*/
+};
+
+/*
 ** SetServerFilter_Struct
 ** Opcode:  OP_SetServerFilter = 0xff21
 ** Direction: client -> zone server

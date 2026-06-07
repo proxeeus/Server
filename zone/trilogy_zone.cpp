@@ -176,6 +176,18 @@ static constexpr uint16_t ZN_OP_SpawnDoor   = 0x9520; // zone -> client: Door_St
 static constexpr uint16_t ZN_OP_ClickDoor   = 0x8d20; // client -> zone: ClickDoor_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_OpenDoor    = 0x8e20; // zone -> client: DoorOpen_Struct (2 bytes: doorid, action)
 
+// Class trainer (right-click GM trainer to open the skill training window)
+// Source: EQClassic/Common/Include/eq_opcodes.h
+//   OP_ClassTraining      0x9c20 (bidirectional) — client requests window;
+//                                                  server replies with ClassTrain_Struct
+//                                                  (148 B) to open it.
+//   OP_ClassEndTraining   0x9d20 (client -> zone) — window closed (ClassTrainEnd_Struct, 4B)
+//   OP_ClassTrainSkill    0x4021 (client -> zone) — train a single skill / language
+//                                                  (ClassSkillChange_Struct, 12 B)
+static constexpr uint16_t ZN_OP_ClassTraining    = 0x9c20;
+static constexpr uint16_t ZN_OP_ClassEndTraining = 0x9d20;
+static constexpr uint16_t ZN_OP_ClassTrainSkill  = 0x4021;
+
 // GM command opcodes (client -> zone, CONNECTED state)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
@@ -1005,6 +1017,12 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_MoveCoin && s.trilogy_client)
 			HandleMoveCoin(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ClassTraining && s.trilogy_client)
+			HandleClassTraining(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ClassTrainSkill && s.trilogy_client)
+			HandleClassTrainSkill(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ClassEndTraining && s.trilogy_client)
+			HandleClassEndTraining(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
 			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
 			if (plen >= 46) {
@@ -3955,6 +3973,361 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	        s.char_id, from_slot, to_slot, denom, static_cast<long long>(amount),
 	        pp.platinum, pp.gold, pp.silver, pp.copper,
 	        pp.platinum_bank, pp.gold_bank, pp.silver_bank, pp.copper_bank);
+}
+
+// ============================================================
+// Class trainer (right-click GM NPC → skill training window)
+//
+// Protocol (EQClassic Zone Source ProcessOP_Class{Training,EndTraining,TrainSkill}):
+//   1. Client right-clicks an NPC whose translated Trilogy class is 17..31 (the
+//      WarriorGM..BeastlordGM range — mapped from EQEmu 20..34 in
+//      TranslateClassToTrilogy).  Client sends OP_ClassTraining (0x9c20,
+//      ClassTrain_Struct, 148B) with npcid+playerid; the body is otherwise zero.
+//   2. Server fills highesttrain[i] with MaxSkill(i) for each trainable skill,
+//      highesttrainLang[i] with the language cap, fills the magic flag block
+//      (`unknown[32]` — EVERY byte must be non-zero or the window stays closed,
+//      per Wizzel's comment + EQClassic reference), and replies with the same
+//      opcode/size to pop the window open.
+//   3. When the player clicks "Train Skill", client sends OP_ClassTrainSkill
+//      (0x4021, ClassSkillChange_Struct, 12B: npcid, skill_type, skill_id).
+//      skill_type 0 = regular skill, 1 = language.
+//   4. Server validates (range, class, skill cap, player has training points,
+//      can afford the cubic cost), increments the skill via SetSkill() (which
+//      auto-emits OP_SkillUpdate → translated to 0x8921 by TrilogyClient),
+//      decrements m_pp.points, deducts money.  The PC's local training-points
+//      counter is decremented client-side; we just keep the PP in sync.
+//   5. On window close, client sends OP_ClassEndTraining (0x9d20, 4B).  Server
+//      emits the farewell line and that's it — no state change.
+// ============================================================
+
+void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::ClassTrain_Struct)) {
+		LogInfo("[TrilogyZone] ClassTraining: short payload {} bytes (expected {})",
+		        plen, sizeof(Trilogy::structs::ClassTrain_Struct));
+		return;
+	}
+	const auto* req = reinterpret_cast<const Trilogy::structs::ClassTrain_Struct*>(payload);
+
+	// v29c sends int16 entity IDs in the low 2 bytes of npcid; high 2 bytes are
+	// padding.  Mask to uint16 so a stray sign bit doesn't make GetMob miss.
+	const uint16_t npcid = static_cast<uint16_t>(req->npcid & 0xFFFF);
+	Mob* m = entity_list.GetMob(npcid);
+	if (!m || !m->IsNPC()) {
+		LogInfo("[TrilogyZone] ClassTraining: npcid {} is not an NPC", npcid);
+		return;
+	}
+
+	// EQEmu GM trainer classes (Class::WarriorGM..BeastlordGM) are 20..34 in
+	// classes.h; Berserker class 16 → BerserkerGM 35 is rejected (no Berserker
+	// in Velious-era anyway).  Cross-class training gated by the same rule the
+	// modern OPGMTraining uses.
+	const uint8 trainer_class = m->GetClass();
+	if (trainer_class < Class::WarriorGM || trainer_class > Class::BerserkerGM) {
+		LogInfo("[TrilogyZone] ClassTraining: NPC {} class {} is not a GM trainer",
+		        m->GetCleanName(), trainer_class);
+		return;
+	}
+	if (!RuleB(Character, AllowCrossClassTrainers)) {
+		const int trains_class = trainer_class - (Class::WarriorGM - Class::Warrior);
+		if (s.trilogy_client->GetClass() != trains_class) {
+			s.trilogy_client->Message(Chat::Red, "I cannot teach you, you must seek your own kind.");
+			return;
+		}
+	}
+
+	if (DistanceSquared(s.trilogy_client->GetPosition(), m->GetPosition()) > USE_NPC_RANGE2) {
+		s.trilogy_client->Message(Chat::Red, "You are too far away from the trainer.");
+		return;
+	}
+
+	// Build the response in a clean local — DO NOT modify the inbound payload
+	// (it's part of the EQNetwork RX buffer).
+	Trilogy::structs::ClassTrain_Struct reply{};
+	reply.npcid    = req->npcid;
+	reply.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+
+	// Skill caps — highesttrain[i] is the max value this trainer can raise
+	// skill i to.  Iterate only the 73 indices the wire struct holds; the
+	// Trilogy enum is densely packed in the same order EQEmu uses for these
+	// indices, so a direct id→id mapping works.  Skills the class can never
+	// learn (CanHaveSkill==false) get 0 → hidden from the window.
+	for (int sid = 0; sid < 73; ++sid) {
+		const auto skill = static_cast<EQ::skills::SkillType>(sid);
+		if (!s.trilogy_client->CanHaveSkill(skill)) {
+			reply.highesttrain[sid] = 0;
+			continue;
+		}
+		// Tinkering is gnome-only (matches OPGMTraining).
+		if (skill == EQ::skills::SkillTinkering && s.trilogy_client->GetRace() != GNOME) {
+			reply.highesttrain[sid] = 0;
+			continue;
+		}
+		const uint16 cap = s.trilogy_client->GetMaxSkillAfterSpecializationRules(
+		    skill,
+		    s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
+		                               RuleI(Character, MaxLevel)));
+		reply.highesttrain[sid] = static_cast<int8_t>(cap > 200 ? 200 : cap);
+	}
+
+	// Languages — every language is trainable up to MaxValue (100) here.  The
+	// per-race "starting language list" gating is handled by the client's UI
+	// from the player's existing m_pp.languages values (entries the player
+	// already knows show up; others get filtered).
+	for (int li = 0; li < 24; ++li)
+		reply.highesttrainLang[li] = static_cast<int8_t>(Language::MaxValue);
+
+	// "Magic flag" block — the v29c client refuses to draw the training dialog
+	// unless these bytes are non-zero.  Confirmed by the EQClassic Zone reference
+	// (ProcessOP_ClassTraining sets every byte of unknown[] to 1) and the
+	// Wizzel comment in eq_packet_structs.h ("one of these are important or the
+	// trainer wont open the training window").
+	memset(reply.unknown,  1, sizeof(reply.unknown));
+	memset(reply.unknown2, 0, sizeof(reply.unknown2));
+
+	SendApp(addr, port, s, ZN_OP_ClassTraining,
+	        reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
+
+	// Trainer greeting (original Velious strings 1204-1207).  Mob::SayString
+	// would route via OP_FormattedMessage (string_id 554), which TrilogyClient
+	// drops, so emit pre-formatted text via OP_SpecialMesg (Client::Message ->
+	// HandleOutgoingSpecialMesg -> 0x8021).  Chat::Say (256) renders as a
+	// proper "<NPC> says, '...'" line in the v29c chat window.
+	static const char* greetings[] = {
+		"Hail and well met, {}.  Are you here for training?",
+		"Greetings, {}.  Step forward — we have much to discuss.",
+		"Welcome, {}.  Show me what skills you wish to hone.",
+		"Make haste, {}.  I have other students waiting.",
+	};
+	const std::string greeting_body = fmt::format(
+	    fmt::runtime(greetings[zone->random.Int(0, 3)]),
+	    s.trilogy_client->GetCleanName());
+	s.trilogy_client->Message(Chat::Say, "%s says, '%s'",
+	    m->GetCleanName(), greeting_body.c_str());
+
+	LogInfo("[TrilogyZone] ClassTraining open: char={} trainer={} (class {}), points={}",
+	        s.char_name, m->GetCleanName(), trainer_class,
+	        s.trilogy_client->GetSkillPoints());
+}
+
+void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port, Session& s,
+                                              const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::ClassSkillChange_Struct)) {
+		LogInfo("[TrilogyZone] ClassTrainSkill: short payload {} bytes", plen);
+		return;
+	}
+	const auto* req = reinterpret_cast<const Trilogy::structs::ClassSkillChange_Struct*>(payload);
+
+	if (s.trilogy_client->GetSkillPoints() == 0) {
+		s.trilogy_client->Message(Chat::Red, "You have no skill points to spend.");
+		return;
+	}
+
+	const uint16_t npcid = static_cast<uint16_t>(req->npcid & 0xFFFF);
+	Mob* m = entity_list.GetMob(npcid);
+	if (!m || !m->IsNPC()) return;
+
+	const uint8 trainer_class = m->GetClass();
+	if (trainer_class < Class::WarriorGM || trainer_class > Class::BerserkerGM)
+		return;
+	if (!RuleB(Character, AllowCrossClassTrainers)) {
+		const int trains_class = trainer_class - (Class::WarriorGM - Class::Warrior);
+		if (s.trilogy_client->GetClass() != trains_class) return;
+	}
+	if (DistanceSquared(s.trilogy_client->GetPosition(), m->GetPosition()) > USE_NPC_RANGE2)
+		return;
+
+	// Cost formula: EQEmu's cubic ((skill-10)^3 / 100) copper, gated by the
+	// Skills:TrainerCostsEnabled rule.  Velious-era EQ trained skills for free;
+	// the cubic ramp is a later-era addition that can hit 6+pp per click at
+	// skill 200 (effectively gating high-end training behind cash that a fresh
+	// #level test character won't have).
+	auto compute_cost = [](uint32 cur) -> uint64 {
+		if (!RuleB(Skills, TrainerCostsEnabled)) return 0;
+		const int adj = static_cast<int>(cur) - 10;
+		if (adj <= 0) return 0;
+		return static_cast<uint64>(adj) * adj * adj / 100;
+	};
+
+	uint64 cost = 0;
+
+	if (req->skill_type == 1) {
+		// Language training.
+		const int32_t lang_id = req->skill_id;
+		if (lang_id < Language::CommonTongue || lang_id > Language::Unknown27) {
+			LogInfo("[TrilogyZone] ClassTrainSkill: invalid language id {}", lang_id);
+			return;
+		}
+		const uint8 cur = s.trilogy_client->GetLanguageSkill(static_cast<uint8>(lang_id));
+		if (cur >= Language::MaxValue) {
+			s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+			return;
+		}
+		cost = compute_cost(cur);
+		if (cost > 0 && !s.trilogy_client->TakeMoneyFromPP(cost, true)) {
+			s.trilogy_client->Message(Chat::Red,
+			    "You cannot afford that — training this would cost %llu copper.",
+			    static_cast<unsigned long long>(cost));
+			return;
+		}
+		// SetLanguageSkill updates m_pp.languages + saves to DB.  EQClassic's
+		// reference notes that the v29c client never auto-displays a language
+		// skillup line (only "You have become better at..." for normal skills
+		// below 100), so emit the classic LANG_SKILL_IMPROVED text ourselves.
+		s.trilogy_client->SetLanguageSkill(static_cast<uint8>(lang_id),
+		                                   static_cast<uint8>(cur + 1));
+		s.trilogy_client->Message(Chat::Skills, "Your language skills have improved.");
+	} else {
+		// Regular skill training (skill_type == 0; treat any non-1 value as skill).
+		const int32_t sid = req->skill_id;
+		if (sid < 0 || sid > EQ::skills::HIGHEST_SKILL) {
+			LogInfo("[TrilogyZone] ClassTrainSkill: invalid skill id {}", sid);
+			return;
+		}
+		const auto skill = static_cast<EQ::skills::SkillType>(sid);
+		if (!s.trilogy_client->CanHaveSkill(skill)) {
+			LogInfo("[TrilogyZone] ClassTrainSkill: char {} cannot have skill {}",
+			        s.char_name, sid);
+			return;
+		}
+		if (s.trilogy_client->MaxSkill(skill) == 0) {
+			s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+			return;
+		}
+
+		uint16 skilllevel = static_cast<uint16>(s.trilogy_client->GetRawSkill(skill));
+		uint16 new_value  = 0;
+
+		if (skilllevel == 0) {
+			// First-time train — seed at the class/race base level.
+			const uint16 t_level = s.trilogy_client->GetSkillTrainLevel(skill, s.trilogy_client->GetClass());
+			if (t_level == 0) {
+				LogInfo("[TrilogyZone] ClassTrainSkill: skill {} invalid for class/race", sid);
+				return;
+			}
+			s.trilogy_client->SetSkill(skill, t_level);
+			new_value = t_level;
+		} else {
+			// Tradeskill / specialization / research caps mirror OPGMTrainSkill.
+			switch (skill) {
+				case EQ::skills::SkillBrewing:
+				case EQ::skills::SkillMakePoison:
+				case EQ::skills::SkillTinkering:
+				case EQ::skills::SkillAlchemy:
+				case EQ::skills::SkillBaking:
+				case EQ::skills::SkillTailoring:
+				case EQ::skills::SkillBlacksmithing:
+				case EQ::skills::SkillFletching:
+				case EQ::skills::SkillJewelryMaking:
+				case EQ::skills::SkillPottery:
+					if (skilllevel >= RuleI(Skills, MaxTrainTradeskills)) {
+						s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+						return;
+					}
+					break;
+				case EQ::skills::SkillResearch:
+					if (skilllevel >= RuleI(Skills, MaxTrainResearch)) {
+						s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+						return;
+					}
+					break;
+				case EQ::skills::SkillSpecializeAbjure:
+				case EQ::skills::SkillSpecializeAlteration:
+				case EQ::skills::SkillSpecializeConjuration:
+				case EQ::skills::SkillSpecializeDivination:
+				case EQ::skills::SkillSpecializeEvocation:
+					if (skilllevel >= RuleI(Skills, MaxTrainSpecializations)) {
+						s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+						return;
+					}
+					break;
+				default:
+					break;
+			}
+
+			const uint16 maxv = s.trilogy_client->MaxSkill(skill);
+			if (skilllevel >= maxv) {
+				s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+				return;
+			}
+			if (sid >= EQ::skills::SkillSpecializeAbjure && sid <= EQ::skills::SkillSpecializeEvocation) {
+				const int max_spec = s.trilogy_client->GetMaxSkillAfterSpecializationRules(skill, maxv);
+				if (static_cast<int>(skilllevel) >= max_spec) {
+					s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
+					return;
+				}
+			}
+
+			cost = compute_cost(skilllevel);
+			if (cost > 0 && !s.trilogy_client->TakeMoneyFromPP(cost, true)) {
+				s.trilogy_client->Message(Chat::Red,
+				    "You cannot afford that — training this would cost %llu copper.",
+				    static_cast<unsigned long long>(cost));
+				return;
+			}
+			s.trilogy_client->SetSkill(skill, skilllevel + 1);
+			new_value = skilllevel + 1;
+		}
+
+		// EQClassic ref note (Zone/Source/client.cpp:1097): the v29c client
+		// auto-prints "You have become better at ..." on OP_SkillUpdate ONLY for
+		// skills below 100.  At 100+ the message is dropped client-side, so
+		// emit it explicitly via OP_SpecialMesg here for consistency at all
+		// skill levels (matches the original EQ Velious behaviour at 100+).
+		if (new_value >= 100) {
+			const std::string name = EQ::skills::GetSkillName(skill);
+			s.trilogy_client->Message(Chat::Skills,
+			    "You have become better at %s! (%u)",
+			    name.empty() ? "your skill" : name.c_str(),
+			    static_cast<unsigned>(new_value));
+		}
+	}
+
+	// Spend a training point + persist the new total (the v29c client decrements
+	// its own counter in lock-step, but we must keep m_pp.points in sync for the
+	// next zone-in / save).
+	s.trilogy_client->SetSkillPoints(s.trilogy_client->GetSkillPoints() - 1);
+	s.trilogy_client->Save();
+
+	LogInfo("[TrilogyZone] ClassTrainSkill char={} type={} id={} cost={} points_left={}",
+	        s.char_name, req->skill_type, req->skill_id,
+	        static_cast<long long>(cost), s.trilogy_client->GetSkillPoints());
+}
+
+void TrilogyZoneServer::HandleClassEndTraining(const std::string& addr, int port, Session& s,
+                                               const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::ClassTrainEnd_Struct)) return;
+	const auto* req = reinterpret_cast<const Trilogy::structs::ClassTrainEnd_Struct*>(payload);
+
+	const uint16_t npcid = static_cast<uint16_t>(req->npcid);
+	Mob* m = entity_list.GetMob(npcid);
+	if (!m || !m->IsNPC()) return;
+
+	const uint8 trainer_class = m->GetClass();
+	if (trainer_class < Class::WarriorGM || trainer_class > Class::BerserkerGM)
+		return;
+
+	// Trainer farewell (original Velious strings 1208-1211, including the
+	// classic "Bring pride upon our name").  Same OP_SpecialMesg delivery as
+	// the greeting in HandleClassTraining.
+	(void)addr; (void)port;
+	static const char* farewells[] = {
+		"Bring pride upon our name, {}.",
+		"Train well and return often, {}.",
+		"May your skills serve you in battle, {}.",
+		"Make us proud out there, {}.",
+	};
+	const std::string farewell_body = fmt::format(
+	    fmt::runtime(farewells[zone->random.Int(0, 3)]),
+	    s.trilogy_client->GetCleanName());
+	s.trilogy_client->Message(Chat::Say, "%s says, '%s'",
+	    m->GetCleanName(), farewell_body.c_str());
 }
 
 // ============================================================

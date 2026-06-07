@@ -272,6 +272,23 @@ private:
 	void HandleMoveCoin(const std::string& addr, int port, Session& s,
 	                    const uint8_t* payload, uint32_t plen);
 
+	// Class trainer (GM trainer right-click → skill training window).
+	// HandleClassTraining: open the window — fill highesttrain[] / highesttrainLang[]
+	//   from EQEmu MaxSkill() and reply 0x9c20 (ClassTrain_Struct, 148B).  No m_pp
+	//   mutation; the client owns the local "skill points remaining" counter from
+	//   the PP it received at zone-in.
+	// HandleClassTrainSkill: train a single skill or language (ClassSkillChange_Struct,
+	//   12B).  Range/class/affordability/cap checks; SetSkill / IncreaseLanguageSkill
+	//   for persistence + automatic OP_SkillUpdate echo (translated to 0x8921 by
+	//   TrilogyClient).  Decrements m_pp.points and charges the EQEmu cubic cost.
+	// HandleClassEndTraining: parting message — no state change.
+	void HandleClassTraining(const std::string& addr, int port, Session& s,
+	                         const uint8_t* payload, uint32_t plen);
+	void HandleClassTrainSkill(const std::string& addr, int port, Session& s,
+	                           const uint8_t* payload, uint32_t plen);
+	void HandleClassEndTraining(const std::string& addr, int port, Session& s,
+	                            const uint8_t* payload, uint32_t plen);
+
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
 	void SendInventoryItems(const std::string& addr, int port, Session& s);

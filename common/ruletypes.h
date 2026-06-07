@@ -268,6 +268,7 @@ RULE_BOOL(Skills, UseLimitTradeskillSearchSkillDiff, true, "Enables the limit fo
 RULE_BOOL(Skills, TrivialTradeskillCombinesNoFail, false, "Enable to make all trivial tradeskill combines unable to fail")
 RULE_INT(Skills, MaxTradeskillSearchSkillDiff, 50, "The maximum difference in skill between the trivial of an item and the skill of the player if the trivial is higher than the skill. Recipes that have not been learnt or made at least once via the Experiment mode will be removed from searches based on this criteria.")
 RULE_INT(Skills, MaxTrainSpecializations, 50, "Maximum level a GM trainer will train casting specializations")
+RULE_BOOL(Skills, TrainerCostsEnabled, false, "If true, GM trainer charges the cubic ((skill-10)^3 / 100) copper formula per train.  Off by default — original EQ Velious trained skills for free, and the cubic ramp can hit 6+pp per click at skill 200 which gates a fresh test character.")
 RULE_INT(Skills, SwimmingStartValue, 100, "Start value of swimming skill")
 RULE_BOOL(Skills, TrainSenseHeading, false, "Switch whether SenseHeading is trained by use")
 RULE_INT(Skills, SenseHeadingStartValue, 200, "Start value of sense heading skill")
