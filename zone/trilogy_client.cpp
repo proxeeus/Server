@@ -1021,6 +1021,16 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 9301:  return "You gain party experience (with a penalty)!";             // GAIN_GROUPXP_PENALTY
 		case 14541: return "You gain experience (with a bonus)!";                     // GAIN_XP_BONUS
 		case 14542: return "You gain experience (with a penalty)!";                   // GAIN_XP_PENALTY
+		// Trap skill feedback — all no-arg templates.  Without these, every
+		// Disarm Traps outcome silently drops on the v29c side (success, fail,
+		// out-of-range, undetected) because each path goes through
+		// MessageString → OP_FormattedMessage rather than literal-text
+		// Message → OP_SpecialMesg.  Sense Traps' "no trap" path uses literal
+		// text and already works.
+		case 305:   return "You have disarmed the trap.";                             // DISARMED_TRAP
+		case 367:   return "You have not detected any traps.";                        // LDON_SENSE_TRAP2
+		case 368:   return "You are too far away from that trap to affect it.";       // TRAP_TOO_FAR
+		case 370:   return "You fail to disarm the detected trap.";                   // FAIL_DISARM_DETECTED_TRAP
 		default:    return nullptr;
 	}
 }
