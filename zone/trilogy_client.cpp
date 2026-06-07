@@ -474,15 +474,18 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		const auto* del = reinterpret_cast<const ::DeleteItem_Struct*>(app->pBuffer);
 		if (app->GetOpcode() == OP_MoveItem && del->to_slot != 0xFFFFFFFFu) break;
 
-		// Skip the ammo slot.  The v29c client manages arrow decrement locally
-		// on ranged-fire (EQClassic Zone/Source/client_process.cpp:3028-3043
-		// shows server only updating pp.inventory[21] for persistence, never
-		// sending a delete packet to the client).  Forwarding our delete here
-		// causes the client to refuse the operation with "failed to move item
-		// in client application" because the local arrow count was already
-		// decremented when it fired.  Server-side m_inv + DB still update via
+		// Skip ammo + range slots.  The v29c client manages projectile-weapon
+		// consumption locally on fire — arrows in slotAmmo (archery) AND
+		// throwing weapons in slotRange (throwing).  EQClassic
+		// Zone/Source/client_process.cpp:3028-3043 shows the server only
+		// updates pp.inventory[21] for persistence, never sending a delete
+		// packet to the client.  Forwarding our delete here causes the v29c
+		// client to refuse the operation with "failed to move item in client
+		// application" because the local stack was already decremented when
+		// the projectile was fired.  Server-side m_inv + DB still update via
 		// DeleteItemInInventory, so the next zone-in reflects reality.
-		if (del->from_slot == static_cast<uint32_t>(EQ::invslot::slotAmmo)) break;
+		if (del->from_slot == static_cast<uint32_t>(EQ::invslot::slotAmmo) ||
+		    del->from_slot == static_cast<uint32_t>(EQ::invslot::slotRange)) break;
 
 		// Reverse slot translation: modern EQEmu RoF2 → v29c wire.  Mirrors the
 		// existing forward map (TrilogyWireSlotToEmuSlot) used inbound, and the
