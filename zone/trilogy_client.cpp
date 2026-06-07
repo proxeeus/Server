@@ -29,6 +29,7 @@
 #include "../common/patches/trilogy_structs.h"
 #include "../common/item_instance.h"
 #include "../common/item_data.h"
+#include "../common/strings.h"
 #include "../common/crc32.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/emu_versions.h"
@@ -473,6 +474,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		const auto* del = reinterpret_cast<const ::DeleteItem_Struct*>(app->pBuffer);
 		if (app->GetOpcode() == OP_MoveItem && del->to_slot != 0xFFFFFFFFu) break;
 
+		// Skip the ammo slot.  The v29c client manages arrow decrement locally
+		// on ranged-fire (EQClassic Zone/Source/client_process.cpp:3028-3043
+		// shows server only updating pp.inventory[21] for persistence, never
+		// sending a delete packet to the client).  Forwarding our delete here
+		// causes the client to refuse the operation with "failed to move item
+		// in client application" because the local arrow count was already
+		// decremented when it fired.  Server-side m_inv + DB still update via
+		// DeleteItemInInventory, so the next zone-in reflects reality.
+		if (del->from_slot == static_cast<uint32_t>(EQ::invslot::slotAmmo)) break;
+
 		// Reverse slot translation: modern EQEmu RoF2 → v29c wire.  Mirrors the
 		// existing forward map (TrilogyWireSlotToEmuSlot) used inbound, and the
 		// HandleItemPacket inventory delivery shifts used outbound.
@@ -492,6 +503,90 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		m_tzs->SendToSession(m_session_key, 0x2c21,
 		                     reinterpret_cast<const uint8_t*>(&mv),
 		                     static_cast<uint32_t>(sizeof(mv)));
+		break;
+	}
+	case OP_SomeItemPacketMaybe: {
+		// Archery / throwing projectile animation.  Modern Mob::SendItemAnimation
+		// (special_attacks.cpp:1706-1750) builds a 136-byte Arrow_Struct on
+		// OP_SomeItemPacketMaybe carrying source xyz, source/target ids, item
+		// model name + id, velocity, launch angle, tilt, arc and the in-use
+		// skill.  V29c uses OP_SpawnProjectile (0x4520) with a 116-byte
+		// SpawnProjectile_Struct (EQClassic eq_packet_structs.h:2178-2210)
+		// whose extra physics fields (burst velocity / yaw / pitch / spawn
+		// behaviour / projectile type / source animation / texture) describe
+		// the same physical event with classic-EQ-engine terminology.
+		//
+		// Without this translation the player sees damage land on the mob
+		// but no firing animation and no arrow flight — the v29c client got
+		// nothing to render because the modern opcode dropped at default.
+		if (app->size < sizeof(::Arrow_Struct)) break;
+		const auto* a = reinterpret_cast<const ::Arrow_Struct*>(app->pBuffer);
+
+#pragma pack(push, 1)
+		struct VSpawnProjectile {
+			int32_t always1;
+			int32_t always0;
+			int32_t test1;
+			float   y;
+			float   x;
+			float   z;
+			float   heading;
+			float   tilt;
+			float   velocity;
+			float   burstVelocity;
+			float   burstHorizontal;
+			float   burstVertical;
+			float   yaw;
+			float   pitch;
+			float   arc;
+			int8_t  test5[4];
+			int32_t sourceID;
+			int32_t targetID;
+			int16_t test6;
+			int16_t test7;
+			int32_t spellID;
+			int8_t  lightSource;
+			int8_t  test9;
+			int8_t  spawnBehavior;
+			int8_t  projectileType;
+			int8_t  sourceAnimation;
+			char    texture[16];
+			char    spacer[15];
+		};
+#pragma pack(pop)
+		static_assert(sizeof(VSpawnProjectile) == 116, "Trilogy SpawnProjectile_Struct must be 116 bytes");
+
+		VSpawnProjectile p{};
+		p.always1         = 1;
+		p.always0         = 0;
+		p.test1           = 0;
+		p.y               = a->src_y;
+		p.x               = a->src_x;
+		p.z               = a->src_z;
+		p.heading         = a->launch_angle;
+		p.tilt            = a->tilt;
+		p.velocity        = a->velocity;
+		p.burstVelocity   = 0.0f;
+		p.burstHorizontal = 0.0f;
+		p.burstVertical   = 0.0f;
+		p.yaw             = 0.0f;
+		p.pitch           = 0.0f;
+		p.arc             = a->arc;
+		p.sourceID        = static_cast<int32_t>(TranslateId(a->source_id));
+		p.targetID        = static_cast<int32_t>(TranslateId(a->target_id));
+		p.spellID         = 0; // physical arrow, not spell bolt
+		p.lightSource     = 0;
+		p.spawnBehavior   = 1; // enable attack animation + projectile spawn
+		// Projectile type per EQClassic comment: 0x11 = Arrow (default for
+		// SkillArchery / SkillThrowing), 0x09 = spell bolt (not applicable here).
+		p.projectileType  = 0x11;
+		// Source animation — DoAnim(9) is EQClassic's archery shoot pose.
+		p.sourceAnimation = 9;
+		strncpy(p.texture, a->model_name, sizeof(p.texture) - 1);
+
+		m_tzs->SendToSession(m_session_key, 0x4520,
+		                     reinterpret_cast<const uint8_t*>(&p),
+		                     static_cast<uint32_t>(sizeof(p)));
 		break;
 	}
 	case OP_Bind_Wound: {
@@ -773,6 +868,13 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	}
 	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+	// equipment[7]=primary, equipment[8]=secondary.  v29c has no Range visual slot
+	// — bows in slotRange are NOT rendered on the player.  EQClassic's own
+	// MakeSpawnUpdate (Zone/Source/client.cpp:1832-1846) reads pp.inventory[13]/[14]
+	// directly with no range fallback; matching that behaviour keeps the primary
+	// hand empty when the only weapon is a bow.  NPC ranger trainers render bows
+	// because their loadout puts the bow into equipment[7], not because the client
+	// substitutes from range.
 
 	strncpy(sp.name,    mob->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, mob->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -2191,7 +2293,16 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 	memset(&ci, 0, sizeof(ci));
 
 	strncpy(ci.name,   it->Name,   sizeof(ci.name)   - 1);
-	strncpy(ci.idfile, it->IDFile, sizeof(ci.idfile)  - 1);
+	// Bow IDFile substitution — see comment at the matching site in
+	// trilogy_zone.cpp:SendInventoryItems.  v29c renders the bow during
+	// archery animations from this idfile; truncated modern IDs collide
+	// with sword models.  "IT4" = v29c bow model (NPC ranger trainers
+	// confirmed render bow with melee1 texture=4).
+	const char* src_idfile =
+	    (it->ItemType == static_cast<uint8_t>(EQ::item::ItemType::ItemTypeBow))
+	    ? "IT4"
+	    : it->IDFile;
+	strncpy(ci.idfile, src_idfile, sizeof(ci.idfile)  - 1);
 
 	// Lore prefix.  EQClassic/Trilogy clients use the first character of the
 	// Lore string as a flag marker — confirmed in EQClassic source:

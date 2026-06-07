@@ -31,6 +31,7 @@
 #include "../common/eq_packet_structs.h"
 #include "../common/eq_constants.h"
 #include "../common/strings.h"
+#include "../common/item_data.h"
 #include "../common/spdat.h"
 #include "command.h"
 #include "guild_mgr.h"
@@ -1856,7 +1857,19 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 
 		// --- header fields ---
 		if (row[3]) strncpy(ci.name,   row[3], sizeof(ci.name)   - 1);
-		if (row[5]) strncpy(ci.idfile, row[5], sizeof(ci.idfile)  - 1);
+		// Bow IDFile substitution — v29c's ClassicItem_Struct.idfile is 5 chars
+		// + null, so modern bows like "IT10614" truncate to "IT106" which the
+		// dynamic-render path (loaded on archery OP_Action) resolves to a sword
+		// model.  All bows render identically in v29c anyway; pick one known-
+		// good classic bow IDFile and use it for every Bow item.  "IT4" maps to
+		// v29c model 4 — confirmed bow model (NPC ranger trainers ship with
+		// melee1 texture=4 and render with bow visuals).  To swap models, change
+		// the literal here and at the matching site in
+		// trilogy_client.cpp:BuildClassicItemFromInst.
+		const int itemtype_val = row[35] ? Strings::ToInt(row[35]) : 0;
+		const bool is_bow = itemtype_val == static_cast<int>(EQ::item::ItemType::ItemTypeBow);
+		const char* src_idfile = is_bow ? "IT4" : (row[5] ? row[5] : "");
+		strncpy(ci.idfile, src_idfile, sizeof(ci.idfile) - 1);
 
 		// Lore prefix.  EQClassic/Trilogy clients use the first character of
 		// the Lore string as a flag marker (confirmed in EQClassic source):
@@ -5398,7 +5411,16 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 {
 	if (!s.trilogy_client) return;
 
-	auto is_worn = [](int slot) { return slot >= 1 && slot <= 20; };
+	// Include slotAmmo (RoF2 22) alongside the 1-20 body equipment range.
+	// Without it, archery breaks: modern RangedAttack reads m_inv[slotAmmo]
+	// directly and the proxy's direct-DB HandleMoveItem doesn't sync m_inv
+	// for non-worn slots — so an arrow moved into ammo lives in the DB but
+	// m_inv[22] stays null, the server returns "you have no ammo!" on fire,
+	// and the v29c client locally decrements anyway (it tracks its own ammo
+	// count optimistically on press).
+	auto is_worn = [](int slot) {
+		return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+	};
 	const bool from_worn = is_worn(from_db);
 	const bool to_worn   = !destroy_path && is_worn(to_db);
 	if (!from_worn && !to_worn) return;
@@ -5504,6 +5526,61 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 	    (to_worn && (to_db == EQ::invslot::slotPrimary || to_db == EQ::invslot::slotSecondary || to_db == EQ::invslot::slotRange));
 	if (weapon_touched) {
 		tc->SetAttackTimer();
+	}
+
+	// Weapon-visual refresh on mid-session swaps.  v29c renders only equipment[7]
+	// (primary) and equipment[8] (secondary) — no Range visual slot — so a Range
+	// slot change has no visual to update.  EQClassic's own MakeSpawnUpdate reads
+	// pp.inventory[13]/[14] directly with no range fallback (Zone/Source/client.cpp:1832-1846),
+	// so a bow in slotRange stays invisible on the player; do NOT substitute it
+	// into primary.  Without this WearChange, swapping a sword in/out of either
+	// hand shows no visual change until re-zone.
+	struct VisualSlot {
+		int      db_slot;
+		uint8_t  material_slot;
+	};
+	const VisualSlot visual_slots[] = {
+		{ EQ::invslot::slotPrimary,   EQ::textures::weaponPrimary   },
+		{ EQ::invslot::slotSecondary, EQ::textures::weaponSecondary },
+	};
+	for (const auto& vs : visual_slots) {
+		const bool touched =
+		    from_db == vs.db_slot ||
+		    (to_worn && to_db == vs.db_slot);
+		if (!touched) continue;
+
+		const uint32 material = tc->GetEquipmentMaterial(vs.material_slot);
+		const uint32 color    = tc->GetEquipmentColor(vs.material_slot);
+
+		// Build the OP_WearChange packet by hand instead of calling
+		// Mob::WearChange — the latter writes armor_tint + SetMobTextureProfile
+		// which would corrupt the mob's texture state.  We only want the wire
+		// effect, not the in-memory state mutation.
+		auto* outapp = new EQApplicationPacket(OP_WearChange, sizeof(::WearChange_Struct));
+		auto* w = reinterpret_cast<::WearChange_Struct*>(outapp->pBuffer);
+		w->spawn_id         = tc->GetID();
+		w->material         = material;
+		w->elite_material   = 0;
+		w->hero_forge_model = 0;
+		w->color.Color      = color;
+		w->wear_slot_id     = vs.material_slot;
+		entity_list.QueueClients(tc, outapp, true);
+		safe_delete(outapp);
+
+		// Deliver to the moving player's own v29c session so they see their
+		// own swap immediately.
+		using TrilWC = Trilogy::structs::WearChange_Struct;
+		TrilWC wc{};
+		wc.spawn_id     = static_cast<int32_t>(tc->GetPlayerSpawnId());
+		wc.wear_slot_id = static_cast<int8_t>(vs.material_slot);
+		wc.slot_graphic = static_cast<int8_t>(material & 0xFF);
+		wc.sub_op       = 0;
+		wc.color        = static_cast<int32_t>(color);
+		wc.wc_unknown3  = 0;
+		wc.flag         = 0;
+		SendApp(s.source_addr, s.source_port, s, 0x9220,
+		        reinterpret_cast<const uint8_t*>(&wc),
+		        static_cast<uint32_t>(sizeof(wc)));
 	}
 }
 
