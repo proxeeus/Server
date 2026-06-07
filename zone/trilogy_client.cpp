@@ -1102,6 +1102,11 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 350:   return "You mend your wounds and heal some damage.";              // MEND_SUCCESS
 		case 351:   return "You have worsened your wounds!";                          // MEND_WORSEN
 		case 352:   return "You have failed to mend your wounds.";                    // MEND_FAIL
+		// Feign Death — observer broadcast on failure (MessageCloseString from
+		// Handle_OP_FeignDeath line 6542 with player name as %1).  Self gets no
+		// message on success OR failure by EQ design; this only reaches NEARBY
+		// v29c-connected players so they see who collapsed.
+		case 1456:  return "%1 has fallen to the ground.";                            // STRING_FEIGNFAILED
 		// Forage feedback — all no-arg templates fired from Client::ForageItem
 		// (forage.cpp:434+) via MessageString.  Without these the v29c client
 		// gets zero visible feedback on Forage success or failure (the food
