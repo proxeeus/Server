@@ -1091,6 +1091,17 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 346:   return "You have hidden yourself from view.";                     // HIDE_SUCCESS
 		case 347:   return "You are as quiet as a cat stalking its prey.";            // SNEAK_SUCCESS
 		case 348:   return "You are as quiet as a herd of running elephants.";        // SNEAK_FAIL
+		// Monk Mend feedback — Handle_OP_Mend MessageString paths
+		// (client_packet.cpp:10449,10452,10468,10471).  Without these the
+		// monk gets zero visible response on press; the HP change happens
+		// silently on success / worsen.  Note: handler also silently
+		// returns early when GetSkill(SkillMend)==0 (HasSkill gate), so
+		// untrained monks see nothing for a separate reason — must
+		// #setskill 32 N (or visit a Monk GM) first.
+		case 349:   return "You magically mend your wounds and heal considerable damage."; // MEND_CRITICAL
+		case 350:   return "You mend your wounds and heal some damage.";              // MEND_SUCCESS
+		case 351:   return "You have worsened your wounds!";                          // MEND_WORSEN
+		case 352:   return "You have failed to mend your wounds.";                    // MEND_FAIL
 		// Forage feedback — all no-arg templates fired from Client::ForageItem
 		// (forage.cpp:434+) via MessageString.  Without these the v29c client
 		// gets zero visible feedback on Forage success or failure (the food
