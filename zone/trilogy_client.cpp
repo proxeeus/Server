@@ -1091,6 +1091,21 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 346:   return "You have hidden yourself from view.";                     // HIDE_SUCCESS
 		case 347:   return "You are as quiet as a cat stalking its prey.";            // SNEAK_SUCCESS
 		case 348:   return "You are as quiet as a herd of running elephants.";        // SNEAK_FAIL
+		// Forage feedback — all no-arg templates fired from Client::ForageItem
+		// (forage.cpp:434+) via MessageString.  Without these the v29c client
+		// gets zero visible feedback on Forage success or failure (the food
+		// item still lands on the cursor via the item-packet path, but the
+		// success line is dropped).
+		case 150:   return "You have scrounged up some fishing grubs.";               // FORAGE_GRUBS
+		case 151:   return "You have scrounged up some water.";                       // FORAGE_WATER
+		case 152:   return "You have scrounged up some food.";                        // FORAGE_FOOD
+		case 153:   return "You have scrounged up some drink.";                       // FORAGE_DRINK
+		case 154:   return "You have scrounged up something that doesn't look edible."; // FORAGE_NOEAT
+		case 155:   return "You fail to locate any food nearby.";                     // FORAGE_FAILED
+		case 6012:  return "Your forage mastery has enabled you to find something else!"; // FORAGE_MASTERY
+		// Generic skill helpers — fire from Forage, Bind Wound and others.
+		case 290:   return "Duplicate lore items are not allowed.";                   // DUP_LORE
+		case 12393: return "You can not use this skill while on a mount.";            // NO_SKILL_WHILE_MOUNTED
 		default:    return nullptr;
 	}
 }

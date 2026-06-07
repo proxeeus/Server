@@ -2900,6 +2900,12 @@ bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const
 		skill_id = EQ::skills::Skill2HPiercing;
 	}
 
+	// Iksar racial Forage — every Iksar can have Forage regardless of class,
+	// even when skill_caps reports 0 for the class.  See MaxSkill() below.
+	if (GetRace() == Race::Iksar && skill_id == EQ::skills::SkillForage) {
+		return true;
+	}
+
 	return skill_caps.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)).cap > 0;
 }
 
@@ -2913,7 +2919,22 @@ uint16 Client::MaxSkill(EQ::skills::SkillType skill_id, uint8 class_id, uint8 le
 		skill_id = EQ::skills::Skill2HPiercing;
 	}
 
-	return skill_caps.GetSkillCap(class_id, skill_id, level).cap;
+	uint16 cap = skill_caps.GetSkillCap(class_id, skill_id, level).cap;
+
+	// Iksar racial Forage floor — EQClassic granted every Iksar an innate
+	// Forage skill capped at 50 regardless of class.  Modern EQEmu's
+	// skill_caps is class-only, so an Iksar Warrior / Monk / Necro / SK /
+	// Shaman / Rogue reports cap=0 here, which causes #level (set/level.cpp)
+	// and any other site comparing GetSkill() > MaxSkill() to clamp the
+	// racial back down to 0.  Raising the floor to 50 for Iksars closes
+	// every clamp site at once.  Iksar Beastlord (the one Iksar class that
+	// has a real class Forage cap > 50) is unaffected because we only raise
+	// the floor when the class cap is below 50.
+	if (GetRace() == Race::Iksar && skill_id == EQ::skills::SkillForage && cap < 50) {
+		cap = 50;
+	}
+
+	return cap;
 }
 
 uint8 Client::GetSkillTrainLevel(EQ::skills::SkillType skill_id, uint8 class_id)
@@ -9115,6 +9136,20 @@ void Client::InitInnates()
 		case Race::Iksar:
 			m_pp.InnateSkills[InnateRegen]       = InnateEnabled;
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
+			// Iksar racial Forage — capped at 50.  EQClassic granted every Iksar
+			// an innate Forage skill of 50 at character creation regardless of
+			// class.  Modern EQEmu's skill_caps table is class-only, so an Iksar
+			// Warrior / Monk / Necro / SK / Shaman / Rogue / Beastlord reports
+			// MaxSkill(SkillForage) == 0 and ForageItem's
+			// `random.Int(0,199) < skill_level` check always fails.  Seed the
+			// skill once at 50 on first init; CheckIncreaseSkill's
+			// `skillval < maxskill` gate (50 < 0 = false) keeps it pinned there
+			// for non-Forage-capable classes — Iksar Beastlords (who *can*
+			// raise Forage via class) keep their higher class cap untouched
+			// because we only seed when the raw skill is zero.
+			if (GetRawSkill(EQ::skills::SkillForage) == 0) {
+				SetSkill(EQ::skills::SkillForage, 50);
+			}
 			break;
 		case Race::VahShir:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
