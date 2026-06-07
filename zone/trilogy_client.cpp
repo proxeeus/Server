@@ -1360,6 +1360,13 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// Generic skill helpers — fire from Forage, Bind Wound and others.
 		case 290:   return "Duplicate lore items are not allowed.";                   // DUP_LORE
 		case 12393: return "You can not use this skill while on a mount.";            // NO_SKILL_WHILE_MOUNTED
+		// Disarm skill feedback — NPC::Disarm + Client::Disarm both fire
+		// MessageString(Chat::Skills, DISARM_SUCCESS/FAILED).  Without these
+		// the player sees no on-screen confirmation of the disarm attempt's
+		// outcome (the WearChange to remove the weapon visual still works,
+		// but the text feedback is dropped).
+		case 12890: return "You disarmed %1!";                                        // DISARM_SUCCESS
+		case 12891: return "Your attempt to disarm failed.";                          // DISARM_FAILED
 		// Fishing feedback — CanFish() validation + GoFish() outcome MessageString
 		// paths (forage.cpp:197-249, 355-408).  Without these the entire cast
 		// cycle is silent on the v29c side: no equip-pole nag, no land/lava

@@ -154,6 +154,9 @@ static constexpr uint16_t ZN_OP_PickPockets  = 0xad20; // 18 B {uint16 to; uint1
 static constexpr uint16_t ZN_OP_Beg          = 0x2521; // 18 B {int32 target; int32 begger; ...}
 static constexpr uint16_t ZN_OP_InstillDoubt = 0x9c21; // 12 B {12 × int8 — fields not consumed server-side}
 static constexpr uint16_t ZN_OP_Taunt        = 0x3b21; // 12 B {int16 tauntTarget; int16; int16 tauntUser; int8[6]}
+static constexpr uint16_t ZN_OP_Disarm       = 0xaa20; // 12 B {uint32 source; uint32 target; uint8[4] tail}
+                                                       // Same opcode v29c uses for the server's success/fail notification
+                                                       // ("OP_DisarmComplete" in EQClassic source) — bidirectional.
 
 // Item-consume opcodes (client -> zone).  V29c splits consume across two
 // opcodes; modern EQEmu has dedicated handlers for each:
@@ -1253,7 +1256,7 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		         (opcode == ZN_OP_ApplyPoison || opcode == ZN_OP_BindWound ||
 		          opcode == ZN_OP_FeignDeath  || opcode == ZN_OP_PickPockets ||
 		          opcode == ZN_OP_Beg         || opcode == ZN_OP_InstillDoubt ||
-		          opcode == ZN_OP_Taunt))
+		          opcode == ZN_OP_Taunt       || opcode == ZN_OP_Disarm))
 		{
 			// Payload-bearing skill bridges.  Each case deserializes the v29c
 			// legacy struct, extracts the field(s) the modern handler actually
@@ -1407,6 +1410,53 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					break;
 				}
 
+				// --------------------------------------------------------------
+				// Disarm — 12 B in {uint32 source; uint32 target; uint8[4] tail},
+				// 16 B out (Disarm_Struct).  Wire-confirmed by packet capture:
+				// source carries the player's player_spawn_id (not modern GetID)
+				// — same as Bind Wound's `to` field — so we reverse-translate it
+				// before the modern handler's anti-hack check rejects us.
+				// `target` is a v29c NPC entity ID which already equals the
+				// modern entity ID (SendZoneSpawns ships them 1:1), so no
+				// translation needed there.  `skill` must equal
+				// GetSkill(SkillDisarm) for the modern handler to accept the
+				// attempt — we supply the live value from the player rather
+				// than parsing the tail bytes (whose layout the v29c client
+				// ships zero-initialised on request, finalised on response).
+				//
+				// Same opcode (0xaa20) carries both the request and the
+				// server's success/fail notification ("OP_DisarmComplete" in
+				// EQClassic), but only the inbound direction needs wiring:
+				// NPC::Disarm fires the WearChange to remove the weapon
+				// visual and a Chat::Skills MessageString (DISARM_SUCCESS/
+				// FAILED, allowlisted in TrilogySystemStringTemplate so they
+				// reach the v29c client) — no per-opcode reply needed.
+				// --------------------------------------------------------------
+				case ZN_OP_Disarm: {
+					if (plen < 8) break;
+					uint32_t wire_source = 0;
+					uint32_t wire_target = 0;
+					memcpy(&wire_source, payload + 0, 4);
+					memcpy(&wire_target, payload + 4, 4);
+
+					::Disarm_Struct ds{};
+					const uint16_t player_spawn_id =
+					    s.trilogy_client->GetPlayerSpawnId();
+					ds.source = (wire_source == player_spawn_id)
+					    ? static_cast<uint32_t>(s.trilogy_client->GetID())
+					    : wire_source;
+					ds.target  = wire_target;
+					ds.skill   = static_cast<uint32_t>(
+					    s.trilogy_client->GetSkill(EQ::skills::SkillDisarm));
+					ds.unknown = 0;
+
+					EQApplicationPacket pkt(OP_Disarm,
+					                        sizeof(::Disarm_Struct));
+					memcpy(pkt.pBuffer, &ds, sizeof(ds));
+					s.trilogy_client->Handle_OP_Disarm(&pkt);
+					break;
+				}
+
 				default: break;
 			}
 		}
@@ -1556,6 +1606,23 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				        s.char_id, plen,
 				        (unsigned)sizeof(Trilogy::structs::PlayerProfile_Struct));
 			}
+		}
+		else {
+			// Catch-all diagnostic for unhandled inbound opcodes.  When wiring a
+			// new skill or action, the v29c client's opcode + payload shape is
+			// usually the missing piece — print both on first sight so we can
+			// identify the packet.  Safe in production: this only fires for
+			// opcodes we don't already dispatch above, which by definition are
+			// not the high-frequency ones (position updates, channel messages,
+			// etc., all match a specific branch and never reach here).
+			std::string hex;
+			const uint32_t cap = plen > 64 ? 64u : plen;
+			for (uint32_t i = 0; i < cap; ++i) {
+				hex += fmt::format("{:02X} ", payload[i]);
+			}
+			if (plen > cap) hex += "...";
+			LogInfo("[TrilogyZone] UNHANDLED rx opcode={:04X} plen={} payload=[{}]",
+			        opcode, plen, hex);
 		}
 		// Heartbeat (A120) is driven by TrilogyZoneServer::Tick(); do not send here.
 		if (s.ack_due) SendAck(addr, port, s);
