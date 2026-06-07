@@ -5371,6 +5371,143 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 }
 
 // ============================================================
+// RefreshWornSlotsAfterMove — sync m_inv + side-effects after a direct-DB move
+//
+// HandleMoveItem writes the `inventory` table directly without touching the
+// Client's in-memory InventoryProfile. For non-worn slots (bags, bag contents,
+// bank) nothing at runtime reads m_inv for those positions, so it's harmless.
+// For WORN slots (DB 1-20) it is not: combat (Client::GetPrimarySkillValue),
+// fishing (Client::CanFish), magic-weapon flag, instrument-equip validation,
+// AC/stat bonuses, etc. all consult m_inv[slot*] directly — so without this
+// refresh, equipping a sword over a dagger keeps the dagger as the "real"
+// weapon, equipping a fishing pole still prints "you need a pole", stat
+// items grant no bonus, and so on.
+//
+// Scope: only the specific worn slots touched by this move (at most 2 of
+// 1-20) are refreshed. Non-worn slots are left alone — full m_inv reloads
+// would pull the invisible cursor queue (DB 8000-8010) and invalidate
+// ItemInstance pointers held elsewhere in the engine.
+//
+// Mirrors the tail of Client::SwapItem:
+//   • EVENT_UNEQUIP_ITEM for whatever was at each touched worn slot before
+//   • EVENT_EQUIP_ITEM   for whatever is at each touched worn slot after
+//   • CalcBonuses() + ApplyWeaponsStance() to recompute equipped stats
+//   • SetAttackTimer() if Primary/Secondary/Range was touched
+// ============================================================
+void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int to_db, bool destroy_path)
+{
+	if (!s.trilogy_client) return;
+
+	auto is_worn = [](int slot) { return slot >= 1 && slot <= 20; };
+	const bool from_worn = is_worn(from_db);
+	const bool to_worn   = !destroy_path && is_worn(to_db);
+	if (!from_worn && !to_worn) return;
+
+	auto* tc  = s.trilogy_client;
+	auto& inv = tc->GetInv();
+
+	// Capture pre-change item IDs at the touched worn slots so we can fire
+	// EVENT_UNEQUIP_ITEM for whatever was sitting there before.
+	auto capture_id = [&](int slot) -> uint32 {
+		if (!is_worn(slot)) return 0;
+		const EQ::ItemInstance* cur = inv[slot];
+		return cur ? cur->GetItem()->ID : 0;
+	};
+	const uint32 was_from_id = capture_id(from_db);
+	const uint32 was_to_id   = capture_id(to_db);
+
+	// Re-read each touched worn slot from DB and overwrite m_inv at that slot.
+	auto refresh_slot = [&](int slot) {
+		if (!is_worn(slot)) return;
+		const bool had_before = (inv[slot] != nullptr);
+		if (had_before) inv.DeleteItem(static_cast<int16>(slot), 0);
+
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`, `charges`, `color`, `augslot1`, `augslot2`, `augslot3`, "
+		    "`augslot4`, `augslot5`, `augslot6` "
+		    "FROM `inventory` WHERE `charid`={} AND `slotid`={}", s.char_id, slot));
+		if (!r.Success() || r.RowCount() == 0) {
+			LogInfo("[TrilogyZone] RefreshWornSlots char={} slot={} had_before={} DB empty after move", s.char_id, slot, had_before);
+			return;
+		}
+
+		auto row = r.begin();
+		const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+		if (item_id == 0) {
+			LogInfo("[TrilogyZone] RefreshWornSlots char={} slot={} had_before={} item_id=0 from DB", s.char_id, slot, had_before);
+			return;
+		}
+
+		const int16  charges = static_cast<int16>(Strings::ToInt(row[1]));
+		const uint32 color   = static_cast<uint32>(Strings::ToInt(row[2]));
+		const uint32 aug1    = static_cast<uint32>(Strings::ToInt(row[3]));
+		const uint32 aug2    = static_cast<uint32>(Strings::ToInt(row[4]));
+		const uint32 aug3    = static_cast<uint32>(Strings::ToInt(row[5]));
+		const uint32 aug4    = static_cast<uint32>(Strings::ToInt(row[6]));
+		const uint32 aug5    = static_cast<uint32>(Strings::ToInt(row[7]));
+		const uint32 aug6    = static_cast<uint32>(Strings::ToInt(row[8]));
+
+		EQ::ItemInstance* inst = database.CreateItem(item_id, charges, aug1, aug2, aug3, aug4, aug5, aug6);
+		if (!inst) {
+			LogInfo("[TrilogyZone] RefreshWornSlots char={} slot={} CreateItem({}) returned null", s.char_id, slot, item_id);
+			return;
+		}
+		inst->SetColor(color);
+		const int16 put_result = inv.PutItem(static_cast<int16>(slot), *inst);
+		LogInfo("[TrilogyZone] RefreshWornSlots char={} slot={} had_before={} item_id={} put_result={} now_present={}",
+		        s.char_id, slot, had_before, item_id, put_result,
+		        inv.GetItem(static_cast<int16>(slot)) != nullptr);
+		delete inst;
+	};
+	refresh_slot(from_db);
+	if (to_worn) refresh_slot(to_db);
+
+	// Fire quest unequip/equip events so item-quest scripts that grant or
+	// revoke effects on equip see the change. Mirrors Client::SwapItem
+	// (inventory.cpp:2209-2279).
+	auto fire_unequip = [&](int slot, uint32 old_id) {
+		if (!is_worn(slot) || old_id == 0) return;
+		EQ::ItemInstance* tmp = database.CreateItem(old_id, 1);
+		if (!tmp) return;
+		if (parse->ItemHasQuestSub(tmp, EVENT_UNEQUIP_ITEM)) {
+			parse->EventItem(EVENT_UNEQUIP_ITEM, tc, tmp, nullptr, "", slot);
+		}
+		if (parse->PlayerHasQuestSub(EVENT_UNEQUIP_ITEM_CLIENT)) {
+			parse->EventPlayer(EVENT_UNEQUIP_ITEM_CLIENT, tc, fmt::format("1 {}", slot), old_id);
+		}
+		delete tmp;
+	};
+	auto fire_equip = [&](int slot) {
+		if (!is_worn(slot)) return;
+		EQ::ItemInstance* inst = inv.GetItem(static_cast<int16>(slot));
+		if (!inst) return;
+		if (parse->ItemHasQuestSub(inst, EVENT_EQUIP_ITEM)) {
+			parse->EventItem(EVENT_EQUIP_ITEM, tc, inst, nullptr, "", slot);
+		}
+		if (parse->PlayerHasQuestSub(EVENT_EQUIP_ITEM_CLIENT)) {
+			parse->EventPlayer(EVENT_EQUIP_ITEM_CLIENT, tc,
+			    fmt::format("{} {}", inst->IsStackable() ? inst->GetCharges() : 1, slot),
+			    inst->GetItem()->ID);
+		}
+	};
+
+	fire_unequip(from_db, was_from_id);
+	if (to_worn) fire_unequip(to_db, was_to_id);
+	fire_equip(from_db);   // swap: dst item now lives at from_db
+	if (to_worn) fire_equip(to_db);
+
+	tc->CalcBonuses();
+	tc->ApplyWeaponsStance();
+
+	const bool weapon_touched =
+	    from_db == EQ::invslot::slotPrimary || from_db == EQ::invslot::slotSecondary || from_db == EQ::invslot::slotRange ||
+	    (to_worn && (to_db == EQ::invslot::slotPrimary || to_db == EQ::invslot::slotSecondary || to_db == EQ::invslot::slotRange));
+	if (weapon_touched) {
+		tc->SetAttackTimer();
+	}
+}
+
+// ============================================================
 // HandleMoveItem — client moved an item (0x2c21)
 //
 // Wire slot semantics (client-side) — a UNIFORM reverse -1 shift (DB = wire + 1)
@@ -5386,6 +5523,10 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 //
 // For bag-to-bag swaps we also migrate bag content slotids so orphan
 // tracking on subsequent zone-ins remains correct.
+//
+// After any DB mutation that touches a worn slot (1-20), m_inv is refreshed
+// for just those slots and equip side-effects (CalcBonuses, attack timer,
+// quest events) are fired — see RefreshWornSlotsAfterMove above.
 // ============================================================
 
 void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Session& s,
@@ -5439,11 +5580,28 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	// Determine the effective source DB slot.
 	int from_db;
 	if (from_wire == 0) {
-		// Placing from cursor — use the slot we saved in step 1.
-		// If cursor_from_db is unset the item arrived via loot/summon, not inventory pick-up;
-		// EQEmu stores cursor items at slot 33.
+		// Placing from cursor — use the slot we saved on the matching pickup if
+		// there was one. If cursor_from_db is unset the item arrived via
+		// loot/summon/#si and lives somewhere in EQEmu's cursor storage: the
+		// real cursor at DB slot 33, or — when slot 33 is already occupied — the
+		// invisible cursor queue at DB slots 8000-8010 (see project memory
+		// `project_trilogy_cursor_queue`). Query both ranges and use whichever
+		// row exists, lowest-slotid first (queue front).
 		if (s.cursor_from_db < 0) {
-			from_db = 33;
+			from_db = -1;
+			auto r = database.QueryDatabase(fmt::format(
+			    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+			    "(`slotid`=33 OR (`slotid` BETWEEN 8000 AND 8010)) "
+			    "ORDER BY `slotid` ASC LIMIT 1", s.char_id));
+			if (r.Success() && r.RowCount() > 0) {
+				from_db = static_cast<int>(Strings::ToInt(r.begin()[0]));
+			}
+			if (from_db < 0) {
+				LogInfo("[TrilogyZone] MoveItem char={} drop-from-cursor but no DB row "
+				        "in 33/8000-8010 — ignoring (client visual likely desynced)",
+				        s.char_id);
+				return;
+			}
 		} else {
 			from_db = s.cursor_from_db;
 			s.cursor_from_db = -1;
@@ -5461,6 +5619,7 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		database.QueryDatabase(fmt::format(
 		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 		    s.char_id, from_db));
+		RefreshWornSlotsAfterMove(s, from_db, -1, /*destroy_path=*/true);
 		return;
 	}
 
@@ -5486,12 +5645,34 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	// ---- persist bag/item row swap ----
 	// Determine if the destination is occupied so we know whether to swap or move.
 	bool to_occupied = false;
+	bool from_present = false;
 	{
 		auto r = database.QueryDatabase(fmt::format(
 		    "SELECT COUNT(*) FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 		    s.char_id, to_db));
 		if (r.Success() && r.RowCount() > 0)
 			to_occupied = (Strings::ToInt(r.begin()[0]) > 0);
+	}
+	{
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT COUNT(*) FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, from_db));
+		if (r.Success() && r.RowCount() > 0)
+			from_present = (Strings::ToInt(r.begin()[0]) > 0);
+	}
+
+	// Safety: if the source slot has no DB row, the swap branch below would
+	// wrongly move the destination item into the source slot (it does
+	// `UPDATE slotid=from_db WHERE slotid=to_db` unconditionally), leaving the
+	// destination empty server-side while the client visually thinks both
+	// slots are populated. Bail out to keep DB state coherent — the client
+	// will be visually desynced until it next reloads, which is far better
+	// than silently destroying the destination item. The simple-move branch
+	// is harmless when source is missing (the UPDATE matches 0 rows).
+	if (!from_present && to_occupied) {
+		LogInfo("[TrilogyZone] MoveItem char={} aborting swap: from_db={} has no DB row "
+		        "(would steal dest from to_db={})", s.char_id, from_db, to_db);
+		return;
 	}
 
 	if (!to_occupied) {
@@ -5544,6 +5725,8 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 			    9000 - to_cont_base, s.char_id));
 		}
 	}
+
+	RefreshWornSlotsAfterMove(s, from_db, to_db, /*destroy_path=*/false);
 }
 
 // ============================================================

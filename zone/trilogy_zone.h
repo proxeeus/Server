@@ -252,6 +252,11 @@ private:
 	                          const uint8_t* payload, uint32_t plen);
 	void HandleMoveItem(const std::string& addr, int port, Session& s,
 	                    const uint8_t* payload, uint32_t plen);
+	// After a HandleMoveItem DB op that touched a worn slot (DB 1-20),
+	// re-read those slots into the client's m_inv and fire equip/unequip
+	// side-effects (CalcBonuses, ApplyWeaponsStance, SetAttackTimer,
+	// EVENT_(UN)EQUIP_ITEM). See trilogy_zone.cpp comment block for why.
+	void RefreshWornSlotsAfterMove(Session& s, int from_db, int to_db, bool destroy_path);
 	// NPC trade window handlers
 	void HandleTradeRequest(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);

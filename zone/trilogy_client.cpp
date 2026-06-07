@@ -448,6 +448,52 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			                     app->pBuffer,
 			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
 		break;
+	case OP_DeleteItem:
+	case OP_DeleteCharge:
+	case OP_MoveItem: {
+		// Server-initiated inventory delete (consumed bait, broken pole, bandage
+		// used, etc.).  Modern EQEmu emits three distinct opcodes — all carry
+		// the same 12-byte DeleteItem_Struct { from_slot; to_slot; number_in_stack }
+		// — that the v29c client doesn't understand.  EQClassic has no
+		// OP_DeleteItem at all; the client expects OP_MoveItem (0x2c21) with
+		// to_slot=0xFFFFFFFF, same pattern HandleMemorizeSpell uses on the scribe
+		// path (trilogy_zone.cpp:5930-5936).
+		//
+		// Semantics distinction we forward:
+		//   OP_DeleteItem   (modern: decrement stack by 1, sent N times by caller)
+		//     → wire OP_MoveItem(to=0xFFFFFFFF, number_in_stack=1)
+		//   OP_DeleteCharge (modern: spend one clicky charge)
+		//     → wire OP_MoveItem(to=0xFFFFFFFF, number_in_stack=1)
+		//   OP_MoveItem with to=0xFFFFFFFF (modern: slot fully emptied)
+		//     → wire OP_MoveItem(to=0xFFFFFFFF, number_in_stack=0)
+		//   OP_MoveItem with any other to_slot
+		//     → server-initiated rearrange; not used by the skill bridges in
+		//       scope right now, so drop quietly until a use case appears.
+		if (app->size < sizeof(::DeleteItem_Struct)) break;
+		const auto* del = reinterpret_cast<const ::DeleteItem_Struct*>(app->pBuffer);
+		if (app->GetOpcode() == OP_MoveItem && del->to_slot != 0xFFFFFFFFu) break;
+
+		// Reverse slot translation: modern EQEmu RoF2 → v29c wire.  Mirrors the
+		// existing forward map (TrilogyWireSlotToEmuSlot) used inbound, and the
+		// HandleItemPacket inventory delivery shifts used outbound.
+		auto emu_to_wire = [](uint32_t emu) -> uint32_t {
+			if (emu == static_cast<uint32_t>(EQ::invslot::slotCursor)) return 0u;
+			if (emu >= 22 && emu <= 30)  return emu - 1;  // general inventory shift
+			if (emu >= 251 && emu <= 340) return emu - 1; // bag content shift
+			return emu;                                   // equipment 1-20 / primary 13 / etc.
+		};
+
+		Trilogy::structs::MoveItem_Struct mv{};
+		mv.from_slot       = emu_to_wire(del->from_slot);
+		mv.to_slot         = 0xFFFFFFFFu;
+		mv.number_in_stack =
+		    (app->GetOpcode() == OP_MoveItem) ? 0u  // empty the slot
+		                                      : 1u; // decrement one charge / stack
+		m_tzs->SendToSession(m_session_key, 0x2c21,
+		                     reinterpret_cast<const uint8_t*>(&mv),
+		                     static_cast<uint32_t>(sizeof(mv)));
+		break;
+	}
 	case OP_Bind_Wound: {
 		// Bind Wound response echo.  Modern BindWound() pushes a sequence of
 		// OP_Bind_Wound packets via QueuePacket with `type` carrying the
