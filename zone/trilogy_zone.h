@@ -60,6 +60,16 @@ public:
 	// the player-race armor/appearance path.
 	void SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* npc);
 
+	// Advance the per-session money-display baseline by the given deltas so the
+	// next Tick() reconciliation does NOT re-push these amounts as an
+	// OP_TradeMoneyUpdate.  Used by outbound packet translators that have
+	// already credited the client locally via a per-skill response packet
+	// (e.g. OP_Begging echo) — without this advance, the Tick reconciliation
+	// detects the PP increment AND we'd double-credit the v29c display.
+	void AdvanceMoneyBaseline(uint64_t session_key,
+	                          int32_t copper_delta, int32_t silver_delta,
+	                          int32_t gold_delta,   int32_t platinum_delta);
+
 private:
 	enum ZoneState : uint8_t {
 		CONNECTING1 = 1,  // waiting for OP_SetDataRate (0xe821)

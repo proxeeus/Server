@@ -448,6 +448,59 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			                     app->pBuffer,
 			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
 		break;
+	case OP_Begging: {
+		// Begging result echo.  Modern BeggingResponse_Struct (20 bytes) carries
+		// only Result (0=fail, 1=plat, 2=gold, 3=silver, 4=copper) at offset 12
+		// and Amount at offset 16.  V29c expects the legacy Beg_Struct (18 bytes)
+		// echoed back on opcode 0x2521 with the same success/coins semantics, so
+		// the client can display the success/fail line and tick its local coin
+		// counter (the proxy's TrilogyZoneServer::Tick reconciliation still
+		// pushes the coin delta separately within ~1s as a safety net).
+		// Source: EQClassic Zone/Beg.cpp:152-155 — server modifies the inbound
+		// packet in place and echoes it back via QueuePacket.
+		if (app->size < sizeof(::BeggingResponse_Struct)) break;
+		const auto* brs = reinterpret_cast<const ::BeggingResponse_Struct*>(app->pBuffer);
+#pragma pack(push, 1)
+		struct VBegStruct {
+			int32_t target;
+			int32_t begger;
+			int8_t  skill;
+			int8_t  success;
+			int16_t time;
+			int32_t coins;
+			int8_t  unknown[2];
+		};
+#pragma pack(pop)
+		static_assert(sizeof(VBegStruct) == 18, "Trilogy Beg_Struct must be 18 bytes");
+		VBegStruct beg{};
+		beg.target  = GetTarget() ? static_cast<int32_t>(TranslateId(GetTarget()->GetID())) : 0;
+		beg.begger  = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(GetID())));
+		beg.skill   = static_cast<int8_t>(GetSkill(EQ::skills::SkillBegging));
+		beg.success = static_cast<int8_t>(brs->Result);
+		beg.time    = 0;
+		beg.coins   = static_cast<int32_t>(brs->Amount);
+		m_tzs->SendToSession(m_session_key, 0x2521,
+		                     reinterpret_cast<const uint8_t*>(&beg),
+		                     static_cast<uint32_t>(sizeof(beg)));
+		// Advance the money-display baseline by the amount we just told the
+		// client to credit so the next Tick reconciliation doesn't re-push it.
+		// Without this the begged coins land on the v29c coin counter twice —
+		// once locally (the client adds `coins` of denomination `success` on
+		// receipt) and once via Tick when it sees m_pp.copper / m_pp.silver
+		// has incremented.  Success codes: 1=pp, 2=gp, 3=sp, 4=cp.
+		if (brs->Result != 0 && brs->Amount != 0) {
+			int32_t dcp = 0, dsp = 0, dgp = 0, dpp = 0;
+			switch (brs->Result) {
+				case 1: dpp = static_cast<int32_t>(brs->Amount); break; // platinum
+				case 2: dgp = static_cast<int32_t>(brs->Amount); break; // gold
+				case 3: dsp = static_cast<int32_t>(brs->Amount); break; // silver
+				case 4: dcp = static_cast<int32_t>(brs->Amount); break; // copper
+				default: break;
+			}
+			m_tzs->AdvanceMoneyBaseline(m_session_key, dcp, dsp, dgp, dpp);
+		}
+		break;
+	}
 	case OP_RequestClientZoneChange: {
 		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
 		// The Trilogy client automatically zones or intra-zone teleports based on whether the

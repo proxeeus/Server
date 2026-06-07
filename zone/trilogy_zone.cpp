@@ -589,6 +589,24 @@ void TrilogyZoneServer::SendCloseToSession(uint64_t session_key)
 	SendClose(s.source_addr, s.source_port, s);
 }
 
+void TrilogyZoneServer::AdvanceMoneyBaseline(uint64_t session_key,
+                                             int32_t copper_delta, int32_t silver_delta,
+                                             int32_t gold_delta,   int32_t platinum_delta)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	Session& s = it->second;
+	// Only advance once the baseline has been synced (first Tick after zone-in).
+	// Before that, last_copper/etc. are stale and advancing would corrupt the
+	// initial sync; the upcoming Tick() will set the baseline from current PP
+	// anyway, so skipping is safe.
+	if (!s.money_synced) return;
+	s.last_copper   += copper_delta;
+	s.last_silver   += silver_delta;
+	s.last_gold     += gold_delta;
+	s.last_platinum += platinum_delta;
+}
+
 uint64_t TrilogyZoneServer::SessionKey(const std::string& addr, int port)
 {
 	uint64_t h = 5381;
