@@ -448,6 +448,40 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			                     app->pBuffer,
 			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
 		break;
+	case OP_Bind_Wound: {
+		// Bind Wound response echo.  Modern BindWound() pushes a sequence of
+		// OP_Bind_Wound packets via QueuePacket with `type` carrying the
+		// bind-state code (3=Unlock Interface, 0=ack, 1=Complete, 4=Target Died,
+		// 5=Target Left Zone, 6=Target Moved Away, 7=You Moved).  The v29c
+		// client expects these same codes on opcode 0x9320 with the same
+		// 8-byte BindWound_Struct layout (int16 to; int16 unk; int16 type;
+		// int16 unk) — direct byte-for-byte forward works.  Without this case
+		// the proxy default drops the completion signal so the user sees no
+		// HP heal feedback (HP itself still updates server-side via
+		// SendHPUpdate, which the proxy already translates).
+		if (app->size < sizeof(::BindWound_Struct)) break;
+		// Legacy v29c BindWound_Struct (EQClassic/Common/Include/
+		// eq_packet_structs.h:529-535) is byte-identical to the modern struct,
+		// so memcpy the buffer; then translate `to` from modern GetID() back
+		// to v29c player_spawn_id for self-bind so the client matches the
+		// response to the right spawn.
+#pragma pack(push, 1)
+		struct VBindWoundStruct {
+			int16_t to;
+			int16_t unknown2;
+			int16_t type;
+			int16_t unknown6;
+		};
+#pragma pack(pop)
+		static_assert(sizeof(VBindWoundStruct) == 8, "Trilogy BindWound_Struct must be 8 bytes");
+		VBindWoundStruct out{};
+		memcpy(&out, app->pBuffer, sizeof(::BindWound_Struct));
+		out.to = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(static_cast<uint16_t>(out.to))));
+		m_tzs->SendToSession(m_session_key, 0x9320,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+		break;
+	}
 	case OP_Begging: {
 		// Begging result echo.  Modern BeggingResponse_Struct (20 bytes) carries
 		// only Result (0=fail, 1=plat, 2=gold, 3=silver, 4=copper) at offset 12

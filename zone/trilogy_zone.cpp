@@ -1292,16 +1292,28 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				// --------------------------------------------------------------
 				// Bind Wound — 8 B in, 8 B out.  Legacy { int16 to; int16 unk;
 				// int16 type; int16 unk } and modern { uint16 to; uint16 unk;
-				// uint16 type; uint16 unk } share the same byte layout, so a
-				// direct memcpy preserves everything the modern handler reads
-				// (it only consumes `to`, but copying the trailing fields keeps
-				// the size check happy and any future server-side fields work).
+				// uint16 type; uint16 unk } share the same byte layout, so the
+				// trailing fields memcpy unchanged — but `to` needs reverse
+				// translation when it points at the player's own v29c spawn id
+				// (self-bind).  The v29c client knows itself as
+				// m_player_spawn_id (e.g. 16694), not the modern Client::GetID,
+				// so entity_list.GetMob(player_spawn_id) returns null in
+				// Handle_OP_Bind_Wound and the server logs "Bindwound on
+				// non-exsistant mob" — bind never starts.  When `to` matches
+				// the session's player_spawn_id, replace it with the modern
+				// GetID() before forwarding so the lookup succeeds.
 				// --------------------------------------------------------------
 				case ZN_OP_BindWound: {
 					if (plen < static_cast<int>(sizeof(::BindWound_Struct))) break;
 					EQApplicationPacket pkt(OP_Bind_Wound,
 					                        sizeof(::BindWound_Struct));
 					memcpy(pkt.pBuffer, payload, sizeof(::BindWound_Struct));
+					auto* bw = reinterpret_cast<::BindWound_Struct*>(pkt.pBuffer);
+					const uint16_t player_spawn_id =
+					    s.trilogy_client->GetPlayerSpawnId();
+					if (bw->to == player_spawn_id) {
+						bw->to = static_cast<uint16_t>(s.trilogy_client->GetID());
+					}
 					s.trilogy_client->Handle_OP_Bind_Wound(&pkt);
 					break;
 				}
