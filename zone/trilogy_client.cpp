@@ -1367,6 +1367,14 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// but the text feedback is dropped).
 		case 12890: return "You disarmed %1!";                                        // DISARM_SUCCESS
 		case 12891: return "Your attempt to disarm failed.";                          // DISARM_FAILED
+		// Intimidation feedback — Mob::InstillDoubt fires NOT_SCARING on every
+		// failed roll (and the formula's harsh, so most attempts produce this).
+		// EQEmu has no corresponding success message (`// is there a success
+		// message?` comment at special_attacks.cpp:2384); on success the NPC
+		// just flees from the SpellOnTarget(229) fear cast.  Without this
+		// allowlist entry the player presses Intimidation, sees the animation,
+		// and gets zero text feedback whether it worked or not.
+		case 164:   return "You're not scaring anyone.";                              // NOT_SCARING
 		// Fishing feedback — CanFish() validation + GoFish() outcome MessageString
 		// paths (forage.cpp:197-249, 355-408).  Without these the entire cast
 		// cycle is silent on the v29c side: no equip-pole nag, no land/lava
@@ -1512,9 +1520,21 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		}
 		out_text += '\0';
 
+		// Honor the modern Chat::* channel the server picked (fm->type) instead
+		// of hardcoding white for every templated message.  Modern Chat:: color
+		// constants (0-20) line up numerically with the v29c SpecialMesg color
+		// palette closely enough for the common cases that matter for skill
+		// feedback — notably Chat::LightBlue(4) → v29c DARK_BLUE(4), which is
+		// what NOT_SCARING and several other Mob::InstillDoubt/skill paths use.
+		// Values outside the small color range (the 256+ MessageType space and
+		// anything above 20) fall back to 10/white — those wouldn't render in
+		// v29c's color palette anyway, so the original fallback is the right
+		// behaviour for them.
+		uint32_t out_color = (fm->type <= 20u) ? fm->type : 10u;
+
 		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
 		auto* out = new uint8_t[out_size]();
-		*reinterpret_cast<uint32_t*>(out) = 10u; // White — regular chat text (classic color palette)
+		*reinterpret_cast<uint32_t*>(out) = out_color;
 		memcpy(out + 4, out_text.data(), out_text.size());
 		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 		delete[] out;
