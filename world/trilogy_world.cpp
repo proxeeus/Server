@@ -977,69 +977,6 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	        (int)str_v, (int)sta_v, (int)cha_v, (int)dex_v, (int)int_v, (int)agi_v, (int)wis_v,
 	        addr, port);
 
-	// DIAGNOSTIC: brute-force scan the entire CharCreate payload for any byte that could be
-	// the deity field.  We don't know the encoding (raw 140/201-216, compact 1-16, eqstr ID),
-	// so log offsets of every byte/word matching plausible deity values.  Skip well-known
-	// fields (name, race, class, stats, position floats) to reduce noise.  The deity byte
-	// for this character should appear in the output; correlate against the deity the user
-	// picked in the UI to pinpoint the offset.
-	{
-		auto is_known_field = [](uint32_t off) -> bool {
-			// Known fields per Trilogy PlayerProfile_Struct (payload = struct - 4):
-			//   [0..29]      name
-			//   [30..49]     surname
-			//   [50]         gender
-			//   [51]         deity_legacy (always 0)
-			//   [52..53]     race uint16
-			//   [54]         class
-			//   [56..59]     pp_unknown
-			//   [60..63]     exp
-			//   [64..67]     trainingpoints + mana
-			//   [68]         face
-			//   [69..115]    unknown0073
-			//   [116..117]   cur_hp
-			//   [118..125]   pp_unknown7 + STR..WIS
-			//   [126..149]   languages
-			//   [150..163]   pp_unknown8
-			//   [2404..2419] y, x, z, heading floats
-			//   [2420..2434] current_zone[15]
-			//   [2456..2503] money fields
-			//   [2504..2577] skills[74]
-			//   [2840..2919] start_point_zone[4][20]
-			if (off < 50) return true;              // name + surname
-			if (off >= 52 && off <= 54) return true; // race + class
-			if (off >= 60 && off <= 67) return true; // exp + trainingpoints + mana
-			if (off == 68) return true;             // face
-			if (off >= 118 && off <= 125) return true; // STR..WIS
-			if (off >= 126 && off <= 149) return true; // languages
-			if (off >= 2404 && off <= 2434) return true; // pos + current_zone
-			if (off >= 2456 && off <= 2503) return true; // money
-			if (off >= 2504 && off <= 2577) return true; // skills
-			if (off >= 2840 && off <= 2919) return true; // start_point_zone slots
-			return false;
-		};
-		const uint32_t scan_end = (plen < 8104) ? plen : 8104;
-		std::string raw_hits, compact_hits;
-		for (uint32_t i = 0; i < scan_end; ++i) {
-			if (is_known_field(i)) continue;
-			const uint8_t b = payload[i];
-			// Raw EQEmu deity IDs: 140, 201..216
-			if (b == 140 || (b >= 201 && b <= 216)) {
-				raw_hits += fmt::format("+{}:0x{:02x} ", i, b);
-				if (raw_hits.size() > 800) break;
-			}
-			// Compact 1..16 (also covers eqstr-low-byte candidates)
-			else if (b >= 1 && b <= 16) {
-				compact_hits += fmt::format("+{}:{} ", i, b);
-				if (compact_hits.size() > 800) break;
-			}
-		}
-		LogInfo("[TrilogyWorld] CharCreate deity-byte scan | RAW(140/201-216) hits: {}",
-		        raw_hits.empty() ? std::string("(none)") : raw_hits);
-		LogInfo("[TrilogyWorld] CharCreate deity-byte scan | COMPACT(1-16) hits: {}",
-		        compact_hits.empty() ? std::string("(none)") : compact_hits);
-	}
-
 	// Get char_id from the row created by ReserveName
 	uint32_t char_id = database.GetCharacterID(name);
 	if (char_id == 0) {
@@ -1085,10 +1022,11 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	// the starting city zone name, then queries start_zones by zone_id+class+race.  We replicate
 	// that here, with start_point_zone slots (payload[2860+]) as a secondary fallback.
 	//
-	// Deity: the Trilogy wire always sends 0 in pp.deity.  After zone placement we infer the
-	// correct EQEmu deity ID from start_zones using race+class (picks lowest non-zero deity,
-	// i.e. the first option in the UI list for that race/class).  This is stored in the DB and
-	// converted to compact encoding by SendPlayerProfile when sending to the client.
+	// Deity: the client transmits the chosen deity at wire byte 4152 (= our struct byte 4156);
+	// we already extracted it into `eqemu_deity` earlier in this handler.  Pass it into the
+	// start_zones lookup so e.g. Mithaniel-Marr Paladins land in Hall of Truth while
+	// Erollisi-Marr Paladins land in Temple of Erollisi (both in freportn).  Falls back to
+	// the legacy race+class lookup if no deity-specific row exists.
 	{
 		bool placed = false;
 
@@ -1130,46 +1068,54 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			return (r.RowCount() > 0) ? static_cast<uint32_t>(Strings::ToInt(r.begin()[0])) : 0;
 		};
 
-		// Try start_zones for a given zone_id.  with_race=true adds player_race filter.
-		// Returns true and fills pp position/zone on success.
-		auto try_start_zone = [&](uint32_t zid, bool with_race) -> bool {
-			if (zid == 0) return false;
-			std::string q;
-			if (with_race) {
-				q = fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`start_zone`={} AND sz.`player_class`={} AND sz.`player_race`={}"
-					" ORDER BY sz.`player_deity` ASC LIMIT 1",
-					zid, class_, race);
-			} else {
-				q = fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`start_zone`={} AND sz.`player_class`={}"
-					" ORDER BY sz.`player_deity` ASC LIMIT 1",
-					zid, class_);
-			}
-			auto zr = content_db.QueryDatabase(q);
-			if (zr.RowCount() == 0) return false;
-			auto row = zr.begin();
-			pp.x       = Strings::ToFloat(row[0]);
-			pp.y       = Strings::ToFloat(row[1]);
-			pp.z       = Strings::ToFloat(row[2]);
-			pp.heading = Strings::ToFloat(row[3]);
-			pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
-			return true;
+		// Look up a starting position in `start_zones`, narrowing progressively:
+		//   1. zone + class + race + deity   (most specific — Mithaniel-Marr vs Erollisi-Marr Paladins in freportn)
+		//   2. zone + class + race           (deity unknown or no matching row)
+		//   3. zone + class                  (some classes are deity-agnostic for some races)
+		// On success: fills pp.x/y/z/heading/zone_id, returns the narrowing level used (1/2/3) for logging.
+		// Returns 0 on no match.
+		auto try_start_zone = [&](uint32_t zid) -> int {
+			if (zid == 0) return 0;
+			auto run = [&](const std::string& q) -> bool {
+				auto zr = content_db.QueryDatabase(q);
+				if (zr.RowCount() == 0) return false;
+				auto row = zr.begin();
+				pp.x       = Strings::ToFloat(row[0]);
+				pp.y       = Strings::ToFloat(row[1]);
+				pp.z       = Strings::ToFloat(row[2]);
+				pp.heading = Strings::ToFloat(row[3]);
+				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
+				return true;
+			};
+			if (eqemu_deity != 0 && run(fmt::format(
+				"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+				" FROM `start_zones` sz"
+				" WHERE sz.`start_zone`={} AND sz.`player_class`={} AND sz.`player_race`={}"
+				"   AND sz.`player_deity`={}"
+				" LIMIT 1",
+				zid, class_, race, eqemu_deity))) return 1;
+			if (run(fmt::format(
+				"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+				" FROM `start_zones` sz"
+				" WHERE sz.`start_zone`={} AND sz.`player_class`={} AND sz.`player_race`={}"
+				" ORDER BY sz.`player_deity` ASC LIMIT 1",
+				zid, class_, race))) return 2;
+			if (run(fmt::format(
+				"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+				" FROM `start_zones` sz"
+				" WHERE sz.`start_zone`={} AND sz.`player_class`={}"
+				" ORDER BY sz.`player_deity` ASC LIMIT 1",
+				zid, class_))) return 3;
+			return 0;
 		};
 
 		// 1. Primary: current_zone (the field EQClassic SetStartingLocations uses)
 		if (current_zone_name[0] != '\0') {
 			uint32_t zid = resolve_zone_id(current_zone_name);
-			if (zid && try_start_zone(zid, /*with_race=*/true)) {
-				LogInfo("[TrilogyWorld] CharCreate | current_zone [{}] placed={}", current_zone_name, pp.zone_id);
-				placed = true;
-			}
-			if (!placed && zid && try_start_zone(zid, /*with_race=*/false)) {
-				LogInfo("[TrilogyWorld] CharCreate | current_zone [{}] (no-race) placed={}", current_zone_name, pp.zone_id);
+			int level = try_start_zone(zid);
+			if (level > 0) {
+				LogInfo("[TrilogyWorld] CharCreate | current_zone [{}] placed={} (match-level={}, deity={})",
+				        current_zone_name, pp.zone_id, level, eqemu_deity);
 				placed = true;
 			}
 		}
@@ -1183,34 +1129,48 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			}
 			if (slot_name[0] == '\0') continue;
 			uint32_t slot_zid = resolve_zone_id(slot_name);
-			if (slot_zid && try_start_zone(slot_zid, /*with_race=*/true)) {
-				LogInfo("[TrilogyWorld] CharCreate | slot[{}] [{}] placed={}", si, slot_name, pp.zone_id);
-				placed = true;
-			}
-			if (!placed && slot_zid && try_start_zone(slot_zid, /*with_race=*/false)) {
-				LogInfo("[TrilogyWorld] CharCreate | slot[{}] [{}] (no-race) placed={}", si, slot_name, pp.zone_id);
+			int level = try_start_zone(slot_zid);
+			if (level > 0) {
+				LogInfo("[TrilogyWorld] CharCreate | slot[{}] [{}] placed={} (match-level={}, deity={})",
+				        si, slot_name, pp.zone_id, level, eqemu_deity);
 				placed = true;
 			}
 		}
 
-		// 3. Final fallback: race + class, any zone
+		// 3. Final fallback: race + class (+ deity if available), any zone
 		if (!placed) {
-			auto zq = fmt::format(
-				"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-				" FROM `start_zones` sz"
-				" WHERE sz.`player_class`={} AND sz.`player_race`={}"
-				" ORDER BY sz.`player_deity` ASC LIMIT 1",
-				class_, race);
-			auto zr = content_db.QueryDatabase(zq);
-			if (zr.RowCount() > 0) {
+			auto run = [&](const std::string& q) -> bool {
+				auto zr = content_db.QueryDatabase(q);
+				if (zr.RowCount() == 0) return false;
 				auto row = zr.begin();
 				pp.x       = Strings::ToFloat(row[0]);
 				pp.y       = Strings::ToFloat(row[1]);
 				pp.z       = Strings::ToFloat(row[2]);
 				pp.heading = Strings::ToFloat(row[3]);
 				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
+				return true;
+			};
+			bool ok = false;
+			if (eqemu_deity != 0) {
+				ok = run(fmt::format(
+					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+					" FROM `start_zones` sz"
+					" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
+					" LIMIT 1",
+					class_, race, eqemu_deity));
+			}
+			if (!ok) {
+				ok = run(fmt::format(
+					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+					" FROM `start_zones` sz"
+					" WHERE sz.`player_class`={} AND sz.`player_race`={}"
+					" ORDER BY sz.`player_deity` ASC LIMIT 1",
+					class_, race));
+			}
+			if (ok) {
 				placed = true;
-				LogInfo("[TrilogyWorld] CharCreate | fallback race/class zone_id={}", pp.zone_id);
+				LogInfo("[TrilogyWorld] CharCreate | fallback race/class zone_id={} (deity={})",
+				        pp.zone_id, eqemu_deity);
 			}
 		}
 
