@@ -718,7 +718,8 @@ struct PlayerProfile_Struct
 /*3960*/	int8	unknown3960[20];
 /*3980*/	int16	bank_inv[8];
 /*3996*/	int16	bank_cont_inv[80];
-/*4156*/	int8	unknown4156[2];
+/*4156*/	int8	deity_wire;					// Deity displayed by the char sheet (raw EQEmu ID 140 or 201-216). Confirmed by capturing the CharCreate payload: client picks Innoruuk -> payload byte 4152 (= struct byte 4156) = 0xCE (206).
+/*4157*/	int8	unknown4157;				// Padding byte adjacent to deity_wire.
 /*4158*/	int16	guildid;
 /*4160*/	int32	time2;
 /*4164*/	int8	unknown4164[6];

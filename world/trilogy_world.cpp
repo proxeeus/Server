@@ -922,13 +922,16 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	// Trilogy PlayerProfile_Struct field offsets (payload = struct - 4-byte checksum):
 	//   payload[0..29]   name[30]        (struct[4..33])
 	//   payload[50]      gender          (struct[54])
-	//   payload[51]      deity           (struct[55])
+	//   payload[51]      deity_legacy    (struct[55])   — placeholder, client always sends 0
 	//   payload[52..53]  race (int16 LE) (struct[56..57])
 	//   payload[54]      class_          (struct[58])
 	//   payload[68]      face            (struct[72])
 	//   payload[119..125] STR STA CHA DEX INT AGI WIS (struct[123..129])
+	//   payload[4152]    deity_wire      (struct[4156]) — real chosen deity (raw EQEmu ID
+	//                                    140/201-216).  Confirmed by capturing the CharCreate
+	//                                    packet for a Dark Elf Cleric of Innoruuk: byte 4152 = 0xCE (206).
 	const uint8_t  gender    = payload[50];
-	const uint8_t  wire_deity = payload[51]; // Always 0: Trilogy client never fills this in CharCreate
+	const uint8_t  wire_deity = payload[51]; // Placeholder; v29c client puts the real deity at payload[4152]
 	const uint16_t race      = *reinterpret_cast<const uint16_t*>(payload + 52); // LE
 	const uint8_t  class_    = payload[54];
 	const uint8_t  face      = payload[68];
@@ -940,9 +943,18 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	const uint8_t  agi_v     = payload[124];
 	const uint8_t  wis_v     = payload[125];
 
-	// Deity: Trilogy client always sends 0 in the CharCreate packet — deity is inferred server-side.
-	// The initial pp.deity value below is unused; it gets overwritten by the inference block further down.
+	// Real deity is at wire byte 4152 (= struct byte 4156 in our PP layout).  Values are
+	// raw EQEmu IDs: 140 (Agnostic) or 201..216 (16 playable deities).
+	uint32_t client_deity = 0;
+	if (plen >= 4153) {
+		client_deity = static_cast<uint32_t>(payload[4152]);
+	}
 	uint32_t eqemu_deity = 0;
+	const bool client_deity_valid =
+		(client_deity == 140) || (client_deity >= 201 && client_deity <= 216);
+	if (client_deity_valid) {
+		eqemu_deity = client_deity;
+	}
 
 	// Dump payload bytes 46-60 (covers gender@50, deity@51, race@52-53, class@54)
 	// so we can verify exactly what the Trilogy client sends in this region.
@@ -953,10 +965,80 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 		        payload[51], payload[52], payload[53], payload[54], payload[55],
 		        payload[56], payload[57], payload[58], payload[59], payload[60]);
 	}
-	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] wire_deity [{}] eqemu_deity [{}] STR/STA/CHA/DEX/INT/AGI/WIS [{}/{}/{}/{}/{}/{}/{}] from {}:{}",
-	        s.account_name, name, race, (int)class_, (int)gender, (int)wire_deity, eqemu_deity,
+	if (plen >= 4153) {
+		LogInfo("[TrilogyWorld] CharCreate payload[4148..4155]: "
+		        "{:02x} {:02x} {:02x} {:02x}  [{:02x}] {:02x} {:02x} {:02x}  (deity at +4152)",
+		        payload[4148], payload[4149], payload[4150], payload[4151],
+		        payload[4152], payload[4153], payload[4154], payload[4155]);
+	}
+	LogInfo("[TrilogyWorld] CharCreate | account [{}] name [{}] race [{}] class [{}] gender [{}] wire_deity [{}] client_deity [{}] (valid={}) STR/STA/CHA/DEX/INT/AGI/WIS [{}/{}/{}/{}/{}/{}/{}] from {}:{}",
+	        s.account_name, name, race, (int)class_, (int)gender, (int)wire_deity,
+	        client_deity, client_deity_valid ? "yes" : "no",
 	        (int)str_v, (int)sta_v, (int)cha_v, (int)dex_v, (int)int_v, (int)agi_v, (int)wis_v,
 	        addr, port);
+
+	// DIAGNOSTIC: brute-force scan the entire CharCreate payload for any byte that could be
+	// the deity field.  We don't know the encoding (raw 140/201-216, compact 1-16, eqstr ID),
+	// so log offsets of every byte/word matching plausible deity values.  Skip well-known
+	// fields (name, race, class, stats, position floats) to reduce noise.  The deity byte
+	// for this character should appear in the output; correlate against the deity the user
+	// picked in the UI to pinpoint the offset.
+	{
+		auto is_known_field = [](uint32_t off) -> bool {
+			// Known fields per Trilogy PlayerProfile_Struct (payload = struct - 4):
+			//   [0..29]      name
+			//   [30..49]     surname
+			//   [50]         gender
+			//   [51]         deity_legacy (always 0)
+			//   [52..53]     race uint16
+			//   [54]         class
+			//   [56..59]     pp_unknown
+			//   [60..63]     exp
+			//   [64..67]     trainingpoints + mana
+			//   [68]         face
+			//   [69..115]    unknown0073
+			//   [116..117]   cur_hp
+			//   [118..125]   pp_unknown7 + STR..WIS
+			//   [126..149]   languages
+			//   [150..163]   pp_unknown8
+			//   [2404..2419] y, x, z, heading floats
+			//   [2420..2434] current_zone[15]
+			//   [2456..2503] money fields
+			//   [2504..2577] skills[74]
+			//   [2840..2919] start_point_zone[4][20]
+			if (off < 50) return true;              // name + surname
+			if (off >= 52 && off <= 54) return true; // race + class
+			if (off >= 60 && off <= 67) return true; // exp + trainingpoints + mana
+			if (off == 68) return true;             // face
+			if (off >= 118 && off <= 125) return true; // STR..WIS
+			if (off >= 126 && off <= 149) return true; // languages
+			if (off >= 2404 && off <= 2434) return true; // pos + current_zone
+			if (off >= 2456 && off <= 2503) return true; // money
+			if (off >= 2504 && off <= 2577) return true; // skills
+			if (off >= 2840 && off <= 2919) return true; // start_point_zone slots
+			return false;
+		};
+		const uint32_t scan_end = (plen < 8104) ? plen : 8104;
+		std::string raw_hits, compact_hits;
+		for (uint32_t i = 0; i < scan_end; ++i) {
+			if (is_known_field(i)) continue;
+			const uint8_t b = payload[i];
+			// Raw EQEmu deity IDs: 140, 201..216
+			if (b == 140 || (b >= 201 && b <= 216)) {
+				raw_hits += fmt::format("+{}:0x{:02x} ", i, b);
+				if (raw_hits.size() > 800) break;
+			}
+			// Compact 1..16 (also covers eqstr-low-byte candidates)
+			else if (b >= 1 && b <= 16) {
+				compact_hits += fmt::format("+{}:{} ", i, b);
+				if (compact_hits.size() > 800) break;
+			}
+		}
+		LogInfo("[TrilogyWorld] CharCreate deity-byte scan | RAW(140/201-216) hits: {}",
+		        raw_hits.empty() ? std::string("(none)") : raw_hits);
+		LogInfo("[TrilogyWorld] CharCreate deity-byte scan | COMPACT(1-16) hits: {}",
+		        compact_hits.empty() ? std::string("(none)") : compact_hits);
+	}
 
 	// Get char_id from the row created by ReserveName
 	uint32_t char_id = database.GetCharacterID(name);
@@ -1138,14 +1220,17 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			LogInfo("[TrilogyWorld] CharCreate | no start_zones row, defaulting to zone_id=1");
 		}
 
-		// Deity: Trilogy wire always sends 0 in the deity byte.  Infer the correct EQEmu
-		// deity ID using two strategies in order:
+		// Deity: prefer the value the v29c client sent at struct byte 4152 (payload[4148]).
+		// If absent or invalid, fall back to two inference strategies:
 		//
 		// 1. Position-based: the client pre-fills y/x/z with the deity-specific spawn point
 		//    (e.g. Hall of Truth vs Temple of Erollisi in freportn).  Match those coords
 		//    against start_zones with a ±5-unit tolerance.
 		// 2. Fallback: pick the lowest non-zero player_deity for race+class.
-		{
+		if (eqemu_deity != 0) {
+			pp.deity = eqemu_deity;
+			LogInfo("[TrilogyWorld] CharCreate | deity from client packet: {}", eqemu_deity);
+		} else {
 			uint32_t inferred_deity = 0;
 
 			// 1. Position-based deity inference.

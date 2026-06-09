@@ -2789,22 +2789,21 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			uint8_t compact = (eq_deity >= 201 && eq_deity <= 216)
 				? kDeityCompact[eq_deity - 201]
 				: 0;
-			pp.deity = static_cast<int8_t>(compact); // byte 55 — compact, not read by char sheet
+			pp.deity = static_cast<int8_t>(compact); // byte 55 — compact value for any legacy readers
 
-			// PP byte 4152 = bank_cont_inv[78]: raw EQEmu deity ID read by the char sheet.
-			// DIAGNOSTIC (banked-container render isolation): the deity hack normally
-			// writes the raw EQEmu deity ID into PP byte 4152 = bank_cont_inv[78].  That is
-			// the ONLY non-item value we place inside the bank-bag-contents array, something
-			// the working EQMacEmu/EQClassic reference NEVER does (they store only item IDs or
-			// 0xFFFF there).  Leaving it empty (0xFFFF) to test whether that pollution corrupts
-			// the bank window's container rendering.  Side effect during this test: char sheet
-			// shows the wrong deity (cosmetic, no login/inventory impact).  If the banked bag
-			// now renders correctly, the deity byte must be relocated off the bank array.
-			pp.bank_cont_inv[78] = static_cast<int16_t>(0xFFFF);
+			// The Trilogy char sheet displays the deity from PP struct byte 4156 (= wire byte 4152
+			// since the 4-byte checksum prefix is stripped on the wire).  Confirmed by capturing a
+			// CharCreate packet where the user picked Innoruuk: payload byte 4152 = 0xCE (206).
+			// This is our `deity_wire` field (formerly `unknown4156[0]`).  Earlier sessions wrote
+			// to `bank_cont_inv[78]` (struct byte 4152) thinking that was the right location; it
+			// is NOT — that's a real bank-content slot 4 bytes earlier in the struct.
+			pp.deity_wire = (eq_deity >= 201 && eq_deity <= 216)
+				? static_cast<int8_t>(static_cast<uint8_t>(eq_deity))
+				: static_cast<int8_t>(140); // 140 = Agnostic
 
 			s.char_deity = eq_deity; // cache for HandleZoneInComplete self-NewSpawn
-			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} compact={} wire4152=DISABLED(FFFF) [bank-render test]",
-			        eq_deity, compact);
+			LogInfo("[TrilogyZone] SendPlayerProfile | deity db={} byte55_compact={} byte4156_wire={:#x}",
+			        eq_deity, compact, static_cast<uint8_t>(pp.deity_wire));
 		}
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
@@ -3085,11 +3084,9 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, deity) == 55,
 		              "PP deity offset changed");
 		const uint8_t* b = reinterpret_cast<const uint8_t*>(&pp);
-		// PP byte 4152 = bank_cont_inv[78] = deity wire field read by the Trilogy char sheet.
-		uint16_t deity_wire = static_cast<uint16_t>(pp.bank_cont_inv[78]);
 		LogInfo("[TrilogyZone] SendPlayerProfile | PP[54=gender]={:02x} PP[55=deity_compact]={:02x}"
-		        " PP[56-57=race]={:02x}{:02x} PP[58=class]={:02x} PP[4152-4153=deity_wire]={:04x}",
-		        b[54], b[55], b[56], b[57], b[58], deity_wire);
+		        " PP[56-57=race]={:02x}{:02x} PP[58=class]={:02x} PP[4156=deity_wire]={:02x}",
+		        b[54], b[55], b[56], b[57], b[58], b[4156]);
 	}
 	// Experiment blanking (done after population, before the CRC so the checksum is correct):
 	//   bulk mode (kInventoryMode!=0) → blank worn/general PP arrays (bulk would be sole source).
@@ -3104,6 +3101,20 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		memset(pp.bank_cont_inv, 0xFF, sizeof(pp.bank_cont_inv));
 		LogInfo("[TrilogyZone] SendPlayerProfile | PP BANK arrays BLANKED "
 		        "(per-item bank packets are sole bank source; inv_mode={})", kInventoryMode);
+	}
+
+	// deity_wire at struct byte 4156 is OUTSIDE bank_cont_inv (which ends at struct byte
+	// 4156 exclusive), so the kBlankBankPP bank-array wipe above does not affect it.
+	// Verify the layout at compile time.
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, deity_wire) == 4156,
+	              "deity_wire must be at PP struct byte 4156 (= wire byte 4152) for the char sheet to read it");
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, bank_cont_inv) == 3996,
+	              "bank_cont_inv must start at struct byte 3996");
+	{
+		const uint8_t* rb = reinterpret_cast<const uint8_t*>(&pp);
+		LogInfo("[TrilogyZone] SendPlayerProfile | pre-CRC final bytes | "
+		        "byte55={:02x} byte4156={:02x} byte4157={:02x}",
+		        rb[55], rb[4156], rb[4157]);
 	}
 
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&pp), sizeof(pp));
