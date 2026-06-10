@@ -250,6 +250,9 @@ private:
 	void HandleMoveDoor(const EQApplicationPacket* app);
 	// Merchant window (server → Trilogy client): open/close + price multiplier.
 	void HandleOutgoingShopRequest(const EQApplicationPacket* app);
+	// Book / note text (server → Trilogy client): strips EQEmu's 10-byte
+	// BookText_Struct header so just the raw text reaches the v29c GUI.
+	void HandleOutgoingReadBook(const EQApplicationPacket* app);
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.

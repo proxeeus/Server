@@ -441,6 +441,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ShopRequest:
 		HandleOutgoingShopRequest(app);
 		break;
+	case OP_ReadBook:
+		HandleOutgoingReadBook(app);
+		break;
 	case OP_ClickObject:
 		// Remove a ground item from the client's view (pickup despawn broadcast).
 		// EQClassic uses the same ClickObject_Struct layout; opcode 0x3620 = OP_PickupItem.
@@ -2231,6 +2234,32 @@ void TrilogyClient::HandleOutgoingShopRequest(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x0b20,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleOutgoingReadBook — strip EQEmu's BookText_Struct header so the v29c
+// client's book GUI receives just the raw text (its on-wire format).
+//
+// Internal layout (BookText_Struct, eq_packet_structs.h):
+//   uint8 window; uint8 type; int16 invslot; int32 target_id;
+//   int8  can_cast; int8 can_scribe; char booktext[]; (variable)
+// The first 10 bytes are header; everything after is the text body, already
+// language-garbled by Client::ReadBook based on the player's language skill.
+// EQClassic ReadBook (Zone/Source/client.cpp:2467) sends exactly that body
+// with no header — `'`` marks newlines in the GUI.
+// ============================================================
+void TrilogyClient::HandleOutgoingReadBook(const EQApplicationPacket* app)
+{
+	if (!app) return;
+	// EQEmu allocates `length + sizeof(BookText_Struct)` bytes — header is
+	// the first 10 bytes (window, type, invslot, target_id, can_cast, can_scribe);
+	// booktext[1] gives a 1-byte trailing slot that's always zero from the
+	// EQApplicationPacket ctor.  Strip both the header and the trailing slot
+	// so we send exactly the text the v29c book GUI expects.
+	if (app->size <= sizeof(::BookText_Struct)) return;
+	const uint8_t* text = app->pBuffer + 10;
+	const uint32_t len  = app->size - sizeof(::BookText_Struct);
+	m_tzs->SendToSession(m_session_key, 0xce20, text, len);
 }
 
 // ============================================================

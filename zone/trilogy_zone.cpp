@@ -180,6 +180,13 @@ static constexpr uint16_t ZN_OP_SpawnDoor   = 0x9520; // zone -> client: Door_St
 static constexpr uint16_t ZN_OP_ClickDoor   = 0x8d20; // client -> zone: ClickDoor_Struct (12 bytes)
 static constexpr uint16_t ZN_OP_OpenDoor    = 0x8e20; // zone -> client: DoorOpen_Struct (2 bytes: doorid, action)
 
+// Book / note / parchment reading (right-click on item.ItemClass == 2 / flag 0x7669)
+// Source: EQClassic/Common/Include/eq_opcodes.h, EQClassic/Zone/Source/client.cpp
+//   client -> zone: char txtfile[14]  — filename of the book row (matches items.filename)
+//   zone -> client: raw booktext bytes (no header).  '`' is treated as newline by the
+//                    client's book GUI.
+static constexpr uint16_t ZN_OP_ReadBook    = 0xce20;
+
 // Class trainer (right-click GM trainer to open the skill training window)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 //   OP_ClassTraining      0x9c20 (bidirectional) — client requests window;
@@ -991,6 +998,31 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				cd->doorid    = payload[0];
 				cd->player_id = static_cast<uint16>(s.trilogy_client->GetID());
 				s.trilogy_client->Handle_OP_ClickDoor(&doorpkt);
+			}
+		}
+		else if (opcode == ZN_OP_ReadBook && s.trilogy_client)
+		{
+			// Right-click on a book / note / parchment item.  Trilogy payload is
+			// just char txtfile[14] — the filename the client read from the item's
+			// book_data.filename field at OP_ItemPacket / OP_CharInventory time.
+			//
+			// Route through Client::Handle_OP_ReadBook so we reuse EQEmu's
+			// content_db.GetBook lookup and Language-skill garbling.  EQEmu's
+			// internal BookRequest_Struct is 28 bytes (window, type, invslot,
+			// target_id, char txtfile[20]) — only txtfile is meaningful for the
+			// v29c client (no per-window state, no SoF can_scribe path).
+			if (plen >= 1) {
+				EQApplicationPacket pkt(OP_ReadBook, sizeof(::BookRequest_Struct));
+				auto* br = reinterpret_cast<::BookRequest_Struct*>(pkt.pBuffer);
+				memset(br, 0, sizeof(::BookRequest_Struct));
+				br->window  = 0xFF; // new window (only field the response echoes that matters)
+				br->type    = 1;    // 1 = book/note (v29c ignores; SoF+ branch never taken here)
+				br->invslot = 0;
+				br->target_id = 0;
+				const size_t copy_len = std::min<size_t>(plen, sizeof(br->txtfile) - 1);
+				memcpy(br->txtfile, payload, copy_len);
+				br->txtfile[copy_len] = '\0';
+				s.trilogy_client->Handle_OP_ReadBook(&pkt);
 			}
 		}
 		else if (opcode == ZN_OP_WearChange)
