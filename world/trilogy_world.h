@@ -121,6 +121,9 @@ private:
 	void HandleCharCreate(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 
+	void HandleDeleteCharacter(const std::string& addr, int port, Session& s,
+	                           const uint8_t* payload, uint32_t plen);
+
 	void HandleWearChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 

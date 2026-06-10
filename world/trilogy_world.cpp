@@ -60,6 +60,7 @@ static constexpr uint16_t TRI_OP_ZoneServerInfo  = 0x0480; // world -> client: Z
 static constexpr uint16_t OP_GUILDS_LIST         = 0x9221; // client -> world: request guilds (4 bytes)
 static constexpr uint16_t OP_NAME_APPROVAL       = 0x8B20; // bidirectional: name approval
 static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: PlayerProfile (EQClassic)
+static constexpr uint16_t OP_DELETE_CHARACTER    = 0x5a20; // client -> world: 30-byte char name (null-terminated)
 static constexpr uint16_t WS_OP_TimeOfDay        = 0xf220; // world -> client: TimeOfDay_Struct (6 bytes, Trilogy wire)
 
 // EQNetwork header flags
@@ -327,6 +328,9 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		break;
 	case OP_CHAR_CREATE:
 		HandleCharCreate(addr, port, s, payload, plen);
+		break;
+	case OP_DELETE_CHARACTER:
+		HandleDeleteCharacter(addr, port, s, payload, plen);
 		break;
 	case WS_OP_WEAR_CHANGE:
 		HandleWearChange(addr, port, s, payload, plen);
@@ -742,6 +746,53 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	}
 
 	SendZoneServerInfo(addr, port, s, zs);
+}
+
+// ============================================================
+// OP_DeleteCharacter (0x5a20): delete a character from char-select.
+//
+// Wire payload: 30-byte null-terminated character name (same shape as
+// OP_ENTERWORLD). Mirrors the EQEmu world handler (Client::HandleDeleteCharacterPacket)
+// and the EQClassic reference (Client::ProcessOP_DeleteCharacter):
+//   1. Verify the character belongs to this session's account.
+//   2. Call database.DeleteCharacter(name) — honors RuleB(Character, SoftDeletes)
+//      (sets deleted_at + renames to "<name>-deleted-<unix_ts>").
+//   3. Re-send CharacterSelect so the slot updates to "<none>".
+// ============================================================
+
+void TrilogyWorldServer::HandleDeleteCharacter(const std::string& addr, int port, Session& s,
+                                                const uint8_t* payload, uint32_t plen)
+{
+	if (plen < 1 || s.account_id == 0) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	char char_name[31] = {};
+	strncpy(char_name, reinterpret_cast<const char*>(payload), std::min(30u, plen));
+	char_name[30] = '\0';
+
+	if (char_name[0] == '\0') {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	// Ownership check: only allow deletion of characters on this account.
+	const uint32_t owner_id = database.GetAccountIDByChar(char_name);
+	if (owner_id != s.account_id) {
+		LogInfo("[TrilogyWorld] DeleteCharacter REJECTED | account [{}] id [{}] tried to delete [{}] (owned by account_id [{}]) from {}:{}",
+		        s.account_name, s.account_id, char_name, owner_id, addr, port);
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	LogInfo("[TrilogyWorld] DeleteCharacter | account [{}] id [{}] deleting [{}] from {}:{}",
+	        s.account_name, s.account_id, char_name, addr, port);
+
+	database.DeleteCharacter(char_name);
+
+	// Refresh the character select screen so the deleted slot shows "<none>".
+	SendCharSelect(addr, port, s);
 }
 
 // ============================================================
