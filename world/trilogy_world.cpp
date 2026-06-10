@@ -50,6 +50,8 @@
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t WS_SEND_LOGIN_INFO     = 0x5818; // client -> world: session_id\0key\0
 static constexpr uint16_t WS_SEND_LOGIN_APPROVED = 0x0710; // world -> client: 1-byte 0x00
+static constexpr uint16_t WS_OP_WEAR_CHANGE      = 0x9220; // both: WearChange_Struct (16 bytes)
+static constexpr int16_t  WS_SUB_CHANGE_CHAR     = 32767;  // sub_op value the client uses to signal a char-select change (informational; not a weapon request)
 static constexpr uint16_t WS_SEND_ENTERWORLD_ACK = 0x0180; // world -> client: 1-byte 0x00
 static constexpr uint16_t WS_SEND_EXPANSION_INFO = 0xd821; // world -> client: 4-byte expansion flags
 static constexpr uint16_t WS_SEND_CHAR_INFO      = 0x4720; // world -> client: CharacterSelect_Struct
@@ -326,6 +328,9 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case OP_CHAR_CREATE:
 		HandleCharCreate(addr, port, s, payload, plen);
 		break;
+	case WS_OP_WEAR_CHANGE:
+		HandleWearChange(addr, port, s, payload, plen);
+		break;
 	case 0x2320: // name-approval handshake ping: echo back to client
 	case 0xa980: // unknown size-0 opcodes seen in EQClassic world — echo back
 	case 0x00ab:
@@ -447,6 +452,59 @@ void TrilogyWorldServer::SendExpansionInfo(const std::string& addr, int port, Se
 }
 
 // ============================================================
+// OP_WearChange (0x9220): char-select weapon-graphic request
+//
+// While on the char-select screen, the v29c client sends one OP_WearChange
+// per character per weapon slot (wear_slot_id=7 primary / 8 secondary) and
+// expects the server to reply with the weapon's model number in slot_graphic.
+// The request uses slot_graphic = 1-based char index. sub_op = WS_SUB_CHANGE_CHAR
+// (32767) is an informational "I changed selected char" event with no reply.
+// Source: EQClassic World/Source/client_process.cpp ProcessOP_WearChange +
+// ClientNetwork.cpp SendWearChangeRequestSlot.
+// ============================================================
+
+void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Session& s,
+                                           const uint8_t* payload, uint32_t plen)
+{
+	using TrilWC = Trilogy::structs::WearChange_Struct;
+	if (plen < sizeof(TrilWC)) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	const auto* req = reinterpret_cast<const TrilWC*>(payload);
+
+	// SUB_ChangeChar is informational — no response expected.
+	if (req->sub_op == WS_SUB_CHANGE_CHAR) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	// Only primary (7) and secondary (8) weapon slots are requested on char select.
+	if (req->wear_slot_id != 7 && req->wear_slot_id != 8) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	const int char_slot = static_cast<int>(req->slot_graphic) - 1; // wire is 1-based
+	if (char_slot < 0 || char_slot >= 10) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	const int hand = (req->wear_slot_id == 7) ? 0 : 1;
+	const int8_t model = s.cs_weapon_model[char_slot][hand];
+
+	TrilWC resp{};
+	resp.wear_slot_id = req->wear_slot_id;
+	resp.slot_graphic = model;     // weapon model number (digits of idfile)
+	resp.sub_op       = req->sub_op; // echo the request tag
+
+	SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+	        reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
+}
+
+// ============================================================
 // Send character select (opcode 0x4720)
 // ============================================================
 
@@ -499,6 +557,10 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
+	// Reset weapon-graphic cache for this session — the client will request these
+	// per-char via OP_WearChange after CharacterSelect_Struct arrives.
+	memset(s.cs_weapon_model, 0, sizeof(s.cs_weapon_model));
+
 	int slot = 0;
 	for (auto row = results.begin(); row != results.end() && slot < 10; ++row, ++slot) {
 		uint32_t char_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
@@ -513,17 +575,43 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		// Populate armor appearance and colors for the paperdoll.
 		// EQClassic slot mapping (inventory[] indices → equip[] index):
 		//   2=head→0, 17=chest→1, 7=arms→2, 10=wrist→3, 12=hands→4, 18=legs→5, 19=feet→6
-		// Values are item material types: 0=none,1=leather,2=chain,3=plate,4=monk straps
+		//   13=primary→7, 14=secondary→8
+		// equip[0..6] = armor material (0=none,1=leather,2=chain,3=plate,4=monk straps).
+		// equip[7..8] = weapon model number: the digits in items.idfile (e.g. "IT63" → 63),
+		// same source the in-zone OP_WearChange path uses (Mob::GetEquipmentMaterial).
+		// items.material is 0 for weapons so it can't be used there.
 		auto eq = database.QueryDatabase(fmt::format(
-			"SELECT inv.`slotid`, i.`material`, COALESCE(NULLIF(inv.`color`,0), i.`color`) "
+			"SELECT inv.`slotid`, i.`material`, i.`idfile`, i.`color` "
 			"FROM `inventory` inv "
 			"JOIN `items` i ON i.`id` = inv.`itemid` "
 			"WHERE inv.`charid` = {} AND inv.`slotid` IN (2,7,10,12,13,14,17,18,19)",
 			char_id));
+
+		// Per-material-slot dye color from character_material (the same table
+		// Mob::GetEquipmentColor reads via PlayerProfile.item_tint). inventory.color
+		// is the legacy dye column with no alpha; the v29c client only renders a tint
+		// when the alpha byte (which we map from use_tint) is non-zero, so we have to
+		// read from character_material to recover use_tint.
+		uint32_t tint_color[7] = {0};
+		auto cm = database.QueryDatabase(fmt::format(
+			"SELECT `slot`, `red`, `green`, `blue`, `use_tint` "
+			"FROM `character_material` WHERE `id` = {}", char_id));
+		for (auto crow = cm.begin(); crow != cm.end(); ++crow) {
+			int mslot = Strings::ToInt(crow[0]);
+			if (mslot < 0 || mslot > 6) continue;
+			uint32_t r  = static_cast<uint32_t>(Strings::ToInt(crow[1])) & 0xFFu;
+			uint32_t g  = static_cast<uint32_t>(Strings::ToInt(crow[2])) & 0xFFu;
+			uint32_t b  = static_cast<uint32_t>(Strings::ToInt(crow[3])) & 0xFFu;
+			uint32_t ut = static_cast<uint32_t>(Strings::ToInt(crow[4])) & 0xFFu;
+			if (ut) tint_color[mslot] = (ut << 24) | (r << 16) | (g << 8) | b;
+		}
+
 		for (auto erow = eq.begin(); erow != eq.end(); ++erow) {
-			int      slotid = Strings::ToInt(erow[0]);
-			uint8_t  mat    = static_cast<uint8_t>(Strings::ToInt(erow[1]));
-			uint32_t clr    = static_cast<uint32_t>(Strings::ToInt(erow[2]));
+			int         slotid    = Strings::ToInt(erow[0]);
+			uint8_t     mat       = static_cast<uint8_t>(Strings::ToInt(erow[1]));
+			const char* idfile    = erow[2] ? erow[2] : "";
+			uint32_t    item_clr  = static_cast<uint32_t>(Strings::ToUnsignedInt(erow[3]));
+
 			int eqidx = -1;
 			switch (slotid) {
 				case 2:  eqidx = 0; break; // head
@@ -536,10 +624,33 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 				case 13: eqidx = 7; break; // primary weapon
 				case 14: eqidx = 8; break; // secondary/offhand
 			}
-			if (eqidx >= 0) {
-				cs.equip[slot][eqidx]     = static_cast<int8_t>(mat);
-				cs.cs_colors[slot][eqidx] = clr;
+			if (eqidx < 0) continue;
+
+			// Weapon model: parse the digits after "IT" in idfile.
+			// The v29c client ignores equip[7]/equip[8] from this struct and
+			// requests weapon graphics on demand via OP_WearChange — we still
+			// stash the model in equip[] for completeness and cache it on the
+			// session so HandleWearChange can answer the per-char requests.
+			if (eqidx >= 7) {
+				uint32_t model = 0;
+				if (strlen(idfile) > 2 && Strings::IsNumber(idfile + 2)) {
+					model = Strings::ToUnsignedInt(idfile + 2);
+				}
+				cs.equip[slot][eqidx] = static_cast<int8_t>(model & 0xFFu);
+				s.cs_weapon_model[slot][eqidx - 7] = static_cast<int8_t>(model & 0xFFu);
+			} else {
+				cs.equip[slot][eqidx] = static_cast<int8_t>(mat);
 			}
+
+			// Color: prefer the character's saved dye (character_material); fall
+			// back to the item's base color. Force alpha=0xFF when an RGB is set
+			// so the client actually applies the tint — items.color and the legacy
+			// inventory.color column are both stored as 0x00RRGGBB.
+			uint32_t clr = (eqidx <= 6) ? tint_color[eqidx] : 0;
+			if (clr == 0 && item_clr != 0) {
+				clr = item_clr | 0xFF000000u;
+			}
+			cs.cs_colors[slot][eqidx] = clr;
 		}
 	}
 

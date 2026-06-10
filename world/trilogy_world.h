@@ -70,6 +70,14 @@ private:
 		uint32_t        char_id       = 0;
 		uint16_t        frag_seq      = 0; // outgoing EQNetwork fragment-group sequence
 
+		// Char-select weapon-graphic cache, populated by SendCharSelect.
+		// The v29c client does NOT read equip[7]/equip[8] from CharacterSelect_Struct;
+		// instead it sends per-char OP_WearChange (0x9220) requests with wear_slot_id=7
+		// (primary) or 8 (secondary) and slot_graphic = 1-based char index. We respond
+		// with the weapon model number (idfile digits) cached here, so the client can
+		// draw the weapon on the paperdoll.  See [[project-trilogy-char-select-appearance]].
+		int8_t          cs_weapon_model[10][2] = {{0}}; // [char_slot][0=primary, 1=secondary]
+
 		// deferred zone entry — set when zone is still booting at EnterWorld time
 		bool            pending_zone_entry    = false;
 		uint32_t        pending_zone_id       = 0;
@@ -111,6 +119,9 @@ private:
 	                        const uint8_t* payload, uint32_t plen);
 
 	void HandleCharCreate(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+
+	void HandleWearChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 
 	void SendCharSelect(const std::string& addr, int port, Session& s);
