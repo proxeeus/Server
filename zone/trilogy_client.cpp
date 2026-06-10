@@ -1442,12 +1442,13 @@ void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
 // system messages.  The packet carries a string_id (resolved client-side
 // from eqstr_us.txt) plus null-terminated parameter strings.
 //
-// Trilogy has no OP_FormattedMessage equivalent.  For the two NPC speech
-// string IDs we know the parameter layout (param0=speaker, param1=text)
-// and can re-encode them as OP_ChannelMessage (0x0721) on the correct
-// channel so the client formats and colours them properly.
-//   GENERIC_SAY   (1032, "%1 says '%2'")   → chan_num 8 (SAY)
-//   GENERIC_SHOUT (1034, "%1 shouts '%2'") → chan_num 3 (SHOUT)
+// Trilogy has no OP_FormattedMessage equivalent.  For the NPC speech /
+// emote string IDs we know the parameter layout (param0=speaker, param1=text)
+// and re-encode them as OP_SpecialMesg (0x8021) with a pre-formatted line and
+// the matching MESSAGETYPE_* color so the client renders them properly.
+//   GENERIC_SAY   (1032, "%1 says '%2'")   → MESSAGETYPE_Say   (256)
+//   GENERIC_SHOUT (1034, "%1 shouts '%2'") → MESSAGETYPE_Shout (262)
+//   GENERIC_EMOTE (1036, "%1 %2")          → MESSAGETYPE_Say   (256)  (color match)
 // All other string IDs are silently dropped.
 // ============================================================
 
@@ -1539,6 +1540,38 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		auto* out = new uint8_t[out_size]();
 		*reinterpret_cast<uint32_t*>(out) = out_color;
 		memcpy(out + 4, out_text.data(), out_text.size());
+		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		delete[] out;
+		return;
+	}
+
+	// GENERIC_EMOTE (1036, "%1 %2") — Mob::Emote / quest::emote / Lua mob:emote.
+	// param0 = sender name, param1 = emote text (already verb-phrase, e.g.
+	// "bows deeply.").  Render server-side as "<name> <text>" on MESSAGETYPE_Emote
+	// (263) — same SpecialMesg path that GENERIC_SAY/SHOUT use, since v29c has
+	// no FormattedMessage equivalent and chan-8 ChannelMessage truncates / mangles
+	// brackets.
+	if (fm->string_id == GENERIC_EMOTE) {
+		if (p0len >= remaining) return;
+		const char* param1      = base + p0len + 1;
+		uint32_t    p1remaining = remaining - static_cast<uint32_t>(p0len + 1);
+		if (p1remaining < 1) return;
+
+		std::string text = StripSayLinks(param1, p1remaining);
+		while (!text.empty() && text.back() == '\0') text.pop_back();
+
+		std::string sender(param0, p0len);
+		std::string line = fmt::format("{} {}", sender, text);
+		line += '\0';
+
+		uint32_t out_size = 4 + static_cast<uint32_t>(line.size());
+		auto* out = new uint8_t[out_size]();
+		// Use MESSAGETYPE_Say (256) — same color as NPC say.  MESSAGETYPE_Emote
+		// (263) renders as the channel-emote blue, which doesn't match the
+		// EQEmu Mob::Emote intent (Chat::NPCQuestSay color, used for in-world
+		// scene flavor like NPC bows / kneels).
+		*reinterpret_cast<uint32_t*>(out) = 256u; // MESSAGETYPE_Say
+		memcpy(out + 4, line.data(), line.size());
 		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 		delete[] out;
 		return;
