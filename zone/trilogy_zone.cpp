@@ -2593,6 +2593,7 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	// a client CTD when Illusions tried to modify not-yet-created entities.
 	{
 		const auto& npc_map = entity_list.GetNPCList();
+		const uint32_t playerbot_type_id = static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
 		for (const auto& kv : npc_map) {
 			NPC* npc = kv.second;
 			if (!npc || !IsPlayerRace(npc->GetRace())) continue;
@@ -2604,6 +2605,28 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
 			    static_cast<int16_t>(npc->GetLuclinFace()));
 			SendApp(addr, port, s, 0x9120, il_buf, 72);
+
+			// Explicit OP_WearChange for the helm slot — v29c does not render the
+			// helm from the spawn struct's npc_helm_graphic field for player-race
+			// NPC=1 entities while the body is in player-equipment mode
+			// (npc_armor_graphic=0xFF + equipment[1..6]).  A follow-up WearChange
+			// for wear_slot=0 (head) with the helmtexture as the slot graphic
+			// forces the helm to render without disrupting the body mechanism.
+			// Skip playerbots — they're NPC=0 and their helm renders via
+			// equipment[0] from real loot items.
+			const bool is_playerbot_npc = (npc->GetNPCTypeID() == playerbot_type_id);
+			const uint8_t helmtex = npc->GetHelmTexture();
+			if (!is_playerbot_npc && helmtex > 0 && helmtex < 0xFF) {
+				Trilogy::structs::WearChange_Struct wc{};
+				wc.spawn_id     = static_cast<int32_t>(npc->GetID());
+				wc.wear_slot_id = 0; // head slot
+				wc.slot_graphic = static_cast<int8_t>(helmtex);
+				wc.sub_op       = 0;
+				wc.color        = static_cast<int32_t>(npc->GetEquipmentColor(EQ::textures::armorHead));
+				SendApp(addr, port, s, 0x9220,
+				        reinterpret_cast<const uint8_t*>(&wc),
+				        static_cast<uint32_t>(sizeof(wc)));
+			}
 		}
 	}
 
@@ -4546,17 +4569,30 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			const uint8_t tex     = npc->GetTexture();
 			const uint8_t helmtex = npc->GetHelmTexture();
 			if (IsPlayerRace(npc->GetRace())) {
-				// Player-race NPCs always use player-equipment mode (0xFF) so per-slot
-				// materials drive appearance.  Playerbots carry actual items; other
-				// player-race NPCs (guards, quest NPCs, …) may have a body texture
-				// set in npc_types.texture (e.g. 2 = chainmail) but only partial loot
-				// equipped, leaving other slots at material 0 (naked).  Fill those
-				// empty slots with the body/helm texture as a fallback so the Trilogy
-				// client sees a complete uniform appearance rather than partial coverage.
-				// Helm (slot 0) falls back to helmtex; all other armor slots fall back to tex.
+				// Player-race NPCs always use player-equipment mode (0xFF) for the
+				// body so per-slot materials drive appearance.  Playerbots carry
+				// actual items; other player-race NPCs (guards, quest NPCs, …) may
+				// have a body texture set in npc_types.texture (e.g. 2 = chainmail)
+				// but only partial loot equipped, leaving other slots at material 0
+				// (naked).  Fill those empty slots with the body/helm texture as a
+				// fallback so the Trilogy client sees a complete uniform appearance
+				// rather than partial coverage.
 				sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
-				sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+				// Helm: v29c does NOT render the helm via equipment[0] for NPC=1
+				// entities (it does for the body via equipment[1..6]).  For non-
+				// playerbot player-race NPCs, drive the helm explicitly via
+				// npc_helm_graphic = helmtexture (1..7); fall back to 0xFF when
+				// helmtexture is 0 so an equipped loot helm's material in
+				// equipment[0] can still drive the helm.  Playerbots keep 0xFF
+				// because they carry real loot helms.
 				const bool is_playerbot_npc = (sp.NPC == 0);
+				if (is_playerbot_npc) {
+					sp.npc_helm_graphic = static_cast<int8_t>(0xFF);
+				} else {
+					sp.npc_helm_graphic = (helmtex == 0 || helmtex > 7)
+					                          ? static_cast<int8_t>(0xFF)
+					                          : static_cast<int8_t>(helmtex);
+				}
 				// Armor slots (helm through boot)
 				for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 					uint8_t mat = npc->GetEquipmentMaterial(static_cast<uint8_t>(mi));

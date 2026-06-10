@@ -861,7 +861,15 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 
 	if (IsPlayerRace(mob->GetRace())) {
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
-		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+		// Helm: v29c does NOT render the helm via equipment[0] for NPC=1 entities
+		// even though it renders the body via the equipment[1..6] path.  Drive the
+		// helm explicitly via npc_helm_graphic when helmtexture is set (1..7); fall
+		// back to 0xFF so a loot-helm item's material in equipment[0] can still
+		// drive the helm for NPCs whose helmtexture is left at 0 in npc_types.
+		const uint8_t helmtex = mob->GetHelmTexture();
+		sp.npc_helm_graphic  = (helmtex == 0 || helmtex > 7)
+		                           ? static_cast<int8_t>(0xFF)
+		                           : static_cast<int8_t>(helmtex);
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 			sp.equipment[mi]   = static_cast<int8_t>(mob->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 			sp.equipcolors[mi] = static_cast<int32_t>(mob->GetEquipmentColor(static_cast<uint8_t>(mi)));
@@ -903,6 +911,30 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x4921,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+
+	// Explicit OP_WearChange for the helm slot — v29c does not render the helm
+	// from the spawn struct's npc_helm_graphic field for player-race NPC=1
+	// entities while the body is in player-equipment mode (npc_armor_graphic=
+	// 0xFF + equipment[1..6]).  A follow-up WearChange for wear_slot=0 (head)
+	// with the helmtexture as the slot graphic forces the helm to render
+	// without disrupting the body mechanism.  Players and Playerbots returned
+	// early before reaching this point (SendPlayerSpawnPermanent /
+	// SendPlayerbotSpawnPermanent handle them), so any IsPlayerRace mob here
+	// is a regular NPC.
+	if (IsPlayerRace(mob->GetRace())) {
+		const uint8_t helmtex = mob->GetHelmTexture();
+		if (helmtex > 0 && helmtex < 0xFF) {
+			Trilogy::structs::WearChange_Struct wc{};
+			wc.spawn_id     = static_cast<int32_t>(spawn_id);
+			wc.wear_slot_id = 0; // head slot
+			wc.slot_graphic = static_cast<int8_t>(helmtex);
+			wc.sub_op       = 0;
+			wc.color        = static_cast<int32_t>(mob->GetEquipmentColor(EQ::textures::armorHead));
+			m_tzs->SendToSession(m_session_key, 0x9220,
+			                     reinterpret_cast<const uint8_t*>(&wc),
+			                     static_cast<uint32_t>(sizeof(wc)));
+		}
+	}
 }
 
 // ============================================================
