@@ -100,6 +100,13 @@ extern LoginServer server;
 
 // LS opcode constants (host byte order; written to wire as htons)
 static constexpr uint16_t LS_OP_LoginInfo           = 0x0100;
+// Login-screen fatal error (a.k.a. OP_ClientError in EQMacEmuTrilogy,
+// OP_FatalError in EQClassic). Payload is a single null-terminated string
+// that the v29c client renders on the login screen as a dialog, after which
+// the client self-disconnects. Must be sent INSTEAD of LS_OP_SessionId when
+// authentication fails, so the user is stopped at the login screen rather
+// than progressing to server-select with a bogus "ls#0" session id.
+static constexpr uint16_t LS_OP_FatalError          = 0x0200;
 static constexpr uint16_t LS_OP_SessionId           = 0x0400;
 static constexpr uint16_t LS_OP_AllFinish           = 0x0500;
 static constexpr uint16_t LS_OP_ServerList          = 0x4600;
@@ -369,9 +376,24 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 		// When the IP is present and not "none", this is a post-char-create reconnect:
 		// the client already knows which server to use and expects the LS to push a
 		// session key automatically after the server list (it will NOT send LS_OP_SessionKey).
-		if (plen >= 40) {
+		//
+		// Authentication MUST be resolved here at the login screen. Until 2026-06-11
+		// the failure path fell through and sent LS_OP_SessionId with "ls#0", which
+		// let the client advance to server-select and only fail later when contacting
+		// world. The Trilogy client (and EQClassic / EQMacEmuTrilogy reference impls)
+		// instead expect an LS_OP_FatalError 0x0200 packet with a plain text message
+		// — it pops a dialog on the login screen and the client self-disconnects, so
+		// the user can re-enter credentials without leaving the login UI.
+
+		const char* auth_failure_msg = nullptr; // non-null = send fatal error and stop
+
+		if (plen < 40) {
+			auth_failure_msg = "Login error: malformed login packet.";
+		} else {
 			uint8_t plain[40] = {};
-			if (trilogy_des_decrypt(payload, plain, 40)) {
+			if (!trilogy_des_decrypt(payload, plain, 40)) {
+				auth_failure_msg = "Login error: server crypto unavailable.";
+			} else {
 				char username[21] = {};
 				char password[21] = {};
 				strncpy(username, reinterpret_cast<const char*>(plain),      20);
@@ -409,6 +431,7 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 						LogInfo("[TrilogyLS] Login success user [{}] id [{}]", username, account_id);
 					} else {
 						LogInfo("[TrilogyLS] Login failed (bad password) for user [{}]", username);
+						auth_failure_msg = "Incorrect username or password.";
 					}
 				} else if (server.options.CanAutoCreateAccounts()) {
 					// Hash before storing so future logins can verify with eqcrypt_verify_hash
@@ -419,19 +442,37 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 						strncpy(s.account_name, username, sizeof(s.account_name) - 1);
 						s.client_ip  = ip;
 						LogInfo("[TrilogyLS] Created account user [{}] id [{}]", username, account_id);
+					} else {
+						LogInfo("[TrilogyLS] Auto-create failed for user [{}]", username);
+						auth_failure_msg = "Account creation failed. Please contact a server administrator.";
 					}
 				} else {
 					LogInfo("[TrilogyLS] Unknown account [{}] and auto-create disabled", username);
+					auth_failure_msg = "Account does not exist and auto-creation is disabled.";
 				}
 			}
 		}
 
+		if (auth_failure_msg) {
+			// Send fatal error and stop — do NOT issue LS_OP_SessionId. The client will
+			// display the message on the login screen and disconnect itself; a fresh
+			// login attempt will arrive on a new SEQSTART and create a new session.
+			uint32_t mlen = static_cast<uint32_t>(strlen(auth_failure_msg) + 1);
+			SendApp(sock, ip, port_ne, s, LS_OP_FatalError,
+			        reinterpret_cast<const uint8_t*>(auth_failure_msg), mlen);
+			// Drop the session immediately. v29c retransmits LS_OP_LoginInfo a couple of
+			// times while waiting for its expected response — without this erase, every
+			// retransmit re-runs auth and re-fires OP_FatalError, so the user has to
+			// dismiss the dialog multiple times. Dropping the session means retransmits
+			// arrive without SEQSTART and get rejected by the `is_new && !seqstart` guard
+			// in OnDatagram. NOTE: `s` is now dangling — do NOT touch it before break.
+			m_sessions.erase(SessionKey(ip, port_ne));
+			break;
+		}
+
 		// session_id: "ls#N" (lowercase to match what the client sends to world)
 		char sid[16] = {};
-		if (s.account_id > 0)
-			snprintf(sid, sizeof(sid), "ls#%u", s.account_id);
-		else
-			strncpy(sid, "ls#0", sizeof(sid)); // will fail world auth
+		snprintf(sid, sizeof(sid), "ls#%u", s.account_id);
 
 		uint8_t buf[21]{};
 		memcpy(buf,      sid,     strlen(sid));
