@@ -448,42 +448,32 @@ void TrilogyLoginServer::OnOpcode(int sock, uint32_t ip, uint16_t port_ne,
 	}
 
 	case LS_OP_ServerList: {
-		// Client requests the world server list
+		// Client requests the world server list — just send it.
+		//
+		// We do NOT auto-push SendClientAuth + LS_OP_SessionKey here, even when
+		// `s.reconnect_mode` is set.  The original implementation interpreted a
+		// non-"none" `reconnect_ip` in LS_OP_LoginInfo as a "post-char-create"
+		// signal and auto-pushed a fresh session key so v29c would skip the
+		// server-select click.  That interpretation is wrong: v29c sends
+		// `reconnect_ip=<server>` on EVERY login once it has successfully reached
+		// a world (verified in LS logs from a normal — not post-CC — login).
+		// The auto-push thus fires whenever the client returns to LS after any
+		// world session, including immediately after Quit-at-CharSelect, and
+		// bounces the client straight back into char-select with a brand-new
+		// session key that legitimately bypasses the world-side same-key
+		// cooldown.  That was the loop the user observed.
+		//
+		// v29c sends LS_OP_SessionKey itself when the user clicks a server in
+		// the server-select UI (also observed in LS logs from the initial
+		// manual-click login).  Letting the client drive the handshake matches
+		// what EQClassic's LS does (see LS/Login/client.cpp case OP_ServerList,
+		// which only sends the server list and does no auto-push).
 		auto list = BuildServerList();
 		SendApp(sock, ip, port_ne, s, LS_OP_ServerList,
 		        list.data(), static_cast<uint32_t>(list.size()));
-
-		// In reconnect mode (post-char-create), the client will NOT send LS_OP_SessionKey —
-		// it expects the LS to push the session key automatically after the server list.
-		if (s.reconnect_mode && s.account_id > 0) {
-			char key_str[16] = {};
-			for (int i = 0; i < 15; ++i) {
-				int y = (rand() % 62) + 48;
-				if (y > 57) y += 7;
-				if (y > 90) y += 6;
-				key_str[i] = static_cast<char>(y);
-			}
-			strncpy(s.key, key_str, sizeof(s.key) - 1);
-
-			if (server.server_manager) {
-				struct in_addr addr_in;
-				addr_in.s_addr = s.client_ip;
-				std::string ip_str = inet_ntoa(addr_in);
-				for (auto& ws : server.server_manager->getWorldServers()) {
-					if (ws->IsAuthorized()) {
-						ws->SendClientAuth(ip_str, s.account_name, key_str, s.account_id, "local");
-						LogInfo("[TrilogyLS] Reconnect: SendClientAuth to [{}] for user [{}] id [{}]",
-						        ws->GetServerLongName(), s.account_name, s.account_id);
-					}
-				}
-			}
-
-			uint8_t key_pkt[17]{};
-			memcpy(key_pkt + 1, key_str, 15);
-			SendApp(sock, ip, port_ne, s, LS_OP_SessionKey, key_pkt, 17);
-			LogInfo("[TrilogyLS] Reconnect: pushed session key for user [{}] id [{}]",
-			        s.account_name, s.account_id);
-		}
+		// reconnect_mode no longer drives any logic here.  Clear it so any future
+		// re-purposing is explicit.
+		s.reconnect_mode = false;
 		break;
 	}
 

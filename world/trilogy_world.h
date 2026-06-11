@@ -127,6 +127,8 @@ private:
 	void HandleWearChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 
+	void HandleWorldLogout(const std::string& addr, int port, Session& s);
+
 	void SendCharSelect(const std::string& addr, int port, Session& s);
 
 	void SendLoginApproved(const std::string& addr, int port, Session& s);
@@ -143,5 +145,20 @@ private:
 	static uint64_t SessionKey(const std::string& addr, int port);
 
 	std::map<uint64_t, Session> m_sessions;
+
+	// LS account_id → (logout time, OLD session key) for recent OP_WorldLogouts.
+	// v29c immediately re-opens a UDP socket on a new port and re-sends
+	// WS_SEND_LOGIN_INFO with its cached LS credentials after our close handshake;
+	// since ClientList::CheckAuth keys on (pLSID, plskey) and ignores online status,
+	// the CLE still matches and we would re-push CharSelect (the Quit-at-CharSelect
+	// loop).  HandleLoginInfo refuses the re-auth ONLY when the incoming key matches
+	// the recorded old key — a fresh key pushed by the LS (e.g. when the user
+	// deliberately clicks back into the server) is allowed through immediately.
+	struct LogoutRecord {
+		std::time_t when = 0;
+		std::string old_key;
+	};
+	std::map<uint32_t, LogoutRecord> m_recent_logouts;
+
 	std::function<void(const std::string&, int, const void*, size_t)> m_send_fn;
 };

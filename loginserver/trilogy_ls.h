@@ -73,6 +73,7 @@ private:
 	static uint64_t SessionKey(uint32_t ip, uint16_t port_ne);
 
 	std::map<uint64_t, Session> m_sessions;
+
 	std::thread                 m_thread;
 	std::atomic<bool>           m_running{false};
 };

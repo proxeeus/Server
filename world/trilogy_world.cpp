@@ -61,6 +61,7 @@ static constexpr uint16_t OP_GUILDS_LIST         = 0x9221; // client -> world: r
 static constexpr uint16_t OP_NAME_APPROVAL       = 0x8B20; // bidirectional: name approval
 static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: PlayerProfile (EQClassic)
 static constexpr uint16_t OP_DELETE_CHARACTER    = 0x5a20; // client -> world: 30-byte char name (null-terminated)
+static constexpr uint16_t OP_WORLD_LOGOUT        = 0x2320; // client -> world: user clicked "Quit" at char select (no payload)
 static constexpr uint16_t WS_OP_TimeOfDay        = 0xf220; // world -> client: TimeOfDay_Struct (6 bytes, Trilogy wire)
 
 // EQNetwork header flags
@@ -335,7 +336,9 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 	case WS_OP_WEAR_CHANGE:
 		HandleWearChange(addr, port, s, payload, plen);
 		break;
-	case 0x2320: // name-approval handshake ping: echo back to client
+	case OP_WORLD_LOGOUT: // 0x2320 — client clicked "Quit" at char select
+		HandleWorldLogout(addr, port, s);
+		break;
 	case 0xa980: // unknown size-0 opcodes seen in EQClassic world — echo back
 	case 0x00ab:
 	case 0x00ac:
@@ -399,6 +402,36 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 
 	LogInfo("[TrilogyWorld] Login | session_id [{}] account_id [{}] from {}:{}",
 	        sid, account_id, addr, port);
+
+	// Post-Quit cooldown: v29c re-opens a fresh UDP socket and re-sends LoginInfo
+	// within milliseconds of receiving our OP_WorldLogout close handshake, reusing
+	// its cached LS session key.  Since ClientList::CheckAuth keys on (LSID, key)
+	// and ignores online status, accepting the re-auth would re-push CharSelect
+	// and produce the observed loop.  Refuse the re-auth ONLY when the incoming
+	// key matches the OLD key we recorded at logout — a fresh key pushed by the
+	// LS for a legitimate user-driven re-entry uses a different key string and is
+	// allowed through immediately.
+	constexpr std::time_t kLogoutCooldownSecs = 30;
+	{
+		const std::time_t now = std::time(nullptr);
+		// Opportunistically reap stale entries so the map cannot grow unbounded.
+		for (auto it = m_recent_logouts.begin(); it != m_recent_logouts.end(); ) {
+			if (now - it->second.when > kLogoutCooldownSecs)
+				it = m_recent_logouts.erase(it);
+			else
+				++it;
+		}
+		auto it = m_recent_logouts.find(account_id);
+		if (it != m_recent_logouts.end() &&
+		    now - it->second.when <= kLogoutCooldownSecs &&
+		    !it->second.old_key.empty() &&
+		    it->second.old_key == key) {
+			LogInfo("[TrilogyWorld] LoginInfo with same cached key within {}s of OP_WorldLogout for ls_id [{}] from {}:{} — refusing re-auth (breaking Quit-at-CharSelect loop)",
+			        kLogoutCooldownSecs, account_id, addr, port);
+			SendClose(addr, port, s);
+			return;
+		}
+	}
 
 	ClientListEntry* cle = client_list.CheckAuth(account_id, key);
 	if (!cle) {
@@ -1666,6 +1699,62 @@ void TrilogyWorldServer::SendZoneServerInfoForChar(const char* char_name, uint32
 		}
 	}
 	// No Trilogy session found — not a Trilogy client, ignore.
+}
+
+// ============================================================
+// OP_WorldLogout (0x2320): user clicked "Quit" at char select.
+//
+// v29c sends this 0-byte opcode (per EQMacEmuTrilogy/utils/patches/patch_Trilogy.conf
+// OP_WorldLogout=0x2320) when the Quit button is clicked from CharSelect.  EQClassic
+// guessed wrong and silently echoed it back; that left our world session ESTABLISHED,
+// the CLE in CharSelect state, and the client falling back through its server-select
+// UI still attached to world.  Any subsequent SEQSTART on the same socket then hit
+// the `returning_from_zone` branch in HandleLoginInfo and re-pushed CharSelect — the
+// loop the user observed.
+//
+// Proper handling matches EQMacEmuTrilogy's world handler:
+//   eqs->Close();
+//   cle->SetOnline(CLE_Status::Offline);
+// We send the Verant close handshake so the client tears down its UDP transport,
+// mark the CLE offline so world bookkeeping reflects the departure, and clear the
+// session's auth fields so any stale packet arriving on this 4-tuple is treated as
+// a fresh, unauthenticated connection (no `returning_from_zone` shortcut).  The
+// session map entry itself is left for natural timeout — matching the pre-existing
+// close-handshake path at OnDatagram, and avoiding the dangling reference in
+// OnDatagram::CheckPendingZoneEntry that runs immediately after this returns.
+// ============================================================
+
+void TrilogyWorldServer::HandleWorldLogout(const std::string& addr, int port, Session& s)
+{
+	LogInfo("[TrilogyWorld] OP_WorldLogout from {}:{} account [{}] id [{}] — disconnecting",
+	        addr, port, s.account_name, s.account_id);
+
+	// Record the LS account_id + the CLE's current key so HandleLoginInfo can
+	// refuse the auto-reconnect v29c performs on a fresh UDP socket immediately
+	// after we close.  Keying on the OLD key means a subsequent legitimate
+	// re-auth that arrives with a FRESH key pushed by the LS is allowed through —
+	// only the same-key retry burst is blocked.  Must read LSID()/GetLSKey()
+	// before clearing s.cle below.
+	if (s.cle) {
+		const uint32_t ls_id = s.cle->LSID();
+		if (ls_id > 0) {
+			LogoutRecord rec;
+			rec.when    = std::time(nullptr);
+			rec.old_key = s.cle->GetLSKey() ? s.cle->GetLSKey() : "";
+			m_recent_logouts[ls_id] = std::move(rec);
+		}
+		s.cle->SetOnline(CLE_Status::Offline);
+	}
+
+	SendClose(addr, port, s);
+
+	// Clear auth so any retransmit or stray packet on this 4-tuple cannot fall
+	// back into the returning_from_zone path and re-send CharSelect.
+	s.account_id           = 0;
+	s.account_name[0]      = '\0';
+	s.cle                  = nullptr;
+	s.returning_from_zone  = false;
+	s.pending_zone_entry   = false;
 }
 
 void TrilogyWorldServer::SendClose(const std::string& addr, int port, Session& s)
