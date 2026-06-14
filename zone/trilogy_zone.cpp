@@ -33,6 +33,7 @@
 #include "../common/strings.h"
 #include "../common/item_data.h"
 #include "../common/spdat.h"
+#include "../common/features.h"
 #include "command.h"
 #include "guild_mgr.h"
 #include "quest_parser_collection.h"
@@ -3134,6 +3135,44 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		}
 	}
 
+	// ---- Pal/SK ability cooldown (Lay on Hands / Harm Touch) ----
+	// PP byte 4216: remaining cooldown in milliseconds; v29c greys the Ability
+	// button while non-zero.  At zone-in s.trilogy_client may not exist yet, so
+	// query the timers table directly; when it does exist use p_timers in memory.
+	if (s.char_class_ == Class::Paladin || s.char_class_ == Class::ShadowKnight) {
+		uint32_t remaining_ms = 0;
+		pTimerType timer_type = (s.char_class_ == Class::ShadowKnight)
+		                      ? pTimerHarmTouch : pTimerLayHands;
+		uint32_t reuse_time   = (s.char_class_ == Class::ShadowKnight)
+		                      ? HarmTouchReuseTime : LayOnHandsReuseTime;
+
+		if (s.trilogy_client) {
+			uint32_t rem_s = s.trilogy_client->GetPTimers().GetRemainingTime(timer_type);
+			if (rem_s > 0 && rem_s <= reuse_time)
+				remaining_ms = rem_s * 1000;
+		} else {
+			auto tq = fmt::format(
+				"SELECT `start`, `duration` FROM `timers` "
+				"WHERE `char_id`={} AND `type`={} LIMIT 1",
+				s.char_id, static_cast<uint32_t>(timer_type));
+			auto tr = database.QueryDatabase(tq);
+			if (tr.RowCount() > 0) {
+				auto row = tr.begin();
+				uint32_t start    = Strings::ToUnsignedInt(row[0]);
+				uint32_t duration = Strings::ToUnsignedInt(row[1]);
+				uint32_t now      = static_cast<uint32_t>(time(nullptr));
+				if (start + duration > now) {
+					uint32_t rem_s = (start + duration) - now;
+					if (rem_s <= reuse_time)
+						remaining_ms = rem_s * 1000;
+				}
+			}
+		}
+		pp.abilityCooldown = remaining_ms;
+		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, abilityCooldown) == 4216,
+		              "abilityCooldown must be at PP byte 4216");
+	}
+
 	// ---- CRC, compress, encrypt, send ----
 	{
 		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, deity) == 55,
@@ -6037,8 +6076,85 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 
 	const auto* tri = reinterpret_cast<const Trilogy::structs::CastSpell_Struct*>(payload);
 
-	// Build EQEmu CastSpell_Struct. The Trilogy wire uses smaller integer types;
-	// inventoryslot 0xFFFF (int16 -1) must map to uint32 0xFFFF, not 0xFFFFFFFF.
+	// Translate target: player_spawn_id → EQEmu entity ID.
+	uint16 raw_target = static_cast<uint16>(tri->target_id);
+	uint32 emu_target = (raw_target == s.player_spawn_id)
+	                  ? static_cast<uint32>(s.trilogy_client->GetID())
+	                  : static_cast<uint32>(raw_target);
+
+	uint16 spell_id = tri->spell_id;
+
+	LogInfo("[TrilogyZone] CastSpell: char={} slot={} spell={} target={}",
+	        s.char_name, tri->slot, spell_id, emu_target);
+
+	// ---- Lay on Hands / Harm Touch intercept ----
+	// v29c sends spell_id 87 (LoH) or 88 (HT) from the Ability button (slot 9).
+	// These CANNOT go through CastSpell/DoCastSpell/CastedSpellFinished because:
+	//   (1) Handle_OP_CastSpell upgrades HT to spell 2821 (Luclin-era) at level
+	//       40+ — absent from v29c's spell table, crashes on spell lookup.
+	//   (2) DoCastSpell sends OP_BeginCast + CastedSpellFinished which emits a
+	//       burst of packets (OP_Action×2, OP_Damage, OP_MemorizeSpell slot=20)
+	//       that crash v29c regardless of cast_time value.
+	// Instead, call SpellOnTarget directly — it sends OP_Action (type=231) which
+	// the Trilogy translator converts to OP_CastOn (0x4620) for the visual effect,
+	// then applies the spell via SpellEffect (heal/damage + messages).  This is
+	// the same two-step sequence EQClassic's SpellOnTarget uses.
+	if (spell_id == SPELL_LAY_ON_HANDS && s.char_class_ == Class::Paladin) {
+		auto& timers = s.trilogy_client->GetPTimers();
+		if (!timers.Expired(&database, pTimerLayHands)) {
+			s.trilogy_client->Message(Chat::Red, "Ability recovery time not yet met.");
+			return;
+		}
+		timers.Start(pTimerLayHands, LayOnHandsReuseTime);
+		s.trilogy_client->SpellOnTarget(SPELL_LAY_ON_HANDS,
+		                               static_cast<Mob*>(s.trilogy_client));
+		// Grey the ability button (slot 9).  EQClassic's SpellFinished sends
+		// OP_MemorizeSpell(slot=9, scribing=3) because 9 < SLOT_ITEMSPELL(10).
+		// Sent directly via SendApp to bypass HandleMemorizeSpellOut's guard
+		// which drops scribing==3 / slot>=8 for normal spell gems.
+		{
+			Trilogy::structs::MemorizeSpell_Struct ms{};
+			ms.slot     = 9;
+			ms.spell_id = static_cast<int32_t>(SPELL_LAY_ON_HANDS);
+			ms.scribing = 3;
+			SendApp(addr, port, s, 0x8221,
+			        reinterpret_cast<const uint8_t*>(&ms),
+			        static_cast<uint32_t>(sizeof(ms)));
+		}
+		// Re-enable spell gems so normal casting works after the ability.
+		s.trilogy_client->SendSpellBarEnable(SPELL_LAY_ON_HANDS);
+		return;
+	}
+
+	if ((spell_id == SPELL_HARM_TOUCH || spell_id == SPELL_HARM_TOUCH2)
+	    && s.char_class_ == Class::ShadowKnight) {
+		auto& timers = s.trilogy_client->GetPTimers();
+		if (!timers.Expired(&database, pTimerHarmTouch)) {
+			s.trilogy_client->Message(Chat::Red, "Ability recovery time not yet met.");
+			return;
+		}
+		Mob* target = entity_list.GetMob(emu_target);
+		if (!target) {
+			s.trilogy_client->Message(Chat::Red, "You must first select a target.");
+			return;
+		}
+		timers.Start(pTimerHarmTouch, HarmTouchReuseTime);
+		// Always spell 88 — never 2821 (absent from v29c spell table).
+		s.trilogy_client->SpellOnTarget(SPELL_HARM_TOUCH, target);
+		{
+			Trilogy::structs::MemorizeSpell_Struct ms{};
+			ms.slot     = 9;
+			ms.spell_id = static_cast<int32_t>(SPELL_HARM_TOUCH);
+			ms.scribing = 3;
+			SendApp(addr, port, s, 0x8221,
+			        reinterpret_cast<const uint8_t*>(&ms),
+			        static_cast<uint32_t>(sizeof(ms)));
+		}
+		s.trilogy_client->SendSpellBarEnable(SPELL_HARM_TOUCH);
+		return;
+	}
+
+	// ---- Normal spell path: translate and forward to Handle_OP_CastSpell ----
 	auto* app = new EQApplicationPacket(OP_CastSpell, sizeof(::CastSpell_Struct));
 	auto* emu = reinterpret_cast<::CastSpell_Struct*>(app->pBuffer);
 	memset(emu, 0, sizeof(::CastSpell_Struct));
@@ -6046,18 +6162,10 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 	emu->slot          = static_cast<uint32>(tri->slot);
 	emu->spell_id      = static_cast<uint32>(tri->spell_id);
 	emu->inventoryslot = static_cast<uint32>(static_cast<uint16>(tri->inventoryslot));
-	// player_spawn_id is what we sent in SpawnAppearance type=0x10; translate to EQEmu entity ID.
-	uint16 raw_target  = static_cast<uint16>(tri->target_id);
-	emu->target_id     = (raw_target == s.player_spawn_id)
-	                   ? static_cast<uint32>(s.trilogy_client->GetID())
-	                   : static_cast<uint32>(raw_target);
-	// Trilogy CastSpell does not carry target-ring coordinates; use caster position.
+	emu->target_id     = emu_target;
 	emu->y_pos = s.pos_y;
 	emu->x_pos = s.pos_x;
 	emu->z_pos = s.pos_z;
-
-	LogInfo("[TrilogyZone] CastSpell: char={} slot={} spell={} target={}",
-	        s.char_name, emu->slot, emu->spell_id, emu->target_id);
 
 	s.trilogy_client->Handle_OP_CastSpell(app);
 	delete app;

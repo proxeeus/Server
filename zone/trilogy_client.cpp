@@ -1904,6 +1904,14 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::MemorizeSpell_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::MemorizeSpell_Struct*>(app->pBuffer);
 
+	// Drop memSpellSpellbar (scribing==3): v29c re-enables gems from its own
+	// cooldown timer; Trilogy wire value 3 means "forget/gray-out gem" — same
+	// numeric value, opposite intent.  Also drop slot >= 8: catches Ability(20),
+	// Item(22), Discipline(23) internal slot values that would overflow the
+	// v29c pp.spell_memory[8] array.
+	if (emu->scribing == memSpellSpellbar) return;
+	if (emu->slot >= Trilogy::structs::SPELL_MEMORY_SIZE) return;
+
 	Trilogy::structs::MemorizeSpell_Struct out{};
 	out.slot     = static_cast<int32_t>(emu->slot);
 	out.spell_id = static_cast<int32_t>(emu->spell_id);

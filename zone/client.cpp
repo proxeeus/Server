@@ -554,6 +554,15 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	database.LoadCharacterSpellBook(char_id, &m_pp);
 	database.LoadCharacterMemmedSpells(char_id, &m_pp);
 
+	// Load persistent timers (Lay on Hands / Harm Touch cooldowns, etc.) so they
+	// survive across relogs.  The normal path does this in Handle_Connect_OP_ZoneEntry
+	// which Trilogy bypasses entirely.
+	p_timers.SetCharID(char_id);
+	if (!p_timers.Load(&database)) {
+		LogError("Unable to load ability timers from the database for [{}] ([{}])!",
+			char_name, char_id);
+	}
+
 	// Load account status so Admin() returns the correct level for GM command authorization.
 	admin = database.GetAccountStatus(acct_id);
 
