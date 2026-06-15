@@ -207,6 +207,7 @@ public:
 	void ClearMerchantWindow() { m_merchant_window.clear(); }
 	float    GetMerchantRate()  const { return m_merchant_rate; }
 	uint16_t GetMerchantNpcId() const { return m_merchant_npc_id; }
+	void FlushPendingLootEcho();
 
 private:
 	TrilogyZoneServer* m_tzs;
@@ -248,7 +249,6 @@ private:
 	void HandleMoneyOnCorpse(const EQApplicationPacket* app);
 	void HandleOutgoingLootItem(const EQApplicationPacket* app);
 	void HandleItemPacket(const EQApplicationPacket* app);
-	void FlushPendingLootEcho();
 	// Ground items
 	void HandleGroundSpawn(const EQApplicationPacket* app);
 	// Doors

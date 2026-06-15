@@ -2780,9 +2780,11 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 	if (it->ID > 65535) return false;
 	ci.id        = static_cast<uint16>(it->ID);
 	ci.icon      = static_cast<uint16>(it->Icon ? it->Icon : 1);
-	ci.equipslot = equip_slot;
-	ci.slots     = static_cast<uint32>(it->Slots);
-	ci.price     = static_cast<int32>(it->Price);
+	ci.equipslot   = equip_slot;
+	if (it->ItemClass != 1)
+		ci.inv_refnum = ci.id;
+	ci.slots       = static_cast<uint32>(it->Slots);
+	ci.price       = static_cast<int32>(it->Price);
 
 	bool has_click  = (it->Click.Effect  > 0 && it->Click.Effect  < 3000);
 	bool has_proc   = (it->Proc.Effect   > 0 && it->Proc.Effect   < 3000);
@@ -2803,6 +2805,17 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 		ci.book_data.booktype = static_cast<int16>(it->BookType);
 		if (it->Filename[0])
 			strncpy(ci.book_data.filename, it->Filename, sizeof(ci.book_data.filename) - 1);
+	} else if (it->ItemClass == 1) {
+		// EQClassic blob loader (database.cpp L1751-1755) zeroes offsets 144-211
+		// and 217-285 for containers: "We clean this or the client crashes or bag
+		// are full of shit."  Only the header (0-143) and container union (212-216)
+		// may be non-zero.  ci is value-initialized (all zero) so we just set the
+		// container fields and leave everything else untouched.
+		ci.common.container.bagtype   = it->BagType;
+		ci.common.container.bagslots  = it->BagSlots > 0 ? it->BagSlots : 1;
+		ci.common.container.isbagopen = 0;
+		ci.common.container.bagsize   = static_cast<int8>(it->BagSize > 0 ? it->BagSize : 1);
+		ci.common.container.bagwr     = it->BagWR;
 	} else {
 		ci.common.unknown0282 = static_cast<int8>(0xFF);
 		ci.common.unknown0283 = static_cast<int8>(0xFF);
@@ -2884,28 +2897,19 @@ static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 		ci.common.factionamt4  = static_cast<uint16>(it->FactionAmt4 < 0 ? 0 : it->FactionAmt4);
 		ci.common.deity        = static_cast<uint16>(it->Deity);
 
-		if (it->ItemClass == 1) {
-			ci.common.container.bagtype   = it->BagType;
-			ci.common.container.bagslots  = it->BagSlots > 0 ? it->BagSlots : 1;
-			ci.common.container.isbagopen = 0;
-			ci.common.container.bagsize   = static_cast<int8>(it->BagSize > 0 ? it->BagSize : 1);
-			ci.common.container.bagwr     = it->BagWR;
-			ci.common.charges             = 0;
-		} else {
-			ci.common.normal.races = static_cast<uint16>(it->Races);
-			if (has_click)
-				ci.common.normal.click_effect_type = (it->Click.Type == 5) ? 3 : static_cast<int8>(it->Click.Type);
-			else if (has_worn)
-				ci.common.normal.click_effect_type = static_cast<int8>(it->Worn.Type);
-			else if (has_scroll)
-				ci.common.normal.click_effect_type = static_cast<int8>(it->Scroll.Type);
-			else if (has_proc)
-				ci.common.normal.click_effect_type = 2;
+		ci.common.normal.races = static_cast<uint16>(it->Races);
+		if (has_click)
+			ci.common.normal.click_effect_type = (it->Click.Type == 5) ? 3 : static_cast<int8>(it->Click.Type);
+		else if (has_worn)
+			ci.common.normal.click_effect_type = static_cast<int8>(it->Worn.Type);
+		else if (has_scroll)
+			ci.common.normal.click_effect_type = static_cast<int8>(it->Scroll.Type);
+		else if (has_proc)
+			ci.common.normal.click_effect_type = 2;
 
-			int16_t ch = inst->GetCharges();
-			ci.common.charges = (ch == 0) ? static_cast<int8>(-1) :
-			                    static_cast<int8>(ch > 127 ? 127 : ch);
-		}
+		int16_t ch = inst->GetCharges();
+		ci.common.charges = (ch == 0) ? static_cast<int8>(-1) :
+		                    static_cast<int8>(ch > 127 ? 127 : ch);
 	}
 
 	return true;
@@ -2986,12 +2990,7 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		} else {
 			equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1)
 			                              : static_cast<int16_t>(slot_id);
-			// Containers (ItemClass==1) MUST go via 0x6621 (OP_CPlayerCont) to
-			// allocate the bag-content array before contents arrive.  Without it
-			// the v29c client dereferences a null pointer when opening the bag.
-			const EQ::ItemData* idata = inst->GetItem();
-			wire_opcode = (idata && idata->ItemClass == 1) ? 0x6621 :
-			              (idata && idata->ItemClass == 2) ? 0x6521 : 0x3120;
+			wire_opcode = 0x3120;
 		}
 		break;
 	case ItemPacketCharInventory:
@@ -3068,10 +3067,11 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	                     reinterpret_cast<const uint8_t*>(&ci),
 	                     static_cast<uint32_t>(sizeof(ci)));
 
-	// EQClassic order: item delivery → loot echo (0xa020).
-	// Flush the deferred echo now so the client receives it after the item.
-	// ItemPacketTrade = inventory slot delivery; ItemPacketLimbo = cursor delivery
-	// (sent when cursor was occupied — PutLootInInventory pre-RoF path).
-	if (pkt_type == ItemPacketTrade || pkt_type == ItemPacketLimbo)
+	// Loot echo (0xa020) is flushed by the caller in trilogy_zone.cpp
+	// AFTER Handle_OP_LootItem returns — matching EQClassic order where
+	// the echo follows ALL item deliveries (bag + contents), not just the
+	// first item.  Flushing here would place the echo between the bag and
+	// its content items, which crashes the v29c client.
+	if (pkt_type == ItemPacketLimbo)
 		FlushPendingLootEcho();
 }

@@ -1593,6 +1593,7 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				auto* li = reinterpret_cast<Trilogy::structs::LootingItem_Struct*>(lootitempkt.pBuffer);
 				li->slot_id = static_cast<int16_t>(li->slot_id + 22);
 				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
+				s.trilogy_client->FlushPendingLootEcho();
 			}
 		}
 		else if (opcode == ZN_OP_EndLootRequest && s.trilogy_client) {
@@ -6044,9 +6045,21 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		database.QueryDatabase(fmt::format(
 		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 		    s.char_id, from_db));
-		if (from_wire == 0 && s.trilogy_client) {
-			auto* stale = s.trilogy_client->GetInv().PopItem(EQ::invslot::slotCursor);
-			safe_delete(stale);
+		if (s.trilogy_client) {
+			auto& inv = s.trilogy_client->GetInv();
+			auto is_worn_slot = [](int slot) -> bool {
+				return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+			};
+			// Clear from_db in m_inv (the DB row is gone).
+			if (!is_worn_slot(from_db)) {
+				auto* old = inv.PopItem(static_cast<int16>(from_db));
+				safe_delete(old);
+			}
+			// Also clear cursor — item may have been placed from cursor.
+			if (from_wire == 0) {
+				auto* cur = inv.PopItem(EQ::invslot::slotCursor);
+				safe_delete(cur);
+			}
 		}
 		RefreshWornSlotsAfterMove(s, from_db, -1, /*destroy_path=*/true);
 		return;
@@ -6155,15 +6168,148 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		}
 	}
 
-	// When moving FROM cursor (loot delivery, summon, #si), the EQEmu engine's
-	// PutLootInInventory put the item into m_inv's cursor AND saved it to DB at
-	// slot 33.  Our DB UPDATE above moved it to the real slot, but m_inv still
-	// thinks cursor is occupied.  If we don't pop it, the next PutLootInInventory
-	// will overflow the old (now-moved) item into the cursor queue (DB 8000+),
-	// creating duplicates on relog.
-	if (from_wire == 0 && s.trilogy_client) {
-		auto* stale = s.trilogy_client->GetInv().PopItem(EQ::invslot::slotCursor);
-		safe_delete(stale);
+	// ---- m_inv sync: mirror every DB mutation into m_inv ----
+	//
+	// Trilogy's HandleMoveItem mutates the `inventory` table directly
+	// without going through m_inv.  Engine systems that read m_inv
+	// (death/corpse MoveItemToCorpse, CalcBonuses, lore checks, aggro
+	// radius) will see stale data unless we mirror the move.
+	//
+	// Strategy: the DB is authoritative after the UPDATE/swap above.
+	// Clear old m_inv entries, then re-read from DB so m_inv matches.
+	// Worn slots (1-20, ammo=22) are skipped here because
+	// RefreshWornSlotsAfterMove (below) already handles them with
+	// full quest-event / CalcBonuses / attack-timer side-effects.
+	if (s.trilogy_client) {
+		auto& inv = s.trilogy_client->GetInv();
+
+		auto is_worn_slot = [](int slot) -> bool {
+			return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+		};
+
+		// Read one inventory DB row into m_inv, clearing any stale entry
+		// first.  For bag-content slots (251-340, 2031-2110), PutItem
+		// needs the parent container in m_inv; if the parent was placed
+		// by a prior unsynced cursor-place, it may be absent — load it
+		// from DB on demand.
+		auto sync_slot = [&](int db_slot) {
+			auto* old = inv.PopItem(static_cast<int16>(db_slot));
+			safe_delete(old);
+			auto r = database.QueryDatabase(fmt::format(
+			    "SELECT `itemid`, `charges`, `color` FROM `inventory` "
+			    "WHERE `charid`={} AND `slotid`={}", s.char_id, db_slot));
+			if (!r.Success() || r.RowCount() == 0) return;
+			auto row = r.begin();
+			const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+			if (item_id == 0) return;
+			const int16  charges = static_cast<int16>(Strings::ToInt(row[1]));
+			const uint32 color   = static_cast<uint32>(Strings::ToInt(row[2]));
+			auto* inst = database.CreateItem(item_id, charges);
+			if (!inst) return;
+			inst->SetColor(color);
+			int16 result = inv.PutItem(static_cast<int16>(db_slot), *inst);
+			if (result < 0) {
+				// Parent container missing — determine parent and load it.
+				int parent = -1;
+				if (db_slot >= 251 && db_slot <= 340)
+					parent = EQ::invslot::GENERAL_BEGIN + (db_slot - 251) / 10;
+				else if (db_slot >= 2031 && db_slot <= 2110)
+					parent = 2000 + (db_slot - 2031) / 10;
+				if (parent >= 0 && !inv.GetItem(static_cast<int16>(parent))) {
+					auto pr = database.QueryDatabase(fmt::format(
+					    "SELECT `itemid`, `charges`, `color` FROM `inventory` "
+					    "WHERE `charid`={} AND `slotid`={}", s.char_id, parent));
+					if (pr.Success() && pr.RowCount() > 0) {
+						auto prow = pr.begin();
+						const uint32 pid = static_cast<uint32>(Strings::ToInt(prow[0]));
+						if (pid > 0) {
+							auto* pinst = database.CreateItem(pid,
+							    static_cast<int16>(Strings::ToInt(prow[1])));
+							if (pinst) {
+								pinst->SetColor(static_cast<uint32>(Strings::ToInt(prow[2])));
+								inv.PutItem(static_cast<int16>(parent), *pinst);
+								delete pinst;
+							}
+						}
+					}
+					result = inv.PutItem(static_cast<int16>(db_slot), *inst);
+				}
+			}
+			delete inst;
+		};
+
+		// 1. Clear cursor — item may have arrived via PutLootInInventory
+		//    (at slotCursor) or via buy/summon without touching m_inv.
+		if (from_wire == 0) {
+			auto* cur = inv.PopItem(EQ::invslot::slotCursor);
+			safe_delete(cur);
+		}
+
+		// 2. Clear the source slot (the DB row has moved away).
+		if (!is_worn_slot(from_db)) {
+			auto* old_src = inv.PopItem(static_cast<int16>(from_db));
+			safe_delete(old_src);
+		}
+
+		// 3. Re-read the destination from DB.
+		if (!is_worn_slot(to_db))
+			sync_slot(to_db);
+
+		// 4. Swap: the old destination item is now at from_db — re-read it.
+		if (to_occupied && !is_worn_slot(from_db))
+			sync_slot(from_db);
+
+		// 5. Bag-content migration: when a container moves between
+		//    bag-capable slots, its contents change slotids.  Clear
+		//    the old range and batch-sync the new range from DB.
+		if (from_cont_base >= 0 && to_cont_base >= 0) {
+			for (int i = 0; i < 10; i++) {
+				auto* oldc = inv.PopItem(static_cast<int16>(from_cont_base + i));
+				safe_delete(oldc);
+			}
+			auto cr = database.QueryDatabase(fmt::format(
+			    "SELECT `slotid`, `itemid`, `charges`, `color` FROM `inventory` "
+			    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+			    s.char_id, to_cont_base, to_cont_base + 9));
+			if (cr.Success()) {
+				for (auto row = cr.begin(); row != cr.end(); ++row) {
+					const int    slot    = static_cast<int>(Strings::ToInt(row[0]));
+					const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[1]));
+					if (item_id == 0) continue;
+					const int16  charges = static_cast<int16>(Strings::ToInt(row[2]));
+					const uint32 color   = static_cast<uint32>(Strings::ToInt(row[3]));
+					auto* inst = database.CreateItem(item_id, charges);
+					if (!inst) continue;
+					inst->SetColor(color);
+					inv.PutItem(static_cast<int16>(slot), *inst);
+					delete inst;
+				}
+			}
+			if (to_occupied) {
+				for (int i = 0; i < 10; i++) {
+					auto* oldc2 = inv.PopItem(static_cast<int16>(to_cont_base + i));
+					safe_delete(oldc2);
+				}
+				auto cr2 = database.QueryDatabase(fmt::format(
+				    "SELECT `slotid`, `itemid`, `charges`, `color` FROM `inventory` "
+				    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+				    s.char_id, from_cont_base, from_cont_base + 9));
+				if (cr2.Success()) {
+					for (auto row = cr2.begin(); row != cr2.end(); ++row) {
+						const int    slot    = static_cast<int>(Strings::ToInt(row[0]));
+						const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[1]));
+						if (item_id == 0) continue;
+						const int16  charges = static_cast<int16>(Strings::ToInt(row[2]));
+						const uint32 color   = static_cast<uint32>(Strings::ToInt(row[3]));
+						auto* inst = database.CreateItem(item_id, charges);
+						if (!inst) continue;
+						inst->SetColor(color);
+						inv.PutItem(static_cast<int16>(slot), *inst);
+						delete inst;
+					}
+				}
+			}
+		}
 	}
 
 	RefreshWornSlotsAfterMove(s, from_db, to_db, /*destroy_path=*/false);
