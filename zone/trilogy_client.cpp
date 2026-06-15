@@ -751,13 +751,43 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// the fixed header (bind_zone_id, coords, heading).
 		if (app->size < sizeof(::ZonePlayerToBind_Struct)) break;
 		const auto* zpb = reinterpret_cast<const ::ZonePlayerToBind_Struct*>(app->pBuffer);
-		const char* zname = nullptr;
-		if (zpb->bind_zone_id != 0) {
-			zname = ZoneName(static_cast<uint32>(zpb->bind_zone_id));
-		} else {
-			// bind_zone_id == 0 means the bind point is in the current zone
-			zname = ZoneName(static_cast<uint32>(GetZoneID()));
+		const bool same_zone = (zpb->bind_zone_id == 0 ||
+		                        static_cast<uint32>(zpb->bind_zone_id) == GetZoneID());
+		if (same_zone) {
+			// Same-zone death respawn.  ZonePC has already overwritten m_Position
+			// with bind coords, so zpb->x/y/z and GetX/GetY/GetZ are both bind
+			// coords.  We must still send TeleportPC (the client needs it to enter
+			// zone-change-pending state and respond with 0xa320), but use the
+			// death position saved by HandleBecomeCorpse — this is where the
+			// player already is visually, so no visible teleport occurs.
+			// The client then responds with 0xa320 → HandleZoneChange drives the
+			// normal zone-out flow (DoZoneSuccess → world → 0x0480 → A320+CLOSE
+			// → reconnect at bind).
+			const char* zname = ZoneName(static_cast<uint32>(GetZoneID()));
+			if (!zname) break;
+			Trilogy::structs::TeleportPC_Struct tpc{};
+			memset(&tpc, 0, sizeof(tpc));
+			strncpy(tpc.zone, zname, sizeof(tpc.zone) - 1);
+			if (m_has_death_pos) {
+				tpc.yPos    = m_death_y;
+				tpc.xPos    = m_death_x;
+				tpc.zPos    = (m_death_z == 0.0f) ? 0.1f : m_death_z;
+				tpc.heading = m_death_heading;
+				m_has_death_pos = false;
+			} else {
+				tpc.yPos    = zpb->y;
+				tpc.xPos    = zpb->x;
+				tpc.zPos    = (zpb->z == 0.0f) ? 0.1f : zpb->z;
+				tpc.heading = zpb->heading;
+			}
+			m_tzs->SendToSession(m_session_key, 0x4d21,
+			                     reinterpret_cast<const uint8_t*>(&tpc),
+			                     static_cast<uint32_t>(sizeof(tpc)));
+			break;
 		}
+		// Cross-zone death: convert to TeleportPC (0x4d21).  The different zone
+		// name triggers the client to send 0xa320 → HandleZoneChange → full zone-out.
+		const char* zname = ZoneName(static_cast<uint32>(zpb->bind_zone_id));
 		if (!zname) break;
 		Trilogy::structs::TeleportPC_Struct tpc{};
 		memset(&tpc, 0, sizeof(tpc));
@@ -2275,6 +2305,14 @@ void TrilogyClient::HandleBecomeCorpse(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::BecomeCorpse_Struct)) return;
 	const auto* bc = reinterpret_cast<const ::BecomeCorpse_Struct*>(app->pBuffer);
+
+	// Save death position before ZonePC (called by GoToDeath moments later)
+	// overwrites m_Position with bind coordinates.
+	m_death_x       = bc->x;
+	m_death_y       = bc->y;
+	m_death_z       = bc->z;
+	m_death_heading = GetHeading();
+	m_has_death_pos = true;
 
 	Trilogy::structs::SpawnAppearance_Struct out{};
 	out.spawn_id  = static_cast<int16_t>(TranslateId(bc->spawn_id));

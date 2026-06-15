@@ -278,6 +278,15 @@ private:
 	//     they will be visible via the next ZoneSpawns bulk or heartbeat.
 	bool m_is_zoning = true;
 
+	// Death position saved by HandleBecomeCorpse before ZonePC overwrites
+	// m_Position with bind coords.  Used by HandleZonePlayerToBind to send
+	// a TeleportPC with the death position (invisible) instead of bind coords.
+	float m_death_x = 0.0f;
+	float m_death_y = 0.0f;
+	float m_death_z = 0.0f;
+	float m_death_heading = 0.0f;
+	bool  m_has_death_pos = false;
+
 	// ---- Spell gem cooldown tracking ----
 	// v29c has no built-in per-gem recast display during gameplay (only at
 	// zone-in via PP spellSlotRefresh).  We track active cooldowns server-side
