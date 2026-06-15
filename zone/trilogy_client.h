@@ -183,6 +183,10 @@ public:
 	// OP_TradeMoneyUpdate (0x3d21) per non-zero amount.
 	void SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
 
+	// Check spell gem cooldowns and un-grey expired gems.
+	// Called from TrilogyZoneServer::Tick() each iteration.
+	void CheckSpellGemCooldowns();
+
 	// ---- Merchant / vendor window state ----
 	// One open merchant window's contents, keyed by the window slot the client
 	// echoes back on buy.  Populated as OP_ItemPacket(ItemPacketMerchant) packets
@@ -272,6 +276,17 @@ private:
 	//   • Player/playerbot OP_NewSpawn (multi-packet paths) are silently dropped;
 	//     they will be visible via the next ZoneSpawns bulk or heartbeat.
 	bool m_is_zoning = true;
+
+	// ---- Spell gem cooldown tracking ----
+	// v29c has no built-in per-gem recast display during gameplay (only at
+	// zone-in via PP spellSlotRefresh).  We track active cooldowns server-side
+	// and grey/un-grey gems with OP_MemorizeSpell scribing=3/1.
+	struct GemCooldown {
+		uint32_t spell_id = 0;
+		uint64_t end_ms   = 0;   // steady_clock ms when cooldown expires
+		bool     active   = false;
+	};
+	GemCooldown m_gem_cooldowns[Trilogy::structs::SPELL_MEMORY_SIZE]{};
 
 	// ---- Merchant / vendor window state (see public accessors above) ----
 	float                            m_merchant_rate   = 1.0f; // EQEmu `rate` = pricemultiplier

@@ -5011,6 +5011,11 @@ void TrilogyZoneServer::Tick()
 		// next zone-back to this zone.
 		if (s.trilogy_client && s.trilogy_client->IsZoning()) continue;
 
+		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
+		if (s.trilogy_client) {
+			s.trilogy_client->CheckSpellGemCooldowns();
+		}
+
 		// Money-display reconciliation: the on-screen coin counter only refreshes from
 		// the PlayerProfile at zone-in.  Quest rewards (givecash / QuestReward / direct
 		// AddMoneyToPP) change the PlayerProfile without pushing a money update the
