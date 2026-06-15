@@ -288,6 +288,16 @@ private:
 	};
 	GemCooldown m_gem_cooldowns[Trilogy::structs::SPELL_MEMORY_SIZE]{};
 
+	// ---- Deferred OP_CastOn for correct resist behaviour ----
+	// EQEmu sends OP_Action (→ OP_CastOn for Trilogy) BEFORE the resist check.
+	// EQClassic sends OP_CastOn AFTER, with unknown2[1]=0x04 for landed spells
+	// and 0x00 for resisted spells (0x04 makes the client add the buff icon).
+	// We defer the send until we know the outcome.
+	bool m_pending_caston_active = false;
+	Trilogy::structs::CastOn_Struct m_pending_caston_data{};
+	bool m_last_caston_was_self_resist = false;
+	void FlushPendingCastOn(bool spell_landed);
+
 	// ---- Merchant / vendor window state (see public accessors above) ----
 	float                            m_merchant_rate   = 1.0f; // EQEmu `rate` = pricemultiplier
 	uint16_t                         m_merchant_npc_id = 0;    // entity id of open merchant

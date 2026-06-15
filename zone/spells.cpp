@@ -5825,6 +5825,9 @@ void Mob::Mesmerize()
 {
 	mezzed = true;
 
+	if (IsClient())
+		SendAppearancePacket(AppearanceType::Animation, Animation::Freeze);
+
 	auto spell_id = bardsong ? bardsong : casting_spell_id;
 
 	if (spell_id)

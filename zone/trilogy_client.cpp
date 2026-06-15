@@ -283,6 +283,8 @@ void TrilogyClient::FastQueuePacket(EQApplicationPacket** app,
 	safe_delete(*app);
 }
 
+static const char* TrilogySystemStringTemplate(uint32_t string_id);
+
 // ============================================================
 // TranslateAndSend — dispatch by EQEmu internal opcode
 // ============================================================
@@ -366,6 +368,40 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Damage:
 		HandleDamage(app);
 		break;
+	case OP_Stun:
+		if (app->size >= sizeof(::Stun_Struct)) {
+			m_tzs->SendToSession(m_session_key, 0x5b21,
+			                     app->pBuffer,
+			                     static_cast<uint32_t>(sizeof(::Stun_Struct)));
+		}
+		break;
+	case OP_InterruptCast:
+	{
+		if (app->size < sizeof(InterruptCast_Struct)) break;
+		auto* ic = (InterruptCast_Struct*)app->pBuffer;
+		const char* tmpl = TrilogySystemStringTemplate(ic->messageid);
+		if (!tmpl) break;
+
+		std::string text(tmpl);
+		// _OTHER variants carry the caster name after the 8-byte header
+		if (app->size > sizeof(InterruptCast_Struct)) {
+			std::string name(ic->message,
+			                 strnlen(ic->message, app->size - sizeof(InterruptCast_Struct)));
+			for (size_t pos; (pos = text.find("%1")) != std::string::npos; )
+				text.replace(pos, 2, name);
+		}
+
+		// Trilogy wire: int16 spawnid + int16 pad(0) + char[] text + null
+		uint32_t out_size = 4 + static_cast<uint32_t>(text.size()) + 1;
+		auto* out = new uint8_t[out_size]();
+		*reinterpret_cast<int16_t*>(out)     = static_cast<int16_t>(TranslateId(ic->spawnid));
+		*reinterpret_cast<int16_t*>(out + 2) = 0;
+		memcpy(out + 4, text.data(), text.size());
+		out[out_size - 1] = 0;
+		m_tzs->SendToSession(m_session_key, 0xd321, out, out_size);
+		delete[] out;
+		break;
+	}
 	case OP_ManaChange:
 		HandleManaChange(app);
 		break;
@@ -1276,10 +1312,13 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 	//   FlyMode (19)      — levitate self-target.
 	//   Light (5), etc.   — appearance state the client needs to render.
 	//
-	// The earlier blanket self-id drop here was the cause of the broken
-	// rogue sneak+hide-while-moving mechanic, NOT the visual rendering
-	// path on movement.
-	if (src->spawn_id == GetID() && src->type == AppearanceType::Animation) return;
+	// NOTE: no self-Animation filter here.  The server already uses
+	// ignore_self=true when broadcasting player-initiated sit/stand
+	// (Handle_OP_SpawnAppearance line 14890), so the player never
+	// receives their own echo.  The only self-targeted Animation
+	// packets that reach here are from AI_Start (Freeze=102, locks
+	// controls for fear/charm/mez) and AI_Stop (Standing=100, restores
+	// controls) — both must be forwarded.
 
 	Trilogy::structs::SpawnAppearance_Struct out{};
 	// Trilogy entities use the spawn_id space we hand out via TranslateId.
@@ -1430,6 +1469,33 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 421:   return "You caught %1!";                                          // FISHING_SUCCESS_FISH_NAME
 		case 171:   return "You spill your beer while bringing in your line.";        // FISHING_SPILL_BEER
 		case 172:   return "You lost your bait!";                                     // FISHING_LOST_BAIT
+		// Spell resist / fizzle / interrupt feedback — MessageString paths from
+		// spells.cpp (ResistSpell, CheckFizzle, InterruptSpell).
+		case 173:   return "Your spell fizzles!";                                     // SPELL_FIZZLE
+		case 180:   return "You miss a note, bringing your song to a close!";         // MISS_NOTE
+		case 425:   return "Your target resisted the %1 spell.";                      // TARGET_RESISTED
+		case 426:   return "You resist the %1 spell!";                                // YOU_RESIST
+		case 439:   return "Your spell is interrupted.";                              // INTERRUPT_SPELL
+		case 1218:  return "%1's spell fizzles!";                                     // SPELL_FIZZLE_OTHER
+		case 1219:  return "A missed note brings %1's song to a close!";              // MISSED_NOTE_OTHER
+		case 12478: return "%1's casting is interrupted!";                             // INTERRUPT_SPELL_OTHER
+		case 12686: return "Your song ends abruptly.";                                // SONG_ENDS_ABRUPTLY
+		case 12687: return "Your song ends.";                                         // SONG_ENDS
+		case 12688: return "%1's song ends.";                                         // SONG_ENDS_OTHER
+		// Additional spell feedback — resist-immunity messages, insufficient mana,
+		// spell-needs-target, and other common caster feedback.
+		case 241:   return "Your target is immune to the stun portion of this effect."; // IMMUNE_STUN
+		case 199:   return "Insufficient Mana to cast this spell!";                   // INSUFFICIENT_MANA
+		case 214:   return "You must first select a target for this spell!";           // SPELL_NEED_TAR
+		case 191:   return "Your target has no mana to affect.";                      // TARGET_NO_MANA
+		case 108:   return "You cannot see your target.";                             // CANT_SEE_TARGET
+		case 5817:  return "Your target avoided your %1 ability.";                    // PHYSICAL_RESIST_FAIL
+		// Channeling / movement during casting feedback
+		case 270:   return "You regain your concentration and continue your casting."; // REGAIN_AND_CONTINUE
+		case 1033:  return "%1 regains concentration and continues casting.";          // OTHER_REGAIN_CAST
+		// Missing reagent / spell component feedback
+		case 272:   return "You are missing some required spell components.";          // MISSING_SPELL_COMP
+		case 433:   return "You are missing %1.";                                     // MISSING_SPELL_COMP_ITEM
 		default:    return nullptr;
 	}
 }
@@ -1538,6 +1604,19 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 	// combat records.  %1..%9 are filled from the null-separated message args.
 	const char* tmpl = TrilogySystemStringTemplate(fm->string_id);
 	if (tmpl) {
+		// Resist string IDs: flush deferred OP_CastOn with "not landed" so the
+		// v29c client plays the spell animation without adding a buff icon.
+		// 425 = TARGET_RESISTED, 426 = YOU_RESIST, 5817 = PHYSICAL_RESIST_FAIL
+		if (fm->string_id == 425 || fm->string_id == 426 || fm->string_id == 5817) {
+			FlushPendingCastOn(false);
+
+			// Self-cast: suppress the redundant caster-perspective message.
+			// The player already sees YOU_RESIST (426); TARGET_RESISTED (425)
+			// is the first message that arrives and makes it look like a duplicate.
+			if (fm->string_id == 425 && m_last_caston_was_self_resist)
+				return;
+		}
+
 		// Gather up to 9 null-separated args.
 		std::vector<std::string> args;
 		const char* p   = base;
@@ -1564,11 +1643,16 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		// palette closely enough for the common cases that matter for skill
 		// feedback — notably Chat::LightBlue(4) → v29c DARK_BLUE(4), which is
 		// what NOT_SCARING and several other Mob::InstillDoubt/skill paths use.
-		// Values outside the small color range (the 256+ MessageType space and
-		// anything above 20) fall back to 10/white — those wouldn't render in
-		// v29c's color palette anyway, so the original fallback is the right
-		// behaviour for them.
-		uint32_t out_color = (fm->type <= 20u) ? fm->type : 10u;
+		// Chat::SpellFailure (289) is used for resist messages — map to RED (13)
+		// to match EQClassic's resist message colour.
+		// Values outside the small color range fall back to 10/white.
+		uint32_t out_color;
+		if (fm->type == 289)       // Chat::SpellFailure → RED
+			out_color = 13;
+		else if (fm->type <= 20u)
+			out_color = fm->type;
+		else
+			out_color = 10;
 
 		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
 		auto* out = new uint8_t[out_size]();
@@ -1668,9 +1752,17 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	std::string text = tmpl;
 	text += '\0';
 
+	uint32_t out_color;
+	if (sm->color == 289)       // Chat::SpellFailure → RED
+		out_color = 13;
+	else if (sm->color <= 20u)
+		out_color = sm->color;
+	else
+		out_color = 10;
+
 	uint32_t out_size = 4 + static_cast<uint32_t>(text.size());
 	auto* out = new uint8_t[out_size]();
-	*reinterpret_cast<uint32_t*>(out) = 10u; // White — regular chat text (classic color palette)
+	*reinterpret_cast<uint32_t*>(out) = out_color;
 	memcpy(out + 4, text.data(), text.size());
 	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
 	delete[] out;
@@ -1729,25 +1821,58 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 // HandleAction — OP_Action (server → Trilogy client).
 //
 // For spells (type == 231 / 0xE7):
-//   Sends OP_Action (0x5820) for target particle effects, then ALSO sends
-//   OP_CastOn (0x4620 / CastOn_Struct) which is the Trilogy-specific packet
-//   that drives the caster body animation.  EQClassic's zone server sends
-//   OP_CastOn from SpellEffect(); EQEmu merges both into a single OP_Action
-//   for Titanium clients.
+//   DEFERS OP_CastOn (0x4620) — see FlushPendingCastOn.  EQEmu sends
+//   OP_Action before the resist check, but the v29c client's unknown2[1]
+//   byte (0x04 = add buff icon, 0x00 = animation only) must vary by
+//   outcome, so we store the packet and flush it when the outcome is known.
 // For melee types (type != 231):
-//   Sends only OP_Action (0x5820).
+//   Sends OP_Action (0x5820) immediately.
 // ============================================================
+
+// ============================================================
+// FlushPendingCastOn — send a deferred OP_CastOn (0x4620).
+//
+// EQEmu fires OP_Action BEFORE the resist check; EQClassic fires
+// OP_CastOn AFTER, with unknown2[1]=0x04 when the spell lands
+// and 0x00 when it is resisted.  0x04 makes the v29c client add
+// the buff/debuff icon; without it the animation plays but no
+// icon is placed.  We defer OP_CastOn in HandleAction and flush
+// here once the outcome is known.
+// ============================================================
+
+void TrilogyClient::FlushPendingCastOn(bool spell_landed)
+{
+	if (!m_pending_caston_active) return;
+	m_pending_caston_data.unknown2[1] =
+		static_cast<int8_t>(spell_landed ? 0x04 : 0x00);
+	m_tzs->SendToSession(m_session_key, 0x4620,
+	                     reinterpret_cast<const uint8_t*>(&m_pending_caston_data),
+	                     static_cast<uint32_t>(sizeof(m_pending_caston_data)));
+	// Track whether this was a self-cast resist for duplicate-message suppression.
+	m_last_caston_was_self_resist = !spell_landed &&
+		m_pending_caston_data.target_id == m_pending_caston_data.source_id &&
+		m_pending_caston_data.target_id != 0;
+	m_pending_caston_active = false;
+	memset(&m_pending_caston_data, 0, sizeof(m_pending_caston_data));
+}
 
 void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::Action_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::Action_Struct*>(app->pBuffer);
 
-	// Spells (type 231) use OP_CastOn (0x4620) exclusively — that packet carries
-	// both the caster animation and the "surrounded by aura" message in Trilogy.
-	// OP_Action (0x5820) is only for melee/non-spell combat.  Sending both would
-	// duplicate the buff-land message.
+	// Spells (type 231) use OP_CastOn (0x4620) — that packet carries
+	// both the target animation and the buff-icon signal in Trilogy.
+	// OP_Action (0x5820) is only for melee/non-spell combat.
+	//
+	// EQEmu fires OP_Action BEFORE the resist check, but the v29c client
+	// needs different unknown2[1] values depending on the outcome (0x04
+	// for landed, 0x00 for resisted).  We defer the send until the
+	// outcome is known (see FlushPendingCastOn).
 	if (emu->type == 231) {
+		FlushPendingCastOn(false);
+		m_last_caston_was_self_resist = false;
+
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
 		caston.target_id        = static_cast<int32_t>(TranslateId(emu->target));
@@ -1758,11 +1883,9 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
 		caston.action           = 231;
 		caston.spell_id         = static_cast<int16_t>(emu->spell);
-		caston.unknown2[1]      = static_cast<int8_t>(0x04);
 
-		m_tzs->SendToSession(m_session_key, 0x4620,
-		                     reinterpret_cast<const uint8_t*>(&caston),
-		                     static_cast<uint32_t>(sizeof(caston)));
+		m_pending_caston_data   = caston;
+		m_pending_caston_active = true;
 		return;
 	}
 
@@ -1794,6 +1917,11 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::CombatDamage_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::CombatDamage_Struct*>(app->pBuffer);
+
+	// Spell damage (DD spells): the spell landed — flush pending OP_CastOn.
+	// DD spells don't generate OP_Buff, so this is the only flush point.
+	if (emu->spellid != 0 && emu->spellid != 0xFFFF)
+		FlushPendingCastOn(true);
 
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
@@ -1832,6 +1960,12 @@ void TrilogyClient::HandleManaChange(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::ManaChange_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::ManaChange_Struct*>(app->pBuffer);
+
+	// Safety: if a pending OP_CastOn still exists by the time the "spell
+	// complete" mana update arrives, flush it now.  This covers edge cases
+	// like utility spells that produce neither OP_Buff nor OP_Damage.
+	if (emu->keepcasting == 0 && emu->spell_id > 0)
+		FlushPendingCastOn(true);
 
 	Trilogy::structs::ManaChange_Struct out{};
 	out.new_mana = static_cast<uint16_t>(
@@ -1992,7 +2126,7 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 	Trilogy::structs::MemorizeSpell_Struct out{};
 	out.slot     = static_cast<int32_t>(emu->slot);
 	out.spell_id = static_cast<int32_t>(emu->spell_id);
-	out.scribing = (emu->scribing == 2) ? 3 : static_cast<int32_t>(emu->scribing);
+	out.scribing = static_cast<int32_t>(emu->scribing);
 
 	m_tzs->SendToSession(m_session_key, 0x8221,
 	                     reinterpret_cast<const uint8_t*>(&out),
@@ -2065,6 +2199,11 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::SpellBuffPacket_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::SpellBuffPacket_Struct*>(app->pBuffer);
+
+	// Buff application (bufffade==0): the spell landed — flush the deferred
+	// OP_CastOn with unknown2[1]=0x04 so the v29c client adds the buff icon.
+	if (emu->bufffade == 0)
+		FlushPendingCastOn(true);
 
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
