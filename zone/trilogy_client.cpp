@@ -24,6 +24,7 @@
 #include "doors.h"
 #include "object.h"
 #include "npc.h"
+#include "corpse.h"
 #include "water_map.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
@@ -419,6 +420,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_Death:
 		HandleDeath(app);
+		break;
+	case OP_BecomeCorpse:
+		HandleBecomeCorpse(app);
 		break;
 	case OP_Consider:
 		HandleOutgoingConsider(app);
@@ -865,6 +869,15 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 			else
 				m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
 		}
+		return;
+	}
+
+	// Corpses spawned via Corpse::Spawn() (DB load, cross-zone move, /corpse summon).
+	// Build a Trilogy corpse spawn with NPC=2 (NPC corpse) or NPC=3 (player corpse)
+	// and send via the permanent ZoneSpawns opcode so the client doesn't stale them.
+	if (mob->IsCorpse()) {
+		Corpse* corpse = mob->CastToCorpse();
+		m_tzs->SendCorpseSpawnPermanent(m_session_key, corpse);
 		return;
 	}
 
@@ -2249,6 +2262,31 @@ void TrilogyClient::HandleDeath(const EQApplicationPacket* app)
 }
 
 // ============================================================
+// HandleBecomeCorpse — OP_BecomeCorpse (server → Trilogy client).
+//
+// EQEmu sends OP_BecomeCorpse to tell clients that an entity has
+// transitioned from a living spawn to a corpse (player death).
+// The v29c client does not understand OP_BecomeCorpse — it uses
+// SpawnAppearance(type=0/Die, parameter=1) for this purpose
+// (EQClassic: SendAppearancePacket(id, SAT_SendToBind, 1, true)).
+// ============================================================
+
+void TrilogyClient::HandleBecomeCorpse(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::BecomeCorpse_Struct)) return;
+	const auto* bc = reinterpret_cast<const ::BecomeCorpse_Struct*>(app->pBuffer);
+
+	Trilogy::structs::SpawnAppearance_Struct out{};
+	out.spawn_id  = static_cast<int16_t>(TranslateId(bc->spawn_id));
+	out.type      = 0; // AppearanceType::Die / SAT_SendToBind
+	out.parameter = 1; // >0 = create corpse (0 would mean zone-to-bind)
+
+	m_tzs->SendToSession(m_session_key, 0xf520,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
 // HandleAnimation — OP_Animation (server → Trilogy client).
 //
 // Sent by Mob::DoAnim to broadcast entity animations (spell casting
@@ -2948,7 +2986,12 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		} else {
 			equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1)
 			                              : static_cast<int16_t>(slot_id);
-			wire_opcode = 0x3120; // OP_ItemTradeIn — inventory/bag/worn slot delivery
+			// Containers (ItemClass==1) MUST go via 0x6621 (OP_CPlayerCont) to
+			// allocate the bag-content array before contents arrive.  Without it
+			// the v29c client dereferences a null pointer when opening the bag.
+			const EQ::ItemData* idata = inst->GetItem();
+			wire_opcode = (idata && idata->ItemClass == 1) ? 0x6621 :
+			              (idata && idata->ItemClass == 2) ? 0x6521 : 0x3120;
 		}
 		break;
 	case ItemPacketCharInventory:

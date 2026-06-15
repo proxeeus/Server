@@ -239,6 +239,7 @@ private:
 	void HandleMemorizeSpellOut(const EQApplicationPacket* app);
 	void HandleBuff(const EQApplicationPacket* app);
 	void HandleDeath(const EQApplicationPacket* app);
+	void HandleBecomeCorpse(const EQApplicationPacket* app);
 	// Consider / exp / leveling
 	void HandleOutgoingConsider(const EQApplicationPacket* app);
 	void HandleExpUpdate(const EQApplicationPacket* app);

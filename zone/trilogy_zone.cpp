@@ -24,6 +24,7 @@
 #include "zonedb.h"
 #include "zone.h"
 #include "npc.h"
+#include "corpse.h"
 #include "../common/crc32.h"
 #include "../common/compression.h"
 #include "../common/eqemu_logsys.h"
@@ -2631,6 +2632,25 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		}
 	}
 
+	// Illusion packets for player-race corpses — sets the correct face.
+	// Same rationale as NPCs above: Spawn_Struct has no face field, so an
+	// Illusion follow-up is the only way to get the v29c client to render it.
+	{
+		const auto& corpse_map = entity_list.GetCorpseList();
+		for (const auto& kv : corpse_map) {
+			Corpse* corpse = kv.second;
+			if (!corpse || !IsPlayerRace(corpse->GetRace())) continue;
+			uint8_t il_buf[72];
+			FillIllusionBuf(il_buf, corpse->GetCleanName(),
+			    static_cast<int16_t>(corpse->GetRace()),
+			    static_cast<int16_t>(corpse->GetGender()),
+			    static_cast<int16_t>(-1),
+			    static_cast<int16_t>(-1),
+			    static_cast<int16_t>(corpse->GetLuclinFace()));
+			SendApp(addr, port, s, 0x9120, il_buf, 72);
+		}
+	}
+
 	// Diagnostic: schedule the first periodic TimeOfDay 5 seconds after zone-in.
 	// If the sky transitions from night to day ~5s after entering the zone, the
 	// Tick()-driven send works but the zone-in sends are not arriving at the right
@@ -4563,15 +4583,16 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 {
 	const auto& npc_map    = entity_list.GetNPCList();
 	const auto& client_map = entity_list.GetClientList();
+	const auto& corpse_map = entity_list.GetCorpseList();
 
-	if (npc_map.empty() && client_map.empty()) {
+	if (npc_map.empty() && client_map.empty() && corpse_map.empty()) {
 		LogInfo("[TrilogyZone] SendZoneSpawns: zone has no spawns");
 		return;
 	}
 
-	// Build raw NewSpawn_Struct[] array (168 bytes per entry: NPCs + players).
+	// Build raw NewSpawn_Struct[] array (168 bytes per entry: NPCs + players + corpses).
 	std::vector<uint8_t> raw;
-	raw.reserve((npc_map.size() + client_map.size()) * sizeof(Trilogy::structs::NewSpawn_Struct));
+	raw.reserve((npc_map.size() + client_map.size() + corpse_map.size()) * sizeof(Trilogy::structs::NewSpawn_Struct));
 
 	uint32_t sent = 0;
 	for (const auto& kv : npc_map) {
@@ -4738,6 +4759,62 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		LogInfo("[TrilogyZone] Player[{}] name='{}' id={} race={} x={} y={} z={}",
 		        sent, c->GetCleanName(), c->GetID(), c->GetRace(),
 		        sp.x_pos, sp.y_pos, sp.z_pos);
+
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+		raw.insert(raw.end(), p, p + sizeof(ns));
+		++sent;
+	}
+
+	// Include corpses already in the zone (player and NPC corpses).
+	for (const auto& kv : corpse_map) {
+		Corpse* corpse = kv.second;
+		if (!corpse) continue;
+
+		Trilogy::structs::NewSpawn_Struct ns{};
+		memset(&ns, 0, sizeof(ns));
+		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+		sp.size      = corpse->GetSize();
+		if (sp.size <= 0.0f) sp.size = 6.0f;
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(corpse->GetHeading() / 2.0f));
+		sp.y_pos     = static_cast<int16_t>(corpse->GetY());
+		sp.x_pos     = static_cast<int16_t>(corpse->GetX());
+		sp.z_pos     = static_cast<int16_t>(corpse->GetZ() * 10.0f);
+		sp.spawn_id  = static_cast<int16_t>(corpse->GetID());
+		sp.NPC       = corpse->IsPlayerCorpse() ? 3 : 2;
+		sp.race      = static_cast<int8_t>(corpse->GetRace());
+		sp.class_    = static_cast<int8_t>(corpse->GetClass());
+		sp.gender    = static_cast<int8_t>(corpse->GetGender());
+		sp.level     = static_cast<int8_t>(corpse->GetLevel());
+		sp.anim_type = 0x64;
+		sp.light     = static_cast<int8_t>(corpse->GetEquipmentLightType());
+		sp.cur_hp    = 0;
+		sp.GuildID   = static_cast<uint16_t>(0xFFFF);
+		sp.guildrank = static_cast<int8_t>(0xFF);
+
+		if (IsPlayerRace(corpse->GetRace())) {
+			sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+			sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+			for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+				sp.equipment[mi]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+				sp.equipcolors[mi] = static_cast<int32_t>(corpse->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			}
+			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+		} else {
+			const uint8_t tex     = corpse->GetTexture();
+			const uint8_t helmtex = corpse->GetHelmTexture();
+			sp.npc_armor_graphic = static_cast<int8_t>(tex);
+			sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
+		}
+
+		strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+
+		if (sent < 5) {
+			LogInfo("[TrilogyZone] Corpse[{}] name='{}' id={} npc={} x={} y={} z={}",
+			        sent, corpse->GetCleanName(), corpse->GetID(), sp.NPC,
+			        sp.x_pos, sp.y_pos, sp.z_pos);
+		}
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -4930,6 +5007,87 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
 	    static_cast<int16_t>(npc->GetLuclinFace()));
 	SendToSession(session_key, 0x9120, il_buf, 72);
+}
+
+// ============================================================
+// SendCorpseSpawnPermanent — send a corpse as a 0x6121 zone-spawn
+// packet.  Corpses need NPC=2 (NPC corpse) or NPC=3 (player corpse)
+// so the v29c client renders them as lootable corpses.
+// Called from TrilogyClient::HandleNewSpawn when Corpse::Spawn()
+// broadcasts a corpse (DB load, cross-zone move, /corpse summon).
+// ============================================================
+
+void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* corpse)
+{
+	if (!corpse) return;
+
+	Trilogy::structs::NewSpawn_Struct ns{};
+	memset(&ns, 0, sizeof(ns));
+	Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+	sp.size      = corpse->GetSize();
+	if (sp.size <= 0.0f) sp.size = 6.0f;
+	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(corpse->GetHeading() / 2.0f));
+	sp.y_pos     = static_cast<int16_t>(corpse->GetY());
+	sp.x_pos     = static_cast<int16_t>(corpse->GetX());
+	sp.z_pos     = static_cast<int16_t>(corpse->GetZ() * 10.0f);
+	sp.spawn_id  = static_cast<int16_t>(corpse->GetID());
+	sp.NPC       = corpse->IsPlayerCorpse() ? 3 : 2;
+	sp.race      = static_cast<int8_t>(corpse->GetRace());
+	sp.class_    = static_cast<int8_t>(corpse->GetClass());
+	sp.gender    = static_cast<int8_t>(corpse->GetGender());
+	sp.level     = static_cast<int8_t>(corpse->GetLevel());
+	sp.anim_type = 0x64;
+	sp.light     = static_cast<int8_t>(corpse->GetEquipmentLightType());
+	sp.cur_hp    = 0;
+	sp.GuildID   = static_cast<uint16_t>(0xFFFF);
+	sp.guildrank = static_cast<int8_t>(0xFF);
+
+	if (IsPlayerRace(corpse->GetRace())) {
+		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
+		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+			sp.equipment[mi]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(corpse->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		}
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+	} else {
+		const uint8_t tex     = corpse->GetTexture();
+		const uint8_t helmtex = corpse->GetHelmTexture();
+		sp.npc_armor_graphic = static_cast<int8_t>(tex);
+		sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
+	}
+
+	strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+	std::vector<uint8_t> raw(p, p + sizeof(ns));
+
+	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
+	std::vector<uint8_t> cbuf(max_clen + 4, 0);
+	uint32_t clen = EQ::DeflateData(
+		reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+		reinterpret_cast<char*>(cbuf.data()), max_clen
+	);
+	if (clen == 0) return;
+	while (clen % 4 != 0) cbuf[clen++] = 0;
+	EncryptZoneSpawnPacket(cbuf.data(), clen);
+
+	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+
+	// Illusion follow-up for player-race corpses to set face (Spawn_Struct
+	// has no face field; the Illusion is the only delivery mechanism).
+	if (IsPlayerRace(corpse->GetRace())) {
+		uint8_t il_buf[72];
+		FillIllusionBuf(il_buf, corpse->GetCleanName(),
+		    static_cast<int16_t>(corpse->GetRace()),
+		    static_cast<int16_t>(corpse->GetGender()),
+		    static_cast<int16_t>(-1),
+		    static_cast<int16_t>(-1),
+		    static_cast<int16_t>(corpse->GetLuclinFace()));
+		SendToSession(session_key, 0x9120, il_buf, 72);
+	}
 }
 
 // ============================================================
@@ -5886,6 +6044,10 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		database.QueryDatabase(fmt::format(
 		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 		    s.char_id, from_db));
+		if (from_wire == 0 && s.trilogy_client) {
+			auto* stale = s.trilogy_client->GetInv().PopItem(EQ::invslot::slotCursor);
+			safe_delete(stale);
+		}
 		RefreshWornSlotsAfterMove(s, from_db, -1, /*destroy_path=*/true);
 		return;
 	}
@@ -5991,6 +6153,17 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 			    "WHERE `charid`={} AND `slotid` BETWEEN 9000 AND 9009",
 			    9000 - to_cont_base, s.char_id));
 		}
+	}
+
+	// When moving FROM cursor (loot delivery, summon, #si), the EQEmu engine's
+	// PutLootInInventory put the item into m_inv's cursor AND saved it to DB at
+	// slot 33.  Our DB UPDATE above moved it to the real slot, but m_inv still
+	// thinks cursor is occupied.  If we don't pop it, the next PutLootInInventory
+	// will overflow the old (now-moved) item into the cursor queue (DB 8000+),
+	// creating duplicates on relog.
+	if (from_wire == 0 && s.trilogy_client) {
+		auto* stale = s.trilogy_client->GetInv().PopItem(EQ::invslot::slotCursor);
+		safe_delete(stale);
 	}
 
 	RefreshWornSlotsAfterMove(s, from_db, to_db, /*destroy_path=*/false);

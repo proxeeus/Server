@@ -33,6 +33,7 @@
 
 class TrilogyClient;
 class Client;
+class Corpse;
 class NPC;
 
 class TrilogyZoneServer {
@@ -59,6 +60,10 @@ public:
 	// client never stales it out.  Playerbots use NPC=0 (blue nameplate) and
 	// the player-race armor/appearance path.
 	void SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* npc);
+
+	// Send a corpse as a zone-permanent spawn (0x6121) with NPC=2 (NPC corpse)
+	// or NPC=3 (player corpse).
+	void SendCorpseSpawnPermanent(uint64_t session_key, Corpse* corpse);
 
 	// Advance the per-session money-display baseline by the given deltas so the
 	// next Tick() reconciliation does NOT re-push these amounts as an
