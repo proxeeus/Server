@@ -971,7 +971,24 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	// because their loadout puts the bow into equipment[7], not because the client
 	// substitutes from range.
 
-	strncpy(sp.name,    mob->GetCleanName(), sizeof(sp.name) - 1);
+	if (mob->IsPlayerCorpse()) {
+		// GetCleanName() strips apostrophe+space from "Name's corpse" → "Namescorpse".
+		// Use backtick+underscore format that CleanMobName preserves: "Name`s_corpse".
+		char raw_copy[64]{};
+		strncpy(raw_copy, mob->GetName(), sizeof(raw_copy) - 1);
+		EntityList::RemoveNumbers(raw_copy);
+		char* apos = strchr(raw_copy, '\'');
+		if (apos) {
+			*apos = '\0';
+			char cname[64]{};
+			snprintf(cname, sizeof(cname), "%s`s_corpse", raw_copy);
+			strncpy(sp.name, cname, sizeof(sp.name) - 1);
+		} else {
+			strncpy(sp.name, mob->GetCleanName(), sizeof(sp.name) - 1);
+		}
+	} else {
+		strncpy(sp.name, mob->GetCleanName(), sizeof(sp.name) - 1);
+	}
 	strncpy(sp.Surname, mob->GetLastName(),  sizeof(sp.Surname) - 1);
 
 	// CRC32 over bytes [4..168) stored in out.ns_unknown1 (bytes [0..3]).
@@ -2281,7 +2298,7 @@ void TrilogyClient::HandleDeath(const EQApplicationPacket* app)
 	memset(&out, 0, sizeof(out));
 	out.spawn_id     = static_cast<int32_t>(TranslateId(emu->spawn_id));
 	out.killer_id    = static_cast<int32_t>(TranslateId(emu->killer_id));
-	out.corpseid     = static_cast<int32_t>(emu->corpseid);
+	out.corpseid     = static_cast<int32_t>(TranslateId(emu->corpseid));
 	out.attack_skill = static_cast<int8_t>(emu->attack_skill);
 	out.damage       = static_cast<int16_t>(
 	    emu->damage > static_cast<uint32_t>(INT16_MAX) ? INT16_MAX : emu->damage);
@@ -2289,6 +2306,20 @@ void TrilogyClient::HandleDeath(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x4a20,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+
+	// Death camera: SAT_SendToBind(1) AFTER OP_Death triggers the v29c
+	// 3rd-person death camera.  A duplicate of the one in HandleBecomeCorpse
+	// (which fires before OP_Death to create the corpse entity while the
+	// spawn still exists).  param=0 does NOT trigger the camera — only 1 does.
+	if (TranslateId(emu->spawn_id) == static_cast<uint32_t>(m_player_spawn_id)) {
+		Trilogy::structs::SpawnAppearance_Struct sa{};
+		sa.spawn_id  = static_cast<int16_t>(m_player_spawn_id);
+		sa.type      = 0; // SAT_SendToBind
+		sa.parameter = 1; // >0 = triggers death camera when sent after OP_Death
+		m_tzs->SendToSession(m_session_key, 0xf520,
+		                     reinterpret_cast<const uint8_t*>(&sa),
+		                     static_cast<uint32_t>(sizeof(sa)));
+	}
 }
 
 // ============================================================
@@ -2314,14 +2345,21 @@ void TrilogyClient::HandleBecomeCorpse(const EQApplicationPacket* app)
 	m_death_heading = GetHeading();
 	m_has_death_pos = true;
 
-	Trilogy::structs::SpawnAppearance_Struct out{};
-	out.spawn_id  = static_cast<int16_t>(TranslateId(bc->spawn_id));
-	out.type      = 0; // AppearanceType::Die / SAT_SendToBind
-	out.parameter = 1; // >0 = create corpse (0 would mean zone-to-bind)
-
+	// Lock UI (SAT_Position_Update=14, SAPP_Lose_Control=102).
+	// EQClassic sends this before Death().
+	Trilogy::structs::SpawnAppearance_Struct cam{};
+	cam.spawn_id  = static_cast<int16_t>(TranslateId(bc->spawn_id));
+	cam.type      = 14;  // SAT_Position_Update
+	cam.parameter = 102; // SAPP_Lose_Control
 	m_tzs->SendToSession(m_session_key, 0xf520,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	                     reinterpret_cast<const uint8_t*>(&cam),
+	                     static_cast<uint32_t>(sizeof(cam)));
+
+	// NOTE: do NOT send SAT_SendToBind(1) here.  Sending it before OP_Death
+	// puts the entity into corpse state, which prevents the post-death
+	// SAT_SendToBind(1) in HandleDeath from triggering the 3rd-person
+	// death camera.  The corpse is handled by the post-death send +
+	// EQEmu's Corpse entity (visible on zone re-entry via OP_NewSpawn).
 }
 
 // ============================================================

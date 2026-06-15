@@ -123,6 +123,7 @@ static constexpr uint16_t ZN_OP_ZoneChange  = 0xa320; // bidirectional: ZoneChan
 
 // Combat / looting opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
+static constexpr uint16_t ZN_OP_Death          = 0x4a20; // client -> zone: Death_Struct (20 bytes) — client-initiated death
 static constexpr uint16_t ZN_OP_AutoAttack     = 0x5121; // client -> zone: 4 bytes, [0]=0 off / 1 on
 static constexpr uint16_t ZN_OP_AutoAttack2    = 0x6021; // client -> zone: same as above (dual-wield follow-up)
 static constexpr uint16_t ZN_OP_ClientTarget   = 0x6221; // client -> zone: ClientTarget_Struct (4 bytes)
@@ -238,6 +239,38 @@ static constexpr uint8_t HDR0_FRAGMENT = 0x08;
 static constexpr uint8_t HDR0_ASQ      = 0x10;
 static constexpr uint8_t HDR0_SEQSTART = 0x20;
 static constexpr uint8_t HDR1_ARSP     = 0x04;
+
+// ============================================================
+// BuildTrilogyCorpseName — convert a player corpse's internal name
+// (e.g. "Bleargh's_corpse0") to the backtick+underscore wire format
+// while preserving the trailing number suffix for uniqueness.
+// The v29c client strips trailing digits from display names, so
+// "Bleargh`s_corpse0" and "Bleargh`s_corpse1" both display as
+// "Bleargh`s corpse" but remain distinct entities for illusion matching.
+// ============================================================
+static void BuildTrilogyCorpseName(const char* raw_name, char* out, size_t out_sz)
+{
+	char tmp[64]{};
+	strncpy(tmp, raw_name, sizeof(tmp) - 1);
+
+	// Find and save trailing digit suffix (e.g. "0", "12").
+	size_t len = strlen(tmp);
+	size_t suffix_start = len;
+	while (suffix_start > 0 && tmp[suffix_start - 1] >= '0' && tmp[suffix_start - 1] <= '9')
+		--suffix_start;
+	char suffix[16]{};
+	strncpy(suffix, tmp + suffix_start, sizeof(suffix) - 1);
+	tmp[suffix_start] = '\0';
+
+	char* ap = strchr(tmp, '\'');
+	if (ap) {
+		*ap = '\0';
+		snprintf(out, out_sz, "%s`s_corpse%s", tmp, suffix);
+	} else {
+		// Fallback — shouldn't happen for player corpses.
+		snprintf(out, out_sz, "%s%s", tmp, suffix);
+	}
+}
 
 // ============================================================
 // FillIllusionBuf — build a 72-byte Trilogy Illusion packet.
@@ -1607,6 +1640,24 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				s.trilogy_client->Handle_OP_EndLootRequest(&endlootpkt);
 			}
 		}
+		else if (opcode == ZN_OP_Death && s.trilogy_client) {
+			// Client-initiated death (0x4A20).  The v29c client detects HP <= 0
+			// locally and sends OP_Death before the server's damage tick calls
+			// Client::Death().  Without this handler the server never creates a
+			// corpse, never strips items, and never charges exp loss.
+			// EQClassic: ProcessOP_Death (attack.cpp:444).
+			if (plen >= sizeof(Trilogy::structs::Death_Struct)) {
+				const auto* td = reinterpret_cast<const Trilogy::structs::Death_Struct*>(payload);
+				Mob* killer = nullptr;
+				if (td->killer_id != 0)
+					killer = entity_list.GetMob(static_cast<uint16_t>(td->killer_id));
+				s.trilogy_client->Death(killer,
+				                        static_cast<int64>(td->damage),
+				                        UINT16_MAX,
+				                        EQ::skills::SkillHandtoHand,
+				                        KilledByTypes::Killed_NPC);
+			}
+		}
 		else if (opcode == 0x2e20) {
 			// ── DIAGNOSTIC (CLIENTBANK): decode the client's OWN uploaded PlayerProfile ──
 			// The Trilogy client uploads its full, UNCOMPRESSED 8104-byte PP via 0x2e20 on
@@ -2634,15 +2685,21 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 
 	// Illusion packets for player-race corpses — sets the correct face.
-	// Same rationale as NPCs above: Spawn_Struct has no face field, so an
-	// Illusion follow-up is the only way to get the v29c client to render it.
+	// Spawn names include the trailing digit suffix (e.g. "Name`s_corpse0",
+	// "Name`s_corpse1") so each corpse is a unique illusion target.
 	{
 		const auto& corpse_map = entity_list.GetCorpseList();
 		for (const auto& kv : corpse_map) {
 			Corpse* corpse = kv.second;
 			if (!corpse || !IsPlayerRace(corpse->GetRace())) continue;
+			char il_name[64]{};
+			if (corpse->IsPlayerCorpse()) {
+				BuildTrilogyCorpseName(corpse->GetName(), il_name, sizeof(il_name));
+			} else {
+				strncpy(il_name, corpse->GetCleanName(), sizeof(il_name) - 1);
+			}
 			uint8_t il_buf[72];
-			FillIllusionBuf(il_buf, corpse->GetCleanName(),
+			FillIllusionBuf(il_buf, il_name,
 			    static_cast<int16_t>(corpse->GetRace()),
 			    static_cast<int16_t>(corpse->GetGender()),
 			    static_cast<int16_t>(-1),
@@ -4792,6 +4849,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.cur_hp    = 0;
 		sp.GuildID   = static_cast<uint16_t>(0xFFFF);
 		sp.guildrank = static_cast<int8_t>(0xFF);
+		sp.unknown163[6] = static_cast<int8_t>(corpse->GetLuclinFace());
 
 		if (IsPlayerRace(corpse->GetRace())) {
 			sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
@@ -4809,7 +4867,13 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
 		}
 
-		strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+		if (corpse->IsPlayerCorpse()) {
+			char cn[64]{};
+			BuildTrilogyCorpseName(corpse->GetName(), cn, sizeof(cn));
+			strncpy(sp.name, cn, sizeof(sp.name) - 1);
+		} else {
+			strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+		}
 
 		if (sent < 5) {
 			LogInfo("[TrilogyZone] Corpse[{}] name='{}' id={} npc={} x={} y={} z={}",
@@ -5043,6 +5107,7 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 	sp.cur_hp    = 0;
 	sp.GuildID   = static_cast<uint16_t>(0xFFFF);
 	sp.guildrank = static_cast<int8_t>(0xFF);
+	sp.unknown163[6] = static_cast<int8_t>(corpse->GetLuclinFace());
 
 	if (IsPlayerRace(corpse->GetRace())) {
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
@@ -5060,7 +5125,13 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 		sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
 	}
 
-	strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+	if (corpse->IsPlayerCorpse()) {
+		char cn[64]{};
+		BuildTrilogyCorpseName(corpse->GetName(), cn, sizeof(cn));
+		strncpy(sp.name, cn, sizeof(sp.name) - 1);
+	} else {
+		strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 	std::vector<uint8_t> raw(p, p + sizeof(ns));
@@ -5077,11 +5148,17 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 
 	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
 
-	// Illusion follow-up for player-race corpses to set face (Spawn_Struct
-	// has no face field; the Illusion is the only delivery mechanism).
+	// Illusion follow-up for player-race corpses to set face.
+	// Spawn name includes trailing digit so each corpse is a unique target.
 	if (IsPlayerRace(corpse->GetRace())) {
+		char il_name[64]{};
+		if (corpse->IsPlayerCorpse()) {
+			BuildTrilogyCorpseName(corpse->GetName(), il_name, sizeof(il_name));
+		} else {
+			strncpy(il_name, corpse->GetCleanName(), sizeof(il_name) - 1);
+		}
 		uint8_t il_buf[72];
-		FillIllusionBuf(il_buf, corpse->GetCleanName(),
+		FillIllusionBuf(il_buf, il_name,
 		    static_cast<int16_t>(corpse->GetRace()),
 		    static_cast<int16_t>(corpse->GetGender()),
 		    static_cast<int16_t>(-1),
