@@ -428,6 +428,10 @@ public:
 	bool IsActiveBardSong(int32 spell_id);
 	bool HasActiveSong() const { return(bardsong != 0); }
 	void ZeroBardPulseVars();
+	// Broadcasts a v29c-compatible bard instrument animation derived from
+	// spells[spell_id].skill. Currently only invoked when the caster is a
+	// Trilogy client (the modern clients animate bard songs locally).
+	void DoBardSongAnim(uint16 spell_id);
 	void DoBardCastingFromItemClick(bool is_casting_bard_song, uint32 cast_time, int32 spell_id, uint16 target_id, EQ::spells::CastingSlot slot, uint32 item_slot,
 		uint32 recast_type , uint32 recast_delay);
 	bool UseBardSpellLogic(uint16 spell_id = 0xffff, int slot = -1);

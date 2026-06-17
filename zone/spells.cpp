@@ -1539,6 +1539,14 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 				}
 				LogSpells("Bard song [{}] started: slot [{}], target id [{}]", bardsong, (int)bardsong_slot, bardsong_target_id);
 				bard_song_mode = true;
+
+				// Play the v29c bard instrument gesture for Trilogy bards.
+				// Modern clients animate bard songs locally from CastingAnim
+				// in their own spell data, so we gate this on Trilogy to
+				// avoid double-animating Titanium+.
+				if (IsClient() && CastToClient()->IsTrilogyClient()) {
+					DoBardSongAnim(spell_id);
+				}
 			}
 		}
 	}
@@ -2958,6 +2966,12 @@ bool Mob::ApplyBardPulse(int32 spell_id, Mob *spell_target, CastingSlot slot) {
 
 	if (!SpellFinished(spell_id, spell_target, slot, spells[spell_id].mana, 0xFFFFFFFF, spells[spell_id].resist_difficulty)) {
 		return false;
+	}
+
+	// Re-emit the bard instrument gesture each pulse so Trilogy bards
+	// keep playing visibly for the song's duration (6s pulse cadence).
+	if (IsClient() && CastToClient()->IsTrilogyClient()) {
+		DoBardSongAnim(spell_id);
 	}
 
 	if (IsClient()) {
