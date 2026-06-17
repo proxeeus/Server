@@ -1027,6 +1027,79 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// guild/dz checks).  HandleClick emits OP_MoveDoor, which is intercepted
 			// by TrilogyClient::HandleMoveDoor and sent back as OP_OpenDoor (0x8e20).
 			if (plen >= 1) {
+				const uint8_t doorid = payload[0];
+				// Diagnostic: log every door click so we can confirm what the v29c
+				// client sends.  Kept after the elevator fix to verify routing.
+				Doors* d = entity_list.FindDoor(doorid);
+				if (d) {
+					LogInfo("[TrilogyClient] OP_ClickDoor zone=[{}] doorid=[{}] "
+					        "name=[{}] opentype=[{}] triggerdoor=[{}] triggertype=[{}] "
+					        "door_param=[{}] invert=[{}] is_open=[{}] plen=[{}]",
+					        zone ? zone->GetShortName() : "?", doorid,
+					        d->GetDoorName(), d->GetOpenType(),
+					        d->GetTriggerDoorID(), d->GetTriggerType(),
+					        d->GetDoorParam(), d->GetInvertState(),
+					        d->IsDoorOpen() ? 1 : 0, plen);
+				} else {
+					LogInfo("[TrilogyClient] OP_ClickDoor zone=[{}] doorid=[{}] "
+					        "(no matching Doors entity) plen=[{}]",
+					        zone ? zone->GetShortName() : "?", doorid, plen);
+				}
+
+				// === Kelethin elevator special case ====================================
+				// FELE2 = elevator button, FAYLEVATOR = elevator platform (gfaydark).
+				// EQEmu's generic HandleClick path is wrong for these:
+				//   (1) it emits OP_MoveDoor for the BUTTON itself, which v29c has no
+				//       animation for — wasted packet that adds noise, and
+				//   (2) it relies on a 5-second close timer to reset m_is_open, but for
+				//       opentype 59 the timer fires silently (no close packet to the
+				//       client; see Doors::Process), so after timeout the server thinks
+				//       the door is closed but the client doesn't — next click sends
+				//       OPEN again and the platform never goes back down.
+				//
+				// EQClassic's working implementation (Zone/Source/client_process.cpp
+				// ProcessOP_ClickDoor, ~L4869) instead sends ONE OP_OpenDoor for the
+				// TRIGGER (platform) only, with a per-click alternating action.  Mirror
+				// that: skip the button, toggle the platform's m_is_open directly (no
+				// timer involved), send a single 0x8E20 with the alternating action.
+				static constexpr uint8 kOpenDoor   = 0x02;
+				static constexpr uint8 kCloseDoor  = 0x03;
+				const bool is_fele_button =
+					d &&
+					d->GetTriggerDoorID() != 0 &&
+					d->GetOpenType() == 59 &&
+					strncasecmp(d->GetDoorName(), "FELE", 4) == 0;
+
+				if (is_fele_button) {
+					Doors* platform = entity_list.FindDoor(d->GetTriggerDoorID());
+					if (platform) {
+						const bool was_open = platform->IsDoorOpen();
+						const uint8 action  = was_open
+							? (platform->GetInvertState() == 0 ? kCloseDoor : kOpenDoor)
+							: (platform->GetInvertState() == 0 ? kOpenDoor  : kCloseDoor);
+						platform->SetOpenState(!was_open);
+
+						// QueueClients(sender, app, ignore_sender=false) reaches every
+						// Client in the zone including the clicker — TrilogyClients see
+						// it via the QueuePacket override that translates OP_MoveDoor
+						// into 0x8E20 (HandleMoveDoor in trilogy_client.cpp).
+						auto* outapp = new EQApplicationPacket(OP_MoveDoor, sizeof(::MoveDoor_Struct));
+						auto* md = reinterpret_cast<::MoveDoor_Struct*>(outapp->pBuffer);
+						md->doorid = static_cast<uint8>(platform->GetDoorID());
+						md->action = action;
+						entity_list.QueueClients(s.trilogy_client, outapp, false);
+						safe_delete(outapp);
+
+						LogInfo("[TrilogyClient] Elevator click: button=[{}] "
+						        "platform=[{}] action=[{:#x}] was_open=[{}] -> now=[{}]",
+						        d->GetDoorID(), platform->GetDoorID(),
+						        action, was_open ? 1 : 0, was_open ? 0 : 1);
+						break;
+					}
+					// Trigger door missing — fall through to generic path as a fallback.
+				}
+				// === end Kelethin elevator special case ================================
+
 				EQApplicationPacket doorpkt(OP_ClickDoor, sizeof(::ClickDoor_Struct));
 				auto* cd = reinterpret_cast<::ClickDoor_Struct*>(doorpkt.pBuffer);
 				memset(cd, 0, sizeof(::ClickDoor_Struct));

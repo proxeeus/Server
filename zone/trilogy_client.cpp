@@ -2723,8 +2723,7 @@ void TrilogyClient::HandleOutgoingReadBook(const EQApplicationPacket* app)
 // SendDoorSpawns — send every door in the current zone to this client as
 // EQClassic OP_SpawnDoor (0x9520) packets, one per door.
 //
-// EQClassic Door_Struct wire layout (44 bytes — the portion the server sends;
-// server-only fields like keys/destination follow but are not transmitted):
+// EQClassic Door_Struct wire layout (46 bytes — full Common struct):
 //   [0]   char[16] name        (model/filename, e.g. "DOOR101")
 //   [16]  float    yPos
 //   [20]  float    xPos
@@ -2736,6 +2735,14 @@ void TrilogyClient::HandleOutgoingReadBook(const EQApplicationPacket* app)
 //   [41]  uint8    opentype    (animation style)
 //   [42]  uint8    doorIsOpen  (spawn state)
 //   [43]  uint8    inverted    (door starts in inverted state)
+//   [44]  int16    parameter   (door_param: lift travel distance / button flag)
+//
+// Why 46 not 44 (previously sent): without parameter, v29c does not register
+// a door as a clickable elevator button (FELE2 in gfaydark) and does not know
+// how far a FAYLEVATOR platform should travel — clients either silently ignore
+// OP_OpenDoor for the platform or animate it indefinitely.  The extra two
+// bytes are read from EQClassic Common Door_Struct (`int16 parameter` at
+// /*0040*/) which is the layout v29c expects (eq_packet_structs.h:1778).
 // ============================================================
 
 void TrilogyClient::SendDoorSpawns()
@@ -2752,11 +2759,24 @@ void TrilogyClient::SendDoorSpawns()
 
 		const glm::vec4& pos = door->GetPosition();
 		const int invert = door->GetInvertState();
+		const char* name = door->GetDoorName();
 
-		uint8_t buf[44];
+		// Kelethin elevator parts must spawn at rest regardless of any stale
+		// server-side m_is_open from prior clicks — a previous test (memory:
+		// "Elevator triggered itself on zone-in") showed a non-zero
+		// doorIsOpen/inverted combined with a non-zero parameter caused the
+		// platform to start moving the moment the player loaded in.  Only
+		// elevators get this override; regular doors keep their normal
+		// open-at-spawn behavior so traps and pre-opened doors still render
+		// correctly.
+		const bool is_elevator =
+			strncasecmp(name, "FELE",       4)  == 0 ||
+			strncasecmp(name, "FAYLEVATOR", 10) == 0;
+
+		uint8_t buf[46];
 		memset(buf, 0, sizeof(buf));
 
-		strncpy(reinterpret_cast<char*>(buf), door->GetDoorName(), 15);
+		strncpy(reinterpret_cast<char*>(buf), name, 15);
 		buf[15] = '\0';
 		*reinterpret_cast<float*>(buf + 16) = pos.y;
 		*reinterpret_cast<float*>(buf + 20) = pos.x;
@@ -2766,11 +2786,22 @@ void TrilogyClient::SendDoorSpawns()
 		// buf+36 padding stays 0
 		buf[40] = static_cast<uint8_t>(door->GetDoorID());
 		buf[41] = static_cast<uint8_t>(door->GetOpenType());
-		// Mirror the Titanium state_at_spawn formula: an inverted door reports the
-		// negated open state at spawn so its rest position renders correctly.
-		bool open_at_spawn = invert ? !door->IsDoorOpen() : door->IsDoorOpen();
-		buf[42] = open_at_spawn ? 1 : 0;
-		buf[43] = invert ? 1 : 0;
+		if (is_elevator) {
+			buf[42] = 0;
+			buf[43] = 0;
+		} else {
+			// Mirror the Titanium state_at_spawn formula: an inverted door reports
+			// the negated open state at spawn so its rest position renders correctly.
+			bool open_at_spawn = invert ? !door->IsDoorOpen() : door->IsDoorOpen();
+			buf[42] = open_at_spawn ? 1 : 0;
+			buf[43] = invert ? 1 : 0;
+		}
+		// int16 parameter at offset 44 — drives v29c's elevator-button detection
+		// (FELE2 has door_param=1) and the FAYLEVATOR platform travel distance
+		// (door_param=68/98/69 in gfaydark).  For non-elevator doors door_param
+		// is typically 0 (no behavior change).
+		*reinterpret_cast<int16_t*>(buf + 44) =
+			static_cast<int16_t>(door->GetDoorParam());
 
 		if (m_is_zoning) {
 			if (m_deferred_spawns.size() < kMaxDeferredSpawns)
@@ -2782,7 +2813,7 @@ void TrilogyClient::SendDoorSpawns()
 		++sent;
 	}
 
-	LogInfo("[TrilogyClient] SendDoorSpawns: {} door(s) {}", sent,
+	LogInfo("[TrilogyClient] SendDoorSpawns: {} door(s) {} (46-byte format)", sent,
 	        m_is_zoning ? "deferred" : "sent");
 }
 
