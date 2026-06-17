@@ -1074,15 +1074,51 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					Doors* platform = entity_list.FindDoor(d->GetTriggerDoorID());
 					if (platform) {
 						const bool was_open = platform->IsDoorOpen();
-						const uint8 action  = was_open
-							? (platform->GetInvertState() == 0 ? kCloseDoor : kOpenDoor)
-							: (platform->GetInvertState() == 0 ? kOpenDoor  : kCloseDoor);
+						// SendDoorSpawns forces elevators to spawn with
+						// inverted=0/doorIsOpen=0 on the client (see the
+						// is_elevator guard there), so the v29c client
+						// tracks the platform as a non-inverted door.
+						// Mirror that here: ignore the DB invert_state
+						// and toggle OPEN/CLOSE straight off was_open.
+						// With the DB invert dance, click 1 would send
+						// CLOSE to a client that already thinks the
+						// platform is closed — a no-op, so the platform
+						// wouldn't move until click 2.  Plain toggle keeps
+						// both sides in sync from the first click on.
+						const uint8 action = was_open ? kCloseDoor : kOpenDoor;
 						platform->SetOpenState(!was_open);
 
-						// QueueClients(sender, app, ignore_sender=false) reaches every
-						// Client in the zone including the clicker — TrilogyClients see
-						// it via the QueuePacket override that translates OP_MoveDoor
-						// into 0x8E20 (HandleMoveDoor in trilogy_client.cpp).
+						// (1) Drive the button's own "depress" animation.  v29c only
+						// animates a door when it receives OP_MoveDoor (0x8E20) AND
+						// the action represents a state change from what the client
+						// tracks locally.  If we always send OPEN, the first click
+						// animates (CLOSED→OPEN) but every subsequent click is a
+						// no-op because the client thinks the button is already
+						// OPEN — door_param=1 only auto-pops it visually, the
+						// client's tracked state still says OPEN.
+						//
+						// Fix: alternate the button's action in lock-step with the
+						// platform — OPEN when sending the platform out, CLOSE
+						// when calling it back.  The client sees a real state
+						// toggle on every click and re-animates each time,
+						// giving press-feedback on every interaction.  Mirror
+						// the same state on the server-side Doors entity so
+						// EQEmu's view stays in sync with what we told the client.
+						const uint8 btn_action = d->IsDoorOpen() ? kCloseDoor : kOpenDoor;
+						d->SetOpenState(!d->IsDoorOpen());
+
+						auto* btn_app = new EQApplicationPacket(OP_MoveDoor, sizeof(::MoveDoor_Struct));
+						auto* btn_md  = reinterpret_cast<::MoveDoor_Struct*>(btn_app->pBuffer);
+						btn_md->doorid = static_cast<uint8>(d->GetDoorID());
+						btn_md->action = btn_action;
+						entity_list.QueueClients(s.trilogy_client, btn_app, false);
+						safe_delete(btn_app);
+
+						// (2) Drive the platform.  QueueClients(sender, app,
+						// ignore_sender=false) reaches every Client in the zone
+						// including the clicker — TrilogyClients see it via the
+						// QueuePacket override that translates OP_MoveDoor into
+						// 0x8E20 (HandleMoveDoor in trilogy_client.cpp).
 						auto* outapp = new EQApplicationPacket(OP_MoveDoor, sizeof(::MoveDoor_Struct));
 						auto* md = reinterpret_cast<::MoveDoor_Struct*>(outapp->pBuffer);
 						md->doorid = static_cast<uint8>(platform->GetDoorID());
@@ -1091,9 +1127,12 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 						safe_delete(outapp);
 
 						LogInfo("[TrilogyClient] Elevator click: button=[{}] "
-						        "platform=[{}] action=[{:#x}] was_open=[{}] -> now=[{}]",
-						        d->GetDoorID(), platform->GetDoorID(),
-						        action, was_open ? 1 : 0, was_open ? 0 : 1);
+						        "btn_action=[{:#x}] btn_now_open=[{}] "
+						        "platform=[{}] platform_action=[{:#x}] "
+						        "was_open=[{}] -> now=[{}]",
+						        d->GetDoorID(), btn_action, d->IsDoorOpen() ? 1 : 0,
+						        platform->GetDoorID(), action,
+						        was_open ? 1 : 0, was_open ? 0 : 1);
 						break;
 					}
 					// Trigger door missing — fall through to generic path as a fallback.
