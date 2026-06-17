@@ -181,3 +181,7 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
   are always `#pragma pack(1)`.
 - When changing wire structs, keep them byte-exact against the EQClassic reference and re-check any
   `static_assert` on struct size — a size change can break stream identification.
+
+
+## General tips
+- Write Debug/Info logs going to zone/world console when possible, especially when debugging or investigating something.
