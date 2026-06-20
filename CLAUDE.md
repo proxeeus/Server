@@ -162,7 +162,7 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
   server, the authoritative reference for opcodes, struct layouts, channel numbers, and the DES
   login key. Key files: `Common/Include/eq_opcodes.h`, `eq_packet_structs.h`, `PlayerProfile.h`,
   `LS/Login/login_structs.h`, `LS/Login/EQCrypto.*`.
-- **`EQMacEmuTrilogy/`** — another Trilogy-era reference implementation.
+- **`EQMacEmuTrilogy/`** — another Trilogy-era reference implementation. This should be a fallback source should anything else fails. EQClassic is the default authoritative source.
 - **`trilogy_plan.md`** (repo root) — original implementation plan: struct field maps, opcode
   table, protocol-difference table, risk register. Historical but still an accurate struct/opcode
   reference.
@@ -184,4 +184,7 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
 
 
 ## General tips
-- Write Debug/Info logs going to zone/world console when possible, especially when debugging or investigating something.
+- Write Debug/Info logs going to zone/world console when possible via LogInfo, especially when debugging or investigating something.
+- NEVER, EVER assume something cannot be done due to a limitation from the Trilogy client.
+- When missing "context" for Trilogy client implementations (packets contents, hex values etc), add LogInfo logging exactly the data and cross-reference
+it with EQClassic source
