@@ -906,18 +906,25 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	Mob* mob = entity_list.GetMob(spawn_id);
 	if (!mob) return;
 
-	// Players and Playerbots are sent via 0x6121 (ZN_OP_ZoneSpawns) so the
-	// Trilogy client treats them as zone-permanent and never stales them out.
-	// Regular NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they
+	// Players, Bots, and Playerbots are sent via 0x6121 (ZN_OP_ZoneSpawns) so
+	// the Trilogy client treats them as zone-permanent and never stales them
+	// out.  Regular NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they
 	// appear in the A120 heartbeat whenever they move.
+	//
+	// Bots (the Bot subsystem — distinct from Playerbots) must reach the
+	// client as NPC=0 (player nameplate) so Trilogy players can target them
+	// for /invite and the BotAI takes over as a real group member; otherwise
+	// v29c renders them with the red NPC nameplate and refuses group invites.
 	bool is_playerbot = mob->IsNPC() &&
 	                    mob->CastToNPC()->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
+	bool is_bot       = mob->IsBot();
 
-	if (mob->IsClient() || is_playerbot) {
-		// Player/playerbot spawns require multi-packet sequences (ZoneSpawns bulk +
-		// illusion + WearChange) that cannot be trivially buffered as a single wire
-		// packet.  During zone transition, skip them; the client will see position
-		// updates for any players/bots who are already in the zone via heartbeat.
+	if (mob->IsClient() || is_playerbot || is_bot) {
+		// Player/playerbot/bot spawns require multi-packet sequences
+		// (ZoneSpawns bulk + illusion + WearChange) that cannot be trivially
+		// buffered as a single wire packet.  During zone transition, skip
+		// them; the client will see position updates for any of them already
+		// in the zone via heartbeat.
 		if (!m_is_zoning) {
 			if (mob->IsClient())
 				m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());

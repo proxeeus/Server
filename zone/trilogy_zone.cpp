@@ -24,6 +24,7 @@
 #include "zonedb.h"
 #include "zone.h"
 #include "npc.h"
+#include "bot.h"
 #include "corpse.h"
 #include "../common/crc32.h"
 #include "../common/compression.h"
@@ -2826,6 +2827,21 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 				        static_cast<uint32_t>(sizeof(wc)));
 			}
 		}
+
+		// Bots: same Illusion fixup for face data.  Bots are NPC=0 (player
+		// nameplate) and render the helm through equipment[0] just like
+		// Playerbots, so no follow-up WearChange is needed.
+		for (Bot* bot : entity_list.GetBotList()) {
+			if (!bot || !IsPlayerRace(bot->GetRace())) continue;
+			uint8_t il_buf[72];
+			FillIllusionBuf(il_buf, bot->GetCleanName(),
+			    static_cast<int16_t>(bot->GetRace()),
+			    static_cast<int16_t>(bot->GetGender()),
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
+			    static_cast<int16_t>(bot->GetLuclinFace()));
+			SendApp(addr, port, s, 0x9120, il_buf, 72);
+		}
 	}
 
 	// Illusion packets for player-race corpses — sets the correct face.
@@ -5470,6 +5486,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 	std::vector<uint8_t> raw;
 	raw.reserve((npc_map.size() + client_map.size() + corpse_map.size()) * sizeof(Trilogy::structs::NewSpawn_Struct));
 
+	const auto& bot_list   = entity_list.GetBotList();
+
 	uint32_t sent = 0;
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
@@ -5571,6 +5589,63 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			        npc->GetSize(), sp.x_pos, sp.y_pos, sp.z_pos,
 			        sp.body_type, sp.class_, sp.level);
 		}
+
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
+		raw.insert(raw.end(), p, p + sizeof(ns));
+		++sent;
+	}
+
+	// Include Bots (the Bot subsystem — owner-summoned PC-like companions) so
+	// that Trilogy players see them as group-eligible PCs (NPC=0, blue
+	// nameplate).  Bots live in entity_list.bot_list, NOT npc_map, so the NPC
+	// loop above skipped them entirely.
+	for (Bot* bot : bot_list) {
+		if (!bot) continue;
+
+		Trilogy::structs::NewSpawn_Struct ns{};
+		memset(&ns, 0, sizeof(ns));
+		Trilogy::structs::Spawn_Struct& sp = ns.spawn;
+
+		sp.size      = bot->GetSize();
+		if (sp.size <= 0.0f) sp.size = 6.0f;
+		sp.walkspeed = 0.7f;
+		sp.runspeed  = 1.4f;
+		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(bot->GetHeading() / 2.0f));
+		sp.y_pos     = static_cast<int16_t>(bot->GetY());
+		sp.x_pos     = static_cast<int16_t>(bot->GetX());
+		sp.z_pos     = static_cast<int16_t>(bot->GetZ() * 10.0f);
+		sp.spawn_id  = static_cast<int16_t>(bot->GetID());
+		sp.body_type = static_cast<int16_t>(bot->GetBodyType());
+		sp.cur_hp    = static_cast<int16_t>(bot->GetHPRatio());
+		sp.GuildID   = static_cast<uint16_t>(bot->GuildID());
+		sp.race      = static_cast<int8_t>(bot->GetRace());
+		sp.NPC       = 0; // player nameplate so /invite works on the client
+		sp.class_    = static_cast<int8_t>(bot->GetClass());
+		sp.gender    = static_cast<int8_t>(bot->GetGender());
+		sp.level     = static_cast<int8_t>(bot->GetLevel());
+		sp.anim_type         = 0x64; // standing
+		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC equipment mode
+		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
+		sp.guildrank         = bot->IsInAGuild()
+		                           ? static_cast<int8_t>(bot->GuildRank())
+		                           : static_cast<int8_t>(0xFF);
+		sp.light = static_cast<int8_t>(bot->GetEquipmentLightType());
+		strncpy(sp.name,    bot->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.Surname, bot->GetLastName(),  sizeof(sp.Surname) - 1);
+		// Face / hair — unknown163[0..6] mirrors EQClassic offsets 207–213
+		sp.unknown163[0] = static_cast<int8_t>(bot->GetHairColor());
+		sp.unknown163[1] = static_cast<int8_t>(bot->GetBeardColor());
+		sp.unknown163[2] = static_cast<int8_t>(bot->GetEyeColor1());
+		sp.unknown163[3] = static_cast<int8_t>(bot->GetEyeColor2());
+		sp.unknown163[4] = static_cast<int8_t>(bot->GetHairStyle());
+		sp.unknown163[6] = static_cast<int8_t>(bot->GetLuclinFace());
+		// Equipment textures and armor tints
+		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
+			sp.equipment[mi]   = static_cast<int8_t>(bot->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(bot->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		}
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponSecondary));
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -6359,6 +6434,41 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			// delta_x/delta_y left at 0 — see NPC block above.
 		}
 		// else: anim_type=0, delta=0 — client confirms position without moving
+
+		if (++n == MAX_UPDATES_PER_PKT)
+			flush_packet();
+	}
+
+	// Bots: same heartbeat pattern as players.  Bots live in entity_list.bot_list
+	// (not npc_map and not client_map), so the loops above never see them.
+	// Without this loop, Bot positions freeze at zone-in and the v29c staleness
+	// timer eventually drops them entirely from the client's render.
+	for (Bot* bot : entity_list.GetBotList()) {
+		if (!bot) continue;
+
+		if (!bot->IsMoving()) {
+			if ((now_ms / 100) % 5 != 0) continue;
+		}
+
+		float dx = bot->GetX() - s.pos_x;
+		float dy = bot->GetY() - s.pos_y;
+		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
+
+		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
+		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
+		memset(upd, 0, sizeof(*upd));
+
+		upd->spawn_id = static_cast<int16_t>(bot->GetID());
+		upd->heading  = static_cast<int8_t>(static_cast<uint8_t>(bot->GetHeading() / 2.0f));
+		upd->y_pos    = static_cast<int16_t>(bot->GetY());
+		upd->x_pos    = static_cast<int16_t>(bot->GetX());
+		upd->z_pos    = static_cast<int16_t>(bot->GetZ() * 10.0f);
+
+		if (bot->IsMoving()) {
+			float float_sp = static_cast<float>(bot->GetRunspeed()) / 40.0f;
+			int   anim     = static_cast<int>(float_sp * 7.0f);
+			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+		}
 
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
