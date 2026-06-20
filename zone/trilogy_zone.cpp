@@ -4929,6 +4929,94 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 
 	const int32_t from_slot = mc->from_slot;
 	const int32_t to_slot   = mc->to_slot;
+
+	// Diagnostic: log EVERY incoming MoveCoin so silent early-returns are
+	// still visible in the log when we're working out v29c behaviour.
+	LogInfo("[TrilogyZone] MoveCoin rx char={} from={} to={} ct1={} ct2={} amount={}",
+	        s.char_name, from_slot, to_slot,
+	        static_cast<int>(mc->cointype1), static_cast<int>(mc->cointype2),
+	        static_cast<int>(mc->amount));
+
+	// ── PC trade coin deposit / withdraw (trade slot = 3) ─────────────────
+	// v29c sends OP_MoveCoin with to_slot==3 when the player drops coin into
+	// the trade window and from_slot==3 when they pull it back out.  The
+	// carried↔bank logic below doesn't know about the trade window — it
+	// either silently early-returns (cursor↔trade) or vaporises the coin
+	// (carried→trade: PP debited, never tracked).  Intercept here so the
+	// coin lands in pc_trade_offer_* and the partner is notified via
+	// OP_TradeCoins so their trade window paints the amount.
+	if (s.pc_trade_active && (from_slot == 3 || to_slot == 3) &&
+	    mc->cointype1 <= 3 && mc->amount > 0) {
+		const uint32_t denom  = mc->cointype1; // source denomination
+		const uint32_t amount = static_cast<uint32_t>(mc->amount);
+		auto& pp = s.trilogy_client->GetPP();
+
+		auto add_offer = [&](int dir) {
+			auto& f = (denom == 0) ? s.pc_trade_offer_cp :
+			          (denom == 1) ? s.pc_trade_offer_sp :
+			          (denom == 2) ? s.pc_trade_offer_gp :
+			                         s.pc_trade_offer_pp;
+			if (dir > 0) f += amount;
+			else         f  = (f >= amount) ? f - amount : 0;
+		};
+		auto adjust_pp = [&](int dir) {
+			auto& f = (denom == 0) ? pp.copper :
+			          (denom == 1) ? pp.silver :
+			          (denom == 2) ? pp.gold   :
+			                         pp.platinum;
+			if (dir > 0) f += amount;
+			else         f  = (f > amount) ? f - amount : 0;
+		};
+
+		if (to_slot == 3) {
+			// Depositing into trade window.
+			add_offer(+1);
+			// Source = carried (1) → debit PP now.
+			// Source = cursor  (0) → PP was already debited by the prior
+			//                        MoveCoin(carried→cursor) pickup, no change.
+			if (from_slot == 1) adjust_pp(-1);
+
+			// Notify partner so their window paints our offer.
+			Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+			if (partner && partner->trilogy_client) {
+				uint8_t out[22];
+				std::memset(out, 0, sizeof(out));
+				const uint32_t partner_id =
+				    static_cast<uint32_t>(partner->trilogy_client->GetID());
+				std::memcpy(out + 0, &partner_id, 4);
+				out[4] = static_cast<uint8_t>(denom);
+				const uint16_t magic = 0x4fD2;
+				std::memcpy(out + 5, &magic, 2);
+				std::memcpy(out + 8, &amount, 4);
+				SendApp(partner->source_addr, partner->source_port, *partner,
+				        ZN_OP_TradeCoins, out, static_cast<uint32_t>(sizeof(out)));
+			}
+
+			LogInfo("[TrilogyZone] PCTrade coin deposit char={} denom={} amount={} from={} "
+			        "(offer cp={} sp={} gp={} pp={})",
+			        s.char_name, denom, amount, from_slot,
+			        s.pc_trade_offer_cp, s.pc_trade_offer_sp,
+			        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+		} else { // from_slot == 3 — withdrawing from trade window
+			add_offer(-1);
+			// Dest = carried (1) → credit PP now.
+			// Dest = cursor  (0) → coin sits on cursor visually; no PP change.
+			if (to_slot == 1) adjust_pp(+1);
+
+			LogInfo("[TrilogyZone] PCTrade coin withdraw char={} denom={} amount={} to={} "
+			        "(offer cp={} sp={} gp={} pp={})",
+			        s.char_name, denom, amount, to_slot,
+			        s.pc_trade_offer_cp, s.pc_trade_offer_sp,
+			        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+		}
+
+		s.trilogy_client->Save();
+		s.last_copper = pp.copper; s.last_silver = pp.silver;
+		s.last_gold   = pp.gold;   s.last_platinum = pp.platinum;
+		s.money_synced = true;
+		return;
+	}
+
 	// Only carried(1) <-> bank(2) transfers persist; cursor(0)/trade(3)-only moves
 	// are display/transient and handled elsewhere (trade) or ignored.
 	if (from_slot != 1 && from_slot != 2 && to_slot != 1 && to_slot != 2)
