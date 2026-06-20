@@ -3249,9 +3249,12 @@ static inline int8_t clamp_i8_tc(int32_t v) {
 	return static_cast<int8_t>(v < -128 ? -128 : (v > 127 ? 127 : v));
 }
 
-static bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
-                                     Trilogy::structs::ClassicItem_Struct& ci,
-                                     int16_t equip_slot)
+// Non-static: trilogy_zone.cpp's PC-trade stage notifier needs this same
+// serialiser to build a 292-byte ClassicItem_Struct for OP_TradeItemPacket
+// (0xdf20).  Declared in trilogy_zone.cpp via a local extern.
+bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
+                              Trilogy::structs::ClassicItem_Struct& ci,
+                              int16_t equip_slot)
 {
 	if (!inst) return false;
 	const EQ::ItemData* it = inst->GetItem();

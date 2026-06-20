@@ -1190,6 +1190,11 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleConnectedSpawnAppearance(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
+		// 0xe620 is also sent by the receiving client to ACCEPT a PC-trade request
+		// (NPC trades echo it from server→client; the inbound direction here is the
+		// recipient agreeing to open their window — relayed to the requester).
+		else if (opcode == ZN_OP_TradeAccept && s.trilogy_client)
+			HandleTradeAccepted(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeCoins && s.trilogy_client)
 			HandleTradeCoins(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClickGive && s.trilogy_client)
@@ -3801,8 +3806,10 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 }
 
 // ============================================================
-// NPC trade window — open / stage / give / cancel.
+// Trade window — NPC and PC-to-PC.
 //
+// NPC trade
+// ---------
 // The EQClassic client opens an NPC trade by sending OP_TradeRequest (0xd120,
 // Trade_Window_Struct {int32 fromid; int32 toid;}); the server echoes
 // OP_TradeAccepted (0xe620) with the ids swapped to pop the window open.  The
@@ -3810,19 +3817,95 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // HandleTradeMoveItem) and may drag coins in (OP_TradeCoins 0xe420).  Clicking
 // "Give" sends OP_Click_Give (0xda20); cancelling sends OP_CancelTrade (0xdb20).
 //
-// We do NOT route through Client::FinishTrade — the Trilogy carried inventory is
+// We do NOT route through Client::FinishTrade — Trilogy carried inventory is
 // persisted DB-direct and m_inv is not kept in lock-step with client moves.
-// Instead, items dropped into the window are only RECORDED on the session (the
-// inventory DB row is left in place) so an abandoned trade can never lose items.
-// On Give the rows are deleted and we fire EVENT_TRADE ourselves — mirroring
-// FinishTrade's quest-NPC path: handed items are removed from the player and the
-// quest script returns anything it does not consume via quest::summonitem /
-// plugin::return_items.  For a non-quest NPC (no EVENT_TRADE sub) everything is
-// returned to the player's cursor — classic "I have no need for this" behaviour.
-// Returned items reach the client through the same cursor-delivery path loot
-// uses (PushItemOnCursor → OP_ItemPacket → TrilogyClient::HandleItemPacket →
-// OP_SummonedItem).
+// Items dropped into the window are only RECORDED on the session (the inventory
+// DB row is left in place) so an abandoned trade can never lose items.  On Give
+// the rows are deleted and EVENT_TRADE fires (quest NPCs only); non-quest NPCs
+// do nothing and the client returns items locally.
+//
+// PC-to-PC trade
+// --------------
+// Dropping a droppable item on another player (or right-clicking) also fires
+// OP_TradeRequest (0xd120).  When the target is another TrilogyClient the
+// request is FORWARDED to the partner's session (no echo) — the partner's
+// client opens its own window and responds with OP_TradeAccepted (0xe620),
+// which is then relayed back to the requester to open their window.
+//
+// Each player stages independently into wire slots 3000-3007 (and bag contents
+// inline).  Each stage event triggers an OP_ItemToTrade / OP_TradeItemPacket
+// (0xdf20) to the partner showing the item on their side of the window.  Each
+// coin event triggers OP_TradeCoins (0xe420) to the partner.
+//
+// The DB is untouched until BOTH players click Give.  On the second Give the
+// server runs a precheck (lore conflicts both ways + free destination slots on
+// each side) and either commits the swap atomically (DELETE+INSERT per item,
+// per bag content; AddMoneyToPP both ways) or aborts both sides with chat
+// messages and leaves the inventory unchanged.  Cancel/disconnect mid-trade
+// refunds staged coin via AddMoneyToPP (PP was debited at stage time by
+// HandleMoveCoin's carried→trade path).
 // ============================================================
+
+// Look up another Trilogy session in this zone by its wire entity id.  Each
+// TrilogyClient registers itself in entity_list under its player_spawn_id which
+// is also stored on the session, so a linear scan is fine here (handful of
+// players per zone).  Returns nullptr if no Trilogy session matches.
+TrilogyZoneServer::Session* TrilogyZoneServer::FindSessionByEntityId(uint16_t entity_id)
+{
+	for (auto& kv : m_sessions) {
+		Session& s = kv.second;
+		if (!s.trilogy_client) continue;
+		if (static_cast<uint16_t>(s.trilogy_client->GetID()) == entity_id)
+			return &s;
+		if (s.player_spawn_id == entity_id)
+			return &s;
+	}
+	return nullptr;
+}
+
+// Wire ↔ DB slot mapping for the trade handlers (mirrors HandleMoveItem;
+// shared by NPC + PC paths).  Wire slot 0 = cursor (DB 33 by default, or the
+// session's tracked cursor_from_db after a two-step unequip pickup).
+int TrilogyZoneServer::TradeWireToDb(const Session& s, uint32_t w)
+{
+	if (w == 0)               return (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
+	if (w >= 1  && w <= 20)   return static_cast<int>(w);
+	if (w >= 21 && w <= 29)   return static_cast<int>(w) + 1;
+	if (w >= 250 && w <= 339) return static_cast<int>(w) + 1;
+	return -1;
+}
+
+// DB content-slot base for the 10 contents of a bag at the given top slot,
+// or -1 if that slot can't hold a container.  Matches the inline lambda in
+// HandleMoveItem (general 23-30 → 251 + (slot-23)*10).
+int TrilogyZoneServer::TradeContBaseFor(int db_slot)
+{
+	if (db_slot >= 23   && db_slot <= 30)   return 251  + (db_slot - 23)   * 10;
+	if (db_slot >= 2000 && db_slot <= 2007) return 2031 + (db_slot - 2000) * 10;
+	return -1;
+}
+
+// Defined non-static in trilogy_client.cpp; reused here to build the same
+// 292-byte ClassicItem_Struct for OP_TradeItemPacket (0xdf20) notifications.
+extern bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
+                                     Trilogy::structs::ClassicItem_Struct& ci,
+                                     int16_t equip_slot);
+
+// Deliver a freshly-traded item into a recipient TrilogyClient's inventory
+// display mid-session.  Uses ItemPacketTrade so HandleItemPacket routes to
+// OP_ItemTradeIn (0x3120) for items / bag contents and OP_CPlayerCont (0x6621)
+// for top-level bag delivery (mirrors merchant buy + loot delivery paths).
+static void DeliverTradedItemToTrilogyClient(TrilogyClient* recipient,
+                                             int16_t        dest_db_slot,
+                                             uint32_t       item_id,
+                                             int16_t        charges)
+{
+	if (!recipient) return;
+	EQ::ItemInstance* inst = database.CreateItem(item_id, charges);
+	if (!inst) return;
+	recipient->SendItemPacket(dest_db_slot, inst, ItemPacketTrade);
+	safe_delete(inst);
+}
 
 void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Session& s,
                                            const uint8_t* payload, uint32_t plen)
@@ -3839,46 +3922,115 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 	                        ? static_cast<uint16_t>(id_b)
 	                        : static_cast<uint16_t>(id_a);
 
-	Mob* other = entity_list.GetMob(other_id);
-	if (!other || !other->IsNPC()) {
-		// Player-to-player trading is out of scope; ignore quietly.
+	if (other_id == self_id) {
+		// Can't trade with yourself — ignore.
 		return;
 	}
 
-	// Clear any leftover staged state from a previous (aborted) trade.  Nothing was
-	// removed from the DB at stage time, so this is just bookkeeping.
-	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
-	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
-	s.trade_npc_id = other_id;
+	Mob* other = entity_list.GetMob(other_id);
+	if (!other) return;
 
-	// Echo OP_TradeAccepted with the ids swapped so the client opens its window.
-	uint8_t resp[8] = {};
-	*reinterpret_cast<uint32_t*>(resp)     = id_b; // fromid = original toid
-	*reinterpret_cast<uint32_t*>(resp + 4) = id_a; // toid   = original fromid
-	SendApp(addr, port, s, ZN_OP_TradeAccept, resp, 8);
+	// ── NPC trade ────────────────────────────────────────────────────────────
+	if (other->IsNPC()) {
+		// Clear any leftover staged state from a previous (aborted) trade.
+		for (auto& st : s.trade_items) st = Session::TradeStageItem{};
+		s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
+		s.trade_npc_id = other_id;
 
-	LogInfo("[TrilogyZone] Trade opened: {} <-> NPC entity {}", s.char_name, other_id);
+		// Echo OP_TradeAccepted with the ids swapped so the client opens its window.
+		uint8_t resp[8] = {};
+		*reinterpret_cast<uint32_t*>(resp)     = id_b;
+		*reinterpret_cast<uint32_t*>(resp + 4) = id_a;
+		SendApp(addr, port, s, ZN_OP_TradeAccept, resp, 8);
+
+		LogInfo("[TrilogyZone] Trade opened: {} <-> NPC entity {}", s.char_name, other_id);
+		return;
+	}
+
+	// ── PC-to-PC trade (Trilogy↔Trilogy only) ────────────────────────────────
+	if (!other->IsClient() || !other->CastToClient()->IsTrilogyClient()) {
+		// Cross-version PC trade is out of scope; ignore quietly.
+		return;
+	}
+
+	// Range gate (same threshold as NPC trade — interaction range).
+	if (DistanceSquared(s.trilogy_client->GetPosition(), other->GetPosition()) > USE_NPC_RANGE2) {
+		s.trilogy_client->Message(Chat::Red, "You are too far away to trade.");
+		return;
+	}
+
+	Session* partner = FindSessionByEntityId(other_id);
+	if (!partner || !partner->trilogy_client) {
+		LogInfo("[TrilogyZone] PCTrade request: no Trilogy session for entity {}", other_id);
+		return;
+	}
+
+	// Both sides busy with anything else?  Reject.
+	if (s.trade_npc_id || partner->trade_npc_id ||
+	    s.pc_trade_active || partner->pc_trade_active) {
+		s.trilogy_client->Message(Chat::Red, "You or your target are already in a trade.");
+		return;
+	}
+
+	// Initialise PC-trade state on BOTH sessions.  We set up the recipient too so
+	// their incoming stage/coin packets find pc_trade_active=true on the relay.
+	auto init_pc_trade = [](Session& sess, uint16_t partner_entity, uint32_t partner_char) {
+		sess.pc_trade_active     = true;
+		sess.pc_trade_partner_id = partner_entity;
+		sess.pc_trade_partner_ch = partner_char;
+		sess.pc_trade_gave       = false;
+		for (auto& it : sess.pc_trade_main) it = Session::PcTradeStageItem{};
+		for (auto& row : sess.pc_trade_bag) for (auto& it : row) it = Session::PcTradeBagSlot{};
+		sess.pc_trade_offer_cp = sess.pc_trade_offer_sp = 0;
+		sess.pc_trade_offer_gp = sess.pc_trade_offer_pp = 0;
+	};
+	init_pc_trade(s,        other_id, partner->char_id);
+	init_pc_trade(*partner, self_id,  s.char_id);
+
+	// Open the trade window on BOTH sides by sending OP_TradeAccepted (0xe620).
+	// v29c only renders the trade window in response to 0xe620 — forwarding the
+	// raw 0xd120 packet is silently discarded by the receiving client (proven by
+	// the 2026-06-21 log where the relayed 0xd120 produced no window).  EQClassic
+	// goes through a 0xd120 echo + recipient-generated 0xe620 ack, but v29c does
+	// not auto-generate the ack, so we open both windows server-side immediately.
+	// Convention from the NPC path: each side receives {fromid=self, toid=other}.
+	auto send_open = [&](Session& sess, uint16_t self_e, uint16_t other_e) {
+		uint8_t resp[8] = {};
+		const uint32_t f = self_e;
+		const uint32_t t = other_e;
+		std::memcpy(resp + 0, &f, 4);
+		std::memcpy(resp + 4, &t, 4);
+		SendApp(sess.source_addr, sess.source_port, sess,
+		        ZN_OP_TradeAccept, resp, 8);
+	};
+	send_open(s,        self_id,  other_id);
+	send_open(*partner, other_id, self_id);
+
+	LogInfo("[TrilogyZone] PCTrade opened: {} (entity {}) <-> {} (entity {})",
+	        s.char_name, self_id, partner->char_name, other_id);
+}
+
+void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*port*/, Session& s,
+                                            const uint8_t* /*payload*/, uint32_t /*plen*/)
+{
+	// Inbound 0xe620 from the v29c client.  In the current PC-trade model the
+	// server opens BOTH windows itself when 0xd120 arrives (HandleTradeRequest),
+	// so any inbound 0xe620 is either an unsolicited echo from the recipient's
+	// client or a duplicate; in either case there is nothing more to do.  Logged
+	// for visibility while we observe v29c's exact behaviour.
+	if (!s.trilogy_client) return;
+	LogInfo("[TrilogyZone] PCTrade accepted (inbound 0xe620 ignored — both windows already opened by HandleTradeRequest) char={}",
+	        s.char_name);
 }
 
 void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire)
 {
 	if (!s.trilogy_client) return;
 
-	// Wire → DB slot for a normal inventory position (mirrors HandleMoveItem;
-	// wire slot 0 = cursor, stored at DB slot 33).
-	auto wire_to_db = [&s](uint32_t w) -> int {
-		if (w == 0)               return (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
-		if (w >= 1  && w <= 20)   return static_cast<int>(w);
-		if (w >= 21 && w <= 29)   return static_cast<int>(w) + 1;
-		if (w >= 250 && w <= 339) return static_cast<int>(w) + 1;
-		return -1;
-	};
-
-	// ── Item moved INTO a trade slot: record it (the DB row is left in place
-	//    until the trade is committed). ──
+	// ── Item moved INTO a trade slot ─────────────────────────────────────────
 	if (to_wire >= 3000 && to_wire <= 3007) {
 		const int idx     = static_cast<int>(to_wire - 3000);
-		const int from_db = wire_to_db(from_wire);
+		const int from_db = TradeWireToDb(s, from_wire);
 		if (from_db < 0) return;
 
 		uint32_t item_id = 0;
@@ -3893,6 +4045,112 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 		}
 		if (item_id == 0) return;
 
+		// ── PC trade staging ────────────────────────────────────────────────
+		if (s.pc_trade_active) {
+			const EQ::ItemData* item = database.GetItem(item_id);
+			if (!item) return;
+
+			// NoDrop enforcement: NoDrop items must never enter a PC trade window.
+			// EQ::ItemData::NoDrop == 0 means "no drop" (same convention as
+			// FinishTrade's `inst->IsDroppable()`/`item->NoDrop` checks).
+			if (item->NoDrop == 0) {
+				s.trilogy_client->Message(Chat::Red,
+				    "You cannot trade that item to another player.");
+				LogInfo("[TrilogyZone] PCTrade NoDrop reject char={} item={}",
+				        s.char_id, item_id);
+				return;
+			}
+
+			Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+			if (!partner || !partner->trilogy_client) {
+				// Partner vanished — silently abort our side; next interaction
+				// will detect and close.
+				return;
+			}
+
+			s.pc_trade_main[idx].item_id      = item_id;
+			s.pc_trade_main[idx].charges      = charges;
+			s.pc_trade_main[idx].from_db_slot = from_db;
+			for (auto& bs : s.pc_trade_bag[idx]) bs = Session::PcTradeBagSlot{};
+			if (from_wire == 0) s.cursor_from_db = -1;
+
+			// Notify partner: main item at trade slot idx.
+			//
+			// OP_ItemToTrade wire layout (EQClassic ItemToTrade_Struct, 302 bytes
+			// with the 292-byte ClassicItem_Struct embedded):
+			//   /*000*/ uint32 playerid;   // RECIPIENT's entity id (the partner)
+			//   /*004*/ int16  to_slot;    // trade-window slot id (0-7 main, 30+10i+j contents)
+			//   /*006*/ int8   unknown;    // 0
+			//   /*007*/ ClassicItem_Struct item;  // 292 B
+			//   /*299*/ int8   pad[3];     // 3 B
+			//
+			// NB: the send_bank_trade lambda elsewhere in this file uses a
+			// 2+2+1+292+5 layout; that path always sends slotid=0 because the
+			// bank position is encoded inside ClassicItem_Struct.equipslot, so
+			// the misalignment of slotid never bit it.  PC trade absolutely
+			// relies on the outer slotid landing in v29c's to_slot field, so
+			// we use the EQClassic layout faithfully.
+			const uint32_t recipient_id =
+			    static_cast<uint32_t>(partner->trilogy_client->GetID());
+
+			auto send_notify = [&](uint16_t slotid, uint32_t iid, int16_t ch) {
+				EQ::ItemInstance* inst = database.CreateItem(iid, ch);
+				if (!inst) return;
+
+				Trilogy::structs::ClassicItem_Struct ci{};
+				const bool ok = BuildClassicItemFromInst(
+				    inst, ci, static_cast<int16_t>(slotid));
+				safe_delete(inst);
+				if (!ok) return;
+
+				uint8_t buf[4 + 2 + 1 + sizeof(Trilogy::structs::ClassicItem_Struct) + 3];
+				std::memset(buf, 0, sizeof(buf));
+				std::memcpy(buf + 0, &recipient_id, 4);
+				const int16_t to_slot = static_cast<int16_t>(slotid);
+				std::memcpy(buf + 4, &to_slot, 2);
+				// buf[6] = 0 (unknown)
+				std::memcpy(buf + 7, &ci, sizeof(ci));
+				// buf[299..301] = 0 (padding)
+				SendApp(partner->source_addr, partner->source_port, *partner,
+				        ZN_OP_TradeItemPacket, buf, static_cast<uint32_t>(sizeof(buf)));
+			};
+
+			send_notify(static_cast<uint16_t>(idx), item_id, charges);
+
+			// Bag-content staging: if the staged item is a bag, also stage its
+			// contents and notify the partner.  Sub-slot wire convention from
+			// EQClassic ProcessOP_MoveItem: trade slot i bag content j →
+			// notify slot 30 + 10*i + j.
+			if (item->ItemClass == EQ::item::ItemClassBag) {
+				const int content_base = TradeContBaseFor(from_db);
+				if (content_base >= 0) {
+					auto cr = database.QueryDatabase(fmt::format(
+					    "SELECT slotid, itemid, charges FROM inventory "
+					    "WHERE charid={} AND slotid BETWEEN {} AND {}",
+					    s.char_id, content_base, content_base + 9));
+					if (cr.Success()) {
+						for (auto row = cr.begin(); row != cr.end(); ++row) {
+							const int sub_db   = Strings::ToInt(row[0]);
+							const uint32_t iid = static_cast<uint32_t>(Strings::ToInt(row[1]));
+							const int16_t  ch  = static_cast<int16_t>(Strings::ToInt(row[2]));
+							const int j = sub_db - content_base;
+							if (j < 0 || j > 9 || iid == 0) continue;
+							s.pc_trade_bag[idx][j].item_id      = iid;
+							s.pc_trade_bag[idx][j].charges      = ch;
+							s.pc_trade_bag[idx][j].from_db_slot = sub_db;
+							send_notify(static_cast<uint16_t>(30 + 10 * idx + j), iid, ch);
+						}
+					}
+				}
+			}
+
+			LogInfo("[TrilogyZone] PCTrade stage char={} -> partner_char={} "
+			        "item={} slot_idx={} (db_slot={})",
+			        s.char_id, s.pc_trade_partner_ch, item_id, idx, from_db);
+			return;
+		}
+
+		// ── NPC trade staging (existing behaviour) ──────────────────────────
 		s.trade_items[idx].item_id      = item_id;
 		s.trade_items[idx].charges      = charges;
 		s.trade_items[idx].from_db_slot = from_db;
@@ -3903,10 +4161,13 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 		return;
 	}
 
-	// ── Item moved OUT of a trade slot: just forget it.  The DB row was never
-	//    touched and the client returns the item to inventory locally. ──
+	// ── Item moved OUT of a trade slot ──────────────────────────────────────
 	if (from_wire >= 3000 && from_wire <= 3007) {
 		const int idx = static_cast<int>(from_wire - 3000);
+		if (s.pc_trade_active) {
+			s.pc_trade_main[idx] = Session::PcTradeStageItem{};
+			for (auto& bs : s.pc_trade_bag[idx]) bs = Session::PcTradeBagSlot{};
+		}
 		s.trade_items[idx] = Session::TradeStageItem{};
 		s.cursor_from_db = -1;
 		return;
@@ -3920,12 +4181,45 @@ void TrilogyZoneServer::HandleTradeCoins(const std::string& addr, int port, Sess
 	if (plen < 12) return;
 
 	// TradeCoin_Struct: int32 trader (0), int8 coin_type (4), int16 (5), int8 (7),
-	// int32 amount (8).  coin_type: 0=copper 1=silver 2=gold 3=platinum.  Each packet
-	// adds that amount to the window; the coins are only debited on a quest Give.
+	// int32 amount (8).  coin_type: 0=copper 1=silver 2=gold 3=platinum.
 	const uint8_t  coin_type = payload[4];
 	const uint32_t amount    = *reinterpret_cast<const uint32_t*>(payload + 8);
 	if (amount == 0) return;
 
+	// ── PC trade: accumulate offer + notify partner ──────────────────────────
+	if (s.pc_trade_active) {
+		switch (coin_type) {
+			case 0: s.pc_trade_offer_cp += amount; break;
+			case 1: s.pc_trade_offer_sp += amount; break;
+			case 2: s.pc_trade_offer_gp += amount; break;
+			case 3: s.pc_trade_offer_pp += amount; break;
+			default: return;
+		}
+
+		Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+		if (partner && partner->trilogy_client) {
+			// Forward TradeCoin_Struct to partner with trader = partner's entity id
+			// (matches EQClassic: server stamps the OTHER player's id and the client
+			// uses it to identify which side of the trade window to update).
+			uint8_t out[22];
+			std::memset(out, 0, sizeof(out));
+			const uint32_t partner_id =
+			    static_cast<uint32_t>(partner->trilogy_client->GetID());
+			std::memcpy(out + 0, &partner_id, 4);
+			out[4] = coin_type;
+			const uint16_t magic = 0x4fD2; // EQClassic sentinel
+			std::memcpy(out + 5, &magic, 2);
+			std::memcpy(out + 8, &amount, 4);
+			SendApp(partner->source_addr, partner->source_port, *partner,
+			        ZN_OP_TradeCoins, out, static_cast<uint32_t>(sizeof(out)));
+		}
+
+		LogInfo("[TrilogyZone] PCTrade coins char={} type={} amount={}",
+		        s.char_name, coin_type, amount);
+		return;
+	}
+
+	// ── NPC trade: existing accumulation ────────────────────────────────────
 	switch (coin_type) {
 		case 0: s.trade_cp += amount; break;
 		case 1: s.trade_sp += amount; break;
@@ -3934,13 +4228,312 @@ void TrilogyZoneServer::HandleTradeCoins(const std::string& addr, int port, Sess
 		default: return;
 	}
 
-	LogInfo("[TrilogyZone] Trade coins char={} type={} amount={}", s.char_name, coin_type, amount);
+	LogInfo("[TrilogyZone] Trade coins char={} type={} amount={}",
+	        s.char_name, coin_type, amount);
+}
+
+// Refund THIS session's offered coins to its PlayerProfile carried money and
+// fire OP_TradeMoneyUpdate via AddMoneyToPP.  Used by abort paths (cancel /
+// disconnect / failed commit precheck).
+void TrilogyZoneServer::PcTradeRefundOfferedCoins(Session& s)
+{
+	if (!s.trilogy_client) return;
+	const uint32_t cp = s.pc_trade_offer_cp;
+	const uint32_t sp = s.pc_trade_offer_sp;
+	const uint32_t gp = s.pc_trade_offer_gp;
+	const uint32_t pp = s.pc_trade_offer_pp;
+	if (cp || sp || gp || pp)
+		s.trilogy_client->AddMoneyToPP(cp, sp, gp, pp, true);
+	s.pc_trade_offer_cp = s.pc_trade_offer_sp = 0;
+	s.pc_trade_offer_gp = s.pc_trade_offer_pp = 0;
+}
+
+void TrilogyZoneServer::PcTradeClearState(Session& s)
+{
+	s.pc_trade_active     = false;
+	s.pc_trade_partner_id = 0;
+	s.pc_trade_partner_ch = 0;
+	s.pc_trade_gave       = false;
+	for (auto& it : s.pc_trade_main) it = Session::PcTradeStageItem{};
+	for (auto& row : s.pc_trade_bag)
+		for (auto& it : row) it = Session::PcTradeBagSlot{};
+	s.pc_trade_offer_cp = s.pc_trade_offer_sp = 0;
+	s.pc_trade_offer_gp = s.pc_trade_offer_pp = 0;
+}
+
+void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
+                                          const char* my_msg, const char* partner_msg)
+{
+	uint8_t z = 0;
+	if (my_msg && *my_msg && s.trilogy_client)
+		s.trilogy_client->Message(Chat::Red, my_msg);
+	PcTradeRefundOfferedCoins(s);
+	SendApp(s.source_addr, s.source_port, s, ZN_OP_CloseTrade, &z, 0);
+	PcTradeClearState(s);
+
+	if (partner && partner->trilogy_client) {
+		if (partner_msg && *partner_msg)
+			partner->trilogy_client->Message(Chat::Red, partner_msg);
+		PcTradeRefundOfferedCoins(*partner);
+		SendApp(partner->source_addr, partner->source_port, *partner,
+		        ZN_OP_CloseTrade, &z, 0);
+		PcTradeClearState(*partner);
+	}
 }
 
 void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Session& s)
 {
 	if (!s.trilogy_client) return;
 
+	// ── PC-to-PC commit path ────────────────────────────────────────────────
+	if (s.pc_trade_active) {
+		s.pc_trade_gave = true;
+
+		Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+		if (!partner || !partner->trilogy_client) {
+			// Partner gone — treat as cancel for us.  Items unchanged in DB.
+			s.trilogy_client->Message(Chat::Red, "Your trade partner is no longer here.");
+			PcTradeRefundOfferedCoins(s);
+			uint8_t z = 0;
+			SendApp(addr, port, s, ZN_OP_CloseTrade, &z, 0);
+			PcTradeClearState(s);
+			return;
+		}
+
+		// Wait for the partner's Give.  Relay our 0xda20 so their window can
+		// show "waiting for accept" if v29c renders that state.
+		if (!partner->pc_trade_gave) {
+			uint8_t empty = 0;
+			SendApp(partner->source_addr, partner->source_port, *partner,
+			        ZN_OP_ClickGive, &empty, 0);
+			LogInfo("[TrilogyZone] PCTrade give (waiting): {} → {}",
+			        s.char_name, partner->char_name);
+			return;
+		}
+
+		// Both Gave — run the precheck.
+		auto count_free_slots = [](uint32 char_id) -> std::vector<int> {
+			// Free general slots 23-30 plus free bag-content slots inside any
+			// equipped containers.  Sorted in delivery order.
+			std::vector<int> free_slots;
+			bool occ[331] = {};
+			int  bagslots[31] = {};
+			auto r = database.QueryDatabase(fmt::format(
+			    "SELECT i.`slotid`, it.`bagslots`, it.`itemclass` FROM `inventory` i "
+			    "LEFT JOIN `items` it ON i.`itemid` = it.`id` "
+			    "WHERE i.`charid`={} AND ((i.`slotid` BETWEEN 23 AND 30) OR (i.`slotid` BETWEEN 251 AND 330))",
+			    char_id));
+			if (r.Success())
+				for (auto row = r.begin(); row != r.end(); ++row) {
+					int sl = Strings::ToInt(row[0]);
+					if (sl >= 0 && sl <= 330) occ[sl] = true;
+					const int itemclass = row[2] ? Strings::ToInt(row[2]) : 0;
+					if (sl >= 23 && sl <= 30 && itemclass == 1 && row[1])
+						bagslots[sl] = Strings::ToInt(row[1]);
+				}
+			for (int sl = 23; sl <= 30; ++sl) if (!occ[sl]) free_slots.push_back(sl);
+			for (int G = 23; G <= 30; ++G) {
+				if (bagslots[G] <= 0) continue;
+				const int base = 251 + (G - 23) * 10;
+				const int n    = bagslots[G] > 10 ? 10 : bagslots[G];
+				for (int j = 0; j < n; ++j)
+					if (base + j <= 330 && !occ[base + j]) free_slots.push_back(base + j);
+			}
+			return free_slots;
+		};
+
+		// Count items each side will receive (skip stale / disappeared slots).
+		auto reconcile = [&](Session& src) -> std::vector<int> {
+			// Returns indices [0..7] of pc_trade_main slots whose DB row still
+			// matches the staged item_id (mid-trade reshuffle guard).
+			std::vector<int> live;
+			for (int i = 0; i < 8; ++i) {
+				const auto& st = src.pc_trade_main[i];
+				if (st.item_id == 0) continue;
+				auto r = database.QueryDatabase(fmt::format(
+				    "SELECT 1 FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
+				    src.char_id, st.from_db_slot, st.item_id));
+				if (r.Success() && r.RowCount() > 0) live.push_back(i);
+			}
+			return live;
+		};
+
+		std::vector<int> a_to_b = reconcile(s);
+		std::vector<int> b_to_a = reconcile(*partner);
+
+		// Lore precheck (both ways) using DB-authoritative override.
+		auto lore_blocked = [](TrilogyClient* receiver, const Session& src,
+		                        const std::vector<int>& live) -> uint32_t {
+			for (int i : live) {
+				const EQ::ItemData* it = database.GetItem(src.pc_trade_main[i].item_id);
+				if (!it) continue;
+				if (receiver->CheckLoreConflict(it)) return it->ID;
+				// Lore inside bag contents too.
+				if (it->ItemClass == EQ::item::ItemClassBag) {
+					for (const auto& bs : src.pc_trade_bag[i]) {
+						if (bs.item_id == 0) continue;
+						const EQ::ItemData* sub = database.GetItem(bs.item_id);
+						if (sub && receiver->CheckLoreConflict(sub)) return sub->ID;
+					}
+				}
+			}
+			return 0;
+		};
+
+		if (uint32_t bad = lore_blocked(partner->trilogy_client, s, a_to_b)) {
+			LogInfo("[TrilogyZone] PCTrade abort: lore conflict on partner side (item {})", bad);
+			PcTradeAbortBoth(s, partner,
+			    "Your trade partner cannot accept that Lore item.",
+			    "You already own a Lore item being offered.");
+			return;
+		}
+		if (uint32_t bad = lore_blocked(s.trilogy_client, *partner, b_to_a)) {
+			LogInfo("[TrilogyZone] PCTrade abort: lore conflict on our side (item {})", bad);
+			PcTradeAbortBoth(s, partner,
+			    "You already own a Lore item being offered.",
+			    "Your trade partner cannot accept that Lore item.");
+			return;
+		}
+
+		// Free-slot precheck.  Each main item needs one top-level destination
+		// slot on the receiver; bag contents follow inside the bag (no top-slot
+		// allocation required).
+		//
+		// A side's outgoing items will VACATE their source slots when executed
+		// before the inbound delivery runs, so the receiver's "effective" free
+		// slot count = current_free + their_own_outgoing_count.  Without this
+		// adjustment a 1-for-1 swap with a full inventory would falsely fail.
+		std::vector<int> s_free       = count_free_slots(s.char_id);
+		std::vector<int> partner_free = count_free_slots(partner->char_id);
+
+		const size_t partner_effective = partner_free.size() + b_to_a.size();
+		const size_t s_effective       = s_free.size()       + a_to_b.size();
+
+		if (a_to_b.size() > partner_effective) {
+			LogInfo("[TrilogyZone] PCTrade abort: partner has no space ({} needed, {} effective free)",
+			        a_to_b.size(), partner_effective);
+			PcTradeAbortBoth(s, partner,
+			    "Your trade partner does not have enough inventory space.",
+			    "You do not have enough inventory space.");
+			return;
+		}
+		if (b_to_a.size() > s_effective) {
+			LogInfo("[TrilogyZone] PCTrade abort: we have no space ({} needed, {} effective free)",
+			        b_to_a.size(), s_effective);
+			PcTradeAbortBoth(s, partner,
+			    "You do not have enough inventory space.",
+			    "Your trade partner does not have enough inventory space.");
+			return;
+		}
+
+		// ── Execute (atomic-ish — DELETE+INSERT per item) ──────────────────
+		// dst_free is re-queried at the start of each direction so that slots
+		// freed by the previous direction's execute (receiver's outgoing items
+		// vacating) are visible.  A bag MUST land in a general-inventory slot
+		// (23-30); other items can use any free slot the count_free_slots
+		// helper returned.
+		auto execute_side = [&](Session& src, Session& dst,
+		                         const std::vector<int>& live) -> bool {
+			std::vector<int> dst_free = count_free_slots(dst.char_id);
+			for (int i : live) {
+				const auto& st = src.pc_trade_main[i];
+				const EQ::ItemData* item = database.GetItem(st.item_id);
+				if (!item) continue;
+
+				int chosen_idx = -1;
+				if (item->ItemClass == EQ::item::ItemClassBag) {
+					for (size_t k = 0; k < dst_free.size(); ++k) {
+						if (dst_free[k] >= 23 && dst_free[k] <= 30) {
+							chosen_idx = static_cast<int>(k);
+							break;
+						}
+					}
+				} else if (!dst_free.empty()) {
+					chosen_idx = 0;
+				}
+				if (chosen_idx < 0) {
+					LogInfo("[TrilogyZone] PCTrade execute: no destination for item {} (bag={}); skipping",
+					        st.item_id,
+					        (item->ItemClass == EQ::item::ItemClassBag) ? 1 : 0);
+					continue;
+				}
+				const int dst_slot = dst_free[chosen_idx];
+				dst_free.erase(dst_free.begin() + chosen_idx);
+
+				database.QueryDatabase(fmt::format(
+				    "DELETE FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
+				    src.char_id, st.from_db_slot, st.item_id));
+
+				database.QueryDatabase(fmt::format(
+				    "INSERT INTO inventory (charid, slotid, itemid, charges) "
+				    "VALUES ({}, {}, {}, {})",
+				    dst.char_id, dst_slot, st.item_id, (int)st.charges));
+
+				DeliverTradedItemToTrilogyClient(dst.trilogy_client,
+				    static_cast<int16_t>(dst_slot), st.item_id, st.charges);
+
+				if (item->ItemClass == EQ::item::ItemClassBag) {
+					const int src_base = TradeContBaseFor(st.from_db_slot);
+					const int dst_base = TradeContBaseFor(dst_slot);
+					if (src_base >= 0 && dst_base >= 0) {
+						for (int j = 0; j < 10; ++j) {
+							const auto& bs = src.pc_trade_bag[i][j];
+							if (bs.item_id == 0) continue;
+							database.QueryDatabase(fmt::format(
+							    "DELETE FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
+							    src.char_id, bs.from_db_slot, bs.item_id));
+							database.QueryDatabase(fmt::format(
+							    "INSERT INTO inventory (charid, slotid, itemid, charges) "
+							    "VALUES ({}, {}, {}, {})",
+							    dst.char_id, dst_base + j, bs.item_id, (int)bs.charges));
+							DeliverTradedItemToTrilogyClient(dst.trilogy_client,
+							    static_cast<int16_t>(dst_base + j), bs.item_id, bs.charges);
+						}
+					}
+				}
+
+				LogInfo("[TrilogyZone] PCTrade commit: char {} -> char {} item {} db {} -> {} (bag={})",
+				        src.char_id, dst.char_id, st.item_id, st.from_db_slot, dst_slot,
+				        (item->ItemClass == EQ::item::ItemClassBag) ? 1 : 0);
+			}
+			return true;
+		};
+
+		execute_side(s,        *partner, a_to_b);
+		execute_side(*partner, s,        b_to_a);
+
+		// Coin exchange: each side receives the OTHER side's offered coins.
+		// PP was already debited at stage time by HandleMoveCoin (carried→trade).
+		auto pay = [](Session& dst, Session& src) {
+			const uint32_t cp = src.pc_trade_offer_cp;
+			const uint32_t sp = src.pc_trade_offer_sp;
+			const uint32_t gp = src.pc_trade_offer_gp;
+			const uint32_t pp = src.pc_trade_offer_pp;
+			if (cp || sp || gp || pp)
+				dst.trilogy_client->AddMoneyToPP(cp, sp, gp, pp, true);
+		};
+		pay(s,        *partner);
+		pay(*partner, s);
+
+		// Persist both sides.
+		s.trilogy_client->Save();
+		partner->trilogy_client->Save();
+
+		// Close windows on both.
+		uint8_t z = 0;
+		SendApp(addr, port, s, ZN_OP_CloseTrade, &z, 0);
+		SendApp(partner->source_addr, partner->source_port, *partner,
+		        ZN_OP_CloseTrade, &z, 0);
+
+		LogInfo("[TrilogyZone] PCTrade complete: {} ↔ {} (a_to_b={} b_to_a={})",
+		        s.char_name, partner->char_name, a_to_b.size(), b_to_a.size());
+
+		PcTradeClearState(s);
+		PcTradeClearState(*partner);
+		return;
+	}
+
+	// ── NPC give path (unchanged) ───────────────────────────────────────────
 	NPC* npc = nullptr;
 	if (s.trade_npc_id) {
 		Mob* m = entity_list.GetMob(s.trade_npc_id);
@@ -3949,13 +4542,7 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 	const bool quest_npc = npc && parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_TRADE);
 
-	// Only a quest NPC actually takes the items.  For a non-quest NPC (or if the NPC
-	// is gone) we do nothing: the inventory DB was never touched, so the client just
-	// returns the items and coins locally — no delivery round-trip, no risk of loss.
 	if (quest_npc) {
-		// Pull the handed items (the 4 NPC trade slots) out of the inventory DB now,
-		// verifying each slot still holds the expected item (guards against a
-		// mid-trade reshuffle).  EVENT_TRADE reads them as item1..item4.
 		std::vector<EQ::ItemInstance*> taken(4, nullptr);
 		for (int i = 0; i < 4; ++i) {
 			auto& st = s.trade_items[i];
@@ -3963,16 +4550,13 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 			auto r = database.QueryDatabase(fmt::format(
 			    "SELECT charges FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
 			    s.char_id, st.from_db_slot, st.item_id));
-			if (!r.Success() || r.RowCount() == 0) continue; // slot reused/emptied — skip
+			if (!r.Success() || r.RowCount() == 0) continue;
 			taken[i] = database.CreateItem(st.item_id, st.charges);
 			database.QueryDatabase(fmt::format(
 			    "DELETE FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
 			    s.char_id, st.from_db_slot, st.item_id));
 		}
 
-		// Debit the staged coins (the client already removed them from its money
-		// display) and expose items + coins to the EVENT_TRADE handler.  The script
-		// returns anything it does not keep via quest::summonitem.
 		const uint64_t copper = (uint64_t)s.trade_cp + (uint64_t)s.trade_sp * 10 +
 		                        (uint64_t)s.trade_gp * 100 + (uint64_t)s.trade_pp * 1000;
 		if (copper) s.trilogy_client->TakeMoneyFromPP(copper, true);
@@ -3998,7 +4582,7 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
 	s.trade_npc_id = 0;
 
-	uint8_t close_dummy = 0; // OP_CloseTrade carries no payload
+	uint8_t close_dummy = 0;
 	SendApp(addr, port, s, ZN_OP_CloseTrade, &close_dummy, 0);
 }
 
@@ -4006,8 +4590,15 @@ void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Ses
 {
 	if (!s.trilogy_client) return;
 
-	// Nothing was removed from the DB at stage time, so just drop the bookkeeping;
-	// the client returns the items and coins to the player locally.
+	// ── PC trade cancel ─────────────────────────────────────────────────────
+	if (s.pc_trade_active) {
+		Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+		PcTradeAbortBoth(s, partner, nullptr, "Your trade partner cancelled the trade.");
+		LogInfo("[TrilogyZone] PCTrade cancelled by {}", s.char_name);
+		return;
+	}
+
+	// ── NPC cancel (existing behaviour) ─────────────────────────────────────
 	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
 	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
 	s.trade_npc_id = 0;

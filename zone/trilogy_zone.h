@@ -213,6 +213,24 @@ private:
 		TradeStageItem trade_items[8] = {};
 		uint32_t       trade_cp = 0, trade_sp = 0, trade_gp = 0, trade_pp = 0;
 
+		// ── PC-to-PC trade window state ──────────────────────────────────────
+		// Mutually exclusive with trade_npc_id.  Tracks the in-progress trade with
+		// another Trilogy client in the same zone.  Items are NOT removed from the
+		// inventory DB at stage time — only at commit (both players clicked Give and
+		// the precheck for lore + free slots passed).  This matches EQClassic
+		// ProcessOP_GiveItem / ProcessOP_TradeAccepted / ProcessOP_Click_Give and the
+		// existing NPC trade pattern, so an abandoned trade cannot lose items.
+		struct PcTradeStageItem { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
+		struct PcTradeBagSlot   { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
+		bool             pc_trade_active     = false;
+		uint16_t         pc_trade_partner_id = 0;   // entity id of the other Trilogy client
+		uint32_t         pc_trade_partner_ch = 0;   // partner char_id (sanity / log)
+		bool             pc_trade_gave       = false;
+		PcTradeStageItem pc_trade_main[8]    = {};         // wire slots 3000-3007
+		PcTradeBagSlot   pc_trade_bag[8][10] = {};         // bag contents per main slot
+		uint32_t         pc_trade_offer_cp = 0, pc_trade_offer_sp = 0;
+		uint32_t         pc_trade_offer_gp = 0, pc_trade_offer_pp = 0;
+
 		// ── Money-display reconciliation ─────────────────────────────────────
 		// The client's coin counter only refreshes from the PlayerProfile at zone-in.
 		// Tick() compares these last-pushed counts to the live PlayerProfile and relays
@@ -262,14 +280,37 @@ private:
 	// side-effects (CalcBonuses, ApplyWeaponsStance, SetAttackTimer,
 	// EVENT_(UN)EQUIP_ITEM). See trilogy_zone.cpp comment block for why.
 	void RefreshWornSlotsAfterMove(Session& s, int from_db, int to_db, bool destroy_path);
-	// NPC trade window handlers
+	// NPC + PC-to-PC trade window handlers.  HandleTradeRequest, HandleTradeCoins,
+	// HandleTradeGive, HandleTradeCancel, and HandleTradeMoveItem each fork
+	// internally on whether the session is in an NPC trade (trade_npc_id set) or
+	// a PC trade (pc_trade_active set) — both states are mutually exclusive.
+	// HandleTradeAccepted is the inbound 0xe620 from a recipient client accepting
+	// a PC trade request, relayed to the originator.
 	void HandleTradeRequest(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);
+	void HandleTradeAccepted(const std::string& addr, int port, Session& s,
+	                         const uint8_t* payload, uint32_t plen);
 	void HandleTradeCoins(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleTradeGive(const std::string& addr, int port, Session& s);
 	void HandleTradeCancel(const std::string& addr, int port, Session& s);
 	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire);
+	// PC-trade internals (split out of the above for readability).
+	void PcTradeAbortBoth(Session& s, Session* partner,
+	                      const char* my_msg, const char* partner_msg);
+	// Refund a session's offered coins to its PP carried + fire OP_TradeMoneyUpdate
+	// via AddMoneyToPP; clears the offer_* counters.
+	static void PcTradeRefundOfferedCoins(Session& s);
+	// Reset every PC-trade field on the session (does NOT refund coins).
+	static void PcTradeClearState(Session& s);
+	// Wire → DB slot (inventory positions only; mirrors HandleMoveItem's lambda).
+	static int  TradeWireToDb(const Session& s, uint32_t w);
+	// DB content-slot base for a bag at the given top slot (general + bank), -1 if
+	// the slot can't hold a container's contents.
+	static int  TradeContBaseFor(int db_slot);
+	// Find the OTHER Trilogy session by entity id (partner's player_spawn_id).
+	// Returns nullptr if no Trilogy session in this zone matches.
+	Session* FindSessionByEntityId(uint16_t entity_id);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
