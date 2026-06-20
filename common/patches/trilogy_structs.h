@@ -1321,16 +1321,20 @@ struct GroupFollow_Struct
 ** Opcode:  OP_GroupCancelInvite = 0x4120
 ** Direction: BOTH (client declines; server echoes to inviter)
 ** Source:  EQClassic Common/Include/eq_packet_structs.h :: GroupInviteDecline_Struct
-** Size:    65 bytes
+**          (uses PC_MAX_NAME_LENGTH = 30, NOT 32)
+** Size:    61 bytes — confirmed by live capture 2026-06-20 (matches v29c wire)
+**
+** Same name-width trap as GroupInvite_Struct (91B) and GroupFollow_Struct (60B):
+** the name fields are [30], NOT [32].  Sending/expecting 65B drops the packet.
 **
 ** action: 1=busy/considering another invite, 2=already grouped, 3=rejected
 */
 struct GroupInviteDecline_Struct
 {
-/*00*/	char	leader[32];		// who invited
-/*32*/	char	leaver[32];		// who's declining
-/*64*/	uint8	action;
-/*65*/
+/*00*/	char	leader[30];		// who invited
+/*30*/	char	leaver[30];		// who's declining
+/*60*/	uint8	action;
+/*61*/
 };
 
 /*

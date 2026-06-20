@@ -2847,7 +2847,7 @@ void TrilogyClient::HandleOutgoingGroupFollow(const EQApplicationPacket* app)
 
 // HandleOutgoingGroupCancelInvite — internal GroupCancel_Struct (129B) or
 // GroupGeneric_Struct (128B) → wire OP_GroupCancelInvite (0x4120)
-// GroupInviteDecline_Struct (65B).
+// GroupInviteDecline_Struct (61B; names are [30] not [32], same trap as Invite/Follow).
 void TrilogyClient::HandleOutgoingGroupCancelInvite(const EQApplicationPacket* app)
 {
 	if (!app) return;
