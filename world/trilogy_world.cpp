@@ -38,6 +38,7 @@
 #include "../common/rulesys.h"
 #include "../common/skill_caps.h"
 #include "../common/skills.h"
+#include "../common/zone_store.h"
 #include "../common/repositories/inventory_repository.h"
 #include "client.h"
 
@@ -1371,8 +1372,17 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 
 		if (!placed) {
 			pp.zone_id = 1;
-			pp.x = 0.0f; pp.y = 0.0f; pp.z = 0.0f; pp.heading = 0.0f;
-			LogInfo("[TrilogyWorld] CharCreate | no start_zones row, defaulting to zone_id=1");
+			auto z = GetZone(pp.zone_id);
+			if (z) {
+				pp.x       = z->safe_x;
+				pp.y       = z->safe_y;
+				pp.z       = z->safe_z;
+				pp.heading = z->safe_heading;
+			} else {
+				pp.x = 0.0f; pp.y = 0.0f; pp.z = 0.0f; pp.heading = 0.0f;
+			}
+			LogInfo("[TrilogyWorld] CharCreate | no start_zones row, defaulting to zone_id=1 safe point ({:.2f},{:.2f},{:.2f})",
+			        pp.x, pp.y, pp.z);
 		}
 
 		// Deity: prefer the value the v29c client sent at struct byte 4152 (payload[4148]).
@@ -1422,11 +1432,25 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 		}
 	}
 
-	// Primary bind = start location; home bind = also start location
+	// Primary bind = start location; home bind = also start location.
+	// Defense: if start coords ended up (0,0,0) (bad start_zones row, fallback
+	// path, or partially-populated data), substitute the zone safe point.
+	// Without this, a same-zone death later teleports the player to (0,0,0)
+	// and the v29c client silently locks — see project_trilogy_same_zone_death.
 	for (int i = 0; i < 5; ++i) {
 		pp.binds[i].zone_id = pp.zone_id;
 		pp.binds[i].x = pp.x; pp.binds[i].y = pp.y;
 		pp.binds[i].z = pp.z; pp.binds[i].heading = pp.heading;
+
+		if (pp.binds[i].x == 0.0f && pp.binds[i].y == 0.0f && pp.binds[i].z == 0.0f) {
+			auto zb = GetZone(pp.binds[i].zone_id);
+			if (zb) {
+				pp.binds[i].x       = zb->safe_x;
+				pp.binds[i].y       = zb->safe_y;
+				pp.binds[i].z       = zb->safe_z;
+				pp.binds[i].heading = zb->safe_heading;
+			}
+		}
 	}
 
 	// Set default skills
