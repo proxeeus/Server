@@ -486,6 +486,31 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ReadBook:
 		HandleOutgoingReadBook(app);
 		break;
+	case OP_GroupInvite:
+		// Popup invite emitted by Handle_OP_GroupInvite2 → GroupInvite_Struct.
+		HandleOutgoingGroupInvite(app);
+		break;
+	case OP_GroupFollow:
+		// Engine doesn't emit OP_GroupFollow outbound to clients in the normal
+		// path (Follow is client→server), but include for completeness if
+		// quest or world-cross-zone code ever wraps it back.
+		HandleOutgoingGroupFollow(app);
+		break;
+	case OP_GroupCancelInvite:
+		// Echoed to the inviter when the invitee declines.
+		HandleOutgoingGroupCancelInvite(app);
+		break;
+	case OP_GroupDisband:
+		// Engine never actually pushes OP_GroupDisband outbound — all leave
+		// notifications come through OP_GroupUpdate. Kept for safety.
+		HandleOutgoingGroupDisband(app);
+		break;
+	case OP_GroupUpdate:
+		// Carries either GroupJoin_Struct (single-member event) or
+		// GroupUpdate_Struct/GroupUpdate2_Struct (full roster bulk) — the
+		// handler disambiguates by size + action field.
+		HandleOutgoingGroupUpdate(app);
+		break;
 	case OP_ClickObject:
 		// Remove a ground item from the client's view (pickup despawn broadcast).
 		// EQClassic uses the same ClickObject_Struct layout; opcode 0x3620 = OP_PickupItem.
@@ -2717,6 +2742,401 @@ void TrilogyClient::HandleOutgoingReadBook(const EQApplicationPacket* app)
 	const uint8_t* text = app->pBuffer + 10;
 	const uint32_t len  = app->size - sizeof(::BookText_Struct);
 	m_tzs->SendToSession(m_session_key, 0xce20, text, len);
+}
+
+// ============================================================
+// Group translators (server → Trilogy client)
+//
+// EQEmu internal structs use 64-byte names; the v29c wire format uses 32-byte
+// names.  All copies use strncpy + an explicit final-byte zero so a truncated
+// 32+ char name still terminates cleanly inside the wire field.
+// ============================================================
+
+namespace {
+inline void CopyTrilogyName(char* dst, size_t dst_size, const char* src)
+{
+	if (!dst || dst_size == 0) return;
+	if (src) {
+		strncpy(dst, src, dst_size - 1);
+		dst[dst_size - 1] = '\0';
+	} else {
+		dst[0] = '\0';
+	}
+}
+
+// Hex dump for group packet diagnostics — caps at 256 bytes so we never spew
+// huge GroupUpdate_Struct (228B) blobs but always cover the full payload.
+inline std::string HexDumpBytes(const void* data, uint32_t len)
+{
+	if (!data || len == 0) return std::string{};
+	const uint8_t* p = static_cast<const uint8_t*>(data);
+	const uint32_t cap = len > 256 ? 256u : len;
+	std::string hex;
+	hex.reserve(cap * 3 + 8);
+	for (uint32_t i = 0; i < cap; ++i) {
+		hex += fmt::format("{:02X} ", p[i]);
+	}
+	if (len > cap) hex += "...";
+	return hex;
+}
+}
+
+// HandleOutgoingGroupInvite — internal GroupGeneric_Struct (128B: name1/name2)
+// → wire OP_GroupInvite2 (0x4020) GroupInvite_Struct (91B = 30 + 30 + 31).
+//
+// EQEmu's Handle_OP_GroupInvite2 sends GroupGeneric_Struct{ name1=invitee,
+// name2=inviter } via QueuePacket.  EQClassic LS forwards the inviter's
+// original opcode UNCHANGED — when the v29c client sent OP_GroupInvite2
+// (0x4020), the invitee also receives it on 0x4020, which is what triggers
+// the invitee's group-window button to switch from "Disband" to "Follow".
+// Sending it on 0x3e20 (the other valid invite opcode) does NOT flip that
+// button in practice, confirmed by live test 2026-06-18.  We send on 0x4020
+// regardless of which opcode the inviter used; the v29c popup-receive path
+// accepts it either way and the button flips reliably.
+void TrilogyClient::HandleOutgoingGroupInvite(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::GroupGeneric_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::GroupGeneric_Struct*>(app->pBuffer);
+
+	Trilogy::structs::GroupInvite_Struct out{};
+	CopyTrilogyName(out.invitee_name, sizeof(out.invitee_name), emu->name1);
+	CopyTrilogyName(out.inviter_name, sizeof(out.inviter_name), emu->name2);
+	// unknown[] stays zero.
+
+	LogInfo("[Trilogy][Group] -> OP_GroupInvite2 (0x4020) invitee=[{}] inviter=[{}] size={} bytes=[{}]",
+	        out.invitee_name, out.inviter_name, sizeof(out), HexDumpBytes(&out, sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x4020,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// HandleOutgoingGroupFollow — internal GroupGeneric_Struct or GroupFollow_Struct
+// → wire OP_GroupFollow (0x3d20) GroupFollow_Struct (64B).
+//
+// Not normally pushed outbound by the engine (Follow is client→server only),
+// but we translate defensively in case quest/world code echoes it.
+void TrilogyClient::HandleOutgoingGroupFollow(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	const char* leader  = nullptr;
+	const char* invited = nullptr;
+
+	if (app->size >= sizeof(::GroupFollow_Struct)) {
+		const auto* emu = reinterpret_cast<const ::GroupFollow_Struct*>(app->pBuffer);
+		leader  = emu->name1;
+		invited = emu->name2;
+	} else if (app->size >= sizeof(::GroupGeneric_Struct)) {
+		const auto* emu = reinterpret_cast<const ::GroupGeneric_Struct*>(app->pBuffer);
+		leader  = emu->name1;
+		invited = emu->name2;
+	} else {
+		return;
+	}
+
+	Trilogy::structs::GroupFollow_Struct out{};
+	CopyTrilogyName(out.leader,  sizeof(out.leader),  leader);
+	CopyTrilogyName(out.invited, sizeof(out.invited), invited);
+
+	LogInfo("[Trilogy][Group] -> OP_GroupFollow (0x4220) leader=[{}] invited=[{}] size={} bytes=[{}]",
+	        out.leader, out.invited, sizeof(out), HexDumpBytes(&out, sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x4220,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// HandleOutgoingGroupCancelInvite — internal GroupCancel_Struct (129B) or
+// GroupGeneric_Struct (128B) → wire OP_GroupCancelInvite (0x4120)
+// GroupInviteDecline_Struct (65B).
+void TrilogyClient::HandleOutgoingGroupCancelInvite(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	Trilogy::structs::GroupInviteDecline_Struct out{};
+
+	if (app->size >= sizeof(::GroupCancel_Struct)) {
+		const auto* emu = reinterpret_cast<const ::GroupCancel_Struct*>(app->pBuffer);
+		CopyTrilogyName(out.leader, sizeof(out.leader), emu->name1);
+		CopyTrilogyName(out.leaver, sizeof(out.leaver), emu->name2);
+		// EQEmu's `toggle` is the same semantic as v29c `action` (1/2/3).
+		out.action = emu->toggle ? emu->toggle : 3; // default reject
+	} else if (app->size >= sizeof(::GroupGeneric_Struct)) {
+		const auto* emu = reinterpret_cast<const ::GroupGeneric_Struct*>(app->pBuffer);
+		CopyTrilogyName(out.leader, sizeof(out.leader), emu->name1);
+		CopyTrilogyName(out.leaver, sizeof(out.leaver), emu->name2);
+		out.action = 3;
+	} else {
+		return;
+	}
+
+	LogInfo("[Trilogy][Group] -> OP_GroupCancelInvite (0x4120) leader=[{}] leaver=[{}] action={} size={} bytes=[{}]",
+	        out.leader, out.leaver, out.action, sizeof(out), HexDumpBytes(&out, sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x4120,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// HandleOutgoingGroupDisband — translate to v29c-style "you leave" via
+// OP_GroupUpdate (0x2640) with action=4.  EQEmu doesn't normally emit
+// OP_GroupDisband outbound (leave events flow through OP_GroupUpdate), but
+// keep this here so any path that does push it gets the right wire effect:
+// clearing the v29c group window.
+void TrilogyClient::HandleOutgoingGroupDisband(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	Trilogy::structs::GroupUpdate_Struct out{};
+	CopyTrilogyName(out.yourname, sizeof(out.yourname), GetName());
+	out.action = 4; // "you leave"
+
+	LogInfo("[Trilogy][Group] -> OP_GroupUpdate (0x2640) action=4 (disband/you leave) size={} bytes=[{}]",
+	        sizeof(out), HexDumpBytes(&out, sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x2640,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// HandleOutgoingGroupUpdate — the main group bus.
+//
+// EQEmu re-uses OP_GroupUpdate for several payloads, all 452B (or 836B with
+// leadership AAs). At offset 0/4 they share action(uint32) + yourname[64].
+// At offset 68 they diverge:
+//   • GroupJoin_Struct: single membername[64] (the member acted on)
+//   • GroupUpdate_Struct: membername[5][64] (full roster) + leadersname[64]
+//
+// Both structs put the relevant "other" name at offset 68, so reading it as
+// GroupUpdate_Struct lets us pull `membername[0]` whether the source was a
+// per-member event or a roster blob.
+//
+// Wire action codes (per EQMacEmuTrilogy ENCODE(OP_GroupUpdate)):
+//   0 = ADD_MEMBER     — "X joins"
+//   1 = NEW_LEADER     — "X is now leader"
+//   3 = REMOVE_MEMBER  — "X leaves"
+//   4 = DISBAND_YOU    — "You leave / group disbanded"
+//
+// Mapping from EQEmu action → v29c action:
+//   groupActJoin(0)          → 0  (with othername = membername[0])
+//   groupActLeave(1)         → 3  (with othername = membername[0])
+//   groupActDisband(6)       → 4  (with othername = yourname)
+//   groupActUpdate(7)        → 0  (treat as add — refresh trigger)
+//   groupActMakeLeader(8)    → 1  (with othername = leadersname)
+//   groupActInviteInitial(9) → 0  (the group-creation packet to yourself)
+//   groupActAAUpdate(10)     → drop (v29c has no leadership AAs)
+//
+// v29c maintains its own group roster locally and uses these packets as
+// per-event deltas (matches EQClassic/Zone/Source/groups.cpp:91-141
+// Group::AddMember — one packet per (receiver, sender) pair, no roster).
+// We do NOT populate the membername[] array.
+//
+// Opcode: 0x2640 (EQClassic/Common/Include/eq_opcodes.h:68) — NOT 0x2620
+// (LS variant).  Sending on 0x2620 makes v29c silently discard the packet
+// and the group window never paints.
+void TrilogyClient::HandleOutgoingGroupUpdate(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	if (app->size != sizeof(::GroupJoin_Struct) &&
+	    app->size != sizeof(::GroupUpdate_Struct) &&
+	    app->size != sizeof(::GroupUpdate2_Struct)) {
+		LogInfo("[Trilogy][Group] OP_GroupUpdate dropped — unexpected size {}", app->size);
+		return;
+	}
+
+	// Read action + yourname from the shared header.
+	const uint32_t emu_action = *reinterpret_cast<const uint32_t*>(app->pBuffer);
+	const char* yourname      = reinterpret_cast<const char*>(app->pBuffer + 4);
+
+	if (emu_action == groupActAAUpdate) {
+		// Leadership AAs are a SoL+ concept; v29c has no UI for them.
+		return;
+	}
+
+	// `membername[0]` (offset 68) overlaps both GroupJoin_Struct::membername
+	// and GroupUpdate_Struct::membername[0], so it gives us the "other"
+	// person in either layout.
+	const char* other_member = reinterpret_cast<const char*>(app->pBuffer + 68);
+
+	Trilogy::structs::GroupUpdate_Struct out{};
+	CopyTrilogyName(out.yourname, sizeof(out.yourname), yourname);
+
+	switch (emu_action) {
+	case groupActJoin:
+	case groupActUpdate:
+	case groupActInviteInitial:
+		CopyTrilogyName(out.othername, sizeof(out.othername), other_member);
+		out.action = 0; // ADD_MEMBER
+		break;
+	case groupActLeave:
+		CopyTrilogyName(out.othername, sizeof(out.othername), other_member);
+		out.action = 3; // REMOVE_MEMBER
+		break;
+	case groupActDisband:
+		// Sent to the leaving/disbanded member only: tell v29c "you leave".
+		CopyTrilogyName(out.othername, sizeof(out.othername), yourname);
+		out.action = 4; // DISBAND_YOU
+		break;
+	case groupActMakeLeader: {
+		// GroupUpdate_Struct (452B/836B) has leadersname at offset 388;
+		// GroupJoin_Struct does not (offset 388 falls in its unknown blob),
+		// but ChangeLeader emits the GroupJoin_Struct path with the new
+		// leader's name in `membername` (offset 68) instead.  Prefer the
+		// roster's leadersname when present, fall back to membername.
+		if (app->size >= sizeof(::GroupUpdate_Struct)) {
+			const char* leadersname =
+			    reinterpret_cast<const char*>(app->pBuffer + 388);
+			if (leadersname[0] != '\0') {
+				CopyTrilogyName(out.othername, sizeof(out.othername), leadersname);
+			} else {
+				CopyTrilogyName(out.othername, sizeof(out.othername), other_member);
+			}
+		} else {
+			CopyTrilogyName(out.othername, sizeof(out.othername), other_member);
+		}
+		out.action = 1; // NEW_LEADER
+		break;
+	}
+	default:
+		LogInfo("[Trilogy][Group] OP_GroupUpdate emu_action={} unmapped, dropping", emu_action);
+		return;
+	}
+
+	LogInfo("[Trilogy][Group] -> OP_GroupUpdate (0x2640) emu_action={} v29c_action={} yourname=[{}] othername=[{}] size={} bytes=[{}]",
+	        emu_action, out.action, out.yourname, out.othername,
+	        sizeof(out), HexDumpBytes(&out, sizeof(out)));
+	m_tzs->SendToSession(m_session_key, 0x2640,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// Group translators (client → server)
+//
+// Convert v29c wire structs (32B names) to EQEmu internal form (64B names)
+// and dispatch to the existing Handle_OP_Group* methods.  Each preserves the
+// original sender semantics: invite carries (invitee, inviter), follow
+// carries (leader, invited), cancel carries (leader, leaver, action).
+// ============================================================
+
+void TrilogyClient::HandleIncomingGroupInvite(const uint8_t* data, uint32_t len)
+{
+	LogInfo("[Trilogy][Group] <- OP_GroupInvite (0x3e20) raw len={} bytes=[{}]",
+	        len, HexDumpBytes(data, len));
+	if (!data || len < sizeof(Trilogy::structs::GroupInvite_Struct)) {
+		LogInfo("[Trilogy][Group] <- OP_GroupInvite (0x3e20) dropped (len={})", len);
+		return;
+	}
+	const auto* wire = reinterpret_cast<const Trilogy::structs::GroupInvite_Struct*>(data);
+
+	EQApplicationPacket pkt(OP_GroupInvite, sizeof(::GroupInvite_Struct));
+	auto* gi = reinterpret_cast<::GroupInvite_Struct*>(pkt.pBuffer);
+	memset(gi, 0, sizeof(::GroupInvite_Struct));
+	strn0cpy(gi->invitee_name, wire->invitee_name, sizeof(gi->invitee_name));
+	strn0cpy(gi->inviter_name, wire->inviter_name, sizeof(gi->inviter_name));
+
+	LogInfo("[Trilogy][Group] <- OP_GroupInvite (0x3e20) invitee=[{}] inviter=[{}]",
+	         gi->invitee_name, gi->inviter_name);
+	Handle_OP_GroupInvite(&pkt);
+}
+
+void TrilogyClient::HandleIncomingGroupInvite2(const uint8_t* data, uint32_t len)
+{
+	LogInfo("[Trilogy][Group] <- OP_GroupInvite2 (0x4020) raw len={} bytes=[{}]",
+	        len, HexDumpBytes(data, len));
+	if (!data || len < sizeof(Trilogy::structs::GroupInvite_Struct)) {
+		LogInfo("[Trilogy][Group] <- OP_GroupInvite2 (0x4020) dropped (len={})", len);
+		return;
+	}
+	const auto* wire = reinterpret_cast<const Trilogy::structs::GroupInvite_Struct*>(data);
+
+	// Forge as OP_GroupInvite2 so Handle_OP_GroupInvite2's app->GetOpcode()
+	// branch (which rewraps to OP_GroupInvite before forwarding to the invitee)
+	// takes the right path.
+	EQApplicationPacket pkt(OP_GroupInvite2, sizeof(::GroupInvite_Struct));
+	auto* gi = reinterpret_cast<::GroupInvite_Struct*>(pkt.pBuffer);
+	memset(gi, 0, sizeof(::GroupInvite_Struct));
+	strn0cpy(gi->invitee_name, wire->invitee_name, sizeof(gi->invitee_name));
+	strn0cpy(gi->inviter_name, wire->inviter_name, sizeof(gi->inviter_name));
+
+	LogInfo("[Trilogy][Group] <- OP_GroupInvite2 (0x4020) invitee=[{}] inviter=[{}]",
+	         gi->invitee_name, gi->inviter_name);
+	Handle_OP_GroupInvite2(&pkt);
+}
+
+void TrilogyClient::HandleIncomingGroupFollow(const uint8_t* data, uint32_t len)
+{
+	LogInfo("[Trilogy][Group] <- OP_GroupFollow (0x4220) raw len={} bytes=[{}]",
+	        len, HexDumpBytes(data, len));
+	if (!data || len < sizeof(Trilogy::structs::GroupFollow_Struct)) {
+		LogInfo("[Trilogy][Group] <- OP_GroupFollow (0x4220) dropped (len={})", len);
+		return;
+	}
+	const auto* wire = reinterpret_cast<const Trilogy::structs::GroupFollow_Struct*>(data);
+
+	// Handle_OP_GroupFollow expects GroupGeneric_Struct { name1=inviter,
+	// name2=invitee }.
+	EQApplicationPacket pkt(OP_GroupFollow, sizeof(::GroupGeneric_Struct));
+	auto* gg = reinterpret_cast<::GroupGeneric_Struct*>(pkt.pBuffer);
+	memset(gg, 0, sizeof(::GroupGeneric_Struct));
+	strn0cpy(gg->name1, wire->leader,  sizeof(gg->name1));
+	strn0cpy(gg->name2, wire->invited, sizeof(gg->name2));
+
+	LogInfo("[Trilogy][Group] <- OP_GroupFollow (0x3d20) inviter=[{}] invitee=[{}]",
+	         gg->name1, gg->name2);
+	Handle_OP_GroupFollow(&pkt);
+}
+
+void TrilogyClient::HandleIncomingGroupCancelInvite(const uint8_t* data, uint32_t len)
+{
+	LogInfo("[Trilogy][Group] <- OP_GroupCancelInvite (0x4120) raw len={} bytes=[{}]",
+	        len, HexDumpBytes(data, len));
+	if (!data || len < sizeof(Trilogy::structs::GroupInviteDecline_Struct)) {
+		LogInfo("[Trilogy][Group] <- OP_GroupCancelInvite (0x4120) dropped (len={})", len);
+		return;
+	}
+	const auto* wire = reinterpret_cast<const Trilogy::structs::GroupInviteDecline_Struct*>(data);
+
+	// Handle_OP_GroupCancelInvite expects GroupCancel_Struct {name1=inviter,
+	// name2=leaver, toggle=action}.
+	EQApplicationPacket pkt(OP_GroupCancelInvite, sizeof(::GroupCancel_Struct));
+	auto* gc = reinterpret_cast<::GroupCancel_Struct*>(pkt.pBuffer);
+	memset(gc, 0, sizeof(::GroupCancel_Struct));
+	strn0cpy(gc->name1, wire->leader, sizeof(gc->name1));
+	strn0cpy(gc->name2, wire->leaver, sizeof(gc->name2));
+	gc->toggle = wire->action;
+
+	LogInfo("[Trilogy][Group] <- OP_GroupCancelInvite (0x4120) inviter=[{}] leaver=[{}] action={}",
+	         gc->name1, gc->name2, gc->toggle);
+	Handle_OP_GroupCancelInvite(&pkt);
+}
+
+void TrilogyClient::HandleIncomingGroupDisband(const uint8_t* data, uint32_t len)
+{
+	LogInfo("[Trilogy][Group] <- OP_GroupDisband (0x4420) raw len={} bytes=[{}]",
+	        len, HexDumpBytes(data, len));
+	if (!data || len < sizeof(Trilogy::structs::GroupDisband_Struct)) {
+		LogInfo("[Trilogy][Group] <- OP_GroupDisband (0x4420) dropped (len={})", len);
+		return;
+	}
+	const auto* wire = reinterpret_cast<const Trilogy::structs::GroupDisband_Struct*>(data);
+
+	// Handle_OP_GroupDisband expects GroupGeneric_Struct { name1, name2 }.
+	// v29c only ships ONE name field (the target — self for /disband, the
+	// kicked member name for a leader kick); set both EQEmu name slots from
+	// it so the kick path (which probes both name1 and name2 via
+	// entity_list.GetMob) finds the right Mob.  The wire field is 15B; we
+	// NUL-terminate defensively.
+	char target_name[16] = {};
+	memcpy(target_name, wire->member, sizeof(wire->member));
+	target_name[sizeof(target_name) - 1] = '\0';
+
+	EQApplicationPacket pkt(OP_GroupDisband, sizeof(::GroupGeneric_Struct));
+	auto* gg = reinterpret_cast<::GroupGeneric_Struct*>(pkt.pBuffer);
+	memset(gg, 0, sizeof(::GroupGeneric_Struct));
+	strn0cpy(gg->name1, target_name, sizeof(gg->name1));
+	strn0cpy(gg->name2, target_name, sizeof(gg->name2));
+
+	LogInfo("[Trilogy][Group] <- OP_GroupDisband (0x4420) target=[{}]", gg->name1);
+	Handle_OP_GroupDisband(&pkt);
 }
 
 // ============================================================

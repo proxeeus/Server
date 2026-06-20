@@ -233,6 +233,18 @@ static constexpr uint16_t ZN_OP_ShopEndConfirm = 0x4521; // zone -> client: clos
 // Source: EQClassic/Common/Include/eq_opcodes.h :: OP_MoveCoin
 static constexpr uint16_t ZN_OP_MoveCoin       = 0x2d21; // client -> zone: MoveCoin_Struct (20 bytes)
 
+// Group opcodes
+// Source: EQMacEmuTrilogy patch_Trilogy.conf + EQClassic/LS branch eq_opcodes.h
+// (EQClassic/Common/Include uses different values for Invite/Follow/Update —
+// do not use as reference, see patch_Trilogy.conf comment for context.)
+static constexpr uint16_t ZN_OP_GroupInvite        = 0x3e20; // bidirectional: GroupInvite_Struct (95B)
+static constexpr uint16_t ZN_OP_GroupInvite2       = 0x4020; // client -> zone: alt invite form
+static constexpr uint16_t ZN_OP_GroupFollow        = 0x4220; // client -> zone: accept invite, GroupFollow_Struct (60B)
+                                                            // NOT 0x3d20 — EQMacEmuTrilogy patch is wrong here, EQClassic Common is right
+static constexpr uint16_t ZN_OP_GroupCancelInvite  = 0x4120; // bidirectional: decline, GroupInviteDecline_Struct (65B)
+static constexpr uint16_t ZN_OP_GroupDisband       = 0x4420; // client -> zone: leave / kick / disband, GroupDisband_Struct (60B)
+static constexpr uint16_t ZN_OP_GroupUpdate        = 0x2620; // zone -> client: GroupUpdate_Struct (228B)
+
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
 static constexpr uint8_t HDR0_FRAGMENT = 0x08;
@@ -1218,6 +1230,21 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_MoveCoin && s.trilogy_client)
 			HandleMoveCoin(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_GroupInvite && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupInvite(payload, plen);
+		}
+		else if (opcode == ZN_OP_GroupInvite2 && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupInvite2(payload, plen);
+		}
+		else if (opcode == ZN_OP_GroupFollow && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupFollow(payload, plen);
+		}
+		else if (opcode == ZN_OP_GroupCancelInvite && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupCancelInvite(payload, plen);
+		}
+		else if (opcode == ZN_OP_GroupDisband && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupDisband(payload, plen);
+		}
 		else if (opcode == ZN_OP_ClassTraining && s.trilogy_client)
 			HandleClassTraining(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClassTrainSkill && s.trilogy_client)

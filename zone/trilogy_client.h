@@ -259,6 +259,31 @@ private:
 	// BookText_Struct header so just the raw text reaches the v29c GUI.
 	void HandleOutgoingReadBook(const EQApplicationPacket* app);
 
+	// ---- Group translators (server → Trilogy client) ----
+	// EQEmu's GroupUpdate_Struct is 452B (4B action + 6×64B names) and the
+	// invite/follow/cancel structs use 64B names; the v29c wire format uses
+	// 32B names and a 228B GroupUpdate. Translate by truncating each name
+	// safely (NUL-padded) and reordering fields where layouts differ.
+	void HandleOutgoingGroupInvite(const EQApplicationPacket* app);
+	void HandleOutgoingGroupFollow(const EQApplicationPacket* app);
+	void HandleOutgoingGroupCancelInvite(const EQApplicationPacket* app);
+	void HandleOutgoingGroupDisband(const EQApplicationPacket* app);
+	void HandleOutgoingGroupUpdate(const EQApplicationPacket* app);
+
+public:
+	// ---- Group translators (client → server) ----
+	// Inbound from the v29c wire: convert 32B-name Trilogy struct back to
+	// the EQEmu internal 64B-name form, then dispatch to the existing
+	// Client::Handle_OP_Group* implementations. Public so trilogy_zone's
+	// inbound dispatch can call them directly.
+	void HandleIncomingGroupInvite(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupInvite2(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupFollow(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupCancelInvite(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupDisband(const uint8_t* data, uint32_t len);
+
+private:
+
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.
 	bool m_pending_loot_echo = false;

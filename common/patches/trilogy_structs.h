@@ -1260,21 +1260,93 @@ struct Consider_Struct
 
 /*
 ** GroupUpdate_Struct
-** Opcode:  OP_GroupUpdate = 0x2640
+** Opcode:  OP_GroupUpdate = 0x2620
 ** Direction: zone server -> client
-** Source:  EQClassic Common/Include/eq_packet_structs.h :: GroupUpdate_Struct
-** Size:    225 bytes
+** Source:  EQMacEmuTrilogy/common/patches/trilogy_structs.h :: GroupUpdate_Struct
+** Size:    228 bytes
 **
-** action: 0=player joins, 3=player leaves, 4=you leave the group
+** action: 0=join, 1=?, 2=?, 3=other leaves, 4=you leave
+** Names are 32-byte NUL-terminated (PC_MAX_NAME_LENGTH on v29c).
+** membername[] holds the OTHER five group members from your perspective
+** (yourname is you, leader-or-not).
 */
 struct GroupUpdate_Struct
 {
-/*000*/	char	receiverName[32];	// member who needs new info
-/*032*/	char	senderName[32];		// member with new info
-/*064*/	char	senderName2[32];
-/*096*/	int8	unknown01[128];
-/*224*/	int8	action;
-/*225*/
+/*000*/	char	yourname[32];
+/*032*/	char	othername[32];		// in join/leave events, the member acted on
+/*064*/	char	membername[5][32];
+/*224*/	uint32	action;
+/*228*/
+};
+
+/*
+** GroupInvite_Struct
+** Opcode:  OP_GroupInvite = 0x3e20 (popup) AND OP_GroupInvite2 = 0x4020
+** Direction: BOTH (client sends to start; server pushes popup to invitee)
+** Source:  EQMacEmuTrilogy trilogy_structs.h — trust the field sizes
+**          (char[30] / char[30] / uint8[31]), NOT the offset comments
+**          in that file which suggest 64/64/65 — those are decorative
+**          and inconsistent with the actual field declarations.  The
+**          v29c wire is 91 bytes (= 30 + 30 + 31), confirmed via
+**          packet capture from a live invite attempt.
+** Size:    91 bytes (30 + 30 + 31)
+*/
+struct GroupInvite_Struct
+{
+/*00*/	char	invitee_name[30];
+/*30*/	char	inviter_name[30];
+/*60*/	uint8	unknown[31];
+/*91*/
+};
+
+/*
+** GroupFollow_Struct
+** Opcode:  OP_GroupFollow = 0x4220 (NOT 0x3d20 — EQMacEmuTrilogy is WRONG
+**          here; the v29c client actually sends 0x4220, matching EQClassic
+**          Common.  Opposite of OP_GroupInvite where EQMacEmu was right.)
+** Direction: client -> server (the invitee accepts)
+** Source:  Confirmed by packet capture 2026-06-18: 60-byte payload with
+**          "Landar" at offset 0 and "Danalan" at offset 30.
+** Size:    60 bytes
+*/
+struct GroupFollow_Struct
+{
+/*00*/	char	leader[30];		// inviter
+/*30*/	char	invited[30];	// the one accepting
+/*60*/
+};
+
+/*
+** GroupInviteDecline_Struct
+** Opcode:  OP_GroupCancelInvite = 0x4120
+** Direction: BOTH (client declines; server echoes to inviter)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: GroupInviteDecline_Struct
+** Size:    65 bytes
+**
+** action: 1=busy/considering another invite, 2=already grouped, 3=rejected
+*/
+struct GroupInviteDecline_Struct
+{
+/*00*/	char	leader[32];		// who invited
+/*32*/	char	leaver[32];		// who's declining
+/*64*/	uint8	action;
+/*65*/
+};
+
+/*
+** GroupDisband_Struct
+** Opcode:  OP_GroupDisband = 0x4420
+** Direction: client -> server (member leaves, kicks, or leader disbands)
+** Source:  EQMacEmuTrilogy / EQClassic
+** Size:    60 bytes
+*/
+struct GroupDisband_Struct
+{
+/*00*/	char	member[15];		// name (NUL-terminated, short — v29c only sends first 14 chars)
+/*15*/	uint8	unknown1[41];
+/*56*/	uint8	framecounter;	// increments by 32 each successive send by same client
+/*57*/	uint8	unknown2[3];
+/*60*/
 };
 
 /*
