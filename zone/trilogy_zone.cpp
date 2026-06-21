@@ -1769,9 +1769,18 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket lootitempkt(OP_LootItem, 16);
 				memcpy(lootitempkt.pBuffer, payload, 16);
 				auto* li = reinterpret_cast<Trilogy::structs::LootingItem_Struct*>(lootitempkt.pBuffer);
+				const int16_t raw_slot = li->slot_id;
+				const int32_t raw_lootee = li->lootee;
+				const int32_t raw_looter = li->looter;
+				const int32_t raw_auto = li->auto_loot;
 				li->slot_id = static_cast<int16_t>(li->slot_id + 22);
+				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem IN: raw_slot={} → corpse_slot={} lootee={} looter={} auto_loot={} session=[{}]",
+				        raw_slot, li->slot_id, raw_lootee, raw_looter, raw_auto,
+				        s.trilogy_client->GetName());
 				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
+				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem: Handle_OP_LootItem returned; flushing echo");
 				s.trilogy_client->FlushPendingLootEcho();
+				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem: echo flushed");
 			}
 		}
 		else if (opcode == ZN_OP_EndLootRequest && s.trilogy_client) {
@@ -6099,6 +6108,23 @@ void TrilogyZoneServer::Tick()
 		Session& s = kv.second;
 		if (s.state != CONNECTED) continue;
 
+		// Stale TrilogyClient* guard.  EQEmu's entity_list can drop the Client
+		// object out from under us (Client::Process() returns false → entity.cpp
+		// "Dropping client" path → ~Client) without notifying TrilogyZoneServer,
+		// leaving s.trilogy_client pointing at freed memory.  Tick later calls
+		// methods on it (CheckSpellGemCooldowns, DrainPendingText, …) and reads
+		// garbage member values — observed crash: SendToSession AV via stale
+		// m_tzs in CheckSpellGemCooldowns, ~45 s after a Dropping-client log.
+		// Validate via entity_list lookup using the cached spawn_id and null
+		// the cached pointer if the Client is gone.  All later s.trilogy_client
+		// checks in this loop body then short-circuit safely.
+		if (s.trilogy_client && s.player_spawn_id != 0) {
+			Client* live = entity_list.GetClientByID(s.player_spawn_id);
+			if (live != static_cast<Client*>(s.trilogy_client)) {
+				s.trilogy_client = nullptr;
+			}
+		}
+
 		// Camp interrupt: classic EQ behaviour cancels /camp the moment the
 		// player takes hostile attention (mob added them to its hate list).
 		// The Trilogy client already aborts its own camp UI and stands the
@@ -6143,6 +6169,13 @@ void TrilogyZoneServer::Tick()
 		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
 		if (s.trilogy_client) {
 			s.trilogy_client->CheckSpellGemCooldowns();
+		}
+
+		// Paced OP_SpecialMesg drain: see QueueTextPacket in trilogy_client.
+		// v29c freezes on tight 0x8021 bursts (observed ^spells with 9 lines
+		// in <50 ms); we cap outbound chat at 20 lines/s.
+		if (s.trilogy_client) {
+			s.trilogy_client->DrainPendingText();
 		}
 
 		// Money-display reconciliation: the on-screen coin counter only refreshes from
@@ -6351,6 +6384,37 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// which overflows the Trilogy v29c client's ARQ queue and causes a disconnect.
 	static constexpr float CULL_RADIUS_SQ = 600.0f * 600.0f;
 
+	// Dirty-flag gate (mirrors EQClassic EntityList::SendPositionUpdates'
+	// `GetLastChange() >= cLastUpdate` filter): only stage an update if the
+	// wire-encoded position/heading/anim actually changed since the last
+	// broadcast to this session, OR the previous broadcast is older than
+	// STALENESS_REFRESH_MS.  The refresh floor matches the prior stationary-NPC
+	// cadence (500 ms) and stays well inside the v29c client's ~5-10 s
+	// staleness timeout for non-permanent spawns, so a held-still mob is
+	// still refreshed before it can stale out client-side.
+	//
+	// Caller is expected to have already built `upd` (spawn_id + the encoded
+	// int16/int8 wire fields).  Returns true → include in batch and bump n;
+	// false → drop this slot, do not increment n (slot gets overwritten next).
+	static constexpr uint64_t STALENESS_REFRESH_MS = 500;
+	auto should_broadcast = [&](Trilogy::structs::SpawnPositionUpdate_Struct* upd) -> bool {
+		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
+		bool stale   = (now_ms - last.sent_ms) >= STALENESS_REFRESH_MS;
+		bool changed = (last.x_pos     != upd->x_pos)
+		            || (last.y_pos     != upd->y_pos)
+		            || (last.z_pos     != upd->z_pos)
+		            || (last.heading   != upd->heading)
+		            || (last.anim_type != upd->anim_type);
+		if (!stale && !changed) return false;
+		last.x_pos     = upd->x_pos;
+		last.y_pos     = upd->y_pos;
+		last.z_pos     = upd->z_pos;
+		last.heading   = upd->heading;
+		last.anim_type = upd->anim_type;
+		last.sent_ms   = now_ms;
+		return true;
+	};
+
 	const uint32_t playerbot_type_id = static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId));
 
 	for (const auto& kv : npc_map) {
@@ -6397,6 +6461,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 		}
 
+		if (!should_broadcast(upd)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -6435,6 +6500,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		}
 		// else: anim_type=0, delta=0 — client confirms position without moving
 
+		if (!should_broadcast(upd)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -6470,6 +6536,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 		}
 
+		if (!should_broadcast(upd)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}

@@ -287,6 +287,49 @@ void TrilogyClient::FastQueuePacket(EQApplicationPacket** app,
 static const char* TrilogySystemStringTemplate(uint32_t string_id);
 
 // ============================================================
+// Outbound text pacing (see m_pending_text_q in trilogy_client.h)
+//
+// v29c silently freezes when a tight burst of OP_SpecialMesg lands inside one
+// zone Tick.  Reproduced with the `^spells` bot command: 9 messages in <50ms
+// → cli_arq lock → no further client RX → 5-min CONNECTED timeout.  Smaller
+// bursts (4–5 lines) survived in the same session, so the threshold is in
+// the 6–9 range.  We pace to 1 packet per 50 ms (20/s) — fast enough that a
+// 30-line `^spells` finishes in ~1.5 s, slow enough that v29c's chat handler
+// keeps up.  FIFO preserves user-visible line order.
+// ============================================================
+void TrilogyClient::QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
+{
+	if (m_pending_text_q.size() >= kMaxPendingText) {
+		// Soft cap: drop oldest.  Hitting this means something is spamming text
+		// far beyond a human-readable rate; losing the leading lines is the
+		// least-bad option for chat that's already going to scroll past.
+		m_pending_text_q.pop_front();
+	}
+	PendingTextPacket p;
+	p.opcode = opcode;
+	p.payload.assign(data, data + size);
+	m_pending_text_q.push_back(std::move(p));
+}
+
+void TrilogyClient::DrainPendingText()
+{
+	if (m_pending_text_q.empty()) return;
+
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	if (now_ms < m_next_text_drain_ms) return;
+
+	auto& p = m_pending_text_q.front();
+	m_tzs->SendToSession(m_session_key, p.opcode,
+	                     p.payload.data(),
+	                     static_cast<uint32_t>(p.payload.size()));
+	m_pending_text_q.pop_front();
+	m_next_text_drain_ms = now_ms + kTextDrainIntervalMs;
+}
+
+// ============================================================
 // TranslateAndSend — dispatch by EQEmu internal opcode
 // ============================================================
 
@@ -1038,6 +1081,22 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 		return;
 	}
 
+	// Diag: log NPC properties when broadcasting NewSpawn — correlates a fresh
+	// mob arrival with the freeze trigger so we can identify what's unusual
+	// about a specific named when it enters the player's view.
+	LogInfo("[TrilogyDiag] 4921 NewSpawn sid={} name='{}' race={} class={} level={} gender={} texture={} helmtex={} size={} npctypeid={} player_race={}",
+	        static_cast<int>(sp.spawn_id),
+	        mob->GetCleanName(),
+	        static_cast<int>(mob->GetRace()),
+	        static_cast<int>(mob->GetClass()),
+	        static_cast<int>(mob->GetLevel()),
+	        static_cast<int>(mob->GetGender()),
+	        static_cast<int>(mob->GetTexture()),
+	        static_cast<int>(mob->GetHelmTexture()),
+	        static_cast<double>(mob->GetSize()),
+	        mob->IsNPC() ? static_cast<int>(mob->CastToNPC()->GetNPCTypeID()) : -1,
+	        IsPlayerRace(mob->GetRace()) ? 1 : 0);
+
 	m_tzs->SendToSession(m_session_key, 0x4921,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
@@ -1090,6 +1149,10 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x2b20,
 	                     reinterpret_cast<const uint8_t*>(&ds_out),
 	                     static_cast<uint32_t>(sizeof(ds_out)));
+
+	// Drop any cached SpawnAppearance state for this spawn so a future
+	// reuse of the id (rare but possible) starts fresh.
+	m_last_appearance.erase(static_cast<uint16_t>(spawn_id));
 }
 
 // ============================================================
@@ -1418,6 +1481,25 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 	out.type      = static_cast<int16_t>(src->type);
 	out.parameter = static_cast<int32_t>(src->parameter);
 
+	// Dedup: same (spawn_id, type, parameter) as the last one we already sent
+	// for this spawn is pure noise — the v29c client has already applied that
+	// state.  See m_last_appearance comment in the header.
+	const uint16_t key = static_cast<uint16_t>(out.spawn_id);
+	const auto pv = std::make_pair(out.type, out.parameter);
+	auto it = m_last_appearance.find(key);
+	if (it != m_last_appearance.end() && it->second == pv) {
+		LogInfo("[TrilogyDiag] F520 dedup sid={} type={} param={}",
+		        out.spawn_id, out.type, out.parameter);
+		return;
+	}
+	if (m_last_appearance.size() >= kMaxAppearanceCache) {
+		m_last_appearance.clear();
+	}
+	m_last_appearance[key] = pv;
+
+	LogInfo("[TrilogyDiag] F520 send sid={} type={} param={}",
+	        out.spawn_id, out.type, out.parameter);
+
 	m_tzs->SendToSession(m_session_key, 0xf520,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
@@ -1623,7 +1705,7 @@ void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
 	*reinterpret_cast<uint32_t*>(out) = ChatTypeToTrilogyMsgType(eqemu_type);
 	memcpy(out + 4, msg_str.data(), msg_str.size());
 
-	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	QueueTextPacket(0x8021, out, out_size);
 	delete[] out;
 }
 
@@ -1669,7 +1751,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		auto* out = new uint8_t[out_size]();
 		*reinterpret_cast<uint32_t*>(out) = 4u; // DARK_BLUE — Trilogy MessageFormat color
 		memcpy(out + 4, msg.data(), msg.size());
-		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		QueueTextPacket(0x8021, out, out_size);
 		delete[] out;
 		return;
 	}
@@ -1686,7 +1768,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		auto* out = new uint8_t[out_size]();
 		*reinterpret_cast<uint32_t*>(out) = 4u; // DARK_BLUE — Trilogy MessageFormat color
 		memcpy(out + 4, msg.data(), msg.size());
-		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		QueueTextPacket(0x8021, out, out_size);
 		delete[] out;
 		return;
 	}
@@ -1750,7 +1832,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		auto* out = new uint8_t[out_size]();
 		*reinterpret_cast<uint32_t*>(out) = out_color;
 		memcpy(out + 4, out_text.data(), out_text.size());
-		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		QueueTextPacket(0x8021, out, out_size);
 		delete[] out;
 		return;
 	}
@@ -1782,7 +1864,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		// scene flavor like NPC bows / kneels).
 		*reinterpret_cast<uint32_t*>(out) = 256u; // MESSAGETYPE_Say
 		memcpy(out + 4, line.data(), line.size());
-		m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+		QueueTextPacket(0x8021, out, out_size);
 		delete[] out;
 		return;
 	}
@@ -1822,7 +1904,7 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 	auto* out = new uint8_t[out_size]();
 	*reinterpret_cast<uint32_t*>(out) = msg_type;
 	memcpy(out + 4, line.data(), line.size());
-	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	QueueTextPacket(0x8021, out, out_size);
 	delete[] out;
 }
 
@@ -1856,7 +1938,7 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	auto* out = new uint8_t[out_size]();
 	*reinterpret_cast<uint32_t*>(out) = out_color;
 	memcpy(out + 4, text.data(), text.size());
-	m_tzs->SendToSession(m_session_key, 0x8021, out, out_size);
+	QueueTextPacket(0x8021, out, out_size);
 	delete[] out;
 }
 
@@ -1904,6 +1986,27 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 	out.spell_id  = static_cast<int32_t>(emu->spell_id);
 	out.cast_time = static_cast<int32_t>(emu->cast_time);
 
+	// Diag: log caster NPC race/class/level/model + name when possible — when
+	// v29c freezes during a hostile cast, knowing the caster's properties tells
+	// us whether it's a PC-race NPC, a specific texture, an unusual model, etc.
+	Mob* caster = entity_list.GetMob(static_cast<uint16>(emu->caster_id));
+	if (caster) {
+		LogInfo("[TrilogyDiag] A920 BeginCast caster_id={} spell_id={} cast_time={} name='{}' race={} class={} level={} gender={} texture={} helmtex={} size={} npc={}",
+		        out.caster_id, out.spell_id, out.cast_time,
+		        caster->GetCleanName(),
+		        static_cast<int>(caster->GetRace()),
+		        static_cast<int>(caster->GetClass()),
+		        static_cast<int>(caster->GetLevel()),
+		        static_cast<int>(caster->GetGender()),
+		        static_cast<int>(caster->GetTexture()),
+		        static_cast<int>(caster->GetHelmTexture()),
+		        static_cast<double>(caster->GetSize()),
+		        caster->IsNPC() ? 1 : 0);
+	} else {
+		LogInfo("[TrilogyDiag] A920 BeginCast caster_id={} spell_id={} cast_time={} (mob not in entity_list)",
+		        out.caster_id, out.spell_id, out.cast_time);
+	}
+
 	m_tzs->SendToSession(m_session_key, 0xa920,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
@@ -1937,6 +2040,11 @@ void TrilogyClient::FlushPendingCastOn(bool spell_landed)
 	if (!m_pending_caston_active) return;
 	m_pending_caston_data.unknown2[1] =
 		static_cast<int8_t>(spell_landed ? 0x04 : 0x00);
+
+	LogInfo("[TrilogyDiag] 4620 CastOn source_id={} target_id={} spell_id={} landed={}",
+	        m_pending_caston_data.source_id, m_pending_caston_data.target_id,
+	        m_pending_caston_data.spell_id, spell_landed ? 1 : 0);
+
 	m_tzs->SendToSession(m_session_key, 0x4620,
 	                     reinterpret_cast<const uint8_t*>(&m_pending_caston_data),
 	                     static_cast<uint32_t>(sizeof(m_pending_caston_data)));
@@ -2544,12 +2652,27 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::LootingItem_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::LootingItem_Struct*>(app->pBuffer);
 
+	const uint32_t in_lootee = static_cast<uint32_t>(emu->lootee);
+	const uint32_t in_looter = static_cast<uint32_t>(emu->looter);
+	const uint32_t tr_lootee = TranslateId(in_lootee);
+	const uint32_t tr_looter = TranslateId(in_looter);
+
 	m_pending_echo_out = {};
-	m_pending_echo_out.lootee    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->lootee)));
-	m_pending_echo_out.looter    = static_cast<int32_t>(TranslateId(static_cast<uint32_t>(emu->looter)));
+	m_pending_echo_out.lootee    = static_cast<int32_t>(tr_lootee);
+	m_pending_echo_out.looter    = static_cast<int32_t>(tr_looter);
 	m_pending_echo_out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
 	m_pending_echo_out.auto_loot = static_cast<int32_t>(emu->auto_loot);
 	m_pending_loot_echo = true;
+
+	LogInfo("[TRILOGY-LOOT] HandleOutgoingLootItem queued: emu_slot={} → wire_slot={} lootee {}→{} looter {}→{} auto={}",
+	        emu->slot_id, m_pending_echo_out.slot_id,
+	        in_lootee, tr_lootee,
+	        in_looter, tr_looter,
+	        m_pending_echo_out.auto_loot);
+	if (tr_lootee == 0 || tr_looter == 0) {
+		LogInfo("[TRILOGY-LOOT] WARN HandleOutgoingLootItem: zero entity id after translate (lootee={} looter={}) — v29c may stall",
+		        tr_lootee, tr_looter);
+	}
 	// Echo is sent by FlushPendingLootEcho() — either after the item delivery
 	// packet (success path) or at OP_LootComplete (error / no-item path).
 	// EQClassic sends item first then echo; we match that order.
@@ -2557,8 +2680,16 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 
 void TrilogyClient::FlushPendingLootEcho()
 {
-	if (!m_pending_loot_echo) return;
+	if (!m_pending_loot_echo) {
+		LogInfo("[TRILOGY-LOOT] FlushPendingLootEcho: no pending echo (skipped)");
+		return;
+	}
 	m_pending_loot_echo = false;
+	LogInfo("[TRILOGY-LOOT] FlushPendingLootEcho sending 0xa020: wire_slot={} lootee={} looter={} auto={}",
+	        m_pending_echo_out.slot_id,
+	        m_pending_echo_out.lootee,
+	        m_pending_echo_out.looter,
+	        m_pending_echo_out.auto_loot);
 	m_tzs->SendToSession(m_session_key, 0xa020,
 	                     reinterpret_cast<const uint8_t*>(&m_pending_echo_out),
 	                     static_cast<uint32_t>(sizeof(m_pending_echo_out)));
@@ -2681,10 +2812,25 @@ void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
 	const auto* emu = reinterpret_cast<const ::MoveDoor_Struct*>(app->pBuffer);
 
 	// DoorOpen_Struct == MoveDoor_Struct on the wire: { int8 doorid, int8 action }.
-	uint8_t out[2];
-	out[0] = emu->doorid;
-	out[1] = emu->action;
+	const uint8_t doorid = static_cast<uint8_t>(emu->doorid);
+	const uint8_t action = static_cast<uint8_t>(emu->action);
 
+	// Dedup: see m_last_door_action comment in the header.  Suppress repeat
+	// (doorid, action) — v29c has already applied that state.
+	auto it = m_last_door_action.find(doorid);
+	if (it != m_last_door_action.end() && it->second == action) {
+		LogInfo("[TrilogyDiag] 8E20 MoveDoor dedup doorid={} action={}",
+		        static_cast<int>(doorid), static_cast<int>(action));
+		return;
+	}
+	m_last_door_action[doorid] = action;
+
+	LogInfo("[TrilogyDiag] 8E20 MoveDoor doorid={} action={}",
+	        static_cast<int>(doorid), static_cast<int>(action));
+
+	uint8_t out[2];
+	out[0] = doorid;
+	out[1] = action;
 	m_tzs->SendToSession(m_session_key, 0x8e20, out, sizeof(out));
 }
 
@@ -3500,6 +3646,9 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		// Subtract 22 so EQEmu slot 23 → Trilogy slot 1, slot 24 → 2, etc.
 		equip_slot   = static_cast<int16_t>(slot_id - 22);
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLoot: emu_slot={} wire_slot={} item_id={} (negative wire_slot is bad)",
+		        slot_id, equip_slot,
+		        inst->GetItem() ? inst->GetItem()->ID : 0);
 		break;
 	case ItemPacketLimbo:
 		// Cursor delivery when cursor was already occupied (pre-RoF path in PutLootInInventory).
@@ -3529,6 +3678,9 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 			                              : static_cast<int16_t>(slot_id);
 			wire_opcode = 0x3120;
 		}
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketTrade: emu_slot={} wire_slot={} wire_op=0x{:04x} item_id={}",
+		        slot_id, equip_slot, wire_opcode,
+		        inst->GetItem() ? inst->GetItem()->ID : 0);
 		break;
 	case ItemPacketCharInventory:
 		// General inventory delivery: translate EQEmu slot to Trilogy slot.
@@ -3600,6 +3752,36 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	if (!BuildClassicItemFromInst(inst, ci, equip_slot))
 		return;
 
+	if (pkt_type == ItemPacketLoot || pkt_type == ItemPacketTrade || pkt_type == ItemPacketLimbo) {
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket WIRE op=0x{:04x} wire_slot={} item_id={} item_class={} bagtype={} charges={} stack={}",
+		        wire_opcode, equip_slot,
+		        inst->GetItem() ? inst->GetItem()->ID : 0,
+		        inst->GetItem() ? (int)inst->GetItem()->ItemClass : -1,
+		        inst->GetItem() ? (int)inst->GetItem()->BagType : -1,
+		        inst->GetCharges(),
+		        inst->IsStackable() ? 1 : 0);
+
+		// Hex-dump the full 292-byte ClassicItem_Struct so we can diff a working
+		// item against a v29c-killing item. Loot crashes are content-dependent —
+		// the slot/id/order all check out but some field inside the struct chokes
+		// the client. Without the bytes we are guessing.
+		const auto* raw = reinterpret_cast<const uint8_t*>(&ci);
+		const size_t total = sizeof(ci);
+		const size_t row   = 32;
+		const char*  iname = (inst->GetItem() && inst->GetItem()->Name) ? inst->GetItem()->Name : "?";
+		LogInfo("[TRILOGY-LOOT] HEX DUMP {} bytes for item_id={} name=[{}]",
+		        static_cast<unsigned>(total),
+		        inst->GetItem() ? inst->GetItem()->ID : 0,
+		        iname);
+		for (size_t off = 0; off < total; off += row) {
+			std::string line = fmt::format("[TRILOGY-LOOT] @0x{:03x}:", off);
+			const size_t end = std::min(off + row, total);
+			for (size_t i = off; i < end; ++i)
+				line += fmt::format(" {:02x}", static_cast<unsigned>(raw[i]));
+			LogInfo("{}", line);
+		}
+	}
+
 	m_tzs->SendToSession(m_session_key, wire_opcode,
 	                     reinterpret_cast<const uint8_t*>(&ci),
 	                     static_cast<uint32_t>(sizeof(ci)));
@@ -3609,6 +3791,8 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	// the echo follows ALL item deliveries (bag + contents), not just the
 	// first item.  Flushing here would place the echo between the bag and
 	// its content items, which crashes the v29c client.
-	if (pkt_type == ItemPacketLimbo)
+	if (pkt_type == ItemPacketLimbo) {
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLimbo: flushing echo NOW (cursor path)");
 		FlushPendingLootEcho();
+	}
 }

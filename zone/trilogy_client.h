@@ -22,7 +22,10 @@
 #include "../common/eq_stream_intf.h"
 #include "../common/patches/trilogy_structs.h"
 
+#include <cstdint>
+#include <deque>
 #include <map>
+#include <vector>
 
 class TrilogyZoneServer;
 
@@ -187,6 +190,11 @@ public:
 	// Called from TrilogyZoneServer::Tick() each iteration.
 	void CheckSpellGemCooldowns();
 
+	// Drain at most one queued OP_SpecialMesg per call, no faster than
+	// kTextDrainIntervalMs.  Called from TrilogyZoneServer::Tick() each
+	// iteration.  See m_pending_text_q comment in the header for why.
+	void DrainPendingText();
+
 	// ---- Merchant / vendor window state ----
 	// One open merchant window's contents, keyed by the window slot the client
 	// echoes back on buy.  Populated as OP_ItemPacket(ItemPacketMerchant) packets
@@ -343,4 +351,46 @@ private:
 	// spawns, so this is generous to avoid silently dropping static world content.
 	static constexpr size_t kMaxDeferredSpawns = 512;
 	std::vector<std::pair<uint16_t, std::vector<uint8_t>>> m_deferred_spawns;
+
+	// Per-spawn last-sent SpawnAppearance (type, parameter) cache.  v29c receives
+	// OP_SpawnAppearance for every appearance change of every visible mob; in a
+	// busy combat scene with bots + nearby NPCs the broadcast rate can hit ~6/s
+	// and dominate the outbound stream.  Most of that traffic is redundant —
+	// the same (type, parameter) re-broadcast for the same spawn — and the v29c
+	// client appears to freeze under sustained pressure.  We suppress the dup
+	// at the translation boundary so the wire stays clean.  Cleared per spawn
+	// on OP_DeleteSpawn; whole map cleared at a soft cap to bound memory.
+	static constexpr size_t kMaxAppearanceCache = 1024;
+	std::map<uint16_t, std::pair<int16_t, int32_t>> m_last_appearance;
+
+	// Per-door last-sent action cache.  Doors::HandleClick in EQEmu has a bug
+	// where city-edge doors (HasDestinationZone() == true) never get
+	// SetOpenState(true) called — so IsDoorOpen() stays false, every subsequent
+	// click broadcasts another OPEN_DOOR, and Doors::Process never fires
+	// CLOSE_DOOR for them.  Bots following the player through a zone-edge
+	// door re-click it on every pass, producing 15+ OPEN broadcasts on the
+	// same door in a single session (observed in qeynos2 logs).  Suppressing
+	// a repeat (doorid, action) at the Trilogy boundary is safe — v29c has
+	// already applied the state — and keeps the wire and ARQ window clean.
+	// Door IDs are 8-bit, so a flat 256-entry map covers every door in a zone.
+	std::map<uint8_t, uint8_t> m_last_door_action;
+
+	// Paced OP_SpecialMesg (0x8021) outbound queue.  v29c freezes silently when
+	// a tight burst of chat lines lands inside one zone Tick — observed with the
+	// `^spells` bot command (9 messages in <50ms) and very likely the trigger
+	// for other "dump"-style commands too.  Every 0x8021 we'd otherwise send
+	// is enqueued here and drained at kTextDrainIntervalMs per packet by
+	// DrainPendingText(), called from TrilogyZoneServer::Tick().  FIFO order is
+	// preserved so chat lines render in the same order they were produced.
+	static constexpr size_t   kMaxPendingText        = 256; // soft cap, drop oldest
+	static constexpr uint64_t kTextDrainIntervalMs   = 50;  // 1 packet / 50ms = 20/s
+	struct PendingTextPacket {
+		uint16_t              opcode;
+		std::vector<uint8_t>  payload;
+	};
+	std::deque<PendingTextPacket> m_pending_text_q;
+	uint64_t                      m_next_text_drain_ms = 0;
+
+	// Enqueue an outbound text packet to be drained by DrainPendingText().
+	void QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size);
 };

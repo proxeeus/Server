@@ -29,6 +29,7 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 class TrilogyClient;
@@ -139,6 +140,30 @@ private:
 		// is cached at ~2 Hz to keep the heartbeat path cheap.
 		uint64_t    last_combat_scan_ms  = 0;
 		bool        nearby_combat        = false;
+
+		// Per-entity dirty-flag cache for SendMobHeartbeat.  EQClassic only
+		// broadcasts mobs whose state actually changed since the previous tick
+		// (see EntityList::SendPositionUpdates: the
+		// `mob->GetLastChange() >= cLastUpdate` gate).  We mirror that here
+		// per-session: each spawn_id remembers the wire-encoded x/y/z/heading/
+		// anim_type values from its last broadcast plus a timestamp.  A
+		// candidate update is skipped iff (a) every field is unchanged AND
+		// (b) the last broadcast was less than STALENESS_REFRESH_MS ago, where
+		// STALENESS_REFRESH_MS is set well inside the v29c client's ~5-10 s
+		// staleness timeout for non-permanent spawns.  This is a pure
+		// bandwidth optimisation — it never changes the *worst-case* refresh
+		// interval, so the staleness timer never fires.  In dense walkers
+		// (qeynos2, freportw) this cuts A120 payload by 30-50 % in idle/
+		// exploration mode at zero visual cost.
+		struct LastBroadcast {
+			int16_t  x_pos     = 0;
+			int16_t  y_pos     = 0;
+			int16_t  z_pos     = 0;
+			int8_t   heading   = 0;
+			int8_t   anim_type = 0;
+			uint64_t sent_ms   = 0;
+		};
+		std::unordered_map<uint16_t, LastBroadcast> last_broadcast;
 
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
