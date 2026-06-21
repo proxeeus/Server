@@ -189,6 +189,15 @@ private:
 		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion
 		uint64_t    last_stamina_ms   = 0;
 
+		// Outbound bandwidth accounting (BWDiag).  SendApp accumulates every wire
+		// byte + packet sent to this session; Tick emits a [BWDiag] line every
+		// 5 s with the rolling totals and resets the window.  Lets us answer
+		// "are we over budget for v29c's 56k-modem-era receive pipe?" with hard
+		// numbers instead of heartbeat-period estimates.
+		uint64_t    bw_window_start_ms = 0;
+		uint64_t    bw_bytes_sent      = 0;
+		uint32_t    bw_packets_sent    = 0;
+
 		// TimeOfDay re-sync — F220 sent every 180s (1 EQ hour) matching world server broadcast
 		uint64_t    last_time_of_day_ms = 0;
 
@@ -205,6 +214,13 @@ private:
 		// Non-null once the player has fully entered the zone (HandleZoneInComplete).
 		// Owned by entity_list; do NOT delete directly — use entity_list.RemoveClient/Mob.
 		TrilogyClient* trilogy_client = nullptr;
+
+		// EQEmu-internal entity_id of trilogy_client, cached at assignment time.
+		// Used by Tick's stale-pointer guard to validate s.trilogy_client without
+		// dereferencing it.  NOTE: this is *not* the same as player_spawn_id, which
+		// is a v29c wire ID derived from char_id.  EQEmu's entity_list keys by the
+		// internal entity_id assigned at AddClient() time.
+		uint16_t eqemu_entity_id = 0;
 
 		// Camp-out tracking: set when client sends OP_Camp (0x0722); session removed after 29s.
 		bool        camping    = false;

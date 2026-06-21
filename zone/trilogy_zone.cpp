@@ -620,7 +620,8 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	Session& s = it->second;
 	if (s.trilogy_client) {
 		uint16 id = s.trilogy_client->GetID();
-		s.trilogy_client = nullptr;
+		s.trilogy_client  = nullptr;
+		s.eqemu_entity_id = 0;
 		entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
 	} else if (s.counted_in_zone && numclients > 0) {
 		--numclients;
@@ -835,7 +836,8 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		Session& existing = m_sessions[key];
 		if (existing.trilogy_client) {
 			uint16 id = existing.trilogy_client->GetID();
-			existing.trilogy_client = nullptr;
+			existing.trilogy_client  = nullptr;
+			existing.eqemu_entity_id = 0;
 			entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
 		} else if (existing.counted_in_zone && numclients > 0) {
 			--numclients;
@@ -2647,8 +2649,9 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		);
 		entity_list.AddClient(tc);
 		database.LoadPetInfo(tc);
-		s.trilogy_client  = tc;
-		s.counted_in_zone = true; // legacy fallback if tc ever becomes null post-init
+		s.trilogy_client   = tc;
+		s.eqemu_entity_id  = static_cast<uint16_t>(tc->GetID()); // cache for Tick's stale-pointer guard
+		s.counted_in_zone  = true; // legacy fallback if tc ever becomes null post-init
 
 		// Arm the zone-in loop guard at the spawn point so server-side zone-point
 		// detection is suppressed until the player walks clear — otherwise a
@@ -6115,14 +6118,36 @@ void TrilogyZoneServer::Tick()
 		// methods on it (CheckSpellGemCooldowns, DrainPendingText, …) and reads
 		// garbage member values — observed crash: SendToSession AV via stale
 		// m_tzs in CheckSpellGemCooldowns, ~45 s after a Dropping-client log.
-		// Validate via entity_list lookup using the cached spawn_id and null
-		// the cached pointer if the Client is gone.  All later s.trilogy_client
-		// checks in this loop body then short-circuit safely.
-		if (s.trilogy_client && s.player_spawn_id != 0) {
-			Client* live = entity_list.GetClientByID(s.player_spawn_id);
+		// Validate via entity_list lookup using the cached EQEmu entity_id (NOT
+		// player_spawn_id — that's a wire ID derived from char_id, and a lookup
+		// by it returns nullptr, which would cause this guard to wrongly null
+		// the pointer on every Tick and silently break input dispatch for
+		// Consider, CombatAbility, Hail, etc. in OnDatagram).
+		if (s.trilogy_client && s.eqemu_entity_id != 0) {
+			Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
 			if (live != static_cast<Client*>(s.trilogy_client)) {
-				s.trilogy_client = nullptr;
+				s.trilogy_client  = nullptr;
+				s.eqemu_entity_id = 0;
 			}
+		}
+
+		// BWDiag: every 5 s, emit per-session outbound bandwidth roll.  Gives
+		// us hard numbers to disambiguate cumulative bandwidth pressure from
+		// other freeze hypotheses.  v29c was sized for ~56k-modem-era inbound
+		// (~3-5 KB/s sustained); anything over that is over budget.
+		if (s.bw_window_start_ms == 0) {
+			s.bw_window_start_ms = now_ms;
+		} else if (now_ms - s.bw_window_start_ms >= 5000) {
+			uint64_t elapsed_ms = now_ms - s.bw_window_start_ms;
+			double   secs      = static_cast<double>(elapsed_ms) / 1000.0;
+			double   kbps      = (secs > 0.0) ? (static_cast<double>(s.bw_bytes_sent) / 1024.0) / secs : 0.0;
+			double   pps       = (secs > 0.0) ? (static_cast<double>(s.bw_packets_sent)) / secs : 0.0;
+			LogInfo("[TrilogyDiag] BW char='{}' window={:.1f}s tx_bytes={} tx_packets={} kbps={:.2f} pps={:.1f}",
+			        s.char_name, secs,
+			        s.bw_bytes_sent, s.bw_packets_sent, kbps, pps);
+			s.bw_window_start_ms = now_ms;
+			s.bw_bytes_sent      = 0;
+			s.bw_packets_sent    = 0;
 		}
 
 		// Camp interrupt: classic EQ behaviour cancels /camp the moment the
@@ -6384,21 +6409,53 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// which overflows the Trilogy v29c client's ARQ queue and causes a disconnect.
 	static constexpr float CULL_RADIUS_SQ = 600.0f * 600.0f;
 
+	// Distance tier: within 300 EQ units of the player ("inner ring") we keep
+	// the full 100 ms / 10 Hz combat refresh for smooth melee.  Between 300
+	// and 600 units ("outer ring") we enforce a 500 ms minimum interval per
+	// mob — bot-vs-NPC fights and patrolling guards at that range produce
+	// 7-9 kbps of heartbeat amplification, which sustained for 2-3 min has
+	// been measured to trigger v29c's cumulative-damage freeze 4-6 min later
+	// (Test 2 / 2026-06-21 freportw_*_7000_7108.log).  Cutting outer-ring
+	// rate to 2 Hz drops peak BW to ~3-4 kbps without touching what the
+	// player is actually engaged with.  Mobs *near* the player are
+	// unaffected — by definition combat targets are close.
+	static constexpr float    INNER_RING_RADIUS_SQ        = 300.0f * 300.0f;
+	static constexpr uint64_t OUTER_RING_MIN_INTERVAL_MS  = 500;
+
 	// Dirty-flag gate (mirrors EQClassic EntityList::SendPositionUpdates'
 	// `GetLastChange() >= cLastUpdate` filter): only stage an update if the
 	// wire-encoded position/heading/anim actually changed since the last
 	// broadcast to this session, OR the previous broadcast is older than
-	// STALENESS_REFRESH_MS.  The refresh floor matches the prior stationary-NPC
-	// cadence (500 ms) and stays well inside the v29c client's ~5-10 s
-	// staleness timeout for non-permanent spawns, so a held-still mob is
-	// still refreshed before it can stale out client-side.
+	// STALENESS_REFRESH_MS.  The v29c client times non-permanent spawns out
+	// after ~5-10 s of silence, so the refresh floor needs to be safely
+	// inside that — but it can be FAR inside it.  At 500 ms we were spending
+	// ~3-4 KB/s on dense city zones (50+ in-range NPCs × 2 Hz refresh).
+	// Bumping to 1000 ms halves stationary-mob bandwidth (~30-50 % total in
+	// idle zones) with zero visual loss — a stationary mob shows the same
+	// coordinates every broadcast — while still leaving 5-10× safety margin
+	// against the client-side timeout.  Moving mobs are unaffected (the
+	// dirty-flag triggers on position change immediately), and combat is
+	// untouched (handled by the per-session 100 ms throttle path above).
 	//
 	// Caller is expected to have already built `upd` (spawn_id + the encoded
-	// int16/int8 wire fields).  Returns true → include in batch and bump n;
-	// false → drop this slot, do not increment n (slot gets overwritten next).
-	static constexpr uint64_t STALENESS_REFRESH_MS = 500;
-	auto should_broadcast = [&](Trilogy::structs::SpawnPositionUpdate_Struct* upd) -> bool {
+	// int16/int8 wire fields), and to pass `dist_sq` (squared distance from
+	// player) so the outer-ring throttle can fire.  Returns true → include
+	// in batch and bump n; false → drop this slot, do not increment n (slot
+	// gets overwritten next).
+	static constexpr uint64_t STALENESS_REFRESH_MS = 1000;
+	auto should_broadcast = [&](Trilogy::structs::SpawnPositionUpdate_Struct* upd,
+	                            float dist_sq) -> bool {
 		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
+
+		// Outer ring (300-600 u): enforce 500 ms minimum interval regardless
+		// of motion.  Skipping this is the biggest single bandwidth lever —
+		// most NPCs in a 600-unit visible field sit in the outer annulus
+		// because it has 3× the area of the inner circle.
+		if (dist_sq > INNER_RING_RADIUS_SQ) {
+			if (now_ms - last.sent_ms < OUTER_RING_MIN_INTERVAL_MS)
+				return false;
+		}
+
 		bool stale   = (now_ms - last.sent_ms) >= STALENESS_REFRESH_MS;
 		bool changed = (last.x_pos     != upd->x_pos)
 		            || (last.y_pos     != upd->y_pos)
@@ -6435,7 +6492,8 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
-		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
+		float dist_sq = dx * dx + dy * dy;
+		if (dist_sq > CULL_RADIUS_SQ) continue;
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -6461,7 +6519,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 		}
 
-		if (!should_broadcast(upd)) continue;
+		if (!should_broadcast(upd, dist_sq)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -6480,7 +6538,8 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		float dx = c->GetX() - s.pos_x;
 		float dy = c->GetY() - s.pos_y;
-		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
+		float dist_sq = dx * dx + dy * dy;
+		if (dist_sq > CULL_RADIUS_SQ) continue;
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -6500,7 +6559,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		}
 		// else: anim_type=0, delta=0 — client confirms position without moving
 
-		if (!should_broadcast(upd)) continue;
+		if (!should_broadcast(upd, dist_sq)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -6518,7 +6577,8 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		float dx = bot->GetX() - s.pos_x;
 		float dy = bot->GetY() - s.pos_y;
-		if (dx * dx + dy * dy > CULL_RADIUS_SQ) continue;
+		float dist_sq = dx * dx + dy * dy;
+		if (dist_sq > CULL_RADIUS_SQ) continue;
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -6536,7 +6596,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 		}
 
-		if (!should_broadcast(upd)) continue;
+		if (!should_broadcast(upd, dist_sq)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -6704,6 +6764,27 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 			  memcpy(buf + o, &crc, 4); o += 4; }
 
 			LogInfo("[TrilogyZone] tx FRAG {}/{} opcode={:04X} chunk={}", i, frags, (i == 0 ? opcode : 0u), chunk);
+
+			// Symmetric outbound hex dump for fragmented packets, gated by
+			// Netcode Detail.  Each fragment is dumped on its own line so we
+			// can reassemble manually if needed.
+			if (LogSys.IsLogEnabled(Logs::Detail, Logs::Netcode)) {
+				std::string hex;
+				int dump_len = std::min(o, 64);
+				for (int k = 0; k < dump_len; ++k) {
+					char tmp[4];
+					snprintf(tmp, sizeof(tmp), "%02X ", buf[k]);
+					hex += tmp;
+				}
+				LogNetcode("[TrilogyZone] tx FRAG datagram {}/{} {} bytes opcode={:04X} hdr={:02X}: {}",
+				           i, frags, o, (i == 0 ? opcode : 0u), (unsigned)buf[0], hex);
+			}
+
+			// BWDiag: accumulate every fragment too — bandwidth-on-the-wire is
+			// what matters, not logical packet count.
+			s.bw_bytes_sent   += static_cast<uint64_t>(o);
+			s.bw_packets_sent += 1;
+
 			m_send_fn(addr, port, buf, static_cast<size_t>(o));
 		}
 		return;
@@ -6745,6 +6826,25 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
+	// Symmetric outbound hex dump (matches OnDatagram's inbound dump format).
+	// Gated by Netcode log level — enable when verifying wire-format correctness
+	// against EQClassic / Verant captures.  At normal log levels this is a no-op.
+	if (LogSys.IsLogEnabled(Logs::Detail, Logs::Netcode)) {
+		std::string hex;
+		int dump_len = std::min(o, 64);
+		for (int i = 0; i < dump_len; ++i) {
+			char tmp[4];
+			snprintf(tmp, sizeof(tmp), "%02X ", buf[i]);
+			hex += tmp;
+		}
+		LogNetcode("[TrilogyZone] tx datagram {} bytes opcode={:04X} hdr={:02X}: {}",
+		           o, opcode, (unsigned)buf[0], hex);
+	}
+
+	// BWDiag: accumulate outbound bytes/packets — Tick emits the 5s roll.
+	s.bw_bytes_sent   += static_cast<uint64_t>(o);
+	s.bw_packets_sent += 1;
+
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }
 
@@ -6774,6 +6874,9 @@ void TrilogyZoneServer::SendAck(const std::string& addr, int port, Session& s)
 	{ uint32_t crc = htonl(CRC32::Generate(buf, static_cast<uint32_t>(o)));
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
+	s.bw_bytes_sent   += static_cast<uint64_t>(o);
+	s.bw_packets_sent += 1;
+
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }
 
@@ -6801,6 +6904,10 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 	  memcpy(buf + o, &crc, 4); o += 4; }
 
 	LogInfo("[TrilogyZone] tx CLOSE SEQ={}", s.gsq - 1);
+
+	s.bw_bytes_sent   += static_cast<uint64_t>(o);
+	s.bw_packets_sent += 1;
+
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 }
 
@@ -7772,7 +7879,8 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 	// retransmit window.
 	if (s.trilogy_client && s.trilogy_client->IsZoning()) {
 		uint16 id = s.trilogy_client->GetID();
-		s.trilogy_client = nullptr;
+		s.trilogy_client  = nullptr;
+		s.eqemu_entity_id = 0;
 		entity_list.RemoveMob(id);
 		s.counted_in_zone = false;
 		LogInfo("[TrilogyZone] {} entity removed on zone-out, numclients={}", s.char_name, numclients);

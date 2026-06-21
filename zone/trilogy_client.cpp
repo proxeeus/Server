@@ -287,46 +287,100 @@ void TrilogyClient::FastQueuePacket(EQApplicationPacket** app,
 static const char* TrilogySystemStringTemplate(uint32_t string_id);
 
 // ============================================================
-// Outbound text pacing (see m_pending_text_q in trilogy_client.h)
+// Combat-event token bucket (see m_pending_combat_q in trilogy_client.h)
 //
-// v29c silently freezes when a tight burst of OP_SpecialMesg lands inside one
-// zone Tick.  Reproduced with the `^spells` bot command: 9 messages in <50ms
-// → cli_arq lock → no further client RX → 5-min CONNECTED timeout.  Smaller
-// bursts (4–5 lines) survived in the same session, so the threshold is in
-// the 6–9 range.  We pace to 1 packet per 50 ms (20/s) — fast enough that a
-// 30-line `^spells` finishes in ~1.5 s, slow enough that v29c's chat handler
-// keeps up.  FIFO preserves user-visible line order.
+// v29c freezes under cumulative load: 5-9 kbps for 3 minutes of bot-vs-NPC
+// combat is enough to poison its state and trigger a delayed freeze even
+// after bandwidth subsides.  v29c's design budget (56k-modem era) is
+// ~3-5 kbps.  Bucket caps OP_SpecialMesg (0x8021), OP_Attack (0x9F20), and
+// OP_Action (0x5820) combined at 30 burst / 10 sustained per second.
+//
+// Subsumes the earlier OP_SpecialMesg-only burst protection (the `^spells`
+// case: 9 chat lines in <50 ms): a 30-token bucket absorbs that without
+// queueing, so the user sees the list instantly.
+//
+// Callers use QueueTextPacket(opcode, data, size) for any combat opcode.
+// Fast path: queue empty AND token available → send immediately (no latency).
+// Slow path: enqueue; DrainPendingText() flushes as tokens refill.
 // ============================================================
-void TrilogyClient::QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
-{
-	if (m_pending_text_q.size() >= kMaxPendingText) {
-		// Soft cap: drop oldest.  Hitting this means something is spamming text
-		// far beyond a human-readable rate; losing the leading lines is the
-		// least-bad option for chat that's already going to scroll past.
-		m_pending_text_q.pop_front();
-	}
-	PendingTextPacket p;
-	p.opcode = opcode;
-	p.payload.assign(data, data + size);
-	m_pending_text_q.push_back(std::move(p));
-}
 
-void TrilogyClient::DrainPendingText()
+bool TrilogyClient::TryAcquireCombatToken()
 {
-	if (m_pending_text_q.empty()) return;
-
 	const uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
-	if (now_ms < m_next_text_drain_ms) return;
+	if (m_combat_tokens_last_ms != 0) {
+		double elapsed_s = static_cast<double>(now_ms - m_combat_tokens_last_ms) / 1000.0;
+		m_combat_tokens = std::min(
+			static_cast<double>(kCombatBucketCapacity),
+			m_combat_tokens + elapsed_s * kCombatBucketRefill);
+	}
+	m_combat_tokens_last_ms = now_ms;
 
-	auto& p = m_pending_text_q.front();
-	m_tzs->SendToSession(m_session_key, p.opcode,
-	                     p.payload.data(),
-	                     static_cast<uint32_t>(p.payload.size()));
-	m_pending_text_q.pop_front();
-	m_next_text_drain_ms = now_ms + kTextDrainIntervalMs;
+	if (m_combat_tokens >= 1.0) {
+		m_combat_tokens -= 1.0;
+		return true;
+	}
+	return false;
+}
+
+void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
+{
+	if (m_pending_combat_q.size() >= kMaxPendingCombat) {
+		// Soft cap: drop oldest.  Hitting this means we're far over rate
+		// budget for many seconds; losing leading chatter is the least-bad
+		// option to keep latency bounded.
+		m_pending_combat_q.pop_front();
+	}
+	PendingCombatPacket p;
+	p.opcode = opcode;
+	p.payload.assign(data, data + size);
+	m_pending_combat_q.push_back(std::move(p));
+}
+
+void TrilogyClient::QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
+{
+	// Fast path: nothing queued AND token available → send immediately so
+	// short bursts (combat hit, brief chat) don't get artificial latency.
+	if (m_pending_combat_q.empty() && TryAcquireCombatToken()) {
+		m_tzs->SendToSession(m_session_key, opcode, data, size);
+		return;
+	}
+	// Else queue — DrainPendingText() will send it as soon as a token is
+	// available, preserving FIFO order across the chat / animation stream.
+	EnqueueCombatPacket(opcode, data, size);
+}
+
+void TrilogyClient::DrainPendingText()
+{
+	if (m_pending_combat_q.empty()) return;
+
+	// Refill + spend tokens against any queued combat events.  Sending
+	// multiple per Tick is fine — the bucket is already capped at burst 30.
+	while (!m_pending_combat_q.empty() && TryAcquireCombatToken()) {
+		auto& p = m_pending_combat_q.front();
+		m_tzs->SendToSession(m_session_key, p.opcode,
+		                     p.payload.data(),
+		                     static_cast<uint32_t>(p.payload.size()));
+		m_pending_combat_q.pop_front();
+	}
+}
+
+bool TrilogyClient::IsCombatEventCloseToObserver(uint16_t source_id, uint16_t target_id) const
+{
+	const float my_x = GetX();
+	const float my_y = GetY();
+
+	auto within = [&](uint16_t id) -> bool {
+		if (id == 0) return false;
+		Mob* m = entity_list.GetMob(id);
+		if (!m) return false;
+		float dx = m->GetX() - my_x;
+		float dy = m->GetY() - my_y;
+		return (dx * dx + dy * dy) <= kCombatVisibilityRadiusSq;
+	};
+	return within(source_id) || within(target_id);
 }
 
 // ============================================================
@@ -2089,6 +2143,11 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		return;
 	}
 
+	// Combat-event visibility filter — drop melee actions where neither
+	// source nor target is close enough to be visually relevant.
+	if (!IsCombatEventCloseToObserver(emu->source, emu->target))
+		return;
+
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
 	out.target = static_cast<int32_t>(TranslateId(emu->target));
@@ -2096,9 +2155,9 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	out.type   = static_cast<int8_t>(emu->type);
 	out.spell  = static_cast<int16_t>(emu->spell);
 
-	m_tzs->SendToSession(m_session_key, 0x5820,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	// Routed through combat-event token bucket — see QueueTextPacket comment.
+	QueueTextPacket(0x5820, reinterpret_cast<const uint8_t*>(&out),
+	                static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================
@@ -2120,8 +2179,16 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 
 	// Spell damage (DD spells): the spell landed — flush pending OP_CastOn.
 	// DD spells don't generate OP_Buff, so this is the only flush point.
+	// NOTE: FlushPendingCastOn runs even when the event is too far to
+	// broadcast — the CastOn buff state must be cleared regardless of
+	// whether the damage packet itself is going on the wire.
 	if (emu->spellid != 0 && emu->spellid != 0xFFFF)
 		FlushPendingCastOn(true);
+
+	// Combat-event visibility filter — drop damage events where neither
+	// source nor target is close enough to be visually relevant.
+	if (!IsCombatEventCloseToObserver(emu->source, emu->target))
+		return;
 
 	Trilogy::structs::Action_Struct out{};
 	memset(&out, 0, sizeof(out));
@@ -2139,9 +2206,9 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 	// are exactly what the client expects for non-hit outcomes.
 	out.damage = static_cast<int32_t>(emu->damage);
 
-	m_tzs->SendToSession(m_session_key, 0x5820,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	// Routed through combat-event token bucket — see QueueTextPacket comment.
+	QueueTextPacket(0x5820, reinterpret_cast<const uint8_t*>(&out),
+	                static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================
@@ -2518,6 +2585,12 @@ void TrilogyClient::HandleAnimation(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::Animation_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::Animation_Struct*>(app->pBuffer);
 
+	// Combat-event visibility filter — drop swings from sources too far from
+	// the observing player to be visually relevant.  Animation has no target
+	// field; source-only check.
+	if (!IsCombatEventCloseToObserver(emu->spawnid, 0))
+		return;
+
 	Trilogy::structs::Attack_Struct out{};
 	memset(&out, 0, sizeof(out));
 	out.spawn_id         = static_cast<int32_t>(TranslateId(emu->spawnid));
@@ -2525,9 +2598,9 @@ void TrilogyClient::HandleAnimation(const EQApplicationPacket* app)
 	out.a_unknown2[5]    = static_cast<int8_t>(0x80);
 	out.a_unknown2[6]    = static_cast<int8_t>(0x3F);
 
-	m_tzs->SendToSession(m_session_key, 0x9f20,
-	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	// Routed through combat-event token bucket — see QueueTextPacket comment.
+	QueueTextPacket(0x9f20, reinterpret_cast<const uint8_t*>(&out),
+	                static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================

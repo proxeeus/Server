@@ -375,22 +375,60 @@ private:
 	// Door IDs are 8-bit, so a flat 256-entry map covers every door in a zone.
 	std::map<uint8_t, uint8_t> m_last_door_action;
 
-	// Paced OP_SpecialMesg (0x8021) outbound queue.  v29c freezes silently when
-	// a tight burst of chat lines lands inside one zone Tick — observed with the
-	// `^spells` bot command (9 messages in <50ms) and very likely the trigger
-	// for other "dump"-style commands too.  Every 0x8021 we'd otherwise send
-	// is enqueued here and drained at kTextDrainIntervalMs per packet by
-	// DrainPendingText(), called from TrilogyZoneServer::Tick().  FIFO order is
-	// preserved so chat lines render in the same order they were produced.
-	static constexpr size_t   kMaxPendingText        = 256; // soft cap, drop oldest
-	static constexpr uint64_t kTextDrainIntervalMs   = 50;  // 1 packet / 50ms = 20/s
-	struct PendingTextPacket {
+	// Combat-event token bucket — protects v29c from cumulative damage during
+	// sustained combat-amplification load (bot-vs-NPC fights the player is just
+	// observing).  Measured: 5-9 kbps for 3 minutes is enough to poison v29c
+	// state and trigger a delayed freeze even after bandwidth subsides.  Bucket
+	// applies to OP_SpecialMesg (0x8021 combat chat), OP_Attack (0x9F20 swing
+	// anims), and OP_Action (0x5820 action anims) — the three highest-volume
+	// combat broadcasts.  Capacity 30 lets short bursts through unimpeded;
+	// 10/s refill caps sustained rate well under v29c's ~3-5 kbps budget.
+	// Over budget → enqueue with drop-oldest at soft cap.
+	//
+	// Also covers the earlier 8021-only `^spells` burst freeze case (9 messages
+	// in <50ms): 30-capacity bucket absorbs that without queueing.
+	static constexpr size_t   kMaxPendingCombat      = 256; // soft cap, drop oldest
+	static constexpr uint32_t kCombatBucketCapacity  = 30;
+	static constexpr double   kCombatBucketRefill    = 10.0; // tokens / second
+	struct PendingCombatPacket {
 		uint16_t              opcode;
 		std::vector<uint8_t>  payload;
 	};
-	std::deque<PendingTextPacket> m_pending_text_q;
-	uint64_t                      m_next_text_drain_ms = 0;
+	std::deque<PendingCombatPacket> m_pending_combat_q;
+	double                          m_combat_tokens          = static_cast<double>(kCombatBucketCapacity);
+	uint64_t                        m_combat_tokens_last_ms  = 0;
 
-	// Enqueue an outbound text packet to be drained by DrainPendingText().
+	// Try to take a combat token; returns true if one was available and was
+	// consumed.  Internally refills tokens based on elapsed wall time.
+	bool TryAcquireCombatToken();
+
+	// Enqueue a combat packet to be drained by DrainPendingText() when a
+	// token becomes available.
+	void EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, uint32_t size);
+
+	// Public caller entry point for combat opcodes (0x8021, 0x9F20, 0x5820).
+	// Fast path sends immediately when a token is free and the queue is
+	// drained; slow path enqueues.  Existing 0x8021 callers in
+	// HandleOutgoingSpecialMesg / FormattedMessage / SimpleMessage already
+	// use this; 0x9F20 (HandleAttack) and 0x5820 (HandleAction / HandleDamage)
+	// were routed through this in 2026-06-21 to subsume their direct
+	// SendToSession calls under the same token bucket.
 	void QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size);
+
+	// Combat-event visibility filter for v29c.  EQEmu broadcasts attack/anim
+	// at RuleI(Range, Anims)=135u and damage messages at 50u — fine for
+	// Titanium+ but each event still counts toward v29c's cumulative-damage
+	// budget (~1000-1500 packets per session before freeze).  A passive
+	// observer "following" bot-vs-NPC combat at 100u behind sits inside
+	// those ranges and accumulates 400+ combat events per minute they're
+	// not actually in.  This check drops the event if NEITHER the source
+	// NOR the target is within kCombatVisibilityRadiusSq of this client —
+	// so anything you're in or standing next to stays full-fidelity, while
+	// the broadcast amplification from following-along disappears.
+	//
+	// Either id may be 0 (no entity for that role); 0 always fails the
+	// close check.  IDs are EQEmu-internal entity_ids (not Trilogy wire IDs).
+	bool IsCombatEventCloseToObserver(uint16_t source_id, uint16_t target_id) const;
+
+	static constexpr float kCombatVisibilityRadiusSq = 100.0f * 100.0f;
 };
