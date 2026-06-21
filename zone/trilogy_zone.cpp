@@ -734,7 +734,31 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 	if (o + 2 > size - 4) return;
 	o += 2; // SEQ
 
-	if (hdr1 & HDR1_ARSP) { if (o + 2 > size - 4) return; o += 2; }
+	if (hdr1 & HDR1_ARSP) {
+		if (o + 2 > size - 4) return;
+		// Client's cumulative ack of our outbound ARQs.  Drives the
+		// unacked-pending gate in SendApp (EQClassic gap-16 prevention)
+		// AND pops acked entries from the EQClassic-faithful resend queue.
+		uint16_t arsp = ntohs(*reinterpret_cast<const uint16_t*>(data + o));
+		if (s.sack_init) {
+			int16_t delta = static_cast<int16_t>(arsp - s.acked_arq);
+			if (delta > 0) {
+				s.acked_arq = arsp; // monotonic, wrap-safe
+				// Drop every queued ARQ that's now acknowledged.  Match
+				// EQClassic IncomingARSP: `dwARSP - top->dwARQ >= 0`
+				// (signed-int16 diff, wrap-safe).
+				while (!s.resend_queue.empty()) {
+					int16_t d = static_cast<int16_t>(arsp - s.resend_queue.front().arq);
+					if (d < 0) break; // queue head still pending
+					s.resend_queue.pop_front();
+				}
+				// Disable no_ack_received_timer when queue fully drains
+				// (matches EQClassic line 103).
+				if (s.resend_queue.empty()) s.resend_timer_ms = 0;
+			}
+		}
+		o += 2;
+	}
 	if (hdr1 & 0x10)       { if (o + 1 > size - 4) return; o += 1; }
 	if (hdr1 & 0x20)       { if (o + 2 > size - 4) return; o += 2; }
 	if (hdr1 & 0x40)       { if (o + 4 > size - 4) return; o += 4; }
@@ -849,10 +873,13 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		existing.seq_sent   = false;
 		existing.gsq        = 0;
 		existing.arq        = 0;
+		existing.acked_arq  = 0;
 		existing.asq_hi     = 1;
 		existing.asq_lo     = 0;
 		existing.ack_due    = false;
 		existing.frag_groups.clear();
+		existing.resend_queue.clear();
+		existing.resend_timer_ms = 0;
 		existing.char_name[0] = '\0';
 		existing.zone_short[0] = '\0';
 		existing.char_id         = 0;
@@ -6264,6 +6291,70 @@ void TrilogyZoneServer::Tick()
 		RemoveSession(key);
 
 	// ──────────────────────────────────────────────────────────────────────
+	// EQClassic-faithful ARQ retransmit (no_ack_received_timer).
+	//
+	// Mirror of EQPacketManager::CheckTimers (EQClassic line 668-708): when
+	// the no_ack_received_timer fires (500 ms first, 1000 ms on retries), we
+	// resend EVERY packet still in resend_queue with a fresh SEQ but the
+	// original ARQ + payload + ARSP.  Each resend bumps send_count; >15 →
+	// drop the session (EQClassic line 695 "Dropping client").
+	//
+	// Resending all-on-timer is wasteful under partial loss but matches
+	// the protocol the v29c client expects.  It's the safety net: the
+	// outbound-pending gate in SendApp keeps the steady-state under cap,
+	// the resend queue is the recovery path for actual packet loss.
+	{
+		constexpr uint64_t kAckTimeoutMs = 1000;
+		constexpr uint8_t  kMaxResends   = 15;
+		std::vector<uint64_t> to_drop;
+
+		for (auto& kv : m_sessions) {
+			Session& s = kv.second;
+			if (s.state != CONNECTED) continue;
+			if (s.resend_queue.empty()) continue;
+			if (s.resend_timer_ms == 0)   continue;
+			if (now_ms < s.resend_timer_ms) continue;
+
+			// Timer fired — resend every queued packet.
+			bool drop = false;
+			for (auto& pending : s.resend_queue) {
+				if (pending.wire_bytes.size() < 8) continue; // sanity
+
+				// Patch SEQ at offset 2-3 to a fresh value.  ARSP/ARQ
+				// payload preserved as originally sent.
+				uint16_t fresh_seq = htons(s.gsq++);
+				memcpy(pending.wire_bytes.data() + 2, &fresh_seq, 2);
+
+				// Recompute CRC32 over bytes [0..size-4].
+				size_t crc_off = pending.wire_bytes.size() - 4;
+				uint32_t crc = htonl(CRC32::Generate(
+					pending.wire_bytes.data(), static_cast<uint32_t>(crc_off)));
+				memcpy(pending.wire_bytes.data() + crc_off, &crc, 4);
+
+				m_send_fn(s.source_addr, s.source_port,
+				          reinterpret_cast<const char*>(pending.wire_bytes.data()),
+				          pending.wire_bytes.size());
+
+				s.bw_bytes_sent   += static_cast<uint64_t>(pending.wire_bytes.size());
+				s.bw_packets_sent += 1;
+
+				pending.last_send_ms = now_ms;
+				if (++pending.send_count > kMaxResends) {
+					LogInfo("[TrilogyZone] resend_count > {} on ARQ={:04X} opcode={:04X} for char [{}] — dropping",
+					        kMaxResends, pending.arq, pending.opcode, s.char_name);
+					drop = true;
+				}
+			}
+
+			// Re-arm timer for 1000 ms (matches EQClassic line 707).
+			s.resend_timer_ms = now_ms + kAckTimeoutMs;
+			if (drop) to_drop.push_back(kv.first);
+		}
+
+		for (uint64_t key : to_drop) RemoveSession(key);
+	}
+
+	// ──────────────────────────────────────────────────────────────────────
 	// Drain the per-session outbound rate-limiter queues.
 	//
 	// SendApp queues application packets when bursts exceed WINDOW_PACKETS
@@ -6277,6 +6368,7 @@ void TrilogyZoneServer::Tick()
 	{
 		constexpr uint32_t WINDOW_PACKETS = 50;
 		constexpr uint64_t WINDOW_MS      = 100;
+		constexpr int      kMaxUnacked    = 9; // EQClassic-style outbound-pending cap
 
 		for (auto& kv : m_sessions) {
 			Session& s = kv.second;
@@ -6288,8 +6380,14 @@ void TrilogyZoneServer::Tick()
 				s.outbound_window_start_ms = now_ms;
 			}
 
+			// Two-gate drain: pop while BOTH (1) under per-100ms burst budget,
+			// AND (2) under unacked-pending cap.  Either gate full → leave the
+			// rest queued for the next Tick.  Unacked drains as client ARSP
+			// arrives in OnDatagram (s.acked_arq advances).
 			s.draining_outbound = true;
-			while (!s.outbound_queue.empty() && s.outbound_window_count < WINDOW_PACKETS) {
+			while (!s.outbound_queue.empty()
+			       && s.outbound_window_count < WINDOW_PACKETS
+			       && static_cast<int16_t>(s.arq - s.acked_arq) < kMaxUnacked) {
 				Session::QueuedAppPacket pkt = std::move(s.outbound_queue.front());
 				s.outbound_queue.pop_front();
 				SendApp(s.source_addr, s.source_port, s, pkt.opcode,
@@ -6335,7 +6433,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 	// Rate-limit heartbeats. Idle/exploration: 250 ms (4 Hz) — matches EQClassic
 	// entity_list.SendPositionUpdates() interval and keeps the inbound packet flood
-	// off the v29c receive buffer. Combat: 100 ms (10 Hz) — a charging mob can close
+	// off the v29c receive buffer. Combat: 200 ms (5 Hz) — a charging mob can close
 	// 40+ ft between idle ticks, and the v29c client has no good way to interpolate
 	// that, so it visibly ghosts/warps on the final approach.
 	//
@@ -6349,13 +6447,23 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	//
 	// Without rate-limiting, every inbound 0x4121 (client ACK of A120) would
 	// re-trigger a heartbeat send and the chain would feed back at ~1000+ pps.
+	//
+	// 2026-06-21: combat throttle relaxed from 100 → 200 ms after Test 7024
+	// proved the freeze trigger is the cumulative A120↔4121 round-trip count.
+	// v29c sends a 4121 ARQ for every A120 we send; at 50 visible mobs × 10 Hz
+	// throttle we were generating 30+ round-trips/sec sustained, hitting some
+	// internal v29c queue ceiling around 5000-6000 trips at ~7 minutes
+	// regardless of bandwidth/packet/entity-table mitigations.  Halving the
+	// rate doubles the time-to-freeze and gets us out of the danger zone for
+	// reasonable session lengths.  Idle Kaladim (10+ min clean) already runs
+	// at ~4-8 trips/sec — well under the limit — so 4 Hz idle is unchanged.
 	uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
 	uint32_t throttle_ms = 250;
 	if (s.trilogy_client && s.trilogy_client->GetAggroCount() > 0) {
-		throttle_ms = 100;
+		throttle_ms = 200;
 	}
 	else if (s.trilogy_client) {
 		// Refresh nearby-combat cache every 500 ms.
@@ -6377,7 +6485,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				}
 			}
 		}
-		if (s.nearby_combat) throttle_ms = 100;
+		if (s.nearby_combat) throttle_ms = 200;
 	}
 
 	if (now_ms - s.last_heartbeat_ms < throttle_ms) return;
@@ -6426,16 +6534,20 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// `GetLastChange() >= cLastUpdate` filter): only stage an update if the
 	// wire-encoded position/heading/anim actually changed since the last
 	// broadcast to this session, OR the previous broadcast is older than
-	// STALENESS_REFRESH_MS.  The v29c client times non-permanent spawns out
-	// after ~5-10 s of silence, so the refresh floor needs to be safely
-	// inside that — but it can be FAR inside it.  At 500 ms we were spending
-	// ~3-4 KB/s on dense city zones (50+ in-range NPCs × 2 Hz refresh).
-	// Bumping to 1000 ms halves stationary-mob bandwidth (~30-50 % total in
-	// idle zones) with zero visual loss — a stationary mob shows the same
-	// coordinates every broadcast — while still leaving 5-10× safety margin
-	// against the client-side timeout.  Moving mobs are unaffected (the
-	// dirty-flag triggers on position change immediately), and combat is
-	// untouched (handled by the per-session 100 ms throttle path above).
+	// STALENESS_REFRESH_MS.
+	//
+	// 1000 ms is the proven floor.  At 500 ms we were spending ~3-4 KB/s on
+	// dense city zones (50+ in-range NPCs × 2 Hz refresh).  At 2000 ms (Test
+	// 8716, 2026-06-21) the user observed NPCs attacking "invisible" mobs:
+	// stationary mobs aged out of v29c's spawn-staleness window between
+	// refreshes, and the subsequent 9F20 attack packet referenced a spawn
+	// the client had already deleted.  v29c's actual spawn timeout is
+	// therefore <2 s — closer to 1.5 s than the 5-10 s assumed earlier.
+	// Don't push this beyond 1000 ms without a way to detect & re-spawn
+	// timed-out entities first.
+	//
+	// Moving mobs are unaffected (dirty flag fires on position change),
+	// combat is untouched (per-session 200 ms throttle path above).
 	//
 	// Caller is expected to have already built `upd` (spawn_id + the encoded
 	// int16/int8 wire fields), and to pass `dist_sq` (squared distance from
@@ -6539,7 +6651,13 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		float dx = c->GetX() - s.pos_x;
 		float dy = c->GetY() - s.pos_y;
 		float dist_sq = dx * dx + dy * dy;
-		if (dist_sq > CULL_RADIUS_SQ) continue;
+		// No CULL_RADIUS_SQ skip: a living player wandering >600 u away
+		// would lose their A120 stream, hit v29c's spawn staleness window
+		// (~5-10 s), and silently vanish from this client's render — and
+		// we don't re-issue 4921 NewSpawn on their return.  Outer ring
+		// throttle (>300 u → 2 Hz) inside should_broadcast still caps
+		// distant-player traffic.  Disconnect/zone-out still sends 2B20
+		// via the normal cleanup path.
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -6578,7 +6696,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		float dx = bot->GetX() - s.pos_x;
 		float dy = bot->GetY() - s.pos_y;
 		float dist_sq = dx * dx + dy * dy;
-		if (dist_sq > CULL_RADIUS_SQ) continue;
+		// No CULL_RADIUS_SQ skip.  Bots and Playerbots CAN die and respawn
+		// (Playerbots auto-respawn; Bots require master re-summon), but
+		// while ALIVE they're a single long-lived entity from the client's
+		// perspective.  Test 11576 (2026-06-21) showed bots wandering >600 u
+		// away (chasing, patrolling, following) silently vanished from the
+		// v29c client — saw shout chat but no entity in render or /who —
+		// because we cut their A120 stream and they aged out of v29c's
+		// spawn staleness window.  We don't re-issue 4921 on their return
+		// to range, so once dropped they stay invisible.  Outer ring
+		// throttle (>300 u → 2 Hz) inside should_broadcast still caps
+		// distant-bot traffic.  Death still goes through 4A20+2B20, and
+		// respawn issues a fresh 4921 via the normal path.
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
@@ -6606,6 +6735,45 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// When no moving mobs are nearby, skip the send entirely.
 	// The connection is kept alive by the client's own F320 stream, ACK responses,
 	// and the 5-second stamina packet.
+
+	// ============================================================
+	// Stale-broadcast cache GC — local bookkeeping only, no wire effect.
+	//
+	// We keep `s.last_broadcast` per session to drive the dirty-flag gate in
+	// should_broadcast.  Entries grow as mobs enter view; without trim, the
+	// map keeps stale entries for mobs we'll never see again (mobs that died,
+	// mobs we wandered far from).  Cap memory by dropping the cache entry
+	// after kStaleTimeMs of no broadcast — but DO NOT send 2B20.
+	//
+	// The previous code (pre-2026-06-21 session 2096) proactively sent
+	// OP_DeleteSpawn for "far away or quiet" mobs to bound v29c's entity
+	// table, on the theory that v29c capped around 150-200 entries.  That
+	// theory was unverified; the only thing it accomplished was orphaning
+	// live mobs in the client's view: we 2B20'd a mob the moment it strayed
+	// >800 u, never re-issued 4921 NewSpawn when it returned to range, then
+	// sent 9F20/5820 attack packets for a spawn_id the client had forgotten.
+	// Result: user-visible "NPC attacking invisible mob" symptom across
+	// multiple test sessions (11576, 8716, 8352, 2096).  Removing the 2B20
+	// also drops ~90 unnecessary ARQ packets per 10-min session, shrinking
+	// the outbound-pending pressure that drives the gap-16 trap.
+	//
+	// Real death still emits 4A20+2B20 via HandleDeleteSpawn on the normal
+	// path; zone-out clears the whole session.  Bot/Player exclusion no
+	// longer matters since we never send the 2B20.
+	// ============================================================
+	static constexpr uint64_t kStaleTimeMs = 15000;
+	if (!s.last_broadcast.empty()) {
+		std::vector<uint16_t> to_clean;
+		to_clean.reserve(16);
+
+		for (const auto& kv : s.last_broadcast) {
+			if (now_ms - kv.second.sent_ms >= kStaleTimeMs)
+				to_clean.push_back(kv.first);
+		}
+
+		for (uint16_t id : to_clean)
+			s.last_broadcast.erase(id);
+	}
 }
 
 // ============================================================
@@ -6619,6 +6787,60 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
                                  bool ack_req)
 {
 	if (!m_send_fn) return;
+
+	// ──────────────────────────────────────────────────────────────────────
+	// EQClassic-style "too many pending" outbound throttle.
+	//
+	// v29c's network layer (closest reference: EQClassic
+	// Common/Source/EQPacketManager.cpp:209) silently orphans buffered ARQ
+	// packets when one arrives ≥16 slots ahead of the last in-order processed,
+	// and its CheckBufferedPackets is O(n²) per inbound packet — the orphan
+	// list grows over session lifetime until the network thread CPU-starves
+	// and outbound ARQ stops (the silent "cli_arq stuck" lock).  EQClassic's
+	// SERVER avoids this by capping unacked ARQ packets at 9
+	// (EQPACKETMANAGER_OUTBOUD_THRESHOLD) via a Sleep/wait loop on
+	// IsTooMuchPending() before queueing more.  We replicate that gate here
+	// but use the queue (no Sleep) since this is a single-threaded engine.
+	//
+	// Gate applies to ALL ARQ traffic including A120 heartbeats — the
+	// previous per-tick A120 cap regressed time-to-lock (Test 8352
+	// 2026-06-21, 8:35 vs 10:53 baseline) because tick-boundary smoothing
+	// doesn't track what the client has actually acknowledged.
+	//
+	// For A120 specifically: when pending is at cap we DROP instead of
+	// queueing.  The mob position in the queued packet would be stale by
+	// the time it sends; next tick's heartbeat re-generates fresh data,
+	// and the dirty-flag (last.sent_ms unchanged because should_broadcast
+	// already returned true for the dropped packet — see below) is reset
+	// on the next iteration anyway.
+	{
+		constexpr int kMaxUnacked = 9;
+		const bool gatable = !s.draining_outbound
+		                  && s.state == CONNECTED
+		                  && ack_req
+		                  && s.sack_init;
+		if (gatable) {
+			const int16_t unacked = static_cast<int16_t>(s.arq - s.acked_arq);
+			if (unacked >= kMaxUnacked) {
+				if (opcode == ZN_OP_MobUpdate) {
+					// Drop stale heartbeat; next Tick will produce fresh coords.
+					return;
+				}
+				constexpr size_t kQueueHardCap = 10000;
+				if (s.outbound_queue.size() >= kQueueHardCap) {
+					LogInfo("[TrilogyZone] outbound queue at hard cap ({}, unacked={}), dropping opcode={:04X} for char [{}]",
+					        kQueueHardCap, unacked, opcode, s.char_name);
+					return;
+				}
+				Session::QueuedAppPacket q;
+				q.opcode  = opcode;
+				if (plen > 0 && payload) q.payload.assign(payload, payload + plen);
+				q.ack_req = ack_req;
+				s.outbound_queue.push_back(std::move(q));
+				return;
+			}
+		}
+	}
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Per-session outbound rate limiter.
@@ -6704,6 +6926,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 		s.sack_init = true;
 		s.gsq    = 1;
 		s.arq    = static_cast<uint16_t>(rand() % 0x3FFF);
+		s.acked_arq = s.arq; // start with nothing pending (unacked = 0)
 		s.asq_hi = 1;
 		s.asq_lo = 0;
 	}
@@ -6741,6 +6964,7 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 				memcpy(buf + o, &arsp, 2); o += 2;
 				s.ack_due = false;
 			}
+			uint16_t this_arq_frag = s.arq;
 			{ uint16_t arq = htons(s.arq++); memcpy(buf + o, &arq, 2); o += 2; }
 			{ uint16_t fs = htons(frag_group_seq);            memcpy(buf + o, &fs, 2); o += 2; }
 			{ uint16_t fc = htons(static_cast<uint16_t>(i));  memcpy(buf + o, &fc, 2); o += 2; }
@@ -6786,6 +7010,22 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 			s.bw_packets_sent += 1;
 
 			m_send_fn(addr, port, buf, static_cast<size_t>(o));
+
+			// Stash fragment for EQClassic-style retransmit.  Each fragment
+			// is its own ARQ packet, tracked independently.
+			if (s.state == CONNECTED) {
+				uint64_t now_ms_push = static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now().time_since_epoch()).count());
+				Session::PendingArq pending;
+				pending.arq          = this_arq_frag;
+				pending.opcode       = opcode;
+				pending.wire_bytes.assign(buf, buf + o);
+				pending.send_count   = 1;
+				pending.last_send_ms = now_ms_push;
+				s.resend_queue.push_back(std::move(pending));
+				if (s.resend_timer_ms == 0) s.resend_timer_ms = now_ms_push + 500;
+			}
 		}
 		return;
 	}
@@ -6810,7 +7050,9 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 		memcpy(buf + o, &arsp, 2); o += 2;
 		s.ack_due = false;
 	}
+	uint16_t this_arq = 0;
 	if (ack_req) {
+		this_arq = s.arq;
 		uint16_t arq = htons(s.arq++);
 		memcpy(buf + o, &arq, 2); o += 2;
 	}
@@ -6846,6 +7088,24 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	s.bw_packets_sent += 1;
 
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
+
+	// Stash for EQClassic-style retransmit on no-ARSP-within-timeout.
+	// Skip when in PM_FINISHING (SendClose) or when this is the close handshake itself.
+	if (ack_req && s.state == CONNECTED && opcode != 0 /*close handshake*/) {
+		uint64_t now_ms_push = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+		Session::PendingArq pending;
+		pending.arq          = this_arq;
+		pending.opcode       = opcode;
+		pending.wire_bytes.assign(buf, buf + o);
+		pending.send_count   = 1;
+		pending.last_send_ms = now_ms_push;
+		s.resend_queue.push_back(std::move(pending));
+		// Arm no_ack_received_timer if not already running.  500 ms on first
+		// arm matches EQClassic OutgoingARQ (EQPacketManager.cpp:130).
+		if (s.resend_timer_ms == 0) s.resend_timer_ms = now_ms_push + 500;
+	}
 }
 
 void TrilogyZoneServer::SendAck(const std::string& addr, int port, Session& s)
@@ -6856,6 +7116,7 @@ void TrilogyZoneServer::SendAck(const std::string& addr, int port, Session& s)
 		s.sack_init = true;
 		s.gsq    = 1;
 		s.arq    = static_cast<uint16_t>(rand() % 0x3FFF);
+		s.acked_arq = s.arq; // start with nothing pending (unacked = 0)
 		s.asq_hi = 1;
 		s.asq_lo = 0;
 	}
@@ -6888,6 +7149,7 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 		s.sack_init = true;
 		s.gsq    = 1;
 		s.arq    = static_cast<uint16_t>(rand() % 0x3FFF);
+		s.acked_arq = s.arq; // start with nothing pending (unacked = 0)
 		s.asq_hi = 1;
 		s.asq_lo = 0;
 	}

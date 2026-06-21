@@ -93,6 +93,11 @@ private:
 		uint8_t     asq_hi    = 1;
 		uint8_t     asq_lo    = 0;
 		uint16_t    cli_arq   = 0;
+		// EQClassic-style outbound-pending throttle: client cumulatively acks our ARQs
+		// via ARSP header field; we keep the highest seen value here so SendApp can
+		// gate on (s.arq - s.acked_arq) and avoid the v29c gap-16 buffered-packet
+		// orphan trap.  Initialized to s.arq at sack_init (nothing pending yet).
+		uint16_t    acked_arq = 0;
 		bool        ack_due   = false;
 		bool        sack_init = false;
 		bool        seq_sent  = false;
@@ -185,6 +190,36 @@ private:
 		// Set true by Tick's drain loop so the re-entrant SendApp call bypasses
 		// the queue check (it would otherwise immediately re-queue).
 		bool                        draining_outbound = false;
+
+		// ── Server-side ARQ retransmit (EQClassic-faithful) ─────────────────
+		// EQClassic's EQPacketManager keeps every outgoing ARQ packet in a
+		// ResendQueue until the client cumulatively ACKs it via ARSP.  If no
+		// ARSP arrives within ~1s (no_ack_received_timer), every queued packet
+		// is retransmitted with a fresh SEQ but the same ARQ.  After 15
+		// retries on any packet, the session is closed
+		// (`Dropping client, resend_count > 15`).  Without this we silently
+		// lose any packet the kernel drops, the client sees a gap, and either
+		// (a) the gap-16 trap fires once enough gaps accumulate, or
+		// (b) the client retransmits an old packet 15× waiting for our ACK
+		//     and closes its session.  See [[project-trilogy-arq-gap16]].
+		//
+		// Wire bytes are saved fully formed (header through CRC).  Resend
+		// patches the SEQ field at offset 2-3 to s.gsq++ and recomputes the
+		// trailing CRC.  ARSP/ARQ payload is preserved as-sent.
+		struct PendingArq {
+			uint16_t              arq           = 0;
+			uint16_t              opcode        = 0; // for diagnostics
+			std::vector<uint8_t>  wire_bytes;        // full packet incl. CRC
+			uint8_t               send_count    = 0; // 1 on first send
+			uint64_t              last_send_ms  = 0;
+		};
+		std::deque<PendingArq> resend_queue;
+		// When >= now, next no-ack-received-timer check fires.  Matches
+		// EQClassic's no_ack_received_timer: 500 ms on first set (from
+		// OutgoingARQ), 1000 ms after each retransmit (line 707 in
+		// EQPacketManager.cpp).  When all packets are acked, set to 0
+		// (disabled).
+		uint64_t              resend_timer_ms = 0;
 
 		// Stamina refresh — OP_Stamina (0x5721) sent every 5s to prevent endurance depletion
 		uint64_t    last_stamina_ms   = 0;
