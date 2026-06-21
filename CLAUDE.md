@@ -191,3 +191,4 @@ it with EQClassic source
 = Diagnostic logging is king.
 - Don't give up on implementations by imagining anything about "v29c's internal limits (entity count, animation slots, corpse count over time)"; worst
 case scenario, investigate and propose workarounds. NEVER EVER assume we "reached the limit of what we can do", this client has been implemented in EQClassic. So the client WORKS.
+- There IS NO SUCH THING AS "We reached the limits of the client, we can't do this." Again, this stuff has been implemented before.
