@@ -6536,15 +6536,24 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// broadcast to this session, OR the previous broadcast is older than
 	// STALENESS_REFRESH_MS.
 	//
-	// 1000 ms is the proven floor.  At 500 ms we were spending ~3-4 KB/s on
-	// dense city zones (50+ in-range NPCs × 2 Hz refresh).  At 2000 ms (Test
-	// 8716, 2026-06-21) the user observed NPCs attacking "invisible" mobs:
-	// stationary mobs aged out of v29c's spawn-staleness window between
-	// refreshes, and the subsequent 9F20 attack packet referenced a spawn
-	// the client had already deleted.  v29c's actual spawn timeout is
-	// therefore <2 s — closer to 1.5 s than the 5-10 s assumed earlier.
-	// Don't push this beyond 1000 ms without a way to detect & re-spawn
-	// timed-out entities first.
+	// 2026-06-21 (Test TODO-analyze.log post-mortem): EQClassic does ZERO
+	// periodic refresh — `SendPositionUpdates` is fully commented out in
+	// client_process.cpp:528 ("maalanar 2008-02-05: no need for the server
+	// to refresh player position, this only causes jumpyness for the
+	// viewing clients").  EQClassic only emits OP_MobUpdate from
+	// Mob::SendPosUpdate ON ACTUAL MOVEMENT EVENTS (mob.cpp:547), not on
+	// a timer.  Stationary mobs are NEVER re-broadcast.
+	//
+	// Our previous belief that "v29c times out spawns after ~1.5 s without
+	// A120" was based on Test 8716 invisible-mob symptoms — but that test
+	// was confounded with the proactive-2B20 cleanup bug (see
+	// [[project-trilogy-proactive-delete-bug]]).  With proactive 2B20
+	// removed, the staleness floor is much higher than 1.5 s.
+	//
+	// Bumping 1000 → 5000.  At 5 s refresh, stationary-mob heartbeat traffic
+	// drops 5×, which is the largest single A120 source in dense city zones
+	// like Freport (217 NPCs, most stationary).  Watch for "NPC attacking
+	// invisible mob" symptoms — if they return, halve to 3000.
 	//
 	// Moving mobs are unaffected (dirty flag fires on position change),
 	// combat is untouched (per-session 200 ms throttle path above).
@@ -6554,7 +6563,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// player) so the outer-ring throttle can fire.  Returns true → include
 	// in batch and bump n; false → drop this slot, do not increment n (slot
 	// gets overwritten next).
-	static constexpr uint64_t STALENESS_REFRESH_MS = 1000;
+	static constexpr uint64_t STALENESS_REFRESH_MS = 5000;
 	auto should_broadcast = [&](Trilogy::structs::SpawnPositionUpdate_Struct* upd,
 	                            float dist_sq) -> bool {
 		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
