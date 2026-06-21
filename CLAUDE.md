@@ -188,3 +188,6 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
 - NEVER, EVER assume something cannot be done due to a limitation from the Trilogy client.
 - When missing "context" for Trilogy client implementations (packets contents, hex values etc), add LogInfo logging exactly the data and cross-reference
 it with EQClassic source
+= Diagnostic logging is king.
+- Don't give up on implementations by imagining anything about "v29c's internal limits (entity count, animation slots, corpse count over time)"; worst
+case scenario, investigate and propose workarounds. NEVER EVER assume we "reached the limit of what we can do", this client has been implemented in EQClassic. So the client WORKS.
