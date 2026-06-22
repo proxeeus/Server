@@ -6209,7 +6209,16 @@ void TrilogyZoneServer::Tick()
 			continue;
 		}
 
-		SendMobHeartbeat(s.source_addr, s.source_port, s);
+		// 2026-06-21: periodic SendMobHeartbeat disabled — EQClassic does no
+		// periodic position refresh (client_process.cpp:528 comment).  Position
+		// updates now flow per-event through TrilogyClient::HandleClientUpdate,
+		// fired from EQEmu's MovementManager whenever a mob actually moves,
+		// and throttled per-mob at ~4 Hz inside that handler.  See
+		// [[project-trilogy-arq-gap16]] for the full rationale.
+		//
+		// SendMobHeartbeat() is still called once at zone-in (line ~2936) to
+		// prime initial positions; the function body is kept around for that
+		// one-shot use.
 
 		// Skip timed broadcasts while the client is in zone-out transition.
 		// Stamina/TimeOfDay packets arriving during EQNetwork's CLOSE handshake

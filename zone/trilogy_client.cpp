@@ -1207,6 +1207,7 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	// Drop any cached SpawnAppearance state for this spawn so a future
 	// reuse of the id (rare but possible) starts fresh.
 	m_last_appearance.erase(static_cast<uint16_t>(spawn_id));
+	m_mob_update_last.erase(static_cast<uint16_t>(spawn_id));
 }
 
 // ============================================================
@@ -1250,22 +1251,87 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 }
 
 // ============================================================
-// HandleClientUpdate — OP_ClientUpdate NPC position broadcast.
+// HandleClientUpdate — OP_ClientUpdate per-mob position broadcast.
 //
-// Previously this sent a per-event 0xa120 to the Trilogy client for every
-// NPC movement tick from EQEmu's movement manager.  With many NPCs active
-// (e.g. 334 in ecommons), the movement manager fired O(100-500) of these
-// per second, each as an ARQ-requiring packet — flooding the client's ARQ
-// queue and causing a disconnect after ~3 minutes.
+// EQClassic-faithful event-driven A120 path (2026-06-21).  Mirrors
+// EQClassic Mob::SendPosUpdate (Zone/Source/mob.cpp:547) which emits
+// OP_MobUpdate ONLY when a mob actually moves, NOT on a server tick.
+// EQClassic intentionally disabled periodic position broadcast in
+// client_process.cpp:528 ("maalanar 2008-02-05: no need for the server
+// to refresh player position, this only causes jumpyness for the viewing
+// clients") and has not reintroduced it.
 //
-// NPC positions are now delivered exclusively by SendMobHeartbeat (250ms,
-// batched, with velocity deltas), which bounds the A120 ARQ rate to at most
-// one batch packet per 250ms regardless of how many NPCs are moving.
+// Previously we used a periodic SendMobHeartbeat (200/250 ms) batched
+// across all in-range mobs.  That bounded ARQ rate but emitted updates
+// for every patrolling guard every tick even when no one was looking at
+// them, dominating outbound A120 traffic in dense city zones.  Test 1892
+// showed STALENESS=5000 for stationary mobs barely moved time-to-lock —
+// the moving-mob updates were the real budget consumer.
+//
+// EQEmu's MovementManager fires OP_ClientUpdate frequently per moving
+// mob (observed 100-500/sec aggregate in ecommons during prior testing).
+// We throttle PER MOB to ~4 Hz via m_mob_update_last; combined with the
+// 600u cull from this client's position, total A120 emission stays
+// bounded by the number of in-view moving mobs, not by total zone NPC
+// count.  Stationary mobs emit zero updates — same as EQClassic.
 // ============================================================
 
 void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 {
-	// Intentionally no-op: position updates flow through SendMobHeartbeat only.
+	if (!app || app->size < sizeof(PlayerPositionUpdateServer_Struct)) return;
+	const auto* p = reinterpret_cast<const PlayerPositionUpdateServer_Struct*>(app->pBuffer);
+
+	const uint16_t spawn_id = p->spawn_id;
+	if (spawn_id == 0) return;
+
+	Mob* m = entity_list.GetMob(spawn_id);
+	if (!m) return;
+
+	// No self-echo — the v29c client tracks its own position locally
+	// from F320 input; a server echo would rubber-band.
+	if (m == static_cast<Mob*>(this)) return;
+
+	// Cull from this client's current position.  600u matches the old
+	// SendMobHeartbeat cull and EQClassic's effective broadcast radius
+	// for QueueCloseClients (default 600u).
+	static constexpr float kCullSq = 600.0f * 600.0f;
+	const float dx = m->GetX() - GetX();
+	const float dy = m->GetY() - GetY();
+	if (dx * dx + dy * dy > kCullSq) return;
+
+	// Per-mob throttle (~4 Hz max per moving mob per session).  EQEmu's
+	// MovementManager can fire 5-10+ OP_ClientUpdates/sec per fast mob;
+	// without this cap, dense combat zones flood v29c's ARQ window.
+	static constexpr uint64_t kMinIntervalMs = 250;
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	auto it = m_mob_update_last.find(spawn_id);
+	if (it != m_mob_update_last.end() && now_ms - it->second < kMinIntervalMs)
+		return;
+	m_mob_update_last[spawn_id] = now_ms;
+
+	// Build single-entry A120 packet:
+	//   [int32 count=1][SpawnPositionUpdate_Struct]
+	uint8_t pkt[4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)];
+	int32_t count = 1;
+	memcpy(pkt, &count, 4);
+	auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(pkt + 4);
+	memset(upd, 0, sizeof(*upd));
+
+	upd->spawn_id = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(spawn_id)));
+	upd->heading  = static_cast<int8_t>(static_cast<uint8_t>(m->GetHeading() / 2.0f));
+	upd->y_pos    = static_cast<int16_t>(m->GetY());
+	upd->x_pos    = static_cast<int16_t>(m->GetX());
+	upd->z_pos    = static_cast<int16_t>(m->GetZ() * 10.0f);
+
+	if (m->IsMoving()) {
+		const float float_sp = static_cast<float>(m->GetRunspeed()) / 40.0f;
+		const int   anim     = static_cast<int>(float_sp * 7.0f);
+		upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+	}
+
+	m_tzs->SendToSession(m_session_key, 0xa120, pkt, static_cast<uint32_t>(sizeof(pkt)));
 }
 
 // ============================================================

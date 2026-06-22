@@ -363,6 +363,13 @@ private:
 	static constexpr size_t kMaxAppearanceCache = 1024;
 	std::map<uint16_t, std::pair<int16_t, int32_t>> m_last_appearance;
 
+	// Per-mob position-broadcast throttle for the EQClassic-faithful
+	// event-driven A120 path (HandleClientUpdate).  Without this, EQEmu's
+	// MovementManager can fire OP_ClientUpdate 100-500 times/sec across all
+	// in-zone mobs during heavy traffic, flooding v29c's ARQ window.  Caps
+	// each mob's per-session position broadcast rate at ~4 Hz (250 ms gap).
+	std::unordered_map<uint16_t, uint64_t> m_mob_update_last;
+
 	// Per-door last-sent action cache.  Doors::HandleClick in EQEmu has a bug
 	// where city-edge doors (HasDestinationZone() == true) never get
 	// SetOpenState(true) called — so IsDoorOpen() stays false, every subsequent
