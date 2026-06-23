@@ -6404,8 +6404,19 @@ void TrilogyZoneServer::Tick()
 	// drains acked entries; this loop only handles the loss-recovery and
 	// drop branches.  Wire-format SEQ patch + CRC recompute is unchanged.
 	{
-		constexpr uint64_t kLinkdeadMs    = 30000;
-		constexpr uint64_t kMaxBackoffMs  = 16000;
+		constexpr uint64_t kLinkdeadMs       = 30000;
+		constexpr uint64_t kMaxBackoffMs     = 16000;
+		// Per-session, per-Tick retransmit cap.  When N packets all hit
+		// their next_retry_ms simultaneously (head stalled for a while),
+		// firing all N back-to-back in one Tick produces a UDP burst that
+		// v29c's modem-era recv buffer can silently overflow.  Cap at 3 per
+		// Tick — the rest defer to the next Tick (~30 ms later) so the
+		// client has time to drain its socket between waves.  Their
+		// next_retry_ms is unchanged, so they're still due immediately on
+		// the next Tick; we just spread the wave over a few cycles instead
+		// of bursting it all at once.  See [[project-trilogy-resend-
+		// explosion]] 2026-06-23 retransmit-burst investigation.
+		constexpr uint32_t kMaxRetriesPerTick = 3;
 		std::vector<uint64_t> to_drop;
 
 		for (auto& kv : m_sessions) {
@@ -6448,10 +6459,16 @@ void TrilogyZoneServer::Tick()
 
 			// Per-packet retransmit — walk the queue, resend only entries
 			// whose individual next_retry_ms has fired.  Apply exponential
-			// backoff to the resent entry's next slot.
+			// backoff to the resent entry's next slot.  Cap at
+			// kMaxRetriesPerTick per session per Tick to prevent UDP burst
+			// overflow on the v29c client side; deferred packets retain
+			// their (already-elapsed) next_retry_ms and fire on the next
+			// Tick, spreading the wave over several Tick cycles.
+			uint32_t retries_this_tick = 0;
 			for (auto& pending : s.resend_queue) {
 				if (pending.wire_bytes.size() < 8) continue; // sanity
 				if (now_ms < pending.next_retry_ms)  continue;
+				if (retries_this_tick >= kMaxRetriesPerTick) break;
 
 				// Patch SEQ at offset 2-3 to a fresh value.  ARSP/ARQ
 				// payload preserved as originally sent.
@@ -6470,6 +6487,7 @@ void TrilogyZoneServer::Tick()
 
 				s.bw_bytes_sent   += static_cast<uint64_t>(pending.wire_bytes.size());
 				s.bw_packets_sent += 1;
+				++retries_this_tick;
 
 				pending.last_send_ms = now_ms;
 				pending.send_count   = static_cast<uint16_t>(pending.send_count + 1);
@@ -7111,7 +7129,15 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 			{ uint16_t fc = htons(static_cast<uint16_t>(i));  memcpy(buf + o, &fc, 2); o += 2; }
 			{ uint16_t ft = htons(static_cast<uint16_t>(frags + 1)); memcpy(buf + o, &ft, 2); o += 2; }
 
-			if (has_asq) { buf[o++] = s.asq_hi; buf[o++] = s.asq_lo++; if (s.asq_lo == 0) ++s.asq_hi; }
+			// EQClassic-faithful: asq_lo wraps freely (255 → 0), asq_hi
+			// stays at its init value (1) for the entire session.  See
+			// EQPacketManager.cpp:645-646 — only SACK.dbASQ_low++, never
+			// touches SACK.dbASQ_high.  Earlier we carried the overflow
+			// into asq_hi which diverged from Verant's wire pattern and
+			// is the suspected cause of cumulative client state corruption
+			// → 45-55 min "linkdead" wall (see [[project-trilogy-resend-
+			// explosion]] 2026-06-23 ASQ-high investigation).
+			if (has_asq) { buf[o++] = s.asq_hi; buf[o++] = s.asq_lo++; }
 			if (i == 0)  { uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2; }
 
 			uint32_t chunk;
@@ -7220,8 +7246,14 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 	buf[o++] = s.asq_hi;
 	if (ack_req) {
 		buf[o++] = s.asq_lo;
+		// EQClassic-faithful: asq_lo wraps 255 → 0, asq_hi stays at its
+		// init value (1) for the entire session.  See EQPacketManager.cpp:
+		// 645-646 — only SACK.dbASQ_low++, never touches SACK.dbASQ_high.
+		// Earlier we carried into asq_hi; that diverged from Verant's wire
+		// pattern and is the suspected cause of cumulative client state
+		// corruption → 45-55 min linkdead wall (see [[project-trilogy-
+		// resend-explosion]] 2026-06-23 ASQ-high investigation).
 		s.asq_lo++;
-		if (s.asq_lo == 0) ++s.asq_hi;
 	}
 	{ uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2; }
 	if (plen > 0 && payload) {
