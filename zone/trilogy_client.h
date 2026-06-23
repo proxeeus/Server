@@ -25,6 +25,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <unordered_set>
 #include <vector>
 
 class TrilogyZoneServer;
@@ -376,6 +377,23 @@ private:
 	// in-zone mobs during heavy traffic, flooding v29c's ARQ window.  Caps
 	// each mob's per-session position broadcast rate at ~4 Hz (250 ms gap).
 	std::unordered_map<uint16_t, uint64_t> m_mob_update_last;
+
+	// Per-(spawn_id, slot) cache tracking whether we've ever sent a non-zero
+	// WearChange material for that slot.  Used by HandleOutgoingWearChange to
+	// gate the spawn-time burst: EQEmu's Mob::SendWearChangeAndLighting fires
+	// a WearChange for every texture slot (0..LastTexture) unconditionally on
+	// CompleteConnect, illusion, equip change, etc. — typically 7-8 packets,
+	// most with material=0 for slots the NPC doesn't actually carry equipment
+	// in.  Snakes, scarabs, most non-player-race NPCs produce all-zero bursts
+	// that consume reliable ARQ budget against the v29c ~4870-packet wall for
+	// zero visual benefit (the spawn struct already shows the slot as empty).
+	//
+	// Gate: skip when material==0 AND no entry exists for (spawn_id, slot).
+	// First non-zero (skeleton texture variant, player equip 0→N) caches the
+	// pair, so a later unequip (N→0) still goes through.  Cleared per-spawn
+	// in HandleDeleteSpawn; whole set cleared at the appearance-cache soft cap
+	// to bound memory.  Key encoding: (spawn_id << 8) | slot.
+	std::unordered_set<uint32_t> m_wear_change_seen;
 
 	// Pending A120 batch buffer for moving mobs. HandleClientUpdate pushes
 	// one entry per accepted MovementManager update (post-throttle, post-cull);

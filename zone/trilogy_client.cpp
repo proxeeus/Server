@@ -1208,6 +1208,16 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	// reuse of the id (rare but possible) starts fresh.
 	m_last_appearance.erase(static_cast<uint16_t>(spawn_id));
 	m_mob_update_last.erase(static_cast<uint16_t>(spawn_id));
+
+	// Drop all per-slot WearChange cache entries for this spawn — the next
+	// reuse of spawn_id will see all slots as cold again.  Key encoding is
+	// (spawn_id << 8) | slot, so we walk and prune.
+	const uint32_t lo = static_cast<uint32_t>(spawn_id) << 8;
+	const uint32_t hi = lo | 0xFFu;
+	for (auto it = m_wear_change_seen.begin(); it != m_wear_change_seen.end(); ) {
+		if (*it >= lo && *it <= hi) it = m_wear_change_seen.erase(it);
+		else ++it;
+	}
 }
 
 // ============================================================
@@ -1559,11 +1569,39 @@ void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
 	// own equipment change causes a feedback loop — the client re-sends 0x9220.
 	if (src->spawn_id == GetID()) return;
 
+	// Cold-slot zero gate: EQEmu's Mob::SendWearChangeAndLighting fires a
+	// WearChange for every texture slot (typically 7-8) on CompleteConnect,
+	// illusion application, equip change, etc., regardless of whether the
+	// slot actually holds equipment.  For non-player-race NPCs (snakes,
+	// scarabs, most monsters) all those slots are material=0 and rendering
+	// them changes nothing — the spawn struct already shows the slot as
+	// empty.  Skip when material==0 AND we have never sent a non-zero for
+	// this (spawn_id, slot) pair.  Skeleton texture variants (material > 0)
+	// pass through, and a later unequip (cached N → 0) still passes through
+	// because the cache will already contain the pair.  Burns ~7 reliable
+	// ARQ slots per non-player NPC spawn for zero visual benefit otherwise;
+	// each saved packet extends time-to-wall by ~1/4870 of a session.
+	const uint8_t material = static_cast<uint8_t>(src->material & 0xFF);
+	const uint32_t cache_key =
+		(static_cast<uint32_t>(static_cast<uint16_t>(src->spawn_id)) << 8) |
+		static_cast<uint32_t>(static_cast<uint8_t>(src->wear_slot_id));
+	if (material == 0) {
+		if (m_wear_change_seen.find(cache_key) == m_wear_change_seen.end()) {
+			return; // cold slot, redundant with empty spawn-struct slot
+		}
+	} else {
+		// Bound memory: clear at the same soft cap used for m_last_appearance.
+		if (m_wear_change_seen.size() >= kMaxAppearanceCache) {
+			m_wear_change_seen.clear();
+		}
+		m_wear_change_seen.insert(cache_key);
+	}
+
 	using TrilWC = Trilogy::structs::WearChange_Struct;
 	TrilWC wc{};
 	wc.spawn_id     = static_cast<int32_t>(src->spawn_id);
 	wc.wear_slot_id = static_cast<int8_t>(src->wear_slot_id);
-	wc.slot_graphic = static_cast<int8_t>(src->material & 0xFF);
+	wc.slot_graphic = static_cast<int8_t>(material);
 	wc.sub_op       = 0;
 	wc.color        = static_cast<int32_t>(src->color.Color);
 	wc.wc_unknown3  = 0;
@@ -2381,9 +2419,12 @@ void TrilogyClient::HandleHPUpdate(const EQApplicationPacket* app)
 	out.cur_hp   = static_cast<int32_t>(emu->cur_hp);
 	out.max_hp   = emu->max_hp;
 
+	// B220 unreliable: see HandleHPUpdate notes / Agz EQPacketManager.cpp:412.
+	// Next HP change supersedes; loss is harmless.
 	m_tzs->SendToSession(m_session_key, 0xb220,
 	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	                     static_cast<uint32_t>(sizeof(out)),
+	                     /*ack_req=*/false);
 }
 
 // ============================================================
@@ -2410,9 +2451,11 @@ void TrilogyClient::HandleMobHealth(const EQApplicationPacket* app)
 	out.cur_hp   = static_cast<int32_t>(mob->GetHP());
 	out.max_hp   = static_cast<int32_t>(mob->GetMaxHP());
 
+	// B220 unreliable: see HandleHPUpdate notes / Agz EQPacketManager.cpp:412.
 	m_tzs->SendToSession(m_session_key, 0xb220,
 	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	                     static_cast<uint32_t>(sizeof(out)),
+	                     /*ack_req=*/false);
 }
 
 // ============================================================

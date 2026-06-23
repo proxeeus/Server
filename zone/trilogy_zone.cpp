@@ -2789,13 +2789,19 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	// The UI is not fully initialised until after D820, so these must come after.
 	if (s.trilogy_client) {
 		// HP update (OP_HPUpdate = 0xb220): actual HP values, NOT percentage.
+		// Unreliable per Agz's original-Verant documentation in
+		// EQClassic/Common/Source/EQPacketManager.cpp:412 — "This is used by
+		// the EQ servers for HP and position updates among other things."
+		// Loss is harmless because the next HP change (combat/regen) re-sends.
+		// See [[project-trilogy-unreliable-a120-wire-format]] for wire layout.
 		Trilogy::structs::SpawnHPUpdate_Struct hpu{};
 		memset(&hpu, 0, sizeof(hpu));
 		hpu.spawn_id = static_cast<int32_t>(s.player_spawn_id);
 		hpu.cur_hp   = static_cast<int32_t>(s.trilogy_client->GetHP());
 		hpu.max_hp   = static_cast<int32_t>(s.trilogy_client->GetMaxHP());
 		SendApp(addr, port, s, 0xb220,
-		        reinterpret_cast<const uint8_t*>(&hpu), sizeof(hpu));
+		        reinterpret_cast<const uint8_t*>(&hpu), sizeof(hpu),
+		        /*ack_req=*/false);
 
 		// Mana update (OP_ManaChange = 0x7f21)
 		Trilogy::structs::ManaChange_Struct mana{};
@@ -2808,13 +2814,21 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 
 	{
+		// Stamina (5721) unreliable: constant-value periodic refresh
+		// (food/water/fatigue static at 6000/6000/0).  Tick re-sends every 5 s
+		// so a UDP drop is invisible — same supersede-by-next-update property
+		// as A120/B220 per Agz EQPacketManager.cpp:412.  Was the wall-killer
+		// in test log 15912 (2026-06-23): 437 reliable 5721 packets / ~9% of
+		// the v29c ~4870-packet reliable budget.
+		// See [[project-trilogy-unreliable-a120-wire-format]] for wire layout.
 		Trilogy::structs::Stamina_Struct sta{};
 		memset(&sta, 0, sizeof(sta));
 		sta.food    = 6000;
 		sta.water   = 6000;
 		sta.fatigue = 0;
 		SendApp(addr, port, s, ZN_OP_Stamina,
-		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
+		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta),
+		        /*ack_req=*/false);
 		// Seed the timer so Tick() waits the full interval before the next refresh.
 		s.last_stamina_ms = static_cast<uint64_t>(
 			std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -6298,6 +6312,8 @@ void TrilogyZoneServer::Tick()
 		}
 
 		// Refresh stamina every 5s so client-side endurance never depletes to 0.
+		// Unreliable: see the zone-in send for rationale.  Loss is harmless —
+		// next tick re-sends the same constant values.
 		if (now_ms - s.last_stamina_ms >= 5000) {
 			s.last_stamina_ms = now_ms;
 			Trilogy::structs::Stamina_Struct sta{};
@@ -6305,7 +6321,8 @@ void TrilogyZoneServer::Tick()
 			sta.water   = 6000;
 			sta.fatigue = 0;
 			SendApp(s.source_addr, s.source_port, s, ZN_OP_Stamina,
-			        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta));
+			        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta),
+			        /*ack_req=*/false);
 		}
 
 		// Re-sync EQ clock every 180s (1 EQ hour), matching the world server's
