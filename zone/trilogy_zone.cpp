@@ -753,9 +753,9 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 					if (d < 0) break; // queue head still pending
 					s.resend_queue.pop_front();
 				}
-				// Disable no_ack_received_timer when queue fully drains
-				// (matches EQClassic line 103).
-				if (s.resend_queue.empty()) s.resend_timer_ms = 0;
+				// Per-packet next_retry_ms means we no longer need a
+				// session-wide timer to disable — empty queue = nothing to
+				// retry on the next Tick.
 			}
 		}
 		o += 2;
@@ -880,7 +880,6 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		existing.ack_due    = false;
 		existing.frag_groups.clear();
 		existing.resend_queue.clear();
-		existing.resend_timer_ms = 0;
 		existing.char_name[0] = '\0';
 		existing.zone_short[0] = '\0';
 		existing.char_id         = 0;
@@ -6378,34 +6377,81 @@ void TrilogyZoneServer::Tick()
 		RemoveSession(key);
 
 	// ──────────────────────────────────────────────────────────────────────
-	// EQClassic-faithful ARQ retransmit (no_ack_received_timer).
+	// Per-packet exponential-backoff ARQ retransmit + age-based linkdead drop
 	//
-	// Mirror of EQPacketManager::CheckTimers (EQClassic line 668-708): when
-	// the no_ack_received_timer fires (500 ms first, 1000 ms on retries), we
-	// resend EVERY packet still in resend_queue with a fresh SEQ but the
-	// original ARQ + payload + ARSP.  Each resend bumps send_count; >15 →
-	// drop the session (EQClassic line 695 "Dropping client").
+	// Replaces the prior EQClassic-port that retried every queued packet on a
+	// session-wide 1 s timer with a hard 15-retry cap.  That design caused
+	// "drop avalanches" — when the HEAD packet stalled and the timer fired
+	// 15 times in 15 s, every TAIL packet pushed during the stall got retried
+	// in lockstep and hit count=15 simultaneously, dropping 3-8 ARQs at the
+	// same instant (visible in resend-cap log clusters at session end).
 	//
-	// Resending all-on-timer is wasteful under partial loss but matches
-	// the protocol the v29c client expects.  It's the safety net: the
-	// outbound-pending gate in SendApp keeps the steady-state under cap,
-	// the resend queue is the recovery path for actual packet loss.
+	// Each PendingArq now carries:
+	//   first_sent_ms — for the HEAD-only age check (linkdead drop)
+	//   next_retry_ms — its own per-packet retry timer
+	//   backoff_ms    — doubles after each retransmit, capped at kMaxBackoffMs
+	//
+	// Drop policy: when the OLDEST unacked packet has been pending > 30 s,
+	// the session is treated as linkdead and removed.  Tail packets get their
+	// own independent first_sent_ms so they can't be avalanched by a head
+	// stall.  The 30 s tolerance matches Verant's classic linkdead behaviour
+	// (sustained unresponsiveness, not a fast-retry count, is what signals a
+	// truly dead session).
+	//
+	// Retry schedule per packet: 500 ms → 1 s → 2 s → 4 s → 8 s → 16 s (cap).
+	// Five retries fit inside the 30 s window before the linkdead check fires.
+	// Cumulative ACK pop in OnDatagram (line 738+) is untouched and still
+	// drains acked entries; this loop only handles the loss-recovery and
+	// drop branches.  Wire-format SEQ patch + CRC recompute is unchanged.
 	{
-		constexpr uint64_t kAckTimeoutMs = 1000;
-		constexpr uint8_t  kMaxResends   = 15;
+		constexpr uint64_t kLinkdeadMs    = 30000;
+		constexpr uint64_t kMaxBackoffMs  = 16000;
 		std::vector<uint64_t> to_drop;
 
 		for (auto& kv : m_sessions) {
 			Session& s = kv.second;
 			if (s.state != CONNECTED) continue;
 			if (s.resend_queue.empty()) continue;
-			if (s.resend_timer_ms == 0)   continue;
-			if (now_ms < s.resend_timer_ms) continue;
 
-			// Timer fired — resend every queued packet.
-			bool drop = false;
+			// HEAD-only linkdead check.  Queue is FIFO with packets pushed
+			// in ARQ order, so the front is always the oldest unacked.
+			// If the head hasn't aged out, no entry has — early exit.
+			//
+			// Underflow guard: this Tick captured now_ms once at the top,
+			// but earlier Tick callbacks (SendMobHeartbeat, FlushPending-
+			// MobUpdates, money reconciliation, Stamina refresh, etc.)
+			// may have called SendApp, which re-reads the clock to set
+			// first_sent_ms.  Net effect: head.first_sent_ms can be a
+			// few ms AHEAD of Tick's now_ms.  Without the guard the
+			// unsigned subtraction wraps to ~2^64 and trivially exceeds
+			// kLinkdeadMs — dropping a brand-new packet instantly.
+			// Test log 1320 (2026-06-23): F220 pushed at the end of Tick,
+			// reported "stuck 18446744073709551597ms" the same instant.
+			{
+				const auto& head = s.resend_queue.front();
+				if (now_ms >= head.first_sent_ms) {
+					const uint64_t head_age_ms = now_ms - head.first_sent_ms;
+					if (head_age_ms > kLinkdeadMs) {
+						LogInfo("[TrilogyZone] linkdead: head ARQ={:04X} opcode={:04X} "
+						        "stuck {}ms (send_count={}) qsize={} for char [{}] — dropping",
+						        head.arq, head.opcode, head_age_ms, head.send_count,
+						        s.resend_queue.size(), s.char_name);
+						to_drop.push_back(kv.first);
+						continue;
+					}
+				}
+				// else: head was pushed AFTER Tick's now_ms snapshot —
+				// it can't possibly be stuck.  Fall through to the per-
+				// packet retry loop (which uses safe future-comparison
+				// against next_retry_ms, no subtraction needed).
+			}
+
+			// Per-packet retransmit — walk the queue, resend only entries
+			// whose individual next_retry_ms has fired.  Apply exponential
+			// backoff to the resent entry's next slot.
 			for (auto& pending : s.resend_queue) {
 				if (pending.wire_bytes.size() < 8) continue; // sanity
+				if (now_ms < pending.next_retry_ms)  continue;
 
 				// Patch SEQ at offset 2-3 to a fresh value.  ARSP/ARQ
 				// payload preserved as originally sent.
@@ -6426,16 +6472,13 @@ void TrilogyZoneServer::Tick()
 				s.bw_packets_sent += 1;
 
 				pending.last_send_ms = now_ms;
-				if (++pending.send_count > kMaxResends) {
-					LogInfo("[TrilogyZone] resend_count > {} on ARQ={:04X} opcode={:04X} for char [{}] — dropping",
-					        kMaxResends, pending.arq, pending.opcode, s.char_name);
-					drop = true;
-				}
-			}
+				pending.send_count   = static_cast<uint16_t>(pending.send_count + 1);
 
-			// Re-arm timer for 1000 ms (matches EQClassic line 707).
-			s.resend_timer_ms = now_ms + kAckTimeoutMs;
-			if (drop) to_drop.push_back(kv.first);
+				// Exponential backoff: double the interval, cap at kMaxBackoffMs.
+				// Drop check above fires before backoff can grow beyond the cap.
+				pending.backoff_ms    = std::min<uint64_t>(pending.backoff_ms * 2, kMaxBackoffMs);
+				pending.next_retry_ms = now_ms + pending.backoff_ms;
+			}
 		}
 
 		for (uint64_t key : to_drop) RemoveSession(key);
@@ -7116,13 +7159,15 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 					std::chrono::duration_cast<std::chrono::milliseconds>(
 						std::chrono::steady_clock::now().time_since_epoch()).count());
 				Session::PendingArq pending;
-				pending.arq          = this_arq_frag;
-				pending.opcode       = opcode;
+				pending.arq           = this_arq_frag;
+				pending.opcode        = opcode;
 				pending.wire_bytes.assign(buf, buf + o);
-				pending.send_count   = 1;
-				pending.last_send_ms = now_ms_push;
+				pending.send_count    = 1;
+				pending.first_sent_ms = now_ms_push;
+				pending.last_send_ms  = now_ms_push;
+				pending.next_retry_ms = now_ms_push + 500;
+				pending.backoff_ms    = 500;
 				s.resend_queue.push_back(std::move(pending));
-				if (s.resend_timer_ms == 0) s.resend_timer_ms = now_ms_push + 500;
 			}
 		}
 		return;
@@ -7208,22 +7253,22 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
 
-	// Stash for EQClassic-style retransmit on no-ARSP-within-timeout.
-	// Skip when in PM_FINISHING (SendClose) or when this is the close handshake itself.
+	// Stash for per-packet exponential-backoff retransmit.  Skip when in
+	// PM_FINISHING (SendClose) or when this is the close handshake itself.
 	if (ack_req && s.state == CONNECTED && opcode != 0 /*close handshake*/) {
 		uint64_t now_ms_push = static_cast<uint64_t>(
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count());
 		Session::PendingArq pending;
-		pending.arq          = this_arq;
-		pending.opcode       = opcode;
+		pending.arq           = this_arq;
+		pending.opcode        = opcode;
 		pending.wire_bytes.assign(buf, buf + o);
-		pending.send_count   = 1;
-		pending.last_send_ms = now_ms_push;
+		pending.send_count    = 1;
+		pending.first_sent_ms = now_ms_push;
+		pending.last_send_ms  = now_ms_push;
+		pending.next_retry_ms = now_ms_push + 500;
+		pending.backoff_ms    = 500;
 		s.resend_queue.push_back(std::move(pending));
-		// Arm no_ack_received_timer if not already running.  500 ms on first
-		// arm matches EQClassic OutgoingARQ (EQPacketManager.cpp:130).
-		if (s.resend_timer_ms == 0) s.resend_timer_ms = now_ms_push + 500;
 	}
 }
 
