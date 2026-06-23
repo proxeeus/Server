@@ -25,7 +25,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
-#include <unordered_set>
+#include <unordered_map>
 #include <vector>
 
 class TrilogyZoneServer;
@@ -378,22 +378,52 @@ private:
 	// each mob's per-session position broadcast rate at ~4 Hz (250 ms gap).
 	std::unordered_map<uint16_t, uint64_t> m_mob_update_last;
 
-	// Per-(spawn_id, slot) cache tracking whether we've ever sent a non-zero
-	// WearChange material for that slot.  Used by HandleOutgoingWearChange to
-	// gate the spawn-time burst: EQEmu's Mob::SendWearChangeAndLighting fires
-	// a WearChange for every texture slot (0..LastTexture) unconditionally on
-	// CompleteConnect, illusion, equip change, etc. — typically 7-8 packets,
-	// most with material=0 for slots the NPC doesn't actually carry equipment
-	// in.  Snakes, scarabs, most non-player-race NPCs produce all-zero bursts
-	// that consume reliable ARQ budget against the v29c ~4870-packet wall for
-	// zero visual benefit (the spawn struct already shows the slot as empty).
+	// Authoritative model of the v29c client's current equipment-material
+	// state, per (spawn_id, slot).  Mirrors EQClassic's `equipment[]` arrays
+	// on the Mob object — same role (record of truth for what the client
+	// rendered), different location (here, because EQEmu's Mob doesn't know
+	// what specifically a v29c client has been told vs. a Titanium/RoF
+	// client).  Drives a pure "fire WearChange only on actual material
+	// change" relay in HandleOutgoingWearChange, matching EQClassic's
+	// surgical one-packet-per-mutation pattern instead of EQEmu's bulk
+	// re-broadcast philosophy.
 	//
-	// Gate: skip when material==0 AND no entry exists for (spawn_id, slot).
-	// First non-zero (skeleton texture variant, player equip 0→N) caches the
-	// pair, so a later unequip (N→0) still goes through.  Cleared per-spawn
-	// in HandleDeleteSpawn; whole set cleared at the appearance-cache soft cap
-	// to bound memory.  Key encoding: (spawn_id << 8) | slot.
-	std::unordered_set<uint32_t> m_wear_change_seen;
+	// Initialized at every spawn-build site (SendZoneSpawns, HandleNewSpawn,
+	// HandleSendZoneEntrySpawn, corpse spawn paths) to mirror the
+	// `sp.equipment[slot]` value the client just received in the spawn
+	// struct.  Updated on every WearChange we actually transmit.  Cleared
+	// per spawn_id in HandleDeleteSpawn.
+	//
+	// Suppressing same-material replays is mathematically lossless: the
+	// suppressed packet carries the exact value the client already rendered
+	// from the prior reliable delivery.  Bounded by kMaxAppearanceCache;
+	// soft-clears if it grows past that.  Key encoding: (spawn_id << 8) | slot.
+	std::unordered_map<uint32_t, uint8_t> m_client_known_material;
+
+public:
+	// Called from trilogy_zone.cpp spawn-build sites immediately after
+	// writing sp.equipment[slot] = material, to keep the proxy's model of
+	// the client's rendered state synchronized with what we just put on the
+	// wire.  Public so SendZoneSpawns / HandleSendZoneEntrySpawn / corpse
+	// builders can reach it without needing friend declarations.
+	void RecordKnownMaterial(uint16_t spawn_id, uint8_t slot, uint8_t material) {
+		if (m_client_known_material.size() >= kMaxAppearanceCache) {
+			m_client_known_material.clear();
+		}
+		const uint32_t key = (static_cast<uint32_t>(spawn_id) << 8) | static_cast<uint32_t>(slot);
+		m_client_known_material[key] = material;
+	}
+
+	// Convenience for spawn-build sites: seed all 9 equipment slots in one
+	// call.  Pass the sp.equipment[] array right after building the spawn
+	// struct so the proxy's model of client state mirrors the wire delivery.
+	void SeedKnownMaterials(uint16_t spawn_id, const int8_t* equipment_9) {
+		for (uint8_t slot = 0; slot < 9; ++slot) {
+			RecordKnownMaterial(spawn_id, slot, static_cast<uint8_t>(equipment_9[slot]));
+		}
+	}
+
+private:
 
 	// Pending A120 batch buffer for moving mobs. HandleClientUpdate pushes
 	// one entry per accepted MovementManager update (post-throttle, post-cull);

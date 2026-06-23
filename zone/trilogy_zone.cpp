@@ -2759,6 +2759,9 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			sp.equipment[mi] = static_cast<int8_t>(tc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi)
 			sp.equipcolors[mi] = static_cast<int32_t>(tc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		// Seed v29c-client-known-material model from the spawn struct equipment.
+		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
 		// Deity: EQClassic DEITY_* constants match EQEmu IDs (201-216); DEITY_AGNOSTIC=140.
 		uint8_t deity_wire = (s.char_deity >= 201 && s.char_deity <= 216)
 			? static_cast<uint8_t>(s.char_deity) : 140;
@@ -2879,6 +2882,9 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 				SendApp(addr, port, s, 0x9220,
 				        reinterpret_cast<const uint8_t*>(&wc),
 				        static_cast<uint32_t>(sizeof(wc)));
+				// Update v29c-client-known-material model: helm slot now reflects helmtex.
+				if (s.trilogy_client) s.trilogy_client->RecordKnownMaterial(
+					static_cast<uint16_t>(npc->GetID()), 0, helmtex);
 			}
 		}
 
@@ -5644,6 +5650,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			        sp.body_type, sp.class_, sp.level);
 		}
 
+		// Seed v29c-client-known-material model from the spawn struct.
+		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
 		++sent;
@@ -5700,6 +5710,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		}
 		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+
+		// Seed v29c-client-known-material model from the spawn struct.
+		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -5765,6 +5779,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		        sent, c->GetCleanName(), c->GetID(), c->GetRace(),
 		        sp.x_pos, sp.y_pos, sp.z_pos);
 
+		// Seed v29c-client-known-material model from the spawn struct.
+		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
 		++sent;
@@ -5827,6 +5845,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			        sent, corpse->GetCleanName(), corpse->GetID(), sp.NPC,
 			        sp.x_pos, sp.y_pos, sp.z_pos);
 		}
+
+		// Seed v29c-client-known-material model from the spawn struct.
+		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -5920,6 +5942,12 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 		sp.equipcolors[mi] = static_cast<int32_t>(c->GetEquipmentColor(static_cast<uint8_t>(mi)));
 	}
 
+	// Seed v29c-client-known-material model from the spawn struct.
+	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
+		sit->second.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+	}
+
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 	std::vector<uint8_t> raw(p, p + sizeof(ns));
 
@@ -5990,6 +6018,12 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	}
 	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+
+	// Seed v29c-client-known-material model from the spawn struct.
+	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
+		sit->second.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 	std::vector<uint8_t> raw(p, p + sizeof(ns));
@@ -6078,6 +6112,12 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 		strncpy(sp.name, cn, sizeof(sp.name) - 1);
 	} else {
 		strncpy(sp.name, corpse->GetCleanName(), sizeof(sp.name) - 1);
+	}
+
+	// Seed v29c-client-known-material model from the spawn struct.
+	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
+		sit->second.trilogy_client->SeedKnownMaterials(
+			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -7450,6 +7490,11 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 		SendApp(s.source_addr, s.source_port, s, 0x9220,
 		        reinterpret_cast<const uint8_t*>(&wc),
 		        static_cast<uint32_t>(sizeof(wc)));
+		// Update v29c-client-known-material model for the player's own slot.
+		tc->RecordKnownMaterial(
+			static_cast<uint16_t>(tc->GetPlayerSpawnId()),
+			static_cast<uint8_t>(vs.material_slot),
+			static_cast<uint8_t>(material & 0xFF));
 	}
 }
 

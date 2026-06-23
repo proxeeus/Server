@@ -1155,6 +1155,9 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 
+	// Seed v29c-client-known-material model from the spawn struct equipment.
+	SeedKnownMaterials(static_cast<uint16_t>(spawn_id), sp.equipment);
+
 	// Explicit OP_WearChange for the helm slot — v29c does not render the helm
 	// from the spawn struct's npc_helm_graphic field for player-race NPC=1
 	// entities while the body is in player-equipment mode (npc_armor_graphic=
@@ -1167,6 +1170,8 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	if (IsPlayerRace(mob->GetRace())) {
 		const uint8_t helmtex = mob->GetHelmTexture();
 		if (helmtex > 0 && helmtex < 0xFF) {
+			// Update the model: the helm now reflects helmtex, not equipment[0].
+			RecordKnownMaterial(static_cast<uint16_t>(spawn_id), 0, helmtex);
 			Trilogy::structs::WearChange_Struct wc{};
 			wc.spawn_id     = static_cast<int32_t>(spawn_id);
 			wc.wear_slot_id = 0; // head slot
@@ -1209,13 +1214,14 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	m_last_appearance.erase(static_cast<uint16_t>(spawn_id));
 	m_mob_update_last.erase(static_cast<uint16_t>(spawn_id));
 
-	// Drop all per-slot WearChange cache entries for this spawn — the next
-	// reuse of spawn_id will see all slots as cold again.  Key encoding is
-	// (spawn_id << 8) | slot, so we walk and prune.
+	// Drop all per-slot known-material entries for this spawn — the next
+	// reuse of spawn_id will need a fresh seed from its spawn struct's
+	// equipment[9].  Key encoding is (spawn_id << 8) | slot, so we walk
+	// and prune (range erase isn't natural on unordered_map).
 	const uint32_t lo = static_cast<uint32_t>(spawn_id) << 8;
 	const uint32_t hi = lo | 0xFFu;
-	for (auto it = m_wear_change_seen.begin(); it != m_wear_change_seen.end(); ) {
-		if (*it >= lo && *it <= hi) it = m_wear_change_seen.erase(it);
+	for (auto it = m_client_known_material.begin(); it != m_client_known_material.end(); ) {
+		if (it->first >= lo && it->first <= hi) it = m_client_known_material.erase(it);
 		else ++it;
 	}
 }
@@ -1569,33 +1575,39 @@ void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
 	// own equipment change causes a feedback loop — the client re-sends 0x9220.
 	if (src->spawn_id == GetID()) return;
 
-	// Cold-slot zero gate: EQEmu's Mob::SendWearChangeAndLighting fires a
-	// WearChange for every texture slot (typically 7-8) on CompleteConnect,
-	// illusion application, equip change, etc., regardless of whether the
-	// slot actually holds equipment.  For non-player-race NPCs (snakes,
-	// scarabs, most monsters) all those slots are material=0 and rendering
-	// them changes nothing — the spawn struct already shows the slot as
-	// empty.  Skip when material==0 AND we have never sent a non-zero for
-	// this (spawn_id, slot) pair.  Skeleton texture variants (material > 0)
-	// pass through, and a later unequip (cached N → 0) still passes through
-	// because the cache will already contain the pair.  Burns ~7 reliable
-	// ARQ slots per non-player NPC spawn for zero visual benefit otherwise;
-	// each saved packet extends time-to-wall by ~1/4870 of a session.
+	// EQClassic-faithful WearChange policy: emit reliably only when the
+	// material actually changes from what the v29c client last rendered.
+	// EQClassic enforces this implicitly by mutating its Mob `equipment[]`
+	// arrays and firing WearChange only at the mutation point.  EQEmu's
+	// philosophy is the opposite — re-broadcast current state on
+	// CompleteConnect, illusion, pet summon, per-loot-slot, etc. — which
+	// blasts 7-8 redundant WearChange per event through our reliable pipe
+	// for zero rendering benefit (the client already has the value).
+	//
+	// We bridge by holding the authoritative model of the client's known
+	// material per (spawn_id, slot) in m_client_known_material.  Initial
+	// values are seeded at spawn-build time from sp.equipment[slot] — the
+	// spawn packet IS the first WearChange in EQClassic terms.  At runtime,
+	// any incoming WearChange that matches the cached value is a no-op
+	// replay and gets suppressed; any actual mutation is sent reliably and
+	// the cache is updated.
+	//
+	// Lossless: a suppressed packet by definition carries the same material
+	// the client already rendered from the prior reliable delivery.  Visual
+	// fidelity is preserved across all paths (spawn struct equipment[9],
+	// per-slot mutation, unequip→0 transitions, skeleton texture variants
+	// — all pass through correctly on the first change).
 	const uint8_t material = static_cast<uint8_t>(src->material & 0xFF);
+	const uint16_t spawn_id_w = static_cast<uint16_t>(src->spawn_id);
+	const uint8_t slot       = static_cast<uint8_t>(src->wear_slot_id);
 	const uint32_t cache_key =
-		(static_cast<uint32_t>(static_cast<uint16_t>(src->spawn_id)) << 8) |
-		static_cast<uint32_t>(static_cast<uint8_t>(src->wear_slot_id));
-	if (material == 0) {
-		if (m_wear_change_seen.find(cache_key) == m_wear_change_seen.end()) {
-			return; // cold slot, redundant with empty spawn-struct slot
-		}
-	} else {
-		// Bound memory: clear at the same soft cap used for m_last_appearance.
-		if (m_wear_change_seen.size() >= kMaxAppearanceCache) {
-			m_wear_change_seen.clear();
-		}
-		m_wear_change_seen.insert(cache_key);
+		(static_cast<uint32_t>(spawn_id_w) << 8) | static_cast<uint32_t>(slot);
+
+	auto it = m_client_known_material.find(cache_key);
+	if (it != m_client_known_material.end() && it->second == material) {
+		return; // client already rendered this exact material — EQClassic wouldn't emit
 	}
+	RecordKnownMaterial(spawn_id_w, slot, material);
 
 	using TrilWC = Trilogy::structs::WearChange_Struct;
 	TrilWC wc{};
