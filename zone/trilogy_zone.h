@@ -45,7 +45,8 @@ public:
 	bool HasConnectedSession() const;
 
 	void SendToSession(uint64_t session_key, uint16_t opcode,
-	                   const uint8_t* data, uint32_t size);
+	                   const uint8_t* data, uint32_t size,
+	                   bool ack_req = true);
 
 	// Send a server-initiated EQNetwork CLOSE to the session.  Called immediately
 	// after the 0xa320 zone-change approval so EQNetwork cleanly nulls out this

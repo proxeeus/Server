@@ -290,6 +290,13 @@ public:
 	void HandleIncomingGroupCancelInvite(const uint8_t* data, uint32_t len);
 	void HandleIncomingGroupDisband(const uint8_t* data, uint32_t len);
 
+	// Flush the per-session A120 batch buffer; called once per Tick by
+	// TrilogyZoneServer. No-op when nothing is pending. Bulk-packs up to
+	// 25 SpawnPositionUpdate_Struct entries per A120 packet (matches
+	// SendMobHeartbeat wire format), so moving-mob ARQ overhead is
+	// O(in-view-moving-mobs / 25) per Tick instead of one ARQ per mob.
+	void FlushPendingMobUpdates();
+
 private:
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
@@ -369,6 +376,14 @@ private:
 	// in-zone mobs during heavy traffic, flooding v29c's ARQ window.  Caps
 	// each mob's per-session position broadcast rate at ~4 Hz (250 ms gap).
 	std::unordered_map<uint16_t, uint64_t> m_mob_update_last;
+
+	// Pending A120 batch buffer for moving mobs. HandleClientUpdate pushes
+	// one entry per accepted MovementManager update (post-throttle, post-cull);
+	// FlushPendingMobUpdates drains the buffer into bulk A120 packets
+	// (up to 25 entries each) once per Tick. Cuts moving-mob A120 ARQ count
+	// by ~20× in dense zones — the same shape as SendMobHeartbeat for
+	// stationary mobs but driven by movement events instead of staleness.
+	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
 
 	// Per-door last-sent action cache.  Doors::HandleClick in EQEmu has a bug
 	// where city-edge doors (HasDestinationZone() == true) never get

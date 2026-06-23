@@ -1253,27 +1253,18 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 // ============================================================
 // HandleClientUpdate — OP_ClientUpdate per-mob position broadcast.
 //
-// EQClassic-faithful event-driven A120 path (2026-06-21).  Mirrors
-// EQClassic Mob::SendPosUpdate (Zone/Source/mob.cpp:547) which emits
-// OP_MobUpdate ONLY when a mob actually moves, NOT on a server tick.
-// EQClassic intentionally disabled periodic position broadcast in
-// client_process.cpp:528 ("maalanar 2008-02-05: no need for the server
-// to refresh player position, this only causes jumpyness for the viewing
-// clients") and has not reintroduced it.
+// EQClassic-faithful event-driven A120 path. EQEmu's MovementManager
+// fires OP_ClientUpdate frequently per moving mob (observed 100-500/sec
+// aggregate in ecommons during prior testing). We throttle PER MOB to
+// ~4 Hz via m_mob_update_last; combined with the 600u cull from this
+// client's position, total A120 emission stays bounded by the number of
+// in-view moving mobs, not by total zone NPC count.
 //
-// Previously we used a periodic SendMobHeartbeat (200/250 ms) batched
-// across all in-range mobs.  That bounded ARQ rate but emitted updates
-// for every patrolling guard every tick even when no one was looking at
-// them, dominating outbound A120 traffic in dense city zones.  Test 1892
-// showed STALENESS=5000 for stationary mobs barely moved time-to-lock —
-// the moving-mob updates were the real budget consumer.
-//
-// EQEmu's MovementManager fires OP_ClientUpdate frequently per moving
-// mob (observed 100-500/sec aggregate in ecommons during prior testing).
-// We throttle PER MOB to ~4 Hz via m_mob_update_last; combined with the
-// 600u cull from this client's position, total A120 emission stays
-// bounded by the number of in-view moving mobs, not by total zone NPC
-// count.  Stationary mobs emit zero updates — same as EQClassic.
+// 2026-06-23: accepted updates are pushed to m_pending_mob_updates and
+// drained by FlushPendingMobUpdates() once per Tick. The 25-entries-per-
+// A120 batching cuts moving-mob ARQ count by ~20×, which is the right
+// architectural lever against the v29c ~4870-ARQ session ceiling
+// (see [[project-trilogy-resend-explosion]] lesson #2).
 // ============================================================
 
 void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
@@ -1311,27 +1302,58 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 		return;
 	m_mob_update_last[spawn_id] = now_ms;
 
-	// Build single-entry A120 packet:
-	//   [int32 count=1][SpawnPositionUpdate_Struct]
-	uint8_t pkt[4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)];
-	int32_t count = 1;
-	memcpy(pkt, &count, 4);
-	auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(pkt + 4);
-	memset(upd, 0, sizeof(*upd));
-
-	upd->spawn_id = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(spawn_id)));
-	upd->heading  = static_cast<int8_t>(static_cast<uint8_t>(m->GetHeading() / 2.0f));
-	upd->y_pos    = static_cast<int16_t>(m->GetY());
-	upd->x_pos    = static_cast<int16_t>(m->GetX());
-	upd->z_pos    = static_cast<int16_t>(m->GetZ() * 10.0f);
+	// Push to the per-session pending buffer; FlushPendingMobUpdates drains
+	// it once per Tick into 25-mob batched A120 packets.
+	Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+	upd.spawn_id = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(spawn_id)));
+	upd.heading  = static_cast<int8_t>(static_cast<uint8_t>(m->GetHeading() / 2.0f));
+	upd.y_pos    = static_cast<int16_t>(m->GetY());
+	upd.x_pos    = static_cast<int16_t>(m->GetX());
+	upd.z_pos    = static_cast<int16_t>(m->GetZ() * 10.0f);
 
 	if (m->IsMoving()) {
 		const float float_sp = static_cast<float>(m->GetRunspeed()) / 40.0f;
 		const int   anim     = static_cast<int>(float_sp * 7.0f);
-		upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+		upd.anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
 	}
 
-	m_tzs->SendToSession(m_session_key, 0xa120, pkt, static_cast<uint32_t>(sizeof(pkt)));
+	m_pending_mob_updates.push_back(upd);
+}
+
+// ============================================================
+// FlushPendingMobUpdates — drain m_pending_mob_updates into bulk A120
+// packets (one per 25 entries). Called once per Tick by
+// TrilogyZoneServer::Tick. Mirrors the wire format used by
+// SendMobHeartbeat: [int32 count][SpawnPositionUpdate_Struct × count].
+// ============================================================
+void TrilogyClient::FlushPendingMobUpdates()
+{
+	if (m_pending_mob_updates.empty()) return;
+
+	// Same cap as SendMobHeartbeat: keeps the datagram under 512 B
+	// (4 + 25*15 = 379) so v29c never has to reassemble a fragmented A120.
+	static constexpr size_t kMaxPerPkt = 25;
+
+	const size_t total = m_pending_mob_updates.size();
+	for (size_t off = 0; off < total; off += kMaxPerPkt) {
+		const size_t   batch = std::min(kMaxPerPkt, total - off);
+		const uint32_t plen  = static_cast<uint32_t>(
+			4 + batch * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
+
+		uint8_t pkt[4 + kMaxPerPkt * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)];
+		int32_t n = static_cast<int32_t>(batch);
+		memcpy(pkt, &n, 4);
+		memcpy(pkt + 4,
+		       m_pending_mob_updates.data() + off,
+		       batch * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
+
+		// A120 unreliable: see flush_packet in SendMobHeartbeat for rationale.
+		// SendApp omits dbASQ_low when !ack_req to match EQClassic's wire
+		// format; see [[project-trilogy-unreliable-a120-wire-format]].
+		m_tzs->SendToSession(m_session_key, 0xa120, pkt, plen, /*ack_req=*/false);
+	}
+
+	m_pending_mob_updates.clear();
 }
 
 // ============================================================

@@ -632,13 +632,14 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 }
 
 void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
-                                      const uint8_t* data, uint32_t size)
+                                      const uint8_t* data, uint32_t size,
+                                      bool ack_req)
 {
 	auto it = m_sessions.find(session_key);
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	if (s.state != CONNECTED) return;
-	SendApp(s.source_addr, s.source_port, s, opcode, data, size);
+	SendApp(s.source_addr, s.source_port, s, opcode, data, size, ack_req);
 }
 
 void TrilogyZoneServer::SendCloseToSession(uint64_t session_key)
@@ -6209,23 +6210,33 @@ void TrilogyZoneServer::Tick()
 			continue;
 		}
 
-		// 2026-06-21: periodic SendMobHeartbeat disabled — EQClassic does no
-		// periodic position refresh (client_process.cpp:528 comment).  Position
-		// updates now flow per-event through TrilogyClient::HandleClientUpdate,
-		// fired from EQEmu's MovementManager whenever a mob actually moves,
-		// and throttled per-mob at ~4 Hz inside that handler.  See
-		// [[project-trilogy-arq-gap16]] for the full rationale.
-		//
-		// SendMobHeartbeat() is still called once at zone-in (line ~2936) to
-		// prime initial positions; the function body is kept around for that
-		// one-shot use.
-
 		// Skip timed broadcasts while the client is in zone-out transition.
 		// Stamina/TimeOfDay packets arriving during EQNetwork's CLOSE handshake
 		// can corrupt the connection-table cleanup, leaving a freed-pointer sentinel
 		// (0xff000000) instead of NULL — which causes the 0x004c7752 crash on the
 		// next zone-back to this zone.
 		if (s.trilogy_client && s.trilogy_client->IsZoning()) continue;
+
+		// Per-NPC spawn-liveness refresh — matches EQClassic's per-NPC 5 s
+		// spawnUpdate_timer in NPC::Process (Zone/Source/npc.cpp:683-691,
+		// constructor-staggered 125-999 ms at npc.cpp:144-146). Yeahlight's
+		// comment at npc.cpp:682 is explicit: "This fixes the client's
+		// inability to target via F8 key and also restores each mob's random
+		// sound effects (flapping wings, growls, etc)" — the exact symptoms
+		// we hit when this call was disabled (mobs visible-but-not-attackable,
+		// "futile to consider the dead", loot/quest interactions broken on
+		// stationary NPCs).
+		//
+		// The prior disable rationale conflated two unrelated EQClassic code
+		// paths: client_process.cpp:528 ("no need to refresh player position")
+		// is about PLAYER→other-clients refresh; npc.cpp:683-691 is the
+		// NPC→player liveness signal and was never optional.
+		//
+		// SendMobHeartbeat is self-throttled (per-spawn last.sent_ms +
+		// STALENESS_REFRESH_MS = 5000), so per-Tick calls only emit packets
+		// for NPCs that are actually stale. Batched 25-per-A120 packet keeps
+		// the wire cost negligible (~1.8 pps for 217 stationary Freport NPCs).
+		SendMobHeartbeat(s.source_addr, s.source_port, s);
 
 		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
 		if (s.trilogy_client) {
@@ -6237,6 +6248,16 @@ void TrilogyZoneServer::Tick()
 		// in <50 ms); we cap outbound chat at 20 lines/s.
 		if (s.trilogy_client) {
 			s.trilogy_client->DrainPendingText();
+		}
+
+		// Drain the per-Tick A120 batch for moving mobs. HandleClientUpdate
+		// accumulates accepted-and-throttled MobUpdates into a per-session
+		// buffer; here we emit them as 25-mob bulk A120 packets. Cuts
+		// moving-mob ARQ overhead ~20× — the architectural follow-up to
+		// the stationary-mob heartbeat re-enable, both aimed at pushing
+		// past the v29c ~4870-ARQ session ceiling.
+		if (s.trilogy_client) {
+			s.trilogy_client->FlushPendingMobUpdates();
 		}
 
 		// Money-display reconciliation: the on-screen coin counter only refreshes from
@@ -6516,8 +6537,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	auto flush_packet = [&]() {
 		if (n == 0) return;
 		memcpy(pkt, &n, 4);
+		// A120 unreliable: original Verant servers sent position updates
+		// without ARQ (Agz, EQClassic/Common/Source/EQPacketManager.cpp:412).
+		// Loss is harmless (next heartbeat supersedes) and unreliable A120
+		// bypasses the v29c client's reliable-stream buffer that drives the
+		// ~4870-packet session wall. SendApp's wire format omits dbASQ_low
+		// on !ack_req packets to match EQClassic. See
+		// [[project-trilogy-unreliable-a120-wire-format]].
 		SendApp(addr, port, s, ZN_OP_MobUpdate,
-		        pkt, static_cast<uint32_t>(4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)));
+		        pkt, static_cast<uint32_t>(4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)),
+		        /*ack_req=*/false);
 		n = 0;
 	};
 
@@ -6545,24 +6574,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// broadcast to this session, OR the previous broadcast is older than
 	// STALENESS_REFRESH_MS.
 	//
-	// 2026-06-21 (Test TODO-analyze.log post-mortem): EQClassic does ZERO
-	// periodic refresh — `SendPositionUpdates` is fully commented out in
-	// client_process.cpp:528 ("maalanar 2008-02-05: no need for the server
-	// to refresh player position, this only causes jumpyness for the
-	// viewing clients").  EQClassic only emits OP_MobUpdate from
-	// Mob::SendPosUpdate ON ACTUAL MOVEMENT EVENTS (mob.cpp:547), not on
-	// a timer.  Stationary mobs are NEVER re-broadcast.
+	// Matches EQClassic's per-NPC `spawnUpdate_timer` cadence: NPC::Process
+	// at Zone/Source/npc.cpp:683-691 unconditionally fires SendPosUpdate
+	// every 5 s (timer reset at line 686, initial 125-999 ms randomized
+	// stagger from npc.cpp:144-146 so 200+ NPCs don't herd onto one Tick).
+	// Yeahlight's comment at npc.cpp:682: "This fixes the client's inability
+	// to target via F8 key and also restores each mob's random sound effects
+	// (flapping wings, growls, etc)" — exactly our staleness symptoms.
 	//
-	// Our previous belief that "v29c times out spawns after ~1.5 s without
-	// A120" was based on Test 8716 invisible-mob symptoms — but that test
-	// was confounded with the proactive-2B20 cleanup bug (see
-	// [[project-trilogy-proactive-delete-bug]]).  With proactive 2B20
-	// removed, the staleness floor is much higher than 1.5 s.
-	//
-	// Bumping 1000 → 5000.  At 5 s refresh, stationary-mob heartbeat traffic
-	// drops 5×, which is the largest single A120 source in dense city zones
-	// like Freport (217 NPCs, most stationary).  Watch for "NPC attacking
-	// invisible mob" symptoms — if they return, halve to 3000.
+	// (Note: the maalanar 2008 comment at client_process.cpp:528 that
+	// disabled SendPositionUpdates is about PLAYER→other-clients refresh,
+	// NOT NPC→player liveness. Two different paths; conflating them was
+	// the 2026-06-21 misread.)
 	//
 	// Moving mobs are unaffected (dirty flag fires on position change),
 	// combat is untouched (per-session 200 ms throttle path above).
@@ -7074,9 +7097,30 @@ void TrilogyZoneServer::SendApp(const std::string& addr, int port, Session& s,
 		uint16_t arq = htons(s.arq++);
 		memcpy(buf + o, &arq, 2); o += 2;
 	}
+	// EQClassic wire format ([EQPacketManager.cpp:287-292, 549-560]):
+	//   dbASQ_high is on the wire whenever a4_ASQ is set
+	//   dbASQ_low is on the wire ONLY when a1_ARQ is also set
+	// EQClassic bumps SACK.dbASQ_low on every a4_ASQ packet (line 645-646)
+	// — BUT EQClassic forcibly overrides every QueuePacket to ack_req=true
+	// (client.cpp:510), so it never tests the unreliable path.
+	//
+	// Empirically (2026-06-23 test log 4788), bumping asq_lo on unreliable
+	// causes v29c to silently discard the *next reliable* packet (doors
+	// don't render, /con replies don't appear, NPC interactions broken)
+	// while still processing unreliable A120 fine. The signature is the
+	// v29c client treating asq_lo as a *reliable-only* counter and rejecting
+	// reliable packets whose asq_lo skipped ahead.
+	//
+	// Resolution: gate the increment on ack_req too. asq_lo becomes a
+	// per-reliable counter (matching what the v29c client expects), wire
+	// format still omits the low byte for unreliable per EQClassic. See
+	// [[project-trilogy-unreliable-a120-wire-format]].
 	buf[o++] = s.asq_hi;
-	buf[o++] = s.asq_lo++;
-	if (s.asq_lo == 0) ++s.asq_hi;
+	if (ack_req) {
+		buf[o++] = s.asq_lo;
+		s.asq_lo++;
+		if (s.asq_lo == 0) ++s.asq_hi;
+	}
 	{ uint16_t op = htons(opcode); memcpy(buf + o, &op, 2); o += 2; }
 	if (plen > 0 && payload) {
 		if (static_cast<size_t>(o) + plen > sizeof(buf) - 4) return;
