@@ -3375,7 +3375,8 @@ void TrilogyClient::HandleOutgoingGroupDisband(const EQApplicationPacket* app)
 //   3 = REMOVE_MEMBER  — "X leaves"
 //   4 = DISBAND_YOU    — "You leave / group disbanded"
 //
-// Mapping from EQEmu action → v29c action:
+// Mapping from EQEmu action → v29c action (mirrors EQMacEmuTrilogy
+// trilogy.cpp:2381 ENCODE(OP_GroupUpdate)):
 //   groupActJoin(0)          → 0  (with othername = membername[0])
 //   groupActLeave(1)         → 3  (with othername = membername[0])
 //   groupActDisband(6)       → 4  (with othername = yourname)
@@ -3520,7 +3521,32 @@ void TrilogyClient::HandleIncomingGroupInvite2(const uint8_t* data, uint32_t len
 
 	LogInfo("[Trilogy][Group] <- OP_GroupInvite2 (0x4020) invitee=[{}] inviter=[{}]",
 	         gi->invitee_name, gi->inviter_name);
+
+	// Pre-check whether the invitee is a Bot.  For player-to-player invites,
+	// the invitee's client will reply with OP_GroupFollow (0x4220) and the
+	// EQEmu engine then echoes that OP_GroupFollow back to the inviter — that
+	// echo is how the v29c client learns it is the new group's leader
+	// (without it, the client's local "am I the leader?" check fails and
+	// the next OP_GroupInvite2 is blocked with "Only a leader can invite
+	// more members").  Bot::ProcessBotGroupInvite skips the Follow step
+	// entirely and just appends the bot to the group server-side, so the
+	// inviter never receives an OP_GroupFollow.  Forge one here so v29c sees
+	// the same wire sequence it would for a player invite that auto-accepted.
+	Mob* invitee_mob = entity_list.GetMob(gi->invitee_name);
+	const bool invitee_is_bot = invitee_mob && invitee_mob->IsBot();
+
 	Handle_OP_GroupInvite2(&pkt);
+
+	if (invitee_is_bot) {
+		Trilogy::structs::GroupFollow_Struct out{};
+		CopyTrilogyName(out.leader,  sizeof(out.leader),  gi->inviter_name);
+		CopyTrilogyName(out.invited, sizeof(out.invited), gi->invitee_name);
+		LogInfo("[Trilogy][Group] -> OP_GroupFollow (0x4220) forged bot-accept leader=[{}] invited=[{}] size={} bytes=[{}]",
+		        out.leader, out.invited, sizeof(out), HexDumpBytes(&out, sizeof(out)));
+		m_tzs->SendToSession(m_session_key, 0x4220,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+	}
 }
 
 void TrilogyClient::HandleIncomingGroupFollow(const uint8_t* data, uint32_t len)
