@@ -162,7 +162,7 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
   server, the authoritative reference for opcodes, struct layouts, channel numbers, and the DES
   login key. Key files: `Common/Include/eq_opcodes.h`, `eq_packet_structs.h`, `PlayerProfile.h`,
   `LS/Login/login_structs.h`, `LS/Login/EQCrypto.*`.
-- **`EQMacEmuTrilogy/`** — another Trilogy-era reference implementation. This should be a fallback source should anything else fails. EQClassic is the default authoritative source.
+- **`EQMacEmuTrilogy/`** — another Trilogy-era reference implementation. DO NOT IMPLEMENT WITHOUT ASKING. EQClassic is the default authoritative source.
 - **`trilogy_plan.md`** (repo root) — original implementation plan: struct field maps, opcode
   table, protocol-difference table, risk register. Historical but still an accurate struct/opcode
   reference.
@@ -201,3 +201,4 @@ case scenario, investigate and propose workarounds. NEVER EVER assume we "reache
 - Don't touch unrelated code but please do surface bad code or design smells you discover with me so we can address them as a separate issue.
 - Flag uncertainty explicitly. If you're unsure about something, see point 1 above. If it makes sense to do so, conduct a small, localised and low-risk experiment and bring the hypothesis and results to me to discuss. Confidence without certainty causes more damage than admitting a gap.
 - I'm always open to ideas on better ways to do things. Please don't hesitate to suggest a better way, or one that has long lasting impact over a tactical change. (as a few examples)
+- Stop asking for EQClassic packet captures. There are none.
