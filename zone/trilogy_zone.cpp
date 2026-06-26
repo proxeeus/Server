@@ -234,6 +234,22 @@ static constexpr uint16_t ZN_OP_ShopEndConfirm = 0x4521; // zone -> client: clos
 // Source: EQClassic/Common/Include/eq_opcodes.h :: OP_MoveCoin
 static constexpr uint16_t ZN_OP_MoveCoin       = 0x2d21; // client -> zone: MoveCoin_Struct (20 bytes)
 
+// Tradeskill / world container opcodes
+// Source: EQClassic/Common/Include/eq_opcodes.h
+//   OP_CraftingStation (0xd720) is BIDIRECTIONAL on the same wire opcode:
+//     zone -> client: open container UI (ClickObjectAck_Struct, 20 B)
+//     client -> zone: player closed UI; server snapshots stationItems back onto
+//                     the Object (same struct echoed back, open=0).
+//   OP_StationItem (0xfb20) carries the full 292 B ClassicItem_Struct, one packet
+//     per occupied slot; the item's equipSlot field holds 0..9 (the bag interior
+//     index), NOT the 4000-4009 wire slot used by OP_MoveItem.
+//   OP_TradeSkillCombine (0x0521) carries Combine_Struct (32 B) when the player
+//     hits the Combine button — same struct/opcode whether the container is on
+//     the ground (worldobjecttype != 0, containerslot = 1000) or in inventory.
+static constexpr uint16_t ZN_OP_CraftingStation   = 0xd720;
+static constexpr uint16_t ZN_OP_StationItem       = 0xfb20;
+static constexpr uint16_t ZN_OP_TradeSkillCombine = 0x0521;
+
 // Group opcodes
 // Source: EQMacEmuTrilogy patch_Trilogy.conf + EQClassic/LS branch eq_opcodes.h
 // (EQClassic/Common/Include uses different values for Invite/Follow/Update —
@@ -1048,6 +1064,11 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (plen >= sizeof(ClickObject_Struct)) {
 				const auto* co_in = reinterpret_cast<const ClickObject_Struct*>(payload);
 				Entity* ent = entity_list.GetID(static_cast<uint16>(co_in->drop_id));
+				LogInfo("[TRILOGY-TS] OP_PickupItem incoming drop_id={} player_id={} ent_found={} is_object={} obj_type={}",
+				        co_in->drop_id, co_in->player_id,
+				        ent ? 1 : 0,
+				        (ent && ent->IsObject()) ? 1 : 0,
+				        (ent && ent->IsObject()) ? (int)ent->CastToObject()->GetType() : -1);
 				if (ent && ent->IsObject()) {
 					ClickObject_Struct co{};
 					co.drop_id   = co_in->drop_id;
@@ -1265,6 +1286,128 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_MoveCoin && s.trilogy_client)
 			HandleMoveCoin(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_TradeSkillCombine && s.trilogy_client)
+		{
+			// Player hit the Combine button in the tradeskill UI (world container OR
+			// inventory bag).  Trilogy Combine_Struct (32B) carries the container
+			// itself + a snapshot of the 10 ingredient item IDs, but
+			// Object::HandleCombine actually reads ingredients live from the
+			// container's bag — so we only need to translate the container_slot.
+			//
+			// Wire containerslot semantics (per EQClassic + Combine_Struct comment):
+			//   1000      = world container (m_tradeskill_object set on click)
+			//   22-29     = personal inventory bag slot 1-8
+			//   2000-2007 = bank top slot (combine-in-bank is rare; pass through)
+			// Trilogy v29c wire ↔ EQEmu DB slot mapping (mirrors HandleMoveItem):
+			//   wire 21-29 → DB 22-30 (+1 shift, EQEmu has a charm slot v29c lacks).
+			// Object::HandleCombine treats container_slot == 1000 specially and
+			// uses m_tradeskill_object; otherwise it does user_inv.GetItem(slot),
+			// which expects the EQEmu/RoF2-style DB slot.
+			if (plen >= sizeof(Trilogy::structs::TradeSkillCombine_Struct)) {
+				const auto* in = reinterpret_cast<const Trilogy::structs::TradeSkillCombine_Struct*>(payload);
+
+				int16_t emu_slot;
+				if (in->containerslot == 1000) {
+					emu_slot = static_cast<int16_t>(EQ::invslot::SLOT_TRADESKILL_EXPERIMENT_COMBINE);
+				} else if (in->containerslot >= 21 && in->containerslot <= 29) {
+					emu_slot = static_cast<int16_t>(in->containerslot + 1);
+				} else {
+					emu_slot = static_cast<int16_t>(in->containerslot);
+				}
+
+				LogInfo("[TrilogyZone] OP_TradeSkillCombine char={} wire_container={} emu_container={} "
+				        "objtype={} containerID={}",
+				        s.char_id, in->containerslot, emu_slot,
+				        in->worldobjecttype, in->containerID);
+
+				// Diagnostic: confirm m_inv state at the combine container slot so we
+				// can tell apart "no recipe in DB" from "m_inv stale".  GetTradeRecipe
+				// silently returns false for both cases; the player sees nothing.
+				if (emu_slot != 1000) {
+					auto& dbg_inv = s.trilogy_client->GetInv();
+					const EQ::ItemInstance* dbg_bag = dbg_inv.GetItem(emu_slot);
+					if (!dbg_bag) {
+						LogInfo("[TrilogyZone] OP_TradeSkillCombine DIAG: m_inv[{}] is EMPTY — "
+						        "bag not loaded; combine will fail silently", emu_slot);
+					} else {
+						const EQ::ItemData* dbg_item = dbg_bag->GetItem();
+						int          dbg_n   = 0;
+						uint32_t     dbg_sum = 0;
+						std::string  dbg_ids;
+						for (uint8 i = 0; i < 10; i++) {
+							const auto* ci = dbg_bag->GetItem(i);
+							if (!ci) continue;
+							const auto* cit = ci->GetItem();
+							if (!cit) continue;
+							dbg_n++;
+							dbg_sum += cit->ID;
+							if (!dbg_ids.empty()) dbg_ids += ",";
+							dbg_ids += std::to_string(cit->ID);
+						}
+						LogInfo("[TrilogyZone] OP_TradeSkillCombine DIAG: m_inv[{}] container item_id={} "
+						        "is_bag={} bag_type={} contents={}/10 ids=[{}] sum={}",
+						        emu_slot,
+						        dbg_item ? dbg_item->ID : 0,
+						        dbg_bag->IsType(EQ::item::ItemClassBag) ? 1 : 0,
+						        dbg_item ? (int)dbg_item->BagType : -1,
+						        dbg_n, dbg_ids, dbg_sum);
+						LogInfo("[TrilogyZone] OP_TradeSkillCombine DIAG: GetTradeRecipe will query: "
+						        "ingredients IN ({}) AND container IN ({}, {}) HAVING count={} sum={} -- "
+						        "check DB: SELECT * FROM tradeskill_recipe_entries WHERE recipe_id IN "
+						        "(SELECT id FROM tradeskill_recipe WHERE enabled=1) AND "
+						        "((item_id IN ({}) AND componentcount>0) OR (item_id IN ({}, {}) AND iscontainer=1))",
+						        dbg_ids,
+						        dbg_item ? (int)dbg_item->BagType : -1,
+						        dbg_item ? dbg_item->ID : 0,
+						        dbg_n, dbg_sum,
+						        dbg_ids,
+						        dbg_item ? (int)dbg_item->BagType : -1,
+						        dbg_item ? dbg_item->ID : 0);
+					}
+				}
+
+				EQApplicationPacket pkt(OP_TradeSkillCombine, sizeof(NewCombine_Struct));
+				auto* nc = reinterpret_cast<NewCombine_Struct*>(pkt.pBuffer);
+				nc->container_slot     = emu_slot;
+				nc->guildtribute_slot  = 0;
+				s.trilogy_client->Handle_OP_TradeSkillCombine(&pkt);
+
+				// Echo the original 32-byte Combine_Struct back as the wire ack.
+				// EQClassic's ProcessOP_TradeSkillCombine re-queues `pApp` verbatim
+				// at the end of the handler (Zone/Source/Tradeskills.cpp:218); the
+				// v29c client treats this as the "combine processed" confirmation
+				// and ignores 0-byte versions.  Sending it AFTER Handle_OP_TradeSkillCombine
+				// keeps the ordering right (cursor result + container clear arrive
+				// first via the standard outgoing path, ack last).
+				SendApp(addr, port, s, ZN_OP_TradeSkillCombine,
+				        payload, sizeof(Trilogy::structs::TradeSkillCombine_Struct));
+			}
+		}
+		else if (opcode == ZN_OP_CraftingStation && s.trilogy_client)
+		{
+			// Player closed the tradeskill container UI (v29c sends the same 20-byte
+			// ClickObjectAck_Struct back with open=0).  Match EQClassic's
+			// ProcessOP_CraftingStation semantics: persist the m_inst contents
+			// back to DB and release the server-side "in use" reference.
+			// Items remain in the container so the next player who clicks it
+			// sees them — exactly like the real Verant behaviour.
+			//
+			// Deliberately bypass Client::Handle_OP_ClickObjectAction here.  That
+			// path calls Object::Close() which dumps any leftover items back into
+			// the player's m_inv via MoveItemToInventory — and m_inv is stale for
+			// Trilogy sessions (we write inventory directly to the DB), so those
+			// items would land in memory but never reach the inventory table.
+			Object* obj = s.trilogy_client->GetTradeskillObject();
+			if (obj) {
+				LogInfo("[TrilogyZone] OP_CraftingStation (close) char={} obj_id={}",
+				        s.char_id, obj->GetID());
+				obj->Save();         // m_inst → DB
+				obj->ReleaseUser();  // clear "in use" + SetTradeskillObject(nullptr)
+			} else {
+				LogInfo("[TrilogyZone] OP_CraftingStation (close) char={} but no open tradeskill object",
+				        s.char_id);
+			}
+		}
 		else if (opcode == ZN_OP_GroupInvite && s.trilogy_client) {
 			s.trilogy_client->HandleIncomingGroupInvite(payload, plen);
 		}
@@ -7615,6 +7758,154 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	if ((to_wire   >= 3000 && to_wire   <= 3007) ||
 	    (from_wire >= 3000 && from_wire <= 3007)) {
 		HandleTradeMoveItem(s, from_wire, to_wire);
+		return;
+	}
+
+	// Tradeskill / world-container interior: wire slots 4000-4009 are the 10
+	// "station" slots inside whatever forge/oven/box the player clicked open.
+	// Items here live on the Object (m_tradeskill_object->m_inst as a bag),
+	// NOT in the inventory DB, so the regular wire_to_db path can't touch them.
+	// All non-trivial moves go through cursor (wire 0) in v29c, so the only
+	// real shapes are:
+	//   from=4000..4009, to=0       → take item out of station → cursor
+	//   from=0,         to=4000..4009 → put cursor item → station
+	//   from=4000..4009, to=4000..4009 → reorder inside station (rare)
+	const bool from_is_world = (from_wire >= 4000 && from_wire <= 4009);
+	const bool to_is_world   = (to_wire   >= 4000 && to_wire   <= 4009);
+	if (from_is_world || to_is_world) {
+		Object* obj = s.trilogy_client ? s.trilogy_client->GetTradeskillObject() : nullptr;
+		if (!obj) {
+			LogInfo("[TrilogyZone] MoveItem char={} world-slot move but no tradeskill object open "
+			        "(from={} to={}); ignoring", s.char_id, from_wire, to_wire);
+			return;
+		}
+
+		auto insert_cursor_row = [&](uint32 item_id, int16 charges, uint32 color) {
+			// Use DB slot 33 (cursor) for the freshly extracted item.  If it's
+			// occupied push to the queue at 8000-8010 (mirrors EQEmu's cursor
+			// queue behaviour for arbitrary item arrivals; see project memory
+			// `project_trilogy_cursor_queue`).
+			auto occ = database.QueryDatabase(fmt::format(
+			    "SELECT COUNT(*) FROM `inventory` WHERE `charid`={} AND `slotid`=33", s.char_id));
+			int cursor_slot = 33;
+			if (occ.Success() && occ.RowCount() > 0 && Strings::ToInt(occ.begin()[0]) > 0) {
+				auto q = database.QueryDatabase(fmt::format(
+				    "SELECT COALESCE(MAX(`slotid`),7999)+1 FROM `inventory` WHERE `charid`={} AND "
+				    "`slotid` BETWEEN 8000 AND 8010", s.char_id));
+				if (q.Success() && q.RowCount() > 0) {
+					cursor_slot = static_cast<int>(Strings::ToInt(q.begin()[0]));
+					if (cursor_slot > 8010) cursor_slot = 8010;
+				}
+			}
+			database.QueryDatabase(fmt::format(
+			    "REPLACE INTO `inventory` (`charid`,`slotid`,`itemid`,`charges`,`color`) "
+			    "VALUES ({},{},{},{},{})",
+			    s.char_id, cursor_slot, item_id, charges, color));
+			return cursor_slot;
+		};
+
+		if (from_is_world && to_wire == 0) {
+			// Take item out of station → cursor.
+			const uint8 idx = static_cast<uint8>(from_wire - 4000);
+			EQ::ItemInstance* inst = obj->PopItem(idx);
+			if (!inst) {
+				LogInfo("[TrilogyZone] MoveItem char={} world-pop idx={} empty", s.char_id, idx);
+				return;
+			}
+			const EQ::ItemData* item = inst->GetItem();
+			if (item) {
+				const int cur_slot = insert_cursor_row(item->ID,
+				                                      static_cast<int16>(inst->GetCharges()),
+				                                      inst->GetColor());
+				s.cursor_from_db = cur_slot;
+				LogInfo("[TrilogyZone] MoveItem char={} station[{}] → cursor (DB slot {}) item={}",
+				        s.char_id, idx, cur_slot, item->ID);
+			}
+			obj->Save();
+			safe_delete(inst);
+			return;
+		}
+
+		if (from_wire == 0 && to_is_world) {
+			// Place cursor item → station.  Resolve the source DB row the same
+			// way the regular drop-from-cursor path does.
+			int src_db = s.cursor_from_db;
+			if (src_db < 0) {
+				auto r = database.QueryDatabase(fmt::format(
+				    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+				    "(`slotid`=33 OR (`slotid` BETWEEN 8000 AND 8010)) "
+				    "ORDER BY `slotid` ASC LIMIT 1", s.char_id));
+				if (r.Success() && r.RowCount() > 0)
+					src_db = static_cast<int>(Strings::ToInt(r.begin()[0]));
+			}
+			if (src_db < 0) {
+				LogInfo("[TrilogyZone] MoveItem char={} drop-to-station but no cursor row found",
+				        s.char_id);
+				return;
+			}
+
+			auto r = database.QueryDatabase(fmt::format(
+			    "SELECT `itemid`,`charges`,`color` FROM `inventory` "
+			    "WHERE `charid`={} AND `slotid`={}", s.char_id, src_db));
+			if (!r.Success() || r.RowCount() == 0) return;
+			auto row = r.begin();
+			const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+			const int16  charges = static_cast<int16>(Strings::ToInt(row[1]));
+			const uint32 color   = static_cast<uint32>(Strings::ToInt(row[2]));
+			if (item_id == 0) return;
+
+			EQ::ItemInstance* inst = database.CreateItem(item_id, charges);
+			if (!inst) return;
+			inst->SetColor(color);
+
+			const uint8 idx = static_cast<uint8>(to_wire - 4000);
+			// Swap: if the target slot is occupied, pop existing first and
+			// stash it on cursor instead of the just-placed item.
+			EQ::ItemInstance* existing = obj->PopItem(idx);
+			obj->PutItem(idx, inst);
+			database.QueryDatabase(fmt::format(
+			    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+			    s.char_id, src_db));
+			s.cursor_from_db = -1;
+			LogInfo("[TrilogyZone] MoveItem char={} cursor (DB slot {}) → station[{}] item={}",
+			        s.char_id, src_db, idx, item_id);
+			safe_delete(inst);
+
+			if (existing) {
+				const EQ::ItemData* eitem = existing->GetItem();
+				if (eitem) {
+					const int cur_slot = insert_cursor_row(eitem->ID,
+					                                      static_cast<int16>(existing->GetCharges()),
+					                                      existing->GetColor());
+					s.cursor_from_db = cur_slot;
+					LogInfo("[TrilogyZone] MoveItem char={} station[{}] swap-out → cursor (DB slot {}) item={}",
+					        s.char_id, idx, cur_slot, eitem->ID);
+				}
+				safe_delete(existing);
+			}
+
+			obj->Save();
+			return;
+		}
+
+		if (from_is_world && to_is_world) {
+			// Reorder inside the station.
+			const uint8 src = static_cast<uint8>(from_wire - 4000);
+			const uint8 dst = static_cast<uint8>(to_wire   - 4000);
+			EQ::ItemInstance* a = obj->PopItem(src);
+			EQ::ItemInstance* b = obj->PopItem(dst);
+			if (a) obj->PutItem(dst, a);
+			if (b) obj->PutItem(src, b);
+			obj->Save();
+			safe_delete(a);
+			safe_delete(b);
+			return;
+		}
+
+		// Other combinations (world ↔ non-cursor inventory) shouldn't happen
+		// in v29c — the client always routes through cursor.  Drop quietly.
+		LogInfo("[TrilogyZone] MoveItem char={} unsupported world-slot shape from={} to={}",
+		        s.char_id, from_wire, to_wire);
 		return;
 	}
 

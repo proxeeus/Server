@@ -1518,6 +1518,34 @@ struct TradeSkillCombine_Struct
 };
 
 /*
+** ClickObjectAck_Struct
+** Opcode:  OP_CraftingStation = 0xd720
+** Direction: zone server -> client (open container UI) AND client -> zone (close)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ClickObjectAck_Struct
+** Size:    20 bytes
+**
+** Sent both directions on the same wire opcode:
+**   server -> client : sets player_id, open=1, type (forge/oven/etc), slot=0x0a,
+**                      icon_nr; client opens tradeskill UI on receipt.
+**   client -> server : same struct echoed back when player closes UI; server
+**                      saves stationItems[10] back onto the Object.
+*/
+struct ClickObjectAck_Struct
+{
+/*000*/	uint32	player_id;		// entity id of clicking player
+/*004*/	uint32	drop_id;		// zone-local object id (echo back of the click)
+/*008*/	uint8	open;			// 0=close 1=open
+/*009*/	uint8	unknown009;
+/*010*/	uint8	type;			// container type (forge/oven/etc.)
+/*011*/	uint8	unknown011;
+/*012*/	uint8	slot;			// always 0x0a — number of station item slots
+/*013*/	uint8	unknown013[3];
+/*016*/	uint16	icon_nr;		// container icon
+/*018*/	uint8	unknown018[4];	// must be 4 bytes per EQClassic's #pragma pack(1) layout —
+/*022*/						// EQMacEmuTrilogy's 20-byte variant is the Mac client, NOT v29c PC
+};
+
+/*
 ** TeleportPC_Struct
 ** Opcode:  OP_TeleportPC = 0x4d21
 ** Direction: zone server -> client

@@ -616,6 +616,70 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			                     app->pBuffer,
 			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
 		break;
+	case OP_ClickObjectAction:
+		// Object::HandleClick → SetTradeskillObject() emits this when a player
+		// clicks a world tradeskill container (forge, oven, brew barrel, etc).
+		// EQEmu's 92-byte ClickObjectAction_Struct collapses to v29c's 22-byte
+		// ClickObjectAck_Struct on wire 0xd720 (OP_CraftingStation).  Per-slot
+		// item contents follow via OP_ItemPacket(ItemPacketWorldContainer) →
+		// OP_StationItem 0xfb20 (handled in HandleItemPacket).
+		if (app->size >= sizeof(::ClickObjectAction_Struct)) {
+			const auto* in = reinterpret_cast<const ::ClickObjectAction_Struct*>(app->pBuffer);
+			Trilogy::structs::ClickObjectAck_Struct out{};
+			// Match EQClassic Zone/Source/object.cpp:320-328 byte-for-byte: memset
+			// to zero, then write ONLY player_id, open, type, slot, icon_nr.  In
+			// particular bytes 4-7 ("drop_id" in modern EQEmu) stay zero — EQClassic
+			// never populates them on this packet, and v29c may be parsing nonzero
+			// bytes there as a different opcode shape.
+			//
+			// CRITICAL: translate the EQEmu server-side entity ID to the wire
+			// spawn ID v29c knows the player by (m_player_spawn_id).  The
+			// v29c client only opens the station UI when the packet's
+			// player_id matches its own self-ID — sending the raw EQEmu GetID()
+			// makes v29c think the packet is for some other player and ignore it.
+			out.player_id  = TranslateId(in->player_id);
+			out.open       = static_cast<uint8_t>(in->open);
+			out.type       = static_cast<uint8_t>(in->type);
+			out.slot       = 0x0a; // always 10 slots
+			out.icon_nr    = static_cast<uint16_t>(in->icon);
+			LogInfo("[TRILOGY-TS] OP_ClickObjectAction → 0xd720 player_id={} drop_id={} open={} type={} icon={} name='{}' struct_size={}",
+			        in->player_id, in->drop_id, in->open, in->type, in->icon,
+			        in->object_name,
+			        static_cast<unsigned>(sizeof(out)));
+			// Hex dump so we can verify the wire layout against EQClassic emission.
+			const auto* raw = reinterpret_cast<const uint8_t*>(&out);
+			std::string hex;
+			for (size_t i = 0; i < sizeof(out); ++i)
+				hex += fmt::format(" {:02x}", raw[i]);
+			LogInfo("[TRILOGY-TS] 0xd720 HEX:{}", hex);
+			m_tzs->SendToSession(m_session_key, 0xd720,
+			                     reinterpret_cast<const uint8_t*>(&out),
+			                     static_cast<uint32_t>(sizeof(out)));
+		}
+		break;
+	case OP_ClientReady:
+		// Object::HandleClick emits OP_ClientReady (0-byte) right before the per-
+		// slot item packets to tell modern clients the world-container UI is now
+		// listening.  v29c has no equivalent — the client opens its station UI on
+		// receipt of OP_CraftingStation (0xd720) and then accepts OP_StationItem
+		// (0xfb20) directly.  Drop silently.
+		break;
+	case OP_ClearObject:
+		// Object::HandleCombine emits OP_ClearObject after a world-container
+		// combine to wipe the client's bag-content display.  v29c uses a 0-byte
+		// OP_CleanStation 0x0522 for the same purpose (see EQClassic's
+		// Client::DeleteItemInStation in Zone/Source/client.cpp).
+		LogInfo("[TRILOGY-TS] OP_ClearObject → 0x0522 (OP_CleanStation)");
+		m_tzs->SendToSession(m_session_key, 0x0522, nullptr, 0);
+		break;
+	case OP_TradeSkillCombine:
+		// Object::HandleCombine emits a 0-byte OP_TradeSkillCombine on every
+		// error/success path as an ack.  EQClassic instead re-queues the
+		// original 32-byte Combine_Struct verbatim.  We send the echo from
+		// TrilogyZoneServer::OnDatagram (right after Handle_OP_TradeSkillCombine
+		// returns) where the original payload is still in scope, so drop the
+		// empty version here — v29c rejects empty bodies on this opcode.
+		break;
 	case OP_DeleteItem:
 	case OP_DeleteCharge:
 	case OP_MoveItem: {
@@ -1862,6 +1926,18 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// Missing reagent / spell component feedback
 		case 272:   return "You are missing some required spell components.";          // MISSING_SPELL_COMP
 		case 433:   return "You are missing %1.";                                     // MISSING_SPELL_COMP_ITEM
+		// Tradeskill combine feedback — Object::HandleCombine + TradeskillExecute
+		// fire these via MessageString.  Without these the v29c client sees nothing
+		// when they press Combine: no "no recipe" line, no fail/success message,
+		// no learn-recipe nag.  All routed through HandleOutgoingFormattedMessage.
+		case 334:   return "You cannot combine these items in this container type!"; // TRADESKILL_NOCOMBINE
+		case 336:   return "You lacked the skills to fashion the items together.";  // TRADESKILL_FAILED
+		case 338:   return "You can no longer advance your skill from making this item."; // TRADESKILL_TRIVIAL
+		case 339:   return "You have fashioned the items together to create something new!"; // TRADESKILL_SUCCEED
+		case 3455:  return "You are missing a %1.";                                  // TRADESKILL_MISSING_ITEM
+		case 3456:  return "Sorry, but you don't have everything you need for this recipe in your general inventory."; // TRADESKILL_MISSING_COMPONENTS
+		case 3457:  return "You have learned the recipe %1!";                        // TRADESKILL_LEARN_RECIPE
+		case 6199:  return "Combine would result in a LORE item (%1) you already possess."; // TRADESKILL_COMBINE_LORE
 		default:    return nullptr;
 	}
 }
@@ -2988,6 +3064,22 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 		// EQClassic writes 8 bytes to the 4-byte unknown_12, deliberately overrunning
 		// into icon_nr/type; replicated exactly (safe within the 240-byte buffer).
 		memset(buf + 232, 0x01, 8);
+
+		// Diagnostic: hex-dump the full spawn packet so we can compare against
+		// EQClassic Object::CreateSpawnPacket byte-for-byte.  Without this we
+		// can't tell whether the v29c client is rejecting the spawn shape (and
+		// therefore treating the click as falling through to a default fallback
+		// like the inventory window).
+		LogInfo("[TRILOGY-TS] HandleGroundSpawn TRADESKILL drop_id={} type={} object_name='{}' (240B)",
+		        emu->drop_id, emu->object_type, emu->object_name);
+		const size_t row_n = 32;
+		for (size_t off = 0; off < CLASSIC_OBJ_SIZE; off += row_n) {
+			std::string line = fmt::format("[TRILOGY-TS] spawn @0x{:03x}:", off);
+			const size_t end = std::min(off + row_n, (size_t)CLASSIC_OBJ_SIZE);
+			for (size_t i = off; i < end; ++i)
+				line += fmt::format(" {:02x}", buf[i]);
+			LogInfo("{}", line);
+		}
 	} else {
 		// Player-dropped ground item (unchanged, working path).
 		*reinterpret_cast<int16_t*>(buf + 238) = OT_DROPPEDITEM;
@@ -3906,6 +3998,18 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1) : slot_id;
 		wire_opcode = (inst->GetItem() && inst->GetItem()->ItemClass == 1) ? 0x6621 :
 		              (inst->GetItem() && inst->GetItem()->ItemClass == 2) ? 0x6521 : 0x6421;
+		break;
+	case ItemPacketWorldContainer:
+		// Tradeskill world container slot delivery, fired from Object::HandleClick
+		// for each occupied bag slot after the OP_CraftingStation open.  EQEmu's
+		// slot_id is the bag interior index 0..9 (EQ::invbag::SLOT_BEGIN..SLOT_END);
+		// EQClassic's SendStationItem writes item.equipSlot = i (0..9) on wire
+		// OP_StationItem 0xfb20.  The 4000-4009 wire range only shows up in
+		// OP_MoveItem traffic (handled in TrilogyZoneServer::HandleMoveItem).
+		equip_slot  = slot_id;
+		wire_opcode = 0xfb20; // OP_StationItem
+		LogInfo("[TRILOGY-TS] HandleItemPacket ItemPacketWorldContainer: bag_idx={} item_id={}",
+		        slot_id, inst->GetItem() ? inst->GetItem()->ID : 0);
 		break;
 	case ItemPacketMerchant: {
 		// Merchant window item.  EQEmu's BulkSendMerchantInventory sends

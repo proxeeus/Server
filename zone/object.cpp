@@ -444,6 +444,14 @@ void Object::Close() {
 	user = nullptr;
 }
 
+void Object::ReleaseUser() {
+	if (user) {
+		last_user = user;
+		user->SetTradeskillObject(nullptr);
+	}
+	user = nullptr;
+}
+
 // Remove item from container
 void Object::DeleteItem(uint8 index)
 {
