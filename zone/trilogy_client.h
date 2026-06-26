@@ -360,6 +360,17 @@ private:
 	static constexpr size_t kMaxDeferredSpawns = 512;
 	std::vector<std::pair<uint16_t, std::vector<uint8_t>>> m_deferred_spawns;
 
+	// Holds deferred Client / Bot / Playerbot spawn IDs that arrived during
+	// zone-in.  These need multi-packet permanent-spawn sequences (ZoneSpawns
+	// bulk + illusion + WearChange) rather than a single buffered wire packet,
+	// so they're held by entity ID and dispatched via SendPlayerSpawnPermanent
+	// or SendPlayerbotSpawnPermanent from OnClientReady() once m_is_zoning
+	// clears.  Without this, Bots loaded by Bot::LoadAndSpawnAllZonedBots during
+	// the owner's zone-in restoration block evaporate at HandleNewSpawn (the
+	// guarded m_is_zoning early-return) and the owner arrives in the dest zone
+	// to an empty party.
+	std::vector<uint16_t> m_deferred_player_spawns;
+
 	// Per-spawn last-sent SpawnAppearance (type, parameter) cache.  v29c receives
 	// OP_SpawnAppearance for every appearance change of every visible mob; in a
 	// busy combat scene with bots + nearby NPCs the broadcast rate can hit ~6/s

@@ -25,6 +25,7 @@
 #include "zone.h"
 #include "npc.h"
 #include "bot.h"
+#include "groups.h"
 #include "corpse.h"
 #include "../common/crc32.h"
 #include "../common/compression.h"
@@ -2833,6 +2834,113 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
+
+		// Group restoration on zone-in.
+		//
+		// EQEmu's standard restoration block lives in Client::Handle_Connect_OP_ZoneEntry
+		// (client_packet.cpp ~L1527) — read group_id from DB, instantiate the Group in
+		// entity_list, LearnMembers + UpdatePlayer, then LoadAndSpawnAllZonedBots.
+		// On the Trilogy path OP_ZoneEntry is consumed by TrilogyZoneServer::HandleZoneEntry
+		// and Client::Handle_Connect_OP_ZoneEntry never runs, so the group is left
+		// unrestored and bots don't re-spawn at the destination zone.  Mirror that block
+		// here so the Trilogy zone-in path matches the Titanium semantics.
+		uint32 groupid = database.GetGroupID(tc->GetName());
+		Group* group = nullptr;
+		if (groupid > 0) {
+			group = entity_list.GetGroupByID(groupid);
+			if (!group) {
+				group = new Group(groupid);
+				if (group->GetID() != 0) {
+					entity_list.AddGroup(group, groupid);
+				} else {
+					delete group;
+					group = nullptr;
+				}
+			}
+			if (!group) {
+				Group::RemoveFromGroup(tc);
+			}
+		}
+
+		if (group) {
+			char ln[64]{};
+			char MainTankName[64]{};
+			char AssistName[64]{};
+			char PullerName[64]{};
+			char NPCMarkerName[64]{};
+			char mentoree_name[64]{};
+			int mentor_percent = 0;
+			GroupLeadershipAA_Struct GLAA{};
+			database.GetGroupLeadershipInfo(group->GetID(), ln, MainTankName, AssistName,
+			                                PullerName, NPCMarkerName, mentoree_name,
+			                                &mentor_percent, &GLAA);
+			group->LearnMembers();
+
+			if (!group->GetLeader()) {
+				if (Client* c = entity_list.GetClientByName(ln)) {
+					group->SetLeader(c);
+				}
+			}
+
+			group->SetMainTank(MainTankName);
+			group->SetMainAssist(AssistName);
+			group->SetPuller(PullerName);
+			group->SetNPCMarker(NPCMarkerName);
+			group->SetGroupAAs(&GLAA);
+			group->SetGroupMentor(mentor_percent, mentoree_name);
+			tc->JoinGroupXTargets(group);
+			group->UpdatePlayer(tc);
+		}
+
+		if (RuleB(Bots, Enabled)) {
+			database.botdb.LoadOwnerOptions(tc);
+			Bot::LoadAndSpawnAllZonedBots(tc);
+		}
+
+		// Group roster sync to the joining v29c client.
+		//
+		// EQEmu's Group::SendUpdate (groups.cpp) iterates members[] and queues
+		// OP_GroupUpdate(groupActJoin) to every OTHER client member — never to
+		// the joining player themselves; on Titanium the joining player's
+		// group window is populated from PP.groupMembers[] at zone-in.  v29c
+		// does NOT read PP.groupMembers — its group window is purely event-
+		// driven (see [[project-trilogy-groups]]), so without explicit per-
+		// member ADD events the window stays empty on zone-in even though
+		// the bots are visible and following.
+		//
+		// Synthesize one groupActJoin event per existing member, targeted at
+		// tc; each one flows through TrilogyClient::QueuePacket →
+		// HandleOutgoingGroupUpdate → v29c 0x2640(action=0,othername=member).
+		if (group) {
+			for (uint32 slot = 0; slot < MAX_GROUP_MEMBERS; ++slot) {
+				if (!group->members[slot] || group->members[slot] == tc) {
+					continue;
+				}
+				const char* mem_name = group->members[slot]->GetCleanName();
+				if (!mem_name || mem_name[0] == '\0') {
+					continue;
+				}
+				auto outapp = new EQApplicationPacket(OP_GroupUpdate, sizeof(GroupJoin_Struct));
+				auto gj = reinterpret_cast<GroupJoin_Struct*>(outapp->pBuffer);
+				strncpy(gj->membername, mem_name, sizeof(gj->membername) - 1);
+				strncpy(gj->yourname, tc->GetName(), sizeof(gj->yourname) - 1);
+				gj->action = groupActJoin;
+				tc->QueuePacket(outapp);
+				safe_delete(outapp);
+			}
+		}
+
+		if (group && group->IsLeader(tc)) {
+			group->SendLeadershipAAUpdate();
+		}
+
+		{
+			auto bots_after = entity_list.GetBotsByBotOwnerCharacterID(tc->CharacterID());
+			LogInfo("[TrilogyZP] zone-in group restore | char='{}' has_group={} "
+			        "group_id={} bots_spawned={}",
+			        tc->GetName(), group != nullptr,
+			        group ? group->GetID() : 0, (unsigned)bots_after.size());
+		}
 
 		// Mark as spawned so SendZoneSpawnsBulk includes this client when future
 		// Titanium clients zone in.  The normal Titanium path sets this inside
@@ -8599,6 +8707,30 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 
 	EQApplicationPacket zc_pkt(OP_ZoneChange, sizeof(::ZoneChange_Struct));
 	memcpy(zc_pkt.pBuffer, &emu_zc, sizeof(emu_zc));
+
+	// Diagnostics for bot-follow-on-zone: report bot/group state before the
+	// standard handler runs (it invokes Bot::ProcessClientZoneChange which
+	// expects the owner's bots to be present in entity_list and grouped with
+	// the owner so each can Save()+Depop() — see bot.cpp:7222).
+	{
+		auto bots_in_zone = entity_list.GetBotsByBotOwnerCharacterID(
+		    s.trilogy_client->CharacterID());
+		Group* g = s.trilogy_client->GetGroup();
+		LogInfo("[TrilogyZP] ZoneChange bot-follow PRE | char='{}' charid={} "
+		        "bots_in_entity_list={} has_group={} group_id={} bots_enabled={}",
+		        s.trilogy_client->GetName(), s.trilogy_client->CharacterID(),
+		        (unsigned)bots_in_zone.size(),
+		        g != nullptr, g ? g->GetID() : 0,
+		        RuleB(Bots, Enabled) ? "Y" : "N");
+		for (auto* b : bots_in_zone) {
+			if (!b) continue;
+			LogInfo("[TrilogyZP] ZoneChange bot-follow PRE   bot='{}' bot_id={} "
+			        "has_group={} group_member_of_owner={}",
+			        b->GetName(), b->GetBotID(), b->HasGroup(),
+			        (g && g->IsGroupMember(b)));
+		}
+	}
+
 	s.trilogy_client->Handle_OP_ZoneChange(&zc_pkt);
 
 	// DoZoneSuccess (inside Handle_OP_ZoneChange) sets m_lock_save_position synchronously.
@@ -8633,6 +8765,24 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 	// retransmit window.
 	if (s.trilogy_client && s.trilogy_client->IsZoning()) {
 		uint16 id = s.trilogy_client->GetID();
+
+		// Nullify the player's slot in any in-zone Group/Raid BEFORE destroying
+		// the Client.  The normal Titanium path leaves the Client object alive
+		// for the duration of the worldserver round-trip (and any auxiliary
+		// MemberZoned call cleans up the slot before delete), but the Trilogy
+		// path destroys the entity synchronously here.  Without this step, the
+		// Group's members[0] points to freed memory; the next NPC death in this
+		// zone (~Mob -> EntityList::UnMarkNPC -> Group::UpdateXTargetMarkedNPC)
+		// dereferences it via members[i]->IsClient() and crashes the zone.
+		// Bot slots are already nullified by Bot::Zone() (called from
+		// Bot::ProcessClientZoneChange at the top of Handle_OP_ZoneChange).
+		if (Group* g = s.trilogy_client->GetGroup()) {
+			g->MemberZoned(s.trilogy_client);
+		}
+		if (Raid* r = s.trilogy_client->GetRaid()) {
+			r->MemberZoned(s.trilogy_client);
+		}
+
 		s.trilogy_client  = nullptr;
 		s.eqemu_entity_id = 0;
 		entity_list.RemoveMob(id);

@@ -1036,6 +1036,7 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// so they don't corrupt the client's teardown state machine.
 		m_is_zoning = true;
 		m_deferred_spawns.clear(); // discard; this session won't deliver them
+		m_deferred_player_spawns.clear();
 		break;
 	}
 	default:
@@ -1083,15 +1084,22 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	if (mob->IsClient() || is_playerbot || is_bot) {
 		// Player/playerbot/bot spawns require multi-packet sequences
 		// (ZoneSpawns bulk + illusion + WearChange) that cannot be trivially
-		// buffered as a single wire packet.  During zone transition, skip
-		// them; the client will see position updates for any of them already
-		// in the zone via heartbeat.
-		if (!m_is_zoning) {
-			if (mob->IsClient())
-				m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
-			else
-				m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
+		// buffered as a single wire packet.  During zone transition, defer
+		// the dispatch by entity ID; OnClientReady will re-resolve the Mob*
+		// and call the appropriate permanent-send once m_is_zoning clears.
+		// Without the deferred path, Bots loaded by Bot::LoadAndSpawnAllZonedBots
+		// during the owner's zone-in restoration block evaporate here and the
+		// owner sees no party at the destination.
+		if (m_is_zoning) {
+			if (m_deferred_player_spawns.size() < kMaxDeferredSpawns) {
+				m_deferred_player_spawns.push_back(spawn_id);
+			}
+			return;
 		}
+		if (mob->IsClient())
+			m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
+		else
+			m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
 		return;
 	}
 
@@ -1444,11 +1452,28 @@ void TrilogyClient::FlushPendingMobUpdates()
 // ============================================================
 void TrilogyClient::OnClientReady()
 {
-	LogInfo("[TrilogyClient] OnClientReady: flushing {} deferred spawn(s)", m_deferred_spawns.size());
+	LogInfo("[TrilogyClient] OnClientReady: flushing {} deferred spawn(s), {} deferred player/bot spawn(s)",
+	        m_deferred_spawns.size(), m_deferred_player_spawns.size());
 	m_is_zoning = false;
 	for (auto& [opcode, data] : m_deferred_spawns)
 		m_tzs->SendToSession(m_session_key, opcode, data.data(), static_cast<uint32_t>(data.size()));
 	m_deferred_spawns.clear();
+
+	// Re-resolve each deferred Client/Bot/Playerbot entity by ID and dispatch
+	// the permanent-spawn multi-packet sequence.  Entities that despawned in
+	// the meantime (left the zone, died, were removed) silently skip.
+	for (uint16_t sid : m_deferred_player_spawns) {
+		Mob* mob = entity_list.GetMob(sid);
+		if (!mob) continue;
+		if (mob->IsClient()) {
+			m_tzs->SendPlayerSpawnPermanent(m_session_key, mob->CastToClient());
+		} else if (mob->IsBot() ||
+		           (mob->IsNPC() && mob->CastToNPC()->GetNPCTypeID() ==
+		                            static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId)))) {
+			m_tzs->SendPlayerbotSpawnPermanent(m_session_key, mob->CastToNPC());
+		}
+	}
+	m_deferred_player_spawns.clear();
 }
 
 // ============================================================
