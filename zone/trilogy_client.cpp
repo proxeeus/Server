@@ -2041,6 +2041,19 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// Generic skill helpers — fire from Forage, Bind Wound and others.
 		case 290:   return "Duplicate lore items are not allowed.";                   // DUP_LORE
 		case 12393: return "You can not use this skill while on a mount.";            // NO_SKILL_WHILE_MOUNTED
+		// Door / lockpick feedback — Doors::HandleClick paths.  All MessageString
+		// calls, so without these the v29c client gets zero text on every locked /
+		// picked / GM scenario (only the plain-text "This is locked..." at
+		// doors.cpp:366 reaches it, and only when the player has nothing on
+		// cursor).  Templates cover the GM-bypass success line, the
+		// no-pick / wrong-pick / insufficient-skill rejections, and the
+		// successful-lockpick confirmation.
+		case 130:   return "It's locked and you're not holding the key.";             // DOORS_LOCKED
+		case 131:   return "This lock cannot be picked.";                             // DOORS_CANT_PICK
+		case 132:   return "You are not sufficiently skilled to pick this lock.";     // DOORS_INSUFFICIENT_SKILL
+		case 133:   return "You opened the locked door with your magic GM key.";      // DOORS_GM
+		case 1457:  return "You successfully picked the lock.";                       // DOORS_SUCCESSFUL_PICK
+		case 7564:  return "You must have a lock pick in your inventory to do this."; // DOORS_NO_PICK
 		// Disarm skill feedback — NPC::Disarm + Client::Disarm both fire
 		// MessageString(Chat::Skills, DISARM_SUCCESS/FAILED).  Without these
 		// the player sees no on-screen confirmation of the disarm attempt's
@@ -3298,6 +3311,10 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 // and sends OPEN_DOOR=0x02 unaltered.  So the action byte is forwarded as-is —
 // no inversion (an earlier 0x02<->0x03 swap caused 2-3 clicks to open a door,
 // because it desynced the client's door state from the server's).
+//
+// Dedup uses a short TTL (kDoorDedupWindowMs) — see the m_last_door_action
+// comment in the header for why a permanent dedup breaks normal door reuse
+// after server-side auto-close.
 // ============================================================
 
 void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
@@ -3309,15 +3326,20 @@ void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
 	const uint8_t doorid = static_cast<uint8_t>(emu->doorid);
 	const uint8_t action = static_cast<uint8_t>(emu->action);
 
-	// Dedup: see m_last_door_action comment in the header.  Suppress repeat
-	// (doorid, action) — v29c has already applied that state.
+	const auto now = std::chrono::steady_clock::now();
 	auto it = m_last_door_action.find(doorid);
-	if (it != m_last_door_action.end() && it->second == action) {
-		LogInfo("[TrilogyDiag] 8E20 MoveDoor dedup doorid={} action={}",
-		        static_cast<int>(doorid), static_cast<int>(action));
-		return;
+	if (it != m_last_door_action.end() && it->second.first == action) {
+		const auto elapsed_ms =
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				now - it->second.second).count();
+		if (elapsed_ms < static_cast<int64_t>(kDoorDedupWindowMs)) {
+			LogInfo("[TrilogyDiag] 8E20 MoveDoor dedup doorid={} action={} elapsed_ms={}",
+			        static_cast<int>(doorid), static_cast<int>(action),
+			        static_cast<long long>(elapsed_ms));
+			return;
+		}
 	}
-	m_last_door_action[doorid] = action;
+	m_last_door_action[doorid] = std::make_pair(action, now);
 
 	LogInfo("[TrilogyDiag] 8E20 MoveDoor doorid={} action={}",
 	        static_cast<int>(doorid), static_cast<int>(action));

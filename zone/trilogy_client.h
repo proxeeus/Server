@@ -22,10 +22,12 @@
 #include "../common/eq_stream_intf.h"
 #include "../common/patches/trilogy_structs.h"
 
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <map>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 class TrilogyZoneServer;
@@ -506,17 +508,29 @@ private:
 	// stationary mobs but driven by movement events instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
 
-	// Per-door last-sent action cache.  Doors::HandleClick in EQEmu has a bug
-	// where city-edge doors (HasDestinationZone() == true) never get
+	// Per-door last-sent action cache with TTL.  Doors::HandleClick in EQEmu
+	// has a bug where city-edge doors (HasDestinationZone() == true) never get
 	// SetOpenState(true) called — so IsDoorOpen() stays false, every subsequent
 	// click broadcasts another OPEN_DOOR, and Doors::Process never fires
 	// CLOSE_DOOR for them.  Bots following the player through a zone-edge
 	// door re-click it on every pass, producing 15+ OPEN broadcasts on the
 	// same door in a single session (observed in qeynos2 logs).  Suppressing
-	// a repeat (doorid, action) at the Trilogy boundary is safe — v29c has
-	// already applied the state — and keeps the wire and ARQ window clean.
-	// Door IDs are 8-bit, so a flat 256-entry map covers every door in a zone.
-	std::map<uint8_t, uint8_t> m_last_door_action;
+	// a repeat (doorid, action) at the Trilogy boundary keeps the wire and
+	// ARQ window clean.
+	//
+	// TTL: a *permanent* dedup would break normal door reuse because most door
+	// types' auto-close (Doors::Process) only flips server state via
+	// SetOpenState(false) without sending an OP_MoveDoor CLOSE to clients —
+	// only m_open_type==40 / GetTriggerType()==1 doors broadcast the close.
+	// So after the server auto-closes, the cache still says OPEN, the next
+	// click also wants to send OPEN, and the dedup would kill it (player
+	// sees "stuck" door needing multiple clicks until a CLOSE happens to
+	// land and flip the cache).  A short time window dedups burst spam from
+	// bot pass-throughs (sub-second clusters) while letting any legitimate
+	// re-click after auto-close through.
+	static constexpr uint32_t kDoorDedupWindowMs = 1500;
+	std::map<uint8_t, std::pair<uint8_t, std::chrono::steady_clock::time_point>>
+		m_last_door_action;
 
 	// Combat-event token bucket — protects v29c from cumulative damage during
 	// sustained combat-amplification load (bot-vs-NPC fights the player is just
