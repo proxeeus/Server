@@ -4189,6 +4189,146 @@ TrilogyZoneServer::Session* TrilogyZoneServer::FindSessionByEntityId(uint16_t en
 	return nullptr;
 }
 
+// ============================================================
+// Bot ^invgive cursor materialization
+//
+// Bot::FinishTrade(BotTradeClientNoDropNoTrade) reads the cursor item via
+// m_inv.GetItem(slotCursor).  On Trilogy, the HandleMoveItem pickup path
+// (wire to_slot == 0) only stashes s.cursor_from_db — the item itself stays
+// at its source DB slot and m_inv.cursor is empty — so FinishTrade silently
+// no-ops and the player sees no feedback.
+//
+// These helpers materialize the cursor item into m_inv.cursor + DB slot 33
+// before FinishTrade runs, then clean up the source DB row + worn-slot
+// side-effects + visual wire cursor after.
+// ============================================================
+int TrilogyZoneServer::MaterializeCursorForBotTrade(TrilogyClient* tc)
+{
+	if (!tc) return -1;
+	Session* sp = FindSessionByEntityId(static_cast<uint16_t>(tc->GetID()));
+	if (!sp) return -1;
+	Session& s = *sp;
+
+	// If m_inv.cursor is already populated (e.g. #si, summon, loot), the
+	// shared FinishTrade path will work as-is.  Treat as "no cleanup needed"
+	// by returning the sentinel 33 (FinalizeCursorAfterBotTrade no-ops on it).
+	if (tc->GetInv().GetItem(EQ::invslot::slotCursor)) {
+		LogInfo("[TrilogyZone] BotTrade: cursor already in m_inv for char={} — no materialization needed",
+		        s.char_id);
+		return 33;
+	}
+
+	// Resolve source DB slot — first try the session-tracked pickup slot,
+	// then fall back to DB slot 33 / 8000-8010 (cursor queue).
+	int src_db = s.cursor_from_db;
+	if (src_db < 0) {
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+		    "(`slotid`=33 OR (`slotid` BETWEEN 8000 AND 8010)) "
+		    "ORDER BY `slotid` ASC LIMIT 1", s.char_id));
+		if (r.Success() && r.RowCount() > 0) {
+			src_db = static_cast<int>(Strings::ToInt(r.begin()[0]));
+		}
+	}
+	if (src_db < 0) {
+		LogInfo("[TrilogyZone] BotTrade: char={} cursor empty (no cursor_from_db, no DB row)",
+		        s.char_id);
+		return -1;
+	}
+
+	// Read item from DB at the source slot.
+	auto r = database.QueryDatabase(fmt::format(
+	    "SELECT `itemid`, `charges`, `color`, `augslot1`, `augslot2`, `augslot3`, "
+	    "`augslot4`, `augslot5`, `augslot6` "
+	    "FROM `inventory` WHERE `charid`={} AND `slotid`={}", s.char_id, src_db));
+	if (!r.Success() || r.RowCount() == 0) {
+		LogInfo("[TrilogyZone] BotTrade: char={} src_db={} has no inventory row", s.char_id, src_db);
+		return -1;
+	}
+
+	auto row = r.begin();
+	const uint32 item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+	if (item_id == 0) return -1;
+	const int16  charges = static_cast<int16>(Strings::ToInt(row[1]));
+	const uint32 color   = static_cast<uint32>(Strings::ToInt(row[2]));
+	const uint32 aug1    = static_cast<uint32>(Strings::ToInt(row[3]));
+	const uint32 aug2    = static_cast<uint32>(Strings::ToInt(row[4]));
+	const uint32 aug3    = static_cast<uint32>(Strings::ToInt(row[5]));
+	const uint32 aug4    = static_cast<uint32>(Strings::ToInt(row[6]));
+	const uint32 aug5    = static_cast<uint32>(Strings::ToInt(row[7]));
+	const uint32 aug6    = static_cast<uint32>(Strings::ToInt(row[8]));
+
+	EQ::ItemInstance* inst = database.CreateItem(item_id, charges, aug1, aug2, aug3, aug4, aug5, aug6);
+	if (!inst) {
+		LogInfo("[TrilogyZone] BotTrade: char={} CreateItem({}) failed", s.char_id, item_id);
+		return -1;
+	}
+	inst->SetColor(color);
+
+	auto& inv = tc->GetInv();
+	inv.PushCursor(*inst);
+	delete inst;
+
+	// Persist the new cursor queue (DB slot 33) and remove the source row in
+	// one shot so DB and m_inv stay consistent regardless of whether the
+	// subsequent FinishTrade succeeds or bails into ResetTrade.
+	{
+		auto sc = inv.cursor_cbegin(), ec = inv.cursor_cend();
+		database.SaveCursor(s.char_id, sc, ec);
+	}
+	if (src_db != 33) {
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    s.char_id, src_db));
+	}
+
+	LogInfo("[TrilogyZone] BotTrade: materialized cursor for char={} from DB slot {} (item_id={})",
+	        s.char_id, src_db, item_id);
+	return src_db;
+}
+
+void TrilogyZoneServer::FinalizeCursorAfterBotTrade(TrilogyClient* tc, int src_db)
+{
+	if (!tc) return;
+	Session* sp = FindSessionByEntityId(static_cast<uint16_t>(tc->GetID()));
+	if (!sp) return;
+	Session& s = *sp;
+
+	// Cursor tracking is consumed — the source slot has either been transferred
+	// to the bot or returned via the cursor queue.  Either way the next
+	// HandleMoveItem(0 → ...) must NOT reference the old src.
+	s.cursor_from_db = -1;
+
+	// If the source was a worn slot (1-20 / ammo 22) the player's m_inv at that
+	// slot is now stale (Materialize DELETEd the DB row without firing equip
+	// events).  Reuse the same helper HandleMoveItem uses: it re-reads the
+	// slot from DB (now empty), pops m_inv, fires EVENT_UNEQUIP_ITEM, recalcs
+	// bonuses, refreshes ApplyWeaponsStance + SetAttackTimer.
+	// Sentinel src_db == 33 means cursor was already DB-synced before
+	// Materialize ran — no source-slot row was touched, so skip the refresh.
+	if (src_db >= 1 && (src_db <= 20 || src_db == EQ::invslot::slotAmmo)) {
+		RefreshWornSlotsAfterMove(s, src_db, -1, /*destroy_path=*/true);
+	}
+
+	// Visual cursor sync: if FinishTrade transferred the item to the bot with
+	// no return, m_inv.cursor is now empty but the wire-level cursor still
+	// shows the original item.  v29c has no OP_DeleteItem; the EQClassic
+	// pattern (see HandleMemorizeSpell) is OP_MoveItem(from=0, to=0xFFFFFFFF).
+	// If a return came back via PutItemInInventory(slotCursor) the cursor is
+	// non-null and OP_SummonedItem (0x7821) already updated the wire — skip.
+	if (!tc->GetInv().GetItem(EQ::invslot::slotCursor)) {
+		Trilogy::structs::MoveItem_Struct mv{};
+		mv.from_slot       = 0;
+		mv.to_slot         = 0xFFFFFFFFu;
+		mv.number_in_stack = 0;
+		SendApp(s.source_addr, s.source_port, s, ZN_OP_MoveItem,
+		        reinterpret_cast<const uint8_t*>(&mv), sizeof(mv));
+		LogInfo("[TrilogyZone] BotTrade: cleared wire cursor for char={}", s.char_id);
+	}
+
+	tc->Save();
+}
+
 // Wire ↔ DB slot mapping for the trade handlers (mirrors HandleMoveItem;
 // shared by NPC + PC paths).  Wire slot 0 = cursor (DB 33 by default, or the
 // session's tracked cursor_from_db after a two-step unequip pickup).

@@ -218,6 +218,15 @@ public:
 	uint16_t GetMerchantNpcId() const { return m_merchant_npc_id; }
 	void FlushPendingLootEcho();
 
+	// ---- Bot ^invgive cursor materialization ----
+	// Bridge methods that delegate to TrilogyZoneServer.  See trilogy_zone.h
+	// for behaviour.  Called from bot_commands/inventory.cpp around
+	// Bot::FinishTrade(BotTradeClientNoDropNoTrade) so that the cursor item
+	// (which on Trilogy lives at cursor_from_db / DB 33 / 8000-8010 rather
+	// than m_inv.cursor) is visible to the shared trade code.
+	int  MaterializeCursorForBotTrade();
+	void FinalizeCursorAfterBotTrade(int src_db);
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;

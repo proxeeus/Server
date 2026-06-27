@@ -3013,6 +3013,21 @@ void TrilogyClient::FlushPendingLootEcho()
 }
 
 // ============================================================
+// Bot ^invgive cursor bridge — thin wrappers around the TrilogyZoneServer
+// helpers so bot_commands/inventory.cpp can call them via Client*.
+// See trilogy_zone.cpp:MaterializeCursorForBotTrade for the full rationale.
+// ============================================================
+int TrilogyClient::MaterializeCursorForBotTrade()
+{
+	return m_tzs ? m_tzs->MaterializeCursorForBotTrade(this) : -1;
+}
+
+void TrilogyClient::FinalizeCursorAfterBotTrade(int src_db)
+{
+	if (m_tzs) m_tzs->FinalizeCursorAfterBotTrade(this, src_db);
+}
+
+// ============================================================
 // HandleGroundSpawn — translate OP_GroundSpawn (EQEmu internal) to the
 // EQClassic object spawn packet (opcode 0x3520, 240 bytes).
 //

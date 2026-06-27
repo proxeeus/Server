@@ -77,6 +77,25 @@ public:
 	                          int32_t copper_delta, int32_t silver_delta,
 	                          int32_t gold_delta,   int32_t platinum_delta);
 
+	// ── Server-side cursor consumption for non-MoveItem paths ────────────────
+	// Used by bot ^invgive: Bot::FinishTrade(BotTradeClientNoDropNoTrade) reads
+	// the player's cursor via m_inv.GetItem(slotCursor), but HandleMoveItem's
+	// pickup path only stamps s.cursor_from_db — the item itself is still at
+	// the source DB slot and m_inv.cursor is empty. Without these helpers the
+	// trade silently no-ops with no feedback.
+	//
+	// MaterializeCursorForBotTrade: copy the item from the source DB slot
+	//   (cursor_from_db, or DB slot 33 / 8000-8010) into m_inv.cursor so the
+	//   shared bot trade code can find it. Returns the source DB slot for
+	//   FinalizeCursorAfterBotTrade to clean up, or -1 if cursor is empty.
+	//
+	// FinalizeCursorAfterBotTrade: DELETEs the source DB row (when it wasn't
+	//   already DB slot 33) and runs RefreshWornSlotsAfterMove for worn-slot
+	//   side-effects (CalcBonuses / equip events / attack timer) if the source
+	//   was 1-20 / ammo. Safe to call with src_db < 0 (no-op).
+	int  MaterializeCursorForBotTrade(TrilogyClient* tc);
+	void FinalizeCursorAfterBotTrade(TrilogyClient* tc, int src_db);
+
 private:
 	enum ZoneState : uint8_t {
 		CONNECTING1 = 1,  // waiting for OP_SetDataRate (0xe821)

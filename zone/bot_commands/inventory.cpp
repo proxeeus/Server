@@ -1,4 +1,5 @@
 #include "../bot_command.h"
+#include "../trilogy_client.h"
 
 void bot_command_inventory(Client *c, const Seperator *sep)
 {
@@ -45,7 +46,25 @@ void bot_command_inventory_give(Client* c, const Seperator* sep)
 		return;
 	}
 
+	// Trilogy cursor lives in DB (cursor_from_db / slot 33 / 8000-8010), not in
+	// m_inv.cursor — see trilogy_zone.cpp:HandleMoveItem pickup path. Without
+	// this bridge, Bot::FinishTrade(BotTradeClientNoDropNoTrade) reads a null
+	// m_inv.cursor and silently no-ops with no feedback.
+	int trilogy_src_db = -1;
+	TrilogyClient* tc  = c->IsTrilogyClient() ? static_cast<TrilogyClient*>(c) : nullptr;
+	if (tc) {
+		trilogy_src_db = tc->MaterializeCursorForBotTrade();
+		if (trilogy_src_db < 0) {
+			c->Message(Chat::Yellow, "You have no item on your cursor to give.");
+			return;
+		}
+	}
+
 	my_bot->FinishTrade(c, Bot::BotTradeClientNoDropNoTrade);
+
+	if (tc) {
+		tc->FinalizeCursorAfterBotTrade(trilogy_src_db);
+	}
 }
 
 void bot_command_inventory_list(Client* c, const Seperator* sep)
