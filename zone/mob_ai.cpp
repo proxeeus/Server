@@ -525,6 +525,11 @@ void Mob::AI_Stop() {
 void NPC::AI_Stop() {
 	Waypoints.clear();
 	AIautocastspell_timer.reset(nullptr);
+	// Chain to base so pAIControlled is cleared and base timers are released.
+	// Without this, NPCs left in {pAIControlled=true, AIautocastspell_timer=null}
+	// AV inside AI_Event_Engaged (e.g. zone shutdown: StopMobAI runs first, then a
+	// charmed pet's SE_Charm fade during ~Mob calls AddToHateList -> AI_Event_Engaged).
+	Mob::AI_Stop();
 }
 
 void Client::AI_Stop() {
