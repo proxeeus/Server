@@ -96,6 +96,15 @@ public:
 	int  MaterializeCursorForBotTrade(TrilogyClient* tc);
 	void FinalizeCursorAfterBotTrade(TrilogyClient* tc, int src_db);
 
+	// Encode an EQEmu integer speed value (e.g. mob->GetWalkspeed() = 28,
+	// mob->GetRunspeed() = 50, or the PlayerPositionUpdateServer_Struct::
+	// animation field from MovementManager) into the Trilogy
+	// SpawnPositionUpdate anim_type byte.  See implementation comment in
+	// trilogy_zone.cpp for the EQClassic-derived formula.  Shared with
+	// TrilogyClient::HandleClientUpdate so both the heartbeat path and the
+	// MovementManager-driven path produce matching bytes.
+	static int8_t EncodeTrilogyAnim(class Mob* m, int eqemu_anim);
+
 private:
 	enum ZoneState : uint8_t {
 		CONNECTING1 = 1,  // waiting for OP_SetDataRate (0xe821)

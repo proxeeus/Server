@@ -1399,10 +1399,16 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	upd.x_pos    = static_cast<int16_t>(m->GetX());
 	upd.z_pos    = static_cast<int16_t>(m->GetZ() * 10.0f);
 
-	if (m->IsMoving()) {
-		const float float_sp = static_cast<float>(m->GetRunspeed()) / 40.0f;
-		const int   anim     = static_cast<int>(float_sp * 7.0f);
-		upd.anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+	// p->animation is EQEmu's authoritative "current speed" for this update
+	// (filled by MobMovementManager::FillCommandStruct from MovementWalking
+	// vs MovementRunning state).  Hand it to the shared encoder so walking
+	// NPCs / rotating mobs get the walk animation byte (~2-3) instead of
+	// the run animation byte (~9) — which was the root cause of "every NPC
+	// looks like it's sprinting" and "hailed NPCs animate run-in-place
+	// while rotating to face".
+	if (m->IsMoving() || p->animation != 0) {
+		upd.anim_type = TrilogyZoneServer::EncodeTrilogyAnim(
+			m, static_cast<int>(p->animation));
 	}
 
 	m_pending_mob_updates.push_back(upd);

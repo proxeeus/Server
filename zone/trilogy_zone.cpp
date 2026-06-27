@@ -271,6 +271,68 @@ static constexpr uint8_t HDR0_SEQSTART = 0x20;
 static constexpr uint8_t HDR1_ARSP     = 0x04;
 
 // ============================================================
+// Speed / animation wire encoding for v29c
+// ============================================================
+//
+// The Trilogy client renders the *local player's* movement speed from the
+// walkspeed/runspeed floats in their own Spawn_Struct (sent once at zone-in).
+// EQClassic Client::Client() seeds these to (0.46, 0.70). EQEmu's modern
+// baseline is 1.25 runspeed — sending that to v29c makes the player feel
+// ~2x faster than authentic Verant-era movement.
+//
+// These two constants are the single tuning knob for player base speed.
+// To match Titanium-style feel instead, raise to (0.70, 1.25). To make the
+// player faster again, raise further.
+//
+// SoW / movement-speed buffs still work because v29c's client computes the
+// modifier locally from the SE_MovementSpeed buff effect. GM-speed currently
+// does NOT visibly speed the player up locally (no v29c speed-update packet
+// exists; only the spawn struct walk/run floats and locally-applied buffs
+// drive the player's own animation rate). Wiring GM-speed is a follow-up.
+static constexpr float kTrilogyPlayerWalkSpeed = 0.46f;
+static constexpr float kTrilogyPlayerRunSpeed  = 0.70f;
+
+// EQEmu stores speeds as int = float × 40 (see Mob::Mob in mob.cpp:192).
+// Reverse the conversion for the Trilogy spawn wire format.
+static inline float ToTrilogySpeed(int eqemu_speed)
+{
+	return static_cast<float>(eqemu_speed) / 40.0f;
+}
+
+// Encode a Mob's current movement speed into Trilogy's SpawnPositionUpdate
+// anim_type byte.  EQClassic semantics (Zone/Source/npc.cpp:1716-1726):
+//   stationary (eqemu_anim == 0)                       → 0
+//   walking    (eqemu_anim ≤ walkspeed +1 fudge)       → walkspeed_float × 4
+//   running    (otherwise)                             → runspeed_float  × 7
+//   fleeing                                            → negated walk/run
+//
+// `eqemu_anim` is the EQEmu integer speed value (e.g. 28 for walk, 50 for run
+// at base; modified by spell/item bonuses).  Pass GetWalkspeed() / GetRunspeed()
+// for the heartbeat path where we don't have an incoming animation; pass the
+// PlayerPositionUpdateServer_Struct::animation field for the MovementManager
+// translation path (HandleClientUpdate).
+//
+// Result is clamped to [1, 127] for the magnitude so anim_type==0 always means
+// "stop" and never collides with a sign-magnitude walk/run.  Bots have their
+// walk/run scaled by 1.7857 (bot.h:226-227); the fudge in the walk comparison
+// absorbs the rounding boundary cleanly without special-casing the class.
+int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
+{
+	if (!m || eqemu_anim == 0) return 0;
+
+	const int abs_anim = std::abs(eqemu_anim);
+	const int walk     = m->GetWalkspeed();
+	const bool is_walk = (walk > 0 && abs_anim <= walk + 1);
+
+	const float speed_f    = static_cast<float>(abs_anim) / 40.0f;
+	const float multiplier = is_walk ? 4.0f : 7.0f;
+	int byte = static_cast<int>(speed_f * multiplier);
+	if (byte < 1)   byte = 1;
+	if (byte > 127) byte = 127;
+	return static_cast<int8_t>(eqemu_anim < 0 ? -byte : byte);
+}
+
+// ============================================================
 // BuildTrilogyCorpseName — convert a player corpse's internal name
 // (e.g. "Bleargh's_corpse0") to the backtick+underscore wire format
 // while preserving the trailing number suffix for uniqueness.
@@ -2972,8 +3034,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 
 		sp.size      = tc->GetSize();
 		if (sp.size <= 0.0f) sp.size = 6.0f;
-		sp.walkspeed = 0.7f;
-		sp.runspeed  = 1.4f;
+		sp.walkspeed = kTrilogyPlayerWalkSpeed;
+		sp.runspeed  = kTrilogyPlayerRunSpeed;
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(tc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(tc->GetY());
 		sp.x_pos     = static_cast<int16_t>(tc->GetX());
@@ -3856,9 +3918,9 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 		}
 	}
 
-	// Walk/run speeds (EQClassic: 0.7 / 1.4 are base values for a player)
-	sze.walkspeed = 0.7f;
-	sze.runspeed  = 1.4f;
+	// Walk/run speeds — see kTrilogyPlayer*Speed constants near top of file.
+	sze.walkspeed = kTrilogyPlayerWalkSpeed;
+	sze.runspeed  = kTrilogyPlayerRunSpeed;
 
 	// EQ checksum over bytes [4..311]
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&sze), sizeof(sze));
@@ -5950,8 +6012,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 
 		sp.size      = npc->GetSize();
 		if (sp.size <= 0.0f) sp.size = 6.0f;
-		sp.walkspeed = 0.7f;
-		sp.runspeed  = 1.4f;
+		sp.walkspeed = ToTrilogySpeed(npc->GetBaseWalkspeed());
+		sp.runspeed  = ToTrilogySpeed(npc->GetBaseRunspeed());
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());
@@ -6069,8 +6131,9 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 
 		sp.size      = bot->GetSize();
 		if (sp.size <= 0.0f) sp.size = 6.0f;
-		sp.walkspeed = 0.7f;
-		sp.runspeed  = 1.4f;
+		// Bots are player-like (NPC=0 nameplate). Match the player baseline.
+		sp.walkspeed = kTrilogyPlayerWalkSpeed;
+		sp.runspeed  = kTrilogyPlayerRunSpeed;
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(bot->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(bot->GetY());
 		sp.x_pos     = static_cast<int16_t>(bot->GetX());
@@ -6130,8 +6193,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 
 		sp.size      = c->GetSize();
 		if (sp.size <= 0.0f) sp.size = 6.0f;
-		sp.walkspeed = 0.7f;
-		sp.runspeed  = 1.4f;
+		sp.walkspeed = kTrilogyPlayerWalkSpeed;
+		sp.runspeed  = kTrilogyPlayerRunSpeed;
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(c->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(c->GetY());
 		sp.x_pos     = static_cast<int16_t>(c->GetX());
@@ -6297,8 +6360,8 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 
 	sp.size      = c->GetSize();
 	if (sp.size <= 0.0f) sp.size = 6.0f;
-	sp.walkspeed = 0.7f;
-	sp.runspeed  = 1.4f;
+	sp.walkspeed = kTrilogyPlayerWalkSpeed;
+	sp.runspeed  = kTrilogyPlayerRunSpeed;
 	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(c->GetHeading() / 2.0f));
 	sp.y_pos     = static_cast<int16_t>(c->GetY());
 	sp.x_pos     = static_cast<int16_t>(c->GetX());
@@ -6379,8 +6442,10 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 
 	sp.size      = npc->GetSize();
 	if (sp.size <= 0.0f) sp.size = 6.0f;
-	sp.walkspeed = 0.7f;
-	sp.runspeed  = 1.4f;
+	// PC-nameplate entities (Bots + Playerbots) get the player speed baseline
+	// so they match a real player's local-render speed in the v29c view.
+	sp.walkspeed = kTrilogyPlayerWalkSpeed;
+	sp.runspeed  = kTrilogyPlayerRunSpeed;
 	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 	sp.y_pos     = static_cast<int16_t>(npc->GetY());
 	sp.x_pos     = static_cast<int16_t>(npc->GetX());
@@ -7198,10 +7263,19 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// anim_type>0 only when moving — stationary mobs send anim_type=0 which
 		// plays the idle/stand animation.  The periodic A120 refresh above keeps
 		// the staleness timer from firing even with anim_type=0.
+		//
+		// Walk vs run heuristic: an engaged NPC is in pursuit / combat and uses
+		// MovementRunning via Mob::RunTo (mob_ai.cpp); a non-engaged NPC is
+		// roaming / patrolling and uses Mob::WalkTo with MovementWalking.  This
+		// covers the dominant cases and avoids the prior "everything runs" bug
+		// where roaming NPCs animated like they were sprinting.  Fleeing NPCs
+		// (negative fearspeed) are handled by the OP_ClientUpdate path which
+		// has the authoritative MovementManager speed value.
 		if (npc->IsMoving()) {
-			float float_sp = static_cast<float>(npc->GetRunspeed()) / 40.0f;
-			int   anim     = static_cast<int>(float_sp * 7.0f);
-			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+			const int eqemu_speed = npc->IsEngaged()
+			                            ? npc->GetRunspeed()
+			                            : npc->GetWalkspeed();
+			upd->anim_type = EncodeTrilogyAnim(npc, eqemu_speed);
 		}
 
 		if (!should_broadcast(upd, dist_sq)) continue;
@@ -7244,8 +7318,13 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
 
 		if (c->IsMoving()) {
-			int8_t anim = static_cast<int8_t>(std::max(1, static_cast<int>(c->GetMovespeed() * 11.0f / 40.0f)));
-			upd->anim_type = anim;
+			// Players self-render locally; this anim only matters for the
+			// other observers receiving the broadcast.  v29c has no reliable
+			// "is this player walking or running" signal server-side (the
+			// client decides locally), so default to run — most player
+			// movement in EQ is run-mode and showing the run animation to
+			// other clients is a smaller error than always showing walk.
+			upd->anim_type = EncodeTrilogyAnim(c, c->GetRunspeed());
 			// delta_x/delta_y left at 0 — see NPC block above.
 		}
 		// else: anim_type=0, delta=0 — client confirms position without moving
@@ -7293,9 +7372,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos    = static_cast<int16_t>(bot->GetZ() * 10.0f);
 
 		if (bot->IsMoving()) {
-			float float_sp = static_cast<float>(bot->GetRunspeed()) / 40.0f;
-			int   anim     = static_cast<int>(float_sp * 7.0f);
-			upd->anim_type = static_cast<int8_t>(std::max(1, std::min(127, anim)));
+			// Bots: same engaged=run / unengaged=walk heuristic as NPCs.
+			// Following the owner counts as MovementRunning when far (≥35 u)
+			// and MovementWalking when close — but EQEmu's bot follow path
+			// doesn't set IsEngaged(), so without a stronger signal default
+			// non-engaged bot motion to walk, matching most observed cases
+			// (bot trailing the player at walking pace).
+			const int eqemu_speed = bot->IsEngaged()
+			                            ? bot->GetRunspeed()
+			                            : bot->GetWalkspeed();
+			upd->anim_type = EncodeTrilogyAnim(bot, eqemu_speed);
 		}
 
 		if (!should_broadcast(upd, dist_sq)) continue;
