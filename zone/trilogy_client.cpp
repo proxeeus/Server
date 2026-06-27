@@ -4251,6 +4251,27 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		// 0-based window slot the client echoes back on buy.  The full buy price is
 		// already baked into inst->GetPrice(); we divide by the price multiplier so
 		// the client's redisplay (cost * pricemultiplier) shows the real buy price.
+		//
+		// ── v29c merchant window cap (30 items, hard) ────────────────────────
+		// The client allocates a fixed `uint16 merchantgoods[30]` (EQClassic
+		// client.h:459).  Their server guards both initial fill (client.cpp:1255
+		// `<30`) and post-sell adds (client.cpp:1395 `if (totalitemdisplayed
+		// == 30) return;`) — over-cap items are silently dropped.  Sending
+		// OP_ShopItem with slot_id >= 30 walks past the array; corruption is
+		// latent and surfaces a few transactions later as an AV reading a
+		// pointer overwritten with item-name bytes (faulting addr decodes as
+		// ASCII string fragment).  Drop here to keep the wire and the client's
+		// buffer in sync.  Side effect: sells beyond the cap still complete
+		// server-side (player gets money, item is added to merchant temp DB) —
+		// the player just can't see it in the open window, matching EQClassic.
+		static constexpr int kTrilogyMerchantWindowCap = 30;
+		if (slot_id >= kTrilogyMerchantWindowCap) {
+			LogInfo("[TRILOGY-MERCHANT] dropping ItemPacketMerchant slot={} (>= v29c cap {}) item={}",
+			        slot_id, kTrilogyMerchantWindowCap,
+			        inst->GetItem() ? inst->GetItem()->ID : 0);
+			return;
+		}
+
 		Trilogy::structs::ClassicItem_Struct mci{};
 		if (!BuildClassicItemFromInst(inst, mci, slot_id))
 			return;
