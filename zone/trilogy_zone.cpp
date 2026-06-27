@@ -299,6 +299,41 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 	return static_cast<float>(eqemu_speed) / 40.0f;
 }
 
+// Compute the v29c SpawnPositionUpdate `delta_heading` byte for a single
+// session+spawn from the previous and current encoded heading bytes.
+//
+// Why: EQEmu's MovementManager breaks pathgrid/roambox paths into many short
+// segments; each segment edge produces a small heading change.  Without a
+// delta_heading hint, the v29c client snaps to each new heading on the next
+// heartbeat → curved paths render as a polygon (the "jagged" trajectory).
+// With delta_heading set, the client rotates smoothly across the heartbeat
+// interval, masking the segment-edge snaps.
+//
+// The wire field is int8 (-128..127) and the byte space is modular (0..255
+// representing 0..360°), so we work in uint8 space to compute the shortest-
+// path angular difference, then re-cast to int8 for the wire.  Clamping is
+// applied after the wrap fold so a NPC executing a near-180° face-target
+// emits a saturated turn rather than a "wrong way" rotation.
+//
+// `prev_heading_wire` and `cur_heading_wire` are the int8 bytes already
+// encoded for the wire (e.g. `static_cast<int8_t>(static_cast<uint8_t>(
+// GetHeading() / 2.0f))`).  Returns 0 when there is no previous broadcast
+// (first heartbeat for this spawn in this session).
+static int8_t ComputeTrilogyDeltaHeading(int8_t prev_heading_wire,
+                                         int8_t cur_heading_wire,
+                                         bool has_prev)
+{
+	if (!has_prev) return 0;
+	const int prev = static_cast<int>(static_cast<uint8_t>(prev_heading_wire));
+	const int cur  = static_cast<int>(static_cast<uint8_t>(cur_heading_wire));
+	int diff = cur - prev;
+	if (diff >  128) diff -= 256;
+	if (diff < -128) diff += 256;
+	if (diff >  127) diff =  127;
+	if (diff < -127) diff = -127;
+	return static_cast<int8_t>(diff);
+}
+
 // Encode a Mob's current movement speed into Trilogy's SpawnPositionUpdate
 // anim_type byte.
 //
@@ -7285,6 +7320,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->x_pos    = static_cast<int16_t>(nx);
 		upd->z_pos    = static_cast<int16_t>(npc->GetZ() * 10.0f);
 
+		// delta_heading: hint the v29c client to ROTATE smoothly across the
+		// heartbeat interval to the new heading instead of snapping.  Source
+		// of jaggedness on pathgrid/roambox NPCs — short path segments
+		// produce small heading changes that without this look polygonal.
+		{
+			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(npc->GetID()));
+			const bool has_prev = (it_prev != s.last_broadcast.end()
+			                       && it_prev->second.sent_ms != 0);
+			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
+			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
+		}
+
 		// delta_x/delta_y stay 0 (EQClassic NPC behaviour); position snaps to
 		// server coords each tick without client-side dead-reckoning.
 		// anim_type>0 only when moving — stationary mobs send anim_type=0 which
@@ -7353,6 +7400,13 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(c->GetY());
 		upd->x_pos    = static_cast<int16_t>(c->GetX());
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
+		{
+			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(c->GetID()));
+			const bool has_prev = (it_prev != s.last_broadcast.end()
+			                       && it_prev->second.sent_ms != 0);
+			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
+			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
+		}
 
 		if (c->IsMoving()) {
 			// Players self-render locally; this anim only matters for the
@@ -7407,6 +7461,13 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(bot->GetY());
 		upd->x_pos    = static_cast<int16_t>(bot->GetX());
 		upd->z_pos    = static_cast<int16_t>(bot->GetZ() * 10.0f);
+		{
+			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(bot->GetID()));
+			const bool has_prev = (it_prev != s.last_broadcast.end()
+			                       && it_prev->second.sent_ms != 0);
+			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
+			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
+		}
 
 		if (bot->IsMoving()) {
 			// Prefer the MovementManager-cached anim (set by HandleClientUpdate
