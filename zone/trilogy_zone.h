@@ -105,6 +105,18 @@ public:
 	// MovementManager-driven path produce matching bytes.
 	static int8_t EncodeTrilogyAnim(class Mob* m, int eqemu_anim);
 
+	// Pack a per-tick velocity vector into the v29c SpawnPositionUpdate
+	// 10-bit signed delta bitfield (offset 11, layout dy/dz/dx).
+	// Source values are EQEmu's MovementManager FloatToEQ13 encoding
+	// (velocity * 64).  Clamps each axis to [-512, 511].  Exposed so
+	// TrilogyClient::HandleClientUpdate can write the MovementManager-
+	// authoritative deltas Titanium uses for client-side interpolation
+	// — the missing field that made v29c NPC motion jaggy on the same
+	// server where Titanium NPCs were smooth.  Wraps the file-static
+	// WriteDeltaBitfield helper in trilogy_zone.cpp.
+	static void EncodeTrilogyDelta(void* spawn_position_update,
+	                               int32_t dx, int32_t dy, int32_t dz);
+
 private:
 	enum ZoneState : uint8_t {
 		CONNECTING1 = 1,  // waiting for OP_SetDataRate (0xe821)
@@ -183,6 +195,17 @@ private:
 		// (delta_heading=0 means no client-side rotational interpolation).
 		uint64_t    last_turning_scan_ms = 0;
 		bool        nearby_turning       = false;
+
+		// Nearby-moving cache — symmetric to nearby_turning but tracks any
+		// NPC/Bot with IsMoving()==true.  When set, drops the heartbeat
+		// throttle to kMovingThrottleMs so a walking/running mob gets ~20
+		// position updates/sec instead of 1-4, shrinking per-snap drift
+		// from ~3 units to ~0.6 units (below visible threshold).  Required
+		// because kVelocityWireScale=0 (EQClassic-faithful) means the v29c
+		// client cannot extrapolate inter-heartbeat motion; without this,
+		// any diagonal pathing visibly micro-teleports.
+		uint64_t    last_moving_scan_ms  = 0;
+		bool        nearby_moving        = false;
 
 		// Rate-limit timestamps for the velocity-delta calibration logs.
 		// Fired at 1 Hz per session — one line for incoming player F320

@@ -1379,20 +1379,27 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	const float dy = m->GetY() - GetY();
 	if (dx * dx + dy * dy > kCullSq) return;
 
-	// Per-mob throttle (~4 Hz max per moving mob per session).  EQEmu's
-	// MovementManager can fire 5-10+ OP_ClientUpdates/sec per fast mob;
-	// without this cap, dense combat zones flood v29c's ARQ window.
+	// Per-mob throttle.  EXPERIMENT 2026-06-27: dropped 2000 → 250 ms now
+	// that SendMobHeartbeat skips moving NPCs entirely.  The previous
+	// wobble at sub-second rates came from heartbeat firing delta=0
+	// between our event-driven delta-bearing broadcasts — the alternation
+	// collapsed client extrapolation back to anim_type-only every other
+	// update.  With heartbeat out of the way, the event-driven path is
+	// the sole source for moving NPCs, and 4 Hz updates with consistent
+	// real deltas should let the client interpolate cleanly.
+	//
+	// Additionally: anim_type-change bypass below skips this throttle on
+	// state transitions (walk→run on aggro, run→walk on disengage,
+	// moving→stopped at waypoint) so the client never extrapolates with
+	// a stale speed for up to a full throttle interval — that was the
+	// root cause of the visible "snap forward on aggro" symptom.
 	static constexpr uint64_t kMinIntervalMs = 250;
 	const uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
-	auto it = m_mob_update_last.find(spawn_id);
-	if (it != m_mob_update_last.end() && now_ms - it->second < kMinIntervalMs)
-		return;
-	m_mob_update_last[spawn_id] = now_ms;
 
-	// Push to the per-session pending buffer; FlushPendingMobUpdates drains
-	// it once per Tick into 25-mob batched A120 packets.
+	// Compute the wire anim_type up front so we can compare against the
+	// last-cached value and bypass the throttle on transitions.
 	Trilogy::structs::SpawnPositionUpdate_Struct upd{};
 	upd.spawn_id = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(spawn_id)));
 	upd.heading  = static_cast<int8_t>(static_cast<uint8_t>(m->GetHeading() / 2.0f));
@@ -1400,17 +1407,24 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	upd.x_pos    = static_cast<int16_t>(m->GetX());
 	upd.z_pos    = static_cast<int16_t>(m->GetZ() * 10.0f);
 
-	// p->animation is EQEmu's authoritative "current speed" for this update
-	// (filled by MobMovementManager::FillCommandStruct from MovementWalking
-	// vs MovementRunning state).  Hand it to the shared encoder so walking
-	// NPCs / rotating mobs get the walk animation byte (~2-3) instead of
-	// the run animation byte (~9) — which was the root cause of "every NPC
-	// looks like it's sprinting" and "hailed NPCs animate run-in-place
-	// while rotating to face".
 	if (m->IsMoving() || p->animation != 0) {
 		upd.anim_type = TrilogyZoneServer::EncodeTrilogyAnim(
 			m, static_cast<int>(p->animation));
 	}
+
+	// Throttle gate — but bypass if anim_type differs from the last cached
+	// value for this spawn (state transition).  Transitions need immediate
+	// delivery; the throttle is only there to cap steady-state rate.
+	auto cache_it = m_movement_anim_cache.find(static_cast<uint16_t>(spawn_id));
+	const bool anim_changed =
+		(cache_it == m_movement_anim_cache.end()) ||
+		(cache_it->second.anim != upd.anim_type);
+	if (!anim_changed) {
+		auto it = m_mob_update_last.find(spawn_id);
+		if (it != m_mob_update_last.end() && now_ms - it->second < kMinIntervalMs)
+			return;
+	}
+	m_mob_update_last[spawn_id] = now_ms;
 
 	// Stash the MovementManager-authoritative anim so the heartbeat path
 	// (SendMobHeartbeat in trilogy_zone.cpp) doesn't override walking
@@ -1418,6 +1432,32 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	// IsEngaged()-based heuristic.  Cache age-bounded inside the getter.
 	m_movement_anim_cache[static_cast<uint16_t>(spawn_id)] =
 		MovementAnim{ upd.anim_type, now_ms };
+
+	// Per-tick velocity vector from EQEmu's MobMovementManager (filled by
+	// FillCommandStruct → FloatToEQ13(delta) = delta * 64).  Titanium
+	// client consumes these same delta_x/y/z values to interpolate
+	// position between OP_ClientUpdate broadcasts — that's why Titanium
+	// NPCs look smooth on the same server that produces jaggy NPCs on
+	// v29c.  Pass through directly into the v29c 10-bit signed bitfield
+	// (PackDelta10 clamps to [-512, 511]; typical run velocities encode
+	// to ~45, well within range; only fall/knockback would clamp).
+	//
+	// Why this isn't the prior "strafing" failure:  earlier attempts in
+	// SendMobHeartbeat computed a fake delta from heading × speed via
+	// kVelocityWireScale, which strafed because the rendered heading
+	// direction diverged from the actual server motion vector on any
+	// tick with z-correction or sub-degree pathing drift.  EQEmu's
+	// MovementManager-fed delta IS the actual motion vector the server's
+	// pathing code is using, so direction matches by construction — the
+	// v29c client's extrapolation lands on the server's next-tick
+	// position rather than drifting off-axis.  This is the event-driven
+	// path; SendMobHeartbeat's polled fallback keeps delta=0 for
+	// stationary mobs (which is correct — no extrapolation hint needed
+	// when there's no motion).
+	TrilogyZoneServer::EncodeTrilogyDelta(&upd,
+	                                      static_cast<int32_t>(p->delta_x),
+	                                      static_cast<int32_t>(p->delta_y),
+	                                      static_cast<int32_t>(p->delta_z));
 
 	m_pending_mob_updates.push_back(upd);
 }

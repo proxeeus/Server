@@ -465,12 +465,18 @@ int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 
 	const float speed_f = static_cast<float>(abs_anim) / 40.0f;
 	int byte;
+	// 2026-06-27: reverted from doubled multiplier (14×) back to 7×.
+	// Doubling matched the v29c client's extrapolation rate to EQEmu's
+	// server motion (forward snap disappeared) but pushed the byte into
+	// v29c's run-animation band, so walking patrols visibly jogged.  The
+	// byte encodes BOTH the animation cycle AND the extrapolation rate
+	// in one knob; EQEmu's NPC speeds are scaled higher than EQClassic's
+	// (where walkspeed*4 lands in walk-anim range because their float
+	// walkspeed values are ~0.5-1.0), so we can't satisfy both at once
+	// at these speeds.  Living with the small forward snap to keep walk
+	// animation correct.
 	if (is_walk) {
 		byte = static_cast<int>(speed_f * 7.0f);
-		// Keep walking byte inside the v29c walk-cycle band: ≥2 so the
-		// animation actually plays at perceptible rate, ≤5 so the client
-		// doesn't cross into run-cycle for fast-walking (SoW'd, speed-
-		// buffed) NPCs.
 		if (byte < 2) byte = 2;
 		if (byte > 5) byte = 5;
 	} else {
@@ -479,6 +485,23 @@ int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 		if (byte > 127) byte = 127;
 	}
 	return static_cast<int8_t>(eqemu_anim < 0 ? -byte : byte);
+}
+
+// ============================================================
+// EncodeTrilogyDelta — thin static wrapper around the file-local
+// WriteDeltaBitfield helper so TrilogyClient (in trilogy_client.cpp)
+// can populate the v29c per-tick velocity field from EQEmu's
+// MobMovementManager-fed deltas.  See declaration in trilogy_zone.h
+// for the why.  The void* parameter is the
+// Trilogy::structs::SpawnPositionUpdate_Struct (avoiding a struct
+// include in trilogy_zone.h to keep that header lean).
+// ============================================================
+void TrilogyZoneServer::EncodeTrilogyDelta(void* spawn_position_update,
+                                           int32_t dx, int32_t dy, int32_t dz)
+{
+	WriteDeltaBitfield(
+		static_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(spawn_position_update),
+		dx, dy, dz);
 }
 
 // ============================================================
@@ -7262,9 +7285,15 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
-	uint32_t throttle_ms = 250;
+	// TEMP TEST 2026-06-27: base throttle at 2000ms.  At 1000ms the int16-
+	// truncation lateral wobble returns visibly; at 2000ms motion is smooth
+	// but each update lands a visible forward snap (client extrapolation
+	// slower than server motion).  Tradeoff settled in favor of 2000ms;
+	// fix the residual forward snap by adjusting anim_type encoding so the
+	// v29c client extrapolates at the server's actual speed.
+	uint32_t throttle_ms = 2000;
 	if (s.trilogy_client && s.trilogy_client->GetAggroCount() > 0) {
-		throttle_ms = 200;
+		throttle_ms = 2000;
 	}
 	else if (s.trilogy_client) {
 		// Refresh nearby-combat cache every 500 ms.
@@ -7344,6 +7373,54 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	}
 	if (s.nearby_turning && throttle_ms > kTurningThrottleMs)
 		throttle_ms = kTurningThrottleMs;
+
+	// Moving-mob smoothing throttle: with kVelocityWireScale=0 (EQClassic-
+	// faithful — v29c client receives no inter-entity delta_x/y/z and so
+	// cannot extrapolate motion between heartbeats), the rendered position
+	// of a moving NPC stays frozen between updates while the server-side
+	// position drifts forward.  At the default 250 ms throttle and ~12
+	// units/sec server motion that yields a ~3-unit position snap per
+	// heartbeat — visibly jagged on diagonal pathing.  Drop the throttle
+	// to kMovingThrottleMs when any in-range NPC/Bot is moving so each snap
+	// is ~0.6 units, below the visible-jaggedness threshold.  Bypass auto-
+	// clears once the scan finds no moving mobs (mob completes a path
+	// segment / arrives at waypoint), returning to the 250 ms idle rate.
+	//
+	// Bandwidth cost: ~20 Hz on the in-range moving subset only.  With
+	// typically 5-10 movers visible at ~26 B/mob/update, that's ~2.5-5 KB/s
+	// per player — well inside the headroom proven by the long-session BW
+	// logs (steady-state <1 kbps idle).  Symmetric in spirit and code to
+	// the turning bypass above.
+	static constexpr uint32_t kMovingThrottleMs  = 2000;
+	static constexpr uint64_t kMovingScanCacheMs = 100;
+	if (s.trilogy_client && now_ms - s.last_moving_scan_ms >= kMovingScanCacheMs) {
+		s.last_moving_scan_ms = now_ms;
+		s.nearby_moving       = false;
+		constexpr float MOVE_RADIUS_SQ = 600.0f * 600.0f; // match CULL_RADIUS / turning scan
+		for (const auto& kv : entity_list.GetNPCList()) {
+			NPC* npc = kv.second;
+			if (!npc || !npc->IsMoving()) continue;
+			float dx = npc->GetX() - s.pos_x;
+			float dy = npc->GetY() - s.pos_y;
+			if (dx * dx + dy * dy <= MOVE_RADIUS_SQ) {
+				s.nearby_moving = true;
+				break;
+			}
+		}
+		if (!s.nearby_moving) {
+			for (Bot* bot : entity_list.GetBotList()) {
+				if (!bot || !bot->IsMoving()) continue;
+				float dx = bot->GetX() - s.pos_x;
+				float dy = bot->GetY() - s.pos_y;
+				if (dx * dx + dy * dy <= MOVE_RADIUS_SQ) {
+					s.nearby_moving = true;
+					break;
+				}
+			}
+		}
+	}
+	if (s.nearby_moving && throttle_ms > kMovingThrottleMs)
+		throttle_ms = kMovingThrottleMs;
 
 	if (now_ms - s.last_heartbeat_ms < throttle_ms) return;
 	s.last_heartbeat_ms = now_ms;
@@ -7463,11 +7540,24 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
-		// All NPCs — including stationary ones — must appear in A120 periodically.
-		// The Trilogy client has a staleness timeout for non-permanent spawns: a mob
-		// absent from A120 for ~5-10s disappears even if it was sent correctly at zone-in.
-		// Moving NPCs are sent every 100ms tick.  Stationary NPCs are refreshed at ~2 Hz
-		// (every 5th tick) — enough safety margin against the staleness timer without
+		// EXPERIMENT 2026-06-27 (option 2 / delta-extrapolation test):
+		// Hand moving NPCs off entirely to the event-driven path
+		// (TrilogyClient::HandleClientUpdate, which writes the MovementManager-
+		// authoritative delta_x/y/z into the wire bitfield).  The heartbeat
+		// here forces delta=0 (kVelocityWireScale=0), and at the current
+		// 2000ms cadence the two paths alternate-overwrite the client's
+		// extrapolation state — every other update tells the client "no
+		// motion hint" which collapses extrapolation back onto anim_type.
+		// Skipping moving NPCs entirely lets HandleClientUpdate own the
+		// consistent delta-bearing broadcast stream; the staleness refresh
+		// stays in the stationary branch below since stationary mobs never
+		// trip the event-driven path.
+		if (npc->IsMoving()) {
+			continue;
+		}
+
+		// Stationary NPCs: staleness refresh only.  ~2 Hz (every 5th 100 ms
+		// tick) keeps the v29c spawn staleness timer satisfied without
 		// flooding the ARQ queue on zones with many idle NPCs.
 		if (!npc->IsMoving()) {
 			if ((now_ms / 100) % 5 != 0) continue;
