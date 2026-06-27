@@ -1285,6 +1285,7 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	// reuse of the id (rare but possible) starts fresh.
 	m_last_appearance.erase(static_cast<uint16_t>(spawn_id));
 	m_mob_update_last.erase(static_cast<uint16_t>(spawn_id));
+	m_movement_anim_cache.erase(static_cast<uint16_t>(spawn_id));
 
 	// Drop all per-slot known-material entries for this spawn — the next
 	// reuse of spawn_id will need a fresh seed from its spawn struct's
@@ -1410,6 +1411,13 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 		upd.anim_type = TrilogyZoneServer::EncodeTrilogyAnim(
 			m, static_cast<int>(p->animation));
 	}
+
+	// Stash the MovementManager-authoritative anim so the heartbeat path
+	// (SendMobHeartbeat in trilogy_zone.cpp) doesn't override walking
+	// patrol NPCs with "run" or running Playerbots with "walk" via its
+	// IsEngaged()-based heuristic.  Cache age-bounded inside the getter.
+	m_movement_anim_cache[static_cast<uint16_t>(spawn_id)] =
+		MovementAnim{ upd.anim_type, now_ms };
 
 	m_pending_mob_updates.push_back(upd);
 }

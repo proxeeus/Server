@@ -398,6 +398,49 @@ private:
 	// each mob's per-session position broadcast rate at ~4 Hz (250 ms gap).
 	std::unordered_map<uint16_t, uint64_t> m_mob_update_last;
 
+	// Per-mob cache of the most recent MovementManager-driven anim byte (the
+	// value HandleClientUpdate encoded from MobMovementManager::FillCommand-
+	// Struct's `current_speed` — the authoritative walk-vs-run signal).
+	// SendMobHeartbeat reads this so its own 4 Hz refresh doesn't override
+	// the MovementManager's choice with the cruder "engaged ? run : walk"
+	// heuristic.
+	//
+	// Concrete bug it fixes: Playerbots following the owner use Mob::RunTo
+	// (MovementRunning → animation=runspeed), HandleClientUpdate encodes a
+	// run byte (~8), but the next heartbeat 200 ms later sees IsEngaged()==
+	// false on the bot and overwrites with a walk byte (~2-3). The client
+	// kept whichever arrived last → walk animation while sprinting.
+	//
+	// Stored value is the wire byte already (sign-magnitude, [-127,127]).
+	// Age-bounded; SendMobHeartbeat ignores entries older than ~1.5 s and
+	// falls back to the engaged-based heuristic so a long-stationary mob
+	// after a brief sprint doesn't keep its old run byte forever.
+	struct MovementAnim {
+		int8_t   anim;
+		uint64_t set_ms;
+	};
+	std::unordered_map<uint16_t, MovementAnim> m_movement_anim_cache;
+
+public:
+	// Returns the most recent MovementManager-driven anim byte for `spawn_id`
+	// if it was set within `max_age_ms` of `now_ms`.  Otherwise returns 0
+	// (sentinel "no recent update — fall back to heuristic").
+	int8_t GetRecentMovementAnim(uint16_t spawn_id, uint64_t now_ms,
+	                             uint64_t max_age_ms = 1500) const {
+		auto it = m_movement_anim_cache.find(spawn_id);
+		if (it == m_movement_anim_cache.end()) return 0;
+		if (now_ms - it->second.set_ms > max_age_ms) return 0;
+		return it->second.anim;
+	}
+
+	// Drop a single cached entry (call from HandleDeleteSpawn so we don't
+	// accumulate entries for despawned mobs).
+	void ClearMovementAnim(uint16_t spawn_id) {
+		m_movement_anim_cache.erase(spawn_id);
+	}
+
+private:
+
 	// Authoritative model of the v29c client's current equipment-material
 	// state, per (spawn_id, slot).  Mirrors EQClassic's `equipment[]` arrays
 	// on the Mob object — same role (record of truth for what the client

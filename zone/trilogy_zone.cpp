@@ -300,21 +300,38 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 }
 
 // Encode a Mob's current movement speed into Trilogy's SpawnPositionUpdate
-// anim_type byte.  EQClassic semantics (Zone/Source/npc.cpp:1716-1726):
+// anim_type byte.
+//
+// EQClassic semantics (Zone/Source/npc.cpp:1716-1726):
 //   stationary (eqemu_anim == 0)                       → 0
 //   walking    (eqemu_anim ≤ walkspeed +1 fudge)       → walkspeed_float × 4
 //   running    (otherwise)                             → runspeed_float  × 7
 //   fleeing                                            → negated walk/run
 //
-// `eqemu_anim` is the EQEmu integer speed value (e.g. 28 for walk, 50 for run
-// at base; modified by spell/item bonuses).  Pass GetWalkspeed() / GetRunspeed()
-// for the heartbeat path where we don't have an incoming animation; pass the
+// The v29c client treats anim_type as an unsigned-ish "velocity" — magnitude
+// drives leg-cycle playback rate and there's a threshold (≈6) above which the
+// client switches from the walk animation to the run animation.
+//
+// We deviate from EQClassic's literal multiplier-of-4 for the walk case
+// because EQEmu's NPC walkspeed scale is significantly slower than EQClassic's:
+//   - EQClassic default NPC walkspeed_float = 0.70  → byte = 0.70 × 4 ≈ 2
+//   - EQEmu default NPC walkspeed_float    = 0.45  → byte = 0.45 × 4 ≈ 1
+// At byte=1 the v29c client plays the walk cycle at ~half EQClassic's rate,
+// so EQEmu NPCs visually shuffle when patrolling. Using multiplier 7 for
+// walking and clamping the result to [2,5] keeps the byte inside the walk-
+// animation band while restoring a perceptible cycle rate at EQEmu speeds.
+// (5 stays safely below the ≈6 run-cycle threshold; 2 is the slowest byte
+// where the leg cycle is clearly animated rather than crawling.)
+//
+// `eqemu_anim` is the EQEmu integer speed value (28 walk / 50 run at base;
+// modified by spell/item bonuses).  Pass GetWalkspeed() / GetRunspeed() for
+// the heartbeat path where we don't have an incoming animation; pass the
 // PlayerPositionUpdateServer_Struct::animation field for the MovementManager
 // translation path (HandleClientUpdate).
 //
-// Result is clamped to [1, 127] for the magnitude so anim_type==0 always means
-// "stop" and never collides with a sign-magnitude walk/run.  Bots have their
-// walk/run scaled by 1.7857 (bot.h:226-227); the fudge in the walk comparison
+// Result magnitude is clamped to [1,127] so anim_type==0 always means "stop"
+// and never collides with a sign-magnitude walk/run.  Bots have their walk/
+// run scaled by 1.7857 (bot.h:226-227); the fudge in the walk comparison
 // absorbs the rounding boundary cleanly without special-casing the class.
 int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 {
@@ -324,11 +341,21 @@ int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 	const int walk     = m->GetWalkspeed();
 	const bool is_walk = (walk > 0 && abs_anim <= walk + 1);
 
-	const float speed_f    = static_cast<float>(abs_anim) / 40.0f;
-	const float multiplier = is_walk ? 4.0f : 7.0f;
-	int byte = static_cast<int>(speed_f * multiplier);
-	if (byte < 1)   byte = 1;
-	if (byte > 127) byte = 127;
+	const float speed_f = static_cast<float>(abs_anim) / 40.0f;
+	int byte;
+	if (is_walk) {
+		byte = static_cast<int>(speed_f * 7.0f);
+		// Keep walking byte inside the v29c walk-cycle band: ≥2 so the
+		// animation actually plays at perceptible rate, ≤5 so the client
+		// doesn't cross into run-cycle for fast-walking (SoW'd, speed-
+		// buffed) NPCs.
+		if (byte < 2) byte = 2;
+		if (byte > 5) byte = 5;
+	} else {
+		byte = static_cast<int>(speed_f * 7.0f);
+		if (byte < 1)   byte = 1;
+		if (byte > 127) byte = 127;
+	}
 	return static_cast<int8_t>(eqemu_anim < 0 ? -byte : byte);
 }
 
@@ -7264,18 +7291,28 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// plays the idle/stand animation.  The periodic A120 refresh above keeps
 		// the staleness timer from firing even with anim_type=0.
 		//
-		// Walk vs run heuristic: an engaged NPC is in pursuit / combat and uses
-		// MovementRunning via Mob::RunTo (mob_ai.cpp); a non-engaged NPC is
-		// roaming / patrolling and uses Mob::WalkTo with MovementWalking.  This
-		// covers the dominant cases and avoids the prior "everything runs" bug
-		// where roaming NPCs animated like they were sprinting.  Fleeing NPCs
-		// (negative fearspeed) are handled by the OP_ClientUpdate path which
-		// has the authoritative MovementManager speed value.
+		// Anim source preference:
+		//   1. MovementManager-cached anim (set by HandleClientUpdate when EQEmu
+		//      fires OP_ClientUpdate with the authoritative current_speed for
+		//      MovementWalking vs MovementRunning).  This is the only source
+		//      that correctly distinguishes a Playerbot RUNNING after its owner
+		//      (RunTo, IsEngaged()==false) from a guard WALKING on patrol.
+		//   2. Engaged-based heuristic — fallback when no recent ClientUpdate.
+		//      Engaged NPC → run (EQEmu AI uses Mob::RunTo for pursuit), idle
+		//      NPC → walk (Mob::WalkTo for roaming/patrolling).
 		if (npc->IsMoving()) {
-			const int eqemu_speed = npc->IsEngaged()
-			                            ? npc->GetRunspeed()
-			                            : npc->GetWalkspeed();
-			upd->anim_type = EncodeTrilogyAnim(npc, eqemu_speed);
+			int8_t cached = s.trilogy_client
+			                    ? s.trilogy_client->GetRecentMovementAnim(
+			                          static_cast<uint16_t>(npc->GetID()), now_ms)
+			                    : static_cast<int8_t>(0);
+			if (cached != 0) {
+				upd->anim_type = cached;
+			} else {
+				const int eqemu_speed = npc->IsEngaged()
+				                            ? npc->GetRunspeed()
+				                            : npc->GetWalkspeed();
+				upd->anim_type = EncodeTrilogyAnim(npc, eqemu_speed);
+			}
 		}
 
 		if (!should_broadcast(upd, dist_sq)) continue;
@@ -7372,16 +7409,22 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos    = static_cast<int16_t>(bot->GetZ() * 10.0f);
 
 		if (bot->IsMoving()) {
-			// Bots: same engaged=run / unengaged=walk heuristic as NPCs.
-			// Following the owner counts as MovementRunning when far (≥35 u)
-			// and MovementWalking when close — but EQEmu's bot follow path
-			// doesn't set IsEngaged(), so without a stronger signal default
-			// non-engaged bot motion to walk, matching most observed cases
-			// (bot trailing the player at walking pace).
-			const int eqemu_speed = bot->IsEngaged()
-			                            ? bot->GetRunspeed()
-			                            : bot->GetWalkspeed();
-			upd->anim_type = EncodeTrilogyAnim(bot, eqemu_speed);
+			// Prefer the MovementManager-cached anim (set by HandleClientUpdate
+			// from the bot's RunTo/WalkTo invocations).  Without this, a bot
+			// chasing its owner via RunTo gets overwritten with the walk byte
+			// here because IsEngaged() is false for the follow-owner path.
+			int8_t cached = s.trilogy_client
+			                    ? s.trilogy_client->GetRecentMovementAnim(
+			                          static_cast<uint16_t>(bot->GetID()), now_ms)
+			                    : static_cast<int8_t>(0);
+			if (cached != 0) {
+				upd->anim_type = cached;
+			} else {
+				const int eqemu_speed = bot->IsEngaged()
+				                            ? bot->GetRunspeed()
+				                            : bot->GetWalkspeed();
+				upd->anim_type = EncodeTrilogyAnim(bot, eqemu_speed);
+			}
 		}
 
 		if (!should_broadcast(upd, dist_sq)) continue;
