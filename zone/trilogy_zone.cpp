@@ -299,29 +299,31 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 	return static_cast<float>(eqemu_speed) / 40.0f;
 }
 
-// Compute the v29c SpawnPositionUpdate `delta_heading` byte for a single
-// session+spawn from the previous and current encoded heading bytes.
+// IMPORTANT: SpawnPositionUpdate_Struct::delta_heading is NOT an
+// interpolation hint between sent heading values — it is the SPIN-STUN
+// rotation-per-tick rate.  EQClassic's mob.cpp:570-574 sets it to 100 only
+// while NPC::GetSpin() is true (the spin-stun spell effect):
+//   if (IsNPC() && CastToNPC()->GetSpin()) spu->delta_heading = 100;
+//   else                                   spu->delta_heading = delta_heading;
+// EQClassic's stored `delta_heading` on a Mob is 0 except when the player
+// CLIENT sends a non-zero delta_heading in cu->delta_heading (player keyboard
+// turning, fed back to other clients).  For NPCs the value is always 0.
 //
-// Why: EQEmu's MovementManager breaks pathgrid/roambox paths into many short
-// segments; each segment edge produces a small heading change.  Without a
-// delta_heading hint, the v29c client snaps to each new heading on the next
-// heartbeat → curved paths render as a polygon (the "jagged" trajectory).
-// With delta_heading set, the client rotates smoothly across the heartbeat
-// interval, masking the segment-edge snaps.
+// A previous attempt here computed delta_heading from the per-heartbeat
+// heading change to "smooth" pathgrid rotation; the v29c client interpreted
+// those small non-zero values as a sustained spin rate, producing endless
+// rotation on guards arriving at waypoints and on NPCs answering /hail.
+// Keep this function in the codebase as a building block for when we wire
+// the spin-stun spell effect (the only legitimate use of non-zero
+// delta_heading for NPCs); do NOT call it from the regular heartbeat path.
 //
-// The wire field is int8 (-128..127) and the byte space is modular (0..255
-// representing 0..360°), so we work in uint8 space to compute the shortest-
-// path angular difference, then re-cast to int8 for the wire.  Clamping is
-// applied after the wrap fold so a NPC executing a near-180° face-target
-// emits a saturated turn rather than a "wrong way" rotation.
-//
-// `prev_heading_wire` and `cur_heading_wire` are the int8 bytes already
-// encoded for the wire (e.g. `static_cast<int8_t>(static_cast<uint8_t>(
-// GetHeading() / 2.0f))`).  Returns 0 when there is no previous broadcast
-// (first heartbeat for this spawn in this session).
-static int8_t ComputeTrilogyDeltaHeading(int8_t prev_heading_wire,
-                                         int8_t cur_heading_wire,
-                                         bool has_prev)
+// The shortest-path angular fold + ±127 clamp below would still be the
+// right encoding for a "turn this far over the next tick" semantic if v29c
+// ever exposed one.  It does not — kept here for documentation and future
+// spin-stun wiring.
+[[maybe_unused]] static int8_t ComputeTrilogyDeltaHeading(int8_t prev_heading_wire,
+                                                          int8_t cur_heading_wire,
+                                                          bool has_prev)
 {
 	if (!has_prev) return 0;
 	const int prev = static_cast<int>(static_cast<uint8_t>(prev_heading_wire));
@@ -7319,18 +7321,8 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(ny);
 		upd->x_pos    = static_cast<int16_t>(nx);
 		upd->z_pos    = static_cast<int16_t>(npc->GetZ() * 10.0f);
-
-		// delta_heading: hint the v29c client to ROTATE smoothly across the
-		// heartbeat interval to the new heading instead of snapping.  Source
-		// of jaggedness on pathgrid/roambox NPCs — short path segments
-		// produce small heading changes that without this look polygonal.
-		{
-			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(npc->GetID()));
-			const bool has_prev = (it_prev != s.last_broadcast.end()
-			                       && it_prev->second.sent_ms != 0);
-			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
-			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
-		}
+		// delta_heading stays 0 — see ComputeTrilogyDeltaHeading comment for
+		// the v29c spin-stun semantics (it's NOT a smoothing hint).
 
 		// delta_x/delta_y stay 0 (EQClassic NPC behaviour); position snaps to
 		// server coords each tick without client-side dead-reckoning.
@@ -7354,6 +7346,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			                    : static_cast<int8_t>(0);
 			if (cached != 0) {
 				upd->anim_type = cached;
+			} else if (npc->turning) {
+				// RotateToCommand sets SetMoving(true) + turning=true and sends
+				// MovementManager OP_ClientUpdate with animation=0 (rotation in
+				// place — no position change).  HandleClientUpdate caches 0 for
+				// these, but the heuristic below would still pick a walk byte
+				// because IsMoving()==true.  Without this gate, hailed NPCs and
+				// FaceTarget rotations play the walk cycle while spinning in
+				// place — the user-visible "rotation polluted by start walking
+				// animation" symptom.
+				upd->anim_type = 0;
 			} else {
 				const int eqemu_speed = npc->IsEngaged()
 				                            ? npc->GetRunspeed()
@@ -7400,13 +7402,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(c->GetY());
 		upd->x_pos    = static_cast<int16_t>(c->GetX());
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
-		{
-			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(c->GetID()));
-			const bool has_prev = (it_prev != s.last_broadcast.end()
-			                       && it_prev->second.sent_ms != 0);
-			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
-			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
-		}
+		// delta_heading stays 0 — v29c spin-stun semantics, not a smoothing hint.
 
 		if (c->IsMoving()) {
 			// Players self-render locally; this anim only matters for the
@@ -7461,13 +7457,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(bot->GetY());
 		upd->x_pos    = static_cast<int16_t>(bot->GetX());
 		upd->z_pos    = static_cast<int16_t>(bot->GetZ() * 10.0f);
-		{
-			auto it_prev = s.last_broadcast.find(static_cast<uint16_t>(bot->GetID()));
-			const bool has_prev = (it_prev != s.last_broadcast.end()
-			                       && it_prev->second.sent_ms != 0);
-			const int8_t prev_h = has_prev ? it_prev->second.heading : int8_t{0};
-			upd->delta_heading = ComputeTrilogyDeltaHeading(prev_h, upd->heading, has_prev);
-		}
+		// delta_heading stays 0 — v29c spin-stun semantics, not a smoothing hint.
 
 		if (bot->IsMoving()) {
 			// Prefer the MovementManager-cached anim (set by HandleClientUpdate
@@ -7480,6 +7470,9 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			                    : static_cast<int8_t>(0);
 			if (cached != 0) {
 				upd->anim_type = cached;
+			} else if (bot->turning) {
+				// Rotation in place — see NPC block above for rationale.
+				upd->anim_type = 0;
 			} else {
 				const int eqemu_speed = bot->IsEngaged()
 				                            ? bot->GetRunspeed()
