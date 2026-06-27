@@ -263,6 +263,75 @@ int64 TrilogyClient::CalcManaRegen(bool bCombat)
 }
 
 // ============================================================
+// GetEXPForLevel — EQClassic v29c race×class formula
+//
+// Mirrors EQClassic\Zone\Source\client.cpp:759-857.  The v29c eqgame.exe
+// computes the XP-bar fill internally using this same hardcoded table; the
+// server-side level threshold has to match or the bar visually fills before
+// the server-side ding fires.  Applied unconditionally so users don't need to
+// flip Character:UseOld{Class,Race}ExpPenalties (those EQEmu rules approximate
+// the same numbers but slightly diverge for Rogues).
+//
+// Formula for level <31: (level-1)^3 × class_modifier × race_modifier
+// Levels 31+ multiply by an additional level-band modifier (1.1..3.1).
+// ============================================================
+uint32 TrilogyClient::GetEXPForLevel(uint16 check_level)
+{
+	if (check_level < 2) return 0;
+
+	// hum     bar     eru     elf     hie     def     hef     dwa     tro     ogr     hal    gno     iks     vah
+	static constexpr float race_mods[14] = {
+		100.0f, 105.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 100.0f, 120.0f, 115.0f, 95.0f, 100.0f, 120.0f, 120.0f
+	};
+	// war   cle    pal    ran    shd    dru    mnk    brd    rog    shm    nec    wiz    mag    enc
+	static constexpr float class_mods[14] = {
+		9.0f, 10.0f, 14.0f, 14.0f, 14.0f, 10.0f, 12.0f, 14.0f, 9.05f, 10.0f, 11.0f, 11.0f, 11.0f, 11.0f
+	};
+
+	uint8 base_race = GetBaseRace();
+	int   race_idx;
+	switch (base_race) {
+		case IKSAR:   race_idx = 13 - 1; break; // EQClassic remap → index 12
+		case VAHSHIR: race_idx = 14 - 1; break; // index 13
+		default:      race_idx = static_cast<int>(base_race) - 1; break;
+	}
+
+	uint8 cls = GetClass();
+	int   class_idx = static_cast<int>(cls) - 1;
+
+	if (race_idx < 0 || race_idx >= 14 || class_idx < 0 || class_idx >= 14) {
+		// Invalid race/class for the v29c table (e.g. Beastlord/Berserker).
+		// Fall back to the EQEmu base formula so SetEXP doesn't get 0xFFFFFFFF
+		// and abort the entire AddEXP path.
+		return Client::GetEXPForLevel(check_level);
+	}
+
+	const uint32 lvm1 = static_cast<uint32>(check_level - 1);
+	const float  cube = static_cast<float>(lvm1 * lvm1 * lvm1);
+	const uint32 calc = static_cast<uint32>(cube * class_mods[class_idx] * race_mods[race_idx]);
+
+	if (check_level < 31) return calc;
+
+	float band =
+		(check_level < 36) ? 1.1f :
+		(check_level < 41) ? 1.2f :
+		(check_level < 46) ? 1.3f :
+		(check_level < 52) ? 1.4f :
+		(check_level < 53) ? 1.5f :
+		(check_level < 54) ? 1.6f :
+		(check_level < 55) ? 1.7f :
+		(check_level < 56) ? 1.9f :
+		(check_level < 57) ? 2.1f :
+		(check_level < 58) ? 2.3f :
+		(check_level < 59) ? 2.5f :
+		(check_level < 60) ? 2.7f :
+		(check_level < 61) ? 3.0f :
+		                     3.1f;
+
+	return static_cast<uint32>(calc * band);
+}
+
+// ============================================================
 // QueuePacket / FastQueuePacket — intercept all outgoing packets
 // ============================================================
 
@@ -1879,14 +1948,26 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 // EQEmu Chat::* 0-255 (raw color codes) map to MESSAGETYPE_Broadcasts (269).
 // ============================================================
 
-// Map EQEmu Chat::* type to EQClassic MESSAGETYPE_* (from MessageTypes.h).
-// EQEmu Chat::* values ≥ 256 are identical to EQClassic MESSAGETYPE_* values
-// (Say=256, Tell=257, YouHitOther=265, Broadcasts=269, etc.) — pass through directly.
-// Values 0-255 are raw color codes with no EQClassic MESSAGETYPE equivalent;
-// map those to MESSAGETYPE_Broadcasts (269) so text stays visible.
+// Map EQEmu Chat::* type to a v29c OP_SpecialMesg msg_type value.
+// v29c interprets msg_type both as a raw color (0-20) AND as a real EQClassic
+// MESSAGETYPE_* (256+).  EQEmu Chat::* values fall into three buckets:
+//   - 0-20:    raw color codes (Chat::Yellow=15, Chat::Red=13).  Pass through;
+//              v29c renders these as that color directly.
+//   - 256+:    EQClassic MESSAGETYPE_* (Say/Tell/Skills/...).  Pass through;
+//              v29c knows MT_Say..MT_Disciplines (256-271).  Modern EQEmu types
+//              beyond that range (Chat::Experience=334, Chat::SpellFailure=289)
+//              with no v29c equivalent are remapped to the matching raw color
+//              via the switch.
+//   - 21-255: undefined.  Default to MT_Broadcasts (269) so text stays visible.
 static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
 {
-	return (chat_type >= 256) ? chat_type : 269u; // 269 = MESSAGETYPE_Broadcasts
+	switch (chat_type) {
+		case 334: return 15; // Chat::Experience  → YELLOW (matches EQClassic Message(15,...))
+		case 289: return 13; // Chat::SpellFailure → RED
+	}
+	if (chat_type <= 20u)   return chat_type; // raw v29c color
+	if (chat_type >= 256u)  return chat_type; // assume EQClassic MT_* compatible
+	return 269u; // MESSAGETYPE_Broadcasts — visible white fallback
 }
 
 // Resolve a handful of common system string-ids (faction / experience / level) to
@@ -2174,21 +2255,11 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		out_text += '\0';
 
 		// Honor the modern Chat::* channel the server picked (fm->type) instead
-		// of hardcoding white for every templated message.  Modern Chat:: color
-		// constants (0-20) line up numerically with the v29c SpecialMesg color
-		// palette closely enough for the common cases that matter for skill
-		// feedback — notably Chat::LightBlue(4) → v29c DARK_BLUE(4), which is
-		// what NOT_SCARING and several other Mob::InstillDoubt/skill paths use.
-		// Chat::SpellFailure (289) is used for resist messages — map to RED (13)
-		// to match EQClassic's resist message colour.
-		// Values outside the small color range fall back to 10/white.
-		uint32_t out_color;
-		if (fm->type == 289)       // Chat::SpellFailure → RED
-			out_color = 13;
-		else if (fm->type <= 20u)
-			out_color = fm->type;
-		else
-			out_color = 10;
+		// of hardcoding white.  ChatTypeToTrilogyMsgType handles the special
+		// modern-only types we care about (Chat::Experience → YELLOW,
+		// Chat::SpellFailure → RED), passes raw colors 0-20 through, and falls
+		// back to broadcasts for the rest.
+		uint32_t out_color = ChatTypeToTrilogyMsgType(fm->type);
 
 		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
 		auto* out = new uint8_t[out_size]();
@@ -2288,13 +2359,7 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	std::string text = tmpl;
 	text += '\0';
 
-	uint32_t out_color;
-	if (sm->color == 289)       // Chat::SpellFailure → RED
-		out_color = 13;
-	else if (sm->color <= 20u)
-		out_color = sm->color;
-	else
-		out_color = 10;
+	uint32_t out_color = ChatTypeToTrilogyMsgType(sm->color);
 
 	uint32_t out_size = 4 + static_cast<uint32_t>(text.size());
 	auto* out = new uint8_t[out_size]();
@@ -2967,22 +3032,23 @@ void TrilogyClient::HandleOutgoingConsider(const EQApplicationPacket* app)
 //
 // EQEmu ExpUpdate_Struct: { uint32 exp, uint32 aaxp } = 8 bytes.
 // Trilogy ExpUpdate_Struct: { uint32 exp } = 4 bytes.
-// EQEmu exp is raw cumulative (e.g. 100 000 at level 5); Trilogy expects 0-330
-// progress within the current level.  Same formula as SendPlayerProfile uses.
+//
+// The v29c client expects RAW cumulative experience here and computes the
+// XP-bar fill internally using its own GetEXPForLevel formula — matches
+// EQClassic\Zone\Source\client.cpp:656 (`eu->exp = set_exp`).  EQEmu pre-
+// computes a 0-330 ratio in `emu->exp` (exp.cpp:874), but that's wrong for
+// v29c: at level 2+ the small value underflows when the client subtracts the
+// level's base exp, and the bar clips to either 0 or 100% (never the right
+// percentage).  Use the cumulative value from m_pp.exp, which Client::SetEXP
+// sets BEFORE dispatching this packet.
 // ============================================================
 
 void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::ExpUpdate_Struct)) return;
-	const auto* emu = reinterpret_cast<const ::ExpUpdate_Struct*>(app->pBuffer);
 
 	Trilogy::structs::ExpUpdate_Struct out{};
-	uint32 base_exp = GetEXPForLevel(GetLevel());
-	uint32 next_exp = GetEXPForLevel(static_cast<uint16>(GetLevel() + 1));
-	uint32 in_lv    = (emu->exp > base_exp) ? (emu->exp - base_exp) : 0;
-	uint32 for_lv   = (next_exp > base_exp) ? (next_exp - base_exp) : 1u;
-	float  frac     = std::min(1.0f, static_cast<float>(in_lv) / static_cast<float>(for_lv));
-	out.exp = static_cast<uint32>(330.0f * frac);
+	out.exp = GetEXP();
 
 	m_tzs->SendToSession(m_session_key, 0x9921,
 	                     reinterpret_cast<const uint8_t*>(&out),
@@ -2994,6 +3060,17 @@ void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
 //
 // EQEmu LevelUpdate_Struct: { uint32 level, level_old, exp } = 12 bytes.
 // Trilogy LevelUpdate_Struct: { int8 level, can_delevel } = 2 bytes.
+//
+// can_delevel is misleadingly named — per the EQClassic LS struct doc, "if
+// not equal to zero, the client allows the character to de-level.  If it is
+// equal to zero, the client does NOT change the level of the played char."
+// So 0 means "ignore this packet's level change entirely", and 1 means
+// "apply the new level (including down-leveling)".  Always send 1, matching
+// EQClassic\Zone\Source\client.cpp:721 (SendLevelUpdate sets it unconditionally).
+// Earlier we set it to 0 on level-ups, which made v29c IGNORE the new level —
+// the client kept its stale level, the XP-bar denominator stayed at the old
+// level's exp range, and as soon as cumulative exp passed that range the bar
+// clipped to 100% and refused to move on subsequent ExpUpdate packets.
 // ============================================================
 
 void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
@@ -3003,7 +3080,7 @@ void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
 
 	Trilogy::structs::LevelUpdate_Struct out{};
 	out.level       = static_cast<int8_t>(emu->level);
-	out.can_delevel = (emu->level < emu->level_old) ? static_cast<int8_t>(1) : static_cast<int8_t>(0);
+	out.can_delevel = 1;
 
 	m_tzs->SendToSession(m_session_key, 0x9821,
 	                     reinterpret_cast<const uint8_t*>(&out),

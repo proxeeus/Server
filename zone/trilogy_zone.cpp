@@ -3667,41 +3667,14 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.race            = static_cast<int16_t>(Strings::ToInt(row[4]));
 		pp.class_          = static_cast<int8_t>(Strings::ToInt(row[5]));
 		pp.level           = static_cast<int8_t>(Strings::ToInt(row[6]));
-		{
-			// EQEmu stores cumulative exp; Trilogy PP.exp is a 0-330 progress value within
-			// the current level.  Raw EQEmu exp (e.g. 100 000 for a low-level char) makes
-			// the bar appear full.  Compute the fraction using EQEmu's own level-exp formula
-			// and clamp to [0, 330].
-			auto eqemu_exp_for_level = [](uint8_t lv) -> uint32_t {
-				if (lv <= 1) return 0;
-				uint32_t lm1 = static_cast<uint32_t>(lv - 1);
-				float base = static_cast<float>(lm1 * lm1 * lm1);
-				float mod =
-					(lv >= 61) ? 3.1f :
-					(lv >= 60) ? 3.0f :
-					(lv >= 59) ? 2.7f :
-					(lv >= 58) ? 2.5f :
-					(lv >= 57) ? 2.3f :
-					(lv >= 56) ? 2.1f :
-					(lv >= 55) ? 1.9f :
-					(lv >= 54) ? 1.7f :
-					(lv >= 53) ? 1.6f :
-					(lv >= 52) ? 1.5f :
-					(lv >= 46) ? 1.4f :
-					(lv >= 41) ? 1.3f :
-					(lv >= 36) ? 1.2f :
-					(lv >= 31) ? 1.1f : 1.0f;
-				return static_cast<uint32_t>(base * mod * 1000.0f);
-			};
-			uint32_t raw_exp  = static_cast<uint32_t>(Strings::ToInt(row[7]));
-			uint8_t  lv       = static_cast<uint8_t>(pp.level);
-			uint32_t base_exp = eqemu_exp_for_level(lv);
-			uint32_t next_exp = eqemu_exp_for_level(static_cast<uint8_t>(lv + 1));
-			uint32_t in_lv    = (raw_exp > base_exp) ? (raw_exp - base_exp) : 0;
-			uint32_t for_lv   = (next_exp > base_exp) ? (next_exp - base_exp) : 1;
-			float    frac     = std::min(1.0f, static_cast<float>(in_lv) / static_cast<float>(for_lv));
-			pp.exp = static_cast<int32_t>(330.0f * frac);
-		}
+		// v29c PP.exp is the RAW cumulative experience value (the client computes the
+		// XP-bar fill internally from level + exp using its own GetEXPForLevel formula).
+		// Matches EQClassic\Zone\Source\client.cpp:590 (`pp.exp = target_exp`) and
+		// `EQClassic\Common\Include\PlayerProfile.h:61 (\"Current Experience\")`.
+		// The earlier 0-330-normalized write caused \"bar full at login\" at any level
+		// > 1: a small normalized value (e.g. 165) became `(165 - base_for_level)`,
+		// which underflows as unsigned → huge value → bar clips to 100%.
+		pp.exp             = static_cast<int32_t>(Strings::ToInt(row[7]));
 		pp.mana            = static_cast<int16_t>(Strings::ToInt(row[8]));
 		pp.face            = static_cast<int8_t>(Strings::ToInt(row[9]));
 		pp.cur_hp          = static_cast<int16_t>(Strings::ToInt(row[10]));

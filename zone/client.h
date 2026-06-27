@@ -1812,7 +1812,11 @@ public:
 	PlayerEvent::PlayerEvent GetPlayerEvent();
 	void RecordKilledNPCEvent(NPC *n);
 
-	uint32 GetEXPForLevel(uint16 check_level);
+	// Virtual so TrilogyClient can override with the EQClassic v29c race×class
+	// formula (the v29c eqgame.exe computes the XP bar fill internally with its
+	// own table; if the server's threshold disagrees with the client's, the bar
+	// reaches full a kill or two before the server-side ding fires).
+	virtual uint32 GetEXPForLevel(uint16 check_level);
 protected:
 	friend class Mob;
 	void CalcEdibleBonuses(StatBonuses* newbon);

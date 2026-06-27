@@ -145,6 +145,16 @@ public:
 	//   sitting + at/above 50% mana → +(Level + 6)
 	int64 CalcManaRegen(bool bCombat = false) override;
 
+	// XP-for-level (override) — use the exact EQClassic v29c race×class formula
+	// from EQClassic\Zone\Source\client.cpp:771-857.  The v29c eqgame.exe computes
+	// the XP-bar fill internally using this same hardcoded table, so the
+	// server-side threshold MUST match or the bar visually fills before the
+	// server-side ding fires (Human Warrior level 2 = 900 in v29c, but EQEmu's
+	// default formula yields 1000 — that 100-exp window is what made the user
+	// report "bar full, no ding").  This override is unconditional so users
+	// don't need to flip Character:UseOld{Class,Race}ExpPenalties for Trilogy.
+	uint32 GetEXPForLevel(uint16 check_level) override;
+
 	// Override both queue paths to intercept all outgoing packets.
 	void QueuePacket(const EQApplicationPacket* app,
 	                 bool               ack_req       = true,
