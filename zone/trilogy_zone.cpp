@@ -7604,19 +7604,25 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
-		// EXPERIMENT 2026-06-27 (option 2 / delta-extrapolation test):
-		// Hand moving NPCs off entirely to the event-driven path
-		// (TrilogyClient::HandleClientUpdate, which writes the MovementManager-
-		// authoritative delta_x/y/z into the wire bitfield).  The heartbeat
-		// here forces delta=0 (kVelocityWireScale=0), and at the current
-		// 2000ms cadence the two paths alternate-overwrite the client's
-		// extrapolation state — every other update tells the client "no
-		// motion hint" which collapses extrapolation back onto anim_type.
-		// Skipping moving NPCs entirely lets HandleClientUpdate own the
-		// consistent delta-bearing broadcast stream; the staleness refresh
-		// stays in the stationary branch below since stationary mobs never
-		// trip the event-driven path.
-		if (npc->IsMoving()) {
+		// 2026-06-27: hand TRANSLATING NPCs off entirely to the event-driven
+		// path (TrilogyClient::HandleClientUpdate, which writes the
+		// MovementManager-authoritative delta_x/y/z into the wire bitfield).
+		// The heartbeat here forces delta=0, and at 2 Hz cadence the two
+		// paths alternate-overwrite the client's extrapolation state.
+		//
+		// EXCEPTION: turning mobs MUST stay in heartbeat.  Rotation in
+		// EQEmu's MobMovementManager (RotateToCommand at
+		// mob_movement_manager.cpp:67) calls SetMoving(true) so the mob
+		// is technically "moving" — but the event-driven path only fires
+		// TWO OP_ClientUpdates for an entire rotation (one at start, one
+		// at completion), leaving the client with nothing to render
+		// mid-rotation.  Pre-2026-06-27 heartbeat used `nearby_turning`
+		// cache to drop throttle to 10ms during rotation so the client
+		// got smooth per-tick heading updates; that bypass still exists
+		// below and is the right path for turning mobs.  Without this
+		// `!turning` carve-out, /hail-driven FaceTarget rotations show as
+		// "NPC waits then snaps to face player" — visible regression.
+		if (npc->IsMoving() && !npc->turning) {
 			continue;
 		}
 
