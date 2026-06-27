@@ -1454,10 +1454,19 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	// path; SendMobHeartbeat's polled fallback keeps delta=0 for
 	// stationary mobs (which is correct — no extrapolation hint needed
 	// when there's no motion).
+	// EXPERIMENT 2026-06-27: 2× delta magnitude to test whether v29c
+	// expects a different fixed-point scale than Titanium's FloatToEQ13
+	// (×64).  If v29c internally divides incoming delta by, say, 128
+	// instead of 64, our raw FloatToEQ13 values would render as half
+	// the actual velocity — client extrapolates at half server speed
+	// and we observe a forward snap every broadcast.  Doubling here
+	// tests that hypothesis.  PackDelta10 clamps to ±511, so typical
+	// walk/run values (45/90 baseline → 90/180 doubled) stay in range;
+	// only severe knockback/fall would clamp.
 	TrilogyZoneServer::EncodeTrilogyDelta(&upd,
-	                                      static_cast<int32_t>(p->delta_x),
-	                                      static_cast<int32_t>(p->delta_y),
-	                                      static_cast<int32_t>(p->delta_z));
+	                                      static_cast<int32_t>(p->delta_x) * 2,
+	                                      static_cast<int32_t>(p->delta_y) * 2,
+	                                      static_cast<int32_t>(p->delta_z) * 2);
 
 	m_pending_mob_updates.push_back(upd);
 }

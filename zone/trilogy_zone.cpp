@@ -465,22 +465,20 @@ int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 
 	const float speed_f = static_cast<float>(abs_anim) / 40.0f;
 	int byte;
-	// 2026-06-27: reverted from doubled multiplier (14×) back to 7×.
-	// Doubling matched the v29c client's extrapolation rate to EQEmu's
-	// server motion (forward snap disappeared) but pushed the byte into
-	// v29c's run-animation band, so walking patrols visibly jogged.  The
-	// byte encodes BOTH the animation cycle AND the extrapolation rate
-	// in one knob; EQEmu's NPC speeds are scaled higher than EQClassic's
-	// (where walkspeed*4 lands in walk-anim range because their float
-	// walkspeed values are ~0.5-1.0), so we can't satisfy both at once
-	// at these speeds.  Living with the small forward snap to keep walk
-	// animation correct.
+	// 2026-06-27: 10× multiplier, paired with the 3× spawn walkspeed bump
+	// in the NPC spawn path.  Binary-searched between 7× (forward snap,
+	// client extrapolated too slowly) and 14× (backward snap, client
+	// extrapolated too fast).  Typical walking NPC (speed_int=14) now
+	// encodes to byte=3 instead of byte=2 or byte=4 — the sweet spot
+	// where client render rate matches EQEmu server motion rate.
+	// Walk upper clamp stays at 10 to give SoW'd / speed-buffed walkers
+	// room within the walk cycle (spawn walkspeed × 4 = 5.4 threshold).
 	if (is_walk) {
-		byte = static_cast<int>(speed_f * 7.0f);
-		if (byte < 2) byte = 2;
-		if (byte > 5) byte = 5;
+		byte = static_cast<int>(speed_f * 10.0f);
+		if (byte < 2)  byte = 2;
+		if (byte > 10) byte = 10;
 	} else {
-		byte = static_cast<int>(speed_f * 7.0f);
+		byte = static_cast<int>(speed_f * 10.0f);
 		if (byte < 1)   byte = 1;
 		if (byte > 127) byte = 127;
 	}
@@ -6209,8 +6207,29 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 
 		sp.size      = npc->GetSize();
 		if (sp.size <= 0.0f) sp.size = 6.0f;
-		sp.walkspeed = ToTrilogySpeed(npc->GetBaseWalkspeed());
-		sp.runspeed  = ToTrilogySpeed(npc->GetBaseRunspeed());
+		// EXPERIMENT 2026-06-27: 3× bump on NPC spawn-time walk/run, paired
+		// with the matching 2× anim multiplier bump in EncodeTrilogyAnim.
+		// Rationale (EQClassic comparison):
+		//   - EQClassic derives server motion FROM the anim byte:
+		//       animation = walkspeed × 4   (walking)
+		//       animation = runspeed  × 7   (running)
+		//       NWUPS     = animation × 2.3/5
+		//     so server speed and client-render speed match by construction.
+		//   - EQEmu does the opposite: server moves at calibrated rates
+		//     (10 u/s walk, 29 u/s run) and we tried to encode that into a
+		//     byte v29c interprets at ~5 u/s — server outran client render,
+		//     producing the steady-state forward snap.
+		//   - v29c also uses spawn-time walkspeed/runspeed as the
+		//     walk-vs-run animation cycle THRESHOLD (approximately
+		//     anim_byte > walkspeed × 4 ⇒ run cycle).  Bumping spawn
+		//     walkspeed raises that threshold so the higher anim bytes
+		//     we now send stay in walk cycle for walking NPCs.
+		// 3× is the EQClassic-equivalent calibration scaled for EQEmu's
+		// faster server speeds.  Mob's server-side walkspeed/runspeed are
+		// untouched (gameplay/Titanium unaffected); only the v29c wire
+		// representation changes.
+		sp.walkspeed = ToTrilogySpeed(npc->GetBaseWalkspeed()) * 3.0f;
+		sp.runspeed  = ToTrilogySpeed(npc->GetBaseRunspeed())  * 3.0f;
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());

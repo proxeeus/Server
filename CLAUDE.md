@@ -202,3 +202,4 @@ case scenario, investigate and propose workarounds. NEVER EVER assume we "reache
 - Flag uncertainty explicitly. If you're unsure about something, see point 1 above. If it makes sense to do so, conduct a small, localised and low-risk experiment and bring the hypothesis and results to me to discuss. Confidence without certainty causes more damage than admitting a gap.
 - I'm always open to ideas on better ways to do things. Please don't hesitate to suggest a better way, or one that has long lasting impact over a tactical change. (as a few examples)
 - Stop asking for EQClassic packet captures. There are none.
+- NEVER EVER suggest "accepting the lesser of two evils" / abandon for the user.
