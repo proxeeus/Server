@@ -299,6 +299,82 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 	return static_cast<float>(eqemu_speed) / 40.0f;
 }
 
+// ============================================================
+// SpawnPositionUpdate delta_x / delta_y / delta_z 10-bit bitfield
+// helpers.  The wire layout (trilogy_structs.h:573-577) is:
+//   /*011*/  int32 delta_y:10, spacer1:1, delta_z:10, spacer2:1, delta_x:10;
+// The struct comment explicitly warns against relying on the compiler's
+// bitfield packing — different compilers / packing pragmas can produce
+// different byte orders.  Use these explicit shifts so the wire format is
+// stable across MSVC / GCC / Clang.
+//
+// Layout (LSB-first, little-endian 32-bit word at offset 11):
+//   bits  0-9   : delta_y  (signed 10-bit, range -512..511)
+//   bit  10     : spacer1
+//   bits 11-20  : delta_z
+//   bit  21     : spacer2
+//   bits 22-31  : delta_x
+static inline uint32_t PackDelta10(int32_t v)
+{
+	if (v >  511) v =  511;
+	if (v < -512) v = -512;
+	return static_cast<uint32_t>(v) & 0x3FF;
+}
+static inline int32_t UnpackDelta10(uint32_t raw)
+{
+	raw &= 0x3FF;
+	// Sign-extend 10-bit to 32-bit: bit 9 is the sign bit.
+	return (raw & 0x200) ? static_cast<int32_t>(raw | 0xFFFFFC00u)
+	                     : static_cast<int32_t>(raw);
+}
+static inline void WriteDeltaBitfield(Trilogy::structs::SpawnPositionUpdate_Struct* upd,
+                                      int32_t dx, int32_t dy, int32_t dz)
+{
+	const uint32_t bits =  PackDelta10(dy)
+	                    | (PackDelta10(dz) << 11)
+	                    | (PackDelta10(dx) << 22);
+	uint8_t* p = reinterpret_cast<uint8_t*>(upd);
+	std::memcpy(p + 11, &bits, 4);
+}
+static inline void ReadDeltaBitfield(const Trilogy::structs::SpawnPositionUpdate_Struct* upd,
+                                     int32_t& dx, int32_t& dy, int32_t& dz)
+{
+	uint32_t bits;
+	const uint8_t* p = reinterpret_cast<const uint8_t*>(upd);
+	std::memcpy(&bits, p + 11, 4);
+	dy = UnpackDelta10(bits);
+	dz = UnpackDelta10(bits >> 11);
+	dx = UnpackDelta10(bits >> 22);
+}
+
+// Server-side velocity (EQ-units/sec) → 10-bit wire delta value.
+//
+// FORCED TO 0 (2026-06-27): matches EQClassic's effective wire-out behavior.
+// Reread EQClassic mob.cpp:581-583 after empirical failures at scale=10 and
+// scale=1.  Their outbound encoder does `spu->delta_y = stored / 125` where
+// `stored` is:
+//   - For NPCs: 0 (never written by their server code).
+//   - For PCs observed by others: cu->delta_y (the small wire value the v29c
+//     client itself sent inbound, typically 5-25), divided by 125 → also 0.
+// So the v29c client receives delta = 0 for ALL entities from EQClassic's
+// server.  delta_x/y/z is an INBOUND-only field in practice — the client
+// uses it locally to compute its own player motion, but receivers do NOT
+// trust it for inter-entity extrapolation.
+//
+// Both empirical iterations (scale=10 and scale=1) reproduced the same
+// "strafing as if destination is evolving" symptom — varying-direction
+// delta each heartbeat made the client extrapolate erratically in
+// directions that didn't match the path.  Magnitude shrank between
+// iterations but the directional confusion persisted, confirming the
+// problem is the *fact* of non-zero delta rather than its size.
+//
+// Keep at 0 unless we positively identify a v29c client behavior that
+// requires non-zero delta_x/y from the server side.  Residual position-snap
+// jagginess from the 4 Hz heartbeat cadence is a separate problem to solve
+// via higher heartbeat rate or event-driven updates.
+static constexpr float    kVelocityWireScale = 0.0f;
+static constexpr uint64_t kDeltaDebugMs      = 1000;   // 1 sec per log line
+
 // IMPORTANT: SpawnPositionUpdate_Struct::delta_heading is NOT an
 // interpolation hint between sent heading values — it is the SPIN-STUN
 // rotation-per-tick rate.  EQClassic's mob.cpp:570-574 sets it to 100 only
@@ -347,7 +423,16 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 //
 // The v29c client treats anim_type as an unsigned-ish "velocity" — magnitude
 // drives leg-cycle playback rate and there's a threshold (≈6) above which the
-// client switches from the walk animation to the run animation.
+// client switches from the walk animation to the run animation.  The client's
+// extrapolation rate per unit anim is much larger than the EQClassic
+// server-side formula `npc_walking_units_per_second = anim * 2.3/5` suggests
+// (that's the SERVER's rate, not the client's interpretation).  Empirically
+// confirmed 2026-06-27 by an "option 2" experiment that scaled anim up to
+// match EQEmu's faster server motion: NPCs zoomed across zones at apparent
+// hundreds of units/sec, proving the client applies a much higher
+// per-anim-unit multiplier than naive math suggests.  Stick to EQClassic's
+// small byte values even though they mean the client's extrapolation
+// undershoots EQEmu's actual server motion (residual jagged trajectory).
 //
 // We deviate from EQClassic's literal multiplier-of-4 for the walk case
 // because EQEmu's NPC walkspeed scale is significantly slower than EQClassic's:
@@ -4171,6 +4256,31 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	float z       = static_cast<float>(upd.z_pos) / 10.0f;
 	float heading = static_cast<float>(static_cast<uint8_t>(upd.heading)) * 2.0f;
 
+	// Diagnostic: decode the v29c CLIENT's outgoing delta_x/y/z bitfield —
+	// this is our calibration anchor for kVelocityWireScale.  The v29c
+	// client computes these deltas from its own local player motion, so
+	// the values it sends while the player is running represent "what the
+	// client itself considers a sensible delta for that velocity."  Match
+	// our outbound encoding to this scale and NPC trajectory extrapolation
+	// will look right to the client.  Rate-limited per session.
+	{
+		uint64_t now_dbg = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+		if (upd.anim_type != 0 && now_dbg - s.last_delta_dbg_in_ms >= kDeltaDebugMs) {
+			s.last_delta_dbg_in_ms = now_dbg;
+			int32_t dx, dy, dz;
+			ReadDeltaBitfield(&upd, dx, dy, dz);
+			LogInfo("[Trilogy/delta IN] char=[{}] anim={} heading={} dx={} dy={} dz={} "
+			        "|v|={:.2f}",
+			        s.char_name,
+			        static_cast<int>(upd.anim_type),
+			        static_cast<int>(static_cast<uint8_t>(upd.heading)),
+			        dx, dy, dz,
+			        std::sqrt(static_cast<float>(dx * dx + dy * dy)));
+		}
+	}
+
 	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
 
 	// Update entity_list position so NPC aggro, proximity, and Titanium broadcasts work.
@@ -7179,6 +7289,62 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		if (s.nearby_combat) throttle_ms = 200;
 	}
 
+	// Rotation-smoothing throttle: with delta_heading=0 (spin-stun field),
+	// the v29c client SNAPS heading on each received update.  EQClassic's
+	// equivalent NPC code (npc.cpp:1276) fires a position update every
+	// time heading changes by >20 wire units, producing ~12-20 Hz update
+	// rate during a rotation.  At our default 4 Hz heartbeat, a typical
+	// walking FaceTarget (~220 ms / 90°) yields only 1 heading snap mid-
+	// rotation, which renders as "jagged / missed frames".
+	//
+	// When any visible NPC/Bot is mid-rotation (turning flag set by
+	// RotateToCommand at mob_movement_manager.cpp:67), drop the global
+	// throttle to kTurningThrottleMs so the rotation gets multiple heading
+	// snaps across its duration.  Auto-reverts to 250 ms once the turning
+	// mob completes (RotateToCommand sets turning=false at
+	// mob_movement_manager.cpp:88) and the scan cache (kTurningScanCacheMs)
+	// re-validates with no turning mobs found.
+	//
+	// Tuning: a walking FaceTarget covers 90° in ~220 ms. At 20 ms throttle
+	// that's ~11 updates → ~8° per snap, well below the eye's motion-
+	// fusion threshold for rotational motion. Effectively the server's
+	// Tick rate (main.cpp's Sleep(1) loop with EQ overhead lands around
+	// 50 Hz wall-clock) so we can't go faster without re-architecting
+	// the heartbeat to skip the loop iteration.  Cost grows linearly
+	// with rate, but the bypass only fires while turning=true on at
+	// least one in-range mob — i.e. only during the brief rotation
+	// window itself, so steady-state bandwidth is unaffected.
+	static constexpr uint32_t kTurningThrottleMs    = 10;
+	static constexpr uint64_t kTurningScanCacheMs   = 100;  // scan cost minor; refresh faster than the throttle so turning-end detection is snappy
+	if (s.trilogy_client && now_ms - s.last_turning_scan_ms >= kTurningScanCacheMs) {
+		s.last_turning_scan_ms = now_ms;
+		s.nearby_turning       = false;
+		constexpr float TURN_RADIUS_SQ = 600.0f * 600.0f; // match CULL_RADIUS
+		for (const auto& kv : entity_list.GetNPCList()) {
+			NPC* npc = kv.second;
+			if (!npc || !npc->turning) continue;
+			float dx = npc->GetX() - s.pos_x;
+			float dy = npc->GetY() - s.pos_y;
+			if (dx * dx + dy * dy <= TURN_RADIUS_SQ) {
+				s.nearby_turning = true;
+				break;
+			}
+		}
+		if (!s.nearby_turning) {
+			for (Bot* bot : entity_list.GetBotList()) {
+				if (!bot || !bot->turning) continue;
+				float dx = bot->GetX() - s.pos_x;
+				float dy = bot->GetY() - s.pos_y;
+				if (dx * dx + dy * dy <= TURN_RADIUS_SQ) {
+					s.nearby_turning = true;
+					break;
+				}
+			}
+		}
+	}
+	if (s.nearby_turning && throttle_ms > kTurningThrottleMs)
+		throttle_ms = kTurningThrottleMs;
+
 	if (now_ms - s.last_heartbeat_ms < throttle_ms) return;
 	s.last_heartbeat_ms = now_ms;
 
@@ -7253,19 +7419,22 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	//
 	// Caller is expected to have already built `upd` (spawn_id + the encoded
 	// int16/int8 wire fields), and to pass `dist_sq` (squared distance from
-	// player) so the outer-ring throttle can fire.  Returns true → include
-	// in batch and bump n; false → drop this slot, do not increment n (slot
-	// gets overwritten next).
+	// player) so the outer-ring throttle can fire.  Pass `priority=true` to
+	// bypass the outer-ring 500 ms rate cap (used for actively-rotating
+	// mobs so the user gets smooth rotation on /hail at any visible range).
+	// Returns true → include in batch and bump n; false → drop this slot,
+	// do not increment n (slot gets overwritten next).
 	static constexpr uint64_t STALENESS_REFRESH_MS = 5000;
 	auto should_broadcast = [&](Trilogy::structs::SpawnPositionUpdate_Struct* upd,
-	                            float dist_sq) -> bool {
+	                            float dist_sq,
+	                            bool  priority = false) -> bool {
 		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
 
 		// Outer ring (300-600 u): enforce 500 ms minimum interval regardless
 		// of motion.  Skipping this is the biggest single bandwidth lever —
 		// most NPCs in a 600-unit visible field sit in the outer annulus
 		// because it has 3× the area of the inner circle.
-		if (dist_sq > INNER_RING_RADIUS_SQ) {
+		if (!priority && dist_sq > INNER_RING_RADIUS_SQ) {
 			if (now_ms - last.sent_ms < OUTER_RING_MIN_INTERVAL_MS)
 				return false;
 		}
@@ -7344,8 +7513,14 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			                    ? s.trilogy_client->GetRecentMovementAnim(
 			                          static_cast<uint16_t>(npc->GetID()), now_ms)
 			                    : static_cast<int8_t>(0);
+			int eqemu_speed_for_delta = 0;
 			if (cached != 0) {
 				upd->anim_type = cached;
+				// Heuristic-derived speed for the velocity delta (cached anim
+				// byte is wire-encoded and not directly reversible to int).
+				eqemu_speed_for_delta = npc->IsEngaged()
+				                            ? npc->GetRunspeed()
+				                            : npc->GetWalkspeed();
 			} else if (npc->turning) {
 				// RotateToCommand sets SetMoving(true) + turning=true and sends
 				// MovementManager OP_ClientUpdate with animation=0 (rotation in
@@ -7356,15 +7531,64 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				// place — the user-visible "rotation polluted by start walking
 				// animation" symptom.
 				upd->anim_type = 0;
+				// turning-in-place → no position translation, so delta stays 0.
 			} else {
 				const int eqemu_speed = npc->IsEngaged()
 				                            ? npc->GetRunspeed()
 				                            : npc->GetWalkspeed();
-				upd->anim_type = EncodeTrilogyAnim(npc, eqemu_speed);
+				upd->anim_type        = EncodeTrilogyAnim(npc, eqemu_speed);
+				eqemu_speed_for_delta = eqemu_speed;
+			}
+
+			// Velocity delta (option 3): give the v29c client a wire vector
+			// to extrapolate position along between heartbeat snaps.  Without
+			// this, the client only had heading + anim_type for between-update
+			// motion, and anim_type-driven extrapolation undershoots EQEmu's
+			// faster server speed → trajectory snap-forward each heartbeat.
+			//
+			// Derivation:
+			//   eq_per_sec  = current_speed × 0.58   (mob_movement_manager.cpp:208)
+			//   heading_rad = (GetHeading() / 512) × 2π   (EQEmu 0=N, 128=E, 256=S, 384=W)
+			//   v_x         = sin(heading_rad) × eq_per_sec
+			//   v_y         = cos(heading_rad) × eq_per_sec
+			//   wire_dx     = v_x × kVelocityWireScale  (clamped to ±511)
+			//
+			// Calibration: compare the inbound delta log (what the v29c
+			// player CLIENT sends for its own running motion) against the
+			// outbound delta log (what we send for the closest moving NPC
+			// here).  Adjust kVelocityWireScale until they line up in
+			// magnitude for matched speeds.
+			if (eqemu_speed_for_delta > 0) {
+				const float heading_rad = (npc->GetHeading() / 512.0f)
+				                          * 2.0f * 3.14159265f;
+				const float eq_per_sec  = eqemu_speed_for_delta * 0.58f;
+				const float vx          = std::sin(heading_rad) * eq_per_sec;
+				const float vy          = std::cos(heading_rad) * eq_per_sec;
+				const int32_t dx_wire   = static_cast<int32_t>(vx * kVelocityWireScale);
+				const int32_t dy_wire   = static_cast<int32_t>(vy * kVelocityWireScale);
+				WriteDeltaBitfield(upd, dx_wire, dy_wire, /*dz_wire=*/0);
+
+				// Diagnostic: log the closest moving NPC at most once per
+				// kDeltaDebugMs so we can read the values without flooding.
+				if (now_ms - s.last_delta_dbg_out_ms >= kDeltaDebugMs &&
+				    dist_sq < 400.0f * 400.0f) {
+					s.last_delta_dbg_out_ms = now_ms;
+					LogInfo("[Trilogy/delta OUT] npc=[{}] speed_int={} eq/s={:.1f} "
+					        "heading={} anim={} dx={} dy={} scale={}",
+					        npc->GetCleanName(),
+					        eqemu_speed_for_delta,
+					        eq_per_sec,
+					        static_cast<int>(static_cast<uint8_t>(upd->heading)),
+					        static_cast<int>(upd->anim_type),
+					        dx_wire, dy_wire,
+					        kVelocityWireScale);
+				}
 			}
 		}
 
-		if (!should_broadcast(upd, dist_sq)) continue;
+		// Turning NPCs bypass the outer-ring 500ms throttle so the user
+		// gets smooth /hail rotation on a guard at 350u just as on one at 50u.
+		if (!should_broadcast(upd, dist_sq, /*priority=*/npc->turning)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
@@ -7481,7 +7705,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			}
 		}
 
-		if (!should_broadcast(upd, dist_sq)) continue;
+		if (!should_broadcast(upd, dist_sq, /*priority=*/bot->turning)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}

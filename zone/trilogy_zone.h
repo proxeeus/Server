@@ -175,6 +175,22 @@ private:
 		uint64_t    last_combat_scan_ms  = 0;
 		bool        nearby_combat        = false;
 
+		// Nearby-turning cache — same shape as nearby_combat but tracks any
+		// mob with Mob::turning==true (RotateToCommand mid-rotation).  When
+		// set, the global heartbeat throttle drops from 200-250 ms to 80 ms
+		// so a /hail-driven FaceTarget gets 3-4 heading snaps mid-rotation
+		// instead of 1, masking the v29c client's heading-snap behaviour
+		// (delta_heading=0 means no client-side rotational interpolation).
+		uint64_t    last_turning_scan_ms = 0;
+		bool        nearby_turning       = false;
+
+		// Rate-limit timestamps for the velocity-delta calibration logs.
+		// Fired at 1 Hz per session — one line for incoming player F320
+		// (reference scale) and one for outbound NPC A120 (current setting).
+		// Compare the two and tune kVelocityWireScale in trilogy_zone.cpp.
+		uint64_t    last_delta_dbg_in_ms  = 0;
+		uint64_t    last_delta_dbg_out_ms = 0;
+
 		// Per-entity dirty-flag cache for SendMobHeartbeat.  EQClassic only
 		// broadcasts mobs whose state actually changed since the previous tick
 		// (see EntityList::SendPositionUpdates: the
