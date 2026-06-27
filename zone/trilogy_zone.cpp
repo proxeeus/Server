@@ -5959,10 +5959,17 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.spawn_id  = static_cast<int16_t>(npc->GetID());
 		sp.body_type = static_cast<int16_t>(npc->GetBodyType());
 		sp.cur_hp    = 100;
-		sp.GuildID   = static_cast<uint16_t>(0xFFFF);
 		sp.race      = static_cast<int8_t>(npc->GetRace());
 		// Playerbots appear as player characters (blue nameplate, client behaviour)
 		sp.NPC       = (npc->GetNPCTypeID() == static_cast<uint32_t>(RuleI(PlayerBots, PlayerBotId))) ? 0 : 1;
+		// Cosmetic guild tag for Playerbots: mirrors NPC::FillSpawnStruct.
+		// GetPlayerBotGuildId returns 0xFFFFFFFF when the bot rolls "no guild",
+		// which truncates to 0xFFFF — the Trilogy "no guild" sentinel.
+		if (sp.NPC == 0 && RuleB(PlayerBots, PlayerBotsCanBeGuilded)) {
+			sp.GuildID = static_cast<uint16_t>(database.GetPlayerBotGuildId());
+		} else {
+			sp.GuildID = static_cast<uint16_t>(0xFFFF);
+		}
 		// Translate EQEmu class id → Trilogy (Merchant 41→32 so the client opens
 		// the shop on right-click, Banker 40→16, GM trainers 20-34→17-31).
 		sp.class_    = static_cast<int8_t>(Trilogy::structs::TranslateClassToTrilogy(npc->GetClass()));
@@ -6381,7 +6388,24 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	sp.spawn_id  = static_cast<int16_t>(npc->GetID());
 	sp.body_type = static_cast<int16_t>(npc->GetBodyType());
 	sp.cur_hp    = static_cast<int16_t>(npc->GetHPRatio());
-	sp.GuildID   = static_cast<uint16_t>(0xFFFF);
+	// Guild tag.  This helper is reused for both Playerbot NPCs and Bot
+	// subsystem entities (Bot inherits from NPC).  Real Bots carry a stored
+	// _guildId from botdb.LoadBotGuild; Playerbot NPCs get a random cosmetic
+	// tag from the PlayerBotsCanBeGuilded rule.  Mirrors the per-entity-kind
+	// split already used by SendZoneSpawns.
+	if (npc->IsBot()) {
+		sp.GuildID   = static_cast<uint16_t>(npc->CastToBot()->GuildID());
+		sp.guildrank = npc->CastToBot()->IsInAGuild()
+		                   ? static_cast<int8_t>(npc->CastToBot()->GuildRank())
+		                   : static_cast<int8_t>(0xFF);
+	} else {
+		if (RuleB(PlayerBots, PlayerBotsCanBeGuilded)) {
+			sp.GuildID = static_cast<uint16_t>(database.GetPlayerBotGuildId());
+		} else {
+			sp.GuildID = static_cast<uint16_t>(0xFFFF);
+		}
+		sp.guildrank = static_cast<int8_t>(0xFF);
+	}
 	sp.race      = static_cast<int8_t>(npc->GetRace());
 	sp.NPC       = 0; // player nameplate
 	sp.class_    = static_cast<int8_t>(npc->GetClass());
@@ -6390,7 +6414,6 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	sp.anim_type         = 0x64; // standing
 	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
-	sp.guildrank         = static_cast<int8_t>(0xFF);
 	sp.light = static_cast<int8_t>(npc->GetEquipmentLightType());
 	strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);

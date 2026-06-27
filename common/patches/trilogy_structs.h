@@ -460,6 +460,41 @@ struct DeleteSpawn_Struct
 };
 
 /*
+** GuildsListEntry_Struct / GuildsList_Struct
+** Opcode:  OP_GuildsList = 0x9221
+** Direction: world server -> client (at char-select, in response to client request)
+** Source:  EQClassic Common/Include/GuildNetwork.h
+** Size:    GuildsListEntry_Struct = 60 bytes
+**          GuildsList_Struct      = 4 + 60 * MAX_GUILDS = 30724 bytes
+**
+** The client uses this table to map the uint16 GuildID in Spawn_Struct to a guild
+** tag string shown above the entity's name.  Without it the GuildID byte is
+** unmapped and no tag is rendered.  Empty slots use guild_id=0xFFFFFFFF, exists=0
+** and 0xFF/0x00 fill bytes (see WorldGuildManager::CreateBlankGuildsListEntry_Struct
+** in EQClassic).
+*/
+static constexpr uint32_t MAX_GUILDS = 512;
+
+struct GuildsListEntry_Struct
+{
+/*00*/	int32	guild_id;        // 0xFFFFFFFF if slot empty
+/*04*/	char	name[32];        // guild tag (null-padded)
+/*36*/	uint8	unknown1[4];     // 0xFF fill
+/*40*/	uint8	exists;          // 1 if entry valid, 0 if empty
+/*41*/	uint8	unknown2[7];     // 0x00 fill
+/*48*/	uint8	unknown3[4];     // 0xFF fill
+/*52*/	uint8	unknown4[8];     // 0x00 fill
+/*60*/
+};
+
+struct GuildsList_Struct
+{
+/*00000*/	uint8	head[4];
+/*00004*/	GuildsListEntry_Struct Guilds[MAX_GUILDS];
+/*30724*/
+};
+
+/*
 ** SpawnAppearance_Struct
 ** Opcode:  OP_SpawnAppearance = 0xf520
 ** Direction: zone server -> client (and client -> server for self)

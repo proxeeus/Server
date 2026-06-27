@@ -538,6 +538,29 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// balance with only what was earned this session — silently destroying their money.
 	database.LoadCharacterCurrency(char_id, &m_pp);
 
+	// Guild membership lives in the separate guild_members table and is loaded
+	// in the standard zone-entry path (client_packet.cpp Handle_Connect_OP_ZoneEntry)
+	// which Trilogy bypasses entirely.  Without this, GuildID() returns GUILD_NONE
+	// for the whole session, so neither the player nor anyone looking at them sees
+	// a guild tag and IsInAGuild()-gated paths (guild chat, guild MOTD, the OP_GuildsList
+	// reply mapping) never engage.  Mirror the SELECT used by the normal path.
+	{
+		auto q = fmt::format(
+			"SELECT `guild_id`, `rank` FROM `guild_members` WHERE `char_id` = {} LIMIT 1",
+			char_id
+		);
+		auto r = database.QueryDatabase(q);
+		if (r.RowCount() > 0) {
+			auto row = r.begin();
+			if (row[0] && Strings::ToInt(row[0]) > 0) {
+				guild_id  = Strings::ToInt(row[0]);
+				guildrank = row[1] ? Strings::ToInt(row[1]) : GUILD_RANK_NONE;
+			}
+		}
+		m_pp.guild_id  = IsInAGuild() ? GuildID() : GUILD_NONE;
+		m_pp.guildrank = guildrank;
+	}
+
 	// Mirror name and zone into m_pp so SaveCharacterData() writes correct values on
 	// disconnect.  Without these, the DB row gets name="" and zone_id=0 on every logout.
 	strn0cpy(m_pp.name, char_name, sizeof(m_pp.name));

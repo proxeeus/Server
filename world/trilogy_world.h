@@ -129,6 +129,8 @@ private:
 
 	void HandleWorldLogout(const std::string& addr, int port, Session& s);
 
+	void SendGuildsList(const std::string& addr, int port, Session& s);
+
 	void SendCharSelect(const std::string& addr, int port, Session& s);
 
 	void SendLoginApproved(const std::string& addr, int port, Session& s);

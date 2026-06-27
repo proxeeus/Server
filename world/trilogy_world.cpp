@@ -41,6 +41,7 @@
 #include "../common/zone_store.h"
 #include "../common/repositories/inventory_repository.h"
 #include "client.h"
+#include "wguild_mgr.h"
 
 #include <algorithm>
 #include <cstring>
@@ -322,8 +323,13 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		HandleEnterWorld(addr, port, s, payload, plen);
 		break;
 	case OP_GUILDS_LIST:
-		// Client requests guilds on char-select load; just ACK — no guilds implemented yet
-		if (s.ack_due) SendAck(addr, port, s);
+		// Client requests guilds on char-select load — without a reply the
+		// uint16 GuildID in Spawn_Struct never resolves to a tag string and no
+		// guild banner is rendered above the entity.  EQClassic
+		// WorldGuildManager::SendGuildsList replies with the full 30724-byte
+		// GuildsList_Struct (4-byte head + 512 entries).  See
+		// SendGuildsList below.
+		SendGuildsList(addr, port, s);
 		break;
 	case OP_NAME_APPROVAL:
 		HandleNameApproval(addr, port, s, payload, plen);
@@ -1747,6 +1753,64 @@ void TrilogyWorldServer::SendZoneServerInfoForChar(const char* char_name, uint32
 // close-handshake path at OnDatagram, and avoiding the dangling reference in
 // OnDatagram::CheckPendingZoneEntry that runs immediately after this returns.
 // ============================================================
+
+// ============================================================
+// SendGuildsList — reply to OP_GuildsList (0x9221) at char-select
+//
+// The Trilogy client uses this table to map the uint16 GuildID in Spawn_Struct
+// to the guild tag rendered above an entity's name; without a reply, no guild
+// banner ever displays for clients, Bots, or Playerbots even when the spawn
+// struct's GuildID field is populated.
+//
+// Wire format (EQClassic Common/Include/GuildNetwork.h::GuildsList_Struct):
+//   4-byte head + 512 × GuildsListEntry_Struct (60B each) = 30724 bytes.
+// Empty slots use guild_id=0xFFFFFFFF, exists=0, and the 0xFF/0x00 fill
+// pattern from WorldGuildManager::CreateBlankGuildsListEntry_Struct.
+// SendApp's fragmentation handles the large payload (~60 frags).
+// ============================================================
+
+void TrilogyWorldServer::SendGuildsList(const std::string& addr, int port, Session& s)
+{
+	Trilogy::structs::GuildsList_Struct gl{};
+
+	// Initialise every slot to the empty pattern.
+	for (uint32_t i = 0; i < Trilogy::structs::MAX_GUILDS; ++i) {
+		auto& e = gl.Guilds[i];
+		e.guild_id = static_cast<int32_t>(0xFFFFFFFF);
+		std::memset(e.name, 0, sizeof(e.name));
+		std::memset(e.unknown1, 0xFF, sizeof(e.unknown1));
+		e.exists = 0;
+		std::memset(e.unknown2, 0x00, sizeof(e.unknown2));
+		std::memset(e.unknown3, 0xFF, sizeof(e.unknown3));
+		std::memset(e.unknown4, 0x00, sizeof(e.unknown4));
+	}
+
+	// Fill from the world's loaded guild table.  guild_mgr is the world-side
+	// BaseGuildManager populated at boot via world_boot.cpp::LoadGuilds().
+	// Indexing by guild ID matches EQClassic's WorldGuildManager::SendGuildsList:
+	// Guilds[id] holds the entry for the guild with that ID, leaving gaps empty.
+	auto guilds_list = guild_mgr.MakeGuildList();
+	uint32_t populated = 0;
+	for (auto const& entry : guilds_list.guild_detail) {
+		if (entry.guild_id >= Trilogy::structs::MAX_GUILDS) {
+			// Trilogy's spawn struct GuildID is uint16 and the client's guild
+			// table is bounded at 512; out-of-range guilds cannot be rendered.
+			continue;
+		}
+		auto& slot = gl.Guilds[entry.guild_id];
+		slot.guild_id = static_cast<int32_t>(entry.guild_id);
+		strncpy(slot.name, entry.guild_name.c_str(), sizeof(slot.name) - 1);
+		slot.exists = 1;
+		++populated;
+	}
+
+	LogInfo("[TrilogyWorld] OP_GuildsList -> {}:{} ({} guild(s) populated, {} byte payload)",
+	        addr, port, populated, static_cast<uint32_t>(sizeof(gl)));
+
+	SendApp(addr, port, s, 0x9221,
+	        reinterpret_cast<const uint8_t*>(&gl),
+	        static_cast<uint32_t>(sizeof(gl)));
+}
 
 void TrilogyWorldServer::HandleWorldLogout(const std::string& addr, int port, Session& s)
 {
