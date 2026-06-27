@@ -465,20 +465,25 @@ int8_t TrilogyZoneServer::EncodeTrilogyAnim(Mob* m, int eqemu_anim)
 
 	const float speed_f = static_cast<float>(abs_anim) / 40.0f;
 	int byte;
-	// 2026-06-27: 10× multiplier, paired with the 3× spawn walkspeed bump
-	// in the NPC spawn path.  Binary-searched between 7× (forward snap,
-	// client extrapolated too slowly) and 14× (backward snap, client
-	// extrapolated too fast).  Typical walking NPC (speed_int=14) now
-	// encodes to byte=3 instead of byte=2 or byte=4 — the sweet spot
-	// where client render rate matches EQEmu server motion rate.
-	// Walk upper clamp stays at 10 to give SoW'd / speed-buffed walkers
-	// room within the walk cycle (spawn walkspeed × 4 = 5.4 threshold).
+	// 2026-06-27: split multipliers — walk ×10, run ×12 — paired with the
+	// 3× spawn walkspeed/runspeed bump.  Empirical observations:
+	//   walk: typical NPC (speed_int=18) → byte=4.  Plays walk cycle,
+	//         body translates at server walk rate.  Smooth, no snap.
+	//   run:  typical NPC (speed_int=50) → byte=15.  Must clear the
+	//         walk-cycle ceiling (~walkspeed × 9 ≈ 12 with our 1.35
+	//         walkspeed) to trigger v29c's run animation cycle.  ×7 and
+	//         ×10 both produced bytes (8 and 12 respectively) that stayed
+	//         inside walk-cycle, giving "body running with walking legs"
+	//         symptom.  ×12 lands at byte=15, clear of the threshold.
+	// Body translation rate for both cycles is driven by spawn-time
+	// walkspeed/runspeed (the 3× bump), separate from the byte's
+	// cycle-selection role.
 	if (is_walk) {
 		byte = static_cast<int>(speed_f * 10.0f);
 		if (byte < 2)  byte = 2;
 		if (byte > 10) byte = 10;
 	} else {
-		byte = static_cast<int>(speed_f * 10.0f);
+		byte = static_cast<int>(speed_f * 12.0f);
 		if (byte < 1)   byte = 1;
 		if (byte > 127) byte = 127;
 	}
@@ -897,6 +902,20 @@ void TrilogyZoneServer::SendCloseToSession(uint64_t session_key)
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	SendClose(s.source_addr, s.source_port, s);
+}
+
+void TrilogyZoneServer::NoteKnownSpawn(uint64_t session_key, uint16_t spawn_id)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	it->second.known_spawns.insert(spawn_id);
+}
+
+void TrilogyZoneServer::ForgetKnownSpawn(uint64_t session_key, uint16_t spawn_id)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	it->second.known_spawns.erase(spawn_id);
 }
 
 void TrilogyZoneServer::AdvanceMoneyBaseline(uint64_t session_key,
@@ -3244,6 +3263,10 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// Seed v29c-client-known-material model from the spawn struct equipment.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.  The
+		// reconcile pass skips s.player_spawn_id defensively, so this insert
+		// is informational only — kept for symmetry with the other emit sites.
+		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 		// Deity: EQClassic DEITY_* constants match EQEmu IDs (201-216); DEITY_AGNOSTIC=140.
 		uint8_t deity_wire = (s.char_deity >= 201 && s.char_deity <= 216)
 			? static_cast<uint8_t>(s.char_deity) : 140;
@@ -6228,8 +6251,16 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// faster server speeds.  Mob's server-side walkspeed/runspeed are
 		// untouched (gameplay/Titanium unaffected); only the v29c wire
 		// representation changes.
-		sp.walkspeed = ToTrilogySpeed(npc->GetBaseWalkspeed()) * 3.0f;
-		sp.runspeed  = ToTrilogySpeed(npc->GetBaseRunspeed())  * 3.0f;
+		// 2026-06-27: dialed walkspeed bump from 3× → 1.5×, runspeed
+		// stays at 1×.  Reasoning: at 3× (walkspeed=1.35) any byte we
+		// sent registered as walk cycle in v29c — looks like v29c locks
+		// to walk cycle when walkspeed exceeds some upper bound rather
+		// than scaling a linear threshold.  1.5× lands walkspeed at 0.675,
+		// just under EQClassic's standard 0.7 where their byte=8 reliably
+		// produces run cycle.  Walk-cycle byte=4 still stays well under
+		// any threshold so walking animation should remain correct.
+		sp.walkspeed = ToTrilogySpeed(npc->GetBaseWalkspeed()) * 1.5f;
+		sp.runspeed  = ToTrilogySpeed(npc->GetBaseRunspeed());
 		sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(npc->GetHeading() / 2.0f));
 		sp.y_pos     = static_cast<int16_t>(npc->GetY());
 		sp.x_pos     = static_cast<int16_t>(npc->GetX());
@@ -6328,6 +6359,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -6390,6 +6423,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -6458,6 +6493,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -6525,6 +6562,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
 		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
 		raw.insert(raw.end(), p, p + sizeof(ns));
@@ -6622,6 +6661,8 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -6717,6 +6758,8 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -6812,6 +6855,8 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
+		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -7849,8 +7894,35 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// Real death still emits 4A20+2B20 via HandleDeleteSpawn on the normal
 	// path; zone-out clears the whole session.  Bot/Player exclusion no
 	// longer matters since we never send the 2B20.
+	//
+	// 2026-06-27: ghost-spawn reconciliation — broadened scope.
+	// Walks s.known_spawns (every spawn_id we've ever sent 0x4921 / 0x6121
+	// for this session) and re-emits 2B20 for any whose serverside entity is
+	// gone.  This catches phantoms that the engine's OP_DeleteSpawn
+	// broadcast missed in the v29c outbound buffer (gap-16 orphan trap,
+	// see [[project-trilogy-resend-explosion]]).
+	//
+	// First version was scoped to s.last_broadcast which only contains mobs
+	// within CULL_RADIUS_SQ (600 u); that missed out-of-vision phantoms in
+	// open zones like East Commonlands.  The known_spawns set covers
+	// everything the client knows about.
+	//
+	// SAFE against [[project-trilogy-proactive-delete-bug]]: we only emit
+	// 2B20 when entity_list.GetMob returns null — serverside ground truth,
+	// never distance/time heuristic.  A live mob the player wandered away
+	// from is still in entity_list and is never deleted.
+	//
+	// Throttled to ~2 s per session to keep wire pressure low.  At 500
+	// known spawns per session this is one unordered_map lookup per entry,
+	// ~250 lookups per second per session — trivial.  Number of 2B20s
+	// emitted is exactly the count of real ghosts, no spillover.
+	//
+	// To disable if it causes problems: flip kEnableGhostReconcile to false.
 	// ============================================================
 	static constexpr uint64_t kStaleTimeMs = 15000;
+	static constexpr bool     kEnableGhostReconcile      = true;
+	static constexpr uint64_t kGhostReconcileIntervalMs  = 2000;
+
 	if (!s.last_broadcast.empty()) {
 		std::vector<uint16_t> to_clean;
 		to_clean.reserve(16);
@@ -7862,6 +7934,40 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		for (uint16_t id : to_clean)
 			s.last_broadcast.erase(id);
+	}
+
+	if (kEnableGhostReconcile &&
+	    now_ms - s.last_ghost_reconcile_ms >= kGhostReconcileIntervalMs &&
+	    !s.known_spawns.empty()) {
+		s.last_ghost_reconcile_ms = now_ms;
+
+		std::vector<uint16_t> ghosts;
+		ghosts.reserve(8);
+
+		for (uint16_t spawn_id : s.known_spawns) {
+			// Skip the player's own spawn_id — sending 2B20 for self would
+			// remove the player from their own client view.  Also skip 0,
+			// which would not be in here normally but is harmless to guard.
+			if (spawn_id == s.player_spawn_id || spawn_id == 0) continue;
+			if (entity_list.GetMob(spawn_id) == nullptr) {
+				ghosts.push_back(spawn_id);
+			}
+		}
+
+		for (uint16_t spawn_id : ghosts) {
+			Trilogy::structs::DeleteSpawn_Struct ds{};
+			ds.spawn_id    = static_cast<int16_t>(spawn_id);
+			ds.ds_unknown1 = 0;
+			SendToSession(SessionKey(addr, port), 0x2b20,
+			              reinterpret_cast<const uint8_t*>(&ds),
+			              static_cast<uint32_t>(sizeof(ds)));
+			LogInfo("[Trilogy ghost-reconcile] 2B20 sid={} "
+			        "(known to client, gone server-side, original delete lost)",
+			        static_cast<int>(spawn_id));
+			s.known_spawns.erase(spawn_id);
+			// Drop any same-spawn-id residue from the position-broadcast cache.
+			s.last_broadcast.erase(spawn_id);
+		}
 	}
 }
 

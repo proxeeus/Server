@@ -1203,6 +1203,10 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 			m_deferred_spawns.emplace_back(uint16_t{0x4921},
 				std::vector<uint8_t>(reinterpret_cast<const uint8_t*>(&out),
 				                     reinterpret_cast<const uint8_t*>(&out) + sizeof(out)));
+			// Record now — the deferred drain in OnClientReady sends via
+			// SendToSession with an opaque encrypted payload, so the ghost
+			// reconcile path won't see the spawn_id at replay time.
+			m_tzs->NoteKnownSpawn(m_session_key, static_cast<uint16_t>(spawn_id));
 		}
 		return;
 	}
@@ -1226,6 +1230,7 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x4921,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+	m_tzs->NoteKnownSpawn(m_session_key, static_cast<uint16_t>(spawn_id));
 
 	// Seed v29c-client-known-material model from the spawn struct equipment.
 	SeedKnownMaterials(static_cast<uint16_t>(spawn_id), sp.equipment);
@@ -1280,6 +1285,7 @@ void TrilogyClient::HandleDeleteSpawn(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x2b20,
 	                     reinterpret_cast<const uint8_t*>(&ds_out),
 	                     static_cast<uint32_t>(sizeof(ds_out)));
+	m_tzs->ForgetKnownSpawn(m_session_key, static_cast<uint16_t>(spawn_id));
 
 	// Drop any cached SpawnAppearance state for this spawn so a future
 	// reuse of the id (rare but possible) starts fresh.

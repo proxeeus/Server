@@ -30,6 +30,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 class TrilogyClient;
@@ -66,6 +67,13 @@ public:
 	// Send a corpse as a zone-permanent spawn (0x6121) with NPC=2 (NPC corpse)
 	// or NPC=3 (player corpse).
 	void SendCorpseSpawnPermanent(uint64_t session_key, Corpse* corpse);
+
+	// Mark / unmark a spawn_id as known-by-client for the given session.  Used
+	// by the spawn-emit and delete-emit sites to feed the ghost-spawn
+	// reconciliation in SendMobHeartbeat.  No-op if the session has been
+	// torn down.
+	void NoteKnownSpawn(uint64_t session_key, uint16_t spawn_id);
+	void ForgetKnownSpawn(uint64_t session_key, uint16_t spawn_id);
 
 	// Advance the per-session money-display baseline by the given deltas so the
 	// next Tick() reconciliation does NOT re-push these amounts as an
@@ -237,6 +245,20 @@ private:
 			uint64_t sent_ms   = 0;
 		};
 		std::unordered_map<uint16_t, LastBroadcast> last_broadcast;
+
+		// Spawn IDs we have told THIS v29c client about via any spawn-emit
+		// opcode (single OP_NewSpawn 0x4921, bulk OP_ZoneSpawns 0x6121).
+		// Populated at every spawn-emit site, cleared on every 2B20 we send,
+		// fully reset when the session is torn down.
+		//
+		// Used by SendMobHeartbeat's reconcile pass to detect "ghost spawns"
+		// — entries the v29c client still has but that the server has
+		// removed from entity_list (e.g. because the engine's OP_DeleteSpawn
+		// was lost in v29c's outbound buffer / gap-16 trap).  Strictly
+		// broader than last_broadcast, which only covers mobs that came
+		// within CULL_RADIUS_SQ of the player.
+		std::unordered_set<uint16_t> known_spawns;
+		uint64_t                     last_ghost_reconcile_ms = 0;
 
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
