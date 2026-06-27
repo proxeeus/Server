@@ -23,6 +23,7 @@
 #include "object.h"
 #include "zonedb.h"
 #include "zone.h"
+#include "map.h"
 #include "npc.h"
 #include "bot.h"
 #include "groups.h"
@@ -3460,6 +3461,51 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 
 	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.
 	SendMobHeartbeat(addr, port, s);
+
+	// ============================================================
+	// Wide-boundary terrain snap (cross-zone FindBestZ workaround)
+	// ============================================================
+	// The departing zone's CheckTraditionalZonePoints (zoning.cpp ~L435/L568)
+	// applies a static +25 skydrop to the DB-stored target_z because that
+	// process has not loaded the destination zone's collision map.  When the
+	// wide-boundary slide lands the player far from the DB's reference point
+	// on steeply-sloped terrain (e.g. ecommons->commons at large delta_y), the
+	// real terrain can be hundreds of units below the DB Z and the EQ client's
+	// local physics drops the player into/under-world.
+	//
+	// We're now in the destination zone with `zone->zonemap` loaded — do a
+	// FindBestZ here and snap pos_z to terrain + small bump when the player
+	// is significantly above the actual ground.  Only fires for wide-boundary
+	// zone-ins (s.pending_heading_sync); narrow doors use an explicit DB
+	// target_z and don't need the snap.
+	if (s.trilogy_client && s.pending_heading_sync && zone && zone->zonemap) {
+		glm::vec3 start(s.pos_x, s.pos_y, s.pos_z + 5.0f);
+		float terrain_z = zone->zonemap->FindBestZ(start, nullptr);
+		if (terrain_z != BEST_Z_INVALID) {
+			float drop = s.pos_z - terrain_z;
+			// 40-unit threshold: the departing zone's +25 skydrop intentionally
+			// leaves us ~25 above terrain; another 15 units of margin tolerates
+			// terrain-probe jitter and small ramps without firing a spurious snap.
+			if (drop > 40.0f) {
+				float new_z = terrain_z + 3.0f;
+				LogInfo("[TrilogyZP] wide-boundary terrain-snap | char [{}] zone [{}] "
+				        "pos ({:.1f},{:.1f}) orig_z={:.2f} terrain_z={:.2f} drop={:.2f} -> new_z={:.2f}",
+				        s.char_name, s.zone_short, s.pos_x, s.pos_y,
+				        s.pos_z, terrain_z, drop, new_z);
+				s.pos_z = new_z;
+				s.trilogy_client->SetPosition(s.pos_x, s.pos_y, new_z);
+			} else {
+				LogInfo("[TrilogyZP] wide-boundary terrain-check | char [{}] zone [{}] "
+				        "pos ({:.1f},{:.1f}) pos_z={:.2f} terrain_z={:.2f} drop={:.2f} (within tolerance, no snap)",
+				        s.char_name, s.zone_short, s.pos_x, s.pos_y,
+				        s.pos_z, terrain_z, drop);
+			}
+		} else {
+			LogInfo("[TrilogyZP] wide-boundary terrain-check | char [{}] zone [{}] "
+			        "pos ({:.1f},{:.1f},{:.2f}) FindBestZ found no terrain — leaving pos_z unchanged",
+			        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z);
+		}
+	}
 
 	// Force the client to the correct spawn position regardless of any per-zone position
 	// cache the client holds from a previous visit to this zone.  Sending a 4d21 with
