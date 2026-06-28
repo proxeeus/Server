@@ -4590,6 +4590,16 @@ int TrilogyZoneServer::MaterializeCursorForBotTrade(TrilogyClient* tc)
 		database.QueryDatabase(fmt::format(
 		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
 		    s.char_id, src_db));
+		// Mirror the DB delete in m_inv so FindFreeSlot/CalcBonuses/lore
+		// checks don't see a ghost.  Worn slots are handled downstream by
+		// Finalize's RefreshWornSlotsAfterMove (full equip-event chain).
+		auto is_worn = [](int slot) {
+			return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+		};
+		if (!is_worn(src_db)) {
+			auto* old = inv.PopItem(static_cast<int16>(src_db));
+			safe_delete(old);
+		}
 	}
 
 	LogInfo("[TrilogyZone] BotTrade: materialized cursor for char={} from DB slot {} (item_id={})",
@@ -4604,11 +4614,66 @@ void TrilogyZoneServer::FinalizeCursorAfterBotTrade(TrilogyClient* tc, int src_d
 	if (!sp) return;
 	Session& s = *sp;
 
+	auto& inv = tc->GetInv();
+
 	// Cursor tracking is consumed — the source slot has either been transferred
 	// to the bot or returned via the cursor queue.  Either way the next
 	// HandleMoveItem(0 → ...) must NOT reference the old src.
 	s.cursor_from_db = -1;
 
+	// Detect FinishTrade rejection.  On success it calls DeleteItemInInventory
+	// (slotCursor) which pops m_inv.cursor.  On rejection (class/race/level,
+	// no slot fit, etc.) it leaves the item on cursor with no movement action.
+	// src_db==33 is the sentinel "cursor was already populated; Materialize
+	// no-oped" — no rollback needed for that case.
+	const bool trade_rejected =
+	    (src_db != 33) && (inv.GetItem(EQ::invslot::slotCursor) != nullptr);
+
+	if (trade_rejected) {
+		// Materialize already DELETEd DB[src_db] and (for non-worn) popped
+		// m_inv[src_db].  Put the cursor item back where it came from so the
+		// player's visible state matches "nothing happened."
+		EQ::ItemInstance* restore = inv.GetItem(EQ::invslot::slotCursor)->Clone();
+
+		// Drain the cursor queue and persist empty so DB[33] / DB[8000-8999]
+		// are cleared.
+		while (auto* p = inv.PopItem(EQ::invslot::slotCursor)) {
+			safe_delete(p);
+		}
+		{
+			auto sc = inv.cursor_cbegin(), ec = inv.cursor_cend();
+			database.SaveCursor(s.char_id, sc, ec);
+		}
+
+		// Restore DB row + m_inv at src_db.  PutItem internally DeleteItem's
+		// any existing entry first, so this is safe whether the slot is
+		// currently empty (non-worn) or still holds the original (worn,
+		// skipped by Materialize).
+		database.SaveInventory(s.char_id, restore, static_cast<int16>(src_db));
+		inv.PutItem(static_cast<int16>(src_db), *restore);
+
+		// Re-deliver to the client so the visual appears in src_db.  Trilogy
+		// translates ItemPacketTrade → 0x3120 with the right wire slot.
+		tc->SendItemPacket(static_cast<int16>(src_db), restore, ItemPacketTrade);
+
+		// Clear the visual cursor on v29c (no OP_DeleteItem in this client).
+		Trilogy::structs::MoveItem_Struct mv{};
+		mv.from_slot       = 0;
+		mv.to_slot         = 0xFFFFFFFFu;
+		mv.number_in_stack = 0;
+		SendApp(s.source_addr, s.source_port, s, ZN_OP_MoveItem,
+		        reinterpret_cast<const uint8_t*>(&mv), sizeof(mv));
+
+		LogInfo("[TrilogyZone] BotTrade: trade rejected — restored item to DB slot {} for char={}",
+		        src_db, s.char_id);
+
+		safe_delete(restore);
+		tc->Save();
+		return;
+	}
+
+	// Trade accepted.  Run the standard cleanup.
+	//
 	// If the source was a worn slot (1-20 / ammo 22) the player's m_inv at that
 	// slot is now stale (Materialize DELETEd the DB row without firing equip
 	// events).  Reuse the same helper HandleMoveItem uses: it re-reads the
@@ -4620,13 +4685,11 @@ void TrilogyZoneServer::FinalizeCursorAfterBotTrade(TrilogyClient* tc, int src_d
 		RefreshWornSlotsAfterMove(s, src_db, -1, /*destroy_path=*/true);
 	}
 
-	// Visual cursor sync: if FinishTrade transferred the item to the bot with
-	// no return, m_inv.cursor is now empty but the wire-level cursor still
-	// shows the original item.  v29c has no OP_DeleteItem; the EQClassic
-	// pattern (see HandleMemorizeSpell) is OP_MoveItem(from=0, to=0xFFFFFFFF).
-	// If a return came back via PutItemInInventory(slotCursor) the cursor is
-	// non-null and OP_SummonedItem (0x7821) already updated the wire — skip.
-	if (!tc->GetInv().GetItem(EQ::invslot::slotCursor)) {
+	// Visual cursor sync: m_inv.cursor is empty (FinishTrade transferred the
+	// item to the bot) but the wire-level cursor still shows the original
+	// item.  v29c has no OP_DeleteItem; the EQClassic pattern (see
+	// HandleMemorizeSpell) is OP_MoveItem(from=0, to=0xFFFFFFFF).
+	if (!inv.GetItem(EQ::invslot::slotCursor)) {
 		Trilogy::structs::MoveItem_Struct mv{};
 		mv.from_slot       = 0;
 		mv.to_slot         = 0xFFFFFFFFu;

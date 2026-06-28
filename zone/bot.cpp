@@ -4434,12 +4434,24 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 			}
 		}
 
+		// Trilogy v29c can't parse SayLink tags; show the plain item name there.
+		const std::string item_display = client->IsTrilogyClient()
+			? trade_instance->GetItem()->Name
+			: item_link;
+
 		if (!trade_instance->IsType(item::ItemClassCommon)) {
 			if (trade_event_exists) {
 				event_trade.push_back(ClientTrade(trade_instance, trade_index));
 				continue;
 			}
 			else {
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I can't equip {} — it isn't a regular item (containers, augments and spell scrolls aren't equippable).",
+						item_display
+					).c_str()
+				);
 				client->ResetTrade();
 				return;
 			}
@@ -4455,6 +4467,23 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				continue;
 			}
 			else {
+				const auto* it = trade_instance->GetItem();
+				std::string reason;
+				if (!trade_instance->IsClassEquipable(GetClass())) {
+					reason = "my class can't equip it";
+				} else if (GetLevel() < it->ReqLevel) {
+					reason = fmt::format("I need to be level {} (I'm {})", it->ReqLevel, GetLevel());
+				} else {
+					reason = "my race can't equip it";
+				}
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I can't equip {} — {}, the trade has been cancelled.",
+						item_display,
+						reason
+					).c_str()
+				);
 				client->ResetTrade();
 				return;
 			}
@@ -4682,6 +4711,22 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				continue;
 			}
 			else {
+				std::string unfit_display;
+				if (client->IsTrilogyClient()) {
+					unfit_display = trade_iterator->trade_item_instance->GetItem()->Name;
+				} else {
+					EQ::SayLinkEngine unfit_linker;
+					unfit_linker.SetLinkType(EQ::saylink::SayLinkItemInst);
+					unfit_linker.SetItemInst(trade_iterator->trade_item_instance);
+					unfit_display = unfit_linker.GenerateLink();
+				}
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I have no equipment slot that fits {} — it stays on your cursor.",
+						unfit_display
+					).c_str()
+				);
 				client_return.push_back(ClientReturn(trade_iterator->trade_item_instance, trade_iterator->from_client_slot));
 				trade_iterator = client_trade.erase(trade_iterator);
 				continue;
