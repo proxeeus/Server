@@ -2090,6 +2090,11 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// Generic skill helpers — fire from Forage, Bind Wound and others.
 		case 290:   return "Duplicate lore items are not allowed.";                   // DUP_LORE
 		case 12393: return "You can not use this skill while on a mount.";            // NO_SKILL_WHILE_MOUNTED
+		// Merchant / trade busy — fires from bot ^invremove (Chat::Tell) when the
+		// player has an open tradeskill container or active trade window.  Without
+		// this template the player gets zero feedback and assumes the command is
+		// broken.
+		case 1143:  return "I'm sorry, I am busy right now.";                         // MERCHANT_BUSY
 		// Door / lockpick feedback — Doors::HandleClick paths.  All MessageString
 		// calls, so without these the v29c client gets zero text on every locked /
 		// picked / GM scenario (only the plain-text "This is locked..." at
