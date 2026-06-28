@@ -549,6 +549,13 @@ static void BuildTrilogyCorpseName(const char* raw_name, char* out, size_t out_s
 // offset 0, so we replicate that behaviour: copy the full name (up to 29
 // chars before the target field at offset 30) without truncating.
 // ============================================================
+// See trilogy_zone.h for the full rationale and kill-switch instructions.
+const char* TrilogyWireName(Mob* m)
+{
+	if (!m) return "";
+	return IsPlayerRace(m->GetRace()) ? m->GetName() : m->GetCleanName();
+}
+
 static void FillIllusionBuf(uint8_t* buf, const char* name,
                               int16_t race, int16_t gender,
                               int16_t texture, int16_t helm, int16_t face)
@@ -3360,7 +3367,11 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			NPC* npc = kv.second;
 			if (!npc || !IsPlayerRace(npc->GetRace())) continue;
 			uint8_t il_buf[72];
-			FillIllusionBuf(il_buf, npc->GetCleanName(),
+			// Illusion target must match the spawn-struct name field — both
+			// flow through TrilogyWireName so duplicate-named NPCs get
+			// distinct wire identities and v29c's by-name lookup resolves
+			// to the right entity per instance.
+			FillIllusionBuf(il_buf, TrilogyWireName(npc),
 			    static_cast<int16_t>(npc->GetRace()),
 			    static_cast<int16_t>(npc->GetGender()),
 			    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
@@ -3400,7 +3411,7 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		for (Bot* bot : entity_list.GetBotList()) {
 			if (!bot || !IsPlayerRace(bot->GetRace())) continue;
 			uint8_t il_buf[72];
-			FillIllusionBuf(il_buf, bot->GetCleanName(),
+			FillIllusionBuf(il_buf, TrilogyWireName(bot),
 			    static_cast<int16_t>(bot->GetRace()),
 			    static_cast<int16_t>(bot->GetGender()),
 			    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
@@ -6364,8 +6375,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			}
 		}
 		sp.guildrank = static_cast<int8_t>(0xFF);
-		strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
-		strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);
+		strncpy(sp.name,    TrilogyWireName(npc),  sizeof(sp.name) - 1);
+		strncpy(sp.Surname, npc->GetLastName(),    sizeof(sp.Surname) - 1);
 
 		if (sent < 5) {
 			LogInfo("[TrilogyZone] NPC[{}] name='{}' id={} race={} size={:.1f} "
@@ -6428,7 +6439,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		                           ? static_cast<int8_t>(bot->GuildRank())
 		                           : static_cast<int8_t>(0xFF);
 		sp.light = static_cast<int8_t>(bot->GetEquipmentLightType());
-		strncpy(sp.name,    bot->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.name,    TrilogyWireName(bot), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, bot->GetLastName(),  sizeof(sp.Surname) - 1);
 		// Face / hair — unknown163[0..6] mirrors EQClassic offsets 207–213
 		sp.unknown163[0] = static_cast<int8_t>(bot->GetHairColor());
@@ -6767,8 +6778,8 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 	sp.light = static_cast<int8_t>(npc->GetEquipmentLightType());
-	strncpy(sp.name,    npc->GetCleanName(), sizeof(sp.name) - 1);
-	strncpy(sp.Surname, npc->GetLastName(),  sizeof(sp.Surname) - 1);
+	strncpy(sp.name,    TrilogyWireName(npc),  sizeof(sp.name) - 1);
+	strncpy(sp.Surname, npc->GetLastName(),    sizeof(sp.Surname) - 1);
 	// Face / hair bytes — same layout as player unknown163[0..6]
 	sp.unknown163[0] = static_cast<int8_t>(npc->GetHairColor());
 	sp.unknown163[1] = static_cast<int8_t>(npc->GetBeardColor());
@@ -6813,7 +6824,7 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	// the Illusion does not switch the client to a flat body-texture mode and
 	// hide the Playerbot's equipped armor.
 	uint8_t il_buf[72];
-	FillIllusionBuf(il_buf, npc->GetCleanName(),
+	FillIllusionBuf(il_buf, TrilogyWireName(npc),
 	    static_cast<int16_t>(npc->GetRace()),
 	    static_cast<int16_t>(npc->GetGender()),
 	    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode

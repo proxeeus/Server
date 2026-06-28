@@ -36,7 +36,30 @@
 class TrilogyClient;
 class Client;
 class Corpse;
+class Mob;
 class NPC;
+
+// =====================================================================
+// TrilogyWireName — the name to send to v29c on the wire for any entity.
+//
+// For player-race entities (race ≤ 12, Iksar, VahShir, Froglok2, Drakkin)
+// returns the RAW MakeNameUnique-suffixed name (e.g.
+// "a_Dervish_Cutthroat000", "a_Dervish_Cutthroat001"…) so v29c's by-name
+// illusion lookup can distinguish duplicate-named NPCs at the wire level.
+// v29c performs client-side name cleaning (strips digits and underscores,
+// like the server's CleanMobName), so the displayed name stays clean —
+// the player sees "a Dervish Cutthroat" while internally the client tracks
+// the entity by its unique suffixed string.
+//
+// For non-player races, returns GetCleanName() unchanged (creature NPCs
+// don't need per-instance illusion face randomization — they share model
+// defaults).
+//
+// KILL SWITCH (one-line revert): replace the body in trilogy_zone.cpp
+// with `return m ? m->GetCleanName() : "";` and every call site falls
+// back to the legacy cleaned-name behavior.
+// =====================================================================
+const char* TrilogyWireName(Mob* m);
 
 class TrilogyZoneServer {
 public:

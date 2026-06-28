@@ -1217,12 +1217,25 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 		// helm explicitly via npc_helm_graphic when helmtexture is set (1..7); fall
 		// back to 0xFF so a loot-helm item's material in equipment[0] can still
 		// drive the helm for NPCs whose helmtexture is left at 0 in npc_types.
+		const uint8_t tex     = mob->GetTexture();
 		const uint8_t helmtex = mob->GetHelmTexture();
 		sp.npc_helm_graphic  = (helmtex == 0 || helmtex > 7)
 		                           ? static_cast<int8_t>(0xFF)
 		                           : static_cast<int8_t>(helmtex);
+		// Texture fallback: when GetEquipmentMaterial(slot) returns 0 (no loot
+		// equipped in that slot), substitute the NPC's body texture so the
+		// whole body shows uniform armor coverage instead of partial nakedness.
+		// Mirrors the bulk SendZoneSpawns path at trilogy_zone.cpp:6347-6352.
+		// Playerbots return early via SendPlayerbotSpawnPermanent above, so
+		// any mob reaching this branch is a regular NPC — no is_playerbot
+		// check needed.
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
-			sp.equipment[mi]   = static_cast<int8_t>(mob->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+			uint8_t mat = mob->GetEquipmentMaterial(static_cast<uint8_t>(mi));
+			if (mat == 0) {
+				const uint8_t fb = (mi == 0) ? helmtex : tex; // slot 0 = helm
+				if (fb > 0 && fb < 0xFF) mat = fb;
+			}
+			sp.equipment[mi]   = static_cast<int8_t>(mat);
 			sp.equipcolors[mi] = static_cast<int32_t>(mob->GetEquipmentColor(static_cast<uint8_t>(mi)));
 		}
 	} else {
@@ -1257,7 +1270,7 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 			strncpy(sp.name, mob->GetCleanName(), sizeof(sp.name) - 1);
 		}
 	} else {
-		strncpy(sp.name, mob->GetCleanName(), sizeof(sp.name) - 1);
+		strncpy(sp.name, TrilogyWireName(mob), sizeof(sp.name) - 1);
 	}
 	strncpy(sp.Surname, mob->GetLastName(),  sizeof(sp.Surname) - 1);
 
@@ -1314,6 +1327,35 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	// SendPlayerbotSpawnPermanent handle them), so any IsPlayerRace mob here
 	// is a regular NPC.
 	if (IsPlayerRace(mob->GetRace())) {
+		// Follow-up OP_Illusion (0x9120) so v29c picks up face/race for this
+		// player-race NPC.  The NewSpawn packet doesn't carry face data;
+		// bulk zone-in NPCs get their face via the post-D820 illusion loop,
+		// mid-session respawns need this follow-up.  Target uses
+		// TrilogyWireName so duplicate-named NPCs (Dervish Cutthroats etc.)
+		// route the face update to the right instance via v29c's by-name
+		// lookup of the raw MakeNameUnique-suffixed wire name.
+		// texture/helm use 0xFFFF (-1) keep-current sentinel so the body
+		// rendering established by the spawn struct's equipment[1..6] and
+		// the helm WearChange below are not disturbed.
+		uint8_t il_buf[72];
+		memset(il_buf, 0, sizeof(il_buf));
+		const char* wire_name = TrilogyWireName(mob);
+		const size_t nlen = strlen(wire_name);
+		memcpy(il_buf,      wire_name, nlen < 29 ? nlen : 29); // name @ 0
+		memcpy(il_buf + 30, wire_name, nlen < 15 ? nlen : 15); // target @ 30
+		il_buf[48] = 24; il_buf[49] = 0;                       // jackbauer = 24 LE
+		auto put_le16 = [&](size_t off, int16_t v) {
+			uint16_t u = static_cast<uint16_t>(v);
+			il_buf[off]     = static_cast<uint8_t>(u);
+			il_buf[off + 1] = static_cast<uint8_t>(u >> 8);
+		};
+		put_le16(62, static_cast<int16_t>(mob->GetRace()));
+		put_le16(64, static_cast<int16_t>(mob->GetGender()));
+		put_le16(66, static_cast<int16_t>(-1));                 // keep current texture
+		put_le16(68, static_cast<int16_t>(-1));                 // keep current helm
+		put_le16(70, static_cast<int16_t>(mob->GetLuclinFace()));
+		m_tzs->SendToSession(m_session_key, 0x9120, il_buf, 72);
+
 		const uint8_t helmtex = mob->GetHelmTexture();
 		if (helmtex > 0 && helmtex < 0xFF) {
 			// Update the model: the helm now reflects helmtex, not equipment[0].
@@ -1390,15 +1432,22 @@ void TrilogyClient::HandleIllusion(const EQApplicationPacket* app)
 
 	const auto* emu = reinterpret_cast<const ::Illusion_Struct*>(app->pBuffer);
 
+	// EQEmu's Mob::SendIllusionPacket sets emu->charname to the already-cleaned
+	// name (GetCleanName).  For v29c's by-name illusion lookup to land on the
+	// correct entity when duplicates exist, we need the raw MakeNameUnique-
+	// suffixed name — same string the spawn struct sent.  Resolve via spawnid.
+	Mob* tgt = entity_list.GetMob(static_cast<uint16>(emu->spawnid));
+	const char* wire_name = tgt ? TrilogyWireName(tgt) : emu->charname;
+
 	// Build a raw 72-byte buffer so the name can exceed the 15-char struct field
 	// limit.  EQClassic's SendIllusionPacket uses strcpy (no length limit), which
 	// means the Trilogy client reads the name as null-terminated from offset 0.
 	// Names up to 29 chars safely fit before the target field at offset 30.
 	uint8_t out[72];
 	memset(out, 0, 72);
-	size_t nlen = strlen(emu->charname);
-	memcpy(out,      emu->charname, nlen < 29 ? nlen : 29); // name at offset 0
-	memcpy(out + 30, emu->charname, nlen < 15 ? nlen : 15); // target at offset 30
+	size_t nlen = strlen(wire_name);
+	memcpy(out,      wire_name, nlen < 29 ? nlen : 29); // name at offset 0
+	memcpy(out + 30, wire_name, nlen < 15 ? nlen : 15); // target at offset 30
 	out[48] = 24; out[49] = 0;                               // jackbauer = 24 LE
 	int16_t race = static_cast<int16_t>(emu->race);
 	int16_t gender = static_cast<int16_t>(emu->gender);
