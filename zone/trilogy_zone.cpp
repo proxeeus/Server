@@ -6409,7 +6409,13 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.spawn_id  = static_cast<int16_t>(bot->GetID());
 		sp.body_type = static_cast<int16_t>(bot->GetBodyType());
 		sp.cur_hp    = static_cast<int16_t>(bot->GetHPRatio());
-		sp.GuildID   = static_cast<uint16_t>(bot->GuildID());
+		// Bot::IsInAGuild() treats both _guildId==0 (newly-created bot) and
+		// _guildId==GUILD_NONE as "no guild", but only GUILD_NONE (0xFFFFFFFF)
+		// truncates to the uint16 0xFFFF sentinel — a raw 0 cast becomes guild
+		// slot 0 and v29c renders the empty entry as "<Unknown Guild>".
+		sp.GuildID   = bot->IsInAGuild()
+		                   ? static_cast<uint16_t>(bot->GuildID())
+		                   : static_cast<uint16_t>(0xFFFF);
 		sp.race      = static_cast<int8_t>(bot->GetRace());
 		sp.NPC       = 0; // player nameplate so /invite works on the client
 		sp.class_    = static_cast<int8_t>(bot->GetClass());
@@ -6735,7 +6741,12 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	// tag from the PlayerBotsCanBeGuilded rule.  Mirrors the per-entity-kind
 	// split already used by SendZoneSpawns.
 	if (npc->IsBot()) {
-		sp.GuildID   = static_cast<uint16_t>(npc->CastToBot()->GuildID());
+		// IsInAGuild() catches both _guildId==0 and _guildId==GUILD_NONE; only
+		// the latter truncates to the uint16 0xFFFF sentinel — a raw 0 cast
+		// hits guild slot 0 and v29c shows "<Unknown Guild>" above the bot.
+		sp.GuildID   = npc->CastToBot()->IsInAGuild()
+		                   ? static_cast<uint16_t>(npc->CastToBot()->GuildID())
+		                   : static_cast<uint16_t>(0xFFFF);
 		sp.guildrank = npc->CastToBot()->IsInAGuild()
 		                   ? static_cast<int8_t>(npc->CastToBot()->GuildRank())
 		                   : static_cast<int8_t>(0xFF);
