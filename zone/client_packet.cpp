@@ -15408,9 +15408,14 @@ void Client::Handle_OP_Taunt(const EQApplicationPacket *app)
 	// Proxeeus : Warriors don't do much, but they fucking ROAST mobs. At least in my world.
 	if (GetClass() == Class::Warrior)
 	{
+		// always_succeed=true guarantees the taunt lands, but it also skips
+		// the skill-up roll inside Mob::Taunt — call CheckIncreaseSkill here
+		// so warriors still progress SkillTaunt.
+		CheckIncreaseSkill(EQ::skills::SkillTaunt, GetTarget(), 10);
 		Taunt(GetTarget()->CastToNPC(), true, 100, false, 50000);
 		Say("I'll teach you to mess with me, you spineless cur!");
-		Emote("You taunt %s, causing it to focus its attention on you!", GetTarget()->GetName());
+		Message(Chat::Skills, "You taunt %s, causing it to focus its attention on you!", GetTarget()->GetCleanName());
+		Emote("taunts %s, causing it to focus its attention on you!", GetTarget()->GetCleanName());
 	}
 	else
 		Taunt(GetTarget()->CastToNPC(), false);
