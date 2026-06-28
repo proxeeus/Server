@@ -219,7 +219,11 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 			uint16_t ropcode = fg.opcode;
 			s.frag_groups.erase(fseq);
 			LogNetcode("[TrilogyWorld] rx FRAGMENT COMPLETE opcode={:04X} plen={}", ropcode, full.size());
-			OnOpcode(addr, port, s, ropcode, full.data(), static_cast<uint32_t>(full.size()));
+			// hdr1=0: reassembled-fragment dispatch path doesn't carry the
+			// original first-fragment hdr1.  Currently only HandleWearChange
+			// inspects hdr1 (to filter ARSP-bundled echoes), and WearChange
+			// never arrives fragmented, so leaving it 0 is safe.
+			OnOpcode(addr, port, s, ropcode, full.data(), static_cast<uint32_t>(full.size()), 0);
 		}
 		return;
 	}
@@ -302,7 +306,7 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	LogNetcode("[TrilogyWorld] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} size={}",
 	           hdr0, hdr1, has_arq, cli_arq, opcode, size);
-	OnOpcode(addr, port, session, opcode, payload, plen);
+	OnOpcode(addr, port, session, opcode, payload, plen, hdr1);
 	CheckPendingZoneEntry(addr, port, session);
 }
 
@@ -311,7 +315,8 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 // ============================================================
 
 void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
-                                   uint16_t opcode, const uint8_t* payload, uint32_t plen)
+                                   uint16_t opcode, const uint8_t* payload, uint32_t plen,
+                                   uint8_t hdr1)
 {
 	LogNetcode("[TrilogyWorld] rx opcode 0x{:04X} plen={} from {}:{}", opcode, plen, addr, port);
 
@@ -341,7 +346,7 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		HandleDeleteCharacter(addr, port, s, payload, plen);
 		break;
 	case WS_OP_WEAR_CHANGE:
-		HandleWearChange(addr, port, s, payload, plen);
+		HandleWearChange(addr, port, s, payload, plen, hdr1);
 		break;
 	case OP_WORLD_LOGOUT: // 0x2320 — client clicked "Quit" at char select
 		HandleWorldLogout(addr, port, s);
@@ -508,7 +513,8 @@ void TrilogyWorldServer::SendExpansionInfo(const std::string& addr, int port, Se
 // ============================================================
 
 void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Session& s,
-                                           const uint8_t* payload, uint32_t plen)
+                                           const uint8_t* payload, uint32_t plen,
+                                           uint8_t hdr1)
 {
 	using TrilWC = Trilogy::structs::WearChange_Struct;
 	if (plen < sizeof(TrilWC)) {
@@ -520,6 +526,29 @@ void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Ses
 
 	// SUB_ChangeChar is informational — no response expected.
 	if (req->sub_op == WS_SUB_CHANGE_CHAR) {
+		if (s.ack_due) SendAck(addr, port, s);
+		return;
+	}
+
+	// Skip ARSP-bundled echo confirmations.  v29c re-sends every OP_WearChange
+	// reply we send back to us as a transport-layer confirmation, bundled with
+	// the ack of our TX (hdr1 bit 0x04 = HDR1_ARSP).  The echo packet carries
+	// the (wear_slot_id, slot_graphic) we just sent — i.e. slot_graphic is the
+	// weapon MODEL number, not the 1-based char index of a real query.  When
+	// that model number happens to fall in [1, char_count] (e.g. Sarallron's
+	// IT2 → model 2 → looks like a query for char 2 in a 4-char roster), the
+	// naive handler treated the echo as a fresh query, looked up the OTHER
+	// character's weapon, and shipped it back.  v29c then applied that to the
+	// displayed character's paperdoll (the "model switches to another char's
+	// weapon when I click between chars" cosmetic bug).
+	//
+	// Real queries arrive with hdr1=0x00 (no ARSP); echoes arrive with
+	// hdr1 & 0x04 set.  Wire-confirmed against world_6416.log: every
+	// hdr1=0x04 OP_WearChange RX in that capture had a slot_graphic that
+	// matched one of our prior TX model numbers (02 / 22 / 24 / 70 / 00),
+	// and every hdr1=0x00 RX with non-CHANGE_CHAR sub_op carried a real
+	// 1-based char index (01..04).  Drop ARSP-bundled echoes and just ACK.
+	if (hdr1 & HDR1_ARSP) {
 		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
@@ -541,7 +570,7 @@ void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Ses
 
 	TrilWC resp{};
 	resp.wear_slot_id = req->wear_slot_id;
-	resp.slot_graphic = model;     // weapon model number (digits of idfile)
+	resp.slot_graphic = model;       // weapon model number (digits of idfile)
 	resp.sub_op       = req->sub_op; // echo the request tag
 
 	SendApp(addr, port, s, WS_OP_WEAR_CHANGE,

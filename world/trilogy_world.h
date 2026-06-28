@@ -103,7 +103,8 @@ private:
 	                const uint8_t* buf, int len);
 
 	void OnOpcode(const std::string& addr, int port, Session& s,
-	              uint16_t opcode, const uint8_t* payload, uint32_t plen);
+	              uint16_t opcode, const uint8_t* payload, uint32_t plen,
+	              uint8_t hdr1 = 0);
 
 	void HandleLoginInfo(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
@@ -125,7 +126,8 @@ private:
 	                           const uint8_t* payload, uint32_t plen);
 
 	void HandleWearChange(const std::string& addr, int port, Session& s,
-	                      const uint8_t* payload, uint32_t plen);
+	                      const uint8_t* payload, uint32_t plen,
+	                      uint8_t hdr1 = 0);
 
 	void HandleWorldLogout(const std::string& addr, int port, Session& s);
 

@@ -8681,13 +8681,43 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 		    (to_worn && to_db == vs.db_slot);
 		if (!touched) continue;
 
-		const uint32 material = tc->GetEquipmentMaterial(vs.material_slot);
-		const uint32 color    = tc->GetEquipmentColor(vs.material_slot);
+		// Resolve material + color from the just-refreshed m_inv slot rather
+		// than via tc->GetEquipmentMaterial / tc->GetEquipmentColor.  Those
+		// helpers consult mob_texture_profile / armor_tint caches that the
+		// v29c client itself populates when it sends OP_WearChange (via
+		// HandleConnectedWearChange → Mob::WearChange → SetMobTextureProfile).
+		// If the prior weapon's WearChange seeded the cache and the client
+		// doesn't send a follow-up WearChange for the new weapon (or sends
+		// one out of order with this MoveItem), the cache still holds the
+		// OLD weapon's material and the helpers return it — so we'd echo the
+		// old shortsword model back to the player and broadcast it to other
+		// clients, defeating the swap.  Reading m_inv (already DB-synced by
+		// refresh_slot above) is authoritative; an empty slot resolves to
+		// material/color 0 which is the correct "bare hands" wire value.
+		uint32 material = 0;
+		uint32 color    = 0;
+		if (const EQ::ItemInstance* w_inst = inv[vs.db_slot]) {
+			if (const EQ::ItemData* w_item = w_inst->GetItem()) {
+				if (strlen(w_item->IDFile) > 2 && Strings::IsNumber(&w_item->IDFile[2])) {
+					material = Strings::ToUnsignedInt(&w_item->IDFile[2]);
+				}
+				color = w_inst->GetColor() ? w_inst->GetColor() : w_item->Color;
+			}
+		}
+
+		// Keep the texture-profile cache coherent with what we're about to
+		// put on the wire.  Without this, the very next reader of
+		// GetEquipmentMaterial for this slot (spawn struct builds when a
+		// new client zones in, pet summon, etc.) would still get the stale
+		// pre-swap material.  Weapons aren't tinted so we deliberately
+		// don't touch armor_tint here.
+		tc->SetMobTextureProfile(vs.material_slot, material, color, 0);
 
 		// Build the OP_WearChange packet by hand instead of calling
-		// Mob::WearChange — the latter writes armor_tint + SetMobTextureProfile
-		// which would corrupt the mob's texture state.  We only want the wire
-		// effect, not the in-memory state mutation.
+		// Mob::WearChange — the latter also writes armor_tint (which would
+		// clobber tinted armor for non-weapon slots if this helper were ever
+		// reused for them).  We only want the wire effect plus the texture-
+		// profile coherency above.
 		auto* outapp = new EQApplicationPacket(OP_WearChange, sizeof(::WearChange_Struct));
 		auto* w = reinterpret_cast<::WearChange_Struct*>(outapp->pBuffer);
 		w->spawn_id         = tc->GetID();
