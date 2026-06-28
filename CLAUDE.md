@@ -167,6 +167,7 @@ these findings with file/line specifics — consult it for anything Trilogy-rela
   table, protocol-difference table, risk register. Historical but still an accurate struct/opcode
   reference.
 - **`packetsFiltered.txt`** (repo root) — captured packet traces.
+- Database credentials are in eqemu_config.json
 
 ---
 
@@ -204,3 +205,4 @@ case scenario, investigate and propose workarounds. NEVER EVER assume we "reache
 - Stop asking for EQClassic packet captures. There are none.
 - NEVER EVER suggest "accepting the lesser of two evils" / abandon for the user.
 - Always ASK before thinking a refactor is needed because somehow a new source has been found.
+- Never, EVER run anything else than SELECT queries on the database. Suggest what should manually done if needed.
