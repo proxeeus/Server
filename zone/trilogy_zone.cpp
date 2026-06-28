@@ -2166,10 +2166,54 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			else {
 				::Consume_Struct cs{};
 				memcpy(&cs, payload, sizeof(::Consume_Struct));
+				const uint32_t wire_slot = cs.slot;
 				const int emu_slot =
 				    TrilogyWireSlotToEmuSlot(cs.slot, s.cursor_from_db);
 				if (emu_slot >= 0) {
+					// Lazy m_inv sync from DB.  Trilogy direct-DB paths
+					// (HandleShopPlayerBuy, NPC trade returns, loot transfers)
+					// write to the `inventory` table without touching m_inv,
+					// so Handle_OP_Consume's GetInv().GetItem(slot) returns
+					// nullptr for items bought this session and bails with
+					// LogError.  The v29c client visibly decrements its local
+					// stack but the DB row stays at the original count — the
+					// stack "reappears" full on the next zone-in because that
+					// zone's SendInventoryItems reloads m_inv from the un-mutated
+					// DB.  Cheap single-row lookup keeps the engine handler honest.
+					if (s.trilogy_client->GetInv().GetItem(
+					        static_cast<int16>(emu_slot)) == nullptr) {
+						auto r = database.QueryDatabase(fmt::format(
+						    "SELECT `itemid`, `charges` FROM `inventory` "
+						    "WHERE `charid`={} AND `slotid`={}",
+						    s.char_id, emu_slot));
+						if (r.Success() && r.RowCount() > 0) {
+							auto row = r.begin();
+							const uint32 item_id =
+							    static_cast<uint32>(Strings::ToUnsignedInt(row[0]));
+							const int16 charges =
+							    static_cast<int16>(Strings::ToInt(row[1]));
+							if (item_id != 0) {
+								EQ::ItemInstance* inst =
+								    database.CreateItem(item_id, charges);
+								if (inst) {
+									s.trilogy_client->GetInv().PutItem(
+									    static_cast<int16>(emu_slot), *inst);
+									safe_delete(inst);
+									LogFood("[TrilogyZone] Consume: synced m_inv from DB "
+									        "slot={} item={} charges={} (was stale post-buy)",
+									        emu_slot, item_id, charges);
+								}
+							}
+						}
+					}
+
 					cs.slot = static_cast<uint32_t>(emu_slot);
+					LogFood("[TrilogyZone] Consume bridge: char={} wire_slot={} "
+					        "emu_slot={} type={} auto={} hunger={} thirst={}",
+					        s.char_name, wire_slot, emu_slot, (int)cs.type,
+					        cs.auto_consumed == 0xffffffff,
+					        s.trilogy_client->GetPP().hunger_level,
+					        s.trilogy_client->GetPP().thirst_level);
 					EQApplicationPacket pkt(OP_Consume,
 					                        sizeof(::Consume_Struct));
 					memcpy(pkt.pBuffer, &cs, sizeof(cs));
@@ -3330,17 +3374,23 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 
 	{
-		// Stamina (5721) unreliable: constant-value periodic refresh
-		// (food/water/fatigue static at 6000/6000/0).  Tick re-sends every 5 s
+		// Stamina (5721) unreliable: periodic refresh.  Tick re-sends every 5 s
 		// so a UDP drop is invisible — same supersede-by-next-update property
-		// as A120/B220 per Agz EQPacketManager.cpp:412.  Was the wall-killer
-		// in test log 15912 (2026-06-23): 437 reliable 5721 packets / ~9% of
-		// the v29c ~4870-packet reliable budget.
+		// as A120/B220 per Agz EQPacketManager.cpp:412.  fatigue stays 0 so
+		// client-side endurance never depletes.  food/water mirror the real
+		// PlayerProfile values so the v29c client can drive its own auto-consume
+		// loop (it sends ZN_OP_ConsumeFoodDrink 0x5621 when hunger/thirst drops
+		// below its threshold).  The engine's Client::DoStaminaHungerUpdate
+		// (client_process.cpp:1965) decrements m_pp.hunger_level/thirst_level
+		// every 46 s; the OP_Stamina it queues is silently dropped by
+		// TrilogyClient (no translator), so this refresh is the only path to
+		// the wire for v29c hunger/thirst.
 		// See [[project-trilogy-unreliable-a120-wire-format]] for wire layout.
+		const auto& pp = s.trilogy_client->GetPP();
 		Trilogy::structs::Stamina_Struct sta{};
 		memset(&sta, 0, sizeof(sta));
-		sta.food    = 6000;
-		sta.water   = 6000;
+		sta.food    = static_cast<int16_t>(std::min(std::max(pp.hunger_level, 0), 6000));
+		sta.water   = static_cast<int16_t>(std::min(std::max(pp.thirst_level, 0), 6000));
 		sta.fatigue = 0;
 		SendApp(addr, port, s, ZN_OP_Stamina,
 		        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta),
@@ -7194,14 +7244,17 @@ void TrilogyZoneServer::Tick()
 			}
 		}
 
-		// Refresh stamina every 5s so client-side endurance never depletes to 0.
-		// Unreliable: see the zone-in send for rationale.  Loss is harmless —
-		// next tick re-sends the same constant values.
-		if (now_ms - s.last_stamina_ms >= 5000) {
+		// Refresh stamina every 5s.  fatigue stays 0 so client endurance never
+		// depletes; food/water mirror the real PlayerProfile so v29c can drive
+		// its own auto-consume loop (sends ZN_OP_ConsumeFoodDrink when its
+		// internal threshold is crossed).  Unreliable: see the zone-in send for
+		// rationale.  Loss is harmless — next tick re-sends the latest values.
+		if (s.trilogy_client && now_ms - s.last_stamina_ms >= 5000) {
 			s.last_stamina_ms = now_ms;
+			const auto& pp = s.trilogy_client->GetPP();
 			Trilogy::structs::Stamina_Struct sta{};
-			sta.food    = 6000;
-			sta.water   = 6000;
+			sta.food    = static_cast<int16_t>(std::min(std::max(pp.hunger_level, 0), 6000));
+			sta.water   = static_cast<int16_t>(std::min(std::max(pp.thirst_level, 0), 6000));
 			sta.fatigue = 0;
 			SendApp(s.source_addr, s.source_port, s, ZN_OP_Stamina,
 			        reinterpret_cast<const uint8_t*>(&sta), sizeof(sta),
