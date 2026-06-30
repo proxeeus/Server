@@ -4912,7 +4912,8 @@ void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*p
 	        s.char_name);
 }
 
-void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire)
+void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
+                                            uint32_t number_in_stack)
 {
 	if (!s.trilogy_client) return;
 
@@ -4922,17 +4923,32 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 		const int from_db = TradeWireToDb(s, from_wire);
 		if (from_db < 0) return;
 
-		uint32_t item_id = 0;
-		int16_t  charges = 0;
+		uint32_t item_id    = 0;
+		int16_t  db_charges = 0;
 		auto r = database.QueryDatabase(fmt::format(
 		    "SELECT itemid, charges FROM inventory WHERE charid={} AND slotid={}",
 		    s.char_id, from_db));
 		if (r.Success() && r.RowCount() > 0) {
 			auto row = r.begin();
-			item_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
-			charges = static_cast<int16_t>(Strings::ToInt(row[1]));
+			item_id    = static_cast<uint32_t>(Strings::ToInt(row[0]));
+			db_charges = static_cast<int16_t>(Strings::ToInt(row[1]));
 		}
 		if (item_id == 0) return;
+
+		// Partial-stack staging is now correct: HandleMoveItem materialises a
+		// real cursor row at DB slot 33 (or 8000-8010 queue) on partial pickup
+		// and decrements the source row.  TradeWireToDb(0) returns
+		// cursor_from_db, which now points at that cursor row, so db_charges
+		// already reflects the partial qty the client put on cursor.  On Give,
+		// HandleTradeGive deletes the cursor row only — the source remainder
+		// stays put.  This log stays as the staging trace.
+		LogInfo("[TrilogyZone] TradeStageDIAG char={} item={} trade_slot={} from_db={} "
+		        "db_charges={} client_number_in_stack={} from_wire={} (cursor_from_db_was={})",
+		        s.char_id, item_id, idx, from_db,
+		        (int)db_charges, number_in_stack, from_wire,
+		        s.cursor_from_db);
+
+		int16_t charges = db_charges;
 
 		// ── PC trade staging ────────────────────────────────────────────────
 		if (s.pc_trade_active) {
@@ -5440,6 +5456,18 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 			    "SELECT charges FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
 			    s.char_id, st.from_db_slot, st.item_id));
 			if (!r.Success() || r.RowCount() == 0) continue;
+
+			// DIAG: compare what we staged (st.charges, captured when the item
+			// was dropped into the trade window) with what the inventory row
+			// currently holds.  Any mismatch points at a partial-stack split
+			// the server failed to model (we read & stage the FULL row but the
+			// client only intended to give number_in_stack).
+			const int16_t db_charges_now = static_cast<int16_t>(Strings::ToInt(r.begin()[0]));
+			LogInfo("[TrilogyZone] TradeGiveDIAG char={} npc={} trade_slot={} item={} "
+			        "from_db={} staged_charges={} db_charges_now={} (deleting full row)",
+			        s.char_id, npc->GetNPCTypeID(), i, st.item_id,
+			        st.from_db_slot, (int)st.charges, (int)db_charges_now);
+
 			taken[i] = database.CreateItem(st.item_id, st.charges);
 			database.QueryDatabase(fmt::format(
 			    "DELETE FROM inventory WHERE charid={} AND slotid={} AND itemid={}",
@@ -8843,7 +8871,7 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	// never go through Client::FinishTrade / m_inv.
 	if ((to_wire   >= 3000 && to_wire   <= 3007) ||
 	    (from_wire >= 3000 && from_wire <= 3007)) {
-		HandleTradeMoveItem(s, from_wire, to_wire);
+		HandleTradeMoveItem(s, from_wire, to_wire, mi->number_in_stack);
 		return;
 	}
 
@@ -9013,11 +9041,111 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	// Destroy from cursor: 0 → 0xFFFFFFFF  — delete cursor_from_db row from DB.
 
 	if (to_wire == 0) {
-		// Picking up to cursor.  Resolve the DB slot now and park it.
+		// Picking up to cursor.  Resolve the DB slot now.
 		const int from_db = wire_to_db(from_wire);
 		if (from_db < 0) return;
-		LogInfo("[TrilogyZone] MoveItem (pick up) char={} from_wire={} → cursor, cursor_from_db={}",
-		        s.char_id, from_wire, from_db);
+
+		// ── Partial-stack pickup ────────────────────────────────────────────
+		// v29c sends MoveItem_Struct.number_in_stack > 0 when the client is
+		// splitting a stack (e.g. right-click pickup of 5 from a stack of 20).
+		// EQClassic ProcessOP_MoveItem (client_process.cpp:1719) and stock
+		// EQEmu Client::SwapItem (inventory.cpp:2138-2148) both decrement the
+		// source row and put the partial on cursor at pickup time.  Without
+		// this:
+		//   • the cursor "represents" the whole source row, so any subsequent
+		//     drop moves/swaps the ENTIRE row (corrupting same-item moves);
+		//   • trade staging reads the full DB row, and giving the trade to a
+		//     quest NPC deletes the whole row — losing the leftover the
+		//     player never intended to give.
+		// Materialise the partial as a real cursor row (DB slot 33, or the
+		// 8000-8010 queue if 33 is occupied) so the rest of the pipeline
+		// (drop / trade / destroy) sees the correct partial qty.
+		if (mi->number_in_stack > 0) {
+			auto src_q = database.QueryDatabase(fmt::format(
+			    "SELECT `itemid`, `charges`, `color` FROM `inventory` "
+			    "WHERE `charid`={} AND `slotid`={}",
+			    s.char_id, from_db));
+			if (src_q.Success() && src_q.RowCount() > 0) {
+				auto row = src_q.begin();
+				const uint32 src_iid = static_cast<uint32>(Strings::ToInt(row[0]));
+				const int16  src_chg = static_cast<int16>(Strings::ToInt(row[1]));
+				const uint32 src_col = static_cast<uint32>(Strings::ToInt(row[2]));
+				const int16  pick    = static_cast<int16>(mi->number_in_stack);
+
+				if (src_iid != 0 && src_chg > pick) {
+					// Pick a free cursor DB slot: 33 if empty, else the next
+					// 8000-8010 queue slot (matches the world-container path
+					// just above and the cursor-queue convention).
+					int cursor_slot = 33;
+					auto occ_q = database.QueryDatabase(fmt::format(
+					    "SELECT COUNT(*) FROM `inventory` "
+					    "WHERE `charid`={} AND `slotid`=33", s.char_id));
+					if (occ_q.Success() && occ_q.RowCount() > 0 &&
+					    Strings::ToInt(occ_q.begin()[0]) > 0) {
+						auto next_q = database.QueryDatabase(fmt::format(
+						    "SELECT COALESCE(MAX(`slotid`),7999)+1 FROM `inventory` "
+						    "WHERE `charid`={} AND `slotid` BETWEEN 8000 AND 8010",
+						    s.char_id));
+						if (next_q.Success() && next_q.RowCount() > 0) {
+							cursor_slot = static_cast<int>(Strings::ToInt(next_q.begin()[0]));
+							if (cursor_slot > 8010) cursor_slot = 8010;
+						}
+					}
+
+					database.QueryDatabase(fmt::format(
+					    "UPDATE `inventory` SET `charges`=`charges`-{} "
+					    "WHERE `charid`={} AND `slotid`={}",
+					    pick, s.char_id, from_db));
+					database.QueryDatabase(fmt::format(
+					    "REPLACE INTO `inventory` (`charid`,`slotid`,`itemid`,`charges`,`color`) "
+					    "VALUES ({},{},{},{},{})",
+					    s.char_id, cursor_slot, src_iid, pick, src_col));
+
+					s.cursor_from_db = cursor_slot;
+
+					// m_inv sync: source slot charges changed; cursor row may
+					// be new.  Re-read both so engine code that consults m_inv
+					// (lore checks, CalcBonuses, etc.) doesn't see stale data.
+					if (s.trilogy_client) {
+						auto& inv = s.trilogy_client->GetInv();
+						auto sync_one = [&](int db_slot) {
+							auto* old = inv.PopItem(static_cast<int16>(db_slot));
+							safe_delete(old);
+							auto r = database.QueryDatabase(fmt::format(
+							    "SELECT `itemid`,`charges`,`color` FROM `inventory` "
+							    "WHERE `charid`={} AND `slotid`={}",
+							    s.char_id, db_slot));
+							if (!r.Success() || r.RowCount() == 0) return;
+							auto rrow = r.begin();
+							const uint32 iid = static_cast<uint32>(Strings::ToInt(rrow[0]));
+							if (iid == 0) return;
+							const int16  ch  = static_cast<int16>(Strings::ToInt(rrow[1]));
+							const uint32 col = static_cast<uint32>(Strings::ToInt(rrow[2]));
+							EQ::ItemInstance* inst = database.CreateItem(iid, ch);
+							if (!inst) return;
+							inst->SetColor(col);
+							inv.PutItem(static_cast<int16>(db_slot), *inst);
+							safe_delete(inst);
+						};
+						sync_one(from_db);
+						sync_one(cursor_slot);
+					}
+
+					LogInfo("[TrilogyZone] MoveItem (partial pickup) char={} from_wire={} "
+					        "src_db={} src_remaining={} cursor_db={} partial_chg={} item={}",
+					        s.char_id, from_wire, from_db, (src_chg - pick),
+					        cursor_slot, pick, src_iid);
+					return;
+				}
+			}
+		}
+
+		// Whole-stack pickup (n_i_s == 0, or n_i_s ≥ src.charges = degenerate):
+		// keep the existing optimisation — record source slot, defer the row
+		// movement until drop.  Drop path handles row UPDATE / merge / swap.
+		LogInfo("[TrilogyZone] MoveItem (pick up) char={} from_wire={} → cursor, "
+		        "cursor_from_db={} client_number_in_stack={}",
+		        s.char_id, from_wire, from_db, mi->number_in_stack);
 		s.cursor_from_db = from_db;
 		return;
 	}
@@ -9136,6 +9264,64 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		return;
 	}
 
+	// Stack-merge probe: if both slots hold the same stackable item, MERGE
+	// charges (cap at StackSize, overflow stays at source) instead of swapping.
+	// Catches both the partial-pickup-then-drop-onto-existing-stack case (cursor
+	// row has the partial qty, dest has the original stack) and whole-stack
+	// pickup dropped onto another same-item stack.  Without this, the swap
+	// path moved entire rows around silently, mangling the per-slot counts the
+	// client expected after the merge.
+	bool did_stack_merge = false;
+	if (to_occupied) {
+		auto src_q = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`, `charges` FROM `inventory` "
+		    "WHERE `charid`={} AND `slotid`={}", s.char_id, from_db));
+		auto dst_q = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`, `charges` FROM `inventory` "
+		    "WHERE `charid`={} AND `slotid`={}", s.char_id, to_db));
+		if (src_q.Success() && src_q.RowCount() > 0 &&
+		    dst_q.Success() && dst_q.RowCount() > 0) {
+			auto srow = src_q.begin();
+			auto drow = dst_q.begin();
+			const uint32 src_iid = static_cast<uint32>(Strings::ToInt(srow[0]));
+			const int16  src_chg = static_cast<int16>(Strings::ToInt(srow[1]));
+			const uint32 dst_iid = static_cast<uint32>(Strings::ToInt(drow[0]));
+			const int16  dst_chg = static_cast<int16>(Strings::ToInt(drow[1]));
+			if (src_iid != 0 && src_iid == dst_iid) {
+				const EQ::ItemData* item = database.GetItem(src_iid);
+				if (item && item->Stackable && item->StackSize > 1) {
+					const int stack_max = item->StackSize;
+					const int total     = src_chg + dst_chg;
+					if (total <= stack_max) {
+						database.QueryDatabase(fmt::format(
+						    "UPDATE `inventory` SET `charges`={} "
+						    "WHERE `charid`={} AND `slotid`={}",
+						    total, s.char_id, to_db));
+						database.QueryDatabase(fmt::format(
+						    "DELETE FROM `inventory` "
+						    "WHERE `charid`={} AND `slotid`={}",
+						    s.char_id, from_db));
+					} else {
+						database.QueryDatabase(fmt::format(
+						    "UPDATE `inventory` SET `charges`={} "
+						    "WHERE `charid`={} AND `slotid`={}",
+						    stack_max, s.char_id, to_db));
+						database.QueryDatabase(fmt::format(
+						    "UPDATE `inventory` SET `charges`={} "
+						    "WHERE `charid`={} AND `slotid`={}",
+						    total - stack_max, s.char_id, from_db));
+					}
+					LogInfo("[TrilogyZone] MoveItem char={} stack-merge item={} "
+					        "src_db={} ({}) + dst_db={} ({}) → dst {} (stack_max={})",
+					        s.char_id, src_iid, from_db, (int)src_chg,
+					        to_db, (int)dst_chg,
+					        (total <= stack_max ? total : stack_max), stack_max);
+					did_stack_merge = true;
+				}
+			}
+		}
+	}
+
 	if (!to_occupied) {
 		// Simple move: from → to (no item at destination)
 		database.QueryDatabase(fmt::format(
@@ -9154,7 +9340,7 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 			    "WHERE `charid`={} AND `slotid` BETWEEN 9000 AND 9009",
 			    9000 - to_cont_base, s.char_id));
 		}
-	} else {
+	} else if (!did_stack_merge) {
 		// Swap: both slots occupied — use temp slotid 9999 to avoid unique-key conflict
 		database.QueryDatabase(fmt::format(
 		    "UPDATE `inventory` SET `slotid`=9999 WHERE `charid`={} AND `slotid`={}",

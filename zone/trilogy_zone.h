@@ -494,7 +494,8 @@ private:
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleTradeGive(const std::string& addr, int port, Session& s);
 	void HandleTradeCancel(const std::string& addr, int port, Session& s);
-	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire);
+	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
+	                         uint32_t number_in_stack);
 	// PC-trade internals (split out of the above for readability).
 	void PcTradeAbortBoth(Session& s, Session* partner,
 	                      const char* my_msg, const char* partner_msg);
