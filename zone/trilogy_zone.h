@@ -389,6 +389,16 @@ private:
 		// Set to the DB slot of the item picked up; cleared after it lands.
 		int cursor_from_db = -1;
 
+		// When HandleMoveItem materialises a partial-stack pickup as a real
+		// cursor row (DB slot 33 or 8000-8010), this records the player's
+		// ORIGINAL inventory slot so trade cancel / non-quest NPC give can
+		// merge the cursor row back into the source.  Cleared on any drop
+		// (cursor → inventory slot, cursor → destroy, cursor → trade slot
+		// after the origin is copied into the TradeStageItem).  -1 means
+		// "no partial pickup pending" (whole-stack pickup uses cursor_from_db
+		// to point at the source row directly).
+		int cursor_partial_origin_db = -1;
+
 		// Bank-bag-content per-item packets, deferred from SendInventoryItems
 		// (CONNECTING3 zone-in burst) to OnClientReady (first ClientUpdate after
 		// zone-in completes).  Sending these inline with the inventory burst
@@ -408,7 +418,18 @@ private:
 		//                returned to the player's cursor (give-to-non-quest / cancel).
 		// trade_*p     : coins staged into the window (deducted from the player when
 		//                placed; spent on a quest give, refunded otherwise).
-		struct TradeStageItem { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
+		// original_source_db_slot: when the staged item came from a partial-stack
+		// pickup, from_db_slot is the materialised cursor row (33 or 8000-8010)
+		// and original_source_db_slot is the player's original inventory slot we
+		// pulled the partial from.  Used to refund the cursor row back to the
+		// source on cancel / non-quest-NPC give.  -1 means "no partial origin"
+		// (whole-stack pickup, or item was already on cursor before pickup).
+		struct TradeStageItem {
+			uint32_t item_id                 = 0;
+			int16_t  charges                 = 0;
+			int      from_db_slot            = -1;
+			int      original_source_db_slot = -1;
+		};
 		uint16_t       trade_npc_id  = 0;
 		TradeStageItem trade_items[8] = {};
 		uint32_t       trade_cp = 0, trade_sp = 0, trade_gp = 0, trade_pp = 0;
@@ -420,7 +441,13 @@ private:
 		// the precheck for lore + free slots passed).  This matches EQClassic
 		// ProcessOP_GiveItem / ProcessOP_TradeAccepted / ProcessOP_Click_Give and the
 		// existing NPC trade pattern, so an abandoned trade cannot lose items.
-		struct PcTradeStageItem { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
+		// Same partial-pickup origin tracking as TradeStageItem — see comment there.
+		struct PcTradeStageItem {
+			uint32_t item_id                 = 0;
+			int16_t  charges                 = 0;
+			int      from_db_slot            = -1;
+			int      original_source_db_slot = -1;
+		};
 		struct PcTradeBagSlot   { uint32_t item_id = 0; int16_t charges = 0; int from_db_slot = -1; };
 		bool             pc_trade_active     = false;
 		uint16_t         pc_trade_partner_id = 0;   // entity id of the other Trilogy client
@@ -496,6 +523,16 @@ private:
 	void HandleTradeCancel(const std::string& addr, int port, Session& s);
 	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
 	                         uint32_t number_in_stack);
+	// Refund any partial-pickup cursor rows that ended up in trade_items back to
+	// their original source slot (merge if same item, else move/queue).  Used by
+	// HandleTradeCancel + the non-quest branch of HandleTradeGive so the server's
+	// DB stays in sync with the client's local-return behaviour.
+	void RefundPartialCursorTradeItems(Session& s);
+	// PC-trade equivalent — same per-row merge logic against pc_trade_main.
+	// Called from PcTradeAbortBoth.
+	void RefundPartialCursorPcTradeItems(Session& s);
+	// m_inv resync helper used by both refund paths above.
+	void ResyncMInvForRefund(Session& s, const std::vector<int>& slots_to_sync);
 	// PC-trade internals (split out of the above for readability).
 	void PcTradeAbortBoth(Session& s, Session* partner,
 	                      const char* my_msg, const char* partner_msg);

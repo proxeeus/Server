@@ -4973,11 +4973,17 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 				return;
 			}
 
-			s.pc_trade_main[idx].item_id      = item_id;
-			s.pc_trade_main[idx].charges      = charges;
-			s.pc_trade_main[idx].from_db_slot = from_db;
+			s.pc_trade_main[idx].item_id                 = item_id;
+			s.pc_trade_main[idx].charges                 = charges;
+			s.pc_trade_main[idx].from_db_slot            = from_db;
+			s.pc_trade_main[idx].original_source_db_slot = (from_wire == 0)
+			    ? s.cursor_partial_origin_db
+			    : -1;
 			for (auto& bs : s.pc_trade_bag[idx]) bs = Session::PcTradeBagSlot{};
-			if (from_wire == 0) s.cursor_from_db = -1;
+			if (from_wire == 0) {
+				s.cursor_from_db           = -1;
+				s.cursor_partial_origin_db = -1;
+			}
 
 			// Notify partner: main item at trade slot idx.
 			//
@@ -5056,13 +5062,22 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 		}
 
 		// ── NPC trade staging (existing behaviour) ──────────────────────────
-		s.trade_items[idx].item_id      = item_id;
-		s.trade_items[idx].charges      = charges;
-		s.trade_items[idx].from_db_slot = from_db;
-		if (from_wire == 0) s.cursor_from_db = -1;
+		s.trade_items[idx].item_id                 = item_id;
+		s.trade_items[idx].charges                 = charges;
+		s.trade_items[idx].from_db_slot            = from_db;
+		// Carry forward the partial-pickup origin so cancel / non-quest give
+		// can merge the cursor row back into the source slot.
+		s.trade_items[idx].original_source_db_slot = (from_wire == 0)
+		    ? s.cursor_partial_origin_db
+		    : -1;
+		if (from_wire == 0) {
+			s.cursor_from_db           = -1;
+			s.cursor_partial_origin_db = -1;
+		}
 
-		LogInfo("[TrilogyZone] Trade stage char={} item={} -> slot {} (db_slot={})",
-		        s.char_id, item_id, idx, from_db);
+		LogInfo("[TrilogyZone] Trade stage char={} item={} -> slot {} (db_slot={} orig_src={})",
+		        s.char_id, item_id, idx, from_db,
+		        s.trade_items[idx].original_source_db_slot);
 		return;
 	}
 
@@ -5173,6 +5188,9 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 	if (my_msg && *my_msg && s.trilogy_client)
 		s.trilogy_client->Message(Chat::Red, my_msg);
 	PcTradeRefundOfferedCoins(s);
+	// Refund any partial-pickup cursor rows BEFORE PcTradeClearState wipes
+	// the pc_trade_main array (the refund needs from_db_slot + origin).
+	RefundPartialCursorPcTradeItems(s);
 	SendApp(s.source_addr, s.source_port, s, ZN_OP_CloseTrade, &z, 0);
 	PcTradeClearState(s);
 
@@ -5180,6 +5198,7 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 		if (partner_msg && *partner_msg)
 			partner->trilogy_client->Message(Chat::Red, partner_msg);
 		PcTradeRefundOfferedCoins(*partner);
+		RefundPartialCursorPcTradeItems(*partner);
 		SendApp(partner->source_addr, partner->source_port, *partner,
 		        ZN_OP_CloseTrade, &z, 0);
 		PcTradeClearState(*partner);
@@ -5493,6 +5512,12 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 		for (EQ::ItemInstance* inst : taken) safe_delete(inst);
 
 		LogInfo("[TrilogyZone] EVENT_TRADE fired: {} -> NPC {}", s.char_name, npc_id);
+	} else {
+		// Non-quest NPC: server doesn't take or move anything; the client
+		// returns the trade-window items to their visual source slot locally.
+		// Refund any partial-pickup cursor rows back into their source DB
+		// slot so server state matches the client's local return.
+		RefundPartialCursorTradeItems(s);
 	}
 
 	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
@@ -5501,6 +5526,165 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 	uint8_t close_dummy = 0;
 	SendApp(addr, port, s, ZN_OP_CloseTrade, &close_dummy, 0);
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Cursor-row refund (trade cancel / non-quest give)
+//
+// When a partial-stack pickup is staged into the NPC or PC trade window, the
+// cursor row at DB slot 33 / 8000-8010 PERSISTS in DB until commit or cancel.
+// On commit (quest NPC give, PC two-sided give), the row is consumed by the
+// commit path — correct.  On CANCEL or GIVE-TO-NON-QUEST-NPC, the client
+// locally returns the partial back to its visual source slot; without a
+// refund, the server's cursor row would stay orphaned and drift from the
+// client's view.
+//
+// Strategy per cursor-row trade item:
+//   1. Source slot still holds the same item AND stackable: merge (cap at
+//      StackSize, overflow stays in the cursor row).  Delete cursor row if
+//      overflow is 0.
+//   2. Source slot empty: UPDATE the cursor row's slotid back to the source
+//      slot (puts the partial back exactly where the client returned it).
+//   3. Source holds a different item now: leave the cursor row alone (would
+//      otherwise trample real data).  Drift self-heals on zone-in.
+//
+// Whole-stack staging (original_source_db_slot < 0) needs no refund — the
+// server never moved that row.  Skipped.
+// ──────────────────────────────────────────────────────────────────────────
+static void RefundOneCursorRow(uint32 char_id, uint32 item_id,
+                               int cur_db, int src_db, int log_slot, const char* ctx)
+{
+	const bool is_cursor_row = (cur_db == 33) ||
+	                           (cur_db >= 8000 && cur_db <= 8010);
+	if (!is_cursor_row || src_db < 0 || item_id == 0) return;
+
+	auto cur_q = database.QueryDatabase(fmt::format(
+	    "SELECT `charges` FROM `inventory` "
+	    "WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
+	    char_id, cur_db, item_id));
+	if (!cur_q.Success() || cur_q.RowCount() == 0) return;
+	const int16 cur_chg = static_cast<int16>(Strings::ToInt(cur_q.begin()[0]));
+
+	auto src_q = database.QueryDatabase(fmt::format(
+	    "SELECT `itemid`, `charges` FROM `inventory` "
+	    "WHERE `charid`={} AND `slotid`={}",
+	    char_id, src_db));
+	const bool   src_present = (src_q.Success() && src_q.RowCount() > 0);
+	const uint32 src_iid = src_present
+	    ? static_cast<uint32>(Strings::ToInt(src_q.begin()[0])) : 0u;
+	const int16  src_chg = src_present
+	    ? static_cast<int16>(Strings::ToInt(src_q.begin()[1])) : int16{0};
+
+	if (!src_present) {
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
+		    src_db, char_id, cur_db));
+		LogInfo("[TrilogyZone] {} char={} slot={} item={} chg={} cursor_db={} src_db={} (source empty)",
+		        ctx, char_id, log_slot, item_id, (int)cur_chg, cur_db, src_db);
+		return;
+	}
+
+	if (src_iid != item_id) {
+		LogInfo("[TrilogyZone] {} char={} slot={} item={} cursor_db={} src_db={} "
+		        "src now holds item={} - leaving cursor row in place",
+		        ctx, char_id, log_slot, item_id, cur_db, src_db, src_iid);
+		return;
+	}
+
+	const EQ::ItemData* item = database.GetItem(item_id);
+	const int stack_max = (item && item->StackSize > 0) ? item->StackSize : 1;
+	const int total     = src_chg + cur_chg;
+
+	if (total <= stack_max) {
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
+		    total, char_id, src_db));
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		    char_id, cur_db));
+		LogInfo("[TrilogyZone] {} char={} slot={} item={} merged cursor_db={} ({}) "
+		        "into src_db={} ({}) result={} (stack_max={})",
+		        ctx, char_id, log_slot, item_id, cur_db, (int)cur_chg,
+		        src_db, (int)src_chg, total, stack_max);
+	} else {
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
+		    stack_max, char_id, src_db));
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
+		    total - stack_max, char_id, cur_db));
+		LogInfo("[TrilogyZone] {} char={} slot={} item={} partial merge cursor_db={} ({}) "
+		        "+ src_db={} ({}) result={} overflow={} (stack_max={})",
+		        ctx, char_id, log_slot, item_id, cur_db, (int)cur_chg,
+		        src_db, (int)src_chg, stack_max, total - stack_max, stack_max);
+	}
+}
+
+// Resync the player's m_inv for any DB rows the refund just touched so engine
+// reads (lore, CalcBonuses, etc.) stay coherent until the next action.
+void TrilogyZoneServer::ResyncMInvForRefund(Session& s,
+                                            const std::vector<int>& slots_to_sync)
+{
+	if (!s.trilogy_client) return;
+	auto& inv = s.trilogy_client->GetInv();
+	auto is_worn_slot = [](int slot) -> bool {
+		return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+	};
+	for (int db_slot : slots_to_sync) {
+		if (db_slot < 0 || is_worn_slot(db_slot)) continue;
+		auto* old = inv.PopItem(static_cast<int16>(db_slot));
+		safe_delete(old);
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`,`charges`,`color` FROM `inventory` "
+		    "WHERE `charid`={} AND `slotid`={}", s.char_id, db_slot));
+		if (!r.Success() || r.RowCount() == 0) continue;
+		auto row = r.begin();
+		const uint32 iid = static_cast<uint32>(Strings::ToInt(row[0]));
+		if (iid == 0) continue;
+		const int16  ch  = static_cast<int16>(Strings::ToInt(row[1]));
+		const uint32 col = static_cast<uint32>(Strings::ToInt(row[2]));
+		EQ::ItemInstance* inst = database.CreateItem(iid, ch);
+		if (!inst) continue;
+		inst->SetColor(col);
+		inv.PutItem(static_cast<int16>(db_slot), *inst);
+		safe_delete(inst);
+	}
+}
+
+void TrilogyZoneServer::RefundPartialCursorTradeItems(Session& s)
+{
+	std::vector<int> resync;
+	for (int i = 0; i < 4; ++i) {
+		auto& st = s.trade_items[i];
+		if (st.item_id == 0) continue;
+		if (st.original_source_db_slot < 0) continue;
+		RefundOneCursorRow(s.char_id, st.item_id,
+		                   st.from_db_slot, st.original_source_db_slot,
+		                   i, "TradeRefund");
+		resync.push_back(st.original_source_db_slot);
+		resync.push_back(st.from_db_slot);
+	}
+	ResyncMInvForRefund(s, resync);
+}
+
+// PC-trade equivalent: same per-cursor-row refund logic across pc_trade_main.
+// Called from PcTradeAbortBoth (and the abort branches inside HandleTradeGive
+// PC commit failures) so a cancelled PC trade after partial pickups leaves
+// the server's DB matching what the client locally restored.
+void TrilogyZoneServer::RefundPartialCursorPcTradeItems(Session& s)
+{
+	std::vector<int> resync;
+	for (int i = 0; i < 8; ++i) {
+		auto& st = s.pc_trade_main[i];
+		if (st.item_id == 0) continue;
+		if (st.original_source_db_slot < 0) continue;
+		RefundOneCursorRow(s.char_id, st.item_id,
+		                   st.from_db_slot, st.original_source_db_slot,
+		                   i, "PCTradeRefund");
+		resync.push_back(st.original_source_db_slot);
+		resync.push_back(st.from_db_slot);
+	}
+	ResyncMInvForRefund(s, resync);
 }
 
 void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Session& s)
@@ -5515,7 +5699,12 @@ void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Ses
 		return;
 	}
 
-	// ── NPC cancel (existing behaviour) ─────────────────────────────────────
+	// ── NPC cancel ──────────────────────────────────────────────────────────
+	// Refund any partial-pickup cursor rows so server state matches the
+	// client's local return-to-source behaviour.  Must run BEFORE clearing
+	// trade_items (the refund needs the staged from_db_slot + origin).
+	RefundPartialCursorTradeItems(s);
+
 	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
 	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
 	s.trade_npc_id = 0;
@@ -9101,7 +9290,8 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 					    "VALUES ({},{},{},{},{})",
 					    s.char_id, cursor_slot, src_iid, pick, src_col));
 
-					s.cursor_from_db = cursor_slot;
+					s.cursor_from_db           = cursor_slot;
+					s.cursor_partial_origin_db = from_db;
 
 					// m_inv sync: source slot charges changed; cursor row may
 					// be new.  Re-read both so engine code that consults m_inv
@@ -9146,7 +9336,8 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		LogInfo("[TrilogyZone] MoveItem (pick up) char={} from_wire={} → cursor, "
 		        "cursor_from_db={} client_number_in_stack={}",
 		        s.char_id, from_wire, from_db, mi->number_in_stack);
-		s.cursor_from_db = from_db;
+		s.cursor_from_db           = from_db;
+		s.cursor_partial_origin_db = -1;
 		return;
 	}
 
@@ -9176,9 +9367,13 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 				return;
 			}
 		} else {
-			from_db = s.cursor_from_db;
+			from_db          = s.cursor_from_db;
 			s.cursor_from_db = -1;
 		}
+		// Drop from cursor terminates the partial-pickup origin tracking — the
+		// cursor row is about to be merged/moved/destroyed regardless of where
+		// it lands.
+		s.cursor_partial_origin_db = -1;
 	} else {
 		from_db = wire_to_db(from_wire);
 		if (from_db < 0) return;
