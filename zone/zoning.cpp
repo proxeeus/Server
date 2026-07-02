@@ -401,18 +401,13 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						}
 
 						// Apply delta on the sliding (wildcard) axis, strict target on the
-						// traversal axis. No delta clamp: the client's reported exit
-						// position is trusted verbatim, however large the lateral slide.
-						// Seamless behaviour: player's exit coordinate on the wildcard axis
-						// is preserved into the destination zone, so the "far south end" of
-						// ecommons zoneline maps to the "far south end" of commons zoneline.
-						// The DB target axis value (which may be a specific safe point like
-						// 10.3) is intentionally ignored on the sliding axis — using it
-						// would collapse every entry point to the same arrival XY.  The
-						// destination-side pre-PP terrain snap (SendPlayerProfile) handles
-						// bad-Z arrivals by probing from high above; a bad-XY arrival where
-						// the destination has no walkable geometry at all is caught there
-						// via FindBestZ returning BEST_Z_INVALID.
+						// traversal axis.  Preserve seamless behaviour for pairs like
+						// ecommons<->commons where seamless is the right answer (user
+						// confirmed 2026-07-02).  Cases where the destination has no
+						// walkable geometry at the seamless XY (e.g. freporte<->nro when
+						// player X is outside NRO's server-side walkable range) are
+						// handled at destination pre-PP via a cross-zone DB target
+						// lookup — see SendPlayerProfile.
 						float delta_x = 0.0f, delta_y = 0.0f;
 						if (traversal_is_x) {
 							target_x = raw_tgt_x;
@@ -437,12 +432,16 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						target_x += 15.0f * std::sin(push_rad);
 						target_y += 15.0f * std::cos(push_rad);
 
-						// Skydrop: FindBestZ cannot be used here — this (departing) zone
-						// process has NOT loaded the destination zone's collision map, so
-						// any raycast would miss and spawn the player underground. Instead
-						// apply a static +25 bump to the DB target_z; the EQ client's own
-						// physics drops the player safely onto the sloped terrain on arrival.
-						target_z += 25.0f;
+						// Z: pass the DB target_z through verbatim.  The old code applied
+						// a static +25 bump here because the departing zone can't run
+						// FindBestZ against the destination collision map — the +25 was
+						// safety margin so the client's local physics dropped the player
+						// onto sloped terrain rather than spawning underground.  That
+						// safety is now redundant: SendPlayerProfile in the destination
+						// zone runs a two-pass FindBestZ and snaps pos_z onto walkable
+						// (up or down) before the PP is deflated.  Skipping the +25
+						// here means arrival Z now matches DB intent and cases where DB
+						// target_z is already correct don't get a visible "sky drop".
 
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
@@ -571,11 +570,9 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						target_x += 15.0f * std::sin(push_rad);
 						target_y += 15.0f * std::cos(push_rad);
 
-						// Skydrop: the departing zone process has not loaded the
-						// destination zone's collision map, so FindBestZ would miss and
-						// spawn the player underground. Apply a static +25 bump to the DB
-						// target_z and let the EQ client's physics drop them onto the slope.
-						target_z += 25.0f;
+						// Z: pass DB target_z through unchanged.  Destination-side
+						// SendPlayerProfile terrain-snap handles bad DB target_z cases
+						// (see the matching removal in the ZoneSolicited path above).
 
 						LogInfo(
 							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"

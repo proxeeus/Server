@@ -3589,7 +3589,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			}
 		}
 
-		const bool snap_down = (drop > 40.0f);
+		// See the pre-PP snap for the threshold rationale (|drop| > 10).
+		const bool snap_down = (drop > 10.0f);
 		const bool snap_up   = (drop < -10.0f);
 		if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
 			float new_z = terrain_z + 3.0f;
@@ -3605,9 +3606,61 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			        pass_tag, s.char_name, s.zone_short, s.pos_x, s.pos_y,
 			        s.pos_z, terrain_z, drop);
 		} else {
-			LogInfo("[TrilogyZP] wide-boundary terrain-check | char [{}] zone [{}] "
-			        "pos ({:.1f},{:.1f},{:.2f}) both probes failed or hit sub-terrain — leaving pos_z unchanged",
-			        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z);
+			// Same cross-zone DB lookup as pre-PP: find the DB target that
+			// sent us here and use it as the funnel point.  If pre-PP
+			// already ran and applied the funnel, s.pos_x/y/z will now sit
+			// on walkable geometry and this branch won't re-fire (the
+			// initial probe will succeed).  Kept as defensive fallback for
+			// paths where the pre-PP fallback didn't run.
+			float funnel_x = 0.0f, funnel_y = 0.0f, funnel_z = 0.0f;
+			bool  funnel_found = false;
+			{
+				auto q = fmt::format(
+					"SELECT target_x, target_y, target_z FROM zone_points "
+					"WHERE target_zone_id = {} "
+					"  AND target_x != 999999 AND target_x != -999999 "
+					"  AND target_y != 999999 AND target_y != -999999 "
+					"  AND ABS(target_y - {}) < 100 "
+					"ORDER BY ABS(target_y - {}) ASC LIMIT 1",
+					zone->GetZoneID(), s.pos_y, s.pos_y);
+				auto r = database.QueryDatabase(q);
+				if (r.RowCount() > 0) {
+					auto row = r.begin();
+					funnel_x = Strings::ToFloat(row[0]);
+					funnel_y = Strings::ToFloat(row[1]);
+					funnel_z = Strings::ToFloat(row[2]);
+					funnel_found = true;
+				}
+			}
+			if (funnel_found) {
+				LogInfo("[TrilogyZP] wide-boundary OFF-MAP DB-funnel (late) | char [{}] zone [{}] "
+				        "seamless XY ({:.1f},{:.1f}) off-map -> DB target ({:.1f},{:.1f},{:.2f})",
+				        s.char_name, s.zone_short,
+				        s.pos_x, s.pos_y,
+				        funnel_x, funnel_y, funnel_z);
+				s.pos_x = funnel_x;
+				s.pos_y = funnel_y;
+				s.pos_z = funnel_z + 3.0f;
+				s.trilogy_client->SetPosition(funnel_x, funnel_y, funnel_z + 3.0f);
+			} else {
+				const glm::vec4 safe = zone->GetSafePoint();
+				const bool safe_valid = (safe.x != 0.0f || safe.y != 0.0f || safe.z != 0.0f);
+				if (safe_valid) {
+					LogInfo("[TrilogyZP] wide-boundary OFF-MAP safe-point (late) | char [{}] zone [{}] "
+					        "seamless XY ({:.1f},{:.1f}) off-map AND no DB target found -> safe ({:.1f},{:.1f},{:.2f})",
+					        s.char_name, s.zone_short,
+					        s.pos_x, s.pos_y,
+					        safe.x, safe.y, safe.z);
+					s.pos_x = safe.x;
+					s.pos_y = safe.y;
+					s.pos_z = safe.z + 3.0f;
+					s.trilogy_client->SetPosition(safe.x, safe.y, safe.z + 3.0f);
+				} else {
+					LogInfo("[TrilogyZP] wide-boundary OFF-MAP (late) | char [{}] zone [{}] "
+					        "seamless XY ({:.1f},{:.1f}) off-map, no DB target, no safe point — leaving pos alone",
+					        s.char_name, s.zone_short, s.pos_x, s.pos_y);
+				}
+			}
 		}
 	}
 
@@ -3960,7 +4013,21 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 				}
 			}
 
-			const bool snap_down = (drop > 40.0f);
+			// Snap trigger: |drop| > 10u.  Now that the two-pass probe reliably
+			// finds walkable, there's no need to preserve the departing zone's
+			// +25 skydrop safety buffer — we can plant the player right on the
+			// ground.  10u tolerance covers terrain-probe jitter without leaving
+			// a visible "drop from the sky" arrival (previously 40u threshold
+			// left up-to-40u free-fall on flat approaches where the DB target_z
+			// happened to differ from actual walkable by 15-40u).
+			// Snap trigger: |drop| > 10u.  Now that the two-pass probe reliably
+			// finds walkable, there's no need to preserve the departing zone's
+			// +25 skydrop safety buffer — we can plant the player right on the
+			// ground.  10u tolerance covers terrain-probe jitter without leaving
+			// a visible "drop from the sky" arrival (previously 40u threshold
+			// left up-to-40u free-fall on flat approaches where the DB target_z
+			// happened to differ from actual walkable by 15-40u).
+			const bool snap_down = (drop > 10.0f);
 			const bool snap_up   = (drop < -10.0f);
 			if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
 				float new_z = terrain_z + 3.0f;
@@ -3971,11 +4038,78 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 				pp.z    = new_z;
 				s.pos_z = new_z;
 			} else if (terrain_z == BEST_Z_INVALID) {
-				LogInfo("[TrilogyZP] wide-boundary terrain-snap (pre-PP) SKIPPED | char [{}] zone [{}] "
-				        "pos ({:.1f},{:.1f}) pos_z={:.2f} "
-				        "(both low and high probes returned no plausible walkable — "
-				        "leaving pos_z alone)",
-				        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z);
+				// Both probes rejected — the seamless slide landed at an XY
+				// where the destination has no walkable geometry.  This is
+				// the freporte<->NRO case: freeport walkable X range is
+				// wider than NRO's server-side walkable X range at the
+				// boundary Y, so a player crossing at freporte's west/east
+				// wall arrives at an NRO X that our server map doesn't
+				// cover.  User confirmed 2026-07-02 that Titanium in this
+				// case funnels the player to the DB-authored arrival point
+				// ("middle of the zoneline") rather than trying to preserve
+				// the seamless X.
+				//
+				// Cross-zone DB lookup: find any zone_point in ANY zone that
+				// targets THIS zone with a target_y close to our arrival Y
+				// (within 100u to allow for the +15 push).  That row is the
+				// source zone's zone_point that just fired to send us here,
+				// and its (target_x, target_y, target_z) is the DB-authored
+				// funnel spot.  If found, use it verbatim.  Otherwise fall
+				// back to the zone safe point so we still don't fall through.
+				float funnel_x = 0.0f, funnel_y = 0.0f, funnel_z = 0.0f;
+				bool  funnel_found = false;
+				{
+					auto q = fmt::format(
+						"SELECT target_x, target_y, target_z FROM zone_points "
+						"WHERE target_zone_id = {} "
+						"  AND target_x != 999999 AND target_x != -999999 "
+						"  AND target_y != 999999 AND target_y != -999999 "
+						"  AND ABS(target_y - {}) < 100 "
+						"ORDER BY ABS(target_y - {}) ASC LIMIT 1",
+						zone->GetZoneID(), s.pos_y, s.pos_y);
+					auto r = database.QueryDatabase(q);
+					if (r.RowCount() > 0) {
+						auto row = r.begin();
+						funnel_x = Strings::ToFloat(row[0]);
+						funnel_y = Strings::ToFloat(row[1]);
+						funnel_z = Strings::ToFloat(row[2]);
+						funnel_found = true;
+					}
+				}
+				if (funnel_found) {
+					LogInfo("[TrilogyZP] wide-boundary OFF-MAP DB-funnel (pre-PP) | char [{}] zone [{}] "
+					        "seamless XY ({:.1f},{:.1f}) off-map -> DB target ({:.1f},{:.1f},{:.2f})",
+					        s.char_name, s.zone_short,
+					        s.pos_x, s.pos_y,
+					        funnel_x, funnel_y, funnel_z);
+					pp.x    = funnel_x;
+					pp.y    = funnel_y;
+					pp.z    = funnel_z + 3.0f;
+					s.pos_x = funnel_x;
+					s.pos_y = funnel_y;
+					s.pos_z = funnel_z + 3.0f;
+				} else {
+					const glm::vec4 safe = zone->GetSafePoint();
+					const bool safe_valid = (safe.x != 0.0f || safe.y != 0.0f || safe.z != 0.0f);
+					if (safe_valid) {
+						LogInfo("[TrilogyZP] wide-boundary OFF-MAP safe-point (pre-PP) | char [{}] zone [{}] "
+						        "seamless XY ({:.1f},{:.1f}) off-map AND no DB target found -> safe ({:.1f},{:.1f},{:.2f})",
+						        s.char_name, s.zone_short,
+						        s.pos_x, s.pos_y,
+						        safe.x, safe.y, safe.z);
+						pp.x    = safe.x;
+						pp.y    = safe.y;
+						pp.z    = safe.z + 3.0f;
+						s.pos_x = safe.x;
+						s.pos_y = safe.y;
+						s.pos_z = safe.z + 3.0f;
+					} else {
+						LogInfo("[TrilogyZP] wide-boundary OFF-MAP (pre-PP) | char [{}] zone [{}] "
+						        "seamless XY ({:.1f},{:.1f}) off-map, no DB target found, no safe point — "
+						        "leaving pos alone (fall-through likely)",
+						        s.char_name, s.zone_short, s.pos_x, s.pos_y);
+					}
+				}
 			}
 		}
 	}
