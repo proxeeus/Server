@@ -206,3 +206,9 @@ case scenario, investigate and propose workarounds. NEVER EVER assume we "reache
 - NEVER EVER suggest "accepting the lesser of two evils" / abandon for the user.
 - Always ASK before thinking a refactor is needed because somehow a new source has been found.
 - Never, EVER run anything else than SELECT queries on the database. Suggest what should manually done if needed.
+
+
+## Log files
+Zone-log files are in : C:\eqemu\logs\zone
+World-log files are in : C:\eqemu\logs\
+Server crash log files are in : C:\eqemu\logs\crashes
