@@ -368,6 +368,7 @@ RULE_INT(Zone, FishingChance, 399, "Chance of fishing from zone table vs global 
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnBots, false, "Set to true to allow cross zone spells (cast/remove) to affect bots")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnMercs, false, "Set to true to allow cross zone spells (cast/remove) to affect mercenaries")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnPets, false, "Set to true to allow cross zone spells (cast/remove) to affect pets")
+RULE_BOOL(Zone, TrilogyZonePointDebug, false, "Diagnostic: log Trilogy zone-point proximity per client update, and echo state changes / near-misses to affected clients. Zero cost when off.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Map)

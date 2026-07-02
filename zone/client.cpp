@@ -9514,13 +9514,53 @@ void Client::CheckVirtualZoneLines()
 // Called from TrilogyClient::TrilogyPositionUpdate.
 void Client::CheckTraditionalZonePoints()
 {
-	if (!zone || zone_mode != ZoneUnsolicited || bZoning) return;
+	// Diagnostic backbone (M5). Gated behind Rules::Zone::TrilogyZonePointDebug so
+	// production paths are zero-cost when off. When on, every tick we log gate
+	// state, guard state, per-tick step (velocity), nearest zone_point + distance,
+	// and reason-for-not-firing. Throttled Chat::White echoes go to affected
+	// clients so a GM can see zoneline geometry live while running through it.
+	const bool zp_dbg = RuleB(Zone, TrilogyZonePointDebug);
+
+	if (!zone || zone_mode != ZoneUnsolicited || bZoning) {
+		if (zp_dbg) {
+			LogInfo("[TrilogyZP DBG] gate SKIP char [{}]"
+			        " | zone={} zone_mode={} bZoning={}"
+			        " (detection only runs while zone_mode==ZoneUnsolicited and !bZoning)",
+			        GetCleanName(), zone ? zone->GetShortName() : "null",
+			        (int)zone_mode, bZoning ? 1 : 0);
+		}
+		return;
+	}
 
 	// Trilogy clients receive no OP_ZonePoints data, so zone-line detection is done
 	// server-side: iterate zone_point_list and use a planar distance/radius + Z
 	// bounding-box check to identify which zp (trigger volume) the player is touching.
 	// Wildcard axes (±999999) span the full axis and are ignored in the planar test.
-	const float kDetectRadius = 10.0f;
+	//
+	// Sphere radius (20u → 40u diameter).  Empirical: at 10u a normal-run player
+	// walking a tunnel whose walkable path passes 15u from the DB trigger center
+	// never fires (observed on nro→ecommons zp#3 at (2908,2626): closest planar
+	// approach 15.00u across 60+ samples).  Titanium clients don't hit this
+	// because they detect crossings client-side against the zone map; Trilogy
+	// has to approximate that with a server-side sphere.  20u covers all
+	// observed misses with headroom.  DB audit: zero pairs of distinct-target
+	// zone_points come within 60u of each other in the same source zone, so a
+	// 40u diameter sphere carries no double-trigger-to-wrong-zone risk.  The
+	// only same-target overlap (paineel 13/14 at 17u apart) already overlapped
+	// at radius=10 — this bump widens that pre-existing ambiguity but does not
+	// introduce a new one.  Guard threshold auto-scales to 2*kDetectRadius=40u.
+	const float kDetectRadius = 20.0f;
+
+	// Diagnostic: per-tick step (planar distance moved since last check). This is
+	// the direct signal for F1.1 "skip-through under load" — if step_u exceeds the
+	// detect diameter (~20u) then the player traversed the trigger sphere in a
+	// single tick and no proximity sample could ever land inside it.
+	float step_u = 0.0f;
+	if (zp_dbg && m_zp_debug_have_last) {
+		const float vdx = GetX() - m_zp_debug_last_x;
+		const float vdy = GetY() - m_zp_debug_last_y;
+		step_u = std::sqrt(vdx * vdx + vdy * vdy);
+	}
 
 	// Zone-in loop guard: the player spawns at the destination zone-in point, which
 	// lies inside the return zone line's detection radius. Suppress detection until
@@ -9532,14 +9572,49 @@ void Client::CheckTraditionalZonePoints()
 		const float gdx = GetX() - m_trilogy_zonein_x;
 		const float gdy = GetY() - m_trilogy_zonein_y;
 		const float kGuardDist  = 2.0f * kDetectRadius;
-		if (gdx * gdx + gdy * gdy < kGuardDist * kGuardDist) {
+		const float guard_dist2 = gdx * gdx + gdy * gdy;
+		if (guard_dist2 < kGuardDist * kGuardDist) {
+			if (zp_dbg) {
+				LogInfo("[TrilogyZP DBG] guard ACTIVE char [{}]"
+				        " | player ({:.1f},{:.1f}) spawn ({:.1f},{:.1f})"
+				        " | dist={:.1f}/{:.1f}u (must exceed 2*kDetectRadius to release)",
+				        GetCleanName(), GetX(), GetY(),
+				        m_trilogy_zonein_x, m_trilogy_zonein_y,
+				        std::sqrt(guard_dist2), kGuardDist);
+				// Refresh last-check pos even while guarded so step_u is meaningful
+				// on the tick guard clears.
+				m_zp_debug_last_x    = GetX();
+				m_zp_debug_last_y    = GetY();
+				m_zp_debug_have_last = true;
+			}
 			return;
 		}
 		m_trilogy_zonein_guard = false; // moved clear — resume normal detection
+		if (zp_dbg) {
+			LogInfo("[TrilogyZP DBG] guard CLEARED char [{}]"
+			        " | moved {:.1f}u from spawn (threshold {:.1f}u)"
+			        " -- normal detection resumes this tick",
+			        GetCleanName(), std::sqrt(guard_dist2), kGuardDist);
+			Message(Chat::White,
+			        fmt::format("[zp-dbg] zone-in guard cleared "
+			                    "(moved {:.1f}u from spawn).",
+			                    std::sqrt(guard_dist2)).c_str());
+		}
 	}
 
 	const float kRadius2      = kDetectRadius * kDetectRadius;
 	static constexpr float kZRange  = 50.0f;
+
+	// Diagnostic: track the nearest planar zone_point across the iteration so we
+	// can report near-miss state after the loop (why detection did NOT fire).
+	ZonePoint* nearest_zp    = nullptr;
+	float      nearest_dist2 = 0.0f;
+	float      nearest_dx    = 0.0f;
+	float      nearest_dy    = 0.0f;
+	float      nearest_dz    = 0.0f;
+	bool       nearest_xw    = false;
+	bool       nearest_yw    = false;
+
 	LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
 	iter.Reset();
 	while (iter.MoreElements()) {
@@ -9563,7 +9638,21 @@ void Client::CheckTraditionalZonePoints()
 		float dx = xWild ? 0.0f : (zp->x - GetX());
 		float dy = yWild ? 0.0f : (zp->y - GetY());
 		float dz = zp->z - GetZ();
-		if (dx*dx + dy*dy < kRadius2 && std::fabs(dz) < kZRange) {
+		const float dist2 = dx * dx + dy * dy;
+
+		// Diagnostic: capture nearest zp seen so far (planar) regardless of Z-box
+		// fit — reporting a Z-out-of-range near-miss is exactly the F3.2 signal.
+		if (zp_dbg && (nearest_zp == nullptr || dist2 < nearest_dist2)) {
+			nearest_zp    = zp;
+			nearest_dist2 = dist2;
+			nearest_dx    = dx;
+			nearest_dy    = dy;
+			nearest_dz    = dz;
+			nearest_xw    = xWild;
+			nearest_yw    = yWild;
+		}
+
+		if (dist2 < kRadius2 && std::fabs(dz) < kZRange) {
 			// Actual trigger center: explicit DB coord, or player's current pos for wildcards.
 			float trig_x = xWild ? GetX() : zp->x;
 			float trig_y = yWild ? GetY() : zp->y;
@@ -9591,6 +9680,24 @@ void Client::CheckTraditionalZonePoints()
 			        zp->target_x, zp->target_y, zp->target_z, (int)zp->target_heading,
 			        dest_x, dest_y, dest_z, dest_heading,
 			        zp->target_zone_id);
+
+			// Diagnostic: fire context ties movement speed to firing tick geometry.
+			// step_u > 2*kDetectRadius on a fire = we JUST barely caught the sphere,
+			// implying prior ticks likely skipped it (F1.1).
+			if (zp_dbg) {
+				LogInfo("[TrilogyZP DBG] FIRE ctx char [{}] zp#{}"
+				        " | planar_dist={:.2f}/{:.2f}u dz={:.2f}/{:.2f}u"
+				        " | step_u={:.2f}u/tick (> {:.0f} risks skip-through)"
+				        " | heading={:.1f}",
+				        GetCleanName(), zp->number,
+				        std::sqrt(dist2), kDetectRadius, dz, kZRange,
+				        step_u, 2.0f * kDetectRadius, GetHeading());
+				Message(Chat::White,
+				        fmt::format("[zp-dbg] FIRE zp#{} -> zone {} | dist={:.1f}u"
+				                    " dz={:.1f}u step={:.1f}u",
+				                    zp->number, zp->target_zone_id,
+				                    std::sqrt(dist2), dz, step_u).c_str());
+			}
 
 			zone_mode            = ZoneSolicited;
 			zonesummon_id        = zp->target_zone_id;
@@ -9624,6 +9731,66 @@ void Client::CheckTraditionalZonePoints()
 			return;
 		}
 		iter.Advance();
+	}
+
+	// Diagnostic: post-loop near-miss report. Only when the rule is on AND the
+	// nearest zp is within a proximity window wide enough for approach/pass-through
+	// analysis. LogInfo unthrottled (file record captures full velocity profile),
+	// Chat::White throttled to one message per ~500ms so in-game chat stays readable.
+	if (zp_dbg && nearest_zp != nullptr) {
+		static constexpr float  kDbgProximity  = 40.0f;
+		static constexpr float  kDbgProximity2 = kDbgProximity * kDbgProximity;
+		static constexpr float  kDbgZWindow    = 100.0f;      // 2x kZRange
+		static constexpr uint32 kDbgChatMs     = 500;
+
+		if (nearest_dist2 < kDbgProximity2 && std::fabs(nearest_dz) < kDbgZWindow) {
+			const float planar_dist = std::sqrt(nearest_dist2);
+			const bool  z_out       = std::fabs(nearest_dz) >= kZRange;
+			const bool  xy_out      = nearest_dist2 >= kRadius2;
+			// Human-readable near-miss reason (why we did NOT fire this tick).
+			const char* miss_reason =
+				(!xy_out && !z_out) ? "should have fired?" :
+				(xy_out && !z_out)  ? "outside XY radius" :
+				(!xy_out && z_out)  ? "outside Z bbox"    :
+				                       "outside XY radius AND Z bbox";
+
+			LogInfo("[TrilogyZP DBG] near zp#{} in [{}] char [{}]"
+			        " | player ({:.1f},{:.1f},{:.1f}) heading={:.1f} step_u={:.2f}"
+			        " | trigger ({:.1f},{:.1f},{:.1f}) xWild={} yWild={}"
+			        " | dx={:.2f} dy={:.2f} planar_dist={:.2f}/{:.2f}u"
+			        " dz={:.2f}/{:.2f}u ({})"
+			        " | target_zone={}",
+			        nearest_zp->number,
+			        zone->GetShortName(),
+			        GetCleanName(),
+			        GetX(), GetY(), GetZ(), GetHeading(), step_u,
+			        nearest_xw ? GetX() : nearest_zp->x,
+			        nearest_yw ? GetY() : nearest_zp->y,
+			        nearest_zp->z,
+			        nearest_xw ? 'Y' : 'N', nearest_yw ? 'Y' : 'N',
+			        nearest_dx, nearest_dy, planar_dist, kDetectRadius,
+			        nearest_dz, kZRange, miss_reason,
+			        nearest_zp->target_zone_id);
+
+			const uint32 now_ms = Timer::GetCurrentTime();
+			if (now_ms - m_zp_debug_last_msg_ms >= kDbgChatMs) {
+				m_zp_debug_last_msg_ms = now_ms;
+				Message(Chat::White,
+				        fmt::format("[zp-dbg] near zp#{} -> zone {} | dist={:.1f}u"
+				                    " (r={:.0f}) dz={:.1f}u (z={:.0f}) step={:.1f}u [{}]",
+				                    nearest_zp->number, nearest_zp->target_zone_id,
+				                    planar_dist, kDetectRadius,
+				                    nearest_dz, kZRange, step_u, miss_reason).c_str());
+			}
+		}
+	}
+
+	// Refresh last-check position for the next tick's step_u calculation. Runs
+	// on every non-guarded, non-fired tick so step_u stays continuous.
+	if (zp_dbg) {
+		m_zp_debug_last_x    = GetX();
+		m_zp_debug_last_y    = GetY();
+		m_zp_debug_have_last = true;
 	}
 }
 

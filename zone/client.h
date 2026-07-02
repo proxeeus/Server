@@ -2071,6 +2071,20 @@ private:
 	float m_trilogy_zonein_y           = 0.f;
 	bool  m_trilogy_zonein_guard       = false;
 
+	// Diagnostic state for Rules::Zone::TrilogyZonePointDebug — see
+	// CheckTraditionalZonePoints. m_zp_debug_last_x/y hold the last position we
+	// ran a proximity check against, so we can compute per-tick planar delta
+	// (velocity in u/tick, exposing skip-through under load). m_zp_debug_have_last
+	// gates the very first sample after zone-in when no prior position exists.
+	// m_zp_debug_last_msg_ms throttles the in-game chat feedback (LogInfo is
+	// unthrottled, chat is capped so it stays readable while running). All fields
+	// stay dormant while the rule is off — they are only written when the rule is
+	// checked and true, and their read cost when the rule is off is zero.
+	float  m_zp_debug_last_x           = 0.f;
+	float  m_zp_debug_last_y           = 0.f;
+	bool   m_zp_debug_have_last        = false;
+	uint32 m_zp_debug_last_msg_ms      = 0;
+
 	WaterRegionType last_region_type;
 
 	PTimerList p_timers; //persistent timers

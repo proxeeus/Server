@@ -3132,6 +3132,12 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// narrow/corridor return trigger (within the detect radius of the spawn)
 		// would fire immediately and bounce them straight back (infinite loop).
 		tc->ArmTrilogyZoneInGuard(s.pos_x, s.pos_y);
+		if (RuleB(Zone, TrilogyZonePointDebug)) {
+			LogInfo("[TrilogyZP DBG] guard ARMED char [{}] spawn ({:.1f},{:.1f}) in zone [{}]"
+			        " -- detection suppressed until player moves clear (2*kDetectRadius=20u)",
+			        s.char_name, s.pos_x, s.pos_y,
+			        zone ? zone->GetShortName() : "?");
+		}
 
 		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
@@ -3524,7 +3530,7 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	SendMobHeartbeat(addr, port, s);
 
 	// ============================================================
-	// Wide-boundary terrain snap (cross-zone FindBestZ workaround)
+	// Wide-boundary terrain snap (cross-zone FindBestZ workaround) — LATE PATH
 	// ============================================================
 	// The departing zone's CheckTraditionalZonePoints (zoning.cpp ~L435/L568)
 	// applies a static +25 skydrop to the DB-stored target_z because that
@@ -3534,36 +3540,73 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	// real terrain can be hundreds of units below the DB Z and the EQ client's
 	// local physics drops the player into/under-world.
 	//
-	// We're now in the destination zone with `zone->zonemap` loaded — do a
-	// FindBestZ here and snap pos_z to terrain + small bump when the player
-	// is significantly above the actual ground.  Only fires for wide-boundary
-	// zone-ins (s.pending_heading_sync); narrow doors use an explicit DB
-	// target_z and don't need the snap.
+	// PRIMARY snap now runs at CONNECTING2, before SendPlayerProfile — see
+	// the "wide-boundary terrain-snap (pre-PP)" block earlier in the file.
+	// That path prevents the initial PP from ever telling the client a Z
+	// hundreds of units above terrain and avoids the fall-through visual.
+	//
+	// This LATE snap remains as a defensive fallback for corner cases where
+	// s.pos_z drifts between CONNECTING2 and here (e.g. a future path that
+	// mutates it during the CONNECTING3/4 handshake).  It is idempotent with
+	// the pre-PP snap: after the pre-PP snap runs, drop here evaluates to
+	// ~3u and the "within tolerance, no snap" branch fires without changing
+	// anything.  Only fires for wide-boundary zone-ins (s.pending_heading_sync);
+	// narrow doors use an explicit DB target_z and don't need the snap.
 	if (s.trilogy_client && s.pending_heading_sync && zone && zone->zonemap) {
-		glm::vec3 start(s.pos_x, s.pos_y, s.pos_z + 5.0f);
-		float terrain_z = zone->zonemap->FindBestZ(start, nullptr);
-		if (terrain_z != BEST_Z_INVALID) {
-			float drop = s.pos_z - terrain_z;
-			// 40-unit threshold: the departing zone's +25 skydrop intentionally
-			// leaves us ~25 above terrain; another 15 units of margin tolerates
-			// terrain-probe jitter and small ramps without firing a spurious snap.
-			if (drop > 40.0f) {
-				float new_z = terrain_z + 3.0f;
-				LogInfo("[TrilogyZP] wide-boundary terrain-snap | char [{}] zone [{}] "
-				        "pos ({:.1f},{:.1f}) orig_z={:.2f} terrain_z={:.2f} drop={:.2f} -> new_z={:.2f}",
-				        s.char_name, s.zone_short, s.pos_x, s.pos_y,
-				        s.pos_z, terrain_z, drop, new_z);
-				s.pos_z = new_z;
-				s.trilogy_client->SetPosition(s.pos_x, s.pos_y, new_z);
-			} else {
-				LogInfo("[TrilogyZP] wide-boundary terrain-check | char [{}] zone [{}] "
-				        "pos ({:.1f},{:.1f}) pos_z={:.2f} terrain_z={:.2f} drop={:.2f} (within tolerance, no snap)",
-				        s.char_name, s.zone_short, s.pos_x, s.pos_y,
-				        s.pos_z, terrain_z, drop);
+		// See the pre-PP snap in SendPlayerProfile for the full rationale.
+		// Two-pass probe: standard (pos_z + 5), fall back to elevated
+		// (pos_z + 200) if pass 1 hit sub-terrain or missed.  Snap when
+		// drop > 40 (above walkable) OR drop < -10 (below walkable — client
+		// physics can't push up).
+		float terrain_z = BEST_Z_INVALID;
+		float drop      = 0.0f;
+		const char* pass_tag = "";
+
+		{
+			glm::vec3 start(s.pos_x, s.pos_y, s.pos_z + 5.0f);
+			float t = zone->zonemap->FindBestZ(start, nullptr);
+			if (t != BEST_Z_INVALID) {
+				float d = s.pos_z - t;
+				if (std::fabs(d) < 150.0f) {
+					terrain_z = t;
+					drop      = d;
+					pass_tag  = "low";
+				}
 			}
+		}
+
+		if (terrain_z == BEST_Z_INVALID) {
+			const float probe_start = s.pos_z + 200.0f;
+			glm::vec3 start(s.pos_x, s.pos_y, probe_start);
+			float t = zone->zonemap->FindBestZ(start, nullptr);
+			if (t != BEST_Z_INVALID && std::fabs(t - probe_start) > 3.0f) {
+				float d = s.pos_z - t;
+				if (std::fabs(d) < 150.0f) {
+					terrain_z = t;
+					drop      = d;
+					pass_tag  = "high";
+				}
+			}
+		}
+
+		const bool snap_down = (drop > 40.0f);
+		const bool snap_up   = (drop < -10.0f);
+		if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
+			float new_z = terrain_z + 3.0f;
+			LogInfo("[TrilogyZP] wide-boundary terrain-snap ({}) | char [{}] zone [{}] "
+			        "pos ({:.1f},{:.1f}) orig_z={:.2f} terrain_z={:.2f} drop={:+.2f} -> new_z={:.2f}",
+			        pass_tag, s.char_name, s.zone_short, s.pos_x, s.pos_y,
+			        s.pos_z, terrain_z, drop, new_z);
+			s.pos_z = new_z;
+			s.trilogy_client->SetPosition(s.pos_x, s.pos_y, new_z);
+		} else if (terrain_z != BEST_Z_INVALID) {
+			LogInfo("[TrilogyZP] wide-boundary terrain-check ({}) | char [{}] zone [{}] "
+			        "pos ({:.1f},{:.1f}) pos_z={:.2f} terrain_z={:.2f} drop={:+.2f} (within tolerance, no snap)",
+			        pass_tag, s.char_name, s.zone_short, s.pos_x, s.pos_y,
+			        s.pos_z, terrain_z, drop);
 		} else {
 			LogInfo("[TrilogyZP] wide-boundary terrain-check | char [{}] zone [{}] "
-			        "pos ({:.1f},{:.1f},{:.2f}) FindBestZ found no terrain — leaving pos_z unchanged",
+			        "pos ({:.1f},{:.1f},{:.2f}) both probes failed or hit sub-terrain — leaving pos_z unchanged",
 			        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z);
 		}
 	}
@@ -3843,6 +3886,98 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f} boundary={} arm_trap={}",
 		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading,
 		        boundary_is_wide ? "WIDE" : "NARROW", s.pending_heading_sync ? "Y" : "N");
+
+		// ============================================================
+		// Wide-boundary terrain snap (PRE-PP) — see also HandleZoneInComplete
+		// ============================================================
+		// Wide-boundary sliding preserves the player's exit coordinate on the
+		// wildcard axis, but the departing zone can't run FindBestZ against the
+		// destination's collision map — so it applies a static +25 skydrop to
+		// the DB target_z.  When the slid arrival XY has walkable ground far
+		// from the DB reference (elevated slopes, steep dunes, valleys), the
+		// skydrop lands the player above OR below the true walkable surface.
+		//
+		// FindBestZ's cast-down bias makes finding the true walkable Z
+		// finicky:
+		//   - Start probe LOW (pos_z + 5): if walkable is BELOW start, we
+		//     find it; if walkable is ABOVE start, we blow through walkable
+		//     and hit sub-terrain at the world floor (observed: commons
+		//     probe from -21 returning -290 when actual walkable is +8..+30
+		//     on a desert slope).
+		//   - Start probe VERY HIGH (Z=500): raycast library misbehaves
+		//     above the navmesh AABB, returns start_z verbatim (observed).
+		//
+		// Two-pass strategy:
+		//   Pass 1: probe from pos_z + 5 (standard).  If drop is "plausibly
+		//           walkable" (|drop| < 150u), use it.
+		//   Pass 2: only if pass 1 failed or hit sub-terrain — probe from
+		//           pos_z + 200.  This is high enough to be above typical
+		//           outdoor walkable slopes at wide-boundary XYs, low enough
+		//           to stay inside most zones' navmesh AABB.  Sanity-check
+		//           the return against the probe start to catch bogus
+		//           "returned = start" values from the raycast library.
+		//
+		// Snap trigger: drop > 40u (player above walkable, standard skydrop
+		// overshoot) OR drop < -10u (player BELOW walkable — can't recover
+		// via client physics since gravity only pulls down).  |drop| capped
+		// at 150u in each pass to reject residual sub-terrain hits.
+		//
+		// Narrow doors use an explicit DB target_z authored near the exact
+		// arrival spot and don't need this snap — gate on boundary_is_wide.
+		if (boundary_is_wide && zone && zone->zonemap) {
+			float terrain_z = BEST_Z_INVALID;
+			float drop      = 0.0f;
+			const char* pass_tag = "";
+
+			// Pass 1: standard probe height.
+			{
+				glm::vec3 start(s.pos_x, s.pos_y, s.pos_z + 5.0f);
+				float t = zone->zonemap->FindBestZ(start, nullptr);
+				if (t != BEST_Z_INVALID) {
+					float d = s.pos_z - t;
+					if (std::fabs(d) < 150.0f) {
+						terrain_z = t;
+						drop      = d;
+						pass_tag  = "low";
+					}
+				}
+			}
+
+			// Pass 2: elevated probe if pass 1 didn't find plausible walkable.
+			if (terrain_z == BEST_Z_INVALID) {
+				const float probe_start = s.pos_z + 200.0f;
+				glm::vec3 start(s.pos_x, s.pos_y, probe_start);
+				float t = zone->zonemap->FindBestZ(start, nullptr);
+				// Reject "returned start Z verbatim" (raycast above-AABB bogus).
+				// Reject sub-terrain hits (|drop| >= 150u) — same as pass 1.
+				if (t != BEST_Z_INVALID && std::fabs(t - probe_start) > 3.0f) {
+					float d = s.pos_z - t;
+					if (std::fabs(d) < 150.0f) {
+						terrain_z = t;
+						drop      = d;
+						pass_tag  = "high";
+					}
+				}
+			}
+
+			const bool snap_down = (drop > 40.0f);
+			const bool snap_up   = (drop < -10.0f);
+			if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
+				float new_z = terrain_z + 3.0f;
+				LogInfo("[TrilogyZP] wide-boundary terrain-snap (pre-PP, {}) | char [{}] zone [{}] "
+				        "pos ({:.1f},{:.1f}) orig_z={:.2f} terrain_z={:.2f} drop={:+.2f} -> new_z={:.2f}",
+				        pass_tag, s.char_name, s.zone_short, s.pos_x, s.pos_y,
+				        s.pos_z, terrain_z, drop, new_z);
+				pp.z    = new_z;
+				s.pos_z = new_z;
+			} else if (terrain_z == BEST_Z_INVALID) {
+				LogInfo("[TrilogyZP] wide-boundary terrain-snap (pre-PP) SKIPPED | char [{}] zone [{}] "
+				        "pos ({:.1f},{:.1f}) pos_z={:.2f} "
+				        "(both low and high probes returned no plausible walkable — "
+				        "leaving pos_z alone)",
+				        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z);
+			}
+		}
 	}
 
 	// ---- character_currency ----
@@ -4148,16 +4283,19 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.gender    = static_cast<int8_t>(Strings::ToInt(row[4]));
 	sze.level     = static_cast<int8_t>(Strings::ToInt(row[5]));
 	sze.face      = static_cast<int8_t>(Strings::ToInt(row[6]));
-	sze.y         = Strings::ToFloat(row[7]);
-	sze.x         = Strings::ToFloat(row[8]);
-	sze.z         = Strings::ToFloat(row[9]);
-	sze.heading   = Strings::ToFloat(row[10]);
-	// character_data.heading may carry the wide/narrow boundary bit sign-encoded
-	// by DoZoneSuccess (negative = narrow door, true heading = -(stored)-1).
-	// Recover the real facing so the entry spawn never sends a negative heading.
-	if (sze.heading < 0.0f) {
-		sze.heading = -sze.heading - 1.0f;
-	}
+	// Position: take from the session, not the DB row.  SendPlayerProfile (called
+	// immediately before us) may have applied a wide-boundary terrain snap to
+	// s.pos_z that the DB row does not yet reflect (the character_data save
+	// happens later via Client::Save).  Reading from the DB here would ship a
+	// stale Z to the client's self-spawn, and OP_ZoneEntry is the packet that
+	// sets the rendered position — that's the "fell through geometry" symptom
+	// that persisted even after the PP-time snap fix.  s.pos_heading is already
+	// the decoded (positive) value; no sign flip is needed.  DB row columns 7-10
+	// remain SELECTed to keep the query stable for other fields.
+	sze.y         = s.pos_y;
+	sze.x         = s.pos_x;
+	sze.z         = s.pos_z;
+	sze.heading   = s.pos_heading;
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
 	// sze.deity: the client reads character sheet deity from ZoneEntry, not pp.deity.
 	// EQClassic sends DEITY_AGNOSTIC=140 in NewSpawn → full EQEmu IDs, not compact.

@@ -403,6 +403,16 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 						// Apply delta on the sliding (wildcard) axis, strict target on the
 						// traversal axis. No delta clamp: the client's reported exit
 						// position is trusted verbatim, however large the lateral slide.
+						// Seamless behaviour: player's exit coordinate on the wildcard axis
+						// is preserved into the destination zone, so the "far south end" of
+						// ecommons zoneline maps to the "far south end" of commons zoneline.
+						// The DB target axis value (which may be a specific safe point like
+						// 10.3) is intentionally ignored on the sliding axis — using it
+						// would collapse every entry point to the same arrival XY.  The
+						// destination-side pre-PP terrain snap (SendPlayerProfile) handles
+						// bad-Z arrivals by probing from high above; a bad-XY arrival where
+						// the destination has no walkable geometry at all is caught there
+						// via FindBestZ returning BEST_Z_INVALID.
 						float delta_x = 0.0f, delta_y = 0.0f;
 						if (traversal_is_x) {
 							target_x = raw_tgt_x;
