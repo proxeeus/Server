@@ -3132,12 +3132,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// narrow/corridor return trigger (within the detect radius of the spawn)
 		// would fire immediately and bounce them straight back (infinite loop).
 		tc->ArmTrilogyZoneInGuard(s.pos_x, s.pos_y);
-		if (RuleB(Zone, TrilogyZonePointDebug)) {
-			LogInfo("[TrilogyZP DBG] guard ARMED char [{}] spawn ({:.1f},{:.1f}) in zone [{}]"
-			        " -- detection suppressed until player moves clear (2*kDetectRadius=20u)",
-			        s.char_name, s.pos_x, s.pos_y,
-			        zone ? zone->GetShortName() : "?");
-		}
+		// (ArmTrilogyZoneInGuard emits its own "guard ARMED" log with the
+		//  per-line effective_r and computed threshold under TrilogyZonePointDebug.)
 
 		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket

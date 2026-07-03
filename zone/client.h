@@ -1995,11 +1995,12 @@ public:
 
 	// Arm the Trilogy zone-in loop guard at the spawn point (see members below).
 	// Called from HandleZoneInComplete once the player entity is created.
-	void ArmTrilogyZoneInGuard(float x, float y) {
-		m_trilogy_zonein_x     = x;
-		m_trilogy_zonein_y     = y;
-		m_trilogy_zonein_guard = true;
-	}
+	// Iterates zone_point_list to find the narrow zoneline nearest to (x,y) and
+	// caches its effective_r into m_trilogy_zonein_guard_r — that's the one that
+	// could re-trigger, so the guard threshold scales to just what's needed
+	// (2 * effective_r) instead of the global 2 * kDetectRadiusMax=40u. Falls
+	// back to kDetectRadiusMax if the zone has no narrow lines loaded.
+	void ArmTrilogyZoneInGuard(float x, float y);
 private:
 
 	PlayerProfile_Struct m_pp;
@@ -2070,6 +2071,12 @@ private:
 	float m_trilogy_zonein_x           = 0.f;
 	float m_trilogy_zonein_y           = 0.f;
 	bool  m_trilogy_zonein_guard       = false;
+	// Effective radius of the narrow zoneline nearest to spawn. Guard threshold
+	// scales off this so a tight-buffer dungeon doesn't over-guard the player
+	// (e.g. befallen with buffer=5 -> guard=10u instead of 40u). Populated by
+	// ArmTrilogyZoneInGuard at zone-in; defaults to kDetectRadiusMax if no
+	// narrow line is found (preserves today's 40u guard for those cases).
+	float m_trilogy_zonein_guard_r     = 20.0f; // matches kDetectRadiusMax literal in client.cpp
 
 	// Diagnostic state for Rules::Zone::TrilogyZonePointDebug — see
 	// CheckTraditionalZonePoints. m_zp_debug_last_x/y hold the last position we

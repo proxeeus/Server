@@ -2143,9 +2143,10 @@ bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint *> *zone_point_list
 		zp->is_virtual           = zone_point.is_virtual > 0;
 		zp->height               = zone_point.height;
 		zp->width                = zone_point.width;
+		zp->buffer               = zone_point.buffer;
 
 		LogZonePoints(
-			"Loading ZP x [{}] y [{}] z [{}] heading [{}] target x y z zone_id instance_id [{}] [{}] [{}] [{}] [{}] number [{}] is_virtual [{}] height [{}] width [{}]",
+			"Loading ZP x [{}] y [{}] z [{}] heading [{}] target x y z zone_id instance_id [{}] [{}] [{}] [{}] [{}] number [{}] is_virtual [{}] height [{}] width [{}] buffer [{}]",
 			zp->x,
 			zp->y,
 			zp->z,
@@ -2158,7 +2159,8 @@ bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint *> *zone_point_list
 			zp->number,
 			zp->is_virtual ? "true" : "false",
 			zp->height,
-			zp->width
+			zp->width,
+			zp->buffer
 		);
 
 		if (zone_point.is_virtual) {

@@ -72,6 +72,11 @@ struct ZonePoint {
 	bool   is_virtual;
 	int    height;
 	int    width;
+	// Per-line detection-radius override for Trilogy CheckTraditionalZonePoints.
+	// Zero/unset -> use the narrow/wide default (10u / 20u). Positive -> use as
+	// the effective sphere radius (e.g. 3.0 for a step-on teleport pad). Ignored
+	// for wildcard-axis (wide) lines unless explicitly overridden.
+	float  buffer;
 };
 
 struct ZoneClientAuth_Struct {

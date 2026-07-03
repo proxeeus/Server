@@ -369,6 +369,7 @@ RULE_BOOL(Zone, AllowCrossZoneSpellsOnBots, false, "Set to true to allow cross z
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnMercs, false, "Set to true to allow cross zone spells (cast/remove) to affect mercenaries")
 RULE_BOOL(Zone, AllowCrossZoneSpellsOnPets, false, "Set to true to allow cross zone spells (cast/remove) to affect pets")
 RULE_BOOL(Zone, TrilogyZonePointDebug, false, "Diagnostic: log Trilogy zone-point proximity per client update, and echo state changes / near-misses to affected clients. Zero cost when off.")
+RULE_BOOL(Zone, TrilogyZonePointLosGate, true, "Require line-of-sight from player to trigger center before firing a narrow (both-axes-explicit) Trilogy zone line. Prevents 'zoning through walls' at dungeon mouths and city gates. Off = today's radius-only behavior.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Map)
