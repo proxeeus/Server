@@ -1729,11 +1729,27 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	GetPP().z       = z;
 	GetPP().heading = heading;
 
-	// Trilogy clients never receive zone point data (OP_ZonePoints) and never
-	// send OP_ZoneChange autonomously, so both types of zone lines must be
-	// checked server-side on every position update.
+	// Trilogy clients never receive OP_ZonePoints data, so zone-line detection
+	// happens server-side per position update.
+	//
+	// Virtual zone lines (rectangular AABB triggers on zone_points.is_virtual=1)
+	// stay on the modern EQEmu path — those are typically GM-authored
+	// teleporters and coexist with EQClassic content.
+	//
+	// Server-side classic zoneline detection: prefer the EQClassic-parity path
+	// (CheckTrilogyZoneLines against trilogy_zone_line_list, imported from
+	// EQClassic). When a zone has NO trilogy_zone_points entries loaded, fall
+	// back to the legacy sphere+wildcard path (CheckTraditionalZonePoints
+	// against zone_point_list) so Trilogy players in non-imported zones aren't
+	// stranded. Coverage today is Classic/Kunark/Velious (~121 zones); other
+	// zones use the sphere fallback until they're imported.
 	CheckVirtualZoneLines();
-	CheckTraditionalZonePoints();
+	if (zone && !zone->trilogy_zone_line_list.empty()) {
+		CheckTrilogyZoneLines();
+	}
+	else {
+		CheckTraditionalZonePoints();
+	}
 
 	// Swimming skill-up + water-region transition.  Mirrors the watermap block
 	// in modern Client::Handle_OP_ClientUpdate (client_packet.cpp:5159-5170) —
@@ -1750,6 +1766,288 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 			}
 		}
 		CheckRegionTypeChanges();
+	}
+}
+
+// ============================================================
+// CheckTrilogyZoneLines — EQClassic-parity server-side zone-line detection.
+//
+// Faithful port of EQClassic's Client::ScanForZoneLines
+// (EQClassic/Zone/Source/client.cpp:3780+). Iterates the imported
+// zone->trilogy_zone_line_list and honors all three modes:
+//   UseNewZoning == 0 : old-mode box detection with Z tolerance + eye-level
+//                       guard + mandatory LOS.
+//   UseNewZoning == 1 : X-based plane crossing with MinVert/MaxVert Z-wall.
+//   UseNewZoning == 2 : Y-based plane crossing, same idea.
+//
+// On fire, computes the destination via EQClassic's keepX/Y/Z + preloaded
+// dest_CenterPoint/dest_MinVert/dest_MaxVert remap, stores it in
+// m_ZoneSummonLocation, sets m_trilogy_use_eqclassic_dest so
+// Handle_OP_ZoneChange takes it verbatim (no wildcard/delta math), and sends
+// OP_RequestClientZoneChange. The client's OP_ZoneChange reply then flows
+// through the existing HandleZoneChange -> Handle_OP_ZoneChange -> DoZoneSuccess
+// chain unchanged.
+//
+// DB heading is stored in EQClassic's 0-255 wire scale; we multiply by 2 at
+// fire time to convert to EQEmu's 0-512 internal scale. TrilogyClient's
+// outbound heading encoders then divide by 2 back to wire for the client.
+//
+// Explicitly NOT ported from EQClassic:
+//   - Cross-zone FindBestZ for arrival Z (documented DEAD END in memory
+//     project_trilogy_zone_transition — the departing zone process has not
+//     loaded the destination zone's collision map). We pass raw target_z
+//     through; destination-side SendPlayerProfile terrain-snap handles bad Z.
+//   - LOS check on plane-crossing modes (EQClassic doesn't do it there either).
+//   - Same-zone teleport special case (EQClassic distinguishes; not needed
+//     here — firing OP_RequestClientZoneChange to the same zone id still
+//     works end-to-end via the standard ZoneChange machinery).
+// ============================================================
+void TrilogyClient::CheckTrilogyZoneLines()
+{
+	// Same gate as legacy CheckTraditionalZonePoints: only fire during idle,
+	// non-zoning state; don't spam OP_RequestClientZoneChange while a zoning
+	// handshake is already in flight.
+	if (!zone || zone_mode != ZoneUnsolicited || bZoning) {
+		return;
+	}
+	// Strict EQClassic parity: zones without imported content get NO server-side
+	// detection here. Any Trilogy player in such a zone can still zone via
+	// client-autonomous OP_ZoneChange (outdoor zonelines) but nothing fires
+	// from this path.
+	if (zone->trilogy_zone_line_list.empty()) {
+		return;
+	}
+
+	const bool zp_dbg = RuleB(Zone, TrilogyZonePointDebug);
+
+	// Zone-in loop guard: same shape as CheckTraditionalZonePoints — suppress
+	// detection until player has moved 2*guard_r from spawn (see
+	// ArmTrilogyZoneInGuard for the per-line effective_r calculation).
+	if (m_trilogy_zonein_guard) {
+		const float gdx        = GetX() - m_trilogy_zonein_x;
+		const float gdy        = GetY() - m_trilogy_zonein_y;
+		const float kGuardDist = 2.0f * m_trilogy_zonein_guard_r;
+		const float g_dist2    = gdx * gdx + gdy * gdy;
+		if (g_dist2 < kGuardDist * kGuardDist) {
+			if (zp_dbg) {
+				LogInfo("[TrilogyZP DBG] guard ACTIVE (trilogy) char [{}]"
+				        " | player ({:.1f},{:.1f}) spawn ({:.1f},{:.1f})"
+				        " | dist={:.1f}/{:.1f}u (guard_r={:.1f})",
+				        GetCleanName(), GetX(), GetY(),
+				        m_trilogy_zonein_x, m_trilogy_zonein_y,
+				        std::sqrt(g_dist2), kGuardDist, m_trilogy_zonein_guard_r);
+			}
+			return;
+		}
+		m_trilogy_zonein_guard = false;
+		if (zp_dbg) {
+			LogInfo("[TrilogyZP DBG] guard CLEARED (trilogy) char [{}]"
+			        " | moved {:.1f}u from spawn (threshold {:.1f}u)",
+			        GetCleanName(), std::sqrt(g_dist2), kGuardDist);
+		}
+	}
+
+	// Per-tick iteration — first line that fires wins (matches EQClassic's
+	// `break` at the fire point).
+	for (const auto &zln : zone->trilogy_zone_line_list) {
+		bool  fired        = false;
+		float dest_x       = 0.0f;
+		float dest_y       = 0.0f;
+		float dest_z       = 0.0f;
+		float dest_heading = zln.heading * 2.0f; // EQClassic 0-255 -> EQEmu 0-512
+		const char* mode_tag = "?";
+
+		if (zln.UseNewZoning == 0) {
+			// --- OLD-MODE BOX (~96% of the imported dataset) ---
+			mode_tag = "box";
+			const int32 zRangeVal = zln.Zrange;
+			const int32 zDiffVal  = (zln.maxZDiff == 0) ? 50000 : zln.maxZDiff;
+
+			if (std::fabs(GetX() - zln.x) > zRangeVal) continue;
+			if (std::fabs(GetY() - zln.y) > zRangeVal) continue;
+			if (std::fabs(GetZ() - zln.z) > zDiffVal)  continue;
+			// Eye-level guard: prevent triggering when the player's head-level
+			// (+10u above their feet) is still below the trigger's floor.
+			if ((GetZ() + 10.0f) < zln.z) continue;
+
+			// Mandatory LOS in EQClassic old-mode. Fail-open when the zone's
+			// map isn't loaded (Mob::CheckLosFN returns false on null zonemap
+			// in this build), so a map-less zone still gets detection.
+			if (zone->zonemap && !CheckLosFN(zln.x, zln.y, zln.z, 5.0f)) {
+				if (zp_dbg) {
+					LogInfo("[TrilogyZP DBG] trilogy box zp id={} LOS BLOCK"
+					        " | player ({:.1f},{:.1f},{:.1f}) trig ({:.1f},{:.1f},{:.1f})",
+					        zln.id, GetX(), GetY(), GetZ(),
+					        zln.x, zln.y, zln.z);
+				}
+				continue;
+			}
+
+			// Fire: keepX/Y/Z overrides the corresponding coord with the
+			// player's current position (EQClassic content authors set these
+			// only where zones' axes line up so this is a safe pass-through).
+			dest_x = (zln.keepX == 1) ? GetX() : zln.target_x;
+			dest_y = (zln.keepY == 1) ? GetY() : zln.target_y;
+			dest_z = (zln.keepZ == 1) ? GetZ() : zln.target_z;
+			fired  = true;
+		}
+		else if (zln.UseNewZoning == 1) {
+			// --- X-based PLANE CROSSING ---
+			mode_tag = "planeX";
+			const float triggerX = zln.x;
+			const float zwallMin = (zln.MinVert == 0.0f) ? -999999.0f : zln.MinVert;
+			const float zwallMax = (zln.MaxVert == 0.0f) ?  999999.0f : zln.MaxVert;
+
+			bool crossed = false;
+			// EQClassic uses two INDEPENDENT branches (>= and <=) selected by
+			// the sign of triggerX. A triggerX of exactly 0 satisfies both,
+			// a mild edge case in their code we replicate faithfully.
+			if (triggerX >= 0.0f) {
+				if (GetX() >= triggerX && GetY() >= zwallMin && GetY() <= zwallMax) {
+					crossed = true;
+				}
+			}
+			if (!crossed && triggerX <= 0.0f) {
+				if (GetX() <= triggerX && GetY() >= zwallMin && GetY() <= zwallMax) {
+					crossed = true;
+				}
+			}
+			if (!crossed) continue;
+
+			// Destination X = raw target_x. Destination Y uses keepY logic:
+			//   keepY == 1  -> preserve player's Y (clamped to destination Min/Max)
+			//   keepY == 0  -> centerpoint-relative remap using the paired
+			//                  destination line's CenterPoint/Min/Max (preloaded
+			//                  at LoadTrilogyZonePoints). If the paired lookup
+			//                  didn't resolve, fall back to raw target_y.
+			dest_x = zln.target_x;
+			float sendY;
+			if (zln.keepY == 1) {
+				sendY = GetY();
+				if (zln.dest_resolved &&
+				    zln.dest_MaxVert != 0.0f && zln.dest_MinVert != 0.0f)
+				{
+					if (sendY > zln.dest_MaxVert) sendY = zln.dest_MaxVert;
+					if (sendY < zln.dest_MinVert) sendY = zln.dest_MinVert;
+				}
+			}
+			else {
+				if (zln.dest_resolved) {
+					const float dist_from_center = GetY() - zln.CenterPoint;
+					sendY = zln.dest_CenterPoint + dist_from_center;
+					if (sendY > zln.dest_MaxVert) sendY = zln.dest_MaxVert;
+					if (sendY < zln.dest_MinVert) sendY = zln.dest_MinVert;
+				}
+				else {
+					sendY = zln.target_y;
+				}
+			}
+			dest_y = sendY;
+			// Z: raw target_z. Cross-zone FindBestZ is not viable here (see
+			// module comment). Destination-side terrain-snap catches bad Z.
+			dest_z = zln.target_z;
+			fired  = true;
+		}
+		else if (zln.UseNewZoning == 2) {
+			// --- Y-based PLANE CROSSING (X/Y roles swapped from planeX) ---
+			mode_tag = "planeY";
+			const float triggerY = zln.y;
+			const float zwallMin = (zln.MinVert == 0.0f) ? -999999.0f : zln.MinVert;
+			const float zwallMax = (zln.MaxVert == 0.0f) ?  999999.0f : zln.MaxVert;
+
+			bool crossed = false;
+			if (triggerY >= 0.0f) {
+				if (GetY() >= triggerY && GetX() >= zwallMin && GetX() <= zwallMax) {
+					crossed = true;
+				}
+			}
+			if (!crossed && triggerY <= 0.0f) {
+				if (GetY() <= triggerY && GetX() >= zwallMin && GetX() <= zwallMax) {
+					crossed = true;
+				}
+			}
+			if (!crossed) continue;
+
+			dest_y = zln.target_y;
+			float sendX;
+			if (zln.keepX == 1) {
+				sendX = GetX();
+				if (zln.dest_resolved &&
+				    zln.dest_MaxVert != 0.0f && zln.dest_MinVert != 0.0f)
+				{
+					if (sendX > zln.dest_MaxVert) sendX = zln.dest_MaxVert;
+					if (sendX < zln.dest_MinVert) sendX = zln.dest_MinVert;
+				}
+			}
+			else {
+				if (zln.dest_resolved) {
+					const float dist_from_center = GetX() - zln.CenterPoint;
+					sendX = zln.dest_CenterPoint + dist_from_center;
+					if (sendX > zln.dest_MaxVert) sendX = zln.dest_MaxVert;
+					if (sendX < zln.dest_MinVert) sendX = zln.dest_MinVert;
+				}
+				else {
+					sendX = zln.target_x;
+				}
+			}
+			dest_x = sendX;
+			dest_z = zln.target_z;
+			fired  = true;
+		}
+		// Any UseNewZoning value outside {0, 1, 2} is data corruption; skip.
+
+		if (!fired) continue;
+
+		LogInfo(
+			"[TrilogyZP] CheckTrilogyZoneLines FIRED: char [{}] zone [{}]"
+			" | line id={} mode={} player ({:.1f},{:.1f},{:.1f})"
+			" trig ({:.1f},{:.1f},{:.1f})"
+			" -> dest ({:.2f},{:.2f},{:.2f},{:.1f}) target_zone={}"
+			" keep [{}{}{}]",
+			GetCleanName(), zone->GetShortName(),
+			zln.id, mode_tag,
+			GetX(), GetY(), GetZ(),
+			zln.x, zln.y, zln.z,
+			dest_x, dest_y, dest_z, dest_heading, zln.target_zone_id,
+			zln.keepX ? 'X' : '.', zln.keepY ? 'Y' : '.', zln.keepZ ? 'Z' : '.'
+		);
+
+		// Set up ZoneSolicited state. m_trilogy_use_eqclassic_dest tells
+		// Handle_OP_ZoneChange to use m_ZoneSummonLocation verbatim (no
+		// wildcard/delta/anti-bounce math) — the destination is already final.
+		zone_mode                     = ZoneSolicited;
+		zonesummon_id                 = zln.target_zone_id;
+		m_ZoneSummonLocation          = glm::vec4(dest_x, dest_y, dest_z, dest_heading);
+		zonesummon_ignorerestrictions = 0;
+		m_trilogy_use_eqclassic_dest  = true;
+		// Wide/narrow classification for downstream (DoZoneSuccess sign-encodes
+		// the persisted heading; destination zone reads sign to gate the
+		// wide-boundary terrain-snap + SpawnCorrect trap):
+		//   UseNewZoning == 0 (old-mode box) : dungeon doors / gates / corridor
+		//        mouths — dest coords are DB-authored static points landing on
+		//        well-defined dungeon floors. NARROW: no terrain-snap needed,
+		//        no SpawnCorrect override needed.
+		//   UseNewZoning >= 1 (plane crossing): seamless outdoor transitions
+		//        (commons<->ecommons, karana<->EC style). The DB target_z is a
+		//        reference not a walkable Y, and destination Z at the slid
+		//        arrival XY isn't known here (no cross-zone FindBestZ). WIDE
+		//        so the destination-side terrain-snap fires + the SpawnCorrect
+		//        trap preserves the pre-computed arrival heading.
+		m_trilogy_wide_boundary       = (zln.UseNewZoning != 0);
+
+		auto* rc_app = new EQApplicationPacket(
+		    OP_RequestClientZoneChange, sizeof(RequestClientZoneChange_Struct));
+		auto* rc     = reinterpret_cast<RequestClientZoneChange_Struct*>(rc_app->pBuffer);
+		rc->zone_id     = zln.target_zone_id;
+		rc->instance_id = 0;
+		rc->x           = dest_x;
+		rc->y           = dest_y;
+		rc->z           = dest_z;
+		rc->heading     = dest_heading;
+		rc->type        = 0x01;
+		FastQueuePacket(&rc_app);
+
+		return; // first fire wins — matches EQClassic's post-fire break
 	}
 }
 

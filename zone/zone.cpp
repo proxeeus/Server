@@ -55,6 +55,7 @@
 #include "../common/data_verification.h"
 #include "zone_reload.h"
 #include "../common/repositories/criteria/content_filter_criteria.h"
+#include "../common/repositories/trilogy_zone_points_repository.h"
 #include "../common/repositories/character_exp_modifiers_repository.h"
 #include "../common/repositories/merchantlist_repository.h"
 #include "../common/repositories/object_repository.h"
@@ -1178,6 +1179,10 @@ bool Zone::Init(bool is_static) {
 	spawn_conditions.LoadSpawnConditions(short_name, instanceid);
 
 	content_db.LoadStaticZonePoints(&zone_point_list, short_name, GetInstanceVersion());
+	// Load the parallel Trilogy-only zoning table (EQClassic import). Empty
+	// for zones without matching content — Trilogy clients get no server-side
+	// detection there, per the strict-parity design.
+	content_db.LoadTrilogyZonePoints(&trilogy_zone_line_list, short_name);
 
 	if (!content_db.LoadSpawnGroups(short_name, GetInstanceVersion(), &spawn_group_list)) {
 		LogError("Loading spawn groups failed");
@@ -1231,6 +1236,12 @@ void Zone::ReloadStaticData() {
 
 	if (!content_db.LoadStaticZonePoints(&zone_point_list, GetShortName(), GetInstanceVersion())) {
 		LogError("Loading static zone points failed");
+	}
+	// Reload the Trilogy-only zoning table alongside the modern one so
+	// #reload static (or the reload path) picks up any DB edits without a
+	// zone restart.
+	if (!content_db.LoadTrilogyZonePoints(&trilogy_zone_line_list, GetShortName())) {
+		LogError("Loading trilogy_zone_points failed");
 	}
 
 	LogInfo("Reloading traps");
@@ -2174,6 +2185,137 @@ bool ZoneDatabase::LoadStaticZonePoints(LinkedList<ZonePoint *> *zone_point_list
 	}
 
 	LogInfo("Loaded [{}] zone_points", Strings::Commify(std::to_string(zone_points.size())));
+
+	return true;
+}
+
+// ============================================================================
+// LoadTrilogyZonePoints — populate zone->trilogy_zone_line_list from the
+// trilogy_zone_points table (direct EQClassic import).
+//
+// Scope: Trilogy client zoning ONLY. This runs alongside LoadStaticZonePoints
+// at zone init; the two lists are entirely disjoint. Modern clients read
+// zone_point_list; Trilogy clients (once Phase 2 wires the detection) will
+// read trilogy_zone_line_list.
+//
+// Design notes:
+//   - We resolve EQClassic's char[16] target_zone shortname to an EQEmu
+//     zone_id via ZoneID() at load time. Rows whose target zone we can't
+//     resolve (custom EQClassic content, mistyped shortnames) get logged and
+//     skipped — never inserted into the runtime list.
+//   - Client version filtering is NOT applied here (unlike LoadStaticZonePoints
+//     which filters on client_version_mask). The trilogy_zone_points table is
+//     Trilogy-only by construction; the read side gates by IsTrilogyClient().
+//   - No version/instance filter either. EQClassic's schema has no such
+//     concept and the Classic/Kunark/Velious content set has no instances.
+// ============================================================================
+bool ZoneDatabase::LoadTrilogyZonePoints(std::vector<TrilogyZoneLineNode>* out_list, const char* zonename)
+{
+	if (!out_list) {
+		return false;
+	}
+	out_list->clear();
+
+	auto rows = TrilogyZonePointsRepository::GetByZone(content_db, zonename);
+
+	out_list->reserve(rows.size());
+
+	int skipped_unresolved = 0;
+	for (auto &r : rows) {
+		uint32 tzid = ZoneID(r.target_zone.c_str());
+		if (tzid == 0) {
+			LogInfo(
+				"[TrilogyZP] LoadTrilogyZonePoints: skipping row id={} zone=[{}]"
+				" target_zone=[{}] -- shortname does not resolve to a known zone_id",
+				r.id, r.zone, r.target_zone
+			);
+			++skipped_unresolved;
+			continue;
+		}
+
+		TrilogyZoneLineNode n{};
+		n.id               = r.id;
+		n.x                = r.x;
+		n.y                = r.y;
+		n.z                = r.z;
+		n.heading          = r.heading;
+		n.target_x         = r.target_x;
+		n.target_y         = r.target_y;
+		n.target_z         = r.target_z;
+		n.target_zone_id   = static_cast<uint16>(tzid);
+		n.Zrange           = r.Zrange;
+		n.maxZDiff         = r.maxZDiff;
+		n.keepX            = r.keepX;
+		n.keepY            = r.keepY;
+		n.keepZ            = r.keepZ;
+		n.UseNewZoning     = r.UseNewZoning;
+		n.CenterPoint      = r.CenterPoint;
+		n.MaxVert          = r.MaxVert;
+		n.MinVert          = r.MinVert;
+		n.ToZoneID         = r.ToZoneID;
+		n.dest_CenterPoint = 0.0f;
+		n.dest_MaxVert     = 0.0f;
+		n.dest_MinVert     = 0.0f;
+		n.dest_resolved    = false;
+
+		// Preload paired-destination geometry for plane-crossing rows only.
+		// Old-mode rows (UseNewZoning==0) send raw target_x/y/z verbatim and
+		// don't need any CenterPoint/Min/Max lookup — skip the DB round-trip
+		// for the ~96% of rows that are old-mode.
+		//
+		// For plane-crossing rows we mirror EQClassic's runtime query pattern
+		// (see EQClassic/Common/Source/database.cpp:1380-1470,
+		// getTargetZoneCenter/Max/Min). Doing it once per row at load time
+		// instead of per fire keeps the hot path DB-free. If the query returns
+		// zero rows (some plane-crossing entries in the imported dataset don't
+		// have a valid pair — e.g. 1 Y-plane row has CenterPoint set but
+		// ToZoneID=0 pointing nowhere), we log once and leave dest_resolved=false;
+		// the fire path then falls back to raw target coords.
+		if (n.UseNewZoning >= 1) {
+			auto paired = TrilogyZonePointsRepository::GetPairedDestination(
+				content_db, zonename, r.target_zone, r.id
+			);
+			if (paired.size() == 1) {
+				n.dest_CenterPoint = paired[0].CenterPoint;
+				n.dest_MaxVert     = paired[0].MaxVert;
+				n.dest_MinVert     = paired[0].MinVert;
+				n.dest_resolved    = true;
+			}
+			else {
+				LogInfo(
+					"[TrilogyZP] Paired-destination lookup for line id={} zone=[{}]"
+					" -> target=[{}] returned {} row(s) (expected 1);"
+					" plane-crossing fire will fall back to raw target coords",
+					r.id, r.zone, r.target_zone, (unsigned) paired.size()
+				);
+			}
+		}
+
+		out_list->push_back(n);
+
+		LogZonePoints(
+			"[TrilogyZP] Loading trilogy line id [{}] xyz [{:.2f},{:.2f},{:.2f}] h [{:.1f}]"
+			" -> target [{}] id={} txyz [{:.2f},{:.2f},{:.2f}]"
+			" Zrange [{}] maxZDiff [{}] keep [{}{}{}]"
+			" UseNewZoning [{}] center [{:.2f}] vert [{:.2f}..{:.2f}] ToZoneID [{}]"
+			" dest [center={:.2f} vert={:.2f}..{:.2f} resolved={}]",
+			n.id, n.x, n.y, n.z, n.heading,
+			r.target_zone, tzid, n.target_x, n.target_y, n.target_z,
+			n.Zrange, n.maxZDiff,
+			n.keepX ? 'X' : '.', n.keepY ? 'Y' : '.', n.keepZ ? 'Z' : '.',
+			n.UseNewZoning, n.CenterPoint, n.MinVert, n.MaxVert, n.ToZoneID,
+			n.dest_CenterPoint, n.dest_MinVert, n.dest_MaxVert,
+			n.dest_resolved ? "Y" : "N"
+		);
+	}
+
+	LogInfo(
+		"[TrilogyZP] Loaded [{}] trilogy_zone_points for zone [{}]"
+		" ({} row(s) skipped: unresolved target_zone)",
+		Strings::Commify(std::to_string(out_list->size())),
+		zonename,
+		skipped_unresolved
+	);
 
 	return true;
 }

@@ -307,13 +307,34 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 			ignore_restrictions = 1;	//can always get to our bind point? seems exploitable
 			break;
 		case ZoneSolicited: //we told the client to zone somewhere, so we know where they are going.
-			// For Trilogy clients, CheckTraditionalZonePoints detects the zone line
-			// server-side.  If the zone point uses all-wildcard (999999) targets, the
-			// destination would be the player's current position in the source zone —
-			// which is wrong when the two zones use different coordinate systems (e.g.
-			// WFP/EC spawn coordinates don't map correctly into the other zone).
-			// Fall back to the target zone's safe coordinates in that case so the
-			// player always arrives at a valid location.
+			// EQClassic-parity Trilogy path (Phase 2): if the fire came from
+			// TrilogyClient::CheckTrilogyZoneLines, the destination is already
+			// final (computed via EQClassic's keepX/Y/Z + CenterPoint/MinVert/
+			// MaxVert rules against the imported trilogy_zone_points data).
+			// Use m_ZoneSummonLocation verbatim — no wildcard/delta/anti-bounce
+			// math. Clear the flag so subsequent solicited zones (spells,
+			// #zone, death rez) don't inadvertently reuse this branch.
+			if (IsTrilogyClient() && m_trilogy_use_eqclassic_dest) {
+				target_x       = m_ZoneSummonLocation.x;
+				target_y       = m_ZoneSummonLocation.y;
+				target_z       = m_ZoneSummonLocation.z;
+				target_heading = m_ZoneSummonLocation.w;
+				m_trilogy_use_eqclassic_dest = false;
+				LogInfo(
+					"[TrilogyZP DIAG] ZoneSolicited (eqclassic-dest) char [{}]"
+					" -> dest ({:.2f},{:.2f},{:.2f},{:.2f}) target_zone={}"
+					" [pre-computed by CheckTrilogyZoneLines]",
+					GetCleanName(), target_x, target_y, target_z, target_heading,
+					zonesummon_id);
+				break;
+			}
+			// Legacy Trilogy path (fallback for zones without imported
+			// trilogy_zone_points content, or for spells / #zone / death rez
+			// that go through solicited zoning without touching
+			// CheckTrilogyZoneLines): CheckTraditionalZonePoints stashed the
+			// raw wildcard targets in m_trilogy_zone_raw_target_*; expand them
+			// against the player's current position and apply the wide-vs-narrow
+			// delta/anti-bounce heuristics below.
 			if (IsTrilogyClient()) {
 				bool all_wildcards = (m_trilogy_zone_raw_target_x == 999999 &&
 				                      m_trilogy_zone_raw_target_y == 999999 &&

@@ -3585,9 +3585,23 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			}
 		}
 
-		// See the pre-PP snap for the threshold rationale (|drop| > 10).
-		const bool snap_down = (drop > 10.0f);
-		const bool snap_up   = (drop < -10.0f);
+		// Asymmetric threshold (LATE snap):
+		//   snap_down (drop > 10u): player 10+u ABOVE walkable. Client physics
+		//       recovers via gravity — brief drop animation, no gameplay harm.
+		//       Only snap on the "obvious skydrop" case to avoid re-triggering
+		//       on 1-3u terrain-probe jitter.
+		//   snap_up (drop < -2u): player 2+u BELOW walkable = embedded in the
+		//       terrain mesh. Client gravity only pulls down, so there is NO
+		//       recovery mechanism — the player falls through the world. Tight
+		//       threshold (2u buffer for probe jitter) so plane-crossing
+		//       arrivals where the DB target_z is authored for one point but
+		//       the slid arrival XY has slightly higher ground (a few units of
+		//       slope) always land above ground.
+		//   Empirical from 2026-07-04 ecommons(4940,-734) arrival: pos_z=-50,
+		//   terrain_z=-44.96, drop=-5.04. Previous symmetric ±10u tolerance
+		//   left player 5u embedded → fall-through-world.
+		const bool snap_down = (drop >  10.0f);
+		const bool snap_up   = (drop <  -2.0f);
 		if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
 			float new_z = terrain_z + 3.0f;
 			LogInfo("[TrilogyZP] wide-boundary terrain-snap ({}) | char [{}] zone [{}] "
@@ -4009,22 +4023,22 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 				}
 			}
 
-			// Snap trigger: |drop| > 10u.  Now that the two-pass probe reliably
-			// finds walkable, there's no need to preserve the departing zone's
-			// +25 skydrop safety buffer — we can plant the player right on the
-			// ground.  10u tolerance covers terrain-probe jitter without leaving
-			// a visible "drop from the sky" arrival (previously 40u threshold
-			// left up-to-40u free-fall on flat approaches where the DB target_z
-			// happened to differ from actual walkable by 15-40u).
-			// Snap trigger: |drop| > 10u.  Now that the two-pass probe reliably
-			// finds walkable, there's no need to preserve the departing zone's
-			// +25 skydrop safety buffer — we can plant the player right on the
-			// ground.  10u tolerance covers terrain-probe jitter without leaving
-			// a visible "drop from the sky" arrival (previously 40u threshold
-			// left up-to-40u free-fall on flat approaches where the DB target_z
-			// happened to differ from actual walkable by 15-40u).
-			const bool snap_down = (drop > 10.0f);
-			const bool snap_up   = (drop < -10.0f);
+			// Asymmetric threshold (pre-PP):
+			//   snap_down (drop > 10u): player 10+u ABOVE walkable — client
+			//       physics recovers via gravity, brief drop animation. Only
+			//       snap on obvious skydrop to avoid re-triggering on probe
+			//       jitter.
+			//   snap_up (drop < -2u): player 2+u BELOW walkable = embedded in
+			//       terrain. Client gravity only pulls down → no recovery →
+			//       fall-through-world. Tight threshold (2u buffer for probe
+			//       jitter) so plane-crossing arrivals where the DB target_z
+			//       is authored for one point but the slid arrival XY has
+			//       slightly different ground (any slope) still land above.
+			//   Empirical from 2026-07-04: ecommons(4940,-734) plane-crossing
+			//   arrival at pos_z=-50 vs terrain_z=-44.96 (drop=-5.04) fell
+			//   through under the previous symmetric ±10u tolerance.
+			const bool snap_down = (drop >  10.0f);
+			const bool snap_up   = (drop <  -2.0f);
 			if (terrain_z != BEST_Z_INVALID && (snap_down || snap_up)) {
 				float new_z = terrain_z + 3.0f;
 				LogInfo("[TrilogyZP] wide-boundary terrain-snap (pre-PP, {}) | char [{}] zone [{}] "

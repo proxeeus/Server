@@ -320,6 +320,7 @@ SET(repositories
     repositories/base/base_veteran_reward_templates_repository.h
     repositories/base/base_zone_repository.h
     repositories/base/base_zone_points_repository.h
+    repositories/base/base_trilogy_zone_points_repository.h
 
     # Extended Repositories
     repositories/aa_ability_repository.h
@@ -503,6 +504,7 @@ SET(repositories
     repositories/veteran_reward_templates_repository.h
     repositories/zone_repository.h
     repositories/zone_points_repository.h
+    repositories/trilogy_zone_points_repository.h
 
 )
 

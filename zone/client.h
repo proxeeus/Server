@@ -1819,6 +1819,14 @@ public:
 	virtual uint32 GetEXPForLevel(uint16 check_level);
 protected:
 	friend class Mob;
+	// TrilogyClient reaches into Client-private zoning state (zone_mode,
+	// m_ZoneSummonLocation, m_trilogy_zonein_*, m_trilogy_use_eqclassic_dest,
+	// etc.) from its EQClassic-parity detection method CheckTrilogyZoneLines.
+	// TrilogyClient inherits from Client and is a real player entity, so
+	// promoting these fields to protected would be equivalent — friend is used
+	// here for parallelism with the existing `friend class Mob` above and to
+	// keep the surface tight (only these two classes see Client's privates).
+	friend class TrilogyClient;
 	void CalcEdibleBonuses(StatBonuses* newbon);
 	void MakeBuffFadePacket(uint16 spell_id, int slot_id, bool send_message = true);
 	bool client_data_loaded;
@@ -2060,6 +2068,16 @@ private:
 	// by DoZoneSuccess, persisted across the (separate-process) zone hop by
 	// sign-encoding the heading written to character_data.
 	bool  m_trilogy_wide_boundary      = false;
+
+	// EQClassic-parity zoning flag. Set to true by TrilogyClient::CheckTrilogyZoneLines
+	// (Phase 2 detection path against trilogy_zone_line_list) right before it sends
+	// OP_RequestClientZoneChange, along with a fully-computed m_ZoneSummonLocation.
+	// Handle_OP_ZoneChange consumes the flag on the ZoneSolicited branch: if set,
+	// it uses m_ZoneSummonLocation verbatim (no wildcard/delta/anti-bounce math),
+	// then clears the flag. This keeps the EQClassic-parity path completely
+	// separate from the legacy sphere+wildcard Trilogy path that still lives in
+	// zoning.cpp for zones without trilogy_zone_points content.
+	bool  m_trilogy_use_eqclassic_dest = false;
 
 	// Zone-in loop guard. A Trilogy client spawns AT the destination zone-in
 	// point, which sits inside the return zone line's server-side detection

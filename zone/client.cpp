@@ -9504,28 +9504,57 @@ void Client::CheckVirtualZoneLines()
 	}
 }
 
-// Arm the zone-in loop guard AND cache the effective_r of the narrow zoneline
-// nearest to spawn — that's the one that could re-trigger, so guard threshold
-// scales to just what's needed instead of the global 2 * kDetectRadiusMax=40u.
-// See declaration in client.h for rationale.
+// Arm the zone-in loop guard AND cache the effective_r of the nearest zoneline
+// to spawn — that's the one that could re-trigger, so the guard threshold
+// scales to just what's needed. Only ever called for Trilogy clients (single
+// call site: TrilogyZoneServer HandleZoneInComplete).
 //
-// The default_r fallback used here for buffer=0 narrow lines must stay in sync
-// with CheckTraditionalZonePoints's kDetectRadiusNarrow. If that constant moves,
-// this value must too. Kept as a local literal to avoid pulling the constants
-// into the header (they're implementation details of CheckTraditionalZonePoints).
+// Routing follows TrilogyPositionUpdate: when the zone has imported
+// trilogy_zone_points content, CheckTrilogyZoneLines is the active detector and
+// the guard basis is that line's Zrange (EQClassic box half-side). When the
+// zone has no imported content, we fall back to the legacy sphere path
+// (CheckTraditionalZonePoints against zone_point_list) and the guard basis
+// mirrors the sphere's effective radius (zone_points.buffer, or the wide/narrow
+// default). This keeps guard sizing coherent with whatever detector actually
+// fires — no over- or under-guarding on either path.
+//
+// Local defaults must stay in sync with CheckTraditionalZonePoints's
+// kDetectRadiusNarrow / kDetectRadiusMax and with the trilogy_zone_points DB
+// DEFAULT for Zrange (15). Comment/re-check if you touch those constants.
 void Client::ArmTrilogyZoneInGuard(float x, float y)
 {
 	m_trilogy_zonein_x     = x;
 	m_trilogy_zonein_y     = y;
 	m_trilogy_zonein_guard = true;
 
-	constexpr float kDetectRadiusNarrow_local = 10.0f;
+	constexpr float kDetectRadiusNarrow_local = 10.0f; // matches CheckTraditionalZonePoints
 	constexpr float kDetectRadiusMax_local    = 20.0f;
+	constexpr float kDefaultZrange            = 15.0f; // matches trilogy_zone_points Zrange DEFAULT
 
-	// -1 sentinel for "no narrow line seen yet"; first candidate wins the compare.
 	float nearest_r  = kDetectRadiusMax_local;
 	float nearest_d2 = -1.0f;
-	if (zone) {
+	const char* source_tag = "none";
+
+	if (zone && !zone->trilogy_zone_line_list.empty()) {
+		// EQClassic-parity path — iterate the imported list, use Zrange.
+		source_tag = "trilogy";
+		nearest_r  = kDefaultZrange;
+		for (const auto &zln : zone->trilogy_zone_line_list) {
+			const float dx = zln.x - x;
+			const float dy = zln.y - y;
+			const float d2 = dx * dx + dy * dy;
+			if (nearest_d2 < 0.0f || d2 < nearest_d2) {
+				nearest_d2 = d2;
+				nearest_r  = (zln.Zrange > 0) ? static_cast<float>(zln.Zrange)
+				                              : kDefaultZrange;
+			}
+		}
+	}
+	else if (zone) {
+		// Legacy sphere-path fallback — iterate zone_point_list narrow entries,
+		// use buffer / narrow-default. Matches CheckTraditionalZonePoints's
+		// effective_r math.
+		source_tag = "sphere";
 		LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
 		iter.Reset();
 		while (iter.MoreElements()) {
@@ -9551,11 +9580,11 @@ void Client::ArmTrilogyZoneInGuard(float x, float y)
 
 	if (RuleB(Zone, TrilogyZonePointDebug)) {
 		LogInfo("[TrilogyZP DBG] guard ARMED char [{}] spawn ({:.1f},{:.1f})"
-		        " in zone [{}] | nearest_narrow_line dist={:.1f}u effective_r={:.1f}u"
-		        " -> guard threshold 2*r={:.1f}u"
-		        " (was hard-coded 40u before per-line scaling)",
+		        " in zone [{}] | source={} nearest_line dist={:.1f}u"
+		        " effective_r={:.1f}u -> guard threshold 2*r={:.1f}u",
 		        GetCleanName(), x, y,
 		        zone ? zone->GetShortName() : "?",
+		        source_tag,
 		        (nearest_d2 >= 0.0f) ? std::sqrt(nearest_d2) : -1.0f,
 		        m_trilogy_zonein_guard_r,
 		        2.0f * m_trilogy_zonein_guard_r);

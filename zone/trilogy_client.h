@@ -172,6 +172,30 @@ public:
 	// and broadcast movement to nearby Titanium clients.
 	void TrilogyPositionUpdate(float x, float y, float z, float heading);
 
+	// EQClassic-parity server-side zone-line detection.
+	//
+	// Iterates zone->trilogy_zone_line_list (populated from trilogy_zone_points,
+	// direct EQClassic import) and mirrors EQClassic's ScanForZoneLines
+	// (Client_Commands / Zone/Source/client.cpp:3780+) semantics:
+	//
+	//   UseNewZoning=0  -> old-mode box test |dx|<=Zrange && |dy|<=Zrange with
+	//                      Z tolerance (maxZDiff, 50000 if 0) and eye-level
+	//                      GetZ()+10 >= zp->z guard, plus LOS.
+	//   UseNewZoning=1  -> X-based plane crossing (playerX >= triggerX or <=,
+	//                      per sign of triggerX) with MinVert/MaxVert Z-wall.
+	//   UseNewZoning=2  -> Y-based plane crossing, same idea.
+	//
+	// On fire, computes the destination via EQClassic's keepX/Y/Z + preloaded
+	// dest_CenterPoint/dest_MinVert/dest_MaxVert (see zone.h TrilogyZoneLineNode)
+	// remap, stores it in m_ZoneSummonLocation, sets m_trilogy_use_eqclassic_dest
+	// so Handle_OP_ZoneChange takes it verbatim, and dispatches
+	// OP_RequestClientZoneChange. Downstream flow is unchanged from other zoning
+	// paths (client replies OP_ZoneChange, HandleZoneChange -> DoZoneSuccess).
+	//
+	// Called from TrilogyPositionUpdate every position tick; O(N) over the
+	// zone's trilogy_zone_line_list (typically 1-10 entries).
+	void CheckTrilogyZoneLines();
+
 	// Zoning state machine — called by TrilogyZoneServer on the client's first
 	// ZN_OP_ClientUpdate to signal that the 3D world is instantiated and buffered
 	// spawn/ground packets can be released.
