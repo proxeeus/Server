@@ -249,7 +249,10 @@ int command_init(void)
 		command_add("setroambox", "[minX] [maxX] [minY] [maxY] [dist] [delay] - Set target spawngroup roambox location data", 100, command_setroambox) ||
 		command_add("zonelines", "List trilogy_zone_points rows loaded for the current zone, highlighting broken (0,0,0) source rows that need #fixzoneline", AccountStatus::GMAdmin, command_zonelines) ||
 		command_add("fixzoneline", "[id] or [target_zone_shortname] - Capture GM position into a broken trilogy_zone_points row's source coords (companion to #zonelines)", AccountStatus::GMAdmin, command_fixzoneline) ||
-		command_add("fixzoneheading", "[id] - Update a trilogy_zone_points row's arrival heading to the GM's current facing direction. Stand in the destination zone facing the way players should face after arrival.", AccountStatus::GMAdmin, command_fixzoneheading)
+		command_add("fixzoneheading", "[id] - Update a trilogy_zone_points row's arrival heading to the GM's current facing direction. Stand in the destination zone facing the way players should face after arrival.", AccountStatus::GMAdmin, command_fixzoneheading) ||
+		command_add("fixzonerange", "[id] [range] or [range] - Update a trilogy_zone_points row's Zrange (detection box half-side) with live in-memory apply", AccountStatus::GMAdmin, command_fixzonerange) ||
+		command_add("fixzoneplane", "[id] [width] - Convert a trilogy_zone_points row to plane-crossing mode (mode 1/2) sized around your current position. Stand in the middle of the opening, face through the boundary toward the destination, run the command.", AccountStatus::GMAdmin, command_fixzoneplane) ||
+		command_add("fixzonetarget", "[id] - Set a trilogy_zone_points row's arrival coords (target_x/y/z) to the GM's current position. Also clears keepX/keepY. Stand in the destination zone where players should land.", AccountStatus::GMAdmin, command_fixzonetarget)
 		//
 	) {
 		command_deinit();
@@ -837,6 +840,9 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/fixmob.cpp"
 #include "gm_commands/fixzoneheading.cpp"
 #include "gm_commands/fixzoneline.cpp"
+#include "gm_commands/fixzoneplane.cpp"
+#include "gm_commands/fixzonerange.cpp"
+#include "gm_commands/fixzonetarget.cpp"
 #include "gm_commands/flagedit.cpp"
 #include "gm_commands/fleeinfo.cpp"
 #include "gm_commands/forage.cpp"

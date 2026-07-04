@@ -53,36 +53,117 @@ void command_fixzoneheading(Client *c, const Seperator *sep)
 		return;
 	}
 
-	if (sep->argnum < 1 || !sep->arg[1] || !*sep->arg[1] || !Strings::IsNumber(sep->arg[1])) {
-		c->Message(Chat::White, "Usage: #fixzoneheading <id>");
-		c->Message(Chat::White, "  id is a trilogy_zone_points primary key (from #zonelines output).");
-		c->Message(Chat::White, "  You should be standing IN THE DESTINATION zone, facing the direction");
-		c->Message(Chat::White, "  players should face after arriving. The id refers to the SOURCE-zone row.");
-		return;
+	// Argument parsing has TWO forms:
+	//
+	//   #fixzoneheading             (no args)
+	//       Auto-pick mode. Finds ANY row whose target_zone = current zone
+	//       and whose target coord is closest to the GM's current position.
+	//       That's the row that FIRED to bring the GM here. Works out of the
+	//       box — no need to think about direction or source zone. Just walk
+	//       in, turn, type the command.
+	//
+	//   #fixzoneheading <id>
+	//       Direct row-id form. Override when auto-pick guesses wrong (rare,
+	//       usually only when the GM has moved far from their arrival spot).
+	//
+	// Auto-pick is the common case (99%) — arrive, turn, run command. The id
+	// form is the safety net.
+	std::vector<TrilogyZonePointsRepository::TrilogyZonePoints> rows;
+	const bool has_arg = (sep->argnum >= 1 && sep->arg[1] && *sep->arg[1]);
+
+	if (has_arg) {
+		// Any non-empty arg is treated as a row id. Rejecting non-numeric
+		// input keeps the UX simple (single arg meaning) — no more confusion
+		// about "source zone vs destination zone vs current zone".
+		if (!Strings::IsNumber(sep->arg[1])) {
+			c->Message(Chat::White, "Usage: #fixzoneheading            (auto-pick the row that brought you here)");
+			c->Message(Chat::White, "       #fixzoneheading <id>       (override: specific trilogy_zone_points row id)");
+			c->Message(Chat::White, "  Stand in the arrival zone facing the direction players should face.");
+			return;
+		}
+		const int32 row_id = Strings::ToInt(sep->arg[1]);
+		rows = TrilogyZonePointsRepository::GetWhere(
+			content_db,
+			fmt::format("id = {}", row_id)
+		);
+		if (rows.empty()) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"[#fixzoneheading] No trilogy_zone_points row with id={}.",
+					row_id
+				).c_str()
+			);
+			return;
+		}
 	}
-
-	const int32 row_id = Strings::ToInt(sep->arg[1]);
-
-	// Look up the row directly from the DB — it may belong to any zone, not
-	// just the one we're standing in. This is intentional because the natural
-	// workflow puts the GM in the destination zone when capturing arrival
-	// heading, but the row we're updating is in the source zone.
-	const std::string query = fmt::format(
-		"id = {}", row_id
-	);
-	auto rows = TrilogyZonePointsRepository::GetWhere(content_db, query);
-	if (rows.empty()) {
+	else {
+		// Auto-pick: find the row that brought us here.
+		//
+		// Signal: the row that fired has target_zone = current zone AND its
+		// target coord ≈ our current position (that's where we landed). We
+		// pick the row targeting our current zone whose target is closest to
+		// our current position, regardless of source zone. Works for droga
+		// arriving from nurga (multiple nurga rows), from frontiermtns, from
+		// anywhere — the proximity match ignores source.
+		//
+		// Handy for multi-source destinations: velketor might have rows from
+		// greatdivide, thurgadin, etc. all landing at different spots — the
+		// row that fired is the one whose target matches where we stand.
+		if (!zone) {
+			c->Message(Chat::White, "[#fixzoneheading] No current zone context - cannot auto-pick.");
+			return;
+		}
+		rows = TrilogyZonePointsRepository::GetWhere(
+			content_db,
+			fmt::format(
+				"target_zone = '{}'"
+				" ORDER BY (POW(target_x - {}, 2) + POW(target_y - {}, 2) + POW(target_z - {}, 2)) ASC"
+				" LIMIT 1",
+				Strings::Escape(zone->GetShortName()),
+				c->GetX(), c->GetY(), c->GetZ()
+			)
+		);
+		if (rows.empty()) {
+			c->Message(
+				Chat::White,
+				fmt::format(
+					"[#fixzoneheading] No trilogy_zone_points row targets [{}]."
+					" Nothing to update.",
+					zone->GetShortName()
+				).c_str()
+			);
+			return;
+		}
+		// Report the pick + confidence so the GM can sanity-check.
+		const auto& picked = rows[0];
+		const float dist_2d = std::sqrt(
+			(picked.target_x - c->GetX()) * (picked.target_x - c->GetX())
+			+ (picked.target_y - c->GetY()) * (picked.target_y - c->GetY())
+		);
 		c->Message(
 			Chat::White,
 			fmt::format(
-				"[#fixzoneheading] No trilogy_zone_points row with id={}.",
-				row_id
+				"[#fixzoneheading] Auto-picked row id={} : from [{}] to [{}], target"
+				" ({:.1f},{:.1f},{:.1f}) is {:.0f}u from your position.",
+				picked.id, picked.zone, picked.target_zone,
+				picked.target_x, picked.target_y, picked.target_z, dist_2d
 			).c_str()
 		);
-		return;
+		if (dist_2d > 100.0f) {
+			c->Message(
+				Chat::Yellow,
+				fmt::format(
+					"[#fixzoneheading] WARNING: pick is {:.0f}u from your position - probably not the row you meant."
+					" Walk closer to the arrival spot and rerun, or use #fixzoneheading <id> with a specific id.",
+					dist_2d
+				).c_str()
+			);
+		}
 	}
 
-	const auto& row = rows[0];
+	const auto&  row    = rows[0];
+	const int32  row_id = row.id;
 
 	// Convert GM heading from EQEmu 0-512 to EQClassic 0-255 wire scale.
 	// Divide by 2 and snap to [0, 255].
