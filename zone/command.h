@@ -86,6 +86,7 @@ void command_feature(Client *c, const Seperator *sep);
 void command_find(Client *c, const Seperator *sep);
 void command_fish(Client* c, const Seperator* sep);
 void command_fixmob(Client *c, const Seperator *sep);
+void command_fixzoneheading(Client *c, const Seperator *sep);
 void command_fixzoneline(Client *c, const Seperator *sep);
 void command_flagedit(Client *c, const Seperator *sep);
 void command_fleeinfo(Client *c, const Seperator *sep);

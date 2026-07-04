@@ -162,22 +162,22 @@ void command_fixzoneline(Client *c, const Seperator *sep)
 		target_row = matches[0];
 	}
 
-	// Safety: refuse to overwrite an already-populated source unless the GM
-	// explicitly acknowledges. This isn't a --force flag today because it
-	// hasn't been needed; if you find yourself needing to re-fix, edit the
-	// DB directly or reload after wiping the row.
-	const bool row_is_broken = (target_row->x == 0.0f && target_row->y == 0.0f && target_row->z == 0.0f);
-	if (!row_is_broken) {
+	// Overwrite protection was here originally, but disambiguating multi-door
+	// zones (droga↔nurga, chardok↔burningwood, and every other pair where
+	// both sides have (0,0,0) sources) can only be done by empirical swap-
+	// and-test. If we refused overwrites, the GM couldn't try swapping
+	// row 1212 with row 1213 to see which pairing feels right. So we just
+	// warn when overwriting a non-placeholder row and proceed anyway.
+	const bool row_was_broken = (target_row->x == 0.0f && target_row->y == 0.0f && target_row->z == 0.0f);
+	if (!row_was_broken) {
 		c->Message(
 			Chat::Yellow,
 			fmt::format(
-				"[#fixzoneline] Row id={} already has non-placeholder source coords"
-				" ({:.1f}, {:.1f}, {:.1f}). Refusing to overwrite. Edit the DB"
-				" directly if you need to re-fix.",
+				"[#fixzoneline] Row id={} already had source coords"
+				" ({:.1f}, {:.1f}, {:.1f}) - OVERWRITING with your current position.",
 				target_row->id, target_row->x, target_row->y, target_row->z
 			).c_str()
 		);
-		return;
 	}
 
 	// Capture GM position, snap Zrange up to 15 for the "door area" tolerance.

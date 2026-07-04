@@ -88,27 +88,40 @@ void command_zonelines(Client *c, const Seperator *sep)
 		const std::string dest_zone_short = ZoneName(zln.target_zone_id, true);
 
 		if (is_broken) {
-			// Reverse-pair lookup for door-location hint.
+			// Reverse-side lookup for door location hints.
 			//
-			// Query: find a row in the DESTINATION zone that points BACK to
-			// the current zone with real source coords. Its TARGET is where
-			// players LAND in the current zone when arriving from that
-			// direction — which is right next to the door on this side.
+			// For each broken row we query rows in the DESTINATION zone that
+			// point back to us. Their TARGET is where players land in this
+			// zone from that direction — approximately the door location on
+			// this side. That's the coord we display as the #goto hint.
 			//
-			// If found, emit a #goto saylink so the GM can teleport straight
-			// to the door area. If not, tell the GM they'll need to find the
-			// door on foot (rare — only when the reverse-side row is also
-			// broken or missing).
+			// We do NOT filter by reverse.source being non-zero. Many pairs
+			// have BOTH sides broken (droga↔nurga, chardok↔burningwood,
+			// airplane↔freporte, most Kunark dungeons). In those cases the
+			// reverse source is also (0,0,0), which would make the earlier
+			// "non-zero source" filter return nothing — false negative.
+			// The reverse row's TARGET is what matters, and target coords
+			// are almost always authored even when source isn't.
+			//
+			// Ordering by twin-source proximity is our 1:1 pairing signal
+			// when the reverse source IS authored (rare but ideal). When
+			// the reverse source is (0,0,0), the ORDER BY term degenerates
+			// (all candidates equidistant from origin-ish), so we lose the
+			// 1:1 signal — but showing ALL candidates is still useful.
+			// We cap at 6 to keep output readable in extreme cases
+			// (skyshrine's 59 self-teleporters).
 			auto reverse_rows = TrilogyZonePointsRepository::GetWhere(
 				content_db,
 				fmt::format(
 					"zone = '{}' AND target_zone = '{}'"
-					" AND (x != 0 OR y != 0 OR z != 0)"
+					" AND (target_x != 0 OR target_y != 0 OR target_z != 0)"
 					" AND id != {}"
-					" LIMIT 1",
+					" ORDER BY (POW(x - {}, 2) + POW(y - {}, 2) + POW(z - {}, 2)) ASC"
+					" LIMIT 6",
 					Strings::Escape(dest_zone_short),
 					Strings::Escape(zone->GetShortName()),
-					zln.id
+					zln.id,
+					zln.target_x, zln.target_y, zln.target_z
 				)
 			);
 
@@ -127,20 +140,57 @@ void command_zonelines(Client *c, const Seperator *sep)
 			);
 
 			if (!reverse_rows.empty()) {
-				const auto& rev = reverse_rows[0];
-				// Trilogy client can't render saylinks; print the #goto
-				// command as plain text the GM types manually. Also print
-				// the fix command explicitly for the same reason.
-				c->Message(
-					Chat::White,
-					fmt::format(
-						"    door in [{}] is approx ({:.1f},{:.1f},{:.1f})"
-						" - type:  #goto {:.0f} {:.0f} {:.0f}",
-						zone->GetShortName(),
-						rev.target_x, rev.target_y, rev.target_z,
-						rev.target_x, rev.target_y, rev.target_z
-					).c_str()
-				);
+				const bool multiple_candidates = reverse_rows.size() > 1;
+				if (multiple_candidates) {
+					c->Message(
+						Chat::Yellow,
+						fmt::format(
+							"    {} candidate door location(s) in [{}] (from {} reverse rows in [{}]) - #goto each and pick the door you're near:",
+							(unsigned) reverse_rows.size(),
+							zone->GetShortName(),
+							(unsigned) reverse_rows.size(),
+							dest_zone_short.c_str()
+						).c_str()
+					);
+				}
+
+				for (const auto& rev : reverse_rows) {
+					const bool reverse_source_broken =
+						(rev.x == 0.0f && rev.y == 0.0f && rev.z == 0.0f);
+					const std::string pair_quality = reverse_source_broken
+						? "unpaired (reverse source is 0,0,0)"
+						: fmt::format(
+							"pair-source at ({:.0f},{:.0f},{:.0f}) in [{}]",
+							rev.x, rev.y, rev.z, rev.zone.c_str()
+						);
+
+					if (multiple_candidates) {
+						// One consolidated line per candidate — includes the
+						// coord to #goto and the fixzoneline command.
+						c->Message(
+							Chat::White,
+							fmt::format(
+								"      -> #goto {:.0f} {:.0f} {:.0f}  (candidate from reverse id={}, {})",
+								rev.target_x, rev.target_y, rev.target_z,
+								rev.id, pair_quality.c_str()
+							).c_str()
+						);
+					}
+					else {
+						c->Message(
+							Chat::White,
+							fmt::format(
+								"    door in [{}] is approx ({:.1f},{:.1f},{:.1f}) ({})"
+								" - type:  #goto {:.0f} {:.0f} {:.0f}",
+								zone->GetShortName(),
+								rev.target_x, rev.target_y, rev.target_z,
+								pair_quality.c_str(),
+								rev.target_x, rev.target_y, rev.target_z
+							).c_str()
+						);
+					}
+				}
+
 				c->Message(
 					Chat::White,
 					fmt::format(
