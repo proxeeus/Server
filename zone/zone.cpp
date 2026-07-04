@@ -2309,11 +2309,28 @@ bool ZoneDatabase::LoadTrilogyZonePoints(std::vector<TrilogyZoneLineNode>* out_l
 		);
 	}
 
+	// Count broken rows (source at literal 0,0,0) — those cannot be detected
+	// server-side by CheckTrilogyZoneLines (box test fails: player is never
+	// AT the origin AND above Z=0 in an interior zone). Content authors left
+	// them as placeholders expecting client-side detection, which fails on
+	// v29c for many interior dungeons. See project_trilogy_zone_transition
+	// memory + Server/utils/sql/git/optional/2026_07_04_trilogy_zone_points_source_recovery.sql
+	// for the recovery workflow (manual #loc + UPDATE).
+	int broken_rows = 0;
+	for (const auto &n : *out_list) {
+		if (n.x == 0.0f && n.y == 0.0f && n.z == 0.0f) {
+			++broken_rows;
+		}
+	}
+	const int usable_rows = static_cast<int>(out_list->size()) - broken_rows;
+
 	LogInfo(
 		"[TrilogyZP] Loaded [{}] trilogy_zone_points for zone [{}]"
-		" ({} row(s) skipped: unresolved target_zone)",
+		" ({} usable, {} broken/placeholder-source, {} skipped: unresolved target_zone)",
 		Strings::Commify(std::to_string(out_list->size())),
 		zonename,
+		usable_rows,
+		broken_rows,
 		skipped_unresolved
 	);
 

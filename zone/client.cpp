@@ -9589,6 +9589,47 @@ void Client::ArmTrilogyZoneInGuard(float x, float y)
 		        m_trilogy_zonein_guard_r,
 		        2.0f * m_trilogy_zonein_guard_r);
 	}
+
+	// Broken-zone diagnostic — always on (independent of TrilogyZonePointDebug).
+	// If the zone has trilogy_zone_points data but ALL rows have placeholder
+	// source (0,0,0), server-side detection is dead here — the player has no
+	// way to zone out unless client-side detection fires or a GM intervenes.
+	// Log a prominent warning per zone-in so we can prioritize which zones
+	// need manual `#loc` walking + DB updates. See
+	// Server/utils/sql/git/optional/2026_07_04_trilogy_zone_points_source_recovery.sql
+	// for the recovery workflow.
+	if (zone && !zone->trilogy_zone_line_list.empty()) {
+		int usable_count = 0;
+		int broken_count = 0;
+		for (const auto &zln : zone->trilogy_zone_line_list) {
+			if (zln.x == 0.0f && zln.y == 0.0f && zln.z == 0.0f) {
+				++broken_count;
+			}
+			else {
+				++usable_count;
+			}
+		}
+		if (usable_count == 0 && broken_count > 0) {
+			LogWarning(
+				"[TrilogyZP] BROKEN ZONE zone-in: char [{}] entered zone [{}] which has"
+				" {} trilogy_zone_points row(s), ALL with placeholder source (0,0,0)."
+				" Server-side zone-line detection is disabled here — player can only"
+				" leave via client-side detection (unreliable on v29c for interior"
+				" zones), /camp, or GM intervention. Prioritize this zone for manual"
+				" #loc + UPDATE trilogy_zone_points (recovery script:"
+				" Server/utils/sql/git/optional/2026_07_04_trilogy_zone_points_source_recovery.sql).",
+				GetCleanName(), zone->GetShortName(), broken_count
+			);
+		}
+		else if (broken_count > 0) {
+			LogInfo(
+				"[TrilogyZP] Partial zone: char [{}] entered zone [{}] with"
+				" {} usable + {} broken/placeholder-source trilogy_zone_points row(s)."
+				" Some exits detectable, some not.",
+				GetCleanName(), zone->GetShortName(), usable_count, broken_count
+			);
+		}
+	}
 }
 
 // Server-side zone point detection for Trilogy clients. Note: the Trilogy

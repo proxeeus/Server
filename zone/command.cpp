@@ -246,7 +246,9 @@ int command_init(void)
 		command_add("zoneshutdown", "[shortname] - Shut down a zone server", AccountStatus::GMLeadAdmin, command_zoneshutdown) ||
 		command_add("zsave", " Saves zheader to the database", AccountStatus::QuestTroupe, command_zsave) ||
 		// Proxeeus
-		command_add("setroambox", "[minX] [maxX] [minY] [maxY] [dist] [delay] - Set target spawngroup roambox location data", 100, command_setroambox)
+		command_add("setroambox", "[minX] [maxX] [minY] [maxY] [dist] [delay] - Set target spawngroup roambox location data", 100, command_setroambox) ||
+		command_add("zonelines", "List trilogy_zone_points rows loaded for the current zone, highlighting broken (0,0,0) source rows that need #fixzoneline", AccountStatus::GMAdmin, command_zonelines) ||
+		command_add("fixzoneline", "[id] or [target_zone_shortname] - Capture GM position into a broken trilogy_zone_points row's source coords (companion to #zonelines)", AccountStatus::GMAdmin, command_fixzoneline)
 		//
 	) {
 		command_deinit();
@@ -832,6 +834,7 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/find.cpp"
 #include "gm_commands/fish.cpp"
 #include "gm_commands/fixmob.cpp"
+#include "gm_commands/fixzoneline.cpp"
 #include "gm_commands/flagedit.cpp"
 #include "gm_commands/fleeinfo.cpp"
 #include "gm_commands/forage.cpp"
@@ -937,6 +940,7 @@ void command_bot(Client *c, const Seperator *sep)
 #include "gm_commands/wpadd.cpp"
 #include "gm_commands/zone.cpp"
 #include "gm_commands/zonebootup.cpp"
+#include "gm_commands/zonelines.cpp"
 #include "gm_commands/zoneshutdown.cpp"
 #include "gm_commands/zone_instance.cpp"
 #include "gm_commands/zsave.cpp"
