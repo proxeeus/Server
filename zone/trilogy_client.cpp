@@ -1909,9 +1909,24 @@ void TrilogyClient::CheckTrilogyZoneLines()
 			// Fire: keepX/Y/Z overrides the corresponding coord with the
 			// player's current position (EQClassic content authors set these
 			// only where zones' axes line up so this is a safe pass-through).
-			dest_x = (zln.keepX == 1) ? GetX() : zln.target_x;
-			dest_y = (zln.keepY == 1) ? GetY() : zln.target_y;
-			dest_z = (zln.keepZ == 1) ? GetZ() : zln.target_z;
+			//
+			// Also treat target coord == +/-999999 as an implicit "keep" flag:
+			// modern EQEmu uses that sentinel to mean "preserve this axis
+			// across the crossing" (zone_points.target_x/y wildcards for
+			// outdoor seamless transitions, and dungeon rows where a specific
+			// axis carries over between adjacent maps). Many trilogy_zone_points
+			// rows have e.g. `target_y=999999` set without also setting
+			// `keepY=1` explicitly — prior to this change the engine literally
+			// teleported the player to Y=999999 (bogus coord). Recognizing the
+			// sentinel makes those rows self-consistent without also toggling
+			// the keep flag. Sentinel threshold 999998 is well beyond any
+			// legitimate EQ coord (zones range roughly ±3000).
+			const bool keepX_effective = (zln.keepX == 1) || (std::fabs(zln.target_x) >= 999998.0f);
+			const bool keepY_effective = (zln.keepY == 1) || (std::fabs(zln.target_y) >= 999998.0f);
+			const bool keepZ_effective = (zln.keepZ == 1) || (std::fabs(zln.target_z) >= 999998.0f);
+			dest_x = keepX_effective ? GetX() : zln.target_x;
+			dest_y = keepY_effective ? GetY() : zln.target_y;
+			dest_z = keepZ_effective ? GetZ() : zln.target_z;
 			fired  = true;
 		}
 		else if (zln.UseNewZoning == 1) {
