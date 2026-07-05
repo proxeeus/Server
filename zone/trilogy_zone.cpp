@@ -516,6 +516,19 @@ void TrilogyZoneServer::EncodeTrilogyDelta(void* spawn_position_update,
 // "Bleargh`s_corpse0" and "Bleargh`s_corpse1" both display as
 // "Bleargh`s corpse" but remain distinct entities for illusion matching.
 // ============================================================
+// ============================================================
+// IsTrilogyTimeLocked — true when this zone's sky should be pinned
+// to a fixed EQ time via the Zone:TrilogyAirplaneLockTime* rules.
+// Only original airplane (Plane of Sky) matches for now.
+// ============================================================
+static bool IsTrilogyTimeLocked(const char* short_name)
+{
+	if (!short_name || !RuleB(Zone, TrilogyAirplaneLockTime)) {
+		return false;
+	}
+	return strcasecmp(short_name, "airplane") == 0;
+}
+
 static void BuildTrilogyCorpseName(const char* raw_name, char* out, size_t out_sz)
 {
 	char tmp[64]{};
@@ -4546,6 +4559,24 @@ void TrilogyZoneServer::SendTimeOfDay(const std::string& addr, int port, Session
 	tod.month  = static_cast<int8_t>(eqtod.month);
 	tod.year   = static_cast<int16_t>(eqtod.year);
 
+	// Per-zone perma-twilight lock: only the wire hour/minute is overridden,
+	// so zone->zone_time keeps advancing and gameplay logic (spell durations,
+	// guard schedules, /time output) reads real time. If more zones ever need
+	// this, promote the short_name match to a table/rule list.
+	//
+	// Wire convention: v29c interprets byte N as (N-1):00 in 24-hour clock —
+	// byte 1 = midnight, byte 13 = noon, byte 18 = 5 PM (red sunset), byte 24
+	// = 11 PM. `Zone::SetTime` (see zone.cpp) applies the same +1 shift, which
+	// is why `#time 17` produces the red 5 PM sky. The rule value is expressed
+	// in the human 0-23 range so users dial in the same number they'd pass to
+	// `#time` and get the identical sky.
+	if (zone && IsTrilogyTimeLocked(zone->GetShortName())) {
+		const int lock_h = std::clamp(RuleI(Zone, TrilogyAirplaneLockHour), 0, 23);
+		const int lock_m = std::clamp(RuleI(Zone, TrilogyAirplaneLockMinute), 0, 59);
+		tod.hour   = static_cast<int8_t>(lock_h + 1);
+		tod.minute = static_cast<int8_t>(lock_m);
+	}
+
 	LogInfo("[TrilogyZone] SendTimeOfDay | hour={} (daytime={}) minute={} day={} month={} year={}",
 	        (int)tod.hour, (tod.hour >= 7 && tod.hour < 21) ? "YES" : "NO",
 	        (int)tod.minute, (int)tod.day, (int)tod.month, (int)tod.year);
@@ -7780,8 +7811,14 @@ void TrilogyZoneServer::Tick()
 
 		// Re-sync EQ clock every 180s (1 EQ hour), matching the world server's
 		// periodic broadcast.  This keeps the client's sky/lighting updated as
-		// EQ time advances.
-		if (now_ms - s.last_time_of_day_ms >= 180000) {
+		// EQ time advances.  When the zone is time-locked (airplane perma-dusk),
+		// the client's own local ticker would drift the sky forward a full EQ
+		// hour between 180s heartbeats before snapping back — re-emit every 10s
+		// so the drift stays inside ~3 EQ minutes and the sunset gradient holds
+		// visually steady.
+		const uint64_t tod_interval =
+			(zone && IsTrilogyTimeLocked(zone->GetShortName())) ? 10000 : 180000;
+		if (now_ms - s.last_time_of_day_ms >= tod_interval) {
 			s.last_time_of_day_ms = now_ms;
 			SendTimeOfDay(s.source_addr, s.source_port, s);
 		}
