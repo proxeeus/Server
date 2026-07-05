@@ -26,6 +26,7 @@
 #include "npc.h"
 #include "corpse.h"
 #include "water_map.h"
+#include "mob_movement_manager.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
 #include "../common/item_instance.h"
@@ -2011,6 +2012,65 @@ void TrilogyClient::CheckTrilogyZoneLines()
 			dest_x, dest_y, dest_z, dest_heading, zln.target_zone_id,
 			zln.keepX ? 'X' : '.', zln.keepY ? 'Y' : '.', zln.keepZ ? 'Z' : '.'
 		);
+
+		// Same-zone teleporter fast path (skyshrine pads, erudin pads, guk
+		// tunnels, etc.). The Trilogy v29c client silently drops OP_TeleportPC
+		// when target zone == current zone — it treats "I'm already there" as
+		// a no-op, so the normal zone-change round-trip never completes and
+		// the player stays put. Bypass the whole zone-change flow: update
+		// server-side position, broadcast to nearby observers via the
+		// MovementManager, and force our own client to rubber-band to the new
+		// coords via a direct OP_ClientUpdate 0xf320 (HandleClientUpdate skips
+		// self-echo by design — that's right during normal movement but
+		// exactly what we need to override for a teleport). No load screen,
+		// no re-zone, just an instant relocate. Arm the zone-in guard so we
+		// don't immediately re-trigger the arrival pad or the return pad.
+		if (zln.target_zone_id == zone->GetZoneID()) {
+			// Parity with ProcessMovePC's in-zone path: drop any dragged
+			// corpses and move any pet along with us. Skipping either would
+			// leave state behind that a normal in-zone summon/gate wouldn't.
+			ClearDraggedCorpses();
+			if (GetPetID() != 0) {
+				if (Mob* p = GetPet()) {
+					p->SetPetOrder(SPO_Follow);
+					// Offset slightly so the pet doesn't stack exactly on us
+					// (mirrors ProcessMovePC's `x + 15` for the same reason).
+					p->GMMove(dest_x + 15.0f, dest_y, dest_z);
+				}
+			}
+
+			m_Position.x = dest_x;
+			m_Position.y = dest_y;
+			m_Position.z = dest_z;
+			SetHeading(dest_heading);
+			mMovementManager->SendCommandToClients(
+				this, 0.0, 0.0, 0.0, 0.0, 0, ClientRangeAny);
+
+			Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+			upd.spawn_id      = static_cast<int16_t>(
+				TranslateId(static_cast<uint32_t>(GetID())));
+			upd.anim_type     = 0; // standing
+			upd.heading       = static_cast<int8_t>(
+				static_cast<uint8_t>(dest_heading / 2.0f));
+			upd.delta_heading = 0;
+			upd.y_pos         = static_cast<int16_t>(dest_y);
+			upd.x_pos         = static_cast<int16_t>(dest_x);
+			upd.z_pos         = static_cast<int16_t>(dest_z * 10.0f);
+			m_tzs->SendToSession(
+				m_session_key, 0xf320,
+				reinterpret_cast<const uint8_t*>(&upd), sizeof(upd));
+
+			ArmTrilogyZoneInGuard(dest_x, dest_y);
+
+			LogInfo(
+				"[TrilogyZP] Same-zone teleport applied: char [{}] line id={}"
+				" -> ({:.2f},{:.2f},{:.2f}) heading={:.1f}",
+				GetCleanName(), zln.id,
+				dest_x, dest_y, dest_z, dest_heading
+			);
+
+			return; // first fire wins
+		}
 
 		// Set up ZoneSolicited state. m_trilogy_use_eqclassic_dest tells
 		// Handle_OP_ZoneChange to use m_ZoneSummonLocation verbatim (no

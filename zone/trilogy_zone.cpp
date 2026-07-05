@@ -1273,6 +1273,24 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		break;
 
 	case CONNECTED:
+		// TrilogyZonePointDebug diagnostic — log EVERY rx opcode in CONNECTED
+		// state (opcode, plen, first 32 bytes of payload). Purpose: when the
+		// v29c client crosses a Skyshrine teleporter pad, we don't yet know
+		// which packet (if any) it emits, and the normal handler-specific
+		// logging doesn't capture handled opcodes in one place. Turn this on
+		// with `#rules set Zone TrilogyZonePointDebug 1`, walk onto a pad,
+		// turn back off. Compare the rx trace against a normal walk to
+		// isolate the pad-crossing opcode.
+		if (RuleB(Zone, TrilogyZonePointDebug)) {
+			std::string hex_dbg;
+			const uint32_t cap_dbg = plen > 32 ? 32u : plen;
+			for (uint32_t i = 0; i < cap_dbg; ++i) {
+				hex_dbg += fmt::format("{:02X} ", payload[i]);
+			}
+			if (plen > cap_dbg) hex_dbg += "...";
+			LogInfo("[TrilogyZP DBG] rx opcode={:04X} plen={} payload=[{}]",
+			        opcode, plen, hex_dbg);
+		}
 		if (opcode == ZN_OP_ClientUpdate)
 			HandleClientUpdate(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ChannelMsg)

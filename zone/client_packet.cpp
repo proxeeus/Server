@@ -4935,6 +4935,33 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 		}
 	}
 
+	// Position-jump detector for pad-crossing analysis. When a client teleports
+	// itself locally (e.g. stepping on a Skyshrine labyrinth pad in Titanium
+	// using the OP_SendZonepoints target list), the next OP_ClientUpdate reports
+	// the destination position without any distinct opcode. This diagnostic logs
+	// planar jumps > 30u so we can identify the pad-cross moment from position
+	// data alone. Gated behind Zone:TrilogyZonePointDebug so it stays off in
+	// production. Skips vehicle-relative updates (on_boat) since those already
+	// look like jumps under normal use.
+	if (RuleB(Zone, TrilogyZonePointDebug) && !on_boat) {
+		const float pdx = cx - m_Position.x;
+		const float pdy = cy - m_Position.y;
+		const float pd2 = pdx * pdx + pdy * pdy;
+		constexpr float kJumpThreshold  = 30.0f;
+		constexpr float kJumpThreshold2 = kJumpThreshold * kJumpThreshold;
+		if (pd2 > kJumpThreshold2) {
+			LogInfo(
+				"[TrilogyZP DBG] position jump char=[{}]"
+				" from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f})"
+				" planar={:.1f}u dz={:+.1f}u",
+				GetCleanName(),
+				m_Position.x, m_Position.y, m_Position.z,
+				cx, cy, cz,
+				std::sqrt(pd2), cz - m_Position.z
+			);
+		}
+	}
+
 	cheat_manager.MovementCheck(glm::vec3(cx, cy, cz));
 
 	if (IsDraggingCorpse())
