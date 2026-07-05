@@ -2014,17 +2014,21 @@ void TrilogyClient::CheckTrilogyZoneLines()
 		);
 
 		// Same-zone teleporter fast path (skyshrine pads, erudin pads, guk
-		// tunnels, etc.). The Trilogy v29c client silently drops OP_TeleportPC
-		// when target zone == current zone — it treats "I'm already there" as
-		// a no-op, so the normal zone-change round-trip never completes and
-		// the player stays put. Bypass the whole zone-change flow: update
-		// server-side position, broadcast to nearby observers via the
-		// MovementManager, and force our own client to rubber-band to the new
-		// coords via a direct OP_ClientUpdate 0xf320 (HandleClientUpdate skips
-		// self-echo by design — that's right during normal movement but
-		// exactly what we need to override for a teleport). No load screen,
-		// no re-zone, just an instant relocate. Arm the zone-in guard so we
-		// don't immediately re-trigger the arrival pad or the return pad.
+		// tunnels, etc.). Use OP_TeleportPC (0x4d21) with the destination
+		// zone-name equal to the current zone. v29c handles this as a
+		// LOCAL intra-zone teleport (no OP_ZoneChange round-trip, no zone
+		// re-connect) and — crucially — accepts the destination Z
+		// authoritatively.
+		//
+		// Prior implementation used a forced OP_ClientUpdate (0xf320) which
+		// the v29c client treats as an XY-only position correction: it
+		// rejected any large Z delta and kept the pre-teleport Z, causing
+		// the player to fall from height when a pad crossed between the
+		// upper/lower Skyshrine floors (198 <-> 378). OP_TeleportPC's
+		// "hard-teleport" semantics avoid that entirely — verified via
+		// same-zone #goto tests where the client landed at the specified Z
+		// without any physics settle. Arm the zone-in guard so we don't
+		// immediately re-trigger the arrival pad or the return pad.
 		if (zln.target_zone_id == zone->GetZoneID()) {
 			// Parity with ProcessMovePC's in-zone path: drop any dragged
 			// corpses and move any pet along with us. Skipping either would
@@ -2039,6 +2043,9 @@ void TrilogyClient::CheckTrilogyZoneLines()
 				}
 			}
 
+			// Update server-side position first so any concurrent handlers
+			// (aggro scan, position save on subsequent tick) see the new
+			// coord immediately, independent of when the client acks.
 			m_Position.x = dest_x;
 			m_Position.y = dest_y;
 			m_Position.z = dest_z;
@@ -2046,25 +2053,33 @@ void TrilogyClient::CheckTrilogyZoneLines()
 			mMovementManager->SendCommandToClients(
 				this, 0.0, 0.0, 0.0, 0.0, 0, ClientRangeAny);
 
-			Trilogy::structs::SpawnPositionUpdate_Struct upd{};
-			upd.spawn_id      = static_cast<int16_t>(
-				TranslateId(static_cast<uint32_t>(GetID())));
-			upd.anim_type     = 0; // standing
-			upd.heading       = static_cast<int8_t>(
-				static_cast<uint8_t>(dest_heading / 2.0f));
-			upd.delta_heading = 0;
-			upd.y_pos         = static_cast<int16_t>(dest_y);
-			upd.x_pos         = static_cast<int16_t>(dest_x);
-			upd.z_pos         = static_cast<int16_t>(dest_z * 10.0f);
-			m_tzs->SendToSession(
-				m_session_key, 0xf320,
-				reinterpret_cast<const uint8_t*>(&upd), sizeof(upd));
+			// Send OP_TeleportPC with current zone's shortname. The client
+			// keys off zone_name to decide "hard teleport" (same-zone) vs
+			// "zone change" (different zone); passing the current zone here
+			// gives us the hard-teleport path.
+			const char* zname = ZoneName(static_cast<uint32_t>(zone->GetZoneID()));
+			if (zname) {
+				Trilogy::structs::TeleportPC_Struct tpc{};
+				memset(&tpc, 0, sizeof(tpc));
+				strncpy(tpc.zone, zname, sizeof(tpc.zone) - 1);
+				tpc.yPos    = dest_y;
+				tpc.xPos    = dest_x;
+				// Same zPos==0 workaround as the OP_RequestClientZoneChange
+				// translator: the v29c client sometimes picks a random
+				// location for a same-zone teleport when zPos is exactly 0
+				// (see EQClassic TeleportPC comment), so nudge to 0.1.
+				tpc.zPos    = (dest_z == 0.0f) ? 0.1f : dest_z;
+				tpc.heading = dest_heading;
+				m_tzs->SendToSession(
+					m_session_key, 0x4d21,
+					reinterpret_cast<const uint8_t*>(&tpc), sizeof(tpc));
+			}
 
 			ArmTrilogyZoneInGuard(dest_x, dest_y);
 
 			LogInfo(
-				"[TrilogyZP] Same-zone teleport applied: char [{}] line id={}"
-				" -> ({:.2f},{:.2f},{:.2f}) heading={:.1f}",
+				"[TrilogyZP] Same-zone teleport applied (0x4d21): char [{}]"
+				" line id={} -> ({:.2f},{:.2f},{:.2f}) heading={:.1f}",
 				GetCleanName(), zln.id,
 				dest_x, dest_y, dest_z, dest_heading
 			);
