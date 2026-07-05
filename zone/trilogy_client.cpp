@@ -1864,24 +1864,46 @@ void TrilogyClient::CheckTrilogyZoneLines()
 			const int32 zRangeVal = zln.Zrange;
 			const int32 zDiffVal  = (zln.maxZDiff == 0) ? 50000 : zln.maxZDiff;
 
-			if (std::fabs(GetX() - zln.x) > zRangeVal) continue;
-			if (std::fabs(GetY() - zln.y) > zRangeVal) continue;
-			if (std::fabs(GetZ() - zln.z) > zDiffVal)  continue;
-			// Eye-level guard: prevent triggering when the player's head-level
-			// (+10u above their feet) is still below the trigger's floor.
-			if ((GetZ() + 10.0f) < zln.z) continue;
+			// Wildcard XY support — mirrors modern EQEmu's CheckTraditionalZonePoints
+			// wildcard sentinel (client.cpp:9783). Rows with x == +/-999999 or
+			// y == +/-999999 skip the corresponding axis in the box test.
+			//
+			// Primary use: fall-through zone triggers (e.g. Plane of Sky
+			// row: x/y wildcard, z=-2000 -> player falling off the islands
+			// zones to freporte docks once Z drops below the threshold).
+			// Without wildcards, that mechanism couldn't exist in Trilogy —
+			// the box test would always fail on x=999999 vs any real player X.
+			//
+			// The LOS check + eye-level guard are also skipped for wildcard-
+			// XY rows: there's no "trigger point" to raycast from or gate
+			// on (the trigger is effectively the whole Z plane). Matches
+			// modern EQEmu behavior which only applies those guards to
+			// non-wildcard entries.
+			const bool xWild = (std::fabs(zln.x) >= 999998.0f);
+			const bool yWild = (std::fabs(zln.y) >= 999998.0f);
 
-			// Mandatory LOS in EQClassic old-mode. Fail-open when the zone's
-			// map isn't loaded (Mob::CheckLosFN returns false on null zonemap
-			// in this build), so a map-less zone still gets detection.
-			if (zone->zonemap && !CheckLosFN(zln.x, zln.y, zln.z, 5.0f)) {
-				if (zp_dbg) {
-					LogInfo("[TrilogyZP DBG] trilogy box zp id={} LOS BLOCK"
-					        " | player ({:.1f},{:.1f},{:.1f}) trig ({:.1f},{:.1f},{:.1f})",
-					        zln.id, GetX(), GetY(), GetZ(),
-					        zln.x, zln.y, zln.z);
+			if (!xWild && std::fabs(GetX() - zln.x) > zRangeVal) continue;
+			if (!yWild && std::fabs(GetY() - zln.y) > zRangeVal) continue;
+			if (std::fabs(GetZ() - zln.z) > zDiffVal) continue;
+			if (!xWild && !yWild) {
+				// Eye-level guard: prevent triggering when the player's
+				// head-level (+10u above their feet) is still below the
+				// trigger's floor. Only meaningful for real spatial triggers.
+				if ((GetZ() + 10.0f) < zln.z) continue;
+
+				// Mandatory LOS in EQClassic old-mode. Fail-open when the
+				// zone's map isn't loaded (Mob::CheckLosFN returns false on
+				// null zonemap in this build), so a map-less zone still
+				// gets detection.
+				if (zone->zonemap && !CheckLosFN(zln.x, zln.y, zln.z, 5.0f)) {
+					if (zp_dbg) {
+						LogInfo("[TrilogyZP DBG] trilogy box zp id={} LOS BLOCK"
+						        " | player ({:.1f},{:.1f},{:.1f}) trig ({:.1f},{:.1f},{:.1f})",
+						        zln.id, GetX(), GetY(), GetZ(),
+						        zln.x, zln.y, zln.z);
+					}
+					continue;
 				}
-				continue;
 			}
 
 			// Fire: keepX/Y/Z overrides the corresponding coord with the
