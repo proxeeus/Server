@@ -1692,6 +1692,21 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	SetHeading(heading);
 	SetMoving(!(x == prev_x && y == prev_y));
 
+	// Proximity events — mirrors modern Handle_OP_ClientUpdate
+	// (client_packet.cpp:4996-5002).  Without this call, EVENT_ENTER /
+	// EVENT_EXIT on NPC proximity boxes (quest::set_proximity), the area
+	// EVENT_ENTER_AREA / EVENT_LEAVE_AREA path, and task-system proximity
+	// objectives never observe player movement on Trilogy clients — the
+	// geometry check itself is client-agnostic, it just needs the position
+	// stream to reach it.  Timer + m_Proximity update match the modern block
+	// exactly so first-tick behavior matches too.
+	if (proximity_timer.Check()) {
+		entity_list.ProcessMove(this, glm::vec3(x, y, z));
+		if (RuleB(TaskSystem, EnableTaskSystem) && RuleB(TaskSystem, EnableTaskProximity))
+			ProcessTaskProximities(x, y, z);
+		m_Proximity = glm::vec3(x, y, z);
+	}
+
 	// Hide-break on movement — mirrors modern Handle_OP_ClientUpdate
 	// (client_packet.cpp:4995-5011).  The proxy bypasses that handler entirely,
 	// so without this check `hidden` / `improved_hidden` persisted across every
