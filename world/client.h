@@ -76,6 +76,11 @@ public:
 		EQ::InventoryProfile *p_inventory_profile
 	);
 
+	static void SetClassStartingSkills(PlayerProfile_Struct *pp, uint8 client_version = 0);
+	static void SetRaceStartingSkills(PlayerProfile_Struct *pp);
+	static void SetRacialLanguages(PlayerProfile_Struct *pp);
+	static void SetClassLanguages(PlayerProfile_Struct *pp);
+
 private:
 
 	uint32	ip;
@@ -93,11 +98,6 @@ private:
 	EQ::versions::ClientVersion m_ClientVersion;
 	uint32 m_ClientVersionBit;
 	bool OPCharCreate(char *name, CharCreate_Struct *cc);
-
-	void SetClassStartingSkills( PlayerProfile_Struct *pp );
-	void SetRaceStartingSkills( PlayerProfile_Struct *pp );
-	void SetRacialLanguages( PlayerProfile_Struct *pp );
-	void SetClassLanguages(PlayerProfile_Struct *pp);
 
 	ClientListEntry* cle;
 	Timer	connect;

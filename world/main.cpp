@@ -78,6 +78,7 @@
 #include "expedition_database.h"
 
 #include "world_server_cli.h"
+#include "trilogy_world.h"
 #include "../common/content/world_content_service.h"
 #include "../common/repositories/character_task_timers_repository.h"
 #include "../common/zone_store.h"
@@ -373,6 +374,21 @@ int main(int argc, char **argv)
 		}
 	);
 
+	// Intercept raw EQNetwork packets from Trilogy clients (port 9000, data[0] != 0)
+	TrilogyWorldServer trilogy_world;
+	extern TrilogyWorldServer* g_trilogy_world;
+	g_trilogy_world = &trilogy_world;
+	eqsm.OnUnknownPacket(
+		[&trilogy_world](const std::string& a, int p, const char* d, size_t s) {
+			trilogy_world.OnRawPacket(a, p, d, s);
+		}
+	);
+	trilogy_world.SetSendFn(
+		[&eqsm](const std::string& a, int p, const void* d, size_t s) {
+			eqsm.SendRaw(a, p, d, s);
+		}
+	);
+
 	Timer player_event_process_timer(1000);
 	player_event_logs.SetDatabase(&database)->Init();
 
@@ -466,6 +482,7 @@ int main(int argc, char **argv)
 			}
 		}
 
+		trilogy_world.Tick();
 		zoneserver_list.Process();
 		launcher_list.Process();
 		LFPGroupList.Process();

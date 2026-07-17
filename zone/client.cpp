@@ -507,6 +507,126 @@ Client::~Client() {
 	UninitializeBuffSlots();
 }
 
+void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
+{
+	character_id    = char_id;
+	account_id      = acct_id;
+	strn0cpy(account_name, acct_name, sizeof(account_name));
+	client_state    = CLIENT_CONNECTED;
+	conn_state      = ClientConnectFinished;
+	client_data_loaded = true;
+
+	// Trilogy clients do not go through the normal EQStream zone-entry handshake;
+	// set client version directly from the stream adapter.
+	m_ClientVersion    = eqs->ClientVersion();
+	m_ClientVersionBit = EQ::versions::ConvertClientVersionToClientVersionBit(m_ClientVersion);
+	m_inv.SetInventoryVersion(m_ClientVersion);
+
+	// Apply name at Mob level so GetName() / FillSpawnStruct() work correctly.
+	SetName(char_name);
+
+	// Load core character data (deity, STR/STA/etc., cur_hp, exp, ...) from the DB so
+	// zone-server systems (CalcMaxHP, faction checks, spell-cap lookups) have correct
+	// values.  Must come before the explicit overrides below so zone_id and name win.
+	database.LoadCharacterData(char_id, &m_pp, &m_epp);
+	database.LoadCharacterSkills(char_id, &m_pp);
+
+	// LoadCharacterData reads the character_data table only — currency lives in the
+	// separate character_currency table and must be loaded explicitly.  Without this,
+	// m_pp.platinum/gold/silver/copper stay 0 for the whole session, so every Save()
+	// (camp, zone-out, ~Client) and every AddMoneyToPP overwrites the player's real
+	// balance with only what was earned this session — silently destroying their money.
+	database.LoadCharacterCurrency(char_id, &m_pp);
+
+	// Guild membership lives in the separate guild_members table and is loaded
+	// in the standard zone-entry path (client_packet.cpp Handle_Connect_OP_ZoneEntry)
+	// which Trilogy bypasses entirely.  Without this, GuildID() returns GUILD_NONE
+	// for the whole session, so neither the player nor anyone looking at them sees
+	// a guild tag and IsInAGuild()-gated paths (guild chat, guild MOTD, the OP_GuildsList
+	// reply mapping) never engage.  Mirror the SELECT used by the normal path.
+	{
+		auto q = fmt::format(
+			"SELECT `guild_id`, `rank` FROM `guild_members` WHERE `char_id` = {} LIMIT 1",
+			char_id
+		);
+		auto r = database.QueryDatabase(q);
+		if (r.RowCount() > 0) {
+			auto row = r.begin();
+			if (row[0] && Strings::ToInt(row[0]) > 0) {
+				guild_id  = Strings::ToInt(row[0]);
+				guildrank = row[1] ? Strings::ToInt(row[1]) : GUILD_RANK_NONE;
+			}
+		}
+		m_pp.guild_id  = IsInAGuild() ? GuildID() : GUILD_NONE;
+		m_pp.guildrank = guildrank;
+	}
+
+	// Mirror name and zone into m_pp so SaveCharacterData() writes correct values on
+	// disconnect.  Without these, the DB row gets name="" and zone_id=0 on every logout.
+	strn0cpy(m_pp.name, char_name, sizeof(m_pp.name));
+	if (zone)
+		m_pp.zone_id = static_cast<uint16>(zone->GetZoneID());
+
+	// Load language skills from DB so ChannelMessageSend can correctly determine
+	// whether the player understands a given language (skill ≥ 24 = understood).
+	database.LoadCharacterLanguages(char_id, &m_pp);
+
+	// Load spell book and memorized spells so HasSpellScribed() and MemSpell() work.
+	// Without these, OPMemorizeSpell rejects every memorize attempt as a "possible hack"
+	// because m_pp.spell_book[] stays zero-initialized.
+	database.LoadCharacterSpellBook(char_id, &m_pp);
+	database.LoadCharacterMemmedSpells(char_id, &m_pp);
+
+	// Load persistent timers (Lay on Hands / Harm Touch cooldowns, etc.) so they
+	// survive across relogs.  The normal path does this in Handle_Connect_OP_ZoneEntry
+	// which Trilogy bypasses entirely.
+	p_timers.SetCharID(char_id);
+	if (!p_timers.Load(&database)) {
+		LogError("Unable to load ability timers from the database for [{}] ([{}])!",
+			char_name, char_id);
+	}
+
+	// Load account status so Admin() returns the correct level for GM command authorization.
+	admin = database.GetAccountStatus(acct_id);
+
+	// Load the character's GM flag so GetGM() works for things like immunity to hunger,
+	// and so the server correctly treats this character as a GM in all internal checks.
+	{
+		auto q = fmt::format("SELECT `gm` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
+		auto r = database.QueryDatabase(q);
+		if (r.RowCount() > 0)
+			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
+	}
+
+	// Load equipment inventory so weapon/armor type lookups (GetWeaponDamage,
+	// CalcBonuses, attack skill selection) work correctly.  Without this,
+	// m_inv.GetItem(slotPrimary) always returns null → every attack defaults
+	// to Hand-to-Hand regardless of what weapon is equipped.
+	// SetGMInventory(true) before load allows all slot ranges to be populated
+	// (mirrors the normal zone-entry path in client_packet.cpp:1310-1311).
+	m_inv.SetGMInventory(true);
+	database.GetInventory(char_id, &m_inv);
+	m_inv.SetGMInventory((bool)m_pp.gm);
+
+	// Trilogy clients never send OP_SetServerFilter so ClientFilters[] stays
+	// zero-initialized (= FilterHide) unless we seed it here.  With FilterHide,
+	// QueueCloseClients drops every FilterNPCSpells / FilterPCSpells packet
+	// (OP_Action for spell effects, OP_Damage, OP_Death, etc.) before they even
+	// reach TranslateAndSend.  Set all filters to FilterShow so the Trilogy
+	// client sees combat and spell activity exactly like a fresh Titanium client.
+	for (int i = 0; i < _FilterCount; ++i)
+		ClientFilters[i] = FilterShow;
+
+	// Trilogy clients bypass the normal zone-entry handshake where CompleteConnect()
+	// calls SetEXPEnabled(true).  Without this, AddEXP() returns immediately on the
+	// !IsEXPEnabled() guard → no XP ever awarded from kills.
+	m_exp_enabled = true;
+
+	// Suppress zone-point detection for 3 s after zone-in to prevent an
+	// immediate re-trigger when the player spawns right on a zone boundary.
+	m_zone_entry_time = Timer::GetCurrentTime();
+}
+
 void Client::SendZoneInPackets()
 {
 
@@ -1768,6 +1888,9 @@ void Client::UpdateWho(uint8 remove)
 	if (!worldserver.Connected()) {
 		return;
 	}
+	if (!zone) {
+		return;
+	}
 
 	auto pack = new ServerPacket(ServerOP_ClientList, sizeof(ServerClientList_Struct));
 	auto *s   = (ServerClientList_Struct *) pack->pBuffer;
@@ -2809,6 +2932,12 @@ bool Client::CanHaveSkill(EQ::skills::SkillType skill_id) const
 		skill_id = EQ::skills::Skill2HPiercing;
 	}
 
+	// Iksar racial Forage — every Iksar can have Forage regardless of class,
+	// even when skill_caps reports 0 for the class.  See MaxSkill() below.
+	if (GetRace() == Race::Iksar && skill_id == EQ::skills::SkillForage) {
+		return true;
+	}
+
 	return skill_caps.GetSkillCap(GetClass(), skill_id, RuleI(Character, MaxLevel)).cap > 0;
 }
 
@@ -2822,7 +2951,22 @@ uint16 Client::MaxSkill(EQ::skills::SkillType skill_id, uint8 class_id, uint8 le
 		skill_id = EQ::skills::Skill2HPiercing;
 	}
 
-	return skill_caps.GetSkillCap(class_id, skill_id, level).cap;
+	uint16 cap = skill_caps.GetSkillCap(class_id, skill_id, level).cap;
+
+	// Iksar racial Forage floor — EQClassic granted every Iksar an innate
+	// Forage skill capped at 50 regardless of class.  Modern EQEmu's
+	// skill_caps is class-only, so an Iksar Warrior / Monk / Necro / SK /
+	// Shaman / Rogue reports cap=0 here, which causes #level (set/level.cpp)
+	// and any other site comparing GetSkill() > MaxSkill() to clamp the
+	// racial back down to 0.  Raising the floor to 50 for Iksars closes
+	// every clamp site at once.  Iksar Beastlord (the one Iksar class that
+	// has a real class Forage cap > 50) is unaffected because we only raise
+	// the floor when the class cap is below 50.
+	if (GetRace() == Race::Iksar && skill_id == EQ::skills::SkillForage && cap < 50) {
+		cap = 50;
+	}
+
+	return cap;
 }
 
 uint8 Client::GetSkillTrainLevel(EQ::skills::SkillType skill_id, uint8 class_id)
@@ -6891,6 +7035,9 @@ int Client::AddAlternateCurrencyValue(uint32 currency_id, int amount, bool is_sc
 
 void Client::SendAlternateCurrencyValues()
 {
+	if (!zone) {
+		return;
+	}
 	for (const auto& alternate_currency : zone->AlternateCurrencies) {
 		SendAlternateCurrencyValue(alternate_currency.id, false);
 	}
@@ -9021,6 +9168,20 @@ void Client::InitInnates()
 		case Race::Iksar:
 			m_pp.InnateSkills[InnateRegen]       = InnateEnabled;
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
+			// Iksar racial Forage — capped at 50.  EQClassic granted every Iksar
+			// an innate Forage skill of 50 at character creation regardless of
+			// class.  Modern EQEmu's skill_caps table is class-only, so an Iksar
+			// Warrior / Monk / Necro / SK / Shaman / Rogue / Beastlord reports
+			// MaxSkill(SkillForage) == 0 and ForageItem's
+			// `random.Int(0,199) < skill_level` check always fails.  Seed the
+			// skill once at 50 on first init; CheckIncreaseSkill's
+			// `skillval < maxskill` gate (50 < 0 = false) keeps it pinned there
+			// for non-Forage-capable classes — Iksar Beastlords (who *can*
+			// raise Forage via class) keep their higher class cap untouched
+			// because we only seed when the raw skill is zero.
+			if (GetRawSkill(EQ::skills::SkillForage) == 0) {
+				SetSkill(EQ::skills::SkillForage, 50);
+			}
 			break;
 		case Race::VahShir:
 			m_pp.InnateSkills[InnateInfravision] = InnateEnabled;
@@ -9340,6 +9501,522 @@ void Client::CheckVirtualZoneLines()
 				ZoneLongName(virtual_zone_point.target_zone_id)
 			);
 		}
+	}
+}
+
+// Arm the zone-in loop guard AND cache the effective_r of the nearest zoneline
+// to spawn — that's the one that could re-trigger, so the guard threshold
+// scales to just what's needed. Only ever called for Trilogy clients (single
+// call site: TrilogyZoneServer HandleZoneInComplete).
+//
+// Routing follows TrilogyPositionUpdate: when the zone has imported
+// trilogy_zone_points content, CheckTrilogyZoneLines is the active detector and
+// the guard basis is that line's Zrange (EQClassic box half-side). When the
+// zone has no imported content, we fall back to the legacy sphere path
+// (CheckTraditionalZonePoints against zone_point_list) and the guard basis
+// mirrors the sphere's effective radius (zone_points.buffer, or the wide/narrow
+// default). This keeps guard sizing coherent with whatever detector actually
+// fires — no over- or under-guarding on either path.
+//
+// Local defaults must stay in sync with CheckTraditionalZonePoints's
+// kDetectRadiusNarrow / kDetectRadiusMax and with the trilogy_zone_points DB
+// DEFAULT for Zrange (15). Comment/re-check if you touch those constants.
+void Client::ArmTrilogyZoneInGuard(float x, float y)
+{
+	m_trilogy_zonein_x     = x;
+	m_trilogy_zonein_y     = y;
+	m_trilogy_zonein_guard = true;
+
+	constexpr float kDetectRadiusNarrow_local = 10.0f; // matches CheckTraditionalZonePoints
+	constexpr float kDetectRadiusMax_local    = 20.0f;
+	constexpr float kDefaultZrange            = 15.0f; // matches trilogy_zone_points Zrange DEFAULT
+
+	float nearest_r  = kDetectRadiusMax_local;
+	float nearest_d2 = -1.0f;
+	const char* source_tag = "none";
+
+	if (zone && !zone->trilogy_zone_line_list.empty()) {
+		// EQClassic-parity path — iterate the imported list, use Zrange.
+		source_tag = "trilogy";
+		nearest_r  = kDefaultZrange;
+		for (const auto &zln : zone->trilogy_zone_line_list) {
+			const float dx = zln.x - x;
+			const float dy = zln.y - y;
+			const float d2 = dx * dx + dy * dy;
+			if (nearest_d2 < 0.0f || d2 < nearest_d2) {
+				nearest_d2 = d2;
+				nearest_r  = (zln.Zrange > 0) ? static_cast<float>(zln.Zrange)
+				                              : kDefaultZrange;
+			}
+		}
+	}
+	else if (zone) {
+		// Legacy sphere-path fallback — iterate zone_point_list narrow entries,
+		// use buffer / narrow-default. Matches CheckTraditionalZonePoints's
+		// effective_r math.
+		source_tag = "sphere";
+		LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
+		iter.Reset();
+		while (iter.MoreElements()) {
+			ZonePoint* zp = iter.GetData();
+			if (zp && (zp->client_version_mask & ClientVersionBit())) {
+				const bool xWild = (zp->x == 999999 || zp->x == -999999);
+				const bool yWild = (zp->y == 999999 || zp->y == -999999);
+				if (!xWild && !yWild) {
+					const float dx = zp->x - x;
+					const float dy = zp->y - y;
+					const float d2 = dx * dx + dy * dy;
+					if (nearest_d2 < 0.0f || d2 < nearest_d2) {
+						nearest_d2 = d2;
+						nearest_r  = (zp->buffer > 0.0f) ? zp->buffer
+						                                : kDetectRadiusNarrow_local;
+					}
+				}
+			}
+			iter.Advance();
+		}
+	}
+	m_trilogy_zonein_guard_r = nearest_r;
+
+	if (RuleB(Zone, TrilogyZonePointDebug)) {
+		LogInfo("[TrilogyZP DBG] guard ARMED char [{}] spawn ({:.1f},{:.1f})"
+		        " in zone [{}] | source={} nearest_line dist={:.1f}u"
+		        " effective_r={:.1f}u -> guard threshold 2*r={:.1f}u",
+		        GetCleanName(), x, y,
+		        zone ? zone->GetShortName() : "?",
+		        source_tag,
+		        (nearest_d2 >= 0.0f) ? std::sqrt(nearest_d2) : -1.0f,
+		        m_trilogy_zonein_guard_r,
+		        2.0f * m_trilogy_zonein_guard_r);
+	}
+
+	// Broken-zone diagnostic — always on (independent of TrilogyZonePointDebug).
+	// If the zone has trilogy_zone_points data but ALL rows have placeholder
+	// source (0,0,0), server-side detection is dead here — the player has no
+	// way to zone out unless client-side detection fires or a GM intervenes.
+	// Log a prominent warning per zone-in so we can prioritize which zones
+	// need manual `#loc` walking + DB updates. See
+	// Server/utils/sql/git/optional/2026_07_04_trilogy_zone_points_source_recovery.sql
+	// for the recovery workflow.
+	if (zone && !zone->trilogy_zone_line_list.empty()) {
+		int usable_count = 0;
+		int broken_count = 0;
+		for (const auto &zln : zone->trilogy_zone_line_list) {
+			if (zln.x == 0.0f && zln.y == 0.0f && zln.z == 0.0f) {
+				++broken_count;
+			}
+			else {
+				++usable_count;
+			}
+		}
+		if (usable_count == 0 && broken_count > 0) {
+			LogWarning(
+				"[TrilogyZP] BROKEN ZONE zone-in: char [{}] entered zone [{}] which has"
+				" {} trilogy_zone_points row(s), ALL with placeholder source (0,0,0)."
+				" Server-side zone-line detection is disabled here — player can only"
+				" leave via client-side detection (unreliable on v29c for interior"
+				" zones), /camp, or GM intervention. Prioritize this zone for manual"
+				" #loc + UPDATE trilogy_zone_points (recovery script:"
+				" Server/utils/sql/git/optional/2026_07_04_trilogy_zone_points_source_recovery.sql).",
+				GetCleanName(), zone->GetShortName(), broken_count
+			);
+		}
+		else if (broken_count > 0) {
+			LogInfo(
+				"[TrilogyZP] Partial zone: char [{}] entered zone [{}] with"
+				" {} usable + {} broken/placeholder-source trilogy_zone_points row(s)."
+				" Some exits detectable, some not.",
+				GetCleanName(), zone->GetShortName(), usable_count, broken_count
+			);
+		}
+	}
+}
+
+// Server-side zone point detection for Trilogy clients. Note: the Trilogy
+// client CAN send OP_ZoneChange autonomously (using its local map data on
+// outdoor zones); interior/dungeon zones lack usable client-side zoneline
+// data, so this server-side proximity check is the only detector for those.
+// When it fires, we send OP_RequestClientZoneChange (0x4d21) and the client
+// replies with 0xa320 (ZoneChange), routed through HandleZoneChange →
+// Handle_OP_ZoneChange → DoZoneSuccess → ZTZ. Only after 0xa320 will the
+// client act on the subsequent 0x0480 from the world server.
+// Called from TrilogyClient::TrilogyPositionUpdate.
+void Client::CheckTraditionalZonePoints()
+{
+	// Diagnostic backbone (M5). Gated behind Rules::Zone::TrilogyZonePointDebug so
+	// production paths are zero-cost when off. When on, every tick we log gate
+	// state, guard state, per-tick step (velocity), nearest zone_point + distance,
+	// and reason-for-not-firing. Throttled Chat::White echoes go to affected
+	// clients so a GM can see zoneline geometry live while running through it.
+	const bool zp_dbg = RuleB(Zone, TrilogyZonePointDebug);
+
+	if (!zone || zone_mode != ZoneUnsolicited || bZoning) {
+		if (zp_dbg) {
+			LogInfo("[TrilogyZP DBG] gate SKIP char [{}]"
+			        " | zone={} zone_mode={} bZoning={}"
+			        " (detection only runs while zone_mode==ZoneUnsolicited and !bZoning)",
+			        GetCleanName(), zone ? zone->GetShortName() : "null",
+			        (int)zone_mode, bZoning ? 1 : 0);
+		}
+		return;
+	}
+
+	// Trilogy clients receive no OP_ZonePoints data, so zone-line detection is done
+	// server-side: iterate zone_point_list and use a planar distance/radius + Z
+	// bounding-box check to identify which zp (trigger volume) the player is touching.
+	// Wildcard axes (±999999) span the full axis and are ignored in the planar test.
+	//
+	// Detection radius splits by trigger shape (Tier A) with a per-line override
+	// via zone_points.buffer (Tier B):
+	//
+	//   WIDE  (at least one axis wildcard: outdoor lines, karana/desert/EC style)
+	//         The trigger centre may sit ~15u lateral to the walkable path
+	//         (empirical: nro→ecommons zp#3 at (2908,2626), 60+ samples, min
+	//         planar approach 15.00u). Default 20u sphere / 40u diameter to
+	//         guarantee catch across the full off-centre band.
+	//
+	//   NARROW (both axes explicit: doors, gates, teleport pads, corridor mouths)
+	//         Trigger centre sits ON the walkable path. Default 10u sphere / 20u
+	//         diameter — tight enough to feel "at the doorway" but still ≥ normal
+	//         run step_u (~14u) so no tunnelling on a straight-through approach.
+	//         SoW/mounts (~23u step) can occasionally skip; acceptable — they can
+	//         approach again or use a direct zone command.
+	//
+	//   OVERRIDE (zone_points.buffer > 0)
+	//         Per-line effective radius. Use for step-on triggers like Erudin
+	//         teleport pads (buffer=3.0 → 6u diameter → walk-onto only) or to
+	//         widen a narrow line whose trigger sits slightly off the path.
+	//
+	// Guard threshold uses kDetectRadiusMax (= wide default) to stay safe for any
+	// zone-in whose return trigger sits at the wide radius; over-guarding a narrow
+	// line just delays detection release by a few units, no correctness issue.
+	//
+	// DB audit reference (from the previous single-20u iteration): zero pairs of
+	// distinct-target zone_points come within 60u of each other in the same source
+	// zone, so no double-trigger-to-wrong-zone risk at these radii.
+	static constexpr float kDetectRadiusWide   = 20.0f;
+	static constexpr float kDetectRadiusNarrow = 10.0f;
+	static constexpr float kDetectRadiusMax    = kDetectRadiusWide;
+
+	// Diagnostic: per-tick step (planar distance moved since last check). This is
+	// the direct signal for F1.1 "skip-through under load" — if step_u exceeds the
+	// detect diameter (~20u) then the player traversed the trigger sphere in a
+	// single tick and no proximity sample could ever land inside it.
+	float step_u = 0.0f;
+	if (zp_dbg && m_zp_debug_have_last) {
+		const float vdx = GetX() - m_zp_debug_last_x;
+		const float vdy = GetY() - m_zp_debug_last_y;
+		step_u = std::sqrt(vdx * vdx + vdy * vdy);
+	}
+
+	// Zone-in loop guard: the player spawns at the destination zone-in point, which
+	// lies inside the return zone line's detection radius. Suppress detection until
+	// they move clear of the spawn point. Releasing at 2x the detect radius
+	// guarantees (triangle inequality) they are also outside the return trigger
+	// (spawn is <=radius from it), so no immediate re-trigger. Auto-clears once they
+	// walk away, so all subsequent zoning works normally; no packets are dropped.
+	if (m_trilogy_zonein_guard) {
+		const float gdx = GetX() - m_trilogy_zonein_x;
+		const float gdy = GetY() - m_trilogy_zonein_y;
+		// Per-line scaling: the nearest narrow zoneline's effective_r was cached
+		// at arm time (ArmTrilogyZoneInGuard), so a tight-buffer dungeon like
+		// befallen (buffer=5) gets guard=10u instead of a wasteful 40u. Triangle
+		// inequality still holds: spawn is <= effective_r from the trigger, so
+		// player at > 2*effective_r from spawn is > effective_r from trigger.
+		const float kGuardDist  = 2.0f * m_trilogy_zonein_guard_r;
+		const float guard_dist2 = gdx * gdx + gdy * gdy;
+		if (guard_dist2 < kGuardDist * kGuardDist) {
+			if (zp_dbg) {
+				LogInfo("[TrilogyZP DBG] guard ACTIVE char [{}]"
+				        " | player ({:.1f},{:.1f}) spawn ({:.1f},{:.1f})"
+				        " | dist={:.1f}/{:.1f}u (guard_r={:.1f}, threshold 2*r)",
+				        GetCleanName(), GetX(), GetY(),
+				        m_trilogy_zonein_x, m_trilogy_zonein_y,
+				        std::sqrt(guard_dist2), kGuardDist,
+				        m_trilogy_zonein_guard_r);
+				// Refresh last-check pos even while guarded so step_u is meaningful
+				// on the tick guard clears.
+				m_zp_debug_last_x    = GetX();
+				m_zp_debug_last_y    = GetY();
+				m_zp_debug_have_last = true;
+			}
+			return;
+		}
+		m_trilogy_zonein_guard = false; // moved clear — resume normal detection
+		if (zp_dbg) {
+			LogInfo("[TrilogyZP DBG] guard CLEARED char [{}]"
+			        " | moved {:.1f}u from spawn (threshold {:.1f}u)"
+			        " -- normal detection resumes this tick",
+			        GetCleanName(), std::sqrt(guard_dist2), kGuardDist);
+			Message(Chat::White,
+			        fmt::format("[zp-dbg] zone-in guard cleared "
+			                    "(moved {:.1f}u from spawn).",
+			                    std::sqrt(guard_dist2)).c_str());
+		}
+	}
+
+	static constexpr float kZRange = 50.0f;
+
+	// Diagnostic: track the nearest planar zone_point across the iteration so we
+	// can report near-miss state after the loop (why detection did NOT fire).
+	// nearest_effective_r captures the per-line radius used in the fire test so
+	// the near-miss "outside XY radius" branch reports against the right threshold.
+	ZonePoint* nearest_zp          = nullptr;
+	float      nearest_dist2       = 0.0f;
+	float      nearest_dx          = 0.0f;
+	float      nearest_dy          = 0.0f;
+	float      nearest_dz          = 0.0f;
+	bool       nearest_xw          = false;
+	bool       nearest_yw          = false;
+	float      nearest_effective_r = kDetectRadiusWide;
+
+	LinkedListIterator<ZonePoint*> iter(zone->zone_point_list);
+	iter.Reset();
+	while (iter.MoreElements()) {
+		ZonePoint* zp = iter.GetData();
+		if (!(zp->client_version_mask & ClientVersionBit())) {
+			iter.Advance();
+			continue;
+		}
+		// Skip zone points with no positional trigger (both axes wildcard).
+		// These are server-side lookup entries, not walk-through zone lines.
+		bool xWild = (zp->x == 999999 || zp->x == -999999);
+		bool yWild = (zp->y == 999999 || zp->y == -999999);
+		if (xWild && yWild) {
+			iter.Advance();
+			continue;
+		}
+
+		// Planar distance to the trigger (the wildcard axis is ignored so a
+		// full-axis zone line matches anywhere along it) plus a Z bounding-box
+		// check identifies the zp the player is standing on.
+		float dx = xWild ? 0.0f : (zp->x - GetX());
+		float dy = yWild ? 0.0f : (zp->y - GetY());
+		float dz = zp->z - GetZ();
+		const float dist2 = dx * dx + dy * dy;
+
+		// Per-line effective radius: wide vs narrow default, overridden by
+		// zone_points.buffer when > 0. Applied to BOTH the fire test and the
+		// near-miss tracker so diagnostics report against the right threshold.
+		const bool  narrow_line  = !xWild && !yWild;
+		const float default_r    = narrow_line ? kDetectRadiusNarrow
+		                                       : kDetectRadiusWide;
+		const float effective_r  = (zp->buffer > 0.0f) ? zp->buffer : default_r;
+		const float effective_r2 = effective_r * effective_r;
+
+		// Diagnostic: capture nearest zp seen so far (planar) regardless of Z-box
+		// fit — reporting a Z-out-of-range near-miss is exactly the F3.2 signal.
+		if (zp_dbg && (nearest_zp == nullptr || dist2 < nearest_dist2)) {
+			nearest_zp          = zp;
+			nearest_dist2       = dist2;
+			nearest_dx          = dx;
+			nearest_dy          = dy;
+			nearest_dz          = dz;
+			nearest_xw          = xWild;
+			nearest_yw          = yWild;
+			nearest_effective_r = effective_r;
+		}
+
+		if (dist2 < effective_r2 && std::fabs(dz) < kZRange) {
+			// Tier 1: LOS gate for narrow zonelines. The 20u sphere is deliberately
+			// generous so outdoor wildcard-axis lines catch off-center walkable
+			// paths; on narrow doors/gates that same generosity fires through walls
+			// (player standing outside a corridor, trigger 20u away behind a wall).
+			// A raycast from the player to the trigger center rejects the
+			// "trigger visible only through a wall" case, approximating what a
+			// client-side map crosser (Titanium/RoF2) would do.
+			//
+			// Gated on:
+			//   - RuleB(Zone, TrilogyZonePointLosGate) - operator kill switch
+			//   - !xWild && !yWild - only narrow lines; wildcard-axis lines have
+			//     no meaningful trigger point to LOS to (999999 is a sentinel)
+			//   - zone->zonemap != nullptr - mapless zones fall through to today's
+			//     behavior; CheckLosFN returns false when zonemap is null (unless
+			//     LOS_DEFAULT_CAN_SEE is defined, which it isn't in this build)
+			//     so we must skip the gate explicitly to avoid fail-closed.
+			//
+			// Runs AFTER the sphere+Z-box gate (so cost is one raycast per
+			// near-trigger tick, not per tick) and BEFORE any state mutation
+			// (zone_mode, m_ZoneSummonLocation, m_trilogy_zone_raw_target_*) so
+			// a blocked LOS is a pure no-op.
+			if (RuleB(Zone, TrilogyZonePointLosGate) &&
+			    !xWild && !yWild &&
+			    zone && zone->zonemap != nullptr) {
+				// Target size 5.0f puts the LOS ray endpoint slightly above the
+				// trigger's ground Z (SEE_POSITION * size / 2), matching how
+				// mob-vs-mob LOS treats a standing target. Watcher position/size
+				// come from `this` implicitly via the member CheckLosFN.
+				if (!CheckLosFN(zp->x, zp->y, zp->z, 5.0f)) {
+					if (zp_dbg) {
+						LogInfo("[TrilogyZP DBG] LOS BLOCK zp#{} char [{}]"
+						        " | player ({:.1f},{:.1f},{:.1f})"
+						        " trig ({:.1f},{:.1f},{:.1f})"
+						        " | planar_dist={:.2f}u dz={:.2f}u"
+						        " -- trigger not visible from player"
+						        " (wall/corner between);"
+						        " detection deferred until LOS clears",
+						        zp->number, GetCleanName(),
+						        GetX(), GetY(), GetZ(),
+						        zp->x, zp->y, zp->z,
+						        std::sqrt(dist2), dz);
+						const uint32 now_ms = Timer::GetCurrentTime();
+						if (now_ms - m_zp_debug_last_msg_ms >= 500) {
+							m_zp_debug_last_msg_ms = now_ms;
+							Message(Chat::White,
+							        fmt::format("[zp-dbg] zp#{} LOS blocked"
+							                    " (dist={:.1f}u)",
+							                    zp->number,
+							                    std::sqrt(dist2)).c_str());
+						}
+					}
+					iter.Advance();
+					continue;
+				}
+			}
+
+			// Actual trigger center: explicit DB coord, or player's current pos for wildcards.
+			float trig_x = xWild ? GetX() : zp->x;
+			float trig_y = yWild ? GetY() : zp->y;
+
+			float dest_x       = (zp->target_x       == 999999) ? GetX()       : zp->target_x;
+			float dest_y       = (zp->target_y       == 999999) ? GetY()       : zp->target_y;
+			float dest_z       = (zp->target_z       == 999999) ? GetZ()       : zp->target_z;
+			// Trilogy: use the DB-designed arrival heading for the destination zone.
+			// The DB target_heading encodes the correct facing direction relative to
+			// the destination zone's geometry (e.g. "face East into EC").  The lateral
+			// position delta is computed separately from player XY vs trigger XY and
+			// does not depend on heading at all.  Fall back to exit heading only when
+			// the DB value is the wildcard sentinel (999).
+			float dest_heading = (zp->target_heading == 999) ? GetHeading() : zp->target_heading;
+
+			LogInfo("[TrilogyZP] CheckTraditionalZonePoints FIRED: char [{}] zone [{}]"
+			        " | zp#={} db_xy ({:.1f},{:.1f},{:.1f}) xWild={} yWild={}"
+			        " | trig_center ({:.1f},{:.1f}) player ({:.1f},{:.1f},{:.1f})"
+			        " | raw_target ({},{},{},{}) -> dest ({:.1f},{:.1f},{:.1f},{:.1f})"
+			        " | target_zone {}",
+			        GetCleanName(), zone ? zone->GetShortName() : "?",
+			        zp->number, zp->x, zp->y, zp->z, xWild ? 'Y' : 'N', yWild ? 'Y' : 'N',
+			        trig_x, trig_y,
+			        GetX(), GetY(), GetZ(),
+			        zp->target_x, zp->target_y, zp->target_z, (int)zp->target_heading,
+			        dest_x, dest_y, dest_z, dest_heading,
+			        zp->target_zone_id);
+
+			// Diagnostic: fire context ties movement speed to firing tick geometry.
+			// step_u > 2*effective_r on a fire = we JUST barely caught the sphere,
+			// implying prior ticks likely skipped it (F1.1). Now per-line, so a
+			// tight buffer=3 pad reports its own diameter for skip-through analysis.
+			if (zp_dbg) {
+				const char* line_kind = narrow_line ? "narrow" : "wide";
+				const char* r_source  = (zp->buffer > 0.0f) ? "buffer" : "default";
+				LogInfo("[TrilogyZP DBG] FIRE ctx char [{}] zp#{}"
+				        " | planar_dist={:.2f}/{:.2f}u dz={:.2f}/{:.2f}u"
+				        " | step_u={:.2f}u/tick (> {:.0f} risks skip-through)"
+				        " | heading={:.1f} kind={} r={}",
+				        GetCleanName(), zp->number,
+				        std::sqrt(dist2), effective_r, dz, kZRange,
+				        step_u, 2.0f * effective_r, GetHeading(),
+				        line_kind, r_source);
+				Message(Chat::White,
+				        fmt::format("[zp-dbg] FIRE zp#{} -> zone {} | dist={:.1f}/{:.1f}u"
+				                    " dz={:.1f}u step={:.1f}u ({}/{})",
+				                    zp->number, zp->target_zone_id,
+				                    std::sqrt(dist2), effective_r, dz, step_u,
+				                    line_kind, r_source).c_str());
+			}
+
+			zone_mode            = ZoneSolicited;
+			zonesummon_id        = zp->target_zone_id;
+			m_ZoneSummonLocation = glm::vec4(dest_x, dest_y, dest_z, dest_heading);
+			zonesummon_ignorerestrictions = 0;
+
+			m_trilogy_zone_raw_target_x = zp->target_x;
+			m_trilogy_zone_raw_target_y = zp->target_y;
+			m_trilogy_zone_raw_target_z = zp->target_z;
+			m_trilogy_zone_raw_target_h = zp->target_heading;
+			m_trilogy_zone_trig_x       = trig_x;
+			m_trilogy_zone_trig_y       = trig_y;
+			m_trilogy_zone_trig_x_wild  = xWild;
+			m_trilogy_zone_trig_y_wild  = yWild;
+
+			// Send 0x4d21 (TeleportPC) to put the Trilogy client in "zoning state".
+			// The client will respond with 0xa320 (ZoneChange), which HandleZoneChange
+			// routes through Handle_OP_ZoneChange → DoZoneSuccess → ZTZ.  Only after
+			// the client sends 0xa320 will it act on the 0x0480 that the world sends
+			// on ZTZ approval.
+			auto* rc_app = new EQApplicationPacket(OP_RequestClientZoneChange, sizeof(RequestClientZoneChange_Struct));
+			auto* rc     = reinterpret_cast<RequestClientZoneChange_Struct*>(rc_app->pBuffer);
+			rc->zone_id     = zp->target_zone_id;
+			rc->instance_id = zp->target_zone_instance;
+			rc->x           = dest_x;
+			rc->y           = dest_y;
+			rc->z           = dest_z;
+			rc->heading     = dest_heading;
+			rc->type        = 0x01;
+			FastQueuePacket(&rc_app);
+			return;
+		}
+		iter.Advance();
+	}
+
+	// Diagnostic: post-loop near-miss report. Only when the rule is on AND the
+	// nearest zp is within a proximity window wide enough for approach/pass-through
+	// analysis. LogInfo unthrottled (file record captures full velocity profile),
+	// Chat::White throttled to one message per ~500ms so in-game chat stays readable.
+	if (zp_dbg && nearest_zp != nullptr) {
+		static constexpr float  kDbgProximity  = 40.0f;
+		static constexpr float  kDbgProximity2 = kDbgProximity * kDbgProximity;
+		static constexpr float  kDbgZWindow    = 100.0f;      // 2x kZRange
+		static constexpr uint32 kDbgChatMs     = 500;
+
+		if (nearest_dist2 < kDbgProximity2 && std::fabs(nearest_dz) < kDbgZWindow) {
+			const float planar_dist = std::sqrt(nearest_dist2);
+			const bool  z_out       = std::fabs(nearest_dz) >= kZRange;
+			const bool  xy_out      = nearest_dist2 >= (nearest_effective_r * nearest_effective_r);
+			// Human-readable near-miss reason (why we did NOT fire this tick).
+			const char* miss_reason =
+				(!xy_out && !z_out) ? "should have fired?" :
+				(xy_out && !z_out)  ? "outside XY radius" :
+				(!xy_out && z_out)  ? "outside Z bbox"    :
+				                       "outside XY radius AND Z bbox";
+
+			LogInfo("[TrilogyZP DBG] near zp#{} in [{}] char [{}]"
+			        " | player ({:.1f},{:.1f},{:.1f}) heading={:.1f} step_u={:.2f}"
+			        " | trigger ({:.1f},{:.1f},{:.1f}) xWild={} yWild={}"
+			        " | dx={:.2f} dy={:.2f} planar_dist={:.2f}/{:.2f}u"
+			        " dz={:.2f}/{:.2f}u ({})"
+			        " | target_zone={}",
+			        nearest_zp->number,
+			        zone->GetShortName(),
+			        GetCleanName(),
+			        GetX(), GetY(), GetZ(), GetHeading(), step_u,
+			        nearest_xw ? GetX() : nearest_zp->x,
+			        nearest_yw ? GetY() : nearest_zp->y,
+			        nearest_zp->z,
+			        nearest_xw ? 'Y' : 'N', nearest_yw ? 'Y' : 'N',
+			        nearest_dx, nearest_dy, planar_dist, nearest_effective_r,
+			        nearest_dz, kZRange, miss_reason,
+			        nearest_zp->target_zone_id);
+
+			const uint32 now_ms = Timer::GetCurrentTime();
+			if (now_ms - m_zp_debug_last_msg_ms >= kDbgChatMs) {
+				m_zp_debug_last_msg_ms = now_ms;
+				Message(Chat::White,
+				        fmt::format("[zp-dbg] near zp#{} -> zone {} | dist={:.1f}u"
+				                    " (r={:.1f}) dz={:.1f}u (z={:.0f}) step={:.1f}u [{}]",
+				                    nearest_zp->number, nearest_zp->target_zone_id,
+				                    planar_dist, nearest_effective_r,
+				                    nearest_dz, kZRange, step_u, miss_reason).c_str());
+			}
+		}
+	}
+
+	// Refresh last-check position for the next tick's step_u calculation. Runs
+	// on every non-guarded, non-fired tick so step_u stays continuous.
+	if (zp_dbg) {
+		m_zp_debug_last_x    = GetX();
+		m_zp_debug_last_y    = GetY();
+		m_zp_debug_have_last = true;
 	}
 }
 

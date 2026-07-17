@@ -49,6 +49,14 @@ static const EQ::constants::LookupEntry constants_static_lookup_entries[EQ::vers
 		ClientUnknown::INULL,
 		ClientUnknown::INULL
 	),
+	/*[ClientVersion::Trilogy] =*/
+	EQ::constants::LookupEntry(
+		Trilogy::constants::EXPANSION,
+		Trilogy::constants::EXPANSION_BIT,
+		Trilogy::constants::EXPANSIONS_MASK,
+		Trilogy::constants::CHARACTER_CREATION_LIMIT,
+		Trilogy::constants::SAY_LINK_BODY_SIZE
+	),
 	/*[ClientVersion::Client62] =*/
 	EQ::constants::LookupEntry(
 		Client62::constants::EXPANSION,
@@ -180,6 +188,33 @@ static const EQ::inventory::LookupEntry inventory_static_lookup_entries[EQ::vers
 		false,
 		false,
 		false
+	),
+	/*[MobVersion::Trilogy] =*/
+	EQ::inventory::LookupEntry(
+		EQ::inventory::LookupEntry::InventoryTypeSize_Struct(
+			EQ::invtype::POSSESSIONS_SIZE,			Trilogy::invtype::BANK_SIZE,				Trilogy::invtype::SHARED_BANK_SIZE,
+			Trilogy::invtype::TRADE_SIZE,			Trilogy::invtype::WORLD_SIZE,				Trilogy::invtype::LIMBO_SIZE,
+			Trilogy::invtype::TRIBUTE_SIZE,			Trilogy::INULL,								Trilogy::invtype::GUILD_TRIBUTE_SIZE,
+			Trilogy::invtype::MERCHANT_SIZE,		Trilogy::INULL,								Trilogy::invtype::CORPSE_SIZE,
+			Trilogy::invtype::BAZAAR_SIZE,			Trilogy::invtype::INSPECT_SIZE,				Trilogy::INULL,
+			Trilogy::invtype::VIEW_MOD_PC_SIZE,		Trilogy::invtype::VIEW_MOD_BANK_SIZE,		Trilogy::invtype::VIEW_MOD_SHARED_BANK_SIZE,
+			Trilogy::invtype::VIEW_MOD_LIMBO_SIZE,	Trilogy::invtype::ALT_STORAGE_SIZE,			Trilogy::invtype::ARCHIVED_SIZE,
+			Trilogy::INULL,							Trilogy::INULL,								Trilogy::INULL,
+			Trilogy::invtype::OTHER_SIZE
+		),
+
+		Trilogy::invslot::EQUIPMENT_BITMASK,
+		Trilogy::invslot::GENERAL_BITMASK,
+		Trilogy::invslot::CURSOR_BITMASK,
+		Trilogy::invslot::POSSESSIONS_BITMASK,
+		Trilogy::invslot::CORPSE_BITMASK,
+		Trilogy::invbag::SLOT_COUNT,
+		Trilogy::invaug::SOCKET_COUNT,
+
+		Trilogy::inventory::AllowEmptyBagInBag,
+		Trilogy::inventory::AllowClickCastFromBag,
+		Trilogy::inventory::ConcatenateInvTypeLimbo,
+		Trilogy::inventory::AllowOverLevelEquipment
 	),
 	/*[MobVersion::Client62] =*/
 	EQ::inventory::LookupEntry(
@@ -586,6 +621,33 @@ static const EQ::inventory::LookupEntry inventory_static_lookup_entries[EQ::vers
 		false,
 		false
 	),
+	/*[MobVersion::OfflineTrilogy] =*/
+	EQ::inventory::LookupEntry(
+		EQ::inventory::LookupEntry::InventoryTypeSize_Struct(
+			Trilogy::INULL,							Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::invtype::TRADE_SIZE,			Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::INULL,							Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::invtype::MERCHANT_SIZE,		Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::invtype::BAZAAR_SIZE,			Trilogy::invtype::INSPECT_SIZE,			Trilogy::INULL,
+			Trilogy::invtype::VIEW_MOD_PC_SIZE,		Trilogy::invtype::VIEW_MOD_BANK_SIZE,	Trilogy::invtype::VIEW_MOD_SHARED_BANK_SIZE,
+			Trilogy::invtype::VIEW_MOD_LIMBO_SIZE,	Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::INULL,							Trilogy::INULL,							Trilogy::INULL,
+			Trilogy::INULL
+		),
+
+		Trilogy::INULL,
+		Trilogy::INULL,
+		Trilogy::INULL,
+		Trilogy::INULL,
+		Trilogy::INULL,
+		Trilogy::invbag::SLOT_COUNT,
+		Trilogy::invaug::SOCKET_COUNT,
+
+		false,
+		false,
+		false,
+		false
+	),
 	/*[MobVersion::OfflineTitanium] =*/
 	EQ::inventory::LookupEntry(
 		EQ::inventory::LookupEntry::InventoryTypeSize_Struct(
@@ -966,6 +1028,10 @@ static const EQ::behavior::LookupEntry behavior_static_lookup_entries[EQ::versio
 	EQ::behavior::LookupEntry(
 		true
 	),
+	/*[MobVersion::Trilogy] =*/
+	EQ::behavior::LookupEntry(
+		Trilogy::behavior::CoinHasWeight
+	),
 	/*[MobVersion::Client62] =*/
 	EQ::behavior::LookupEntry(
 		true
@@ -1025,6 +1091,10 @@ static const EQ::behavior::LookupEntry behavior_static_lookup_entries[EQ::versio
 	/*[MobVersion::BotPet] =*/
 	EQ::behavior::LookupEntry(
 		EQ::behavior::CoinHasWeight
+	),
+	/*[MobVersion::OfflineTrilogy] =*/
+	EQ::behavior::LookupEntry(
+		Trilogy::behavior::CoinHasWeight
 	),
 	/*[MobVersion::OfflineTitanium] =*/
 	EQ::behavior::LookupEntry(
@@ -1111,6 +1181,19 @@ static const EQ::spells::LookupEntry spells_static_lookup_entries[EQ::versions::
 		ClientUnknown::INULL,
 		ClientUnknown::INULL,
 		ClientUnknown::INULL
+	),
+	/*[ClientVersion::Trilogy] =*/
+	EQ::spells::LookupEntry(
+		Trilogy::spells::SPELL_ID_MAX,
+		Trilogy::spells::SPELLBOOK_SIZE,
+		Trilogy::spells::SPELL_GEM_COUNT,
+		Trilogy::spells::LONG_BUFFS,
+		Trilogy::spells::SHORT_BUFFS,
+		Trilogy::spells::DISC_BUFFS,
+		Trilogy::spells::TOTAL_BUFFS,
+		Trilogy::spells::NPC_BUFFS,
+		Trilogy::spells::PET_BUFFS,
+		Trilogy::spells::MERC_BUFFS
 	),
 	/*[ClientVersion::Client62] =*/
 	EQ::spells::LookupEntry(

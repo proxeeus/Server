@@ -651,6 +651,14 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	case ServerOP_TrilogyClientExpected: {
+		// A Trilogy client is about to connect via UDP; give the zone 30 s to
+		// stay alive while the multi-step handshake completes.
+		if (zone) {
+			zone->StartShutdownTimer(30000);
+		}
+		break;
+	}
 	case ServerOP_ZonePlayer: {
 		ServerZonePlayer_Struct* szp = (ServerZonePlayer_Struct*)pack->pBuffer;
 		auto client = entity_list.GetClientByName(szp->name);

@@ -60,6 +60,7 @@ public:
 	void	CLCheckStale();
 	void	CLEKeepAlive(uint32 numupdates, uint32* wid);
 	void	CLEAdd(uint32 iLSID, const char* iLoginServerName, const char* iLoginName, const char* iLoginKey, int16 iWorldAdmin = AccountStatus::Player, uint32 ip = 0, uint8 local=0);
+	ClientListEntry* CLEAddDirect(uint32 account_id, const char* account_name, int16 admin, uint32 ip);
 	void	UpdateClientGuild(uint32 char_id, uint32 guild_id);
 	bool    IsAccountInGame(uint32 iLSID);
 

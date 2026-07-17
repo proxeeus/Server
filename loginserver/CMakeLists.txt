@@ -10,6 +10,7 @@ SET(eqlogin_sources
 	loginserver_webserver.cpp
 	main.cpp
 	server_manager.cpp
+	trilogy_ls.cpp
 	world_server.cpp
 )
 
@@ -25,6 +26,7 @@ SET(eqlogin_headers
 	login_types.h
 	options.h
 	server_manager.h
+	trilogy_ls.h
 	world_server.h
 )
 

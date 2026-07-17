@@ -3565,6 +3565,52 @@ void Mob::DoAnim(const int animation_id, int animation_speed, bool ackreq, eqFil
 	safe_delete(outapp);
 }
 
+// ============================================================
+// DoBardSongAnim — broadcast a bard-skill-specific play gesture.
+//
+// Maps the casting skill stored on the spell to the v29c player animation
+// IDs used by the EQ Trilogy client (and also recognized by later clients):
+//   Stringed     -> 0x28 (40) — lute / strumming pose
+//   Percussion   -> 0x28 (40) — drum pose. The proper drum ID is 0x27 but
+//                              v29c renders nothing for it (confirmed by
+//                              in-game test 2026-06-17); EQClassic noted the
+//                              same. Fall back to the string anim so the
+//                              bard still visibly plays.
+//   Wind / Brass -> 0x29 (41) — flute / horn pose
+//   Singing      -> no animation (no dedicated gesture in v29c)
+//
+// Broadcasts via DoAnim, so nearby Trilogy clients receive it translated to
+// OP_Attack 0x9f20 by TrilogyClient::HandleAnimation, and other in-range
+// observers see the same gesture natively.
+//
+// Reference: EQClassic Zone/Source/spells.cpp Mob::DoBardSongAnim
+// (Pinedepain) — the function exists there but was left disabled at the
+// call site; the skill/anim table is correct for v29c.
+// ============================================================
+void Mob::DoBardSongAnim(uint16 spell_id)
+{
+	if (!IsValidSpell(spell_id)) {
+		return;
+	}
+
+	int anim = 0;
+	switch (spells[spell_id].skill) {
+	case EQ::skills::SkillStringedInstruments:
+	case EQ::skills::SkillPercussionInstruments:
+		anim = 0x28; // 40 — lute (also percussion fallback, see comment)
+		break;
+	case EQ::skills::SkillWindInstruments:
+	case EQ::skills::SkillBrassInstruments:
+		anim = 0x29; // 41 — flute / horn
+		break;
+	default:
+		// SkillSinging and anything else: no dedicated v29c gesture.
+		return;
+	}
+
+	DoAnim(anim, 0, true, FilterPCSpells);
+}
+
 void Mob::ShowBuffs(Client* c) {
 	if (SPDAT_RECORDS <= 0) {
 		return;

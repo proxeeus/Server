@@ -29,6 +29,7 @@ struct ExtendedProfile_Struct;
 struct NPCType;
 struct PlayerCorpse_Struct;
 struct ZonePoint;
+struct TrilogyZoneLineNode;
 struct npcDecayTimes_Struct;
 
 namespace EQ
@@ -524,6 +525,13 @@ public:
 	/* Zone related   */
 	bool		SaveZoneCFG(uint32 zone_id, uint16 instance_version, NewZone_Struct* zd);
 	bool		LoadStaticZonePoints(LinkedList<ZonePoint*>* zone_point_list,const char* zonename, uint32 version);
+	// Loads the Trilogy-only zoning table (trilogy_zone_points, direct EQClassic
+	// import). Zone-scoped: pulls all rows WHERE zone = <shortname>, resolves
+	// target_zone shortnames via ZoneID(), and appends TrilogyZoneLineNode
+	// entries into the provided vector. Empty vector for zones without content
+	// -> Trilogy clients get no server-side detection in that zone (strict
+	// EQClassic parity: no sphere fallback).
+	bool		LoadTrilogyZonePoints(std::vector<TrilogyZoneLineNode>* out_list, const char* zonename);
 	int			getZoneShutDownDelay(uint32 zoneID, uint32 version);
 
 	/* Spawns and Spawn Points  */

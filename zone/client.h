@@ -415,8 +415,9 @@ public:
 	void FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho);
 	bool ShouldISpawnFor(Client *c) { return !GMHideMe(c) && !IsHoveringForRespawn(); }
 	virtual bool Process();
-	void QueuePacket(const EQApplicationPacket* app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL, eqFilterType filter=FilterNone);
-	void FastQueuePacket(EQApplicationPacket** app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL);
+	virtual void QueuePacket(const EQApplicationPacket* app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL, eqFilterType filter=FilterNone);
+	virtual void FastQueuePacket(EQApplicationPacket** app, bool ack_req = true, CLIENT_CONN_STATUS = CLIENT_CONNECTINGALL);
+	virtual bool IsTrilogyClient() const { return false; }
 	void ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_skill, const char* orig_message, const char* targetname = nullptr, bool is_silent = false);
 	void ChannelMessageSend(const char* from, const char* to, uint8 channel_id, uint8 language_id, uint8 language_skill, const char* message, ...);
 	void Message(uint32 type, const char* message, ...);
@@ -548,6 +549,7 @@ public:
 	inline void ClearAllProximities() { entity_list.ProcessMove(this, glm::vec3(FLT_MAX, FLT_MAX, FLT_MAX)); m_Proximity = glm::vec3(FLT_MAX,FLT_MAX,FLT_MAX); }
 
 	void CheckVirtualZoneLines();
+	void CheckTraditionalZonePoints();
 
 	/*
 			Begin client modifiers
@@ -756,7 +758,7 @@ public:
 	void AssignToInstance(uint16 instance_id);
 	void RemoveFromInstance(uint16 instance_id);
 	void WhoAll();
-	bool CheckLoreConflict(const EQ::ItemData* item);
+	virtual bool CheckLoreConflict(const EQ::ItemData* item);
 	void ChangeLastName(std::string last_name);
 	void GetGroupAAs(GroupLeadershipAA_Struct *into) const;
 	void GetRaidAAs(RaidLeadershipAA_Struct *into) const;
@@ -1810,12 +1812,26 @@ public:
 	PlayerEvent::PlayerEvent GetPlayerEvent();
 	void RecordKilledNPCEvent(NPC *n);
 
-	uint32 GetEXPForLevel(uint16 check_level);
+	// Virtual so TrilogyClient can override with the EQClassic v29c race×class
+	// formula (the v29c eqgame.exe computes the XP bar fill internally with its
+	// own table; if the server's threshold disagrees with the client's, the bar
+	// reaches full a kill or two before the server-side ding fires).
+	virtual uint32 GetEXPForLevel(uint16 check_level);
 protected:
 	friend class Mob;
+	// TrilogyClient reaches into Client-private zoning state (zone_mode,
+	// m_ZoneSummonLocation, m_trilogy_zonein_*, m_trilogy_use_eqclassic_dest,
+	// etc.) from its EQClassic-parity detection method CheckTrilogyZoneLines.
+	// TrilogyClient inherits from Client and is a real player entity, so
+	// promoting these fields to protected would be equivalent — friend is used
+	// here for parallelism with the existing `friend class Mob` above and to
+	// keep the surface tight (only these two classes see Client's privates).
+	friend class TrilogyClient;
 	void CalcEdibleBonuses(StatBonuses* newbon);
 	void MakeBuffFadePacket(uint16 spell_id, int slot_id, bool send_message = true);
 	bool client_data_loaded;
+
+	void InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name);
 
 
 	void FinishAlternateAdvancementPurchase(AA::Rank *rank, bool ignore_cost, bool send_message_and_save);
@@ -1883,7 +1899,7 @@ private:
 	int64 CalcMaxHP();
 	int64 CalcBaseHP();
 	int64 CalcHPRegen(bool bCombat = false);
-	int64 CalcManaRegen(bool bCombat = false);
+	virtual int64 CalcManaRegen(bool bCombat = false);
 	int64 CalcBaseManaRegen();
 	void DoHPRegen();
 	void DoManaRegen();
@@ -1984,6 +2000,15 @@ private:
 public:
 	bool IsLockSavePosition() const;
 	void SetLockSavePosition(bool lock_save_position);
+
+	// Arm the Trilogy zone-in loop guard at the spawn point (see members below).
+	// Called from HandleZoneInComplete once the player entity is created.
+	// Iterates zone_point_list to find the narrow zoneline nearest to (x,y) and
+	// caches its effective_r into m_trilogy_zonein_guard_r — that's the one that
+	// could re-trigger, so the guard threshold scales to just what's needed
+	// (2 * effective_r) instead of the global 2 * kDetectRadiusMax=40u. Falls
+	// back to kDetectRadiusMax if the zone has no narrow lines loaded.
+	void ArmTrilogyZoneInGuard(float x, float y);
 private:
 
 	PlayerProfile_Struct m_pp;
@@ -2018,6 +2043,72 @@ private:
 	uint16 zonesummon_id;
 	uint8 zonesummon_ignorerestrictions;
 	ZoneMode zone_mode;
+
+	// Raw zone_point target values stored by CheckTraditionalZonePoints.
+	// Handle_OP_ZoneChange re-evaluates any 999999 wildcards using the player's
+	// current position so the destination reflects the actual zone-exit point,
+	// not the position captured at detection time (which may be the spawn location).
+	float m_trilogy_zone_raw_target_x = 0.f;
+	float m_trilogy_zone_raw_target_y = 0.f;
+	float m_trilogy_zone_raw_target_z = 0.f;
+	float m_trilogy_zone_raw_target_h = 0.f;
+	float m_trilogy_zone_trig_x        = 0.f;  // trigger center X (zp->x, or GetX() if wildcard)
+	float m_trilogy_zone_trig_y        = 0.f;  // trigger center Y (zp->y, or GetY() if wildcard)
+	bool  m_trilogy_zone_trig_x_wild   = false; // zp->x was ±999999
+	bool  m_trilogy_zone_trig_y_wild   = false; // zp->y was ±999999
+
+	// Wide-vs-narrow boundary decision for the destination zone's SpawnCorrect
+	// heading trap.  A "wide" boundary is one where a lateral sliding delta /
+	// axis passthrough is applied (at least one trigger axis is a ±999999
+	// wildcard) — those are seamless outdoor zone lines where the player's
+	// momentum/exit heading should be preserved against the late SpawnCorrect.
+	// A "narrow" boundary (door, gate, tunnel: both axes explicit) sends the
+	// player to the DB's hardcoded target and must NOT arm the heading trap, or
+	// the player spawns facing a wall.  Computed in Handle_OP_ZoneChange, read
+	// by DoZoneSuccess, persisted across the (separate-process) zone hop by
+	// sign-encoding the heading written to character_data.
+	bool  m_trilogy_wide_boundary      = false;
+
+	// EQClassic-parity zoning flag. Set to true by TrilogyClient::CheckTrilogyZoneLines
+	// (Phase 2 detection path against trilogy_zone_line_list) right before it sends
+	// OP_RequestClientZoneChange, along with a fully-computed m_ZoneSummonLocation.
+	// Handle_OP_ZoneChange consumes the flag on the ZoneSolicited branch: if set,
+	// it uses m_ZoneSummonLocation verbatim (no wildcard/delta/anti-bounce math),
+	// then clears the flag. This keeps the EQClassic-parity path completely
+	// separate from the legacy sphere+wildcard Trilogy path that still lives in
+	// zoning.cpp for zones without trilogy_zone_points content.
+	bool  m_trilogy_use_eqclassic_dest = false;
+
+	// Zone-in loop guard. A Trilogy client spawns AT the destination zone-in
+	// point, which sits inside the return zone line's server-side detection
+	// radius. Without this, CheckTraditionalZonePoints would fire immediately on
+	// spawn and bounce the player straight back (infinite zone loop). Armed on
+	// zone-in with the spawn coords; detection is suppressed until the player has
+	// moved clear of the spawn point, then the guard auto-clears so all normal
+	// zoning resumes. Per-process / per-character (fresh each zone hop).
+	float m_trilogy_zonein_x           = 0.f;
+	float m_trilogy_zonein_y           = 0.f;
+	bool  m_trilogy_zonein_guard       = false;
+	// Effective radius of the narrow zoneline nearest to spawn. Guard threshold
+	// scales off this so a tight-buffer dungeon doesn't over-guard the player
+	// (e.g. befallen with buffer=5 -> guard=10u instead of 40u). Populated by
+	// ArmTrilogyZoneInGuard at zone-in; defaults to kDetectRadiusMax if no
+	// narrow line is found (preserves today's 40u guard for those cases).
+	float m_trilogy_zonein_guard_r     = 20.0f; // matches kDetectRadiusMax literal in client.cpp
+
+	// Diagnostic state for Rules::Zone::TrilogyZonePointDebug — see
+	// CheckTraditionalZonePoints. m_zp_debug_last_x/y hold the last position we
+	// ran a proximity check against, so we can compute per-tick planar delta
+	// (velocity in u/tick, exposing skip-through under load). m_zp_debug_have_last
+	// gates the very first sample after zone-in when no prior position exists.
+	// m_zp_debug_last_msg_ms throttles the in-game chat feedback (LogInfo is
+	// unthrottled, chat is capped so it stays readable while running). All fields
+	// stay dormant while the rule is off — they are only written when the rule is
+	// checked and true, and their read cost when the rule is off is zero.
+	float  m_zp_debug_last_x           = 0.f;
+	float  m_zp_debug_last_y           = 0.f;
+	bool   m_zp_debug_have_last        = false;
+	uint32 m_zp_debug_last_msg_ms      = 0;
 
 	WaterRegionType last_region_type;
 
@@ -2181,6 +2272,11 @@ private:
 	glm::vec3 m_quest_compass;
 	bool m_has_quest_compass = false;
 	std::vector<uint32_t> m_dynamic_zone_ids;
+
+	// Trilogy zone-point grace period: ms timestamp set at zone-in; zone point
+	// detection is suppressed for 3 s to avoid immediate re-trigger when the
+	// player spawns right on a zone boundary.  Zero = disabled (non-Trilogy path).
+	uint32 m_zone_entry_time = 0;
 
 public:
 	enum BotOwnerOption : size_t {

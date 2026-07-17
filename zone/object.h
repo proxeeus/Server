@@ -150,6 +150,12 @@ public:
 	// Event handlers
 	bool HandleClick(Client* sender, const ClickObject_Struct* click_object);
 	void Close();
+	// ReleaseUser — like Close() but does NOT dump leftover items back to the
+	// player's inventory.  Used by the Trilogy v29c close path where m_inv is
+	// stale (TrilogyZoneServer writes inventory directly to the DB), and the
+	// EQClassic-correct behaviour is for items to remain in the world
+	// container until the next user picks them up.
+	void ReleaseUser();
 	void Delete(bool reset_state=false); // Object itself
 	static void HandleCombine(Client* user, const NewCombine_Struct* in_combine, Object *worldo);
 	static void HandleAugmentation(Client* user, const AugmentItem_Struct* in_augment, Object *worldo);

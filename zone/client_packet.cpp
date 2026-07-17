@@ -674,7 +674,7 @@ void Client::CompleteConnect()
 				break;
 			}
 			case SE_SummonHorse: {
-				if (RuleB(Character, PreventMountsFromZoning) || !zone->CanCastOutdoor()) {
+				if (!zone || RuleB(Character, PreventMountsFromZoning) || !zone->CanCastOutdoor()) {
 					BuffFadeByEffect(SE_SummonHorse);
 				} else {
 					SummonHorse(buffs[j1].spellid);
@@ -704,7 +704,7 @@ void Client::CompleteConnect()
 			}
 			case SE_Levitate:
 			{
-				if (!zone->CanLevitate()) {
+				if (!zone || !zone->CanLevitate()) {
 					if (!GetGM()) {
 						SendAppearancePacket(AppearanceType::FlyMode, 0);
 						BuffFadeByEffect(SE_Levitate);
@@ -852,7 +852,7 @@ void Client::CompleteConnect()
 	CalcItemScale();
 	DoItemEnterZone();
 
-	if (zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
+	if (zone && zone->GetZoneID() == Zones::GUILDHALL && GuildBanks)
 		GuildBanks->SendGuildBank(this);
 
 	if (ClientVersion() >= EQ::versions::ClientVersion::SoD)
@@ -864,7 +864,7 @@ void Client::CompleteConnect()
 			guild_mgr.SendToWorldSendGuildMembersList(GuildID());
 		}
 
-		guild_mgr.SendGuildMemberUpdateToWorld(GetName(), GuildID(), zone->GetZoneID(), time(nullptr));
+		guild_mgr.SendGuildMemberUpdateToWorld(GetName(), GuildID(), zone ? zone->GetZoneID() : 0, time(nullptr));
 
 		SendGuildList();
 		if (GetGuildListDirty()) {
@@ -942,7 +942,7 @@ void Client::CompleteConnect()
 
 	entity_list.ScanCloseMobs(close_mobs, this, true);
 
-	if (GetGM() && IsDevToolsEnabled()) {
+	if (GetGM() && IsDevToolsEnabled() && !IsTrilogyClient()) {
 		ShowDevToolsMenu();
 	}
 
@@ -4932,6 +4932,33 @@ void Client::Handle_OP_ClientUpdate(const EQApplicationPacket *app) {
 			cz += boat->GetZ();
 
 			new_heading += boat->GetHeading();
+		}
+	}
+
+	// Position-jump detector for pad-crossing analysis. When a client teleports
+	// itself locally (e.g. stepping on a Skyshrine labyrinth pad in Titanium
+	// using the OP_SendZonepoints target list), the next OP_ClientUpdate reports
+	// the destination position without any distinct opcode. This diagnostic logs
+	// planar jumps > 30u so we can identify the pad-cross moment from position
+	// data alone. Gated behind Zone:TrilogyZonePointDebug so it stays off in
+	// production. Skips vehicle-relative updates (on_boat) since those already
+	// look like jumps under normal use.
+	if (RuleB(Zone, TrilogyZonePointDebug) && !on_boat) {
+		const float pdx = cx - m_Position.x;
+		const float pdy = cy - m_Position.y;
+		const float pd2 = pdx * pdx + pdy * pdy;
+		constexpr float kJumpThreshold  = 30.0f;
+		constexpr float kJumpThreshold2 = kJumpThreshold * kJumpThreshold;
+		if (pd2 > kJumpThreshold2) {
+			LogInfo(
+				"[TrilogyZP DBG] position jump char=[{}]"
+				" from ({:.1f},{:.1f},{:.1f}) to ({:.1f},{:.1f},{:.1f})"
+				" planar={:.1f}u dz={:+.1f}u",
+				GetCleanName(),
+				m_Position.x, m_Position.y, m_Position.z,
+				cx, cy, cz,
+				std::sqrt(pd2), cz - m_Position.z
+			);
 		}
 	}
 
@@ -15408,9 +15435,14 @@ void Client::Handle_OP_Taunt(const EQApplicationPacket *app)
 	// Proxeeus : Warriors don't do much, but they fucking ROAST mobs. At least in my world.
 	if (GetClass() == Class::Warrior)
 	{
+		// always_succeed=true guarantees the taunt lands, but it also skips
+		// the skill-up roll inside Mob::Taunt — call CheckIncreaseSkill here
+		// so warriors still progress SkillTaunt.
+		CheckIncreaseSkill(EQ::skills::SkillTaunt, GetTarget(), 10);
 		Taunt(GetTarget()->CastToNPC(), true, 100, false, 50000);
 		Say("I'll teach you to mess with me, you spineless cur!");
-		Emote("You taunt %s, causing it to focus its attention on you!", GetTarget()->GetName());
+		Message(Chat::Skills, "You taunt %s, causing it to focus its attention on you!", GetTarget()->GetCleanName());
+		Emote("taunts %s, causing it to focus its attention on you!", GetTarget()->GetCleanName());
 	}
 	else
 		Taunt(GetTarget()->CastToNPC(), false);

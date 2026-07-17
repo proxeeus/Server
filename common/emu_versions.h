@@ -30,6 +30,7 @@ namespace EQ
 	namespace versions {
 		enum class ClientVersion : uint32 {
 			Unknown = 0,
+			Trilogy,	// Build: '8-09-2001 14:25'
 			Client62,	// Build: 'Aug  4 2005 15:40:59'
 			Titanium,	// Build: 'Oct 31 2005 10:33:37'
 			SoF,		// Build: 'Sep  7 2007 09:11:49'
@@ -40,26 +41,28 @@ namespace EQ
 		};
 
 		enum ClientVersionBitmask : uint32 {
-			bitUnknown = 0x00000000,
-			bitClient62 = 0x00000001, // unsupported (placeholder for scripts)
-			bitTitanium = 0x00000002,
-			bitSoF = 0x00000004,
-			bitSoD = 0x00000008,
-			bitUF = 0x00000010,
-			bitRoF = 0x00000020,
-			bitRoF2 = 0x00000040,
-			maskUnknown = 0x00000000,
-			maskTitaniumAndEarlier = 0x00000003,
-			maskSoFAndEarlier = 0x00000007,
-			maskSoDAndEarlier = 0x0000000F,
-			maskUFAndEarlier = 0x0000001F,
-			maskRoFAndEarlier = 0x0000003F,
-			maskSoFAndLater = 0xFFFFFFFC,
-			maskSoDAndLater = 0xFFFFFFF8,
-			maskUFAndLater = 0xFFFFFFF0,
-			maskRoFAndLater = 0xFFFFFFE0,
-			maskRoF2AndLater = 0xFFFFFFC0,
-			maskAllClients = 0xFFFFFFFF
+			bitUnknown  = 0x00000000,
+			bitTrilogy  = 0x00000001,
+			bitClient62 = 0x00000002, // unsupported (placeholder for scripts)
+			bitTitanium = 0x00000004,
+			bitSoF      = 0x00000008,
+			bitSoD      = 0x00000010,
+			bitUF       = 0x00000020,
+			bitRoF      = 0x00000040,
+			bitRoF2     = 0x00000080,
+			maskUnknown            = 0x00000000,
+			maskTrilogyAndEarlier  = 0x00000001,
+			maskTitaniumAndEarlier = 0x00000007,
+			maskSoFAndEarlier      = 0x0000000F,
+			maskSoDAndEarlier      = 0x0000001F,
+			maskUFAndEarlier       = 0x0000003F,
+			maskRoFAndEarlier      = 0x0000007F,
+			maskSoFAndLater        = 0xFFFFFFF8,
+			maskSoDAndLater        = 0xFFFFFFF0,
+			maskUFAndLater         = 0xFFFFFFE0,
+			maskRoFAndLater        = 0xFFFFFFC0,
+			maskRoF2AndLater       = 0xFFFFFF80,
+			maskAllClients         = 0xFFFFFFFF
 		};
 
 		const ClientVersion LastClientVersion = ClientVersion::RoF2;
@@ -73,6 +76,7 @@ namespace EQ
 		
 		enum class MobVersion : uint32 {
 			Unknown = 0,
+			Trilogy,
 			Client62,
 			Titanium,
 			SoF,
@@ -88,6 +92,7 @@ namespace EQ
 			NPCPet,
 			MercPet,
 			BotPet,
+			OfflineTrilogy,
 			OfflineTitanium,
 			OfflineSoF,
 			OfflineSoD,
@@ -122,15 +127,17 @@ namespace EQ
 
 
 		enum UCSVersion : char {
-			ucsUnknown = '\0',
+			ucsUnknown      = '\0',
+			ucsTrilogyChat  = '@',	// pre-Client62 chat protocol (0x40)
+			ucsTrilogyMail  = '`',	// pre-Client62 mail protocol (0x60)
 			ucsClient62Chat = 'A',
 			ucsClient62Mail = 'a',
 			ucsTitaniumChat = 'B',
 			ucsTitaniumMail = 'b',
-			ucsSoFCombined = 'C',
-			ucsSoDCombined = 'D',
-			ucsUFCombined = 'E',
-			ucsRoFCombined = 'F',
+			ucsSoFCombined  = 'C',
+			ucsSoDCombined  = 'D',
+			ucsUFCombined   = 'E',
+			ucsRoFCombined  = 'F',
 			ucsRoF2Combined = 'G'
 		};
 

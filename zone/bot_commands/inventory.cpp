@@ -1,4 +1,5 @@
 #include "../bot_command.h"
+#include "../trilogy_client.h"
 
 void bot_command_inventory(Client *c, const Seperator *sep)
 {
@@ -25,17 +26,50 @@ void bot_command_inventory_give(Client* c, const Seperator* sep)
 		c->Message(
 			Chat::White,
 			fmt::format(
-				"Usage: {} ([actionable: target | byname] ([actionable_name]))",
+				"Usage: {} ([slot_id: 0-22]) ([actionable: target | byname] ([actionable_name]))",
 				sep->arg[0]
 			).c_str()
 		);
+		c->Message(
+			Chat::White,
+			"  slot_id forces the destination equipment slot (e.g. 14 = secondary, 13 = primary).  Omit to let the bot auto-route."
+		);
 		return;
+	}
+
+	// Optional slot_id at arg[1].  If numeric and in EQUIPMENT range, treat as
+	// a forced destination slot and shift the actionable args by 1.  If non-
+	// numeric, fall back to the original parse (arg[1] = actionable type).
+	int16 forced_slot        = -1;
+	int   actionable_arg_idx = 1;
+	if (sep->IsNumber(1)) {
+		const int parsed = Strings::ToInt(sep->arg[1]);
+		if (parsed < EQ::invslot::EQUIPMENT_BEGIN || parsed > EQ::invslot::EQUIPMENT_END) {
+			c->Message(
+				Chat::Yellow,
+				fmt::format(
+					"Invalid slot_id {} — valid equipment slots are {} to {}.",
+					parsed,
+					(int)EQ::invslot::EQUIPMENT_BEGIN,
+					(int)EQ::invslot::EQUIPMENT_END
+				).c_str()
+			);
+			return;
+		}
+		forced_slot        = static_cast<int16>(parsed);
+		actionable_arg_idx = 2;
 	}
 
 	int ab_mask = (ActionableBots::ABM_Target | ActionableBots::ABM_ByName);
 
 	std::list<Bot*> sbl;
-	if (ActionableBots::PopulateSBL(c, sep->arg[1], sbl, ab_mask, sep->arg[2]) == ActionableBots::ABT_None) {
+	if (ActionableBots::PopulateSBL(
+	        c,
+	        sep->arg[actionable_arg_idx],
+	        sbl,
+	        ab_mask,
+	        sep->arg[actionable_arg_idx + 1]
+	    ) == ActionableBots::ABT_None) {
 		return;
 	}
 
@@ -45,7 +79,25 @@ void bot_command_inventory_give(Client* c, const Seperator* sep)
 		return;
 	}
 
-	my_bot->FinishTrade(c, Bot::BotTradeClientNoDropNoTrade);
+	// Trilogy cursor lives in DB (cursor_from_db / slot 33 / 8000-8010), not in
+	// m_inv.cursor — see trilogy_zone.cpp:HandleMoveItem pickup path. Without
+	// this bridge, Bot::FinishTrade(BotTradeClientNoDropNoTrade) reads a null
+	// m_inv.cursor and silently no-ops with no feedback.
+	int trilogy_src_db = -1;
+	TrilogyClient* tc  = c->IsTrilogyClient() ? static_cast<TrilogyClient*>(c) : nullptr;
+	if (tc) {
+		trilogy_src_db = tc->MaterializeCursorForBotTrade();
+		if (trilogy_src_db < 0) {
+			c->Message(Chat::Yellow, "You have no item on your cursor to give.");
+			return;
+		}
+	}
+
+	my_bot->FinishTrade(c, Bot::BotTradeClientNoDropNoTrade, forced_slot);
+
+	if (tc) {
+		tc->FinalizeCursorAfterBotTrade(trilogy_src_db);
+	}
 }
 
 void bot_command_inventory_list(Client* c, const Seperator* sep)
@@ -146,7 +198,17 @@ void bot_command_inventory_list(Client* c, const Seperator* sep)
 
 void bot_command_inventory_remove(Client* c, const Seperator* sep)
 {
+	// Diagnostic trail — these LogInfo lines pin down which bail point fires
+	// when a user reports "nothing happens".  Cheap to leave in (one call per
+	// ^invremove invocation).  Remove or downgrade to LogDebug once Trilogy
+	// edge cases are well understood.
+	LogInfo("[BotCmd] invremove: entry char='{}' arg1='{}' arg2='{}' arg3='{}' is_trilogy={}",
+	        c ? c->GetCleanName() : "(null)",
+	        sep->arg[1], sep->arg[2], sep->arg[3],
+	        c && c->IsTrilogyClient());
+
 	if (helper_command_alias_fail(c, "bot_command_inventory_remove", sep->arg[0], "inventoryremove")) {
+		LogInfo("[BotCmd] invremove: bail at helper_command_alias_fail (alias='{}')", sep->arg[0]);
 		return;
 	}
 
@@ -164,33 +226,51 @@ void bot_command_inventory_remove(Client* c, const Seperator* sep)
 	int ab_mask = (ActionableBots::ABM_Target | ActionableBots::ABM_ByName);
 
 	if (c->GetTradeskillObject() || (c->trade->state == Trading)) {
+		LogInfo("[BotCmd] invremove: bail at MERCHANT_BUSY check (tradeskill_obj={} trade_state={})",
+		        c->GetTradeskillObject() != nullptr,
+		        static_cast<int>(c->trade->state));
 		c->MessageString(Chat::Tell, MERCHANT_BUSY);
 		return;
 	}
 
 	std::list<Bot*> sbl;
-	if (ActionableBots::PopulateSBL(c, sep->arg[2], sbl, ab_mask, sep->arg[3]) == ActionableBots::ABT_None) {
+	auto pop_result = ActionableBots::PopulateSBL(c, sep->arg[2], sbl, ab_mask, sep->arg[3]);
+	LogInfo("[BotCmd] invremove: PopulateSBL returned={} sbl_size={}",
+	        static_cast<int>(pop_result), sbl.size());
+	if (pop_result == ActionableBots::ABT_None) {
+		LogInfo("[BotCmd] invremove: bail at PopulateSBL == ABT_None (no actionable bot)");
 		return;
 	}
 
-	auto my_bot = sbl.front();
+	auto my_bot = sbl.empty() ? nullptr : sbl.front();
 	if (!my_bot) {
+		LogInfo("[BotCmd] invremove: bail at my_bot==nullptr (empty sbl after Populate)");
 		c->Message(Chat::White, "ActionableBots returned 'nullptr'");
 		return;
 	}
 
 	if (!sep->IsNumber(1)) {
+		LogInfo("[BotCmd] invremove: bail at !IsNumber(arg1='{}')", sep->arg[1]);
 		c->Message(Chat::White, "Slot ID must be a number.");
 		return;
 	}
 
 	auto slot_id = static_cast<uint16>(Strings::ToUnsignedInt(sep->arg[1]));
 	if (slot_id > EQ::invslot::EQUIPMENT_END || slot_id < EQ::invslot::EQUIPMENT_BEGIN) {
+		LogInfo("[BotCmd] invremove: bail at slot out of range ({}, valid {}..{})",
+		        slot_id,
+		        (int)EQ::invslot::EQUIPMENT_BEGIN,
+		        (int)EQ::invslot::EQUIPMENT_END);
 		c->Message(Chat::White, "Valid slots are 0 to 22.");
 		return;
 	}
 
 	auto* inst = my_bot->GetBotItem(slot_id);
+	LogInfo("[BotCmd] invremove: bot='{}' slot={} item_inst={} item_id={}",
+	        my_bot->GetCleanName(),
+	        slot_id,
+	        inst != nullptr,
+	        (inst && inst->GetItem()) ? inst->GetItem()->ID : 0);
 	if (!inst) {
 		std::string slot_message = "is";
 		switch (slot_id) {
@@ -205,6 +285,7 @@ void bot_command_inventory_remove(Client* c, const Seperator* sep)
 				break;
 		}
 
+		LogInfo("[BotCmd] invremove: slot {} already empty on bot — sending 'already unequipped'", slot_id);
 		my_bot->OwnerMessage(
 			fmt::format(
 				"My {} (Slot {}) {} already unequipped.",
@@ -219,6 +300,7 @@ void bot_command_inventory_remove(Client* c, const Seperator* sep)
 	const auto* itm = inst->GetItem();
 
 	if (inst && itm && c->CheckLoreConflict(itm)) {
+		LogInfo("[BotCmd] invremove: bail at owner LoreConflict on item_id={}", itm->ID);
 		c->MessageString(Chat::White, PICK_LORE);
 		return;
 	}
@@ -233,11 +315,13 @@ void bot_command_inventory_remove(Client* c, const Seperator* sep)
 			continue;
 		}
 
+		LogInfo("[BotCmd] invremove: bail at augment LoreConflict (socket={})", m);
 		c->MessageString(Chat::White, PICK_LORE);
 		return;
 	}
 
 	if (itm) {
+		LogInfo("[BotCmd] invremove: pushing item_id={} to owner cursor (slot {})", itm->ID, slot_id);
 		EQ::SayLinkEngine linker;
 		linker.SetLinkType(EQ::saylink::SayLinkItemInst);
 		linker.SetItemInst(inst);

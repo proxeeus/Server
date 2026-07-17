@@ -237,6 +237,9 @@ void EQ::Net::DaybreakConnectionManager::ProcessPacket(const std::string &endpoi
 				m_connections.emplace(std::make_pair(std::make_pair(endpoint, port), connection));
 				connection->ProcessPacket(p);
 			}
+			else if (m_on_unknown_packet && data[1] != OP_OutOfSession) {
+				m_on_unknown_packet(endpoint, port, data, size);
+			}
 			else if (data[1] != OP_OutOfSession) {
 				SendDisconnect(endpoint, port);
 			}
@@ -280,6 +283,24 @@ void EQ::Net::DaybreakConnectionManager::SendDisconnect(const std::string &addr,
 	send_buffers[0] = uv_buf_init(data, out.Length());
 	send_req->data = send_buffers[0].base;
 	int ret = uv_udp_send(send_req, &m_socket, send_buffers, 1, (sockaddr*)&send_addr,
+		[](uv_udp_send_t* req, int status) {
+		delete[](char*)req->data;
+		delete req;
+	});
+}
+
+void EQ::Net::DaybreakConnectionManager::SendRaw(const std::string& addr, int port, const void* data, size_t size)
+{
+	uv_udp_send_t *send_req = new uv_udp_send_t;
+	sockaddr_in send_addr;
+	uv_ip4_addr(addr.c_str(), port, &send_addr);
+
+	char *buf_data = new char[size];
+	memcpy(buf_data, data, size);
+	uv_buf_t send_buffers[1];
+	send_buffers[0] = uv_buf_init(buf_data, (unsigned int)size);
+	send_req->data = buf_data;
+	uv_udp_send(send_req, &m_socket, send_buffers, 1, (sockaddr*)&send_addr,
 		[](uv_udp_send_t* req, int status) {
 		delete[](char*)req->data;
 		delete req;

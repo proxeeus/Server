@@ -4215,7 +4215,7 @@ bool Bot::AddBotToGroup(Bot* bot, Group* group) {
 }
 
 // Completes a trade with a client bot owner
-void Bot::FinishTrade(Client* client, BotTradeType trade_type)
+void Bot::FinishTrade(Client* client, BotTradeType trade_type, int16 forced_slot)
 {
 	if (
 		!client ||
@@ -4234,20 +4234,28 @@ void Bot::FinishTrade(Client* client, BotTradeType trade_type)
 	if (trade_type == BotTradeClientNormal) {
 		// Items being traded are found in the normal trade window used to trade between a Client and a Client or NPC
 		// Items in this mode are found in slot ids 3000 thru 3003 - thought bots used the full 8-slot window..?
-		PerformTradeWithClient(EQ::invslot::TRADE_BEGIN, EQ::invslot::TRADE_END, client); // {3000..3007}
+		PerformTradeWithClient(EQ::invslot::TRADE_BEGIN, EQ::invslot::TRADE_END, client, forced_slot); // {3000..3007}
 	}
 	else if (trade_type == BotTradeClientNoDropNoTrade) {
 		// Items being traded are found on the Client's cursor slot, slot id 30. This item can be either a single item or it can be a bag.
 		// If it is a bag, then we have to search for items in slots 331 thru 340
-		PerformTradeWithClient(EQ::invslot::slotCursor, EQ::invslot::slotCursor, client);
+		PerformTradeWithClient(EQ::invslot::slotCursor, EQ::invslot::slotCursor, client, forced_slot);
 
 		// TODO: Add logic here to test if the item in SLOT_CURSOR is a container type, if it is then we need to call the following:
 		// PerformTradeWithClient(331, 340, client);
 	}
 }
 
-// Perfoms the actual trade action with a client bot owner
-void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client* client)
+// Perfoms the actual trade action with a client bot owner.
+//
+// forced_slot:  if >= 0, skip the bot_equip_order auto-routing and place the
+//   single traded item directly into that bot equipment slot.  The forced slot
+//   still has to pass the standard pre-checks (item->Slots bit set, dual-wield
+//   gate for 1H weapons in slotSecondary, 2H weapon clears slotSecondary,
+//   shield/non-weapon clears slotPrimary if it was 2H, lore).  Currently only
+//   used by `^invgive <slot_id>` (cursor → slot path) — the multi-item trade
+//   window path with forced_slot would need additional logic and is unused.
+void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client* client, int16 forced_slot)
 {
 	using namespace EQ;
 
@@ -4426,12 +4434,24 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 			}
 		}
 
+		// Trilogy v29c can't parse SayLink tags; show the plain item name there.
+		const std::string item_display = client->IsTrilogyClient()
+			? trade_instance->GetItem()->Name
+			: item_link;
+
 		if (!trade_instance->IsType(item::ItemClassCommon)) {
 			if (trade_event_exists) {
 				event_trade.push_back(ClientTrade(trade_instance, trade_index));
 				continue;
 			}
 			else {
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I can't equip {} — it isn't a regular item (containers, augments and spell scrolls aren't equippable).",
+						item_display
+					).c_str()
+				);
 				client->ResetTrade();
 				return;
 			}
@@ -4447,6 +4467,23 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				continue;
 			}
 			else {
+				const auto* it = trade_instance->GetItem();
+				std::string reason;
+				if (!trade_instance->IsClassEquipable(GetClass())) {
+					reason = "my class can't equip it";
+				} else if (GetLevel() < it->ReqLevel) {
+					reason = fmt::format("I need to be level {} (I'm {})", it->ReqLevel, GetLevel());
+				} else {
+					reason = "my race can't equip it";
+				}
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I can't equip {} — {}, the trade has been cancelled.",
+						item_display,
+						reason
+					).c_str()
+				);
 				client->ResetTrade();
 				return;
 			}
@@ -4493,92 +4530,174 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 	bool melee_2h_weapon = false;
 	bool melee_secondary = false;
 
-	//for (unsigned stage_loop = stageStackable; stage_loop <= stageReplaceable; ++stage_loop) { // awaiting implementation
-	for (unsigned stage_loop = stageEmpty; stage_loop <= stageReplaceable; ++stage_loop) {
+	if (forced_slot >= 0) {
+		// ---- Forced-slot path (`^invgive <slot_id>`) ----
+		// Skip the bot_equip_order auto-routing and place the single traded
+		// item into the caller-specified slot, with the same per-slot validity
+		// gates the auto-router uses (slot bit, dual-wield for 1H secondary,
+		// 2H clears secondary, 1H/shield clears 2H primary).  Single-item
+		// only — the forced_slot helper is exposed via ^invgive (cursor),
+		// not the full 8-slot trade window.
 		for (auto& trade_iterator : client_trade) {
 			if (trade_iterator.to_bot_slot != invslot::SLOT_INVALID) {
 				continue;
 			}
 
 			auto trade_instance = trade_iterator.trade_item_instance;
-			//if ((stage_loop == stageStackable) && !trade_instance->IsStackable())
-			//	continue;
+			const int16 index = forced_slot;
 
-			for (auto index : bot_equip_order) {
-				if (!(trade_instance->GetItem()->Slots & (1 << index))) {
+			EQ::SayLinkEngine linker;
+			linker.SetLinkType(EQ::saylink::SayLinkItemInst);
+			linker.SetItemInst(trade_instance);
+			auto item_link = linker.GenerateLink();
+
+			if (trade_instance->GetItem()->ItemType == EQ::item::ItemTypeAugmentation) {
+				client->Message(
+					Chat::Yellow,
+					fmt::format("{} is an augmentation and cannot be equipped directly.", item_link).c_str()
+				);
+				client->ResetTrade();
+				return;
+			}
+
+			if (!(trade_instance->GetItem()->Slots & (1 << index))) {
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"{} cannot be equipped in slot {} ({}) — the item does not support that slot.",
+						item_link,
+						index,
+						EQ::invslot::GetInvPossessionsSlotName(index)
+					).c_str()
+				);
+				client->ResetTrade();
+				return;
+			}
+
+			if (index == invslot::slotPrimary) {
+				if (trade_instance->GetItem()->IsType2HWeapon()) {
+					melee_2h_weapon = true;
+					auto equipped_secondary_weapon = GetBotItem(invslot::slotSecondary);
+					if (equipped_secondary_weapon) {
+						client_return.push_back(ClientReturn(equipped_secondary_weapon, invslot::slotSecondary));
+					}
+				}
+			} else if (index == invslot::slotSecondary) {
+				const bool ok = (can_dual_wield && trade_instance->GetItem()->IsType1HWeapon()) ||
+				                trade_instance->GetItem()->IsTypeShield() ||
+				                !trade_instance->IsWeapon();
+				if (!ok) {
+					client->Message(
+						Chat::Yellow,
+						fmt::format(
+							"I cannot equip {} in my secondary — I need the Dual Wield skill for a 1H weapon, or the item must be a shield / non-weapon.",
+							item_link
+						).c_str()
+					);
+					client->ResetTrade();
+					return;
+				}
+				melee_secondary = true;
+				auto equipped_primary_weapon = GetBotItem(invslot::slotPrimary);
+				if (equipped_primary_weapon && equipped_primary_weapon->GetItem()->IsType2HWeapon()) {
+					client_return.push_back(ClientReturn(equipped_primary_weapon, invslot::slotPrimary));
+				}
+			}
+
+			trade_iterator.to_bot_slot = index;
+
+			if (m_inv[index]) {
+				client_return.push_back(ClientReturn(GetBotItem(index), index));
+			}
+		}
+	} else {
+		//for (unsigned stage_loop = stageStackable; stage_loop <= stageReplaceable; ++stage_loop) { // awaiting implementation
+		for (unsigned stage_loop = stageEmpty; stage_loop <= stageReplaceable; ++stage_loop) {
+			for (auto& trade_iterator : client_trade) {
+				if (trade_iterator.to_bot_slot != invslot::SLOT_INVALID) {
 					continue;
 				}
 
-				if (trade_instance->GetItem()->ItemType == EQ::item::ItemTypeAugmentation) {
-					continue;
-				}
-
-				//if (stage_loop == stageStackable) {
-				//	// TODO: implement
+				auto trade_instance = trade_iterator.trade_item_instance;
+				//if ((stage_loop == stageStackable) && !trade_instance->IsStackable())
 				//	continue;
-				//}
 
-				if (stage_loop != stageReplaceable) {
+				for (auto index : bot_equip_order) {
+					if (!(trade_instance->GetItem()->Slots & (1 << index))) {
+						continue;
+					}
+
+					if (trade_instance->GetItem()->ItemType == EQ::item::ItemTypeAugmentation) {
+						continue;
+					}
+
+					//if (stage_loop == stageStackable) {
+					//	// TODO: implement
+					//	continue;
+					//}
+
+					if (stage_loop != stageReplaceable) {
+						if (m_inv[index]) {
+							continue;
+						}
+					}
+
+					bool slot_taken = false;
+					for (const auto& check_iterator : client_trade) {
+						if (check_iterator.from_client_slot == trade_iterator.from_client_slot) {
+							continue;
+						}
+
+						if (check_iterator.to_bot_slot == index) {
+							slot_taken = true;
+							break;
+						}
+					}
+
+					if (slot_taken) {
+						continue;
+					}
+
+					if (index == invslot::slotPrimary) {
+						if (trade_instance->GetItem()->IsType2HWeapon()) {
+							if (!melee_secondary) {
+								melee_2h_weapon = true;
+								auto equipped_secondary_weapon = GetBotItem(invslot::slotSecondary);
+								if (equipped_secondary_weapon) {
+									client_return.push_back(ClientReturn(equipped_secondary_weapon, invslot::slotSecondary));
+								}
+							} else {
+								continue;
+							}
+						}
+					} else if (index == invslot::slotSecondary) {
+						if (!melee_2h_weapon) {
+							if (
+								(can_dual_wield && trade_instance->GetItem()->IsType1HWeapon()) ||
+								trade_instance->GetItem()->IsTypeShield() ||
+								!trade_instance->IsWeapon()
+							) {
+								melee_secondary = true;
+								auto equipped_primary_weapon = GetBotItem(invslot::slotPrimary);
+								if (equipped_primary_weapon && equipped_primary_weapon->GetItem()->IsType2HWeapon()) {
+									client_return.push_back(ClientReturn(equipped_primary_weapon, invslot::slotPrimary));
+								}
+							} else {
+								continue;
+							}
+						} else {
+							continue;
+						}
+					}
+
+					trade_iterator.to_bot_slot = index;
+
 					if (m_inv[index]) {
-						continue;
-					}
-				}
-
-				bool slot_taken = false;
-				for (const auto& check_iterator : client_trade) {
-					if (check_iterator.from_client_slot == trade_iterator.from_client_slot) {
-						continue;
+						client_return.push_back(ClientReturn(GetBotItem(index), index));
 					}
 
-					if (check_iterator.to_bot_slot == index) {
-						slot_taken = true;
-						break;
-					}
+					break;
 				}
-
-				if (slot_taken) {
-					continue;
-				}
-
-				if (index == invslot::slotPrimary) {
-					if (trade_instance->GetItem()->IsType2HWeapon()) {
-						if (!melee_secondary) {
-							melee_2h_weapon = true;
-							auto equipped_secondary_weapon = GetBotItem(invslot::slotSecondary);
-							if (equipped_secondary_weapon) {
-								client_return.push_back(ClientReturn(equipped_secondary_weapon, invslot::slotSecondary));
-							}
-						} else {
-							continue;
-						}
-					}
-				} else if (index == invslot::slotSecondary) {
-					if (!melee_2h_weapon) {
-						if (
-							(can_dual_wield && trade_instance->GetItem()->IsType1HWeapon()) ||
-							trade_instance->GetItem()->IsTypeShield() ||
-							!trade_instance->IsWeapon()
-						) {
-							melee_secondary = true;
-							auto equipped_primary_weapon = GetBotItem(invslot::slotPrimary);
-							if (equipped_primary_weapon && equipped_primary_weapon->GetItem()->IsType2HWeapon()) {
-								client_return.push_back(ClientReturn(equipped_primary_weapon, invslot::slotPrimary));
-							}
-						} else {
-							continue;
-						}
-					} else {
-						continue;
-					}
-				}
-
-				trade_iterator.to_bot_slot = index;
-
-				if (m_inv[index]) {
-					client_return.push_back(ClientReturn(GetBotItem(index), index));
-				}
-
-				break;
 			}
 		}
 	}
@@ -4592,6 +4711,22 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				continue;
 			}
 			else {
+				std::string unfit_display;
+				if (client->IsTrilogyClient()) {
+					unfit_display = trade_iterator->trade_item_instance->GetItem()->Name;
+				} else {
+					EQ::SayLinkEngine unfit_linker;
+					unfit_linker.SetLinkType(EQ::saylink::SayLinkItemInst);
+					unfit_linker.SetItemInst(trade_iterator->trade_item_instance);
+					unfit_display = unfit_linker.GenerateLink();
+				}
+				client->Message(
+					Chat::Yellow,
+					fmt::format(
+						"I have no equipment slot that fits {} — it stays on your cursor.",
+						unfit_display
+					).c_str()
+				);
 				client_return.push_back(ClientReturn(trade_iterator->trade_item_instance, trade_iterator->from_client_slot));
 				trade_iterator = client_trade.erase(trade_iterator);
 				continue;

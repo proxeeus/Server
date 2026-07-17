@@ -149,6 +149,8 @@ SET(zone_sources
     task_manager.cpp
     tasks.cpp
     titles.cpp
+    trilogy_client.cpp
+    trilogy_zone.cpp
     tradeskills.cpp
     trading.cpp
     trap.cpp
@@ -271,6 +273,7 @@ SET(zone_headers
     tasks.h
     titles.h
     trap.h
+    trilogy_zone.h
     water_map.h
     water_map_v1.h
     water_map_v2.h

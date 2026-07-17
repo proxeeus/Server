@@ -22,6 +22,8 @@ namespace EQ
 			virtual void SetOptions(const EQStreamManagerInterfaceOptions& options);
 			void OnNewConnection(std::function<void(std::shared_ptr<EQStream>)> func) { m_on_new_connection = func; }
 			void OnConnectionStateChange(std::function<void(std::shared_ptr<EQStream>, DbProtocolStatus, DbProtocolStatus)> func) { m_on_connection_state_change = func; }
+			void OnUnknownPacket(std::function<void(const std::string&, int, const char*, size_t)> func) { m_daybreak.OnUnknownPacket(func); }
+			void SendRaw(const std::string& addr, int port, const void* data, size_t size) { m_daybreak.SendRaw(addr, port, data, size); }
 		private:
 			DaybreakConnectionManager m_daybreak;
 			std::function<void(std::shared_ptr<EQStream>)> m_on_new_connection;

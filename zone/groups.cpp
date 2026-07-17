@@ -529,7 +529,6 @@ bool Group::UpdatePlayer(Mob* update) {
 			break;
 		}
 	}
-
 	// mentoree isn't set, the name has a length and the name is ours! update the pointer
 	if (update->IsClient() && !mentoree && mentoree_name.length() && !mentoree_name.compare(update->GetName()))
 		mentoree = update->CastToClient();

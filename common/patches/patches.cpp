@@ -20,6 +20,7 @@
 #include "../global_define.h"
 #include "patches.h"
 
+#include "trilogy.h"
 #include "titanium.h"
 #include "uf.h"
 #include "sof.h"
@@ -30,6 +31,7 @@
 
 void RegisterAllPatches(EQStreamIdentifier &into)
 {
+	Trilogy::Register(into);
 	Titanium::Register(into);
 	SoF::Register(into);
 	SoD::Register(into);
@@ -40,6 +42,7 @@ void RegisterAllPatches(EQStreamIdentifier &into)
 
 void ReloadAllPatches()
 {
+	Trilogy::Reload();
 	Titanium::Reload();
 	SoF::Reload();
 	SoD::Reload();

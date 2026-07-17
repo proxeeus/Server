@@ -72,6 +72,51 @@ struct ZonePoint {
 	bool   is_virtual;
 	int    height;
 	int    width;
+	// Per-line detection-radius override for Trilogy CheckTraditionalZonePoints.
+	// Zero/unset -> use the narrow/wide default (10u / 20u). Positive -> use as
+	// the effective sphere radius (e.g. 3.0 for a step-on teleport pad). Ignored
+	// for wildcard-axis (wide) lines unless explicitly overridden.
+	float  buffer;
+};
+
+// Trilogy client zoning uses a completely separate table (trilogy_zone_points)
+// imported directly from EQClassic. The struct layout mirrors EQClassic's
+// runtime ZoneLineNode field-for-field, so their detection code (box vs
+// plane crossing, keepX/Y/Z + CenterPoint/MinVert/MaxVert coordinate handoff)
+// ports over 1:1. All Trilogy client zoning reads from
+// zone->trilogy_zone_line_list and never touches ZonePoint / zone_point_list.
+struct TrilogyZoneLineNode {
+	int32  id;
+	float  x;
+	float  y;
+	float  z;
+	float  heading;              // int8 in EQClassic; stored as float for convenience
+	float  target_x;
+	float  target_y;
+	float  target_z;
+	uint16 target_zone_id;       // resolved from EQClassic's char[16] target_zone via ZoneID()
+	int32  Zrange;               // box half-side (old-mode) or unused (plane-crossing modes)
+	int32  maxZDiff;             // Z tolerance; 0 -> treated as 50000 (effectively infinite)
+	int32  keepX;                // 1 = carry player's X across the transition
+	int32  keepY;                // 1 = carry player's Y across the transition
+	int32  keepZ;                // 1 = carry player's Z across the transition
+	int8   UseNewZoning;         // 0 = old-mode box, 1 = X-based plane crossing, 2 = Y-based
+	float  CenterPoint;          // this line's center coord (source-side reference)
+	float  MaxVert;              // this line's vert max (source-side; Z-wall in plane-crossing modes)
+	float  MinVert;              // this line's vert min (source-side; Z-wall in plane-crossing modes)
+	int32  ToZoneID;             // paired destination line id (for symmetric coord handoff)
+	// Preloaded destination-side geometry for plane-crossing modes. EQClassic's
+	// runtime issues per-fire DB queries (getTargetZoneCenter/Max/Min at
+	// EQClassic/Common/Source/database.cpp:1380-1470) against the paired line.
+	// We resolve those once at LoadTrilogyZonePoints time by ToZoneID lookup
+	// and cache here, so the fire path is a struct read, not a DB round-trip.
+	// Zero + dest_resolved=false for old-mode rows (they don't use these) and
+	// for plane-crossing rows whose paired line couldn't be resolved (fire
+	// then falls back to raw target coords).
+	float  dest_CenterPoint;
+	float  dest_MaxVert;
+	float  dest_MinVert;
+	bool   dest_resolved;
 };
 
 struct ZoneClientAuth_Struct {
@@ -203,6 +248,12 @@ public:
 	LinkedList<Spawn2 *>                          spawn2_list;
 	LinkedList<ZonePoint *>                       zone_point_list;
 	std::vector<ZonePointsRepository::ZonePoints> virtual_zone_point_list;
+	// Trilogy client zoning table (imported from EQClassic). Populated by
+	// ZoneDatabase::LoadTrilogyZonePoints at zone init. Trilogy clients read
+	// EXCLUSIVELY from this list; modern clients (Titanium/RoF2) don't touch
+	// it. Empty for zones without EQClassic content — Trilogy clients get no
+	// server-side detection there. See TrilogyZoneLineNode above.
+	std::vector<TrilogyZoneLineNode>              trilogy_zone_line_list;
 
 	Map                   *zonemap;
 	MercTemplate *GetMercTemplate(uint32 template_id);
@@ -328,6 +379,7 @@ public:
 	void StartShutdownTimer(uint32 set_time = (RuleI(Zone, AutoShutdownDelay)));
 	void ResetShutdownTimer();
 	void StopShutdownTimer();
+	void SetHasActiveTrilogySessions(bool v) { m_has_active_trilogy_sessions = v; }
 	void UpdateQGlobal(uint32 qid, QGlobal newGlobal);
 	void weatherSend(Client *client = nullptr);
 	void ClearSpawnTimers();
@@ -502,6 +554,7 @@ private:
 	Timer                               autoshutdown_timer;
 	Timer                               clientauth_timer;
 	Timer                               initgrids_timer;
+	bool                                m_has_active_trilogy_sessions = false;
 	Timer                               qglobal_purge_timer;
 	ZoneSpellsBlocked                   *blocked_spells;
 

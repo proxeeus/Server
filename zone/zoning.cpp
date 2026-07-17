@@ -40,6 +40,10 @@ extern Zone* zone;
 
 
 void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
+	// Guard against being called twice for the same zone-change attempt (e.g.
+	// Trilogy client responds to 0x4d21 AND detects the zone line concurrently).
+	if (bZoning) return;
+
 	if (RuleB(Bots, Enabled)) {
 		Bot::ProcessClientZoneChange(this);
 	}
@@ -303,11 +307,186 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 			ignore_restrictions = 1;	//can always get to our bind point? seems exploitable
 			break;
 		case ZoneSolicited: //we told the client to zone somewhere, so we know where they are going.
-			//recycle zonesummon variables
-			target_x = m_ZoneSummonLocation.x;
-			target_y = m_ZoneSummonLocation.y;
-			target_z = m_ZoneSummonLocation.z;
-			target_heading = m_ZoneSummonLocation.w;
+			// EQClassic-parity Trilogy path (Phase 2): if the fire came from
+			// TrilogyClient::CheckTrilogyZoneLines, the destination is already
+			// final (computed via EQClassic's keepX/Y/Z + CenterPoint/MinVert/
+			// MaxVert rules against the imported trilogy_zone_points data).
+			// Use m_ZoneSummonLocation verbatim — no wildcard/delta/anti-bounce
+			// math. Clear the flag so subsequent solicited zones (spells,
+			// #zone, death rez) don't inadvertently reuse this branch.
+			if (IsTrilogyClient() && m_trilogy_use_eqclassic_dest) {
+				target_x       = m_ZoneSummonLocation.x;
+				target_y       = m_ZoneSummonLocation.y;
+				target_z       = m_ZoneSummonLocation.z;
+				target_heading = m_ZoneSummonLocation.w;
+				m_trilogy_use_eqclassic_dest = false;
+				LogInfo(
+					"[TrilogyZP DIAG] ZoneSolicited (eqclassic-dest) char [{}]"
+					" -> dest ({:.2f},{:.2f},{:.2f},{:.2f}) target_zone={}"
+					" [pre-computed by CheckTrilogyZoneLines]",
+					GetCleanName(), target_x, target_y, target_z, target_heading,
+					zonesummon_id);
+				break;
+			}
+			// Legacy Trilogy path (fallback for zones without imported
+			// trilogy_zone_points content, or for spells / #zone / death rez
+			// that go through solicited zoning without touching
+			// CheckTrilogyZoneLines): CheckTraditionalZonePoints stashed the
+			// raw wildcard targets in m_trilogy_zone_raw_target_*; expand them
+			// against the player's current position and apply the wide-vs-narrow
+			// delta/anti-bounce heuristics below.
+			if (IsTrilogyClient()) {
+				bool all_wildcards = (m_trilogy_zone_raw_target_x == 999999 &&
+				                      m_trilogy_zone_raw_target_y == 999999 &&
+				                      m_trilogy_zone_raw_target_z == 999999);
+				if (all_wildcards) {
+					// Fixed safe-point arrival — no sliding delta, treat as narrow
+					// (DB heading is authoritative; do not arm the SpawnCorrect trap).
+					m_trilogy_wide_boundary = false;
+					target_x       = safe_x;
+					target_y       = safe_y;
+					target_z       = safe_z;
+					target_heading = (m_trilogy_zone_raw_target_h == 999) ? safe_heading : m_ZoneSummonLocation.w;
+					LogInfo("[TrilogyZP] ZoneSolicited char [{}] | all_wildcards -> safe ({:.1f},{:.1f},{:.1f})",
+					        GetCleanName(), target_x, target_y, target_z);
+				} else {
+					float raw_tgt_x = (m_trilogy_zone_raw_target_x == 999999) ? GetX() : m_ZoneSummonLocation.x;
+					float raw_tgt_y = (m_trilogy_zone_raw_target_y == 999999) ? GetY() : m_ZoneSummonLocation.y;
+					target_z        = (m_trilogy_zone_raw_target_z == 999999) ? GetZ() : m_ZoneSummonLocation.z;
+					target_heading  = (m_trilogy_zone_raw_target_h == 999)    ? GetHeading() : m_ZoneSummonLocation.w;
+
+					// Determine traversal (strict target) vs sliding (delta/passthrough) axis.
+					// Primary: wildcard pattern on the SOURCE trigger identifies the wall axis.
+					//   !xWild && yWild → X wall, player crosses in X → traversal = X, sliding = Y
+					//   xWild && !yWild → Y wall, player crosses in Y → traversal = Y, sliding = X
+					// Fallback (both explicit or both wildcard): use arrival heading.
+					bool xWild = m_trilogy_zone_trig_x_wild;
+					bool yWild = m_trilogy_zone_trig_y_wild;
+
+					// A lateral sliding delta is applied ONLY when the DB trigger
+					// explicitly flags a wildcard axis. Both axes explicit = a
+					// non-contiguous walk-in tunnel/door (e.g. WC -> Befallen):
+					// pass the static DB target verbatim, no delta, no push, and do
+					// NOT arm the SpawnCorrect heading trap.
+					const bool is_sliding_boundary = (xWild || yWild);
+					m_trilogy_wide_boundary = is_sliding_boundary;
+
+					if (!is_sliding_boundary) {
+						target_x = raw_tgt_x;
+						target_y = raw_tgt_y;
+						// No lateral delta, but still nudge the player +5 units forward
+						// along target_heading so they clear the destination's return
+						// trigger volume — otherwise a door/tunnel spawns them inside it
+						// and the client immediately zones back (infinite loop).
+						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
+						// 128=+X/West): radians = (heading / 512) * 2*PI.
+						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
+						target_x += 5.0f * std::sin(radians);
+						target_y += 5.0f * std::cos(radians);
+						// +5 Z safety bump so the static DB floor coord never stair-clips.
+						target_z += 5.0f;
+						LogInfo(
+							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
+							" | NARROW (both trigger axes explicit) +5 push +5 z"
+							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+							GetCleanName(), target_x, target_y, target_z, target_heading);
+					} else {
+						// Anti-bounce momentum heading: preserve the player's exit heading
+						// so diagonal running angles carry across the seamless boundary, but
+						// the Trilogy client's local physics can bounce the player ~180° off
+						// the invisible zone wall the frame before OP_ZoneChange fires —
+						// capturing a backwards vector. Compare the captured heading to the
+						// DB-designed target_heading; if they oppose by >90° (128 on the 512
+						// compass) the client bounced, so flip 180° to face forward while
+						// keeping the diagonal angle intact.
+						{
+							float cached_exit_heading = GetHeading();
+							float db_design_heading   = target_heading;
+							float hdiff = std::fabs(cached_exit_heading - db_design_heading);
+							if (hdiff > 256.0f) hdiff = 512.0f - hdiff;
+							if (hdiff > 128.0f) {
+								cached_exit_heading += 256.0f;
+								if (cached_exit_heading >= 512.0f) cached_exit_heading -= 512.0f;
+							}
+							target_heading = cached_exit_heading;
+						}
+
+						bool traversal_is_x;
+						if (!xWild && yWild)
+							traversal_is_x = true;
+						else if (xWild && !yWild)
+							traversal_is_x = false;
+						else {
+							float h_rad    = target_heading * (static_cast<float>(M_PI) / 256.0f);
+							traversal_is_x = (std::fabs(std::sin(h_rad)) > std::fabs(std::cos(h_rad)));
+						}
+
+						// Apply delta on the sliding (wildcard) axis, strict target on the
+						// traversal axis.  Preserve seamless behaviour for pairs like
+						// ecommons<->commons where seamless is the right answer (user
+						// confirmed 2026-07-02).  Cases where the destination has no
+						// walkable geometry at the seamless XY (e.g. freporte<->nro when
+						// player X is outside NRO's server-side walkable range) are
+						// handled at destination pre-PP via a cross-zone DB target
+						// lookup — see SendPlayerProfile.
+						float delta_x = 0.0f, delta_y = 0.0f;
+						if (traversal_is_x) {
+							target_x = raw_tgt_x;
+							if (yWild) {
+								target_y = GetY();
+							} else {
+								delta_y  = GetY() - m_trilogy_zone_trig_y;
+								target_y = raw_tgt_y + delta_y;
+							}
+						} else {
+							target_y = raw_tgt_y;
+							if (xWild) {
+								target_x = GetX();
+							} else {
+								delta_x  = GetX() - m_trilogy_zone_trig_x;
+								target_x = raw_tgt_x + delta_x;
+							}
+						}
+
+						// Gentle push to clear the return trigger (10-unit detection radius).
+						float push_rad = target_heading * (static_cast<float>(M_PI) / 256.0f);
+						target_x += 15.0f * std::sin(push_rad);
+						target_y += 15.0f * std::cos(push_rad);
+
+						// Z: pass the DB target_z through verbatim.  The old code applied
+						// a static +25 bump here because the departing zone can't run
+						// FindBestZ against the destination collision map — the +25 was
+						// safety margin so the client's local physics dropped the player
+						// onto sloped terrain rather than spawning underground.  That
+						// safety is now redundant: SendPlayerProfile in the destination
+						// zone runs a two-pass FindBestZ and snaps pos_z onto walkable
+						// (up or down) before the PP is deflated.  Skipping the +25
+						// here means arrival Z now matches DB intent and cases where DB
+						// target_z is already correct don't get a visible "sky drop".
+
+						LogInfo(
+							"[TrilogyZP DIAG] ZoneSolicited char [{}]"
+							" | db_trig ({:.2f},{:.2f}) xWild={} yWild={}"
+							" | player_exit ({:.2f},{:.2f})"
+							" | traversal={} delta_xy ({:.2f},{:.2f})"
+							" | raw_target_xy ({},{})"
+							" -> dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+							GetCleanName(),
+							m_trilogy_zone_trig_x, m_trilogy_zone_trig_y,
+							xWild ? 'Y' : 'N', yWild ? 'Y' : 'N',
+							GetX(), GetY(),
+							traversal_is_x ? "X" : "Y", delta_x, delta_y,
+							m_trilogy_zone_raw_target_x, m_trilogy_zone_raw_target_y,
+							target_x, target_y, target_z, target_heading
+						);
+					}
+				}
+			} else {
+				target_x       = m_ZoneSummonLocation.x;
+				target_y       = m_ZoneSummonLocation.y;
+				target_z       = m_ZoneSummonLocation.z;
+				target_heading = m_ZoneSummonLocation.w;
+			}
 			break;
 		case ZoneUnsolicited: //client came up with this on its own.
 			//client requested a zoning... what are the cases when this could happen?
@@ -317,10 +496,127 @@ void Client::Handle_OP_ZoneChange(const EQApplicationPacket *app) {
 				//they are zoning using a valid zone point, figure out coords
 
 				//999999 is a placeholder for 'same as where they were from'
-				target_x = zone_point->target_x == 999999 ? GetX() : zone_point->target_x;
-				target_y = zone_point->target_y == 999999 ? GetY() : zone_point->target_y;
-				target_z = zone_point->target_z == 999999 ? GetZ() : zone_point->target_z;
-				target_heading = zone_point->target_heading == 999 ? GetHeading() : zone_point->target_heading;
+				if (IsTrilogyClient()) {
+					bool xWild = (zone_point->x == 999999.0f || zone_point->x == -999999.0f);
+					bool yWild = (zone_point->y == 999999.0f || zone_point->y == -999999.0f);
+
+					// Sliding delta applies ONLY when the DB trigger flags a wildcard
+					// axis. Both explicit = non-contiguous walk-in tunnel/door → pass
+					// the static DB target verbatim, no delta/push, do NOT arm the trap.
+					const bool is_sliding_boundary = (xWild || yWild);
+					m_trilogy_wide_boundary = is_sliding_boundary;
+
+					float trig_x    = xWild ? GetX() : zone_point->x;
+					float trig_y    = yWild ? GetY() : zone_point->y;
+					float raw_tgt_x = (zone_point->target_x == 999999) ? GetX() : zone_point->target_x;
+					float raw_tgt_y = (zone_point->target_y == 999999) ? GetY() : zone_point->target_y;
+					target_z        = (zone_point->target_z == 999999) ? GetZ() : zone_point->target_z;
+					// Use the DB-designed arrival heading: it encodes the correct facing
+					// direction relative to the destination zone's geometry.  Fall back to
+					// exit heading only when the DB value is the wildcard sentinel (999).
+					target_heading  = (zone_point->target_heading == 999) ? GetHeading() : zone_point->target_heading;
+
+					if (!is_sliding_boundary) {
+						target_x = raw_tgt_x;
+						target_y = raw_tgt_y;
+						// No lateral delta, but still nudge the player +5 units forward
+						// along target_heading so they clear the destination's return
+						// trigger volume — otherwise a door/tunnel spawns them inside it
+						// and the client immediately zones back (infinite loop).
+						// Exact EQ heading->radian conversion (0-512 range, 0=+Y/North,
+						// 128=+X/West): radians = (heading / 512) * 2*PI.
+						float radians = (target_heading / 512.0f) * 2.0f * static_cast<float>(M_PI);
+						target_x += 5.0f * std::sin(radians);
+						target_y += 5.0f * std::cos(radians);
+						// +5 Z safety bump so the static DB floor coord never stair-clips.
+						target_z += 5.0f;
+						LogInfo(
+							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
+							" | NARROW (both trigger axes explicit) +5 push +5 z"
+							" -> static DB dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+							GetCleanName(), target_x, target_y, target_z, target_heading);
+					} else {
+						// Anti-bounce momentum heading: preserve the player's exit heading
+						// so diagonal running angles carry across the seamless boundary, but
+						// the Trilogy client's local physics can bounce the player ~180° off
+						// the invisible zone wall the frame before OP_ZoneChange fires —
+						// capturing a backwards vector. Compare the captured heading to the
+						// DB-designed target_heading; if they oppose by >90° (128 on the 512
+						// compass) the client bounced, so flip 180° to face forward while
+						// keeping the diagonal angle intact.
+						{
+							float cached_exit_heading = GetHeading();
+							float db_design_heading   = target_heading;
+							float hdiff = std::fabs(cached_exit_heading - db_design_heading);
+							if (hdiff > 256.0f) hdiff = 512.0f - hdiff;
+							if (hdiff > 128.0f) {
+								cached_exit_heading += 256.0f;
+								if (cached_exit_heading >= 512.0f) cached_exit_heading -= 512.0f;
+							}
+							target_heading = cached_exit_heading;
+						}
+
+						bool traversal_is_x;
+						if (!xWild && yWild)
+							traversal_is_x = true;
+						else if (xWild && !yWild)
+							traversal_is_x = false;
+						else {
+							float h_rad    = target_heading * (static_cast<float>(M_PI) / 256.0f);
+							traversal_is_x = (std::fabs(std::sin(h_rad)) > std::fabs(std::cos(h_rad)));
+						}
+
+						// No delta clamp: the client's reported exit position is trusted
+						// verbatim, however large the lateral slide.
+						float delta_x = 0.0f, delta_y = 0.0f;
+						if (traversal_is_x) {
+							target_x = raw_tgt_x;
+							if (yWild) {
+								target_y = GetY();
+							} else {
+								delta_y  = GetY() - trig_y;
+								target_y = raw_tgt_y + delta_y;
+							}
+						} else {
+							target_y = raw_tgt_y;
+							if (xWild) {
+								target_x = GetX();
+							} else {
+								delta_x  = GetX() - trig_x;
+								target_x = raw_tgt_x + delta_x;
+							}
+						}
+
+						float push_rad = target_heading * (static_cast<float>(M_PI) / 256.0f);
+						target_x += 15.0f * std::sin(push_rad);
+						target_y += 15.0f * std::cos(push_rad);
+
+						// Z: pass DB target_z through unchanged.  Destination-side
+						// SendPlayerProfile terrain-snap handles bad DB target_z cases
+						// (see the matching removal in the ZoneSolicited path above).
+
+						LogInfo(
+							"[TrilogyZP DIAG] ZoneUnsolicited char [{}]"
+							" | db_trig ({:.2f},{:.2f}) xWild={} yWild={}"
+							" | player_exit ({:.2f},{:.2f})"
+							" | traversal={} delta_xy ({:.2f},{:.2f})"
+							" | raw_target_xy ({:.2f},{:.2f})"
+							" -> dest ({:.2f},{:.2f},{:.2f},{:.2f})",
+							GetCleanName(),
+							trig_x, trig_y,
+							xWild ? 'Y' : 'N', yWild ? 'Y' : 'N',
+							GetX(), GetY(),
+							traversal_is_x ? "X" : "Y", delta_x, delta_y,
+							raw_tgt_x, raw_tgt_y,
+							target_x, target_y, target_z, target_heading
+						);
+					}
+				} else {
+					target_x       = zone_point->target_x == 999999 ? GetX() : zone_point->target_x;
+					target_y       = zone_point->target_y == 999999 ? GetY() : zone_point->target_y;
+					target_z       = zone_point->target_z == 999999 ? GetZ() : zone_point->target_z;
+					target_heading = zone_point->target_heading == 999 ? GetHeading() : zone_point->target_heading;
+				}
 				break;
 			}
 
@@ -530,10 +826,29 @@ void Client::DoZoneSuccess(ZoneChange_Struct *zc, uint16 zone_id, uint32 instanc
 	m_Position.x = dest_x; //these coordinates will now be saved when ~client is called
 	m_Position.y = dest_y;
 	m_Position.z = dest_z;
-	m_Position.w = dest_h; // Cripp: fix for zone heading
-	m_pp.heading = dest_h;
+
+	// Sign-encode the wide/narrow boundary bit into the heading persisted to
+	// character_data so it survives the (separate-process) zone hop.  The
+	// destination zone process can't see this zone's trigger geometry, so the
+	// SpawnCorrect heading trap there keys off the sign:
+	//   wide boundary   (sliding delta applied)  -> store +dest_h  (arm trap)
+	//   narrow door/gate (strict DB target)       -> store -(dest_h+1) (do NOT arm)
+	// The destination decodes back to the true heading in SendPlayerProfile and
+	// immediately normalizes the DB row, so no other reader sees a negative.
+	// dest_h is always >= 0, so -(dest_h+1) is strictly negative and the +0 / -0
+	// ambiguity at dest_h==0 is avoided by the +1 bias.
+	float persisted_h = dest_h;
+	if (IsTrilogyClient() && !m_trilogy_wide_boundary) {
+		persisted_h = -(dest_h + 1.0f);
+	}
+	m_Position.w = persisted_h; // Cripp: fix for zone heading
+	m_pp.heading = persisted_h;
 	m_pp.zone_id = zone_id;
 	m_pp.zoneInstance = instance_id;
+
+	LogInfo("[TrilogyZP] DoZoneSuccess: char [{}] dest zone {} ({}) dest_pos ({:.2f},{:.2f},{:.2f},{:.2f}) wide_boundary={} persisted_h={:.2f} — writing to DB",
+	        GetCleanName(), ZoneName(zone_id) ? ZoneName(zone_id) : "?", zone_id,
+	        dest_x, dest_y, dest_z, dest_h, m_trilogy_wide_boundary ? "Y" : "N", persisted_h);
 
 	//Force a save so its waiting for them when they zone
 	Save(2);
@@ -1353,6 +1668,10 @@ bool Client::CanEnterZone(const std::string& zone_short_name, int16 instance_ver
 	//the zone
 
 	if (Admin() >= RuleI(GM, MinStatusToZoneAnywhere)) {
+		return true;
+	}
+
+	if (!zone) {
 		return true;
 	}
 

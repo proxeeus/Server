@@ -312,6 +312,8 @@ namespace EQ
 			void OnConnectionStateChange(std::function<void(std::shared_ptr<DaybreakConnection>, DbProtocolStatus, DbProtocolStatus)> func) { m_on_connection_state_change = func; }
 			void OnPacketRecv(std::function<void(std::shared_ptr<DaybreakConnection>, const Packet &)> func) { m_on_packet_recv = func; }
 			void OnErrorMessage(std::function<void(const std::string&)> func) { m_on_error_message = func; }
+			void OnUnknownPacket(std::function<void(const std::string&, int, const char*, size_t)> func) { m_on_unknown_packet = func; }
+			void SendRaw(const std::string& addr, int port, const void* data, size_t size);
 
 			DaybreakConnectionManagerOptions& GetOptions() { return m_options; }
 		private:
@@ -327,6 +329,7 @@ namespace EQ
 			std::function<void(std::shared_ptr<DaybreakConnection>, DbProtocolStatus, DbProtocolStatus)> m_on_connection_state_change;
 			std::function<void(std::shared_ptr<DaybreakConnection>, const Packet&)> m_on_packet_recv;
 			std::function<void(const std::string&)> m_on_error_message;
+			std::function<void(const std::string&, int, const char*, size_t)> m_on_unknown_packet;
 			std::map<std::pair<std::string, int>, std::shared_ptr<DaybreakConnection>> m_connections;
 
 			void ProcessPacket(const std::string &endpoint, int port, const char *data, size_t size);

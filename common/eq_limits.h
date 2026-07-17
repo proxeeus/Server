@@ -23,6 +23,7 @@
 #include "types.h"
 #include "eq_constants.h"
 #include "emu_versions.h"
+#include "../common/patches/trilogy_limits.h"
 #include "../common/patches/titanium_limits.h"
 #include "../common/patches/sof_limits.h"
 #include "../common/patches/sod_limits.h"
