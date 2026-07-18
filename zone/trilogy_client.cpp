@@ -1204,8 +1204,23 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 
 	sp.size      = mob->GetSize();
 	if (sp.size <= 0.0f) sp.size = 6.0f;
-	sp.walkspeed = 0.7f;
-	sp.runspeed  = 1.4f;
+	// Speed encoding: derive from DB to match the bulk OP_ZoneSpawns path
+	// (trilogy_zone.cpp:6953-6954).  The previous hardcoded 0.7/1.4 fit
+	// typical humanoids but broke any NPC with atypical speeds — most
+	// visibly boats (race 72, runspeed=12.5 in DB) respawned mid-session
+	// via quest::spawn2.  Once the client cached runspeed=1.4 for such a
+	// mob, subsequent A120 position broadcasts moving it at ~29 u/s far
+	// exceeded that speed model and v29c stopped rendering the entity.
+	// Gate behind Zone:TrilogyNewSpawnSpeedFromDB so a regression can be
+	// reverted at runtime via `#reloadrules` without a rebuild.
+	// ToTrilogySpeed = eqemu_speed / 40.0f (mirrors trilogy_zone.cpp:298).
+	if (RuleB(Zone, TrilogyNewSpawnSpeedFromDB)) {
+		sp.walkspeed = (static_cast<float>(mob->GetBaseWalkspeed()) / 40.0f) * 1.5f;
+		sp.runspeed  =  static_cast<float>(mob->GetBaseRunspeed())  / 40.0f;
+	} else {
+		sp.walkspeed = 0.7f;
+		sp.runspeed  = 1.4f;
+	}
 	sp.heading   = static_cast<int8_t>(static_cast<uint8_t>(mob->GetHeading() / 2.0f));
 	sp.y_pos     = static_cast<int16_t>(mob->GetY());
 	sp.x_pos     = static_cast<int16_t>(mob->GetX());
