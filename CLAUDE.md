@@ -206,6 +206,8 @@ case scenario, investigate and propose workarounds. NEVER EVER assume we "reache
 - NEVER EVER suggest "accepting the lesser of two evils" / abandon for the user.
 - Always ASK before thinking a refactor is needed because somehow a new source has been found.
 - Never, EVER run anything else than SELECT queries on the database. Suggest what should manually done if needed.
+- Adopt a "PR-first" hygiene
+- Don't gate everything behind EQEmu rules if it's not absolutely needed, to avoid complete recompilation everytime a change is made.
 
 
 ## Log files
