@@ -7047,6 +7047,24 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			        sp.body_type, sp.class_, sp.level);
 		}
 
+		// Diag: FV Maiden. Log inclusion in the bulk with wire-encoded state
+		// so we can compare to the individual 4921 path and to the boat's
+		// actual server-side position at zone-in time. See Zone:TrilogyBoatDiag.
+		if (RuleB(Zone, TrilogyBoatDiag) && npc->GetNPCTypeID() == 84250) {
+			LogInfo("[BoatDiag] SendZoneSpawns 6121 Maiden 84250: id={} "
+			        "server_pos=({:.1f},{:.1f},{:.1f}) sp.pos=({},{},{}) sp.h={} "
+			        "sp.walkspeed={:.2f} sp.runspeed={:.2f} moving={} grid={} "
+			        "bulk_idx={} char=[{}]",
+			        npc->GetID(),
+			        npc->GetX(), npc->GetY(), npc->GetZ(),
+			        sp.x_pos, sp.y_pos, sp.z_pos,
+			        static_cast<int>(sp.heading),
+			        sp.walkspeed, sp.runspeed,
+			        npc->IsMoving() ? 1 : 0,
+			        npc->GetGrid(),
+			        sent, s.char_name);
+		}
+
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);

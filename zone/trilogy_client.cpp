@@ -1138,6 +1138,20 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	Mob* mob = entity_list.GetMob(spawn_id);
 	if (!mob) return;
 
+	// Diag: FV Maiden's Voyage invisibility. Log every mid-session 4921 for
+	// NPC 84250 with server-side state. See Zone:TrilogyBoatDiag.
+	if (RuleB(Zone, TrilogyBoatDiag) && mob->IsNPC() &&
+	    mob->CastToNPC()->GetNPCTypeID() == 84250) {
+		LogInfo("[BoatDiag] HandleNewSpawn 4921 Maiden 84250: sid={} pos=({:.1f},{:.1f},{:.1f}) "
+		        "h={:.1f} moving={} grid={} m_is_zoning={} char=[{}]",
+		        spawn_id, mob->GetX(), mob->GetY(), mob->GetZ(),
+		        mob->GetHeading(),
+		        mob->IsMoving() ? 1 : 0,
+		        mob->CastToNPC()->GetGrid(),
+		        m_is_zoning ? 1 : 0,
+		        GetCleanName());
+	}
+
 	// Players, Bots, and Playerbots are sent via 0x6121 (ZN_OP_ZoneSpawns) so
 	// the Trilogy client treats them as zone-permanent and never stales them
 	// out.  Regular NPCs use 0x4921 (ZN_OP_NewSpawn) which is fine since they
@@ -1502,7 +1516,24 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	static constexpr float kCullSq = 600.0f * 600.0f;
 	const float dx = m->GetX() - GetX();
 	const float dy = m->GetY() - GetY();
-	if (dx * dx + dy * dy > kCullSq) return;
+	const float dist_sq_client_update = dx * dx + dy * dy;
+	// Diag: FV Maiden. Log EVERY outgoing OP_ClientUpdate (A120 candidate)
+	// including cull outcome so we can see whether the boat's position
+	// broadcasts are being culled by distance. See Zone:TrilogyBoatDiag.
+	if (RuleB(Zone, TrilogyBoatDiag) && m->IsNPC() &&
+	    m->CastToNPC()->GetNPCTypeID() == 84250) {
+		LogInfo("[BoatDiag] HandleClientUpdate outgoing Maiden 84250: sid={} "
+		        "pos=({:.1f},{:.1f},{:.1f}) player=({:.1f},{:.1f}) dist={:.1f} "
+		        "moving={} anim_in={} culled={} char=[{}]",
+		        spawn_id, m->GetX(), m->GetY(), m->GetZ(),
+		        GetX(), GetY(),
+		        std::sqrt(dist_sq_client_update),
+		        m->IsMoving() ? 1 : 0,
+		        static_cast<int>(p->animation),
+		        (dist_sq_client_update > kCullSq) ? 1 : 0,
+		        GetCleanName());
+	}
+	if (dist_sq_client_update > kCullSq) return;
 
 	// Per-mob throttle.  EXPERIMENT 2026-06-27: dropped 2000 → 250 ms now
 	// that SendMobHeartbeat skips moving NPCs entirely.  The previous
