@@ -3839,6 +3839,37 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	for (int i = 0; i < 15; i++)
 		pp.buffs[i].spellid = static_cast<int16_t>(0xFFFF);
 
+	// Populate persistent buffs from character_buffs so buffs survive zoning.  v29c has
+	// no OP_Buff packet at zone-in — the client reads its buff bar exclusively from the
+	// PlayerProfile SpellBuff_Struct array (see EQClassic\Zone\Source\client.cpp:372
+	// where they populate this same field before SetPlayerProfile).  SaveBuffs on the
+	// source zone (Client::Save → SaveBuffs) writes character_buffs before we get here,
+	// so this read picks up the freshly persisted state.  The server-side reapply of
+	// spell effects (illusions, procs, appearance) is handled by CompleteConnect's
+	// buff loop after Client::buffs[] is filled via LoadBuffs in InitTrilogyFields.
+	{
+		auto br = database.QueryDatabase(fmt::format(
+		    "SELECT `slot_id`, `spell_id`, `caster_level`, `ticsremaining`, `instrument_mod` "
+		    "FROM `character_buffs` WHERE `character_id` = {}",
+		    s.char_id));
+		if (br.Success()) {
+			for (auto row = br.begin(); row != br.end(); ++row) {
+				const int slot     = row[0] ? Strings::ToInt(row[0]) : -1;
+				const int spell_id = row[1] ? Strings::ToInt(row[1]) : 0;
+				const int level    = row[2] ? Strings::ToInt(row[2]) : 0;
+				const int tics     = row[3] ? Strings::ToInt(row[3]) : 0;
+				const int inst_mod = row[4] ? Strings::ToInt(row[4]) : 10;
+				if (slot < 0 || slot >= 15) continue;               // v29c BUFF_COUNT = 15
+				if (spell_id <= 0 || spell_id >= 0xFFFF) continue;  // wire is int16
+				pp.buffs[slot].spellid       = static_cast<int16_t>(spell_id);
+				pp.buffs[slot].duration      = static_cast<int32_t>(tics);
+				pp.buffs[slot].level         = static_cast<int8_t>(level);
+				pp.buffs[slot].visable       = 2; // 2 = visible + timed (see EQClassic client.cpp:379)
+				pp.buffs[slot].bard_modifier = static_cast<int8_t>(inst_mod > 0 ? inst_mod : 10);
+			}
+		}
+	}
+
 	// ---- character_data ----
 	{
 		auto q = fmt::format(
