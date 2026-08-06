@@ -577,6 +577,17 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	database.LoadCharacterSpellBook(char_id, &m_pp);
 	database.LoadCharacterMemmedSpells(char_id, &m_pp);
 
+	// Load persistent buffs from character_buffs so buffs survive zoning.  The normal
+	// zone-entry path does this in Handle_Connect_OP_ZoneEntry (client_packet.cpp
+	// ~L1496); Trilogy bypasses that path entirely.  Without this, Client::buffs[]
+	// stays SPELL_UNKNOWN and CompleteConnect's reapply loop (~L654) never fires
+	// SE_Illusion / SE_Invisibility / SE_Levitate / procs / DA / etc. — the buff row
+	// exists in the DB (SaveBuffs runs on zone-out) but its server-side effects are
+	// silently dropped on the destination side.  The buff-window wire copy is
+	// handled separately in TrilogyZoneServer::SendPlayerProfile which reads
+	// character_buffs and packs into pp.buffs[15] (v29c has no OP_Buff at zone-in).
+	database.LoadBuffs(this);
+
 	// Load persistent timers (Lay on Hands / Harm Touch cooldowns, etc.) so they
 	// survive across relogs.  The normal path does this in Handle_Connect_OP_ZoneEntry
 	// which Trilogy bypasses entirely.
