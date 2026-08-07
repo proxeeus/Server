@@ -61,6 +61,7 @@ This fork extends the upstream EQEmu server with support for the pre-Daybreak Ve
  - [proxeeus/quests](https://github.com/proxeeus/quests) — quest scripts (Perl/Lua) used with this server.
  - [proxeeus/lua_modules](https://github.com/proxeeus/lua_modules) — shared Lua modules loaded by quest scripts.
  - [proxeeus/plugins](https://github.com/proxeeus/plugins) — Perl quest plugins.
+ - [proxeeus/eqemu_db](https://github.com/proxeeus/eqemu_db) — the associated database.
 
 **Credits / references**
  - [EQClassic](https://github.com/EQClassic) — authoritative reference for opcodes, struct layouts, and the DES login key.
