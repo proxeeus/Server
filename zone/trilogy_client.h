@@ -525,11 +525,14 @@ public:
 private:
 
 	// Pending A120 batch buffer for moving mobs. HandleClientUpdate pushes
-	// one entry per accepted MovementManager update (post-throttle, post-cull);
-	// FlushPendingMobUpdates drains the buffer into bulk A120 packets
-	// (up to 25 entries each) once per Tick. Cuts moving-mob A120 ARQ count
-	// by ~20× in dense zones — the same shape as SendMobHeartbeat for
-	// stationary mobs but driven by movement events instead of staleness.
+	// one entry per accepted MovementManager update (post-throttle, post-cull),
+	// deduped by spawn_id so bursts from the anim_changed throttle bypass
+	// (e.g. 70-bot raid follow with frequent walk↔run flips) collapse to one
+	// entry per mob with the freshest state.  FlushPendingMobUpdates drains
+	// the buffer into bulk A120 packets (up to 25 entries each) once per Tick.
+	// Cuts moving-mob A120 ARQ count by ~20× in dense zones — same shape as
+	// SendMobHeartbeat for stationary mobs but driven by movement events
+	// instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
 
 	// Per-door last-sent action cache with TTL.  Doors::HandleClick in EQEmu

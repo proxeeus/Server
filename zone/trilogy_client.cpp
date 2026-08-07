@@ -1707,6 +1707,24 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	                                      static_cast<int32_t>(p->delta_y) * 2,
 	                                      static_cast<int32_t>(p->delta_z) * 2);
 
+	// Dedup within the current Tick's flush window: if this spawn_id is
+	// already queued, replace its entry in place so only the freshest state
+	// hits the wire.  The 250ms per-mob throttle above caps *steady-state*
+	// rate, but the anim_changed bypass right below the throttle lets state
+	// transitions through unthrottled — under a 70-bot follow on the move,
+	// bots frequently flip walk↔run to match owner speed, so a single Tick
+	// can accumulate 2-3 updates per spawn.  Dedup collapses those to one
+	// with the newest position/anim/delta; queue size is bounded by the
+	// count of *distinct* visible-moving mobs rather than event volume.
+	//
+	// Cost: linear scan of the pending vector (typical size < 100 during
+	// dense raid scenes), well inside the per-Tick budget.
+	for (auto& existing : m_pending_mob_updates) {
+		if (existing.spawn_id == upd.spawn_id) {
+			existing = upd;
+			return;
+		}
+	}
 	m_pending_mob_updates.push_back(upd);
 }
 
