@@ -41,6 +41,14 @@
 
 This fork extends the upstream EQEmu server with support for the pre-Daybreak Verant Trilogy client (`v29c` / `v30`). All upstream client support (Titanium through RoF2) is preserved and continues to work alongside the Trilogy path — Trilogy players and modern-client players coexist in the same zones, groups, and raids.
 
+### Screenshots
+
+<em>Click any screenshot to view full size.</em>
+
+|   |   |   |   |
+|:---:|:---:|:---:|:---:|
+| <a href="docs/screenshots/trilogy/trilogy-01.png"><img src="docs/screenshots/trilogy/trilogy-01.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-02.png"><img src="docs/screenshots/trilogy/trilogy-02.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-03.png"><img src="docs/screenshots/trilogy/trilogy-03.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-04.png"><img src="docs/screenshots/trilogy/trilogy-04.png" height="150"></a> |
+
 **Highlights**
  - Full in-zone gameplay: movement, combat, spells (256-slot spellbook, 15 buffs), grouping/raids, merchants, banking, tradeskills/combines, doors, boats, corpses/loot, trades (PC↔PC and PC↔NPC), quests, and zone transitions.
  - Char select, character create, and world→zone handoff on the Verant login/world protocol.
