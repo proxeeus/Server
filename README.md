@@ -56,6 +56,12 @@ This fork extends the upstream EQEmu server with support for the pre-Daybreak Ve
  - [CLAUDE.md](CLAUDE.md) — architectural overview, the client-patch layer, the EQNetwork session layer, and the current list of Trilogy gotchas.
  - [trilogy_plan.md](trilogy_plan.md) — original field-by-field struct/opcode reference and protocol-difference table.
 
+**Companion repositories (this fork)**
+ - [proxeeus/VisualEQ](https://github.com/proxeeus/VisualEQ) — work-in-progress 3D zone editor for spawns, zonelines, grids, etc.
+ - [proxeeus/quests](https://github.com/proxeeus/quests) — quest scripts (Perl/Lua) used with this server.
+ - [proxeeus/lua_modules](https://github.com/proxeeus/lua_modules) — shared Lua modules loaded by quest scripts.
+ - [proxeeus/plugins](https://github.com/proxeeus/plugins) — Perl quest plugins.
+
 **Credits / references**
  - [EQClassic](https://github.com/EQClassic) — authoritative reference for opcodes, struct layouts, and the DES login key.
  - The upstream [EQEmu](https://github.com/EQEmu/Server) project, on top of which all of this is built.
