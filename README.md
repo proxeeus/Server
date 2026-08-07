@@ -45,15 +45,17 @@ This fork extends the upstream EQEmu server with support for the pre-Daybreak Ve
 
 <em>Click any screenshot to view full size.</em>
 
-|   |   |   |   |
-|:---:|:---:|:---:|:---:|
-| <a href="docs/screenshots/trilogy/trilogy-01.png"><img src="docs/screenshots/trilogy/trilogy-01.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-02.png"><img src="docs/screenshots/trilogy/trilogy-02.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-03.png"><img src="docs/screenshots/trilogy/trilogy-03.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-04.png"><img src="docs/screenshots/trilogy/trilogy-04.png" height="150"></a> |
+|   |   |   |   |   |   |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| <a href="docs/screenshots/trilogy/trilogy-01.png"><img src="docs/screenshots/trilogy/trilogy-01.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-02.png"><img src="docs/screenshots/trilogy/trilogy-02.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-03.png"><img src="docs/screenshots/trilogy/trilogy-03.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-04.png"><img src="docs/screenshots/trilogy/trilogy-04.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-05.png"><img src="docs/screenshots/trilogy/trilogy-05.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-06.png"><img src="docs/screenshots/trilogy/trilogy-06.png" height="150"></a> |
 
 **Highlights**
  - Full in-zone gameplay: movement, combat, spells (256-slot spellbook, 15 buffs), grouping/raids, merchants, banking, tradeskills/combines, doors, boats, corpses/loot, trades (PC↔PC and PC↔NPC), quests, and zone transitions.
  - Char select, character create, and world→zone handoff on the Verant login/world protocol.
  - Coexistence with modern clients (visibility, aggro, groups, raids, chat).
  - Bot integration (including Trilogy-aware `^botlist`, `^raidshow`, `^rosterlist`).
+
+Note: this is still very much a **work in progress**, there will be bugs and stuff maybe not implemented.
 
 **Architecture (short version)**
  - A standard EQEmu **patch translation layer** at [common/patches/trilogy*](common/patches/) handles struct/opcode translation (see the sibling `titanium.*` files for the template).
