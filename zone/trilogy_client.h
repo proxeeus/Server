@@ -558,22 +558,39 @@ private:
 
 	// Combat-event token bucket — protects v29c from cumulative damage during
 	// sustained combat-amplification load (bot-vs-NPC fights the player is just
-	// observing).  Measured: 5-9 kbps for 3 minutes is enough to poison v29c
-	// state and trigger a delayed freeze even after bandwidth subsides.  Bucket
-	// applies to OP_SpecialMesg (0x8021 combat chat), OP_Attack (0x9F20 swing
-	// anims), and OP_Action (0x5820 action anims) — the three highest-volume
-	// combat broadcasts.  Capacity 30 lets short bursts through unimpeded;
-	// 10/s refill caps sustained rate well under v29c's ~3-5 kbps budget.
-	// Over budget → enqueue with drop-oldest at soft cap.
+	// observing).  Bucket applies to OP_SpecialMesg (0x8021 combat chat),
+	// OP_Attack (0x9F20 swing anims), and OP_Action (0x5820 action / damage) —
+	// the three highest-volume combat broadcasts.
 	//
-	// Also covers the earlier 8021-only `^spells` burst freeze case (9 messages
-	// in <50ms): 30-capacity bucket absorbs that without queueing.
-	static constexpr size_t   kMaxPendingCombat      = 256; // soft cap, drop oldest
-	static constexpr uint32_t kCombatBucketCapacity  = 30;
-	static constexpr double   kCombatBucketRefill    = 10.0; // tokens / second
+	// Rate: 25 tokens/sec sustained, 60 burst.  The asq_hi carry fix
+	// (project_trilogy_resend_explosion) removed the count-based session wall,
+	// and the 2h45m proof-run held steady at 17-18 pps; 25/s leaves headroom
+	// while doubling the ceiling from the original 10/s that was too tight
+	// for 70-bot raid combat (400+ events/sec → permanent queue backlog).
+	//
+	// Under overload the queue stays bounded by two layers:
+	//  1. Per-source dedup on animation opcodes at enqueue — a bot's newer
+	//     swing replaces its older queued swing (see EnqueueCombatPacket).
+	//     Damage packets (OP_Action with non-zero damage) are unique event
+	//     data and are NOT deduped.
+	//  2. Stale-drop at drain time — any packet older than
+	//     kMaxCombatQueueAgeMs is discarded without sending, so wire traffic
+	//     under overload carries the newest events instead of a stale
+	//     backlog.  This is the primary fix for the "combat text keeps
+	//     arriving after the target is dead" symptom on Trilogy raid clients.
+	//
+	// Also covers the earlier 8021-only `^spells` burst freeze case
+	// (9 messages in <50ms): 60-capacity bucket absorbs it without queueing.
+	static constexpr size_t   kMaxPendingCombat      = 96;   // soft cap, drop oldest — bounded drain latency
+	static constexpr uint32_t kCombatBucketCapacity  = 60;
+	static constexpr double   kCombatBucketRefill    = 25.0; // tokens / second
+	static constexpr uint64_t kMaxCombatQueueAgeMs   = 1500; // stale packets dropped at drain
 	struct PendingCombatPacket {
 		uint16_t              opcode;
 		std::vector<uint8_t>  payload;
+		uint64_t              enqueued_ms;  // wall time; used for stale-drop
+		uint32_t              source_id;    // extracted from payload; 0 = unknown / not classified
+		bool                  supersedes;   // true → eligible for per-source dedup replacement
 	};
 	std::deque<PendingCombatPacket> m_pending_combat_q;
 	double                          m_combat_tokens          = static_cast<double>(kCombatBucketCapacity);
