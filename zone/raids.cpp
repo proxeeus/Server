@@ -1828,6 +1828,15 @@ void Raid::SendHPManaEndPacketsTo(Client *client)
 		return;
 	}
 
+	// Trilogy (v29c) has no raid-window UI, so the raid-member HP fan-out
+	// would render nowhere on this client while adding hundreds of extra
+	// packets/sec during bot-raid combat. Skip entirely — bot AI reads
+	// HP server-side and the player still gets HP via targeting and the
+	// direct pet/bot-owner paths in Mob::SendHPUpdate.
+	if (client->ClientVersion() == EQ::versions::ClientVersion::Trilogy) {
+		return;
+	}
+
 	uint32 group_id = GetGroup(client);
 
 	EQApplicationPacket hp_packet;
@@ -1879,6 +1888,17 @@ void Raid::SendHPManaEndPacketsFrom(Mob *mob)
 
 	for (const auto& m : members) {
 		if (m.is_bot) {
+			continue;
+		}
+
+		// Silent-raid for Trilogy (v29c): no raid-window UI, so this fan-out
+		// would render nowhere. During bot raids with 30+ bots, this path is
+		// the dominant bandwidth source (per-bot HP change × N raid clients
+		// × per-tick timers in Bot::AI_Process). HP is still delivered via
+		// targeting broadcasts and the direct pet/bot-owner QueuePacket calls
+		// in Mob::SendHPUpdate; healer bot AI reads GetHPRatio() from server
+		// memory and does not depend on this packet.
+		if (m.member && m.member->ClientVersion() == EQ::versions::ClientVersion::Trilogy) {
 			continue;
 		}
 

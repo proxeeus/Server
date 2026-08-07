@@ -1142,7 +1142,9 @@ int bot_command_init(void)
 		bot_command_add("guildremove", "Kicks a Bot from your guild (purely cosmetic).", 0, bot_command_guildremove) ||
 		bot_command_add("createraid", "Creates a raid with the specified name and invites all bots in your bot army.", 0, bot_command_create_raid) ||
 		bot_command_add("addtoroster", "Adds a bot to your raid roster.", 0, bot_command_addtoroster) ||
-		bot_command_add("removefromroster", "Removes a bot from your raid roster.", 0, bot_command_removefromroster)
+		bot_command_add("removefromroster", "Removes a bot from your raid roster.", 0, bot_command_removefromroster) ||
+		bot_command_add("raidshow", "Prints the current raid roster and group composition to chat (text-only; primarily for Trilogy clients with no raid UI).", 0, bot_command_raid_show) ||
+		bot_command_add("rosterlist", "Prints your current raid roster (bots pre-selected for ^createraid) to chat.", 0, bot_command_roster_list)
 	) {
 		bot_command_deinit();
 		return -1;
@@ -1977,3 +1979,4 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/memblur.cpp"
 #include "bot_commands/rdefensive.cpp"
 #include "bot_commands/createraid.cpp"
+#include "bot_commands/raid_show.cpp"

@@ -359,19 +359,27 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id);
 // ============================================================
 // Combat-event token bucket (see m_pending_combat_q in trilogy_client.h)
 //
-// v29c freezes under cumulative load: 5-9 kbps for 3 minutes of bot-vs-NPC
-// combat is enough to poison its state and trigger a delayed freeze even
-// after bandwidth subsides.  v29c's design budget (56k-modem era) is
-// ~3-5 kbps.  Bucket caps OP_SpecialMesg (0x8021), OP_Attack (0x9F20), and
-// OP_Action (0x5820) combined at 30 burst / 10 sustained per second.
-//
-// Subsumes the earlier OP_SpecialMesg-only burst protection (the `^spells`
-// case: 9 chat lines in <50 ms): a 30-token bucket absorbs that without
-// queueing, so the user sees the list instantly.
+// Rate: 60 tokens/sec sustained, 120 burst.  Applies to OP_SpecialMesg
+// (0x8021), OP_Attack (0x9F20), and OP_Action (0x5820).  Sized to
+// accommodate ~all 70 bots in a raid swinging simultaneously.
 //
 // Callers use QueueTextPacket(opcode, data, size) for any combat opcode.
 // Fast path: queue empty AND token available → send immediately (no latency).
 // Slow path: enqueue; DrainPendingText() flushes as tokens refill.
+//
+// Two overload defenses (both added 2026-08-07 after the 70-bot raid case):
+//   1. Per-source dedup on OP_Attack + zero-damage OP_Action at enqueue —
+//      a bot's newer swing replaces its older queued swing rather than
+//      piling up.  Damage packets (OP_Action with damage != 0) are unique
+//      event data and are NEVER deduped.
+//   2. Stale-drop at drain — packets older than kMaxCombatQueueAgeMs are
+//      discarded silently.  Under raid overload, wire traffic carries the
+//      newest events instead of a 25-second stale backlog.  Directly fixes
+//      the "combat text keeps arriving after the target is dead" symptom.
+//
+// Subsumes the earlier OP_SpecialMesg-only burst protection (the `^spells`
+// case: 9 chat lines in <50 ms): a 120-token bucket absorbs that without
+// queueing, so the user sees the list instantly.
 // ============================================================
 
 bool TrilogyClient::TryAcquireCombatToken()
@@ -397,6 +405,48 @@ bool TrilogyClient::TryAcquireCombatToken()
 
 void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
 {
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Classify: extract source_id and decide if this packet is eligible for
+	// per-source dedup.  Under raid overload, one bot may fire OP_Attack
+	// faster than the bucket drains — replacing the older queued entry
+	// with the newest one keeps the animation stream current instead of
+	// playing stale swings after the fight has ended.
+	//
+	// Wire structs:
+	//   Attack_Struct (0x9F20): int32 spawn_id @ 0, int8 type @ 4       — 12 B
+	//   Action_Struct (0x5820): int32 target @ 0, int32 source @ 4,
+	//                           int8 type @ 8, int16 spell @ 10,
+	//                           int32 damage @ 12                        — 28 B
+	uint32_t source_id  = 0;
+	bool     supersedes = false;
+	if (opcode == 0x9f20 && size >= 4) {
+		source_id  = *reinterpret_cast<const uint32_t*>(data);
+		supersedes = true;
+	}
+	else if (opcode == 0x5820 && size >= 16) {
+		source_id             = *reinterpret_cast<const uint32_t*>(data + 4);
+		const int32_t damage  = *reinterpret_cast<const int32_t*>(data + 12);
+		// Damage packets are unique (miss/hit values, spell landings) —
+		// never dedup.  Zero-damage OP_Action is a pure animation trigger
+		// (spell hit anim, cast complete effect) and IS superseded.
+		supersedes = (damage == 0);
+	}
+	// OP_SpecialMesg (0x8021) chat: each line may carry different text —
+	// never dedup.
+
+	if (supersedes && source_id != 0) {
+		for (auto& p : m_pending_combat_q) {
+			if (p.opcode == opcode && p.source_id == source_id) {
+				p.payload.assign(data, data + size);
+				p.enqueued_ms = now_ms;
+				return;
+			}
+		}
+	}
+
 	if (m_pending_combat_q.size() >= kMaxPendingCombat) {
 		// Soft cap: drop oldest.  Hitting this means we're far over rate
 		// budget for many seconds; losing leading chatter is the least-bad
@@ -404,8 +454,11 @@ void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, ui
 		m_pending_combat_q.pop_front();
 	}
 	PendingCombatPacket p;
-	p.opcode = opcode;
+	p.opcode      = opcode;
 	p.payload.assign(data, data + size);
+	p.enqueued_ms = now_ms;
+	p.source_id   = source_id;
+	p.supersedes  = supersedes;
 	m_pending_combat_q.push_back(std::move(p));
 }
 
@@ -426,8 +479,24 @@ void TrilogyClient::DrainPendingText()
 {
 	if (m_pending_combat_q.empty()) return;
 
-	// Refill + spend tokens against any queued combat events.  Sending
-	// multiple per Tick is fine — the bucket is already capped at burst 30.
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Stale-drop pass: any packet older than kMaxCombatQueueAgeMs is
+	// discarded without spending a token or hitting the wire.  This is the
+	// primary defense against the "combat text keeps arriving after the
+	// target is dead" symptom on Trilogy raid clients — under sustained
+	// overload we prefer losing old events to burning wire bandwidth on
+	// them.  Entries are FIFO, so we can pop from the front until we hit
+	// a fresh one.
+	while (!m_pending_combat_q.empty() &&
+	       now_ms - m_pending_combat_q.front().enqueued_ms > kMaxCombatQueueAgeMs) {
+		m_pending_combat_q.pop_front();
+	}
+
+	// Refill + spend tokens against remaining queued combat events.
+	// Sending multiple per Tick is fine — the bucket is capped at burst 120.
 	while (!m_pending_combat_q.empty() && TryAcquireCombatToken()) {
 		auto& p = m_pending_combat_q.front();
 		m_tzs->SendToSession(m_session_key, p.opcode,
@@ -1639,6 +1708,24 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	                                      static_cast<int32_t>(p->delta_y) * 2,
 	                                      static_cast<int32_t>(p->delta_z) * 2);
 
+	// Dedup within the current Tick's flush window: if this spawn_id is
+	// already queued, replace its entry in place so only the freshest state
+	// hits the wire.  The 250ms per-mob throttle above caps *steady-state*
+	// rate, but the anim_changed bypass right below the throttle lets state
+	// transitions through unthrottled — under a 70-bot follow on the move,
+	// bots frequently flip walk↔run to match owner speed, so a single Tick
+	// can accumulate 2-3 updates per spawn.  Dedup collapses those to one
+	// with the newest position/anim/delta; queue size is bounded by the
+	// count of *distinct* visible-moving mobs rather than event volume.
+	//
+	// Cost: linear scan of the pending vector (typical size < 100 during
+	// dense raid scenes), well inside the per-Tick budget.
+	for (auto& existing : m_pending_mob_updates) {
+		if (existing.spawn_id == upd.spawn_id) {
+			existing = upd;
+			return;
+		}
+	}
 	m_pending_mob_updates.push_back(upd);
 }
 

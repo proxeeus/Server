@@ -686,39 +686,53 @@ void bot_command_list_bots(Client* c, const Seperator* sep)
 
 		auto* bot = entity_list.GetBotByBotName(bots_iter.bot_name);
 
-		// --- Saylink Integration for Raid Roster ---
-		std::string roster_saylink;
+		// Roster status.  Titanium+ gets clickable saylinks that fire
+		// ^addtoroster / ^removefromroster on click.  Trilogy has no
+		// saylink support (StripSayLinks renders them as inert bracketed
+		// text), so we swap in a plain `[R]` / `[ ]` tag — the player
+		// discovers the commands via the trailer note below.
+		const bool is_trilogy =
+			(c->ClientVersion() == EQ::versions::ClientVersion::Trilogy);
 		uint32 bot_id = bots_iter.bot_id;
 		bool in_roster = database.botdb.IsBotInRaidRoster(c->CharacterID(), bot_id);
 
-		if (in_roster) {
-			roster_saylink = Saylink::Silent(
+		std::string roster_tag;
+		if (is_trilogy) {
+			roster_tag = in_roster ? "[R]" : "[ ]";
+		} else if (in_roster) {
+			roster_tag = Saylink::Silent(
 				fmt::format("^removefromroster {}", bots_iter.bot_name),
 				"[Remove from Raid Roster]"
 			);
-		}
-		else {
-			roster_saylink = Saylink::Silent(
+		} else {
+			roster_tag = Saylink::Silent(
 				fmt::format("^addtoroster {}", bots_iter.bot_name),
 				"[Add to Raid Roster]"
 			);
 		}
-		// --- End Saylink Integration ---
+
+		// Name field: on Titanium+, unspawned-and-owned bots get a
+		// clickable saylink that spawns them; on Trilogy we render the
+		// plain name (spawning is `^spawn <name>` via the trailer note).
+		std::string name_field;
+		const bool name_should_be_spawnable =
+			(c->CharacterID() == bots_iter.owner_id && !bot);
+		if (name_should_be_spawnable && !is_trilogy) {
+			name_field = Saylink::Silent(
+				fmt::format("^spawn {}", bots_iter.bot_name),
+				bots_iter.bot_name
+			);
+		} else {
+			name_field = bots_iter.bot_name;
+		}
 
 		c->Message(
 			Chat::White,
 			fmt::format(
 				"Bot {} | {} {} is a Level {} {} {} {} owned by {}.",
 				bot_number,
-				roster_saylink,
-				(
-					(c->CharacterID() == bots_iter.owner_id && !bot) ?
-					Saylink::Silent(
-						fmt::format("^spawn {}", bots_iter.bot_name),
-						bots_iter.bot_name
-					) :
-					bots_iter.bot_name
-					),
+				roster_tag,
+				name_field,
 				bots_iter.level,
 				GetGenderName(bots_iter.gender),
 				GetRaceIDName(bots_iter.race),
@@ -752,8 +766,15 @@ void bot_command_list_bots(Client* c, const Seperator* sep)
 			).c_str()
 		);
 
-		c->Message(Chat::White, "Note: You can spawn any owned bots by clicking their name if they are not already spawned.");
-		c->Message(Chat::White, "Note: Use [AddToRoster]/[RemoveFromRoster] to manage your raid roster for ^createraid.");
+		if (c->ClientVersion() == EQ::versions::ClientVersion::Trilogy) {
+			c->Message(Chat::White, "Note: `[R]` = in raid roster, `[ ]` = not in roster.");
+			c->Message(Chat::White, "Note: Type `^spawn <botname>` to spawn a bot.");
+			c->Message(Chat::White, "Note: Type `^addtoroster <botname>` or `^removefromroster <botname>` to manage your raid roster for ^createraid.");
+			c->Message(Chat::White, "Note: Type `^rosterlist` to inspect your current raid roster, `^raidshow` to inspect an active raid.");
+		} else {
+			c->Message(Chat::White, "Note: You can spawn any owned bots by clicking their name if they are not already spawned.");
+			c->Message(Chat::White, "Note: Use [AddToRoster]/[RemoveFromRoster] to manage your raid roster for ^createraid.");
+		}
 		c->Message(Chat::White, "Your bot creation limits are as follows:");
 
 		const auto overall_bot_creation_limit = c->GetBotCreationLimit();
