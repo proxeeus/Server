@@ -359,8 +359,9 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id);
 // ============================================================
 // Combat-event token bucket (see m_pending_combat_q in trilogy_client.h)
 //
-// Rate: 25 tokens/sec sustained, 60 burst.  Applies to OP_SpecialMesg
-// (0x8021), OP_Attack (0x9F20), and OP_Action (0x5820).
+// Rate: 60 tokens/sec sustained, 120 burst.  Applies to OP_SpecialMesg
+// (0x8021), OP_Attack (0x9F20), and OP_Action (0x5820).  Sized to
+// accommodate ~all 70 bots in a raid swinging simultaneously.
 //
 // Callers use QueueTextPacket(opcode, data, size) for any combat opcode.
 // Fast path: queue empty AND token available → send immediately (no latency).
@@ -377,7 +378,7 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id);
 //      the "combat text keeps arriving after the target is dead" symptom.
 //
 // Subsumes the earlier OP_SpecialMesg-only burst protection (the `^spells`
-// case: 9 chat lines in <50 ms): a 60-token bucket absorbs that without
+// case: 9 chat lines in <50 ms): a 120-token bucket absorbs that without
 // queueing, so the user sees the list instantly.
 // ============================================================
 
@@ -495,7 +496,7 @@ void TrilogyClient::DrainPendingText()
 	}
 
 	// Refill + spend tokens against remaining queued combat events.
-	// Sending multiple per Tick is fine — the bucket is capped at burst 60.
+	// Sending multiple per Tick is fine — the bucket is capped at burst 120.
 	while (!m_pending_combat_q.empty() && TryAcquireCombatToken()) {
 		auto& p = m_pending_combat_q.front();
 		m_tzs->SendToSession(m_session_key, p.opcode,

@@ -565,11 +565,13 @@ private:
 	// OP_Attack (0x9F20 swing anims), and OP_Action (0x5820 action / damage) —
 	// the three highest-volume combat broadcasts.
 	//
-	// Rate: 25 tokens/sec sustained, 60 burst.  The asq_hi carry fix
+	// Rate: 60 tokens/sec sustained, 120 burst.  The asq_hi carry fix
 	// (project_trilogy_resend_explosion) removed the count-based session wall,
-	// and the 2h45m proof-run held steady at 17-18 pps; 25/s leaves headroom
-	// while doubling the ceiling from the original 10/s that was too tight
-	// for 70-bot raid combat (400+ events/sec → permanent queue backlog).
+	// and the 2h45m proof-run held steady at 17-18 pps of *reliable* traffic;
+	// combat opcodes here are unreliable so they don't count against that
+	// budget.  60/s ≈ 3.6 KB/s combat-opcode wire cost — well inside v29c's
+	// tolerance and enough tokens to animate ~all 70 bots in a raid swinging
+	// at once instead of a fraction per second.
 	//
 	// Under overload the queue stays bounded by two layers:
 	//  1. Per-source dedup on animation opcodes at enqueue — a bot's newer
@@ -583,10 +585,10 @@ private:
 	//     arriving after the target is dead" symptom on Trilogy raid clients.
 	//
 	// Also covers the earlier 8021-only `^spells` burst freeze case
-	// (9 messages in <50ms): 60-capacity bucket absorbs it without queueing.
+	// (9 messages in <50ms): 120-capacity bucket absorbs it without queueing.
 	static constexpr size_t   kMaxPendingCombat      = 96;   // soft cap, drop oldest — bounded drain latency
-	static constexpr uint32_t kCombatBucketCapacity  = 60;
-	static constexpr double   kCombatBucketRefill    = 25.0; // tokens / second
+	static constexpr uint32_t kCombatBucketCapacity  = 120;
+	static constexpr double   kCombatBucketRefill    = 60.0; // tokens / second
 	static constexpr uint64_t kMaxCombatQueueAgeMs   = 1500; // stale packets dropped at drain
 	struct PendingCombatPacket {
 		uint16_t              opcode;

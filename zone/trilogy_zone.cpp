@@ -8572,25 +8572,36 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	for (Bot* bot : entity_list.GetBotList()) {
 		if (!bot) continue;
 
-		if (!bot->IsMoving()) {
-			if ((now_ms / 100) % 5 != 0) continue;
-		}
-
 		float dx = bot->GetX() - s.pos_x;
 		float dy = bot->GetY() - s.pos_y;
 		float dist_sq = dx * dx + dy * dy;
-		// No CULL_RADIUS_SQ skip.  Bots and Playerbots CAN die and respawn
-		// (Playerbots auto-respawn; Bots require master re-summon), but
-		// while ALIVE they're a single long-lived entity from the client's
-		// perspective.  Test 11576 (2026-06-21) showed bots wandering >600 u
-		// away (chasing, patrolling, following) silently vanished from the
-		// v29c client — saw shout chat but no entity in render or /who —
-		// because we cut their A120 stream and they aged out of v29c's
-		// spawn staleness window.  We don't re-issue 4921 on their return
-		// to range, so once dropped they stay invisible.  Outer ring
-		// throttle (>300 u → 2 Hz) inside should_broadcast still caps
-		// distant-bot traffic.  Death still goes through 4A20+2B20, and
-		// respawn issues a fresh 4921 via the normal path.
+
+		// Moving-non-turning bots WITHIN cull range are handled exclusively
+		// by TrilogyClient::HandleClientUpdate (event-driven, batched into
+		// FlushPendingMobUpdates).  Without this skip, moving bots produce
+		// A120 traffic through BOTH paths — the dominant amplifier for the
+		// 17-30 KB/s spikes observed when a Trilogy player moves with a
+		// 70-bot raid follow (each bot fired A120 through both heartbeat
+		// and event-driven, effectively doubling wire cost per moving bot).
+		//
+		// Turning bots MUST stay in heartbeat — RotateToCommand only fires
+		// two OP_ClientUpdates for an entire rotation (start + end), which
+		// leaves the client with nothing to render mid-rotation without
+		// the heartbeat's nearby_turning bypass to kTurningThrottleMs.
+		//
+		// Bots OUTSIDE cull range MUST also stay in heartbeat: Test 11576
+		// (2026-06-21) showed bots wandering >600 u away silently vanished
+		// from v29c because we never re-issue OP_NewSpawn on return-to-range,
+		// so once they age out of v29c's staleness window they stay invisible.
+		// Event-driven culls at 600u too, so out-of-range bots need heartbeat
+		// as their sole staleness-refresh path.
+		if (bot->IsMoving() && !bot->turning && dist_sq <= CULL_RADIUS_SQ) {
+			continue;
+		}
+
+		if (!bot->IsMoving()) {
+			if ((now_ms / 100) % 5 != 0) continue;
+		}
 
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
