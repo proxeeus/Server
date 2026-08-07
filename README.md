@@ -35,6 +35,48 @@
 |:---:|:---:|:---:|:---:|:---:|
 |<img src="http://i.imgur.com/hrwDxoM.jpg" height="150">|<img src="http://i.imgur.com/cRDW5tn.png" height="150">|<img src="http://i.imgur.com/V48kuVn.jpg" height="150">|<img src="http://i.imgur.com/IJQ0XMa.jpg" height="150">|<img src="http://i.imgur.com/OMpHkKa.png" height="100">|
 
+**This fork additionally supports the original EverQuest _Trilogy_ client (v29c, build `8-09-2001 14:25`)** — a client that predates every officially-supported EQEmu client. See [Trilogy Client Support](#trilogy-client-support-this-fork) below.
+
+## Trilogy Client Support (this fork)
+
+This fork extends the upstream EQEmu server with support for the pre-Daybreak Verant Trilogy client (`v29c` / `v30`). All upstream client support (Titanium through RoF2) is preserved and continues to work alongside the Trilogy path — Trilogy players and modern-client players coexist in the same zones, groups, and raids.
+
+### Screenshots
+
+<em>Click any screenshot to view full size.</em>
+
+|   |   |   |   |   |   |
+|:---:|:---:|:---:|:---:|:---:|:---:|
+| <a href="docs/screenshots/trilogy/trilogy-01.png"><img src="docs/screenshots/trilogy/trilogy-01.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-02.png"><img src="docs/screenshots/trilogy/trilogy-02.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-03.png"><img src="docs/screenshots/trilogy/trilogy-03.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-04.png"><img src="docs/screenshots/trilogy/trilogy-04.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-05.png"><img src="docs/screenshots/trilogy/trilogy-05.png" height="150"></a> | <a href="docs/screenshots/trilogy/trilogy-06.png"><img src="docs/screenshots/trilogy/trilogy-06.png" height="150"></a> |
+
+**Highlights**
+ - Full in-zone gameplay: movement, combat, spells (256-slot spellbook, 15 buffs), grouping/raids, merchants, banking, tradeskills/combines, doors, boats, corpses/loot, trades (PC↔PC and PC↔NPC), quests, and zone transitions.
+ - Char select, character create, and world→zone handoff on the Verant login/world protocol.
+ - Coexistence with modern clients (visibility, aggro, groups, raids, chat).
+ - Bot integration (including Trilogy-aware `^botlist`, `^raidshow`, `^rosterlist`).
+
+Note: this is still very much a **work in progress**, there will be bugs and stuff maybe not implemented.
+
+**Architecture (short version)**
+ - A standard EQEmu **patch translation layer** at [common/patches/trilogy*](common/patches/) handles struct/opcode translation (see the sibling `titanium.*` files for the template).
+ - A bespoke **EQNetwork session layer** — `TrilogyLoginServer`, `TrilogyWorldServer`, `TrilogyZoneServer`, and `TrilogyClient` — speaks the pre-Daybreak Verant UDP protocol (SEQSTART / ARQ / ARSP / fragment reassembly / CRC). Raw datagrams the normal `EQStream` stack can't identify are routed into these handlers via `OnUnknownPacket`.
+ - `TrilogyClient : public Client` plugs into the existing entity system, so `entity_list`, aggro/hate, groups/raids, and cross-client visibility all work unchanged.
+
+**Where to read more**
+ - [CLAUDE.md](CLAUDE.md) — architectural overview, the client-patch layer, the EQNetwork session layer, and the current list of Trilogy gotchas.
+ - [trilogy_plan.md](trilogy_plan.md) — original field-by-field struct/opcode reference and protocol-difference table.
+
+**Companion repositories (this fork)**
+ - [proxeeus/VisualEQ](https://github.com/proxeeus/VisualEQ) — work-in-progress 3D zone editor for spawns, zonelines, grids, etc.
+ - [proxeeus/quests](https://github.com/proxeeus/quests) — quest scripts (Perl/Lua) used with this server.
+ - [proxeeus/lua_modules](https://github.com/proxeeus/lua_modules) — shared Lua modules loaded by quest scripts.
+ - [proxeeus/plugins](https://github.com/proxeeus/plugins) — Perl quest plugins.
+ - [proxeeus/eqemu_db](https://github.com/proxeeus/eqemu_db) — the associated database.
+
+**Credits / references**
+ - [EQClassic](https://github.com/EQClassic) — authoritative reference for opcodes, struct layouts, and the DES login key.
+ - The upstream [EQEmu](https://github.com/EQEmu/Server) project, on top of which all of this is built.
+
 ## Bug Reports <img src="http://i.imgur.com/daf1Vjw.png" height="20">
 * Please use the [issue tracker](https://github.com/EQEmu/Server/issues) provided by GitHub to send us bug
 reports or feature requests.
