@@ -458,6 +458,29 @@ private:
 		uint32_t         pc_trade_offer_cp = 0, pc_trade_offer_sp = 0;
 		uint32_t         pc_trade_offer_gp = 0, pc_trade_offer_pp = 0;
 
+		// Inspect state — see HandleInspectRequest / HandleInspectAnswer.
+		//
+		// inspect_captured: latched on after the first successful answer
+		//   hex-dump.  v29c re-sends OP_InspectRequest ~2/sec while the
+		//   window is open — dumping every 1036B answer floods the log
+		//   (237 answers × 66 lines = 15,642 lines in 2 min was enough to
+		//   make the zone unresponsive).  One dump per session is all we
+		//   need to reverse-engineer the payload layout.
+		//
+		// pending_inspect_target_id: stashed on the REQUESTER's session at
+		//   inspect-request time — the entity id THIS session's client sees
+		//   for the target.  On Trilogy, a PC has TWO wire ids: its own
+		//   client sees itself with `player_spawn_id` = (char_id & 0x3FFF)
+		//   | 0x4000, but other clients receive spawn broadcasts using the
+		//   EQEmu entity id.  When the target's client builds the inspect
+		//   answer it fills PlayerID with its own-view id, which the
+		//   requester's client does not recognize (unknown-entity → dropped
+		//   silently, window never opens).  On relay we rewrite PlayerID
+		//   in the answer to this stashed value so the requester's client
+		//   sees an id it knows.  0 = no pending inspect.
+		bool             inspect_captured        = false;
+		uint16_t         pending_inspect_target_id = 0;
+
 		// ── Money-display reconciliation ─────────────────────────────────────
 		// The client's coin counter only refreshes from the PlayerProfile at zone-in.
 		// Tick() compares these last-pushed counts to the live PlayerProfile and relays
@@ -587,6 +610,24 @@ private:
 	                           const uint8_t* payload, uint32_t plen);
 	void HandleClassEndTraining(const std::string& addr, int port, Session& s,
 	                            const uint8_t* payload, uint32_t plen);
+
+	// Right-click inspect on another player.  Pure client-to-client relay per
+	// EQClassic model (server does not synthesize the answer payload — v29c
+	// builds it from its own equipment/inspect-text state).
+	//
+	// HandleInspectRequest: 8B inbound {int32 target_id, int32 player_id}.
+	//   Look up target session by entity id; if it's another Trilogy client,
+	//   forward the raw 8B to their session so their client builds + returns
+	//   an OP_InspectAnswer.  Bots / modern clients: log-only in Phase 1.
+	// HandleInspectAnswer: 1044B inbound {int32 target_id (=requester),
+	//   int32 player_id (=responder), uint8 payload[1036]}.  Forward the
+	//   raw packet to the requester's session.  When Zone:TrilogyInspectDebug
+	//   is on, hex-dump the 1036B payload so we can reverse-engineer the
+	//   item-slot / about-me-text layout for future bot inspect support.
+	void HandleInspectRequest(const std::string& addr, int port, Session& s,
+	                          const uint8_t* payload, uint32_t plen);
+	void HandleInspectAnswer(const std::string& addr, int port, Session& s,
+	                         const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
