@@ -773,7 +773,21 @@ bool Bot::BotCastDispel(Mob* tar, BotSpell& botSpell, uint32 iSpellTypes, const 
 bool Bot::BotCastNuke(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpell, const bool& checked_los) {
 
 	bool casted_spell = false;
-	if ((tar->GetHPRatio() <= 95.0f) || ((botClass == Class::Bard) || (botClass == Class::Shaman) || (botClass == Class::Enchanter) || (botClass == Class::Paladin) || (botClass == Class::ShadowKnight) || (botClass == Class::Warrior)))
+
+	// Hold nukes until aggro is established elsewhere so casters don't preempt
+	// the tank on a pull. Replaces prior tar->GetHPRatio() <= 95% proxy, which
+	// silently failed whenever the tank couldn't damage the mob at all (e.g.
+	// magic-immune ghouls with a non-magic-weapon group) — the target stayed
+	// at 100% HP forever and the caster never fired. Solo bots always allowed;
+	// original class whitelist (hybrids + non-DPS-caster classes) preserved.
+	const bool always_allowed = (botClass == Class::Bard || botClass == Class::Shaman ||
+		botClass == Class::Enchanter || botClass == Class::Paladin ||
+		botClass == Class::ShadowKnight || botClass == Class::Warrior);
+	Mob* hate_top = tar->GetHateTop();
+	const bool in_group = (GetGroup() != nullptr) || (GetRaid() != nullptr);
+	const bool aggro_safe = (hate_top != nullptr) && (hate_top != this || !in_group);
+
+	if (always_allowed || aggro_safe)
 	{
 		if (!checked_los && (!CheckLosFN(tar) || !CheckWaterLoS(tar))) {
 			return casted_spell;
@@ -1350,6 +1364,34 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 
 		if (IsCasting() && IsSitting())
 			Stand();
+
+		// Announce the cast on the real group/raid channel so it lands in
+		// the group chat window, not as an inline "says" line.  Skip buff
+		// pulses (self and group shields, songs, pre-combat prep) to keep
+		// chat readable during long fights.  Falls back to a private
+		// message to the owner when the bot is solo.
+		const uint32 buff_types = SpellType_Buff | SpellType_InCombatBuff |
+			SpellType_InCombatBuffSong | SpellType_OutOfCombatBuffSong |
+			SpellType_PreCombatBuff | SpellType_PreCombatBuffSong;
+		if (result && !(AIBot_spells[i].type & buff_types)) {
+			const char* target_name = (tar == this) ? "self" : tar->GetCleanName();
+			const auto msg = fmt::format("Casting {} on {}.",
+				spells[AIBot_spells[i].spellid].name, target_name);
+			if (IsRaidGrouped()) {
+				if (Raid* r = entity_list.GetRaidByBotName(GetName())) {
+					r->RaidGroupSay(msg.c_str(), GetCleanName(),
+						Language::CommonTongue, Language::MaxValue);
+				}
+			}
+			else if (Group* g = GetGroup()) {
+				g->GroupMessage(this, Language::CommonTongue,
+					Language::MaxValue, msg.c_str());
+			}
+			else if (Mob* owner = GetOwner()) {
+				owner->Message(Chat::PetResponse, "%s: %s",
+					GetCleanName(), msg.c_str());
+			}
+		}
 	}
 
 	// if the spell wasn't casted, then take back any extra mana that was given to the bot to cast that spell
@@ -1567,6 +1609,15 @@ bool Bot::AI_EngagedCastCheck() {
 
 		uint8 botClass = GetClass();
 		bool mayGetAggro = HasOrMayGetAggro();
+
+		// If the target is immune to non-magical melee, the tank cannot build
+		// meaningful hate and mayGetAggro pins every caster's nuke chance to
+		// zero for the whole fight.  Casters are the only reliable damage
+		// source in that case, so bypass the aggro gate.  Ghouls, spectres,
+		// some undead.  Applies to all classes' nuke branches below.
+		if (mayGetAggro && GetTarget()->GetSpecialAbility(SpecialAbility::MeleeImmunityExceptMagical)) {
+			mayGetAggro = false;
+		}
 
 		LogAIDetail("Engaged autocast check triggered (BOTS). Trying to cast healing spells then maybe offensive spells");
 
