@@ -1793,4 +1793,8 @@ void bot_command_addtoroster(Client* c, const Seperator* sep);
 void bot_command_removefromroster(Client* c, const Seperator* sep);
 void bot_command_raid_show(Client* c, const Seperator* sep);
 void bot_command_roster_list(Client* c, const Seperator* sep);
+void bot_command_spell_show(Client* c, const Seperator* sep);
+void bot_command_ss_show(Client* c, const Seperator* sep);
+void bot_command_ss_toggle(Client* c, const Seperator* sep);
+void bot_command_ss_delete(Client* c, const Seperator* sep);
 #endif
