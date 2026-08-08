@@ -1582,6 +1582,15 @@ bool Bot::AI_EngagedCastCheck() {
 		uint8 botClass = GetClass();
 		bool mayGetAggro = HasOrMayGetAggro();
 
+		// If the target is immune to non-magical melee, the tank cannot build
+		// meaningful hate and mayGetAggro pins every caster's nuke chance to
+		// zero for the whole fight.  Casters are the only reliable damage
+		// source in that case, so bypass the aggro gate.  Ghouls, spectres,
+		// some undead.  Applies to all classes' nuke branches below.
+		if (mayGetAggro && GetTarget()->GetSpecialAbility(SpecialAbility::MeleeImmunityExceptMagical)) {
+			mayGetAggro = false;
+		}
+
 		LogAIDetail("Engaged autocast check triggered (BOTS). Trying to cast healing spells then maybe offensive spells");
 
 		if (botClass == Class::Cleric) {
