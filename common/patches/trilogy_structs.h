@@ -1737,6 +1737,34 @@ static_assert(sizeof(LootingItem_Struct)    ==  16,
 	"Trilogy LootingItem_Struct must be 16 bytes");
 
 	} /*structs*/
+
+// ---------------------------------------------------------------------
+// Wire helper: normalise an EQEmu items.color / armor_tint value for the
+// v29c client's armour-tint pipeline (spawn equipcolors[], ServerZoneEntry
+// helmcolor, char-select cs_colors[], WearChange color).
+//
+// v29c reads the alpha byte as a "apply this tint" gate — alpha != 0
+// means "multiply the RGB over the material's default texture", alpha == 0
+// means "no tint, render the material's default colour". Modern EQEmu code
+// (Client::GetEquipmentColor, char-select paperdoll) falls back to
+// items.color when there is no explicit dye. That table stores a legacy
+// sentinel of 0xFF000000 (alpha=FF, RGB=0) for the majority of legacy
+// gear (leather, chain, cloth). Modern clients ignore that because they
+// gate tint on PlayerProfile.item_tint[i].UseTint; v29c has no such flag
+// and happily paints those pieces pitch-black.
+//
+// Rule: an all-zero RGB is never a real tint — strip the alpha so v29c
+// renders the material's default colour. Otherwise force alpha=FF so a
+// real dye (RGB != 0) actually applies (the legacy inventory.color dye
+// column stores dyes as 0x00RRGGBB with no alpha and would silently
+// no-op on v29c without the re-arm).
+// ---------------------------------------------------------------------
+inline uint32 NormalizeTintColor(uint32 color)
+{
+	if ((color & 0x00FFFFFFu) == 0) return 0;
+	return color | 0xFF000000u;
+}
+
 } /*Trilogy*/
 
 #endif /*COMMON_TRILOGY_STRUCTS_H*/
