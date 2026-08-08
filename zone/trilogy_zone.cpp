@@ -2801,7 +2801,13 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			ci.common.magic    = static_cast<int8>(Strings::ToInt(row[36]));
 			int32 clicklevel   = Strings::ToInt(row[37]);
 			ci.common.material = static_cast<uint8>(Strings::ToInt(row[38]));
-			ci.common.color    = static_cast<uint32>(Strings::ToUnsignedInt(row[39]));
+			// items.color for legacy leather/chain/plate gear carries the sentinel
+			// 0xFF000000 (alpha=FF, RGB=0). v29c stores this per-item and echoes
+			// it back in its own OP_WearChange when the player equips the piece
+			// (driving the OWN character's local render), which then multiplies
+			// the helm texture by RGB=0 = pitch-black. See NormalizeTintColor.
+			ci.common.color    = static_cast<uint32>(
+				Trilogy::NormalizeTintColor(Strings::ToUnsignedInt(row[39])));
 			ci.common.classes  = static_cast<uint16>(Strings::ToInt(row[41]));
 
 			// Effect slots: click > scroll > proc > worn (priority order)
@@ -3344,7 +3350,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		for (int mi = 0; mi < EQ::textures::materialCount; ++mi)
 			sp.equipment[mi] = static_cast<int8_t>(tc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi)
-			sp.equipcolors[mi] = static_cast<int32_t>(tc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(tc->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		// Seed v29c-client-known-material model from the spawn struct equipment.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
@@ -3478,7 +3485,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 				wc.wear_slot_id = 0; // head slot
 				wc.slot_graphic = static_cast<int8_t>(helmtex);
 				wc.sub_op       = 0;
-				wc.color        = static_cast<int32_t>(npc->GetEquipmentColor(EQ::textures::armorHead));
+				wc.color        = static_cast<int32_t>(
+					Trilogy::NormalizeTintColor(npc->GetEquipmentColor(EQ::textures::armorHead)));
 				SendApp(addr, port, s, 0x9220,
 				        reinterpret_cast<const uint8_t*>(&wc),
 				        static_cast<uint32_t>(sizeof(wc)));
@@ -4531,7 +4539,11 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 		if (hr.RowCount() > 0) {
 			auto hrow = hr.begin();
 			sze.helmet   = static_cast<int8_t>(Strings::ToInt(hrow[0]));
-			sze.helmcolor = static_cast<uint32_t>(Strings::ToUnsignedInt(hrow[1]));
+			// items.color for legacy leather/chain gear is 0xFF000000 — modern
+			// clients ignore that via PP.item_tint.UseTint, but v29c would apply
+			// it as an opaque black tint (pitch-black helm). See NormalizeTintColor.
+			sze.helmcolor = Trilogy::NormalizeTintColor(
+				static_cast<uint32_t>(Strings::ToUnsignedInt(hrow[1])));
 		}
 	}
 
@@ -7043,7 +7055,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 						if (fb > 0 && fb < 0xFF) mat = fb;
 					}
 					sp.equipment[mi]   = static_cast<int8_t>(mat);
-					sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+					sp.equipcolors[mi] = static_cast<int32_t>(
+						Trilogy::NormalizeTintColor(npc->GetEquipmentColor(static_cast<uint8_t>(mi))));
 				}
 				// Weapon slots (Melee1, Melee2) — use equipped item material as-is
 				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
@@ -7161,7 +7174,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Equipment textures and armor tints
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 			sp.equipment[mi]   = static_cast<int8_t>(bot->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
-			sp.equipcolors[mi] = static_cast<int32_t>(bot->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(bot->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
 		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponSecondary));
@@ -7229,7 +7243,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 		}
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
-			sp.equipcolors[mi] = static_cast<int32_t>(c->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(c->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
 
 		LogInfo("[TrilogyZone] Player[{}] name='{}' id={} race={} x={} y={} z={}",
@@ -7280,7 +7295,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 			for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 				sp.equipment[mi]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
-				sp.equipcolors[mi] = static_cast<int32_t>(corpse->GetEquipmentColor(static_cast<uint8_t>(mi)));
+				sp.equipcolors[mi] = static_cast<int32_t>(
+					Trilogy::NormalizeTintColor(corpse->GetEquipmentColor(static_cast<uint8_t>(mi))));
 			}
 			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
@@ -7400,7 +7416,8 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 		sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 	}
 	for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
-		sp.equipcolors[mi] = static_cast<int32_t>(c->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		sp.equipcolors[mi] = static_cast<int32_t>(
+			Trilogy::NormalizeTintColor(c->GetEquipmentColor(static_cast<uint8_t>(mi))));
 	}
 
 	// Seed v29c-client-known-material model from the spawn struct.
@@ -7500,7 +7517,8 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	// Armor slots (player-race path)
 	for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 		sp.equipment[mi]   = static_cast<int8_t>(npc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
-		sp.equipcolors[mi] = static_cast<int32_t>(npc->GetEquipmentColor(static_cast<uint8_t>(mi)));
+		sp.equipcolors[mi] = static_cast<int32_t>(
+			Trilogy::NormalizeTintColor(npc->GetEquipmentColor(static_cast<uint8_t>(mi))));
 	}
 	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
@@ -7583,7 +7601,8 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 			sp.equipment[mi]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
-			sp.equipcolors[mi] = static_cast<int32_t>(corpse->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(corpse->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
 		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
 		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
@@ -9368,7 +9387,9 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 				if (strlen(w_item->IDFile) > 2 && Strings::IsNumber(&w_item->IDFile[2])) {
 					material = Strings::ToUnsignedInt(&w_item->IDFile[2]);
 				}
-				color = w_inst->GetColor() ? w_inst->GetColor() : w_item->Color;
+				// Normalise the "no tint" legacy sentinel (see NormalizeTintColor).
+				color = Trilogy::NormalizeTintColor(
+					w_inst->GetColor() ? w_inst->GetColor() : w_item->Color);
 			}
 		}
 

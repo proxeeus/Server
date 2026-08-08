@@ -171,7 +171,10 @@ namespace Trilogy
 				strncpy(eq->zone[i], zname, sizeof(eq->zone[i]) - 1);
 			for (uint32 j = 0; j < static_cast<uint32>(EQ::textures::materialCount); ++j) {
 				eq->equip[i][j]     = static_cast<int8>(src.Equip[j].Material & 0xFFu);
-				eq->cs_colors[i][j] = src.Equip[j].Color;
+				// v29c applies the RGB unconditionally when alpha != 0; strip the
+				// legacy 0xFF000000 "no tint" sentinel so leather/chain gear does
+				// not render pitch-black on the paperdoll.
+				eq->cs_colors[i][j] = Trilogy::NormalizeTintColor(src.Equip[j].Color);
 			}
 		}
 

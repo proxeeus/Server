@@ -1335,7 +1335,8 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 				if (fb > 0 && fb < 0xFF) mat = fb;
 			}
 			sp.equipment[mi]   = static_cast<int8_t>(mat);
-			sp.equipcolors[mi] = static_cast<int32_t>(mob->GetEquipmentColor(static_cast<uint8_t>(mi)));
+			sp.equipcolors[mi] = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(mob->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
 	} else {
 		uint8_t tex     = mob->GetTexture();
@@ -1464,7 +1465,8 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 			wc.wear_slot_id = 0; // head slot
 			wc.slot_graphic = static_cast<int8_t>(helmtex);
 			wc.sub_op       = 0;
-			wc.color        = static_cast<int32_t>(mob->GetEquipmentColor(EQ::textures::armorHead));
+			wc.color        = static_cast<int32_t>(
+				Trilogy::NormalizeTintColor(mob->GetEquipmentColor(EQ::textures::armorHead)));
 			m_tzs->SendToSession(m_session_key, 0x9220,
 			                     reinterpret_cast<const uint8_t*>(&wc),
 			                     static_cast<uint32_t>(sizeof(wc)));
@@ -2449,7 +2451,11 @@ void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
 	wc.wear_slot_id = static_cast<int8_t>(src->wear_slot_id);
 	wc.slot_graphic = static_cast<int8_t>(material);
 	wc.sub_op       = 0;
-	wc.color        = static_cast<int32_t>(src->color.Color);
+	// Strip the 0xFF000000 "no tint" sentinel that legacy items.color carries
+	// (see NormalizeTintColor).  Without this leather/chain gear renders
+	// pitch-black on v29c because the client applies the RGB unconditionally.
+	wc.color        = static_cast<int32_t>(
+		Trilogy::NormalizeTintColor(static_cast<uint32_t>(src->color.Color)));
 	wc.wc_unknown3  = 0;
 	wc.flag         = 0;
 
@@ -4680,7 +4686,13 @@ bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 		ci.common.itemtype= static_cast<uint8>(it->ItemType);
 		ci.common.magic   = it->Magic ? 1 : 0;
 		ci.common.material= static_cast<uint8>(it->Material);
-		ci.common.color   = static_cast<uint32>(it->Color);
+		// items.color for legacy leather/chain/plate gear carries the sentinel
+		// 0xFF000000 (alpha=FF, RGB=0). Modern clients ignore that via
+		// PP.item_tint.UseTint; v29c stores this value on the item and later
+		// echoes it back inside its own OP_WearChange when the player equips
+		// the piece, driving its own local render — which multiplies the helm
+		// texture by RGB=0 and paints it pitch-black. See NormalizeTintColor.
+		ci.common.color   = static_cast<uint32>(Trilogy::NormalizeTintColor(it->Color));
 		ci.common.classes = static_cast<uint16>(it->Classes);
 
 		uint16 eff_id    = 0;

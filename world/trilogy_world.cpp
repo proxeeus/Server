@@ -716,12 +716,14 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 			}
 
 			// Color: prefer the character's saved dye (character_material); fall
-			// back to the item's base color. Force alpha=0xFF when an RGB is set
-			// so the client actually applies the tint — items.color and the legacy
-			// inventory.color column are both stored as 0x00RRGGBB.
+			// back to the item's base color. NormalizeTintColor strips the
+			// legacy 0xFF000000 sentinel that most leather/chain items carry —
+			// modern EQEmu code ignores that via PP.item_tint.UseTint, but v29c
+			// has no such flag and would render the piece pitch-black. Any real
+			// RGB dye gets alpha=FF re-armed so the tint actually applies.
 			uint32_t clr = (eqidx <= 6) ? tint_color[eqidx] : 0;
 			if (clr == 0 && item_clr != 0) {
-				clr = item_clr | 0xFF000000u;
+				clr = Trilogy::NormalizeTintColor(item_clr);
 			}
 			cs.cs_colors[slot][eqidx] = clr;
 		}
