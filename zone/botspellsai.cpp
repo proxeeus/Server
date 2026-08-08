@@ -1364,6 +1364,18 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 
 		if (IsCasting() && IsSitting())
 			Stand();
+
+		// Announce the cast to the group so the owner can see what each bot
+		// is actually doing without hunting through the combat log.  Skip
+		// buff pulses (self and group shields, songs, pre-combat prep) to
+		// keep chat readable during long fights.
+		const uint32 buff_types = SpellType_Buff | SpellType_InCombatBuff |
+			SpellType_InCombatBuffSong | SpellType_OutOfCombatBuffSong |
+			SpellType_PreCombatBuff | SpellType_PreCombatBuffSong;
+		if (result && !(AIBot_spells[i].type & buff_types)) {
+			const char* target_name = (tar == this) ? "self" : tar->GetCleanName();
+			BotGroupSay(this, "Casting %s on %s.", spells[AIBot_spells[i].spellid].name, target_name);
+		}
 	}
 
 	// if the spell wasn't casted, then take back any extra mana that was given to the bot to cast that spell
