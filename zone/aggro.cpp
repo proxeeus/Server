@@ -1211,7 +1211,15 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 
 	if (_DistNoRoot <= size_mod) {
 		//A hack to kill an exploit till we get something better.
-		if (flymode != GravityBehavior::Flying && _zDist > 500 && !CheckLastLosState()) {
+		//Fleeing targets are exempted: flee AI can path a mob off a ledge or
+		//through a terrain seam, dropping it far below the attacker with LoS
+		//broken.  That trips this guard on a target the group was legitimately
+		//fighting one tick earlier, silently stalling autoattack + bot casts
+		//until the mob leashes back.  flee_mode is only set from active-combat
+		//paths (CheckFlee on damage, SE_Fear application), so exempting it
+		//doesn't open a new through-wall vector.
+		if (flymode != GravityBehavior::Flying && _zDist > 500 && !CheckLastLosState()
+		    && !other->IsFleeing()) {
 			return false;
 		}
 		return true;
