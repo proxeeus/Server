@@ -4686,7 +4686,13 @@ bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 		ci.common.itemtype= static_cast<uint8>(it->ItemType);
 		ci.common.magic   = it->Magic ? 1 : 0;
 		ci.common.material= static_cast<uint8>(it->Material);
-		ci.common.color   = static_cast<uint32>(it->Color);
+		// items.color for legacy leather/chain/plate gear carries the sentinel
+		// 0xFF000000 (alpha=FF, RGB=0). Modern clients ignore that via
+		// PP.item_tint.UseTint; v29c stores this value on the item and later
+		// echoes it back inside its own OP_WearChange when the player equips
+		// the piece, driving its own local render — which multiplies the helm
+		// texture by RGB=0 and paints it pitch-black. See NormalizeTintColor.
+		ci.common.color   = static_cast<uint32>(Trilogy::NormalizeTintColor(it->Color));
 		ci.common.classes = static_cast<uint16>(it->Classes);
 
 		uint16 eff_id    = 0;

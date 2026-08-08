@@ -2801,7 +2801,13 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			ci.common.magic    = static_cast<int8>(Strings::ToInt(row[36]));
 			int32 clicklevel   = Strings::ToInt(row[37]);
 			ci.common.material = static_cast<uint8>(Strings::ToInt(row[38]));
-			ci.common.color    = static_cast<uint32>(Strings::ToUnsignedInt(row[39]));
+			// items.color for legacy leather/chain/plate gear carries the sentinel
+			// 0xFF000000 (alpha=FF, RGB=0). v29c stores this per-item and echoes
+			// it back in its own OP_WearChange when the player equips the piece
+			// (driving the OWN character's local render), which then multiplies
+			// the helm texture by RGB=0 = pitch-black. See NormalizeTintColor.
+			ci.common.color    = static_cast<uint32>(
+				Trilogy::NormalizeTintColor(Strings::ToUnsignedInt(row[39])));
 			ci.common.classes  = static_cast<uint16>(Strings::ToInt(row[41]));
 
 			// Effect slots: click > scroll > proc > worn (priority order)
