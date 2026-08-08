@@ -773,7 +773,21 @@ bool Bot::BotCastDispel(Mob* tar, BotSpell& botSpell, uint32 iSpellTypes, const 
 bool Bot::BotCastNuke(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpell, const bool& checked_los) {
 
 	bool casted_spell = false;
-	if ((tar->GetHPRatio() <= 95.0f) || ((botClass == Class::Bard) || (botClass == Class::Shaman) || (botClass == Class::Enchanter) || (botClass == Class::Paladin) || (botClass == Class::ShadowKnight) || (botClass == Class::Warrior)))
+
+	// Hold nukes until aggro is established elsewhere so casters don't preempt
+	// the tank on a pull. Replaces prior tar->GetHPRatio() <= 95% proxy, which
+	// silently failed whenever the tank couldn't damage the mob at all (e.g.
+	// magic-immune ghouls with a non-magic-weapon group) — the target stayed
+	// at 100% HP forever and the caster never fired. Solo bots always allowed;
+	// original class whitelist (hybrids + non-DPS-caster classes) preserved.
+	const bool always_allowed = (botClass == Class::Bard || botClass == Class::Shaman ||
+		botClass == Class::Enchanter || botClass == Class::Paladin ||
+		botClass == Class::ShadowKnight || botClass == Class::Warrior);
+	Mob* hate_top = tar->GetHateTop();
+	const bool in_group = (GetGroup() != nullptr) || (GetRaid() != nullptr);
+	const bool aggro_safe = (hate_top != nullptr) && (hate_top != this || !in_group);
+
+	if (always_allowed || aggro_safe)
 	{
 		if (!checked_los && (!CheckLosFN(tar) || !CheckWaterLoS(tar))) {
 			return casted_spell;
