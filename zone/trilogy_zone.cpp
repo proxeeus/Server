@@ -264,6 +264,24 @@ static constexpr uint16_t ZN_OP_GroupCancelInvite  = 0x4120; // bidirectional: d
 static constexpr uint16_t ZN_OP_GroupDisband       = 0x4420; // client -> zone: leave / kick / disband, GroupDisband_Struct (60B)
 static constexpr uint16_t ZN_OP_GroupUpdate        = 0x2620; // zone -> client: GroupUpdate_Struct (228B)
 
+// Inspect opcodes (right-click another player → equipment window + about-me text)
+// Source: EQClassic/Common/Include/eq_opcodes.h + EQClassic/Zone/Source/client_process.cpp:4590
+//   Model: pure client-to-client relay.  Server does NOT construct the answer
+//   payload — the v29c client builds it itself from local equipment + inspect
+//   text, and the server just forwards the packet to the requester/target.
+//
+//   OP_InspectRequest (0xb520) — 8 B: {int32 TargetID, int32 PlayerID}
+//                                     TargetID = who is being inspected
+//                                     PlayerID = who is inspecting
+//   OP_InspectAnswer  (0xb620) — 1044 B: {int32 TargetID, int32 PlayerID,
+//                                         uint8 payload[1036]}
+//                                     TargetID/PlayerID SWAPPED on the answer
+//                                     (TargetID = requester, PlayerID = responder)
+//                                     payload = opaque to server — item slots
+//                                     + about-me text; layout TBD from capture
+static constexpr uint16_t ZN_OP_InspectRequest = 0xb520;
+static constexpr uint16_t ZN_OP_InspectAnswer  = 0xb620;
+
 // EQNetwork header flags (identical to world handler)
 static constexpr uint8_t HDR0_ARQ      = 0x02;
 static constexpr uint8_t HDR0_FRAGMENT = 0x08;
@@ -1714,6 +1732,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_GroupDisband && s.trilogy_client) {
 			s.trilogy_client->HandleIncomingGroupDisband(payload, plen);
 		}
+		else if (opcode == ZN_OP_InspectRequest && s.trilogy_client)
+			HandleInspectRequest(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_InspectAnswer && s.trilogy_client)
+			HandleInspectAnswer(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClassTraining && s.trilogy_client)
 			HandleClassTraining(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClassTrainSkill && s.trilogy_client)
@@ -6919,6 +6941,260 @@ void TrilogyZoneServer::HandleClassEndTraining(const std::string& addr, int port
 	    s.trilogy_client->GetCleanName());
 	s.trilogy_client->Message(Chat::Say, "%s says, '%s'",
 	    m->GetCleanName(), farewell_body.c_str());
+}
+
+// ============================================================
+// Inspect (right-click another player) — pure client-to-client relay.
+// Wire model (EQClassic/Zone/Source/client_process.cpp:4590-4618):
+//   Client A sends 8B OP_InspectRequest {target=B, player=A} → server
+//   forwards to B → B's client builds a 1044B OP_InspectAnswer locally
+//   from its own equipment + inspect text → server relays back to A.
+// The 1036B payload is opaque to the server.  For Phase 1 we only wire
+// Trilogy ↔ Trilogy; bots + modern-client cross-inspect are follow-ups
+// that need the payload layout decoded from a Zone:TrilogyInspectDebug
+// capture of a real v29c answer.
+// ============================================================
+void TrilogyZoneServer::HandleInspectRequest(const std::string& addr, int port, Session& s,
+                                             const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < 8) {
+		LogInfo("[TrilogyZone] Inspect request: short payload {} (expected 8) char={}",
+		        plen, s.char_name);
+		return;
+	}
+
+	uint32_t target_id = 0, player_id = 0;
+	std::memcpy(&target_id, payload + 0, 4);
+	std::memcpy(&player_id, payload + 4, 4);
+
+	// Look up target via FindSessionByEntityId FIRST — it matches on both
+	// EQEmu entity id AND wire player_spawn_id, which is required for
+	// self-inspect: the wire target_id comes from the client's self-view
+	// (= player_spawn_id, e.g. 16616), NOT the EQEmu entity id (= 232),
+	// and entity_list.GetMob() only indexes EQEmu ids.  Using GetMob first
+	// used to make self-inspect silently drop ("no entity 16616 in zone").
+	Session* partner = FindSessionByEntityId(static_cast<uint16_t>(target_id));
+	if (partner && partner->trilogy_client) {
+		// Trilogy ↔ Trilogy: relay the raw 8B so the target's client builds
+		// + returns an OP_InspectAnswer, which we relay back in HandleInspectAnswer.
+		//
+		// Stash the target id AS THIS CLIENT SEES IT.  When the answer comes
+		// back the responder will have filled PlayerID with THEIR own-view id
+		// (Curwen self=16417) — but this session's client only knows Curwen
+		// as target_id (=221 in the 2026-08-08 repro).  Without the rewrite
+		// the requester's client silently drops the answer and the window
+		// never opens.
+		s.pending_inspect_target_id = static_cast<uint16_t>(target_id);
+		const bool is_self = (partner == &s);
+		LogInfo("[TrilogyZone] Inspect request RELAY: {} (entity {}) inspects {} (entity {}){}",
+		        s.char_name, player_id, partner->char_name, target_id,
+		        is_self ? " [SELF]" : "");
+		SendApp(partner->source_addr, partner->source_port, *partner,
+		        ZN_OP_InspectRequest, payload, 8);
+
+		// Notify the target — v29c does NOT auto-generate this
+		// notification server-side (unlike Titanium+, per modern EQEmu
+		// client.cpp:6227 comment).  The initiator gets a client-native
+		// message once the answer is displayed correctly (verified 2026-08-08
+		// after the doubled-target header fix), so no server-side self
+		// message needed.  Suppress for self-inspect.
+		if (!is_self) {
+			partner->trilogy_client->Message(Chat::White,
+			    "%s is looking at your equipment...", s.char_name);
+		}
+		return;
+	}
+
+	// Fallback lookup: target may be a non-Trilogy entity (bot/NPC/modern PC).
+	Mob* target = entity_list.GetMob(static_cast<uint16_t>(target_id));
+	if (!target) {
+		LogInfo("[TrilogyZone] Inspect request: no entity {} in zone (from char={})",
+		        target_id, s.char_name);
+		return;
+	}
+
+	// ── Bot inspect ──────────────────────────────────────────────────────
+	// Bots have no client to build the answer, so build the v29c
+	// OP_InspectAnswer server-side from the bot's equipment + persisted
+	// inspect message and send it directly to the requester.
+	//
+	// v29c 1036B payload layout (verified from PC captures 2026-08-08):
+	//   +0x000..+0x2BF  22 slots × 32B null-terminated ASCII item names
+	//                    (wire slot order: 0=charm .. 20=waist, 21=ammo —
+	//                    powerSource has no wire slot in v29c so we map
+	//                    wire[21] → EQEmu slotAmmo(22))
+	//   +0x2C0..+0x2EB  22 × uint16 icon ids, 0xFFFF = no icon
+	//   +0x2EC..+0x40B  288B About-Me / inspect message text
+	// Header (8B before body): both TargetID and PlayerID = bot's entity
+	// id (the same value all clients see for bots, unlike PCs — bots have
+	// no dual-wire-id problem).
+	if (target->IsBot()) {
+		Bot* bot = target->CastToBot();
+		std::vector<uint8_t> pkt(1044, 0);
+		const uint32_t bot_id = static_cast<uint32_t>(bot->GetID());
+		std::memcpy(pkt.data() + 0, &bot_id, 4);
+		std::memcpy(pkt.data() + 4, &bot_id, 4);
+
+		uint8_t* body = pkt.data() + 8;
+		uint16_t* icons = reinterpret_cast<uint16_t*>(body + 0x2C0);
+		for (int i = 0; i < 22; ++i) icons[i] = 0xFFFF;
+
+		// wire slot → EQEmu invslot mapping.  Identical for 0..20; slot 21
+		// (ammo on the wire) skips the modern powerSource=21 gap.
+		static constexpr int16 kSlotMap[22] = {
+			EQ::invslot::slotCharm,     EQ::invslot::slotEar1,
+			EQ::invslot::slotHead,      EQ::invslot::slotFace,
+			EQ::invslot::slotEar2,      EQ::invslot::slotNeck,
+			EQ::invslot::slotShoulders, EQ::invslot::slotArms,
+			EQ::invslot::slotBack,      EQ::invslot::slotWrist1,
+			EQ::invslot::slotWrist2,    EQ::invslot::slotRange,
+			EQ::invslot::slotHands,     EQ::invslot::slotPrimary,
+			EQ::invslot::slotSecondary, EQ::invslot::slotFinger1,
+			EQ::invslot::slotFinger2,   EQ::invslot::slotChest,
+			EQ::invslot::slotLegs,      EQ::invslot::slotFeet,
+			EQ::invslot::slotWaist,     EQ::invslot::slotAmmo,
+		};
+
+		for (int wire_slot = 0; wire_slot < 22; ++wire_slot) {
+			const EQ::ItemInstance* inst = bot->GetBotItem(static_cast<uint16>(kSlotMap[wire_slot]));
+			if (!inst) continue;
+			const EQ::ItemData* item = inst->GetItem();
+			if (!item) continue;
+			char* name_dst = reinterpret_cast<char*>(body + wire_slot * 32);
+			std::strncpy(name_dst, item->Name, 31); // 31 chars + NUL
+			icons[wire_slot] = static_cast<uint16_t>(item->Icon);
+		}
+
+		// About-Me: from bot_inspect_messages via Bot::GetInspectMessage
+		// (loaded at bot spawn — bot.cpp:247).  288B max, always NUL-terminate.
+		const auto& msg = bot->GetInspectMessage();
+		if (msg.text[0]) {
+			std::strncpy(reinterpret_cast<char*>(body + 0x2EC), msg.text, 287);
+		}
+
+		LogInfo("[TrilogyZone] Bot inspect: {} inspects bot {} (entity {}) — built server-side",
+		        s.char_name, bot->GetCleanName(), bot_id);
+		SendApp(addr, port, s, ZN_OP_InspectAnswer, pkt.data(), 1044);
+		return;
+	}
+
+	// Other non-Trilogy targets (modern-client PC, non-bot NPC) — not implemented.
+	const char* kind =
+	    target->IsClient() ? "client" :
+	    target->IsNPC()    ? "npc"    : "other";
+	LogInfo("[TrilogyZone] Inspect request DROP: {} inspects entity {} (kind={}, name={}) — "
+	        "no Trilogy session; modern-client inspect not implemented",
+	        s.char_name, target_id, kind, target->GetCleanName());
+}
+
+void TrilogyZoneServer::HandleInspectAnswer(const std::string& /*addr*/, int /*port*/, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	// Expected 1044 bytes: 8B header + 1036B opaque payload.
+	if (plen < 8) {
+		LogInfo("[TrilogyZone] Inspect answer: short payload {} char={}", plen, s.char_name);
+		return;
+	}
+
+	uint32_t requester_id = 0, responder_id = 0;
+	std::memcpy(&requester_id, payload + 0, 4); // TargetID on the answer = the requester
+	std::memcpy(&responder_id, payload + 4, 4); // PlayerID on the answer = the responder (us)
+
+	// Hex-dump the 1036B payload the FIRST time only.  v29c re-sends
+	// OP_InspectRequest ~2/sec while the window is open — logging every
+	// answer floods the zone log (237 × 66 = 15,642 lines / 2 min in the
+	// original repro was enough to make the zone unresponsive).  One
+	// capture is all we need to reverse-engineer the payload layout.
+	if (!s.inspect_captured) {
+		const uint8_t* body = payload + 8;
+		const uint32_t body_len = plen - 8;
+		LogInfo("[TrilogyZone] Inspect answer CAPTURE from {} (entity {}) to entity {} — "
+		        "payload {} bytes:",
+		        s.char_name, responder_id, requester_id, body_len);
+		for (uint32_t off = 0; off < body_len; off += 16) {
+			char hex[64] = {};
+			char asc[17] = {};
+			char* hp = hex;
+			for (uint32_t j = 0; j < 16; ++j) {
+				if (off + j < body_len) {
+					const uint8_t b = body[off + j];
+					hp += std::snprintf(hp, hex + sizeof(hex) - hp, "%02x ", b);
+					asc[j] = (b >= 0x20 && b < 0x7f) ? static_cast<char>(b) : '.';
+				} else {
+					hp += std::snprintf(hp, hex + sizeof(hex) - hp, "   ");
+					asc[j] = ' ';
+				}
+			}
+			asc[16] = '\0';
+			LogInfo("[TrilogyZone]   +{:04x}  {} |{}|", off, hex, asc);
+		}
+		s.inspect_captured = true;
+	}
+
+	// TODO(inspect-phase2): once the CAPTURE dump identifies the text-field
+	// offset, snapshot the inspect message to the DB here via
+	// database.SaveCharacterInspectMessage(s.char_id, ...).  Leaving the hook
+	// unwired for now so we don't scribble unknown bytes into character_inspect_messages.
+
+	// Relay to the requester.  Per EQClassic model, forward the packet
+	// including the opaque payload — BUT rewrite both header ids so the
+	// v29c client's UI dispatches to the correct window.
+	//
+	// The responder built the answer using the EQClassic swap convention
+	// (TargetID = requester, PlayerID = responder self-view).  Two problems
+	// for the requester's client after receipt:
+	//   1. PlayerID = responder's own-view (Curwen self=16417) but this
+	//      requester's client only knows the responder under a different
+	//      id (Nekoto sees Curwen as 221 in the 2026-08-08 repro).  Without
+	//      fixing this, the client silently drops the answer (unknown entity)
+	//      and the inspect window never opens.
+	//   2. TargetID = requester's own id (Nekoto self=16616), which the
+	//      v29c client's fullscreen/semi-transparent UI reads as "this
+	//      answer describes ME" and opens the character sheet instead of
+	//      the dedicated inspect-other window.  (The old stone UI doesn't
+	//      check TargetID this way — same relay opens the correct window
+	//      there.)
+	//
+	// Fix: rewrite the header into "displayed / inspector" order that both
+	// UIs handle correctly:
+	//   payload[+0] TargetID = displayed entity, in REQUESTER'S VIEW
+	//                        = requester->pending_inspect_target_id (=221)
+	//   payload[+4] PlayerID = the requester itself, self-view
+	//                        = original answer's TargetID (=requester_id, 16616)
+	// For self-inspect both values equal the requester's self id, so the
+	// UI opens the char sheet — which is the correct behavior for self.
+	Session* requester = FindSessionByEntityId(static_cast<uint16_t>(requester_id));
+	if (!requester || !requester->trilogy_client) {
+		LogInfo("[TrilogyZone] Inspect answer: no Trilogy session for requester entity {} "
+		        "(from char={}) — dropping",
+		        requester_id, s.char_name);
+		return;
+	}
+
+	std::vector<uint8_t> patched(payload, payload + plen);
+	if (requester->pending_inspect_target_id != 0) {
+		// Set BOTH fields to the responder's id AS THE REQUESTER SEES IT.
+		// Empirical: on the fullscreen/semi-transparent UI, whichever field
+		// the client uses for character-name lookup was resolving to the
+		// requester's OWN entity (because we had put requester_id in
+		// PlayerID), so the inspect window showed "Nekoto" not "Curwen".
+		// Setting both to the target-from-requester-view keeps any
+		// interpretation (route id, display id, name lookup id) pointed
+		// at the correct entity in the requester's local table.  For
+		// self-inspect this collapses to (self,self) same as before.
+		const uint32_t tid = requester->pending_inspect_target_id;
+		std::memcpy(patched.data() + 0, &tid, 4);
+		std::memcpy(patched.data() + 4, &tid, 4);
+		LogInfo("[TrilogyZone] Inspect answer relay: rewrote header target={} player={} "
+		        "(was target={} player={}) for requester {} (responder {})",
+		        tid, tid, requester_id, responder_id,
+		        requester->char_name, s.char_name);
+	}
+
+	SendApp(requester->source_addr, requester->source_port, *requester,
+	        ZN_OP_InspectAnswer, patched.data(), plen);
 }
 
 // ============================================================
