@@ -1365,16 +1365,32 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 		if (IsCasting() && IsSitting())
 			Stand();
 
-		// Announce the cast to the group so the owner can see what each bot
-		// is actually doing without hunting through the combat log.  Skip
-		// buff pulses (self and group shields, songs, pre-combat prep) to
-		// keep chat readable during long fights.
+		// Announce the cast on the real group/raid channel so it lands in
+		// the group chat window, not as an inline "says" line.  Skip buff
+		// pulses (self and group shields, songs, pre-combat prep) to keep
+		// chat readable during long fights.  Falls back to a private
+		// message to the owner when the bot is solo.
 		const uint32 buff_types = SpellType_Buff | SpellType_InCombatBuff |
 			SpellType_InCombatBuffSong | SpellType_OutOfCombatBuffSong |
 			SpellType_PreCombatBuff | SpellType_PreCombatBuffSong;
 		if (result && !(AIBot_spells[i].type & buff_types)) {
 			const char* target_name = (tar == this) ? "self" : tar->GetCleanName();
-			BotGroupSay(this, "Casting %s on %s.", spells[AIBot_spells[i].spellid].name, target_name);
+			const auto msg = fmt::format("Casting {} on {}.",
+				spells[AIBot_spells[i].spellid].name, target_name);
+			if (IsRaidGrouped()) {
+				if (Raid* r = entity_list.GetRaidByBotName(GetName())) {
+					r->RaidGroupSay(msg.c_str(), GetCleanName(),
+						Language::CommonTongue, Language::MaxValue);
+				}
+			}
+			else if (Group* g = GetGroup()) {
+				g->GroupMessage(this, Language::CommonTongue,
+					Language::MaxValue, msg.c_str());
+			}
+			else if (Mob* owner = GetOwner()) {
+				owner->Message(Chat::PetResponse, "%s: %s",
+					GetCleanName(), msg.c_str());
+			}
 		}
 	}
 
