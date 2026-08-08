@@ -674,6 +674,10 @@ public:
 	void SetBotEnforceSpellSetting(bool enforcespellsettings, bool save = false);
 	bool GetBotEnforceSpellSetting() const { return m_enforce_spell_settings; }
 
+	const std::vector<BotSpells_Struct>& GetAIBotSpells() const { return AIBot_spells; }
+	const std::vector<BotSpells_Struct>& GetAIBotSpellsEnforced() const { return AIBot_spells_enforced; }
+	const std::map<uint16, BotSpellSetting>& GetBotSpellSettings() const { return bot_spell_settings; }
+
 	void SetFeigned(bool in_feigned, Bot* b);
 
 	// Class Destructors
