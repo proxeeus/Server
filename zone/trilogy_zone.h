@@ -646,6 +646,13 @@ private:
 	void SendAck(const std::string& addr, int port, Session& s);
 	void SendClose(const std::string& addr, int port, Session& s);
 
+	// Perform the full camp-out flow: leave raid/group, save merc, save
+	// character, send SpawnAppearance(SAT_Camp) so the client shows the
+	// graceful camp-out transition (not the "You have been disconnected"
+	// screen), then SendClose.  Caller is responsible for RemoveSession
+	// afterwards (which invalidates the `s` reference).
+	void CompleteCamp(uint64_t session_key, Session& s);
+
 	void RemoveSession(uint64_t key);
 
 	static uint64_t SessionKey(const std::string& addr, int port);
