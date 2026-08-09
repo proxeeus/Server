@@ -122,6 +122,16 @@ static constexpr uint16_t ZN_OP_MoveItem    = 0x2c21; // client -> zone: MoveIte
 static constexpr uint16_t ZN_OP_DropItem    = 0x3520; // client -> zone: player drops cursor item on ground
 static constexpr uint16_t ZN_OP_PickupItem  = 0x3620; // client -> zone: player clicks ground item to pick it up
 static constexpr uint16_t ZN_OP_Camp        = 0x0722; // client -> zone: /camp command (no payload)
+// Client -> zone: sent at T+30s from OP_Camp if the client's local countdown
+// completed without interruption.  This is the authoritative "camp finished"
+// signal in the Verant-era protocol; EQClassic ProcessOP_DeleteSpawn
+// (LS/zone/client_process.cpp:2241) saves, broadcasts DeleteSpawn to nearby
+// clients, sends 0x5941, then Disconnects.  We do the same via CompleteCamp.
+static constexpr uint16_t ZN_OP_DeleteSpawn = 0x5021;
+// Client -> zone: fragmented ~8100-byte PlayerProfile dump sent alongside
+// OP_DeleteSpawn during camp-out (and again on zone transitions).  EQClassic
+// just calls Save() and does not ack — the client does not wait for a reply.
+static constexpr uint16_t ZN_OP_PlayerSave2 = 0x5521;
 static constexpr uint16_t ZN_OP_ZoneChange  = 0xa320; // bidirectional: ZoneChange_Struct (68 bytes)
 
 // Combat / looting opcodes
@@ -1826,9 +1836,31 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
 			HandleMemorizeSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Camp && s.trilogy_client && !s.camping) {
+			// Diagnostic only — the client owns the 30 s countdown and
+			// signals completion via ZN_OP_DeleteSpawn (0x5021).  See the
+			// long comment in Tick() for why this is not a server-driven
+			// timer any more.
 			s.camping    = true;
 			s.camp_start = std::time(nullptr);
 			LogInfo("[TrilogyZone] Camp initiated for {}", s.char_name);
+		}
+		else if (opcode == ZN_OP_DeleteSpawn && s.trilogy_client) {
+			// Client's own 30 s /camp countdown expired without interruption.
+			// This is the authoritative camp-complete signal — process the
+			// full camp-out flow and drop the session immediately.  We do NOT
+			// touch `s` after RemoveSession (it invalidates the reference).
+			uint64_t key = SessionKey(addr, port);
+			CompleteCamp(key, s);
+			RemoveSession(key);
+			return;
+		}
+		else if (opcode == ZN_OP_PlayerSave2 && s.trilogy_client) {
+			// Fragmented PlayerProfile dump the client sends alongside
+			// OP_DeleteSpawn (and on zone-out).  EQClassic just Save()s
+			// and sends no ack — the client does not wait for a reply.
+			// Content of the packet is not parsed; our DB save from
+			// TrilogyClient::Save() is authoritative.
+			s.trilogy_client->Save();
 		}
 		else if ((opcode == ZN_OP_AutoAttack || opcode == ZN_OP_AutoAttack2) && s.trilogy_client) {
 			// 4-byte payload: pBuffer[0] = 0 (off) or 1 (on).
@@ -8000,8 +8032,6 @@ void TrilogyZoneServer::Tick()
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
-	std::vector<uint64_t> camp_complete;
-
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
 		if (s.state != CONNECTED) continue;
@@ -8045,37 +8075,22 @@ void TrilogyZoneServer::Tick()
 			s.bw_packets_sent    = 0;
 		}
 
-		// Camp interrupt: classic EQ behaviour cancels /camp the moment the
-		// player takes hostile attention (mob added them to its hate list).
-		// The Trilogy client already aborts its own camp UI and stands the
-		// player up when aggro hits; without this check the server's 29 s
-		// timer keeps ticking and force-disconnects a now-active player
-		// mid-combat.  Once cancelled, a fresh /camp can re-arm normally.
-		if (s.camping && s.trilogy_client && s.trilogy_client->GetAggroCount() > 0) {
-			LogInfo("[TrilogyZone] Camp aborted for {} — aggro'd during camp window", s.char_name);
-			s.camping    = false;
-			s.camp_start = 0;
-		}
-
-		// Camp completion: 29s after OP_Camp was received, save + disconnect.
-		if (s.camping && s.trilogy_client && now - s.camp_start >= 29) {
-			LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
-			Raid* raid = entity_list.GetRaidByClient(s.trilogy_client);
-			if (raid) raid->MemberZoned(s.trilogy_client);
-			s.trilogy_client->LeaveGroup();
-			if (s.trilogy_client->IsInAGuild()) {
-				guild_mgr.UpdateDbMemberOnline(s.trilogy_client->CharacterID(), false);
-				guild_mgr.SendToWorldSendGuildMembersList(s.trilogy_client->GuildID());
-			}
-			if (s.trilogy_client->GetMerc()) {
-				s.trilogy_client->GetMerc()->Save();
-				s.trilogy_client->GetMerc()->Depop();
-			}
-			s.trilogy_client->Save();
-			SendClose(s.source_addr, s.source_port, s);
-			camp_complete.push_back(kv.first);
-			continue;
-		}
+		// Camp completion is now driven by the client via ZN_OP_DeleteSpawn
+		// (0x5021) at T+30s from OP_Camp — the authoritative Verant-era
+		// "camp finished" signal.  Handling it there instead of on a
+		// server-side timer avoids two nasty bugs:
+		//   1. When bots tanked all incoming damage the server used to see
+		//      GetAggroCount()>0 and silently abort camping, but the client
+		//      (which never took damage and never saw a local interrupt)
+		//      kept its own 30s countdown running, then froze at T+30s
+		//      waiting for a reply to its 0x5021/0x5521 handshake.
+		//   2. When the player was legitimately interrupted (took damage,
+		//      client shows "You have been interrupted while camping."), a
+		//      server-side timer would still fire at T+29s and force-
+		//      disconnect a now-active player mid-fight.
+		// The client is the only actor that knows if the countdown was
+		// interrupted, so let it drive.  If the client crashes mid-camp the
+		// existing 300 s CONNECTED session timeout (above) reaps the state.
 
 		// Skip timed broadcasts while the client is in zone-out transition.
 		// Stamina/TimeOfDay packets arriving during EQNetwork's CLOSE handshake
@@ -8195,9 +8210,6 @@ void TrilogyZoneServer::Tick()
 			SendTimeOfDay(s.source_addr, s.source_port, s);
 		}
 	}
-
-	for (uint64_t key : camp_complete)
-		RemoveSession(key);
 
 	// ──────────────────────────────────────────────────────────────────────
 	// Per-packet exponential-backoff ARQ retransmit + age-based linkdead drop
@@ -9503,6 +9515,61 @@ void TrilogyZoneServer::SendClose(const std::string& addr, int port, Session& s)
 	s.bw_packets_sent += 1;
 
 	m_send_fn(addr, port, buf, static_cast<size_t>(o));
+}
+
+// ============================================================
+// CompleteCamp — full camp-out flow for a Trilogy session
+//
+// Fired when the client sends ZN_OP_DeleteSpawn (0x5021) at T+30s from
+// OP_Camp — the authoritative "camp finished" signal in the Verant-era
+// protocol.  EQClassic's ProcessOP_DeleteSpawn does essentially the same
+// (Save + Disconnect); we add the modern EQEmu bookkeeping (raid/group
+// leave, guild online flag, merc save/depop).
+//
+// The SpawnAppearance(SAT_Camp=16=0x10, spawn_id=0, parameter=0) sent
+// BEFORE SendClose is what tells the client to show the graceful camp-out
+// transition instead of the "You have been disconnected" screen.  Same
+// byte value used at zone-in for "here is your spawn id" — the client
+// interprets it by current state (CONNECTING5 = self-id, CONNECTED = camp).
+//
+// Caller is responsible for RemoveSession(session_key) afterwards; this
+// function does not remove the map entry so the caller's reference to
+// `s` remains valid for the duration of the call.
+void TrilogyZoneServer::CompleteCamp(uint64_t /*session_key*/, Session& s)
+{
+	if (!s.trilogy_client) return;
+
+	LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
+
+	Raid* raid = entity_list.GetRaidByClient(s.trilogy_client);
+	if (raid) raid->MemberZoned(s.trilogy_client);
+	s.trilogy_client->LeaveGroup();
+
+	if (s.trilogy_client->IsInAGuild()) {
+		guild_mgr.UpdateDbMemberOnline(s.trilogy_client->CharacterID(), false);
+		guild_mgr.SendToWorldSendGuildMembersList(s.trilogy_client->GuildID());
+	}
+
+	if (s.trilogy_client->GetMerc()) {
+		s.trilogy_client->GetMerc()->Save();
+		s.trilogy_client->GetMerc()->Depop();
+	}
+
+	s.trilogy_client->Save();
+
+	// Graceful camp-out signal — must come BEFORE SendClose so the client
+	// paints the camp transition rather than "You have been disconnected".
+	{
+		Trilogy::structs::SpawnAppearance_Struct sa{};
+		memset(&sa, 0, sizeof(sa));
+		sa.spawn_id  = 0;
+		sa.type      = 0x10;   // SAT_Camp when applied to a CONNECTED session
+		sa.parameter = 0;
+		SendApp(s.source_addr, s.source_port, s, ZN_OP_Appearance,
+		        reinterpret_cast<const uint8_t*>(&sa), sizeof(sa));
+	}
+
+	SendClose(s.source_addr, s.source_port, s);
 }
 
 // ============================================================
