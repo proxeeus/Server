@@ -7222,13 +7222,63 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		return;
 	}
 
+	// EQClassic parity: SendZoneSpawnsBulk (Zone/Source/EntityList.cpp:913)
+	// splits the bulk into chunks of at most 100 NewSpawn_Struct entries per
+	// OP_ZoneSpawns packet.  v29c has a per-packet processing cap somewhere
+	// past that; a single mega-packet (our prior behavior) causes entries
+	// beyond the cap to be silently dropped by the client — the mob is
+	// server-alive but invisible.  Rule-gate the split so it can be reverted
+	// at runtime via `#reloadrules` if it regresses.
+	static constexpr size_t kMaxSpawnsPerPacket = 100;
+	const bool split_enabled = RuleB(Zone, TrilogyZoneSpawnsSplit);
+
 	// Build raw NewSpawn_Struct[] array (168 bytes per entry: NPCs + players + corpses).
 	std::vector<uint8_t> raw;
-	raw.reserve((npc_map.size() + client_map.size() + corpse_map.size()) * sizeof(Trilogy::structs::NewSpawn_Struct));
+	const size_t reserve_hint = split_enabled
+	                                ? kMaxSpawnsPerPacket
+	                                : (npc_map.size() + client_map.size() + corpse_map.size());
+	raw.reserve(reserve_hint * sizeof(Trilogy::structs::NewSpawn_Struct));
 
 	const auto& bot_list   = entity_list.GetBotList();
 
-	uint32_t sent = 0;
+	uint32_t sent          = 0; // cumulative across all chunks (bulk_idx for diag)
+	uint32_t chunk_entries = 0; // entries in the currently-building chunk
+	uint32_t chunk_packets = 0; // number of 6121 packets emitted so far
+
+	auto flush_chunk = [&]() {
+		if (chunk_entries == 0) return;
+
+		uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
+		std::vector<uint8_t> cbuf(max_clen + 4, 0); // +4 for encrypt alignment
+		uint32_t clen = EQ::DeflateData(
+			reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
+			reinterpret_cast<char*>(cbuf.data()), max_clen
+		);
+		if (clen == 0) {
+			LogError("[TrilogyZone] SendZoneSpawns: deflate failed (chunk {} with {} entries)",
+			         chunk_packets + 1, chunk_entries);
+			raw.clear();
+			chunk_entries = 0;
+			return;
+		}
+		// Pad to multiple of 4 (EncryptZoneSpawnPacket operates on int32 values)
+		while (clen % 4 != 0) cbuf[clen++] = 0;
+		EncryptZoneSpawnPacket(cbuf.data(), clen);
+		++chunk_packets;
+		LogInfo("[TrilogyZone] SendZoneSpawns chunk {}: {} entries → raw={} compressed={} (~{} fragments)",
+		        chunk_packets, chunk_entries, raw.size(), clen, clen >> 9);
+		SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+		raw.clear();
+		chunk_entries = 0;
+	};
+
+	auto append_entry = [&](const Trilogy::structs::NewSpawn_Struct& ns_ref) {
+		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns_ref);
+		raw.insert(raw.end(), p, p + sizeof(ns_ref));
+		++chunk_entries;
+		++sent;
+		if (split_enabled && chunk_entries >= kMaxSpawnsPerPacket) flush_chunk();
+	};
 	for (const auto& kv : npc_map) {
 		NPC* npc = kv.second;
 		if (!npc) continue;
@@ -7391,9 +7441,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
 		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
-		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
-		raw.insert(raw.end(), p, p + sizeof(ns));
-		++sent;
+		append_entry(ns);
 	}
 
 	// Include Bots (the Bot subsystem — owner-summoned PC-like companions) so
@@ -7462,9 +7510,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
 		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
-		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
-		raw.insert(raw.end(), p, p + sizeof(ns));
-		++sent;
+		append_entry(ns);
 	}
 
 	// Include other players already in the zone.
@@ -7533,9 +7579,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
 		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
-		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
-		raw.insert(raw.end(), p, p + sizeof(ns));
-		++sent;
+		append_entry(ns);
 	}
 
 	// Include corpses already in the zone (player and NPC corpses).
@@ -7603,31 +7647,15 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
 		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
 
-		const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
-		raw.insert(raw.end(), p, p + sizeof(ns));
-		++sent;
+		append_entry(ns);
 	}
 
-	// Compress (zlib deflate)
-	uint32_t max_clen = EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size()));
-	std::vector<uint8_t> cbuf(max_clen + 4, 0); // +4 for encrypt alignment
-	uint32_t clen = EQ::DeflateData(
-		reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
-		reinterpret_cast<char*>(cbuf.data()), max_clen
-	);
-	if (clen == 0) {
-		LogError("[TrilogyZone] SendZoneSpawns: deflate failed ({} NPCs)", sent);
-		return;
-	}
+	// Flush the trailing chunk (if any).  Chunks that hit chunk_cap during
+	// append_entry have already been emitted; this handles the remainder.
+	flush_chunk();
 
-	// Pad to multiple of 4 (EncryptZoneSpawnPacket operates on int32 values)
-	while (clen % 4 != 0) cbuf[clen++] = 0;
-
-	EncryptZoneSpawnPacket(cbuf.data(), clen);
-
-	LogInfo("[TrilogyZone] SendZoneSpawns: {} NPCs → raw={} compressed={} (~{} fragments)",
-	        sent, raw.size(), clen, clen >> 9);
-	SendApp(addr, port, s, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+	LogInfo("[TrilogyZone] SendZoneSpawns: {} entries total across {} OP_ZoneSpawns packet(s) ({})",
+	        sent, chunk_packets, split_enabled ? "split@100" : "single");
 	// Illusion packets are deferred to HandleZoneInComplete (after client's 0xd820 ACK)
 	// so the client has fully reassembled and registered ZoneSpawns entities before
 	// Illusions attempt to modify them.  Sending Illusions here caused a client CTD
