@@ -98,6 +98,15 @@ public:
 	void NoteKnownSpawn(uint64_t session_key, uint16_t spawn_id);
 	void ForgetKnownSpawn(uint64_t session_key, uint16_t spawn_id);
 
+	// Same as NoteKnownSpawn but also seeds last_broadcast with the spawn's
+	// initial position, so the drift-refresh pass in SendMobHeartbeat can
+	// detect out-of-cull mobs whose server position has drifted far from
+	// what the client is rendering (the "never entered cull since zone-in"
+	// case — e.g. wandering mobs on the far side of a large open zone).
+	void NoteKnownSpawnAt(uint64_t session_key, uint16_t spawn_id,
+	                      int16_t x_pos, int16_t y_pos, int16_t z_pos,
+	                      int8_t heading);
+
 	// Advance the per-session money-display baseline by the given deltas so the
 	// next Tick() reconciliation does NOT re-push these amounts as an
 	// OP_TradeMoneyUpdate.  Used by outbound packet translators that have
