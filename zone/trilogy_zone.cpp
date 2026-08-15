@@ -981,6 +981,28 @@ void TrilogyZoneServer::ForgetKnownSpawn(uint64_t session_key, uint16_t spawn_id
 	auto it = m_sessions.find(session_key);
 	if (it == m_sessions.end()) return;
 	it->second.known_spawns.erase(spawn_id);
+	// Keep both maps in lockstep so a subsequent re-spawn (spawn_id recycled
+	// by EQEmu) doesn't inherit stale broadcast state from the prior mob.
+	it->second.last_broadcast.erase(spawn_id);
+}
+
+void TrilogyZoneServer::NoteKnownSpawnAt(uint64_t session_key, uint16_t spawn_id,
+                                          int16_t x_pos, int16_t y_pos, int16_t z_pos,
+                                          int8_t heading)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	auto& s = it->second;
+	s.known_spawns.insert(spawn_id);
+	auto& lb = s.last_broadcast[spawn_id];
+	lb.x_pos     = x_pos;
+	lb.y_pos     = y_pos;
+	lb.z_pos     = z_pos;
+	lb.heading   = heading;
+	lb.anim_type = 0; // initial spawn / permanent-single: not-moving default
+	lb.sent_ms   = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
 void TrilogyZoneServer::AdvanceMoneyBaseline(uint64_t session_key,
@@ -1914,6 +1936,41 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// 4-byte payload: pBuffer[0] = 0 (off) or 1 (on).
 			// Directly construct and queue a 4-byte OP_AutoAttack packet for Client::Handle_OP_AutoAttack.
 			if (plen >= 1) {
+				// Attack-diagnostic: capture target state at the moment the
+				// user toggled auto-attack on. Answers "why does attack do
+				// nothing?" — is target gone / out of range / not attackable.
+				if (payload[0] == 1) {
+					Mob* tgt = s.trilogy_client->GetTarget();
+					if (tgt) {
+						float dx = tgt->GetX() - s.trilogy_client->GetX();
+						float dy = tgt->GetY() - s.trilogy_client->GetY();
+						float dz = tgt->GetZ() - s.trilogy_client->GetZ();
+						float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+						LogInfo("[Trilogy attack-diag] AUTO_ON tgt_sid={} name='{}' "
+						        "tgt_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
+						        "dist={:.1f} is_npc={} is_client={} is_corpse={} moving={} "
+						        "hp={}/{}",
+						        static_cast<int>(tgt->GetID()),
+						        tgt->GetCleanName() ? tgt->GetCleanName() : "?",
+						        tgt->GetX(), tgt->GetY(), tgt->GetZ(),
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ(),
+						        dist,
+						        tgt->IsNPC() ? 1 : 0,
+						        tgt->IsClient() ? 1 : 0,
+						        tgt->IsCorpse() ? 1 : 0,
+						        tgt->IsMoving() ? 1 : 0,
+						        tgt->GetHP(), tgt->GetMaxHP());
+					} else {
+						LogInfo("[Trilogy attack-diag] AUTO_ON tgt=NULL "
+						        "player_pos=({:.1f},{:.1f},{:.1f})",
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ());
+					}
+				} else {
+					LogInfo("[Trilogy attack-diag] AUTO_OFF");
+				}
+
 				EQApplicationPacket atkpkt(OP_AutoAttack, 4);
 				memset(atkpkt.pBuffer, 0, 4);
 				atkpkt.pBuffer[0] = payload[0];
@@ -1932,6 +1989,115 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				int16_t tgt16;
 				memcpy(&tgt16, payload, 2);
 				uint32_t tgt32 = static_cast<uint32_t>(static_cast<int32_t>(tgt16));
+
+				const uint64_t now_ms_tgt = static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now().time_since_epoch()).count());
+				Mob* tgt_mob = (tgt32 != 0) ? entity_list.GetMob(static_cast<uint16_t>(tgt32)) : nullptr;
+
+				// Compute client render drift for the target (regardless of
+				// log rate limit) so the JIT refresh below can act on every
+				// selection that needs it.
+				int client_last_x = 0, client_last_y = 0;
+				int client_gap    = -1;
+				auto lb_it_tgt = (tgt_mob != nullptr)
+				                 ? s.last_broadcast.find(static_cast<uint16_t>(tgt32))
+				                 : s.last_broadcast.end();
+				int cur_wire_x_tgt = 0, cur_wire_y_tgt = 0;
+				if (tgt_mob) {
+					cur_wire_x_tgt = static_cast<int16_t>(tgt_mob->GetX());
+					cur_wire_y_tgt = static_cast<int16_t>(tgt_mob->GetY());
+				}
+				if (lb_it_tgt != s.last_broadcast.end()) {
+					client_last_x = lb_it_tgt->second.x_pos;
+					client_last_y = lb_it_tgt->second.y_pos;
+					const int gx = cur_wire_x_tgt - client_last_x;
+					const int gy = cur_wire_y_tgt - client_last_y;
+					client_gap = static_cast<int>(std::sqrt(
+						static_cast<float>(gx * gx + gy * gy)));
+				}
+
+				// ── Just-in-time (JIT) drift refresh on target selection ──
+				// If the client's rendered position for this target is off
+				// from the server's by more than the range-check margin, the
+				// client's local range gate will reject the user's next action
+				// (loot on a corpse ~40u drift, attack on a mob ~15u drift).
+				// Push a fresh A120 so the client's next click has an accurate
+				// position for its own range test.  Wire cost: 1 A120 per
+				// target selection that actually needed correction — bounded
+				// by user click rate.  Naturally throttled: back-to-back
+				// clicks on the same target only fire once (last_broadcast is
+				// then current, so the next click sees gap=0 and skips).
+				static constexpr int kJitRefreshThresholdUnits = 20;
+				if (tgt_mob && lb_it_tgt != s.last_broadcast.end() &&
+				    client_gap >= kJitRefreshThresholdUnits) {
+					Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+					upd.spawn_id = static_cast<int16_t>(tgt32);
+					upd.heading  = static_cast<int8_t>(
+						static_cast<uint8_t>(tgt_mob->GetHeading() / 2.0f));
+					upd.y_pos    = static_cast<int16_t>(tgt_mob->GetY());
+					upd.x_pos    = static_cast<int16_t>(tgt_mob->GetX());
+					upd.z_pos    = static_cast<int16_t>(tgt_mob->GetZ() * 10.0f);
+					if (tgt_mob->IsMoving()) {
+						const int eqemu_speed = tgt_mob->IsEngaged()
+						                            ? tgt_mob->GetRunspeed()
+						                            : tgt_mob->GetWalkspeed();
+						upd.anim_type = EncodeTrilogyAnim(tgt_mob, eqemu_speed);
+					}
+
+					uint8_t buf[4 + sizeof(upd)];
+					int32_t n = 1;
+					memcpy(buf, &n, 4);
+					memcpy(buf + 4, &upd, sizeof(upd));
+					SendApp(addr, port, s, ZN_OP_MobUpdate,
+					        buf, static_cast<uint32_t>(sizeof(buf)),
+					        /*ack_req=*/false);
+
+					lb_it_tgt->second.x_pos     = upd.x_pos;
+					lb_it_tgt->second.y_pos     = upd.y_pos;
+					lb_it_tgt->second.z_pos     = upd.z_pos;
+					lb_it_tgt->second.heading   = upd.heading;
+					lb_it_tgt->second.anim_type = upd.anim_type;
+					lb_it_tgt->second.sent_ms   = now_ms_tgt;
+
+					LogInfo("[Trilogy jit-refresh] sid={} name='{}' "
+					        "gap={} client_last=({},{}) → server=({:.1f},{:.1f})",
+					        static_cast<int>(tgt32),
+					        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?",
+					        client_gap, client_last_x, client_last_y,
+					        tgt_mob->GetX(), tgt_mob->GetY());
+				}
+
+				// Attack-diagnostic log — rate-limited to 1s per session so
+				// click-spamming doesn't flood the log.
+				if (now_ms_tgt - s.last_target_log_ms >= 1000) {
+					s.last_target_log_ms = now_ms_tgt;
+					if (tgt_mob) {
+						float dx = tgt_mob->GetX() - s.trilogy_client->GetX();
+						float dy = tgt_mob->GetY() - s.trilogy_client->GetY();
+						float dist = std::sqrt(dx*dx + dy*dy);
+						LogInfo("[Trilogy attack-diag] TARGET wire_id={} sid={} name='{}' "
+						        "server_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
+						        "dist={:.1f} client_last=({},{}) client_gap={} "
+						        "is_npc={} is_corpse={} moving={} hp={}/{}",
+						        static_cast<int>(tgt16),
+						        static_cast<int>(tgt_mob->GetID()),
+						        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?",
+						        tgt_mob->GetX(), tgt_mob->GetY(), tgt_mob->GetZ(),
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ(),
+						        dist,
+						        client_last_x, client_last_y, client_gap,
+						        tgt_mob->IsNPC() ? 1 : 0,
+						        tgt_mob->IsCorpse() ? 1 : 0,
+						        tgt_mob->IsMoving() ? 1 : 0,
+						        tgt_mob->GetHP(), tgt_mob->GetMaxHP());
+					} else if (tgt32 != 0) {
+						LogInfo("[Trilogy attack-diag] TARGET wire_id={} → GONE (entity_list has no mob for this sid)",
+						        static_cast<int>(tgt16));
+					}
+				}
+
 				EQApplicationPacket tgtpkt(OP_TargetMouse, sizeof(::ClientTarget_Struct));
 				memset(tgtpkt.pBuffer, 0, sizeof(::ClientTarget_Struct));
 				memcpy(tgtpkt.pBuffer, &tgt32, 4);
@@ -7782,8 +7948,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(SessionKey(addr, port), static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 
 		append_entry(ns);
 	}
@@ -7851,8 +8019,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(SessionKey(addr, port), static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 
 		append_entry(ns);
 	}
@@ -7920,8 +8090,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(SessionKey(addr, port), static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 
 		append_entry(ns);
 	}
@@ -7988,8 +8160,10 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		s.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(SessionKey(addr, port), static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 
 		append_entry(ns);
 	}
@@ -8072,8 +8246,10 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(session_key, static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -8175,8 +8351,10 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(session_key, static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -8273,8 +8451,10 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
 		sit->second.trilogy_client->SeedKnownMaterials(
 			static_cast<uint16_t>(sp.spawn_id), sp.equipment);
-		// Record for ghost-spawn reconciliation in SendMobHeartbeat.
-		sit->second.known_spawns.insert(static_cast<uint16_t>(sp.spawn_id));
+		// Record for ghost-spawn reconciliation in SendMobHeartbeat, and seed
+		// last_broadcast so drift-refresh can catch never-in-cull mobs.
+		NoteKnownSpawnAt(session_key, static_cast<uint16_t>(sp.spawn_id),
+		                 sp.x_pos, sp.y_pos, sp.z_pos, sp.heading);
 	}
 
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(&ns);
@@ -8955,6 +9135,11 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// unaffected — by definition combat targets are close.
 	static constexpr float    INNER_RING_RADIUS_SQ        = 300.0f * 300.0f;
 	static constexpr uint64_t OUTER_RING_MIN_INTERVAL_MS  = 500;
+	// Inner-ring min-interval bounds wire cost during nearby-turning
+	// fast-cycles where body throttle_ms drops to 10 ms. Without this,
+	// inner-ring moving mobs would emit at ~100 Hz for the ~200-500 ms
+	// rotation window. 100 ms = 10 Hz per mob, plenty for melee smoothness.
+	static constexpr uint64_t INNER_RING_MIN_INTERVAL_MS  = 100;
 
 	// Dirty-flag gate (mirrors EQClassic EntityList::SendPositionUpdates'
 	// `GetLastChange() >= cLastUpdate` filter): only stage an update if the
@@ -8991,12 +9176,19 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	                            bool  priority = false) -> bool {
 		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
 
-		// Outer ring (300-600 u): enforce 500 ms minimum interval regardless
-		// of motion.  Skipping this is the biggest single bandwidth lever —
-		// most NPCs in a 600-unit visible field sit in the outer annulus
-		// because it has 3× the area of the inner circle.
-		if (!priority && dist_sq > INNER_RING_RADIUS_SQ) {
-			if (now_ms - last.sent_ms < OUTER_RING_MIN_INTERVAL_MS)
+		// Per-mob min-interval throttle:
+		//   Outer ring (>300 u): 500 ms cap — biggest single bandwidth lever,
+		//                         most NPCs in the 600 u visible field sit in
+		//                         the outer annulus (3× the area of inner).
+		//   Inner ring (≤300 u): 100 ms cap — bounds worst case during the
+		//                         nearby-turning fast-cycle (body at 10 ms).
+		// Turning mobs bypass via priority=true (need every-tick rotation).
+		if (!priority) {
+			const uint64_t min_interval =
+				(dist_sq > INNER_RING_RADIUS_SQ)
+				    ? OUTER_RING_MIN_INTERVAL_MS
+				    : INNER_RING_MIN_INTERVAL_MS;
+			if (now_ms - last.sent_ms < min_interval)
 				return false;
 		}
 
@@ -9024,34 +9216,47 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
-		// 2026-06-27: hand TRANSLATING NPCs off entirely to the event-driven
-		// path (TrilogyClient::HandleClientUpdate, which writes the
-		// MovementManager-authoritative delta_x/y/z into the wire bitfield).
-		// The heartbeat here forces delta=0, and at 2 Hz cadence the two
-		// paths alternate-overwrite the client's extrapolation state.
+		// 2026-06-27 → 2026-08-15: previously we skipped moving-but-not-
+		// turning NPCs entirely, on the theory that TrilogyClient::
+		// HandleClientUpdate (event-driven from EQEmu's OP_ClientUpdate
+		// broadcasts) was the sole source of position for movers.  That
+		// theory failed in open zones (commons/lakeofillomen): the
+		// [Trilogy desync-pos] detector caught patrolling NPCs going 4-15 s
+		// between position updates and rendering at stale coordinates
+		// while alive server-side — user-visible symptom "mob just stands
+		// there, attacks fail, then eventually poofs".  Root cause: EQEmu's
+		// per-NPC broadcast cadence for grid roamers is ~5 s (matching
+		// EQClassic's spawnUpdate_timer), and any packet drop in the ARQ
+		// pipeline widens the gap.
 		//
-		// EXCEPTION: turning mobs MUST stay in heartbeat.  Rotation in
-		// EQEmu's MobMovementManager (RotateToCommand at
-		// mob_movement_manager.cpp:67) calls SetMoving(true) so the mob
-		// is technically "moving" — but the event-driven path only fires
-		// TWO OP_ClientUpdates for an entire rotation (one at start, one
-		// at completion), leaving the client with nothing to render
-		// mid-rotation.  Pre-2026-06-27 heartbeat used `nearby_turning`
-		// cache to drop throttle to 10ms during rotation so the client
-		// got smooth per-tick heading updates; that bypass still exists
-		// below and is the right path for turning mobs.  Without this
-		// `!turning` carve-out, /hail-driven FaceTarget rotations show as
-		// "NPC waits then snaps to face player" — visible regression.
-		if (npc->IsMoving() && !npc->turning) {
-			continue;
-		}
-
-		// Stationary NPCs: staleness refresh only.  ~2 Hz (every 5th 100 ms
-		// tick) keeps the v29c spawn staleness timer satisfied without
-		// flooding the ARQ queue on zones with many idle NPCs.
-		if (!npc->IsMoving()) {
-			if ((now_ms / 100) % 5 != 0) continue;
-		}
+		// Fix: let moving NPCs flow through should_broadcast just like
+		// stationary ones.  The dirty-flag gate suppresses redundant
+		// sends when the client already has the current position; the
+		// STALENESS_REFRESH_MS forced refresh catches gaps.  The moving-
+		// mob branch below (~9078) already encodes proper anim_type and
+		// velocity delta from the MovementManager cache, so alternating
+		// with event-driven no longer breaks client extrapolation (the
+		// obsolete concern that motivated the original skip).
+		//
+		// Wire cost: at 2 s session heartbeat cadence and dirty-flag
+		// suppression, a moving mob costs at most ~0.5 Hz beyond event-
+		// driven — bounded by CULL_RADIUS_SQ and outer-ring 500 ms cap.
+		// Turning mobs still take the fast (10 ms) path via nearby_turning.
+		//
+		// Cadence: NO per-tick modulo gate.  The prior `(now_ms/100)%5==0`
+		// gate assumed a ~100 ms body cadence, but session throttle_ms is
+		// normally 2000 ms.  With body running every 2000 ms and gate
+		// checking `now_ms/100 % 5`, alignment is fixed relative to the
+		// first body run: if the first run lands off-modulo (e.g.
+		// s.last_heartbeat_ms=12345 → 123%5=3), every subsequent 2000 ms
+		// later run also lands off-modulo → gate blocks FOREVER, moving
+		// mobs never heartbeat.  Diagnosed 2026-08-15 via commons log
+		// showing `hb_age_ms=0 cadence_ok=0` on every desync-pos line.
+		//
+		// Rely on session throttle_ms (2000 ms idle / 200 ms combat / 10 ms
+		// during turning) for cadence.  should_broadcast enforces per-mob
+		// caps (INNER_RING_MIN_INTERVAL_MS=100 / OUTER_RING_MIN_INTERVAL_MS=500)
+		// to bound wire cost during the 10 ms turning fast-cycle.
 
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
@@ -9356,22 +9561,31 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	//
 	// To disable if it causes problems: flip kEnableGhostReconcile to false.
 	// ============================================================
-	static constexpr uint64_t kStaleTimeMs = 15000;
 	static constexpr bool     kEnableGhostReconcile      = true;
 	static constexpr uint64_t kGhostReconcileIntervalMs  = 2000;
+	// Drift-refresh: for out-of-cull mobs whose server position has drifted
+	// from what we last broadcast to the client by more than this threshold,
+	// send one A120 with the current server position.  Prevents the "client
+	// renders a puma near the player but server has it 1400 u away" pathology
+	// (the mob was in the zone-in bulk spawn but never entered player cull,
+	// so heartbeat never refreshed it, so the client's render is frozen at
+	// the zone-in position while the mob wandered arbitrarily far).
+	//
+	// 200 u threshold: at walkspeed ~20 u/s a mob traverses this in ~10 s,
+	// so worst-case refresh cadence is ~0.1 Hz per drifting mob.  For 20
+	// out-of-cull movers in a busy zone that's ~2 pps additional.  Client
+	// render always tracks server truth to within 200 u — user sees mobs
+	// walking away into the distance rather than a phantom stuck near them.
+	//
+	// Kill switch: flip kEnableDriftRefresh to false.
+	static constexpr bool     kEnableDriftRefresh          = true;
+	static constexpr int      kDriftRefreshThresholdUnits  = 200;
 
-	if (!s.last_broadcast.empty()) {
-		std::vector<uint16_t> to_clean;
-		to_clean.reserve(16);
-
-		for (const auto& kv : s.last_broadcast) {
-			if (now_ms - kv.second.sent_ms >= kStaleTimeMs)
-				to_clean.push_back(kv.first);
-		}
-
-		for (uint16_t id : to_clean)
-			s.last_broadcast.erase(id);
-	}
+	// (No time-based last_broadcast GC — the map is bounded by known_spawns
+	// which is itself bounded by NPC count, and ForgetKnownSpawn now erases
+	// both.  Prior 15 s cache GC was incompatible with drift-refresh, which
+	// needs the entry to persist for stationary out-of-cull mobs so a later
+	// drift can be detected against a real baseline.)
 
 	if (kEnableGhostReconcile &&
 	    now_ms - s.last_ghost_reconcile_ms >= kGhostReconcileIntervalMs &&
@@ -9381,14 +9595,141 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		std::vector<uint16_t> ghosts;
 		ghosts.reserve(8);
 
+		// ── Position-stale diagnostic (log-only, no wire packets) ──────
+		// Detects the second desync class: mob is ALIVE server-side but the
+		// last position we broadcast to the v29c client is meaningfully
+		// different from the mob's current server-side position.  User
+		// symptom in open zones (lakeofillomen, commons): NPC "just stands
+		// there" client-side; player runs up and attacks fail because the
+		// server-side entity is elsewhere.  Ghost-reconcile handles the
+		// "mob gone server-side" class; this catches the inverse.
+		//
+		// Trigger: current server XY differs from last broadcast wire XY
+		// (int16, 1 EQ unit each) by more than kDesyncGapXY EQ units.
+		// Per-spawn rate limit kDesyncLogIntervalMs prevents spamming a
+		// mob that stays desynced for minutes.
+		//
+		// Zero wire packets emitted — pure LogInfo.  Reuses the same
+		// known_spawns walk as ghost detection, no extra iteration cost.
+		static constexpr int      kDesyncGapXY            = 50;    // EQ units
+		static constexpr uint64_t kDesyncLogIntervalMs    = 10000; // per spawn
+
 		for (uint16_t spawn_id : s.known_spawns) {
 			// Skip the player's own spawn_id — sending 2B20 for self would
 			// remove the player from their own client view.  Also skip 0,
 			// which would not be in here normally but is harmless to guard.
 			if (spawn_id == s.player_spawn_id || spawn_id == 0) continue;
-			if (entity_list.GetMob(spawn_id) == nullptr) {
+
+			Mob* m = entity_list.GetMob(spawn_id);
+			if (m == nullptr) {
 				ghosts.push_back(spawn_id);
+				continue;
 			}
+
+			auto lb_it = s.last_broadcast.find(spawn_id);
+			if (lb_it == s.last_broadcast.end()) continue;
+			auto& last = lb_it->second;
+
+			int cur_wire_x = static_cast<int16_t>(m->GetX());
+			int cur_wire_y = static_cast<int16_t>(m->GetY());
+			int gap_x = cur_wire_x - static_cast<int>(last.x_pos);
+			int gap_y = cur_wire_y - static_cast<int>(last.y_pos);
+			int gap_sq = gap_x * gap_x + gap_y * gap_y;
+			if (gap_sq <= kDesyncGapXY * kDesyncGapXY) continue;
+
+			float dx_player = m->GetX() - s.pos_x;
+			float dy_player = m->GetY() - s.pos_y;
+			float dist_player_sq_local = dx_player * dx_player + dy_player * dy_player;
+			const bool in_cull_local = dist_player_sq_local <= 600.0f * 600.0f;
+
+			// ── Drift-refresh action (out-of-cull only) ──
+			// The heartbeat loop above skips any mob beyond CULL_RADIUS_SQ, so
+			// out-of-cull mobs never refresh through the normal path.  If such
+			// a mob's server position has drifted by more than
+			// kDriftRefreshThresholdUnits from the last position we broadcast,
+			// emit one A120 with the current server position so the client's
+			// render tracks server truth to within that threshold.  This is
+			// the fix for the "puma renders near player, server has it 1400 u
+			// away, attack fails" pathology.
+			if (kEnableDriftRefresh && !in_cull_local &&
+			    gap_sq >= kDriftRefreshThresholdUnits * kDriftRefreshThresholdUnits) {
+				Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+				upd.spawn_id  = static_cast<int16_t>(spawn_id);
+				upd.heading   = static_cast<int8_t>(
+					static_cast<uint8_t>(m->GetHeading() / 2.0f));
+				upd.y_pos     = static_cast<int16_t>(m->GetY());
+				upd.x_pos     = static_cast<int16_t>(m->GetX());
+				upd.z_pos     = static_cast<int16_t>(m->GetZ() * 10.0f);
+				if (m->IsMoving()) {
+					const int eqemu_speed = m->IsEngaged()
+					                            ? m->GetRunspeed()
+					                            : m->GetWalkspeed();
+					upd.anim_type = EncodeTrilogyAnim(m, eqemu_speed);
+				}
+
+				uint8_t buf[4 + sizeof(upd)];
+				int32_t n = 1;
+				memcpy(buf, &n, 4);
+				memcpy(buf + 4, &upd, sizeof(upd));
+				SendApp(addr, port, s, ZN_OP_MobUpdate,
+				        buf, static_cast<uint32_t>(sizeof(buf)),
+				        /*ack_req=*/false);
+
+				last.x_pos     = upd.x_pos;
+				last.y_pos     = upd.y_pos;
+				last.z_pos     = upd.z_pos;
+				last.heading   = upd.heading;
+				last.anim_type = upd.anim_type;
+				last.sent_ms   = now_ms;
+
+				LogInfo("[Trilogy drift-refresh] sid={} name='{}' "
+				        "server=({:.1f},{:.1f},{:.1f}) drift={} dist_to_player={:.1f}",
+				        static_cast<int>(spawn_id),
+				        m->GetCleanName() ? m->GetCleanName() : "?",
+				        m->GetX(), m->GetY(), m->GetZ(),
+				        static_cast<int>(std::sqrt(static_cast<float>(gap_sq))),
+				        std::sqrt(dist_player_sq_local));
+				// Re-compute gap for the desync-pos log below now that we've
+				// refreshed — will be near zero so log won't fire.
+				gap_x = cur_wire_x - static_cast<int>(last.x_pos);
+				gap_y = cur_wire_y - static_cast<int>(last.y_pos);
+				gap_sq = gap_x * gap_x + gap_y * gap_y;
+				if (gap_sq <= kDesyncGapXY * kDesyncGapXY) continue;
+			}
+
+			auto& log_ts = s.last_desync_log_ms[spawn_id];
+			if (log_ts != 0 && now_ms - log_ts < kDesyncLogIntervalMs) continue;
+			log_ts = now_ms;
+
+			float dist_to_player = std::sqrt(dist_player_sq_local);
+
+			// Diagnostic funnel — see comments in prior commit for field
+			// meanings.  Reuses values already computed in this iteration.
+			const uint64_t hb_age = now_ms - s.last_heartbeat_ms;
+			const bool m_turning = m->IsNPC() && m->CastToNPC()->turning;
+			const bool cadence_ok = m_turning || (now_ms / 100) % 5 == 0;
+			const int cur_wire_z_int = static_cast<int16_t>(m->GetZ() * 10.0f);
+			const bool would_be_dirty =
+				(last.x_pos != cur_wire_x) ||
+				(last.y_pos != cur_wire_y) ||
+				(last.z_pos != cur_wire_z_int);
+
+			LogInfo("[Trilogy desync-pos] sid={} name='{}' moving={} "
+			        "client_last=({},{},{}/10) server=({:.1f},{:.1f},{:.1f}) "
+			        "gap_xy={} age_ms={} dist_to_player={:.1f} "
+			        "hb_age_ms={} cadence_ok={} in_cull={} would_dirty={}",
+			        static_cast<int>(spawn_id),
+			        m->GetCleanName() ? m->GetCleanName() : "?",
+			        m->IsMoving() ? 1 : 0,
+			        static_cast<int>(last.x_pos),
+			        static_cast<int>(last.y_pos),
+			        static_cast<int>(last.z_pos),
+			        m->GetX(), m->GetY(), m->GetZ(),
+			        static_cast<int>(std::sqrt(static_cast<float>(gap_sq))),
+			        static_cast<uint64_t>(now_ms - last.sent_ms),
+			        dist_to_player,
+			        hb_age, cadence_ok ? 1 : 0,
+			        in_cull_local ? 1 : 0, would_be_dirty ? 1 : 0);
 		}
 
 		for (uint16_t spawn_id : ghosts) {
@@ -9404,6 +9745,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			s.known_spawns.erase(spawn_id);
 			// Drop any same-spawn-id residue from the position-broadcast cache.
 			s.last_broadcast.erase(spawn_id);
+			s.last_desync_log_ms.erase(spawn_id);
 		}
 	}
 }

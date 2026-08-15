@@ -98,6 +98,15 @@ public:
 	void NoteKnownSpawn(uint64_t session_key, uint16_t spawn_id);
 	void ForgetKnownSpawn(uint64_t session_key, uint16_t spawn_id);
 
+	// Same as NoteKnownSpawn but also seeds last_broadcast with the spawn's
+	// initial position, so the drift-refresh pass in SendMobHeartbeat can
+	// detect out-of-cull mobs whose server position has drifted far from
+	// what the client is rendering (the "never entered cull since zone-in"
+	// case — e.g. wandering mobs on the far side of a large open zone).
+	void NoteKnownSpawnAt(uint64_t session_key, uint16_t spawn_id,
+	                      int16_t x_pos, int16_t y_pos, int16_t z_pos,
+	                      int8_t heading);
+
 	// Advance the per-session money-display baseline by the given deltas so the
 	// next Tick() reconciliation does NOT re-push these amounts as an
 	// OP_TradeMoneyUpdate.  Used by outbound packet translators that have
@@ -282,6 +291,16 @@ private:
 		// within CULL_RADIUS_SQ of the player.
 		std::unordered_set<uint16_t> known_spawns;
 		uint64_t                     last_ghost_reconcile_ms = 0;
+
+		// Per-spawn rate limiter for the position-stale diagnostic
+		// (see SendMobHeartbeat tail).  A mob that stays desynced for minutes
+		// would otherwise emit a LogInfo every 2 s per ghost-reconcile pass;
+		// this caps it to one line per spawn per kDesyncLogIntervalMs.
+		std::unordered_map<uint16_t, uint64_t> last_desync_log_ms;
+
+		// Rate limiter for [Trilogy attack-diag] TARGET log — click-spam
+		// on nearby NPCs would otherwise flood on every mouseover.
+		uint64_t last_target_log_ms = 0;
 
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
