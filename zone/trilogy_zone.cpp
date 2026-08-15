@@ -6775,6 +6775,20 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 		        plen, sizeof(Trilogy::structs::ClassTrain_Struct));
 		return;
 	}
+	// Diagnostic — investigating missing cost display in trainer window.
+	// EQClassic's ClassTrain_Struct is 148B (uint8 highesttrain[73] + unknowns);
+	// EQMacEmuTrilogy's OldGMTrainee_Struct is 244B and includes a `float greed`
+	// price modifier + language[32] + trailing ending block that modern EQEmu
+	// preserves via memcpy on Titanium's 448B struct.  If v29c actually expects
+	// the 244B layout, our 148B reply would leave the client without a valid
+	// greed field → no cost displayed.  Log the actual size so we can confirm.
+	if (plen != sizeof(Trilogy::structs::ClassTrain_Struct)) {
+		LogInfo("[TrilogyZone] ClassTraining REQ size={} (our struct={}) — extra {} bytes",
+		        plen, sizeof(Trilogy::structs::ClassTrain_Struct),
+		        plen - sizeof(Trilogy::structs::ClassTrain_Struct));
+	} else {
+		LogInfo("[TrilogyZone] ClassTraining REQ size={} (matches struct)", plen);
+	}
 	const auto* req = reinterpret_cast<const Trilogy::structs::ClassTrain_Struct*>(payload);
 
 	// v29c sends int16 entity IDs in the low 2 bytes of npcid; high 2 bytes are
@@ -6811,15 +6825,39 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 
 	// Build the response in a clean local — DO NOT modify the inbound payload
 	// (it's part of the EQNetwork RX buffer).
+	//
+	// CRITICAL: echo the client's own player_id from the request unchanged.
+	// v29c uses this field to match the response against its OWN self-ID (the
+	// wire spawn_id it was given on zone-in — for character Nekoto that's
+	// 16616, not the EQEmu GetID() which is a small entity index).  If the
+	// echoed value doesn't match the client's expected self-ID, subsystems
+	// like the per-skill cost/price display in the trainer window silently
+	// fail to render — the window itself opens (that path only needs the
+	// unknown[32] magic bytes), but the cost text stays blank.  Same trap as
+	// documented in TrilogyClient::HandleClickObjectAction (trilogy_client.cpp
+	// ~L820, "v29c client only opens the station UI when the packet's
+	// player_id matches its own self-ID").  EQClassic's ProcessOP_ClassTraining
+	// side-steps this by modifying the inbound packet in-place and re-queuing
+	// it (echoing both npcid and playerid).  We do the same explicitly.
 	Trilogy::structs::ClassTrain_Struct reply{};
 	reply.npcid    = req->npcid;
-	reply.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+	reply.playerid = req->playerid;
 
 	// Skill caps — highesttrain[i] is the max value this trainer can raise
-	// skill i to.  Iterate only the 73 indices the wire struct holds; the
-	// Trilogy enum is densely packed in the same order EQEmu uses for these
-	// indices, so a direct id→id mapping works.  Skills the class can never
-	// learn (CanHaveSkill==false) get 0 → hidden from the window.
+	// skill i to at the character's CURRENT level.  The v29c client uses this
+	// as the denominator for the trainer window's tier bar
+	// ("awful/very bad/average/master") — ratio = pp.skills[i] / highesttrain[i].
+	// Sending the absolute class cap (MaxLevel ~250) makes the ratio stay tiny
+	// forever and the tier never visibly advances as the player trains, which
+	// looks like the UI is stuck.  EQClassic's ProcessOP_ClassTraining
+	// (Zone/Source/client_process.cpp:5612) passes GetLevel() to CheckMaxSkill,
+	// producing a per-level cap (~30 at level 5) that the tier bar can move
+	// meaningfully against.  Match that.
+	//
+	// Iterate only the 73 indices the wire struct holds; the Trilogy enum is
+	// densely packed in the same order EQEmu uses for these indices, so a
+	// direct id→id mapping works.  Skills the class can never learn
+	// (CanHaveSkill==false) get 0 → hidden from the window.
 	for (int sid = 0; sid < 73; ++sid) {
 		const auto skill = static_cast<EQ::skills::SkillType>(sid);
 		if (!s.trilogy_client->CanHaveSkill(skill)) {
@@ -6834,7 +6872,7 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 		const uint16 cap = s.trilogy_client->GetMaxSkillAfterSpecializationRules(
 		    skill,
 		    s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
-		                               RuleI(Character, MaxLevel)));
+		                               s.trilogy_client->GetLevel()));
 		reply.highesttrain[sid] = static_cast<int8_t>(cap > 200 ? 200 : cap);
 	}
 
@@ -6852,6 +6890,30 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	// trainer wont open the training window").
 	memset(reply.unknown,  1, sizeof(reply.unknown));
 	memset(reply.unknown2, 0, sizeof(reply.unknown2));
+
+	// Greed / price-modifier float — the v29c client reads a float from what
+	// modern EQEmu's OPGMTraining treats as "last 40 bytes = trailing metadata
+	// block" (see client_process.cpp:1674-1679 — a `memcpy(&outapp->pBuffer
+	// [outapp->size-40], ending, 40)` where ending starts with a float ≈ 1.08).
+	// In our 148 B response that puts greed at offset 108 (= unknown[27..30]).
+	//
+	// Symptom before this fix: the per-skill cost widget rendered "No charge"
+	// at every skill level because our all-1s pattern in unknown[] made the
+	// client read greed = 0x01010101 little-endian = ~2.35e-38 (subnormal) ≈ 0,
+	// so `displayed_cost = client_hardcoded_formula * greed` collapsed to 0.
+	//
+	// Use Titanium's exact magic bytes (0x3F8A8734 = ~1.082) instead of a
+	// clean 1.0f — 1.0f encodes as {0x00,0x00,0x80,0x3F} which introduces
+	// zero bytes into unknown[], and Wizzel's EQClassic comment warns "one of
+	// these are important or the trainer wont open the training window".
+	// 0x3F8A8734 has no zero bytes, so it satisfies the non-zero-byte
+	// heuristic while giving the client a valid ~1.0 multiplier.
+	{
+		static constexpr uint8_t kGreedBytes[4] = { 0x34, 0x87, 0x8A, 0x3F };
+		auto* raw = reinterpret_cast<uint8_t*>(&reply);
+		static_assert(sizeof(reply) >= 40, "ClassTrain_Struct too small for greed placement");
+		std::memcpy(raw + (sizeof(reply) - 40), kGreedBytes, sizeof(kGreedBytes));
+	}
 
 	SendApp(addr, port, s, ZN_OP_ClassTraining,
 	        reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
