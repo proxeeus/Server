@@ -762,6 +762,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ReadBook:
 		HandleOutgoingReadBook(app);
 		break;
+	case OP_RezzRequest:
+		HandleOutgoingRezzRequest(app);
+		break;
 	case OP_GroupInvite:
 		// Popup invite emitted by Handle_OP_GroupInvite2 → GroupInvite_Struct.
 		HandleOutgoingGroupInvite(app);
@@ -4069,6 +4072,63 @@ void TrilogyClient::HandleOutgoingReadBook(const EQApplicationPacket* app)
 	const uint8_t* text = app->pBuffer + 10;
 	const uint32_t len  = app->size - sizeof(::BookText_Struct);
 	m_tzs->SendToSession(m_session_key, 0xce20, text, len);
+}
+
+// ============================================================
+// HandleOutgoingRezzRequest — translate the 228-byte modern Resurrect_Struct
+// to the 160-byte v29c layout and fire it out at opcode 0x2a21 so the client
+// pops the resurrection window.
+//
+// The engine (Corpse::CastRezz → worldserver.RezzPlayer → world routes to
+// owner's zone → WorldServer::HandleMessage:ServerOP_RezzPlayer) hands us the
+// modern struct via QueuePacket.  Handle_OP_RezzAnswer will fire back at
+// 0x9b21 with the same 160B layout and the client's chosen action field.
+//
+// Field mapping (modern → v29c):
+//   zone_id (uint16)          -> zoneName[16]  via zone_store.GetZoneName
+//   y/x/z   (float)           -> y/x/z         (same order)
+//   your_name[64]             -> targetName[30]   (v29c popup uses this)
+//   rezzer_name[64]           -> casterName[30]
+//   corpse_name[64]           -> corpseName[28]
+//   spellid  (uint32)         -> spellID       (uint16; rez spells fit)
+// unknown fields left zero — v29c ignores them.
+// corpseEntityID is not carried on the outbound path (the caster's zone owns
+// the corpse lookup); it's echoed back verbatim on 0x9b21 which we ignore
+// because pending-rez state is server-side (SetPendingRezzData).
+// ============================================================
+void TrilogyClient::HandleOutgoingRezzRequest(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Resurrect_Struct)) return;
+
+	const auto* r_in = reinterpret_cast<const ::Resurrect_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Resurrect_Struct out{};
+	// corpseEntityID left zero; client only uses targetName to route the popup.
+	out.corpseEntityID = 0;
+
+	const char* zone_short = zone_store.GetZoneName(r_in->zone_id, false);
+	if (zone_short && *zone_short) {
+		strn0cpy(out.zoneName, zone_short, sizeof(out.zoneName));
+	}
+
+	out.y         = r_in->y;
+	out.x         = r_in->x;
+	out.z         = r_in->z;
+	out.fullGMRez = 0;
+	out.spellID   = static_cast<uint16_t>(r_in->spellid);
+
+	strn0cpy(out.targetName, r_in->your_name,   sizeof(out.targetName));
+	strn0cpy(out.casterName, r_in->rezzer_name, sizeof(out.casterName));
+	strn0cpy(out.corpseName, r_in->corpse_name, sizeof(out.corpseName));
+
+	LogSpells(
+		"[TrilogyRezz] send OP_RezzRequest target={} caster={} spell={} corpse={} zone={} pos=({:.1f},{:.1f},{:.1f})",
+		out.targetName, out.casterName, out.spellID, out.corpseName,
+		out.zoneName, out.x, out.y, out.z);
+
+	m_tzs->SendToSession(m_session_key, 0x2a21,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================

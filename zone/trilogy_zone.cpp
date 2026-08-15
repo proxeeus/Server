@@ -228,6 +228,17 @@ static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+u
 static constexpr uint16_t ZN_OP_Surname       = 0xc421; // client -> zone: Surname_Struct (56B, /surname submit)
 static constexpr uint16_t ZN_OP_GMSurname     = 0x6e21; // zone -> nearby: GMSurname_Struct (94B, refresh nameplates)
 
+// Resurrection (all 160B Resurrect_Struct).
+// Source: EQClassic Common/Include/eq_opcodes.h + eq_packet_structs.h
+// - ZN_OP_RezzRequest  is bidirectional but we only translate zone->client
+//   (server-side spell effect drives the request; inbound 0x2a21 from the
+//   caster's client would double-fire and is silently dropped).
+// - ZN_OP_RezzAnswer   is the corpse owner's yes/no reply (action=1/0).
+// - ZN_OP_RezzComplete terminates the pending-rez state on the client.
+static constexpr uint16_t ZN_OP_RezzRequest   = 0x2a21; // bidirectional; used server -> client
+static constexpr uint16_t ZN_OP_RezzAnswer    = 0x9b21; // client -> zone: accept / decline
+static constexpr uint16_t ZN_OP_RezzComplete  = 0xec21; // zone -> client: rez finished
+
 // Trade opcodes (NPC trade window)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
@@ -1836,6 +1847,15 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_Surname && s.trilogy_client)
 			HandleSurname(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_RezzAnswer && s.trilogy_client)
+			HandleRezzAnswer(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_RezzRequest && s.trilogy_client) {
+			// The v29c client sends this when it lands a rez spell on a corpse.
+			// Modern EQEmu's SE_Revive spell-effect path already fires
+			// Corpse::CastRezz from SpellFinished when the caster's spell
+			// completes on a corpse target, so processing this inbound would
+			// double-fire the popup on the corpse owner.  Silently drop.
+		}
 		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
@@ -7274,6 +7294,79 @@ void TrilogyZoneServer::HandleSurname(const std::string& /*addr*/, int /*port*/,
 
 	LogInfo("[TrilogyZone] /surname: {} -> '{}'", s.char_name, es->lastname);
 	s.trilogy_client->Handle_OP_Surname(&app);
+}
+
+// ============================================================
+// HandleRezzAnswer — corpse owner clicked yes/no on the resurrection popup.
+//
+// Wire in : Trilogy::structs::Resurrect_Struct (160B) at opcode 0x9b21.
+// Wire out: on accept, OP_RezzComplete (0xec21, same 160B struct) so the v29c
+//           client tears down its pending-rez state (parity with EQClassic
+//           ProcessOP_RezzAnswer at Zone/Source/client_process.cpp:6654).
+//
+// Server-side flow is the modern one: translate to the 228B EQEmu
+// Resurrect_Struct and dispatch through Client::Handle_OP_RezzAnswer, which
+// runs OPRezzAnswer (XP restore, MovePC to corpse coords, worldserver
+// route-back of OP_RezzComplete so the corpse's zone marks it rezzed).
+// Trilogy has no hover-rez — the player is either at bind or in another zone,
+// so MovePC will drive either an OP_TeleportPC (same-zone) or an
+// OP_RequestClientZoneChange (cross-zone), both of which already have Trilogy
+// translators (see project_trilogy_skyshrine_pads memory).
+//
+// zone_id is looked up from the incoming zoneName via zone_store; server-side
+// PendingRezzXP/etc. was stashed by WorldServer::HandleMessage:ServerOP_RezzPlayer
+// when the popup was originally shown.
+// ============================================================
+void TrilogyZoneServer::HandleRezzAnswer(const std::string& addr, int port, Session& s,
+                                          const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Resurrect_Struct)) {
+		LogInfo("[TrilogyRezz] OP_RezzAnswer short payload {} from char={}", plen, s.char_name);
+		return;
+	}
+
+	const auto* rin = reinterpret_cast<const Trilogy::structs::Resurrect_Struct*>(payload);
+
+	EQApplicationPacket app(OP_RezzAnswer, sizeof(::Resurrect_Struct));
+	memset(app.pBuffer, 0, sizeof(::Resurrect_Struct));
+	auto* rout = reinterpret_cast<::Resurrect_Struct*>(app.pBuffer);
+
+	// Look up zone_id from zoneName; v29c echoes whatever we sent on the outbound
+	// popup so this is the caster's zone (where the corpse is).
+	char zshort[17] = {};
+	strn0cpy(zshort, rin->zoneName, sizeof(zshort));
+	rout->zone_id     = static_cast<uint16_t>(ZoneID(zshort));
+	rout->instance_id = 0;
+
+	rout->y       = rin->y;
+	rout->x       = rin->x;
+	rout->z       = rin->z;
+	rout->spellid = rin->spellID;
+	rout->action  = rin->action;
+
+	strn0cpy(rout->your_name,   rin->targetName, sizeof(rout->your_name));
+	strn0cpy(rout->rezzer_name, rin->casterName, sizeof(rout->rezzer_name));
+	strn0cpy(rout->corpse_name, rin->corpseName, sizeof(rout->corpse_name));
+
+	LogInfo("[TrilogyRezz] OP_RezzAnswer from {} action={} spell={} zone={}({}) corpse='{}'",
+	        s.char_name,
+	        rout->action ? "ACCEPT" : "DECLINE",
+	        rout->spellid,
+	        zshort,
+	        rout->zone_id,
+	        rout->corpse_name);
+
+	s.trilogy_client->Handle_OP_RezzAnswer(&app);
+
+	// EQClassic client_process.cpp:6654 sends OP_RezzComplete back to the
+	// corpse owner on accept so the v29c client dismisses the pending-rez UI.
+	// Modern EQEmu never queues this to the client (the world route-back at
+	// worldserver.cpp:937 is a corpse-zone bookkeeping message, not user
+	// visible), so we synthesize it here for wire parity.
+	if (rin->action == 1) {
+		SendApp(addr, port, s, ZN_OP_RezzComplete, payload, plen, true);
+	}
 }
 
 // ============================================================
