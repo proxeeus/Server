@@ -775,41 +775,35 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
-	// Attempt 6: send weapon OP_WearChange BEFORE the CharacterSelect_Struct
-	// itself. The client's paperdoll pipeline may read pending equipment
-	// state at first render — if we deliver weapon models first, they're
-	// already in the buffer when the paperdoll initialises from the CS
-	// struct. Attempts 1-5 sent AFTER, meaning the paperdoll already
-	// rendered without weapons before our packet arrived.
+	// Attempt 7 (DIAGNOSTIC): user reports multi-char rosters render weapons
+	// on the default char automatically, but 1-char rosters do not. This
+	// suggests the client's auto-poll trigger requires 2+ populated slots.
+	// Test that hypothesis by injecting a PHANTOM char into slot 1 for
+	// 1-char rosters — duplicate slot 0's data so the client sees a 2-char
+	// roster. If weapons render on slot 0 (Sarallron), we've confirmed the
+	// trigger is roster-multi-ness and can iterate on a clean solution
+	// (probably a specific field in unknown3 that gates the auto-poll).
+	// This is UGLY (user will see a second identical portrait) but is a
+	// deliberate SCIENTIFIC TEST — if it works, next attempt figures out
+	// how to trigger multi-char behavior without the visual phantom.
 	if (slot == 1) {
-		using TrilWC = Trilogy::structs::WearChange_Struct;
-		constexpr int16_t kPollTag  = 9410;
-		constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
-
-		// SUB_ChangeChar first — "auto-selecting char 1"
-		{
-			TrilWC ch{};
-			ch.wear_slot_id = 0;
-			ch.slot_graphic = 1;
-			ch.sub_op       = WS_SUB_CHANGE_CHAR;
-			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-			        reinterpret_cast<const uint8_t*>(&ch), sizeof(ch));
+		LogInfo("[TrilogyWorld] SendCharSelect | attempt7 injecting PHANTOM char into slot 1 "
+		        "(diagnostic test — you will see a 2nd portrait) to {}:{}", addr, port);
+		strncpy(cs.name[1],  cs.name[0],  sizeof(cs.name[1]) - 1);
+		strncpy(cs.zone[1],  cs.zone[0],  sizeof(cs.zone[1]) - 1);
+		cs.level[1]  = cs.level[0];
+		cs.class_[1] = cs.class_[0];
+		cs.race[1]   = cs.race[0];
+		cs.gender[1] = cs.gender[0];
+		cs.face[1]   = cs.face[0];
+		for (int i = 0; i < 9; ++i) {
+			cs.equip[1][i]     = cs.equip[0][i];
+			cs.cs_colors[1][i] = cs.cs_colors[0][i];
 		}
-
-		// Then the two weapon assignments
-		for (int hand = 0; hand < 2; ++hand) {
-			TrilWC wc{};
-			wc.wear_slot_id = static_cast<int8_t>(7 + hand);
-			wc.slot_graphic = s.cs_weapon_model[0][hand];
-			wc.sub_op       = kPollTag;
-			wc.flag         = kPollFlag;
-			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
-		}
-		LogInfo("[TrilogyWorld] SendCharSelect | attempt6 pre-CS WearChange primary=[{}] secondary=[{}] to {}:{}",
-		        static_cast<int>(s.cs_weapon_model[0][0]),
-		        static_cast<int>(s.cs_weapon_model[0][1]),
-		        addr, port);
+		// Also duplicate the weapon-model cache so HandleWearChange responds
+		// correctly to polls for slot_graphic=2 (phantom char).
+		s.cs_weapon_model[1][0] = s.cs_weapon_model[0][0];
+		s.cs_weapon_model[1][1] = s.cs_weapon_model[0][1];
 	}
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
