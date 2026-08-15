@@ -1855,9 +1855,8 @@ void TrilogyClient::FlushPendingMobUpdates()
 // That's why there is no tick heartbeat here; MoveToCommand's natural
 // start / speed-change / 5s cadence provides the leg-boundary triggers.
 //
-// Client Z encoding: EQClassic's MakeSpawnUpdate (mob.cpp:577-578) sends
-// raw z_pos for Client mobs vs z_pos*10 for NPCs.  For self-push we're
-// always encoding a Client, so we use raw Z.
+// Z encoding is *10 like every other outbound Z in this layer — see the
+// inline comment on upd.z_pos below.
 // ============================================================
 void TrilogyClient::SendForcedSelfPositionUpdate(
 	const PlayerPositionUpdateServer_Struct* p)
@@ -1870,11 +1869,14 @@ void TrilogyClient::SendForcedSelfPositionUpdate(
 	upd.delta_heading = 0;
 	upd.y_pos         = static_cast<int16_t>(GetY());
 	upd.x_pos         = static_cast<int16_t>(GetX());
-	// CLIENT Z encoding: raw, not *10 (EQClassic mob.cpp:577).  NPCs use
-	// *10 for 0.1-unit precision, clients use whole units.  Sending *10 for
-	// a client makes the decoded Z 10× actual, which can put the player
-	// inside geometry and contribute to collision failures.
-	upd.z_pos         = static_cast<int16_t>(GetZ());
+	// Z encoding: *10 matches EVERY OTHER outbound Z in our Trilogy layer
+	// (see trilogy_zone.cpp:3497, 7671, 7810, 7878, 8033, 9208 etc.) and
+	// pairs with the inbound decode at trilogy_zone.cpp:4945 (`z_pos / 10`).
+	// EQClassic's mob.cpp:577 "raw for IsClient" is a server-internal Z
+	// scale quirk of theirs (Yeahlight-ism), not a universal wire property.
+	// Earlier attempt at raw Z made the player "fall from sky" — decoded Z
+	// landed 10× above actual.
+	upd.z_pos         = static_cast<int16_t>(GetZ() * 10.0f);
 
 	// Encode fear speed as anim_type so the client renders the run cycle
 	// while extrapolating position.  EncodeTrilogyAnim converts EQEmu-speed
