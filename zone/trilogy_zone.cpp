@@ -1990,37 +1990,92 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				memcpy(&tgt16, payload, 2);
 				uint32_t tgt32 = static_cast<uint32_t>(static_cast<int32_t>(tgt16));
 
-				// Attack-diagnostic: what does the server think of this target
-				// at the moment the client picks it? Rate-limited to once per
-				// second per session so click-spamming doesn't flood the log.
 				const uint64_t now_ms_tgt = static_cast<uint64_t>(
 					std::chrono::duration_cast<std::chrono::milliseconds>(
 						std::chrono::steady_clock::now().time_since_epoch()).count());
+				Mob* tgt_mob = (tgt32 != 0) ? entity_list.GetMob(static_cast<uint16_t>(tgt32)) : nullptr;
+
+				// Compute client render drift for the target (regardless of
+				// log rate limit) so the JIT refresh below can act on every
+				// selection that needs it.
+				int client_last_x = 0, client_last_y = 0;
+				int client_gap    = -1;
+				auto lb_it_tgt = (tgt_mob != nullptr)
+				                 ? s.last_broadcast.find(static_cast<uint16_t>(tgt32))
+				                 : s.last_broadcast.end();
+				int cur_wire_x_tgt = 0, cur_wire_y_tgt = 0;
+				if (tgt_mob) {
+					cur_wire_x_tgt = static_cast<int16_t>(tgt_mob->GetX());
+					cur_wire_y_tgt = static_cast<int16_t>(tgt_mob->GetY());
+				}
+				if (lb_it_tgt != s.last_broadcast.end()) {
+					client_last_x = lb_it_tgt->second.x_pos;
+					client_last_y = lb_it_tgt->second.y_pos;
+					const int gx = cur_wire_x_tgt - client_last_x;
+					const int gy = cur_wire_y_tgt - client_last_y;
+					client_gap = static_cast<int>(std::sqrt(
+						static_cast<float>(gx * gx + gy * gy)));
+				}
+
+				// ── Just-in-time (JIT) drift refresh on target selection ──
+				// If the client's rendered position for this target is off
+				// from the server's by more than the range-check margin, the
+				// client's local range gate will reject the user's next action
+				// (loot on a corpse ~40u drift, attack on a mob ~15u drift).
+				// Push a fresh A120 so the client's next click has an accurate
+				// position for its own range test.  Wire cost: 1 A120 per
+				// target selection that actually needed correction — bounded
+				// by user click rate.  Naturally throttled: back-to-back
+				// clicks on the same target only fire once (last_broadcast is
+				// then current, so the next click sees gap=0 and skips).
+				static constexpr int kJitRefreshThresholdUnits = 20;
+				if (tgt_mob && lb_it_tgt != s.last_broadcast.end() &&
+				    client_gap >= kJitRefreshThresholdUnits) {
+					Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+					upd.spawn_id = static_cast<int16_t>(tgt32);
+					upd.heading  = static_cast<int8_t>(
+						static_cast<uint8_t>(tgt_mob->GetHeading() / 2.0f));
+					upd.y_pos    = static_cast<int16_t>(tgt_mob->GetY());
+					upd.x_pos    = static_cast<int16_t>(tgt_mob->GetX());
+					upd.z_pos    = static_cast<int16_t>(tgt_mob->GetZ() * 10.0f);
+					if (tgt_mob->IsMoving()) {
+						const int eqemu_speed = tgt_mob->IsEngaged()
+						                            ? tgt_mob->GetRunspeed()
+						                            : tgt_mob->GetWalkspeed();
+						upd.anim_type = EncodeTrilogyAnim(tgt_mob, eqemu_speed);
+					}
+
+					uint8_t buf[4 + sizeof(upd)];
+					int32_t n = 1;
+					memcpy(buf, &n, 4);
+					memcpy(buf + 4, &upd, sizeof(upd));
+					SendApp(addr, port, s, ZN_OP_MobUpdate,
+					        buf, static_cast<uint32_t>(sizeof(buf)),
+					        /*ack_req=*/false);
+
+					lb_it_tgt->second.x_pos     = upd.x_pos;
+					lb_it_tgt->second.y_pos     = upd.y_pos;
+					lb_it_tgt->second.z_pos     = upd.z_pos;
+					lb_it_tgt->second.heading   = upd.heading;
+					lb_it_tgt->second.anim_type = upd.anim_type;
+					lb_it_tgt->second.sent_ms   = now_ms_tgt;
+
+					LogInfo("[Trilogy jit-refresh] sid={} name='{}' "
+					        "gap={} client_last=({},{}) → server=({:.1f},{:.1f})",
+					        static_cast<int>(tgt32),
+					        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?",
+					        client_gap, client_last_x, client_last_y,
+					        tgt_mob->GetX(), tgt_mob->GetY());
+				}
+
+				// Attack-diagnostic log — rate-limited to 1s per session so
+				// click-spamming doesn't flood the log.
 				if (now_ms_tgt - s.last_target_log_ms >= 1000) {
 					s.last_target_log_ms = now_ms_tgt;
-					Mob* tgt_mob = (tgt32 != 0) ? entity_list.GetMob(static_cast<uint16_t>(tgt32)) : nullptr;
 					if (tgt_mob) {
 						float dx = tgt_mob->GetX() - s.trilogy_client->GetX();
 						float dy = tgt_mob->GetY() - s.trilogy_client->GetY();
 						float dist = std::sqrt(dx*dx + dy*dy);
-						// Look up what we last told the client about this spawn.
-						// If client_last differs from server pos, the client's
-						// rendered position is stale and its local range check
-						// may reject actions the server would otherwise accept
-						// (loot on corpses, attack range on live mobs).
-						int client_last_x = 0, client_last_y = 0;
-						int client_gap    = -1;
-						auto lb_it = s.last_broadcast.find(static_cast<uint16_t>(tgt32));
-						if (lb_it != s.last_broadcast.end()) {
-							client_last_x = lb_it->second.x_pos;
-							client_last_y = lb_it->second.y_pos;
-							const int cur_wire_x = static_cast<int16_t>(tgt_mob->GetX());
-							const int cur_wire_y = static_cast<int16_t>(tgt_mob->GetY());
-							const int gx = cur_wire_x - client_last_x;
-							const int gy = cur_wire_y - client_last_y;
-							client_gap = static_cast<int>(std::sqrt(
-								static_cast<float>(gx * gx + gy * gy)));
-						}
 						LogInfo("[Trilogy attack-diag] TARGET wire_id={} sid={} name='{}' "
 						        "server_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
 						        "dist={:.1f} client_last=({},{}) client_gap={} "
