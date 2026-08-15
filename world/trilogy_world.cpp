@@ -1503,40 +1503,45 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			}
 		}
 
-		// 3. Final fallback: race + class (+ deity if available), any zone
+		// 3. Final fallback: honor the client's zone at its safe point.
+		//
+		// Never teleport the player to a city they did not pick. If priorities
+		// 1 and 2 both failed (no matching start_zones row for any client-hinted
+		// zone), use the client's current_zone (or first non-empty slot) with the
+		// zone's own safe point coords. This is missing-data-in-DB, not a reason
+		// to override the user's chosen city.
+		//
+		// Prior behavior: any-zone `LIMIT 1` deity lookup — would land the player
+		// in whatever zone the SQL engine returned first (typically qeynos)
+		// regardless of what the client asked for. This is what dropped Human
+		// Bard of The Tribunal in Qeynos after the user selected Freeport.
 		if (!placed) {
-			auto run = [&](const std::string& q) -> bool {
-				auto zr = content_db.QueryDatabase(q);
-				if (zr.RowCount() == 0) return false;
-				auto row = zr.begin();
-				pp.x       = Strings::ToFloat(row[0]);
-				pp.y       = Strings::ToFloat(row[1]);
-				pp.z       = Strings::ToFloat(row[2]);
-				pp.heading = Strings::ToFloat(row[3]);
-				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
-				return true;
-			};
-			bool ok = false;
-			if (eqemu_deity != 0) {
-				ok = run(fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
-					" LIMIT 1",
-					class_, race, eqemu_deity));
+			const char* target_name = nullptr;
+			if (current_zone_name[0] != '\0') {
+				target_name = current_zone_name;
+			} else {
+				for (int si = 0; si < 4; ++si) {
+					if (plen >= kSlotOffsets[si] + 20) {
+						const char* slot = reinterpret_cast<const char*>(payload + kSlotOffsets[si]);
+						if (slot[0] != '\0') { target_name = slot; break; }
+					}
+				}
 			}
-			if (!ok) {
-				ok = run(fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`player_class`={} AND sz.`player_race`={}"
-					" ORDER BY sz.`player_deity` ASC LIMIT 1",
-					class_, race));
-			}
-			if (ok) {
-				placed = true;
-				LogInfo("[TrilogyWorld] CharCreate | fallback race/class zone_id={} (deity={})",
-				        pp.zone_id, eqemu_deity);
+			if (target_name != nullptr) {
+				uint32_t zid = resolve_zone_id(target_name);
+				if (zid != 0) {
+					auto z = GetZone(zid);
+					if (z) {
+						pp.zone_id = static_cast<uint16_t>(zid);
+						pp.x       = z->safe_x;
+						pp.y       = z->safe_y;
+						pp.z       = z->safe_z;
+						pp.heading = z->safe_heading;
+						placed = true;
+						LogInfo("[TrilogyWorld] CharCreate | client-zone safe point: [{}] zone_id={} at ({:.2f},{:.2f},{:.2f}) (no start_zones row for combo in this zone)",
+						        target_name, pp.zone_id, pp.x, pp.y, pp.z);
+					}
+				}
 			}
 		}
 
