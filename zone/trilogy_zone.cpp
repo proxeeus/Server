@@ -2523,55 +2523,6 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				        (uint16_t)cpp->bank_inv[4], (uint16_t)cpp->bank_inv[5],
 				        (uint16_t)cpp->bank_inv[6], (uint16_t)cpp->bank_inv[7],
 				        cont);
-
-				// /played offset discovery: dump the three "unknown timestamp"
-				// fields as the CLIENT populated them at camp/NPC-trade time.
-				// The client keeps its /played state internally and writes it
-				// out with the rest of the PP; whichever slot holds a plausible
-				// unix ts (~1.7e9) or minute count (~0-1e6) IS the field the
-				// client's /played reads.  Zone-in doesn't tell us — the client
-				// takes what we send.  This log captures ground truth on the
-				// next 0x2e20 upload; ask the player to type /played once,
-				// then camp — compare these values against what /played showed.
-				//
-				// Also do a coarse scan of unknown4508[3592] for any int32 that
-				// looks like a recent unix timestamp (2001-2030 range) or a
-				// plausible minute count (< 5000000 min = ~9.5 years), so we
-				// can spot the field wherever it lives in that block.
-				{
-					const uint32_t t1 = static_cast<uint32_t>(cpp->time1);
-					const uint32_t t2 = static_cast<uint32_t>(cpp->time2);
-					const uint32_t lt = static_cast<uint32_t>(cpp->logtime);
-					LogInfo("[TrilogyPlayed] CLIENTBANK PP char={} time1(3956)={} time2(4160)={} logtime(8100)={}",
-					        s.char_id, t1, t2, lt);
-
-					// Scan unknown4508[3592] as 898 x uint32; report slots
-					// carrying a plausible timestamp or minute-count value.
-					constexpr uint32_t kUnixTsLow  = 978307200u;   // 2001-01-01
-					constexpr uint32_t kUnixTsHigh = 1893456000u;  // 2030-01-01
-					constexpr uint32_t kMinutesMax = 5000000u;     // ~9.5 years
-					const uint8_t* blk = reinterpret_cast<const uint8_t*>(cpp->unknown4508);
-					std::string hits;
-					int hit_count = 0;
-					for (int i = 0; i + 4 <= 3592 && hit_count < 20; ++i) {
-						uint32_t v;
-						std::memcpy(&v, blk + i, 4);
-						const bool looks_ts  = (v >= kUnixTsLow && v <= kUnixTsHigh);
-						const bool looks_min = (v > 0 && v < kMinutesMax);
-						if (looks_ts || looks_min) {
-							hits += fmt::format("{}(off={})={}{} ",
-							        (looks_ts ? "TS" : "MIN"),
-							        4508 + i,
-							        v,
-							        (looks_ts ? "" : "min"));
-							++hit_count;
-						}
-					}
-					if (!hits.empty()) {
-						LogInfo("[TrilogyPlayed] CLIENTBANK unknown4508 scan char={} hits=[{}]",
-						        s.char_id, hits);
-					}
-				}
 			} else {
 				LogInfo("[TrilogyZone] CLIENTBANK char={} upload too small plen={} (need {})",
 				        s.char_id, plen,
@@ -4109,7 +4060,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
-			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm` "
+			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm`,"
+			" `birthday`, `time_played` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -4216,77 +4168,19 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
 
-		// ── /played offset sigil probe (phase 2) ────────────────────────────
-		// PHASE 1 result: struct byte 4160 (`time2`) IS BirthdayTime.
-		// PHASE 2 goal: pin down TimePlayedMin.  It's NOT at 3956, 4160, or
-		// 8100 (all three tested — "You have played..." still showed session
-		// time).  Most likely candidates: bytes just after BirthdayTime
-		// (mirrors the 8244-byte alternate PP layout where TimePlayedMin
-		// sits 8 bytes after BirthdayTime with a 4-byte "Unknown" gap
-		// between), OR somewhere in `unknown4508[3592]`.
-		//
-		// Strategy: write each candidate int32 slot with a sigil equal to
-		// the STRUCT OFFSET itself.  Then whatever the client displays in
-		// "You have played this character for:" (a minute count) decodes
-		// directly to the offset it read.  Example: "8100 min = 5 days
-		// 15 hours 0 min" → the client read from struct byte 8100 (logtime).
-		//
-		// Coverage: 4164/4166 (immediate neighbours of BirthdayTime),
-		// 8100 (logtime, already tested but re-planted for completeness),
-		// then every ~250 bytes across unknown4508 (14 samples spanning the
-		// full 3592-byte block).
-		//
-		// Also keep time2 = 2005-01-01 sigil so BirthdayTime displays
-		// remain consistent as a sanity check.
-		constexpr bool kProbePlayedOffsets = true;
-		if (kProbePlayedOffsets) {
-			// Sanity: birthday sigil (offset 4160)
-			pp.time2 = static_cast<int32_t>(1104537600u); // 2005-01-01
-
-			// Helper to write an int32 sigil into any struct byte offset.
-			// The value written == the byte offset, so a display of "N
-			// minutes" decodes to `offset = N`.
-			auto plant = [&pp](uint32_t byte_offset) {
-				const int32_t sigil = static_cast<int32_t>(byte_offset);
-				std::memcpy(reinterpret_cast<uint8_t*>(&pp) + byte_offset,
-				            &sigil, sizeof(sigil));
-			};
-
-			// Immediate neighbours of BirthdayTime (mirrors 8244-byte
-			// PP where TimePlayedMin was 8 bytes past BirthdayTime).
-			plant(4164);  // int32 in unknown4164[0..3]
-			// Skip 4166/4168 because they'd overlap fatigue(4170).
-
-			// logtime (already tested as birthday in phase 1 — replant
-			// as int32 sigil = 8100 in case it's TimePlayedMin)
-			plant(8100);
-
-			// unknown4508[3592] sweep — every ~250 bytes.  Values written
-			// are the byte offset, all fall in the 4508-8096 range as
-			// plausible minute counts (~3-5 days each).
-			plant(4508);
-			plant(4756);
-			plant(5000);
-			plant(5252);
-			plant(5500);
-			plant(5752);
-			plant(6000);
-			plant(6252);
-			plant(6500);
-			plant(6752);
-			plant(7000);
-			plant(7252);
-			plant(7500);
-			plant(7752);
-			plant(8000);
-			plant(8096);  // last valid int32 slot before logtime
-
-			LogInfo("[TrilogyPlayed] PROBE2 char [{}] time2(4160)=1104537600(2005-birthday); "
-			        "sigils=[4164,4508,4756,5000,5252,5500,5752,6000,6252,6500,6752,"
-			        "7000,7252,7500,7752,8000,8096,8100] (value == offset)",
-			        s.char_name);
-		}
-		// ────────────────────────────────────────────────────────────────────
+		// /played fields.  The v29c client's /played handler is entirely
+		// client-side: it reads two adjacent int32s from the PP and formats
+		// them locally.  Offsets pinned by sigil probe 2026-08-15:
+		//   birthday_time   (byte 4160) — unix timestamp of char creation
+		//   time_played_min (byte 4164) — cumulative minutes played
+		// Both columns are populated by the modern EQEmu character path:
+		// character_data.birthday is set at CharCreate (trilogy_world.cpp)
+		// and character_data.time_played is accumulated by Client::Save()
+		// via TotalSecondsPlayed.  The seed in InitTrilogyFields (client.cpp)
+		// prevents the very first Trilogy-session Save() from clobbering
+		// the stored total.
+		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
+		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
 
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
