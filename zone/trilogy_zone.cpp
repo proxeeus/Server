@@ -6816,10 +6816,20 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	reply.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
 
 	// Skill caps — highesttrain[i] is the max value this trainer can raise
-	// skill i to.  Iterate only the 73 indices the wire struct holds; the
-	// Trilogy enum is densely packed in the same order EQEmu uses for these
-	// indices, so a direct id→id mapping works.  Skills the class can never
-	// learn (CanHaveSkill==false) get 0 → hidden from the window.
+	// skill i to at the character's CURRENT level.  The v29c client uses this
+	// as the denominator for the trainer window's tier bar
+	// ("awful/very bad/average/master") — ratio = pp.skills[i] / highesttrain[i].
+	// Sending the absolute class cap (MaxLevel ~250) makes the ratio stay tiny
+	// forever and the tier never visibly advances as the player trains, which
+	// looks like the UI is stuck.  EQClassic's ProcessOP_ClassTraining
+	// (Zone/Source/client_process.cpp:5612) passes GetLevel() to CheckMaxSkill,
+	// producing a per-level cap (~30 at level 5) that the tier bar can move
+	// meaningfully against.  Match that.
+	//
+	// Iterate only the 73 indices the wire struct holds; the Trilogy enum is
+	// densely packed in the same order EQEmu uses for these indices, so a
+	// direct id→id mapping works.  Skills the class can never learn
+	// (CanHaveSkill==false) get 0 → hidden from the window.
 	for (int sid = 0; sid < 73; ++sid) {
 		const auto skill = static_cast<EQ::skills::SkillType>(sid);
 		if (!s.trilogy_client->CanHaveSkill(skill)) {
@@ -6834,7 +6844,7 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 		const uint16 cap = s.trilogy_client->GetMaxSkillAfterSpecializationRules(
 		    skill,
 		    s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
-		                               RuleI(Character, MaxLevel)));
+		                               s.trilogy_client->GetLevel()));
 		reply.highesttrain[sid] = static_cast<int8_t>(cap > 200 ? 200 : cap);
 	}
 
