@@ -10045,6 +10045,134 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 }
 
 // ============================================================
+// ApplyWornSlotPickupSideEffects — sync m_inv + fire unequip side-effects for
+// the whole-stack pickup path when the source is a worn slot (1-20 or ammo).
+//
+// The whole-stack pickup branch of HandleMoveItem defers the DB row movement
+// until the drop step (avoids one UPDATE if the player drops back to the same
+// slot).  RefreshWornSlotsAfterMove is not appropriate here because it re-reads
+// the DB — and the DB row is still at the worn slot at pickup time, so it would
+// silently restore the just-unequipped item.
+//
+// This helper mirrors the essential CalcBonuses / ApplyWeaponsStance /
+// SetAttackTimer / WearChange / EVENT_UNEQUIP tail of RefreshWornSlotsAfterMove
+// but skips the DB re-read — it directly pops the ItemInstance out of m_inv at
+// the worn slot and stashes it at m_inv[slotCursor] so lore/CalcBonuses and any
+// engine code that consults m_inv sees the cursor state instead of the stale
+// equipped state.
+//
+// Consequences of NOT calling this (the pre-fix behavior):
+//   • m_inv[Primary/Secondary] still points at the weapon, so Client::Attack
+//     (attack.cpp:1618) finds a non-null weapon → AttackAnimation returns the
+//     weapon skill (1H Slash / Piercing / …) instead of HandtoHand.
+//   • CalcBonuses is not called, so has_two_hander_equipped, weapon damage
+//     bonuses, and haste stay applied while the item is on the cursor.
+//   • SetAttackTimer is not called, so the primary/secondary attack timers
+//     stay calibrated to the weapon delay instead of GetHandToHandDelay().
+//   • No OP_WearChange, so the character continues to visually swing the
+//     weapon in other players' views.
+// ============================================================
+void TrilogyZoneServer::ApplyWornSlotPickupSideEffects(Session& s, int from_db)
+{
+	if (!s.trilogy_client) return;
+
+	auto is_worn = [](int slot) {
+		return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
+	};
+	if (!is_worn(from_db)) return;
+
+	auto* tc  = s.trilogy_client;
+	auto& inv = tc->GetInv();
+
+	// Pop the ItemInstance out of the worn slot.  If nothing was there (e.g.
+	// prior desync or race) we still run the recalc tail below so the client's
+	// bonuses/attack-timer end up coherent with an empty slot.
+	EQ::ItemInstance* worn_inst = inv.PopItem(static_cast<int16>(from_db));
+	uint32 worn_id = worn_inst ? worn_inst->GetItem()->ID : 0;
+
+	// Fire EVENT_UNEQUIP_ITEM for whatever was equipped.  Mirrors the
+	// unequip side of RefreshWornSlotsAfterMove::fire_unequip.
+	if (worn_inst && worn_inst->GetItem()) {
+		if (parse->ItemHasQuestSub(worn_inst, EVENT_UNEQUIP_ITEM)) {
+			parse->EventItem(EVENT_UNEQUIP_ITEM, tc, worn_inst, nullptr, "", from_db);
+		}
+		if (parse->PlayerHasQuestSub(EVENT_UNEQUIP_ITEM_CLIENT)) {
+			parse->EventPlayer(EVENT_UNEQUIP_ITEM_CLIENT, tc,
+			                   fmt::format("1 {}", from_db), worn_id);
+		}
+	}
+
+	// Stash on cursor so m_inv[slotCursor] matches the logical state (item is
+	// on the cursor).  Any existing cursor item is displaced silently — the
+	// v29c client can only hold one thing on the cursor at a time, so a
+	// well-behaved client won't reach this branch with a pre-populated cursor.
+	if (worn_inst) {
+		auto* prev = inv.PopItem(EQ::invslot::slotCursor);
+		safe_delete(prev);
+		inv.PutItem(EQ::invslot::slotCursor, *worn_inst);
+	}
+
+	tc->CalcBonuses();
+	tc->ApplyWeaponsStance();
+
+	// Weapon/range slot touched → recalibrate both attack timers immediately
+	// so the very next auto-attack tick uses GetHandToHandDelay().  Without
+	// this, the still-set weapon-delay trigger keeps firing at the wrong
+	// cadence until the next weapon-slot event.
+	if (from_db == EQ::invslot::slotPrimary ||
+	    from_db == EQ::invslot::slotSecondary ||
+	    from_db == EQ::invslot::slotRange) {
+		tc->SetAttackTimer();
+	}
+
+	// Weapon-visual clear for slot 13/14.  v29c has no visual for the range
+	// slot, so a bow pickup skips this block (matches RefreshWornSlotsAfterMove).
+	// The wire pattern (material=0, color=0, self + broadcast, texture-profile
+	// cache update, RecordKnownMaterial) mirrors the tail of that helper — the
+	// only differences are that (a) we already know material/color are zero
+	// (bare hands) and (b) we don't need to consult m_inv for the "after" state.
+	uint8_t material_slot = 0xFF;
+	if (from_db == EQ::invslot::slotPrimary)   material_slot = EQ::textures::weaponPrimary;
+	if (from_db == EQ::invslot::slotSecondary) material_slot = EQ::textures::weaponSecondary;
+	if (material_slot != 0xFF) {
+		tc->SetMobTextureProfile(material_slot, 0, 0, 0);
+
+		auto* outapp = new EQApplicationPacket(OP_WearChange, sizeof(::WearChange_Struct));
+		auto* w = reinterpret_cast<::WearChange_Struct*>(outapp->pBuffer);
+		w->spawn_id         = tc->GetID();
+		w->material         = 0;
+		w->elite_material   = 0;
+		w->hero_forge_model = 0;
+		w->color.Color      = 0;
+		w->wear_slot_id     = material_slot;
+		entity_list.QueueClients(tc, outapp, true);
+		safe_delete(outapp);
+
+		using TrilWC = Trilogy::structs::WearChange_Struct;
+		TrilWC wc{};
+		wc.spawn_id     = static_cast<int32_t>(tc->GetPlayerSpawnId());
+		wc.wear_slot_id = static_cast<int8_t>(material_slot);
+		wc.slot_graphic = 0;
+		wc.sub_op       = 0;
+		wc.color        = 0;
+		wc.wc_unknown3  = 0;
+		wc.flag         = 0;
+		SendApp(s.source_addr, s.source_port, s, 0x9220,
+		        reinterpret_cast<const uint8_t*>(&wc),
+		        static_cast<uint32_t>(sizeof(wc)));
+		tc->RecordKnownMaterial(
+			static_cast<uint16_t>(tc->GetPlayerSpawnId()),
+			material_slot, 0);
+	}
+
+	LogInfo("[TrilogyZone] worn-slot pickup char={} slot={} item={} → cursor "
+	        "(m_inv synced, CalcBonuses+SetAttackTimer fired, visual cleared)",
+	        s.char_id, from_db, worn_id);
+
+	safe_delete(worn_inst);
+}
+
+// ============================================================
 // HandleMoveItem — client moved an item (0x2c21)
 //
 // Wire slot semantics (client-side) — a UNIFORM reverse -1 shift (DB = wire + 1)
@@ -10361,6 +10489,12 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 		        s.char_id, from_wire, from_db, mi->number_in_stack);
 		s.cursor_from_db           = from_db;
 		s.cursor_partial_origin_db = -1;
+
+		// If we just picked up from a worn slot (equip → cursor), the DB row
+		// stays put but m_inv, bonuses, attack timer, and the weapon visual all
+		// need to be updated NOW — otherwise the auto-attack loop keeps swinging
+		// the still-referenced weapon with its weapon skill mid-combat.
+		ApplyWornSlotPickupSideEffects(s, from_db);
 		return;
 	}
 

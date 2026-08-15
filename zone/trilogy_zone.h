@@ -530,6 +530,14 @@ private:
 	// side-effects (CalcBonuses, ApplyWeaponsStance, SetAttackTimer,
 	// EVENT_(UN)EQUIP_ITEM). See trilogy_zone.cpp comment block for why.
 	void RefreshWornSlotsAfterMove(Session& s, int from_db, int to_db, bool destroy_path);
+	// Whole-stack pickup FROM a worn slot (equip -> cursor) defers the DB row
+	// movement to the drop step, but must still update m_inv + fire unequip
+	// side-effects immediately.  Without this, mid-combat unequip leaves the
+	// weapon in m_inv[Primary/Secondary] so Attack() keeps swinging it with the
+	// weapon skill, CalcBonuses keeps two-hander/damage bonuses live, and the
+	// attack timer stays calibrated to the weapon delay instead of H2H.
+	// Companion of RefreshWornSlotsAfterMove for the deferred-DB pickup path.
+	void ApplyWornSlotPickupSideEffects(Session& s, int from_db);
 	// NPC + PC-to-PC trade window handlers.  HandleTradeRequest, HandleTradeCoins,
 	// HandleTradeGive, HandleTradeCancel, and HandleTradeMoveItem each fork
 	// internally on whether the session is in an NPC trade (trade_npc_id set) or
