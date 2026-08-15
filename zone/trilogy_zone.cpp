@@ -8454,14 +8454,15 @@ void TrilogyZoneServer::Tick()
 			s.trilogy_client->FlushPendingMobUpdates();
 		}
 
-		// SE_Fear self-position top-up.  MovementManager only fires
-		// SendCommandToClients on start / speed-change / 5s heartbeat,
-		// so between MoveToCommand legs the v29c client has no wire
-		// position update to render against — visible "feared but
-		// standing still" symptom.  MaybeSendFearHeartbeat pushes a
-		// fresh 0xf320 at 100ms cadence while IsFeared() is true,
-		// mirroring EQClassic's FearMovement() per-server-tick cadence
-		// (250ms was visibly choppy).  No-op when not feared.
+		// SE_Fear tick hook — currently only resets self-push transition
+		// state when IsFeared() flips off (so the next fear cast re-logs
+		// its first push).  Actual fear position pushes are event-driven
+		// via HandleClientUpdate's self-branch — MoveToCommand fires
+		// SendCommandToClients on each new fear leg / speed-change /
+		// 5s heartbeat and the self-echo now routes to A120.  EQClassic
+		// parity: one A120 per leg + client-side heading × anim_type
+		// extrapolation between packets.  Previous 100ms tick heartbeat
+		// caused visible jitter by over-correcting the extrapolation.
 		if (s.trilogy_client) {
 			s.trilogy_client->MaybeSendFearHeartbeat();
 		}

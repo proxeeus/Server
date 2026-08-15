@@ -49,6 +49,7 @@
 #  include <winsock2.h>
 #endif
 
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <cmath>
@@ -1829,22 +1830,34 @@ void TrilogyClient::FlushPendingMobUpdates()
 }
 
 // ============================================================
-// SendForcedSelfPositionUpdate — server → self OP_ClientUpdate (0xf320).
+// SendForcedSelfPositionUpdate — server → self OP_MobUpdate (0xa120).
 //
 // The v29c client normally owns its own position and rejects self-echoes
 // (see HandleClientUpdate self-branch).  During SE_Fear the server is the
 // movement authority: AI_Start freezes local controls and MovementManager
 // steps the player toward m_FearWalkTarget each AI_movement_timer tick.
 // Without a wire push, the frozen client stays visually stationary while
-// the server-side position drifts — exactly the "feared but stunned in
-// place" symptom.
+// the server-side position drifts — the "feared but stunned in place"
+// symptom.
 //
-// EQClassic's Zone/Source/client.cpp :: FearMovement() sends the same
-// OP_ClientUpdate (0xf320) with SpawnPositionUpdate_Struct per tick;
-// the v29c client applies it as an authoritative XY correction (Z is
-// resolved client-side by terrain/gravity — see the same-zone teleport
-// gotcha at HandleZonePointCheck: 0xf320 is XY-only, which is exactly
-// what we want for fear-run over ground).
+// Wire opcode is A120 (OP_MobUpdate), NOT F320 (OP_ClientUpdate) — that
+// distinction matters and is why the earlier F320 attempt caused wall
+// clipping + jitter.  F320 to self is a hard XY position correction, so
+// each push teleports the player past client-side collision.  A120 tells
+// the client "this is where this mob is + what animation it's playing";
+// v29c then renders the run cycle with LOCAL COLLISION APPLIED, honoring
+// walls and terrain.
+//
+// EQClassic proof at Zone/Source/mob.cpp:547-562 (SendPosUpdate) +
+// SpellEffects.cpp:222-237 (SE_Fear branch calls it once via
+// GetFearDestination).  EQClassic sends ONE A120 per fear leg — the
+// client extrapolates the animation between legs from heading + anim_type.
+// That's why there is no tick heartbeat here; MoveToCommand's natural
+// start / speed-change / 5s cadence provides the leg-boundary triggers.
+//
+// Client Z encoding: EQClassic's MakeSpawnUpdate (mob.cpp:577-578) sends
+// raw z_pos for Client mobs vs z_pos*10 for NPCs.  For self-push we're
+// always encoding a Client, so we use raw Z.
 // ============================================================
 void TrilogyClient::SendForcedSelfPositionUpdate(
 	const PlayerPositionUpdateServer_Struct* p)
@@ -1857,41 +1870,37 @@ void TrilogyClient::SendForcedSelfPositionUpdate(
 	upd.delta_heading = 0;
 	upd.y_pos         = static_cast<int16_t>(GetY());
 	upd.x_pos         = static_cast<int16_t>(GetX());
-	upd.z_pos         = static_cast<int16_t>(GetZ() * 10.0f);
+	// CLIENT Z encoding: raw, not *10 (EQClassic mob.cpp:577).  NPCs use
+	// *10 for 0.1-unit precision, clients use whole units.  Sending *10 for
+	// a client makes the decoded Z 10× actual, which can put the player
+	// inside geometry and contribute to collision failures.
+	upd.z_pos         = static_cast<int16_t>(GetZ());
 
-	// Encode fear speed as anim_type so the client renders the run animation
-	// while the position advances.  EncodeTrilogyAnim reads GetRunspeed / feared
-	// state and returns the signed byte v29c expects.
+	// Encode fear speed as anim_type so the client renders the run cycle
+	// while extrapolating position.  EncodeTrilogyAnim converts EQEmu-speed
+	// to v29c wire byte; matches how NPC updates encode running speed.
 	upd.anim_type = TrilogyZoneServer::EncodeTrilogyAnim(
 		this, static_cast<int>(p->animation));
 
-	// Pass the MovementManager velocity vector so the v29c client can
-	// interpolate cleanly between our ~4Hz sends (same rationale as the
-	// A120 event path).  Scale matches HandleClientUpdate's ×2 experiment.
-	TrilogyZoneServer::EncodeTrilogyDelta(&upd,
-	                                      static_cast<int32_t>(p->delta_x) * 2,
-	                                      static_cast<int32_t>(p->delta_y) * 2,
-	                                      static_cast<int32_t>(p->delta_z) * 2);
+	// Deltas: EQClassic sends 0 for all entities in practice (see
+	// trilogy_zone.cpp:395-407 for the analysis of their /125 rounding).
+	// The client extrapolates from heading × anim, not from delta vectors.
+	TrilogyZoneServer::EncodeTrilogyDelta(&upd, 0, 0, 0);
 
-	m_tzs->SendToSession(m_session_key, 0xf320,
-	                     reinterpret_cast<const uint8_t*>(&upd),
-	                     static_cast<uint32_t>(sizeof(upd)),
+	m_tzs->SendToSession(m_session_key, 0xa120,
+	                     BuildSingleA120Payload(upd).data(),
+	                     4 + sizeof(upd),
 	                     /*ack_req=*/false);
 
-	// Log only on transition (first push per fear cast, or when anim toggles
-	// between run/stop mid-fear — e.g. root gate).  A steady 4Hz LogInfo
-	// during a 30-60s fear would flood the zone log.  m_last_fear_self_push_ms
-	// == 0 means "no push yet" (either fear just started or we reset on fade).
-	const bool first_push        = (m_last_fear_self_push_ms == 0);
-	const bool anim_transition   = (upd.anim_type != m_last_fear_self_anim);
+	// Log only on transition to avoid flooding the zone log across a long
+	// fear cast.  first_push == fear just started or previously reset.
+	const bool first_push      = (m_last_fear_self_push_ms == 0);
+	const bool anim_transition = (upd.anim_type != m_last_fear_self_anim);
 	if (first_push || anim_transition) {
-		LogInfo("[TrilogyFear] F320 self-push sid={} pos=({:.1f},{:.1f},{:.1f}) "
-		        "heading={:.1f} anim={} d=({},{},{}) char=[{}] first={} trans={}",
+		LogInfo("[TrilogyFear] A120 self-push sid={} pos=({:.1f},{:.1f},{:.1f}) "
+		        "heading={:.1f} anim={} char=[{}] first={} trans={}",
 		        upd.spawn_id, GetX(), GetY(), GetZ(), GetHeading(),
 		        static_cast<int>(upd.anim_type),
-		        static_cast<int>(p->delta_x),
-		        static_cast<int>(p->delta_y),
-		        static_cast<int>(p->delta_z),
 		        GetCleanName(),
 		        first_push ? 1 : 0, anim_transition ? 1 : 0);
 	}
@@ -1902,52 +1911,36 @@ void TrilogyClient::SendForcedSelfPositionUpdate(
 	m_last_fear_self_anim = upd.anim_type;
 }
 
+// A120 wire is [int32 num_updates][SpawnPositionUpdate_Struct × N].
+// For a single-mob self-push we build a 19-byte payload (4 + 15).
+std::array<uint8_t, 4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)>
+TrilogyClient::BuildSingleA120Payload(
+	const Trilogy::structs::SpawnPositionUpdate_Struct& upd)
+{
+	std::array<uint8_t, 4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)> pkt{};
+	int32_t n = 1;
+	std::memcpy(pkt.data(),     &n,   4);
+	std::memcpy(pkt.data() + 4, &upd, sizeof(upd));
+	return pkt;
+}
+
 // ============================================================
-// MaybeSendFearHeartbeat — per-Tick self-position top-up while feared.
-//
-// Called once per 250ms TrilogyZoneServer::Tick.  MovementManager's
-// MoveToCommand only fires SendCommandToClients on start / speed-change /
-// 5s heartbeat, so between MoveToCommand legs the v29c client would
-// extrapolate off stale data.  EQClassic's FearMovement() ticks server-
-// frequent (~10Hz); this hook mirrors that at 250ms — enough to keep the
-// rendered position tracking the authoritative server position without
-// flooding ARQ.  No-op when not feared.
+// MaybeSendFearHeartbeat — kept as a no-op stub; hooks in
+// TrilogyZoneServer::Tick still call this but EQClassic parity means
+// there's nothing to do per-tick.  Fear position pushes are driven
+// entirely by MoveToCommand's start / speed-change / 5s cadence via
+// HandleClientUpdate's self-branch.  The v29c client extrapolates
+// heading × anim_type between packets.  The earlier tick heartbeat
+// was actively causing jitter by over-correcting.
 // ============================================================
 void TrilogyClient::MaybeSendFearHeartbeat()
 {
 	if (!IsFeared()) {
-		// Reset transition state so the next fear cast re-logs its first
-		// push.  Cheap: only runs when the flag is already off.
 		if (m_last_fear_self_push_ms != 0) {
 			m_last_fear_self_push_ms = 0;
 			m_last_fear_self_anim    = 0;
 		}
-		return;
 	}
-
-	const uint64_t now_ms = static_cast<uint64_t>(
-		std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()).count());
-
-	// 100ms cadence = EQClassic parity.  EQClassic's FearMovement() fires on
-	// every server tick (~0.1s), and the v29c client renders each snap as
-	// smooth motion because the position deltas per push are small enough
-	// (~13 units at fear speed) that consecutive positions blur together.
-	// At 250ms per-push snaps were ~32 units — user reported visible chop.
-	// Guard against double-fire when HandleClientUpdate self-branch also
-	// pushes on the same tick (from a MoveToCommand start / speed-change).
-	static constexpr uint64_t kMinIntervalMs = 100;
-	if (now_ms - m_last_fear_self_push_ms < kMinIntervalMs) return;
-
-	// Synthesize a minimal PlayerPositionUpdateServer_Struct so
-	// SendForcedSelfPositionUpdate can share the encoding path.  Deltas are
-	// zero (MovementManager provides zero deltas for AI-driven mobs anyway —
-	// the v29c client uses heading × anim for direction, position for anchor).
-	// animation=fear_speed so EncodeTrilogyAnim renders the run animation.
-	PlayerPositionUpdateServer_Struct synth{};
-	synth.spawn_id  = GetID();
-	synth.animation = static_cast<uint8_t>(GetFearSpeed());
-	SendForcedSelfPositionUpdate(&synth);
 }
 
 // ============================================================
