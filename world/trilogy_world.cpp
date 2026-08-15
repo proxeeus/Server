@@ -1422,82 +1422,55 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			return 0;
 		};
 
-		// 0. Deity-first, but honor the client's chosen city when possible.
+		// 0. Single-zone deity remap.
 		//
-		// For combos with a single deity-specific city (e.g. Human Cleric of Bertoxxulous
-		// → qcat only) the v29c client sends the race's default city (e.g. "qeynos") in
-		// current_zone regardless — so we need to search across all zones to find the
-		// right one, or the character lands at the wrong spot and misses class+deity
-		// specific starting items (guildmaster notes) gated on zone_id.
+		// When the UNION of char_create_combinations (what the client's char-create
+		// UI would offer) and start_zones (what coords the server has), filtered to
+		// Trilogy-era (`zone.expansion <= 2`) zones only, has exactly ONE zone for
+		// this (race, class, deity) combo — rewrite current_zone_name to that zone.
 		//
-		// For combos with multiple deity-specific cities (e.g. Half Elf Warrior of
-		// Prexus → qeynos, freportw, gfaydark) the client's current_zone / start_point
-		// slots ARE the user's chosen city, and we must respect that choice.
+		// This targets combos like Bertoxxulous Human Cleric where the v29c client
+		// may send the race's default city (e.g. "qeynos") but the only legitimate
+		// Trilogy start city is a sub-zone (qcat). Without the remap, priority 1's
+		// level-2 fallback matches the wrong-deity row in qeynos (Karana's spot)
+		// and pp.zone_id ends up as 1 — which then filters out deity-gated
+		// starting_items rows keyed on zone_id 45.
 		//
-		// Two-pass approach:
-		//   (a) Iterate client-hinted zones (current_zone first, then start_point slots).
-		//       First one with an exact class+race+deity row wins — this honors the
-		//       user's city pick when the DB supports it.
-		//   (b) If none of the client-hinted zones has a deity-specific row, fall back
-		//       to any-zone class+race+deity — this rescues combos like Bertox Human
-		//       Cleric where the client's zone hint doesn't cover the deity.
+		// The two-source UNION guards against:
+		//   - char_create_combinations being post-Trilogy revamped and missing
+		//     classic zones (e.g. Bristlebane Human Bard has {qeynos} in
+		//     char_create but {qeynos, freportn} in start_zones → union size 2
+		//     → no remap, client's pick honored).
+		//   - Bogus start_zones rows for combos the client cannot actually pick
+		//     (e.g. Troll Shaman of Innoruuk has {grobb} in char_create but a
+		//     stray {neriaka} in start_zones → union size 2 → no remap, client's
+		//     grobb honored, priority 1 level-3 handles placement).
+		//
+		// Multi-city combos (Warriors, Bards, etc.) always land in the union-size
+		// > 1 bucket by construction, so this remap never overrides the user's
+		// picked city for combos with genuine choice.
 		if (eqemu_deity != 0) {
-			auto place_from_row = [&](auto& zr) {
-				auto row = zr.begin();
-				pp.x       = Strings::ToFloat(row[0]);
-				pp.y       = Strings::ToFloat(row[1]);
-				pp.z       = Strings::ToFloat(row[2]);
-				pp.heading = Strings::ToFloat(row[3]);
-				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
-			};
+			auto zr = content_db.QueryDatabase(fmt::format(
+				"SELECT DISTINCT z.`short_name` FROM ("
+				"   SELECT cc.`start_zone` AS zid FROM `char_create_combinations` cc"
+				"     JOIN `zone` z ON z.`zoneidnumber`=cc.`start_zone` AND z.`version`=0"
+				"     WHERE cc.`race`={} AND cc.`class`={} AND cc.`deity`={} AND z.`expansion` <= 2"
+				"   UNION"
+				"   SELECT sz.`start_zone` AS zid FROM `start_zones` sz"
+				"     JOIN `zone` z ON z.`zoneidnumber`=sz.`start_zone` AND z.`version`=0"
+				"     WHERE sz.`player_race`={} AND sz.`player_class`={} AND sz.`player_deity`={} AND z.`expansion` <= 2"
+				" ) u"
+				" JOIN `zone` z ON z.`zoneidnumber`=u.`zid` AND z.`version`=0",
+				race, class_, eqemu_deity,
+				race, class_, eqemu_deity));
 
-			auto try_zone_deity_exact = [&](uint32_t zid) -> bool {
-				if (zid == 0) return false;
-				auto zr = content_db.QueryDatabase(fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`start_zone`={} AND sz.`player_class`={} AND sz.`player_race`={}"
-					"   AND sz.`player_deity`={}"
-					" LIMIT 1",
-					zid, class_, race, eqemu_deity));
-				if (zr.RowCount() == 0) return false;
-				place_from_row(zr);
-				return true;
-			};
-
-			// (a) Client-hinted zones in preference order.
-			if (current_zone_name[0] != '\0' && try_zone_deity_exact(resolve_zone_id(current_zone_name))) {
-				placed = true;
-				LogInfo("[TrilogyWorld] CharCreate | deity-first honored current_zone [{}] zone_id={} (deity={})",
-				        current_zone_name, pp.zone_id, eqemu_deity);
-			}
-			for (int si = 0; si < 4 && !placed; ++si) {
-				char slot_name[21] = {};
-				if (plen >= kSlotOffsets[si] + 20) {
-					strncpy(slot_name, reinterpret_cast<const char*>(payload + kSlotOffsets[si]), 20);
-					slot_name[20] = '\0';
-				}
-				if (slot_name[0] == '\0') continue;
-				if (try_zone_deity_exact(resolve_zone_id(slot_name))) {
-					placed = true;
-					LogInfo("[TrilogyWorld] CharCreate | deity-first honored slot[{}] [{}] zone_id={} (deity={})",
-					        si, slot_name, pp.zone_id, eqemu_deity);
-				}
-			}
-
-			// (b) No client-hinted zone had a deity row — search any zone.
-			if (!placed) {
-				auto zr = content_db.QueryDatabase(fmt::format(
-					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
-					" FROM `start_zones` sz"
-					" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
-					" LIMIT 1",
-					class_, race, eqemu_deity));
-				if (zr.RowCount() > 0) {
-					place_from_row(zr);
-					placed = true;
-					LogInfo("[TrilogyWorld] CharCreate | deity-first any-zone zone_id={} at ({:.2f},{:.2f},{:.2f}) (deity={})",
-					        pp.zone_id, pp.x, pp.y, pp.z, eqemu_deity);
+			if (zr.RowCount() == 1) {
+				std::string only_zone = zr.begin()[0];
+				if (only_zone != current_zone_name) {
+					LogInfo("[TrilogyWorld] CharCreate | single-zone remap: current_zone [{}] -> [{}] (race={} class={} deity={})",
+					        current_zone_name, only_zone, race, class_, eqemu_deity);
+					strncpy(current_zone_name, only_zone.c_str(), sizeof(current_zone_name) - 1);
+					current_zone_name[sizeof(current_zone_name) - 1] = '\0';
 				}
 			}
 		}
