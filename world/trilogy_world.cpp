@@ -775,12 +775,47 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
+	// Attempt 6: send weapon OP_WearChange BEFORE the CharacterSelect_Struct
+	// itself. The client's paperdoll pipeline may read pending equipment
+	// state at first render — if we deliver weapon models first, they're
+	// already in the buffer when the paperdoll initialises from the CS
+	// struct. Attempts 1-5 sent AFTER, meaning the paperdoll already
+	// rendered without weapons before our packet arrived.
+	if (slot == 1) {
+		using TrilWC = Trilogy::structs::WearChange_Struct;
+		constexpr int16_t kPollTag  = 9410;
+		constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
+
+		// SUB_ChangeChar first — "auto-selecting char 1"
+		{
+			TrilWC ch{};
+			ch.wear_slot_id = 0;
+			ch.slot_graphic = 1;
+			ch.sub_op       = WS_SUB_CHANGE_CHAR;
+			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+			        reinterpret_cast<const uint8_t*>(&ch), sizeof(ch));
+		}
+
+		// Then the two weapon assignments
+		for (int hand = 0; hand < 2; ++hand) {
+			TrilWC wc{};
+			wc.wear_slot_id = static_cast<int8_t>(7 + hand);
+			wc.slot_graphic = s.cs_weapon_model[0][hand];
+			wc.sub_op       = kPollTag;
+			wc.flag         = kPollFlag;
+			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
+		}
+		LogInfo("[TrilogyWorld] SendCharSelect | attempt6 pre-CS WearChange primary=[{}] secondary=[{}] to {}:{}",
+		        static_cast<int>(s.cs_weapon_model[0][0]),
+		        static_cast<int>(s.cs_weapon_model[0][1]),
+		        addr, port);
+	}
+
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
 
-	// Attempt 5 setup: stash roster count + reset the "pushed" latch. The
-	// proactive weapon push now happens in the OP_GuildsList handler (when
-	// the client is definitively settled at char-select), not here.
+	// Stash roster count for the OP_GuildsList-timed push (attempt 5 backup).
 	s.cs_char_count         = static_cast<uint8_t>(slot);
 	s.cs_wpn_pushed_this_cs = false;
 	LogInfo("[TrilogyWorld] SendCharSelect | cs_char_count=[{}] to {}:{}",
