@@ -343,6 +343,34 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		// WorldGuildManager::SendGuildsList replies with the full 30724-byte
 		// GuildsList_Struct (4-byte head + 512 entries).  See
 		// SendGuildsList below.
+		//
+		// Attempt 5 for 1-char auto-select weapon rendering: the OP_GuildsList
+		// request is the client's "I'm settled at char-select" signal — it
+		// arrives many seconds after CharacterSelect_Struct (the wire capture
+		// showed a 12-second gap). Attempts 1-4 sent proactive OP_WearChange
+		// immediately after SendCharSelect and were ignored / caused flicker.
+		// Pushing the weapon assignment right BEFORE the guilds list response
+		// puts it at a moment the client is definitively ready to process it.
+		if (s.cs_char_count == 1 && !s.cs_wpn_pushed_this_cs) {
+			using TrilWC = Trilogy::structs::WearChange_Struct;
+			constexpr int16_t kPollTag  = 9410;
+			constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
+			for (int hand = 0; hand < 2; ++hand) {
+				TrilWC wc{};
+				wc.wear_slot_id = static_cast<int8_t>(7 + hand);
+				wc.slot_graphic = s.cs_weapon_model[0][hand];
+				wc.sub_op       = kPollTag;
+				wc.flag         = kPollFlag;
+				SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+				        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
+			}
+			s.cs_wpn_pushed_this_cs = true;
+			LogInfo("[TrilogyWorld] OP_GuildsList | attempt5 pushed WearChange primary=[{}] "
+			        "secondary=[{}] BEFORE guilds reply to {}:{}",
+			        static_cast<int>(s.cs_weapon_model[0][0]),
+			        static_cast<int>(s.cs_weapon_model[0][1]),
+			        addr, port);
+		}
 		SendGuildsList(addr, port, s);
 		break;
 	case OP_NAME_APPROVAL:
@@ -750,55 +778,13 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
 
-	// Attempt 4: send SUB_ChangeChar server->client FIRST, then weapon
-	// responses.
-	//
-	// Attempts 1-3 (proactive OP_WearChange responses with varying sub_op
-	// and flag) produced flicker (weapons briefly render, then clear) but
-	// never permanent rendering. The flicker is evidence the client accepts
-	// our packet enough to render — but clears because it has no matching
-	// pending poll to bind the render to.
-	//
-	// In the click cycle the client sends SUB_ChangeChar (sub_op=32767)
-	// FIRST — before polls. That inbound SUB_ChangeChar is the "wake up
-	// your char-select state machine" signal from the user's mouse click.
-	// If we send SUB_ChangeChar SERVER->CLIENT (inverting the direction),
-	// the client may treat it as an authoritative "server-side selection
-	// change" — either firing its own polls (which HandleWearChange handles)
-	// or entering a state where our follow-up weapon responses bind.
-	if (slot == 1) {
-		using TrilWC = Trilogy::structs::WearChange_Struct;
-
-		// 1. SUB_ChangeChar with slot_graphic=1 (char index 1) — "server
-		//    says char 1 is the active selection, prepare paperdoll".
-		{
-			TrilWC ch{};
-			ch.wear_slot_id = 0;
-			ch.slot_graphic = 1;
-			ch.sub_op       = WS_SUB_CHANGE_CHAR; // 32767
-			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-			        reinterpret_cast<const uint8_t*>(&ch), sizeof(ch));
-		}
-
-		// 2. Weapon responses (same shape as attempt 3: sub_op=9410, flag=0xFA).
-		constexpr int16_t kPollTag  = 9410;
-		constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
-		for (int hand = 0; hand < 2; ++hand) {
-			TrilWC wc{};
-			wc.wear_slot_id = static_cast<int8_t>(7 + hand);
-			wc.slot_graphic = s.cs_weapon_model[0][hand];
-			wc.sub_op       = kPollTag;
-			wc.flag         = kPollFlag;
-			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
-		}
-
-		LogInfo("[TrilogyWorld] SendCharSelect | attempt4 SUB_ChangeChar + weapon "
-		        "(primary=[{}] secondary=[{}]) to {}:{}",
-		        static_cast<int>(s.cs_weapon_model[0][0]),
-		        static_cast<int>(s.cs_weapon_model[0][1]),
-		        addr, port);
-	}
+	// Attempt 5 setup: stash roster count + reset the "pushed" latch. The
+	// proactive weapon push now happens in the OP_GuildsList handler (when
+	// the client is definitively settled at char-select), not here.
+	s.cs_char_count         = static_cast<uint8_t>(slot);
+	s.cs_wpn_pushed_this_cs = false;
+	LogInfo("[TrilogyWorld] SendCharSelect | cs_char_count=[{}] to {}:{}",
+	        s.cs_char_count, addr, port);
 }
 
 // ============================================================

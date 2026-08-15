@@ -78,6 +78,15 @@ private:
 		// draw the weapon on the paperdoll.  See [[project-trilogy-char-select-appearance]].
 		int8_t          cs_weapon_model[10][2] = {{0}}; // [char_slot][0=primary, 1=secondary]
 
+		// Roster count from most recent SendCharSelect. Used by HandleGuildsList
+		// (attempt 5) to detect 1-char auto-select rosters and push proactive
+		// OP_WearChange responses at the "client is settled at char-select"
+		// signal instead of immediately after SendCharSelect (which arrived too
+		// early — attempts 1-4 were sent before the client's paperdoll pipeline
+		// was ready to accept them).
+		uint8_t         cs_char_count            = 0;
+		bool            cs_wpn_pushed_this_cs    = false;
+
 		// deferred zone entry — set when zone is still booting at EnterWorld time
 		bool            pending_zone_entry    = false;
 		uint32_t        pending_zone_id       = 0;
