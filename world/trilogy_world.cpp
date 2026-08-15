@@ -1342,8 +1342,35 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			return 0;
 		};
 
+		// 0. Deity-first: when the client sent a valid deity, an exact class+race+deity
+		// row anywhere in `start_zones` wins over the client's current_zone. The v29c
+		// client sends the race's default city (e.g. "qeynos" for Humans) in current_zone
+		// regardless of chosen deity, so a Human Cleric of Bertoxxulous would otherwise
+		// fall through to the level-2 zone+class+race narrowing and land at the Karana
+		// spot in qeynos instead of the Bertox spot in qcat — missing the class+deity
+		// specific starting item (guildmaster note) gated on the correct zone_id.
+		if (eqemu_deity != 0) {
+			auto zr = content_db.QueryDatabase(fmt::format(
+				"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+				" FROM `start_zones` sz"
+				" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
+				" LIMIT 1",
+				class_, race, eqemu_deity));
+			if (zr.RowCount() > 0) {
+				auto row = zr.begin();
+				pp.x       = Strings::ToFloat(row[0]);
+				pp.y       = Strings::ToFloat(row[1]);
+				pp.z       = Strings::ToFloat(row[2]);
+				pp.heading = Strings::ToFloat(row[3]);
+				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
+				placed = true;
+				LogInfo("[TrilogyWorld] CharCreate | deity-first placed zone_id={} at ({:.2f},{:.2f},{:.2f}) (deity={})",
+				        pp.zone_id, pp.x, pp.y, pp.z, eqemu_deity);
+			}
+		}
+
 		// 1. Primary: current_zone (the field EQClassic SetStartingLocations uses)
-		if (current_zone_name[0] != '\0') {
+		if (!placed && current_zone_name[0] != '\0') {
 			uint32_t zid = resolve_zone_id(current_zone_name);
 			int level = try_start_zone(zid);
 			if (level > 0) {
