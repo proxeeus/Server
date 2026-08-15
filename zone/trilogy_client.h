@@ -282,6 +282,48 @@ public:
 	void OnClientCursorCleared();
 	void EnqueueOrSendSummonedItem(const uint8_t* wire, uint32_t size);
 
+	// ---- v29c corpse loot slot renumbering + retransmit dedup ----
+	// v29c's corpse UI is a fixed 30-slot array indexed by the 1-based `counter`
+	// EQClassic emits (PlayerCorpse.cpp:626-653).  EQEmu's Corpse::MakeLootRequestPackets
+	// walks loot_slot from CORPSE_BEGIN (23) using whichever bits are set in the
+	// CORPSE_BITMASK, producing sparse, non-1-based slot IDs (e.g. 23-30, 33, 34-54, 56
+	// under the `<<34` layout).  That gives wire slots 1-8, 11, 12-32, 34 — gaps at 9,
+	// 10, 33 and a lone slot at 34 that overflows the v29c array.
+	//
+	// We keep EQEmu's iteration untouched and renumber at the wire boundary: for each
+	// outbound ItemPacketLoot, assign the next sequential wire index (1..30) and store
+	// the mapping wire_slot → emu_slot on TrilogyClient.  Inbound OP_LootItem uses the
+	// reverse lookup to recover the correct emu slot for Handle_OP_LootItem dispatch.
+	// Resets on every OP_LootRequest so each corpse open starts fresh at counter=1.
+	//
+	// Also tracks the last processed LootingItem to dedupe ARQ retransmits — v29c's
+	// EQNetwork will re-send OP_LootItem if it thinks the server didn't ACK in time,
+	// and the second delivery hits Corpse::LootCorpseItem's 10ms cooldown check
+	// (corpse.cpp:1451) which calls ResetLooter() — corpse's m_being_looted_by_entity_id
+	// gets cleared and every subsequent LootItem fails the IsBeingLootedBy check
+	// (corpse.cpp:1476), echoing back to the client without delivering anything.  User
+	// perceives this as "loot 1, then close/reopen to loot more."  Dropping duplicate
+	// LootingItem packets at the Trilogy dispatch prevents the cooldown from tripping.
+
+	// Assign the next wire slot for an outbound corpse-item packet.  Called by
+	// HandleItemPacket for ItemPacketLoot.  Returns 0 (drops the item) if we've
+	// already assigned 30 slots for the current loot session.
+	int16_t AssignLootWireSlot(int16_t emu_slot);
+
+	// Look up the emu slot for an inbound wire loot slot.  Called by TrilogyZoneServer::
+	// OnOpcode for ZN_OP_LootItem.  Returns -1 if the wire slot was never assigned
+	// (client bug / stale packet) so the dispatcher can drop it cleanly.
+	int16_t LookupLootEmuSlot(int16_t wire_slot) const;
+
+	// Reset the per-loot-session slot map and dedup state.  Called by TrilogyZoneServer::
+	// OnOpcode when a fresh OP_LootRequest arrives.
+	void ResetLootSession();
+
+	// Retransmit dedup — returns true if this incoming LootingItem is a duplicate of
+	// the most recent one (same lootee + wire slot within kLootDedupWindowMs).
+	// Updates the tracked state as a side effect when returning false.
+	bool IsDuplicateLootItem(uint32_t lootee, int16_t wire_slot);
+
 	// ---- Bot ^invgive cursor materialization ----
 	// Bridge methods that delegate to TrilogyZoneServer.  See trilogy_zone.h
 	// for behaviour.  Called from bot_commands/inventory.cpp around
@@ -390,6 +432,20 @@ private:
 	bool                             m_client_cursor_busy = false;
 	std::deque<std::vector<uint8_t>> m_pending_summons;
 	static constexpr size_t          kMaxPendingSummons = 64; // guardrail; a full inventory of bag content is ~30
+
+	// Corpse loot slot renumbering state — see AssignLootWireSlot / ResetLootSession.
+	// v29c corpse UI is a 30-entry array indexed by 1-based wire slot.
+	static constexpr int kLootWireSlots = 30;
+	int16_t m_loot_wire_to_emu[kLootWireSlots] = {}; // wire slot 1..30 → EQEmu slot; 0 = unassigned
+	int16_t m_next_loot_wire_slot            = 1;    // 1..30; increments on assign
+
+	// LootItem retransmit dedup — see IsDuplicateLootItem.  ARQ retransmits from the
+	// v29c client would otherwise trip Corpse::LootCorpseItem's cooldown check and
+	// call ResetLooter, breaking subsequent loots until the corpse is reopened.
+	static constexpr uint32_t kLootDedupWindowMs = 750;
+	uint32_t m_last_loot_lootee    = 0;
+	int16_t  m_last_loot_wire_slot = -1;
+	uint64_t m_last_loot_ts_ms     = 0;
 
 	// ---- Zoning state machine ----
 	// true from construction until the client sends its first ZN_OP_ClientUpdate

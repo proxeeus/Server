@@ -3794,10 +3794,25 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	const uint32_t tr_lootee = TranslateId(in_lootee);
 	const uint32_t tr_looter = TranslateId(in_looter);
 
+	// Reverse the emu→wire loot slot mapping so the echo carries the same wire
+	// slot the client sent us.  Scan the small (30-entry) map; emu_slot=0 sentinel
+	// means unmapped so we fall back to slot_id-22 for the (rare) case where the
+	// echo runs for a slot we never emitted (shouldn't happen, but defensive).
+	int16_t echo_wire_slot = -1;
+	for (int i = 0; i < kLootWireSlots; ++i) {
+		if (m_loot_wire_to_emu[i] == emu->slot_id) {
+			echo_wire_slot = static_cast<int16_t>(i + 1);
+			break;
+		}
+	}
+	if (echo_wire_slot < 0) {
+		echo_wire_slot = static_cast<int16_t>(emu->slot_id - 22);
+	}
+
 	m_pending_echo_out = {};
 	m_pending_echo_out.lootee    = static_cast<int32_t>(tr_lootee);
 	m_pending_echo_out.looter    = static_cast<int32_t>(tr_looter);
-	m_pending_echo_out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
+	m_pending_echo_out.slot_id   = echo_wire_slot;
 	m_pending_echo_out.auto_loot = static_cast<int32_t>(emu->auto_loot);
 	m_pending_loot_echo = true;
 
@@ -3889,6 +3904,60 @@ void TrilogyClient::OnClientCursorCleared()
 	        m_pending_summons.size());
 	m_tzs->SendToSession(m_session_key, 0x7821, next.data(),
 	                     static_cast<uint32_t>(next.size()));
+}
+
+// ============================================================
+// Corpse loot slot renumbering + retransmit dedup.
+// See header for full rationale.
+// ============================================================
+
+void TrilogyClient::ResetLootSession()
+{
+	for (int i = 0; i < kLootWireSlots; ++i) m_loot_wire_to_emu[i] = 0;
+	m_next_loot_wire_slot = 1;
+	m_last_loot_lootee    = 0;
+	m_last_loot_wire_slot = -1;
+	m_last_loot_ts_ms     = 0;
+}
+
+int16_t TrilogyClient::AssignLootWireSlot(int16_t emu_slot)
+{
+	if (m_next_loot_wire_slot > kLootWireSlots) {
+		LogInfo("[TRILOGY-LOOT] AssignLootWireSlot: v29c 30-slot corpse array full, "
+		        "dropping emu_slot={} (over-cap items are invisible to the client)",
+		        emu_slot);
+		return 0;
+	}
+	const int16_t wire = m_next_loot_wire_slot++;
+	m_loot_wire_to_emu[wire - 1] = emu_slot;
+	return wire;
+}
+
+int16_t TrilogyClient::LookupLootEmuSlot(int16_t wire_slot) const
+{
+	if (wire_slot < 1 || wire_slot > kLootWireSlots) return -1;
+	const int16_t emu = m_loot_wire_to_emu[wire_slot - 1];
+	return (emu == 0) ? -1 : emu;
+}
+
+bool TrilogyClient::IsDuplicateLootItem(uint32_t lootee, int16_t wire_slot)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	if (lootee == m_last_loot_lootee && wire_slot == m_last_loot_wire_slot &&
+	    (now_ms - m_last_loot_ts_ms) <= kLootDedupWindowMs) {
+		LogInfo("[TRILOGY-LOOT] IsDuplicateLootItem: dropping ARQ retransmit "
+		        "lootee={} wire_slot={} age_ms={} (window={}ms)",
+		        lootee, wire_slot, (now_ms - m_last_loot_ts_ms), kLootDedupWindowMs);
+		return true;
+	}
+
+	m_last_loot_lootee    = lootee;
+	m_last_loot_wire_slot = wire_slot;
+	m_last_loot_ts_ms     = now_ms;
+	return false;
 }
 
 // ============================================================
@@ -4965,16 +5034,27 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	uint16_t wire_opcode;
 
 	switch (pkt_type) {
-	case ItemPacketLoot:
-		// EQEmu corpse slots start at slotGeneral1 = 23.  EQClassic loot window
-		// uses 1-based indices (counter starts at 1 in MakeLootRequestPackets).
-		// Subtract 22 so EQEmu slot 23 → Trilogy slot 1, slot 24 → 2, etc.
-		equip_slot   = static_cast<int16_t>(slot_id - 22);
+	case ItemPacketLoot: {
+		// EQEmu's Corpse::MakeLootRequestPackets iterates loot_slot from CORPSE_BEGIN
+		// (23) skipping bits absent from CORPSE_BITMASK, so emu slots arrive sparse
+		// (e.g. 23-30, 33, 34-54, 56) — that's what the `<< 34` mask layout produces
+		// to avoid the PossessionsBitmask conflict at slots 31/32.  A raw slot_id-22
+		// translation would give the v29c client wire slots 1-8, 11, 12-32, 34 with
+		// gaps and a lone slot 34 that overflows the client's 30-entry corpse array.
+		//
+		// Renumber to sequential 1..30 to match EQClassic's `counter++` pattern
+		// (Zone/Source/PlayerCorpse.cpp:626-653) — the wire → emu mapping is stored
+		// on TrilogyClient so ZN_OP_LootItem's inbound handler can recover the
+		// correct emu slot for Handle_OP_LootItem.  Reset per LootRequest.
+		const int16_t wire = AssignLootWireSlot(slot_id);
+		if (wire == 0) return; // over-cap; dropped by AssignLootWireSlot
+		equip_slot   = wire;
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
-		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLoot: emu_slot={} wire_slot={} item_id={} (negative wire_slot is bad)",
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLoot: emu_slot={} → wire_slot={} item_id={}",
 		        slot_id, equip_slot,
 		        inst->GetItem() ? inst->GetItem()->ID : 0);
 		break;
+	}
 	case ItemPacketLimbo:
 		// Cursor delivery when cursor was already occupied (pre-RoF path in PutLootInInventory).
 		// Treat identically to ItemPacketTrade at slotCursor: send OP_SummonedItem (0x7821)

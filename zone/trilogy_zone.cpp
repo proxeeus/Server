@@ -2360,6 +2360,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				uint32_t corpse_id = static_cast<uint32_t>(
 				    payload[0] | (static_cast<uint32_t>(payload[1]) << 8) |
 				    (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24));
+				// Fresh loot session — reset the wire slot map + retransmit dedup.
+				// MakeLootRequestPackets will re-assign wire slots 1..N via
+				// HandleItemPacket ItemPacketLoot's AssignLootWireSlot.
+				s.trilogy_client->ResetLootSession();
 				EQApplicationPacket lootreqpkt(OP_LootRequest, 4);
 				memcpy(lootreqpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_LootRequest(&lootreqpkt);
@@ -2372,8 +2376,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_LootItem && s.trilogy_client) {
 			// LootingItem_Struct (16 bytes) — compatible with EQEmu LootingItem_Struct.
-			// Translate Trilogy slot (1-based, from MakeLootRequestPackets counter=1) back to
-			// EQEmu corpse slot (23-based, slotGeneral1 = CORPSE_BEGIN).
+			// Wire slot is a 1-based counter (per EQClassic wire spec + our
+			// AssignLootWireSlot in HandleItemPacket).  Convert back to the EQEmu
+			// corpse slot using the per-session wire→emu map that was populated when
+			// MakeLootRequestPackets was translated outbound.
 			if (plen >= 16) {
 				EQApplicationPacket lootitempkt(OP_LootItem, 16);
 				memcpy(lootitempkt.pBuffer, payload, 16);
@@ -2382,7 +2388,27 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				const int32_t raw_lootee = li->lootee;
 				const int32_t raw_looter = li->looter;
 				const int32_t raw_auto = li->auto_loot;
-				li->slot_id = static_cast<int16_t>(li->slot_id + 22);
+
+				// Retransmit dedup — v29c ARQ resends OP_LootItem when it thinks
+				// the server didn't ACK in time; the second delivery trips
+				// Corpse::LootCorpseItem's 10ms cooldown and ResetLooter() breaks
+				// subsequent loots until the corpse is closed and reopened.  See
+				// TrilogyClient::IsDuplicateLootItem.
+				if (s.trilogy_client->IsDuplicateLootItem(
+				        static_cast<uint32_t>(raw_lootee), raw_slot)) {
+					break;
+				}
+
+				// Translate wire slot → EQEmu corpse slot via the session map.
+				const int16_t emu_slot = s.trilogy_client->LookupLootEmuSlot(raw_slot);
+				if (emu_slot < 0) {
+					LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem: unknown wire_slot={} "
+					        "(never assigned or corpse re-opened) — dropping to avoid "
+					        "spurious LootCorpseItem miss + ResetLooter cascade",
+					        raw_slot);
+					break;
+				}
+				li->slot_id = emu_slot;
 
 				// If the corpse item at this slot is a bag with content, promote
 				// auto_loot to 1 so PutLootInInventory targets a general inventory
@@ -2445,6 +2471,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket endlootpkt(OP_EndLootRequest, 4);
 				memcpy(endlootpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_EndLootRequest(&endlootpkt);
+				// Clear the wire→emu slot map + dedup state so the next corpse open
+				// starts fresh.  Safe even if the user reopens the same corpse.
+				s.trilogy_client->ResetLootSession();
 			}
 		}
 		else if (opcode == ZN_OP_Death && s.trilogy_client) {

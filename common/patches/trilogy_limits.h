@@ -69,16 +69,26 @@ namespace Trilogy
 		static const uint64 GENERAL_BITMASK     = 0x000000007F800000ULL;
 		static const uint64 CURSOR_BITMASK      = 0x0000000200000000ULL;
 		static const uint64 POSSESSIONS_BITMASK = EQUIPMENT_BITMASK | GENERAL_BITMASK | CURSOR_BITMASK;
-		// Corpse loot window — 30 contiguous slots starting at CORPSE_BEGIN (server bit 23).
-		// Corpse::MakeLootRequestPackets walks loot_slot from CORPSE_BEGIN..CORPSE_END and
-		// only sends items when the corresponding bit is set in this mask. Aliasing this to
-		// POSSESSIONS_BITMASK (as this used to do) only sets 9 bits in that range
-		// (general 23-30 + cursor 33), so any player corpse with >9 items had the rest
-		// silently dropped from the loot window. A contiguous run of 30 bits maps 1:1 to
-		// EQClassic's `counter=1..N` sequential loot slots — see
-		// EQClassic Zone/Source/PlayerCorpse.cpp:626-653 (MakeLootRequestPackets).
-		//   loot_slot 23..52  → wire slot 1..30  (via slot_id-22 in HandleItemPacket).
-		static const uint64 CORPSE_BITMASK      = ((1ULL << 30) - 1) << 23;
+		// Corpse loot window — same layout every other patch uses (titanium, sof, sod, uf,
+		// rof, rof2): general + cursor at their natural positions, plus equipment shifted
+		// above POSSESSIONS_END (33) so it doesn't collide with the SendItemPacket
+		// PossessionsBitmask check at inventory.cpp:3187 (a contiguous 23..52 mask lit
+		// slots 31/32 which fall in POSSESSIONS but not in PossessionsBitmask → rejection
+		// + "Item not sent to merchant" spam per loot).
+		//
+		//   bits 23-30 (GENERAL_BITMASK)           → wire slots 1-8   (via slot_id-22)
+		//   bit  33    (CURSOR_BITMASK)            → wire slot 11
+		//   bits 34-54 + 56 (EQUIPMENT_BITMASK<<34)→ wire slots 12-32 + 34
+		//
+		// Total = 30 loot slots.  The wire slot layout has gaps at 9, 10, 33 and a lone
+		// slot at 34 which v29c's fixed 30-entry corpse array would truncate — so
+		// HandleItemPacket ItemPacketLoot renumbers wire slots 1..N sequentially at the
+		// translation boundary (via TrilogyClient's per-session loot slot map).  Corpse::
+		// MakeLootRequestPackets iterates whichever bits are set here; renumbering keeps
+		// EQClassic wire semantics (Zone/Source/PlayerCorpse.cpp:626-653 `counter++`)
+		// while the EQEmu core keeps its bitmask-driven iteration untouched.
+		static const uint64 CORPSE_BITMASK      = GENERAL_BITMASK | CURSOR_BITMASK |
+		                                          (EQUIPMENT_BITMASK << 34);
 	}
 
 	namespace invbag {
