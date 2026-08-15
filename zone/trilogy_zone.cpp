@@ -6891,6 +6891,30 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	memset(reply.unknown,  1, sizeof(reply.unknown));
 	memset(reply.unknown2, 0, sizeof(reply.unknown2));
 
+	// Greed / price-modifier float — the v29c client reads a float from what
+	// modern EQEmu's OPGMTraining treats as "last 40 bytes = trailing metadata
+	// block" (see client_process.cpp:1674-1679 — a `memcpy(&outapp->pBuffer
+	// [outapp->size-40], ending, 40)` where ending starts with a float ≈ 1.08).
+	// In our 148 B response that puts greed at offset 108 (= unknown[27..30]).
+	//
+	// Symptom before this fix: the per-skill cost widget rendered "No charge"
+	// at every skill level because our all-1s pattern in unknown[] made the
+	// client read greed = 0x01010101 little-endian = ~2.35e-38 (subnormal) ≈ 0,
+	// so `displayed_cost = client_hardcoded_formula * greed` collapsed to 0.
+	//
+	// Use Titanium's exact magic bytes (0x3F8A8734 = ~1.082) instead of a
+	// clean 1.0f — 1.0f encodes as {0x00,0x00,0x80,0x3F} which introduces
+	// zero bytes into unknown[], and Wizzel's EQClassic comment warns "one of
+	// these are important or the trainer wont open the training window".
+	// 0x3F8A8734 has no zero bytes, so it satisfies the non-zero-byte
+	// heuristic while giving the client a valid ~1.0 multiplier.
+	{
+		static constexpr uint8_t kGreedBytes[4] = { 0x34, 0x87, 0x8A, 0x3F };
+		auto* raw = reinterpret_cast<uint8_t*>(&reply);
+		static_assert(sizeof(reply) >= 40, "ClassTrain_Struct too small for greed placement");
+		std::memcpy(raw + (sizeof(reply) - 40), kGreedBytes, sizeof(kGreedBytes));
+	}
+
 	SendApp(addr, port, s, ZN_OP_ClassTraining,
 	        reinterpret_cast<const uint8_t*>(&reply), sizeof(reply));
 
