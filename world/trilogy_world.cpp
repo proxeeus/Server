@@ -1503,32 +1503,79 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			}
 		}
 
-		// 3. Final fallback: honor the client's zone at its safe point.
+		// 3. Final fallback: any-zone (class+race+deity) row, PREFER rows whose
+		// zone shares a name prefix with the client's chosen zone.
 		//
-		// Never teleport the player to a city they did not pick. If priorities
-		// 1 and 2 both failed (no matching start_zones row for any client-hinted
-		// zone), use the client's current_zone (or first non-empty slot) with the
-		// zone's own safe point coords. This is missing-data-in-DB, not a reason
-		// to override the user's chosen city.
+		// Rationale for prefix preference: start_zones and starting_items rows
+		// are keyed together — if start_zones puts Human Bard Tribunal in
+		// freportn (8), starting_items for that combo is also zone-gated on 8.
+		// Using the start_zones row's zone_id ensures items fire correctly.
 		//
-		// Prior behavior: any-zone `LIMIT 1` deity lookup — would land the player
-		// in whatever zone the SQL engine returned first (typically qeynos)
-		// regardless of what the client asked for. This is what dropped Human
-		// Bard of The Tribunal in Qeynos after the user selected Freeport.
+		// The prefix preference then guarantees we pick a row in the same city
+		// family as the user's pick (freportn matches freportw on "frep" prefix
+		// vs qeynos which doesn't) — so Human Bard Tribunal who picked Freeport
+		// lands in freportn instead of the arbitrary-first qeynos row.
+		//
+		// If no start_zones row exists at all for the combo, fall back to the
+		// client-zone safe point (better to land somewhere in the picked city
+		// with no items than in a completely different city).
 		if (!placed) {
-			const char* target_name = nullptr;
+			auto run = [&](const std::string& q) -> bool {
+				auto zr = content_db.QueryDatabase(q);
+				if (zr.RowCount() == 0) return false;
+				auto row = zr.begin();
+				pp.x       = Strings::ToFloat(row[0]);
+				pp.y       = Strings::ToFloat(row[1]);
+				pp.z       = Strings::ToFloat(row[2]);
+				pp.heading = Strings::ToFloat(row[3]);
+				pp.zone_id = static_cast<uint16_t>(Strings::ToInt(row[4]));
+				return true;
+			};
+
+			// First non-empty client-hinted zone name for prefix matching.
+			std::string client_hint;
 			if (current_zone_name[0] != '\0') {
-				target_name = current_zone_name;
+				client_hint = current_zone_name;
 			} else {
 				for (int si = 0; si < 4; ++si) {
 					if (plen >= kSlotOffsets[si] + 20) {
 						const char* slot = reinterpret_cast<const char*>(payload + kSlotOffsets[si]);
-						if (slot[0] != '\0') { target_name = slot; break; }
+						if (slot[0] != '\0') { client_hint = slot; break; }
 					}
 				}
 			}
-			if (target_name != nullptr) {
-				uint32_t zid = resolve_zone_id(target_name);
+			std::string prefix = client_hint.substr(0, 4);
+
+			bool ok = false;
+			if (eqemu_deity != 0) {
+				ok = run(fmt::format(
+					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+					" FROM `start_zones` sz"
+					" JOIN `zone` z ON z.`zoneidnumber`=sz.`start_zone` AND z.`version`=0"
+					" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
+					" ORDER BY (SUBSTRING(z.`short_name`,1,4)='{}') DESC LIMIT 1",
+					class_, race, eqemu_deity, prefix));
+			}
+			if (!ok) {
+				ok = run(fmt::format(
+					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
+					" FROM `start_zones` sz"
+					" JOIN `zone` z ON z.`zoneidnumber`=sz.`start_zone` AND z.`version`=0"
+					" WHERE sz.`player_class`={} AND sz.`player_race`={}"
+					" ORDER BY (SUBSTRING(z.`short_name`,1,4)='{}') DESC, sz.`player_deity` ASC LIMIT 1",
+					class_, race, prefix));
+			}
+			if (ok) {
+				placed = true;
+				LogInfo("[TrilogyWorld] CharCreate | fallback race/class zone_id={} (deity={}, prefix-hint=[{}])",
+				        pp.zone_id, eqemu_deity, prefix);
+			}
+
+			// Last resort: no start_zones row at all → client-zone safe point.
+			// Items may not fire (nothing was designed for this combo), but at
+			// least the player lands in the city they actually picked.
+			if (!placed && !client_hint.empty()) {
+				uint32_t zid = resolve_zone_id(client_hint.c_str());
 				if (zid != 0) {
 					auto z = GetZone(zid);
 					if (z) {
@@ -1538,8 +1585,8 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 						pp.z       = z->safe_z;
 						pp.heading = z->safe_heading;
 						placed = true;
-						LogInfo("[TrilogyWorld] CharCreate | client-zone safe point: [{}] zone_id={} at ({:.2f},{:.2f},{:.2f}) (no start_zones row for combo in this zone)",
-						        target_name, pp.zone_id, pp.x, pp.y, pp.z);
+						LogInfo("[TrilogyWorld] CharCreate | client-zone safe point (no start_zones row for combo): [{}] zone_id={}",
+						        client_hint, pp.zone_id);
 					}
 				}
 			}
