@@ -1635,9 +1635,27 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	Mob* m = entity_list.GetMob(spawn_id);
 	if (!m) return;
 
-	// No self-echo — the v29c client tracks its own position locally
-	// from F320 input; a server echo would rubber-band.
-	if (m == static_cast<Mob*>(this)) return;
+	// Self-echo: normally the v29c client tracks its own position locally
+	// from F320 input; a server echo would rubber-band.  BUT when the server
+	// takes movement authority — SE_Fear locks controls via AI_Start's
+	// SpawnAppearance(Animation=14, Freeze=102), then MovementManager drives
+	// position via SetPosition every AI_movement_timer tick — the client has
+	// no local input to advance its position, so dropping the echo leaves it
+	// frozen in place (user-visible "feared but standing still, like stunned").
+	//
+	// EQClassic parity: SpellEffects.cpp SE_Fear branch flips SetFeared(true)
+	// + SendAppearance(SAT_Position_Update=14, SAPP_Lose_Control=102) — same
+	// wire values as AppearanceType::Animation + Animation::Freeze — then
+	// FearMovement() ticks server-side and sends OP_ClientUpdate (0xf320) with
+	// the new position, which the v29c client accepts as an authoritative XY
+	// correction while feared (see [[project-trilogy-skyshrine-pads]] for the
+	// "0xf320 is XY-only" gotcha — perfect fit for fear which runs on terrain).
+	if (m == static_cast<Mob*>(this)) {
+		if (IsFeared()) {
+			SendForcedSelfPositionUpdate(p);
+		}
+		return;
+	}
 
 	// Cull from this client's current position.  600u matches the old
 	// SendMobHeartbeat cull and EQClassic's effective broadcast radius
@@ -1808,6 +1826,125 @@ void TrilogyClient::FlushPendingMobUpdates()
 	}
 
 	m_pending_mob_updates.clear();
+}
+
+// ============================================================
+// SendForcedSelfPositionUpdate — server → self OP_ClientUpdate (0xf320).
+//
+// The v29c client normally owns its own position and rejects self-echoes
+// (see HandleClientUpdate self-branch).  During SE_Fear the server is the
+// movement authority: AI_Start freezes local controls and MovementManager
+// steps the player toward m_FearWalkTarget each AI_movement_timer tick.
+// Without a wire push, the frozen client stays visually stationary while
+// the server-side position drifts — exactly the "feared but stunned in
+// place" symptom.
+//
+// EQClassic's Zone/Source/client.cpp :: FearMovement() sends the same
+// OP_ClientUpdate (0xf320) with SpawnPositionUpdate_Struct per tick;
+// the v29c client applies it as an authoritative XY correction (Z is
+// resolved client-side by terrain/gravity — see the same-zone teleport
+// gotcha at HandleZonePointCheck: 0xf320 is XY-only, which is exactly
+// what we want for fear-run over ground).
+// ============================================================
+void TrilogyClient::SendForcedSelfPositionUpdate(
+	const PlayerPositionUpdateServer_Struct* p)
+{
+	if (!p) return;
+
+	Trilogy::structs::SpawnPositionUpdate_Struct upd{};
+	upd.spawn_id      = static_cast<int16_t>(TranslateId(GetID()));
+	upd.heading       = static_cast<int8_t>(static_cast<uint8_t>(GetHeading() / 2.0f));
+	upd.delta_heading = 0;
+	upd.y_pos         = static_cast<int16_t>(GetY());
+	upd.x_pos         = static_cast<int16_t>(GetX());
+	upd.z_pos         = static_cast<int16_t>(GetZ() * 10.0f);
+
+	// Encode fear speed as anim_type so the client renders the run animation
+	// while the position advances.  EncodeTrilogyAnim reads GetRunspeed / feared
+	// state and returns the signed byte v29c expects.
+	upd.anim_type = TrilogyZoneServer::EncodeTrilogyAnim(
+		this, static_cast<int>(p->animation));
+
+	// Pass the MovementManager velocity vector so the v29c client can
+	// interpolate cleanly between our ~4Hz sends (same rationale as the
+	// A120 event path).  Scale matches HandleClientUpdate's ×2 experiment.
+	TrilogyZoneServer::EncodeTrilogyDelta(&upd,
+	                                      static_cast<int32_t>(p->delta_x) * 2,
+	                                      static_cast<int32_t>(p->delta_y) * 2,
+	                                      static_cast<int32_t>(p->delta_z) * 2);
+
+	m_tzs->SendToSession(m_session_key, 0xf320,
+	                     reinterpret_cast<const uint8_t*>(&upd),
+	                     static_cast<uint32_t>(sizeof(upd)),
+	                     /*ack_req=*/false);
+
+	// Log only on transition (first push per fear cast, or when anim toggles
+	// between run/stop mid-fear — e.g. root gate).  A steady 4Hz LogInfo
+	// during a 30-60s fear would flood the zone log.  m_last_fear_self_push_ms
+	// == 0 means "no push yet" (either fear just started or we reset on fade).
+	const bool first_push        = (m_last_fear_self_push_ms == 0);
+	const bool anim_transition   = (upd.anim_type != m_last_fear_self_anim);
+	if (first_push || anim_transition) {
+		LogInfo("[TrilogyFear] F320 self-push sid={} pos=({:.1f},{:.1f},{:.1f}) "
+		        "heading={:.1f} anim={} d=({},{},{}) char=[{}] first={} trans={}",
+		        upd.spawn_id, GetX(), GetY(), GetZ(), GetHeading(),
+		        static_cast<int>(upd.anim_type),
+		        static_cast<int>(p->delta_x),
+		        static_cast<int>(p->delta_y),
+		        static_cast<int>(p->delta_z),
+		        GetCleanName(),
+		        first_push ? 1 : 0, anim_transition ? 1 : 0);
+	}
+
+	m_last_fear_self_push_ms  = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	m_last_fear_self_anim = upd.anim_type;
+}
+
+// ============================================================
+// MaybeSendFearHeartbeat — per-Tick self-position top-up while feared.
+//
+// Called once per 250ms TrilogyZoneServer::Tick.  MovementManager's
+// MoveToCommand only fires SendCommandToClients on start / speed-change /
+// 5s heartbeat, so between MoveToCommand legs the v29c client would
+// extrapolate off stale data.  EQClassic's FearMovement() ticks server-
+// frequent (~10Hz); this hook mirrors that at 250ms — enough to keep the
+// rendered position tracking the authoritative server position without
+// flooding ARQ.  No-op when not feared.
+// ============================================================
+void TrilogyClient::MaybeSendFearHeartbeat()
+{
+	if (!IsFeared()) {
+		// Reset transition state so the next fear cast re-logs its first
+		// push.  Cheap: only runs when the flag is already off.
+		if (m_last_fear_self_push_ms != 0) {
+			m_last_fear_self_push_ms = 0;
+			m_last_fear_self_anim    = 0;
+		}
+		return;
+	}
+
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Same throttle as HandleClientUpdate per-mob path.  If HandleClientUpdate
+	// just fired a self-push (from a MoveToCommand start / speed-change), the
+	// stamp is fresh and we skip.  If it didn't (mid-leg, no MovementManager
+	// event), the stamp is stale and we push a top-up.
+	static constexpr uint64_t kMinIntervalMs = 250;
+	if (now_ms - m_last_fear_self_push_ms < kMinIntervalMs) return;
+
+	// Synthesize a minimal PlayerPositionUpdateServer_Struct so
+	// SendForcedSelfPositionUpdate can share the encoding path.  Deltas are
+	// zero (MovementManager provides zero deltas for AI-driven mobs anyway —
+	// the v29c client uses heading × anim for direction, position for anchor).
+	// animation=fear_speed so EncodeTrilogyAnim renders the run animation.
+	PlayerPositionUpdateServer_Struct synth{};
+	synth.spawn_id  = GetID();
+	synth.animation = static_cast<uint8_t>(GetFearSpeed());
+	SendForcedSelfPositionUpdate(&synth);
 }
 
 // ============================================================

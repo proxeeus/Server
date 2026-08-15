@@ -346,6 +346,19 @@ private:
 	void HandleNewSpawn(const EQApplicationPacket* app);
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
 	void HandleClientUpdate(const EQApplicationPacket* app);
+	// Server-authoritative self-position push (0xf320).  Called from
+	// HandleClientUpdate's self-branch when IsFeared() — restores fear
+	// movement that would otherwise be dropped as a rubber-band self-echo.
+	void SendForcedSelfPositionUpdate(
+		const struct PlayerPositionUpdateServer_Struct* p);
+	// Per-Tick top-up during SE_Fear.  MovementManager only fires
+	// SendCommandToClients on start / speed-change / 5s heartbeat, so
+	// between MoveToCommand legs the v29c client would extrapolate off
+	// stale data (or worse, stall).  EQClassic sends fear position updates
+	// server-tick-frequent (~10Hz); this hook mirrors that cadence at the
+	// 250ms Tick interval to keep the rendered position tracking the
+	// authoritative server position.  No-op when not feared.
+	void MaybeSendFearHeartbeat();
 	void HandleIllusion(const EQApplicationPacket* app);
 	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
@@ -631,6 +644,17 @@ private:
 	// SendMobHeartbeat for stationary mobs but driven by movement events
 	// instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
+
+	// Fear self-position heartbeat throttle.  MaybeSendFearHeartbeat runs on
+	// every 250ms Tick while IsFeared() is true — this stamp caps the actual
+	// wire rate to the same 250ms cadence as HandleClientUpdate's per-mob
+	// throttle so the two paths (event-driven MoveToCommand start pushes
+	// through HandleClientUpdate + tick top-ups here) can't double-fire.
+	// Reset to 0 in MaybeSendFearHeartbeat when IsFeared() flips false so
+	// the next fear cast logs its first push (see anti-spam log gate in
+	// SendForcedSelfPositionUpdate).
+	uint64_t m_last_fear_self_push_ms = 0;
+	int8_t   m_last_fear_self_anim    = 0;
 
 	// Per-door last-sent action cache with TTL.  Doors::HandleClick in EQEmu
 	// has a bug where city-edge doors (HasDestinationZone() == true) never get

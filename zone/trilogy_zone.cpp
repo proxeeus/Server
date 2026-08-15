@@ -8454,6 +8454,18 @@ void TrilogyZoneServer::Tick()
 			s.trilogy_client->FlushPendingMobUpdates();
 		}
 
+		// SE_Fear self-position top-up.  MovementManager only fires
+		// SendCommandToClients on start / speed-change / 5s heartbeat,
+		// so between MoveToCommand legs the v29c client has no wire
+		// position update to render against — visible "feared but
+		// standing still" symptom.  MaybeSendFearHeartbeat pushes a
+		// fresh 0xf320 at 250ms cadence while IsFeared() is true,
+		// mirroring EQClassic's FearMovement() server-tick cadence.
+		// No-op when not feared.
+		if (s.trilogy_client) {
+			s.trilogy_client->MaybeSendFearHeartbeat();
+		}
+
 		// Money-display reconciliation: the on-screen coin counter only refreshes from
 		// the PlayerProfile at zone-in.  Quest rewards (givecash / QuestReward / direct
 		// AddMoneyToPP) change the PlayerProfile without pushing a money update the
