@@ -8459,9 +8459,9 @@ void TrilogyZoneServer::Tick()
 		// so between MoveToCommand legs the v29c client has no wire
 		// position update to render against — visible "feared but
 		// standing still" symptom.  MaybeSendFearHeartbeat pushes a
-		// fresh 0xf320 at 250ms cadence while IsFeared() is true,
-		// mirroring EQClassic's FearMovement() server-tick cadence.
-		// No-op when not feared.
+		// fresh 0xf320 at 100ms cadence while IsFeared() is true,
+		// mirroring EQClassic's FearMovement() per-server-tick cadence
+		// (250ms was visibly choppy).  No-op when not feared.
 		if (s.trilogy_client) {
 			s.trilogy_client->MaybeSendFearHeartbeat();
 		}

@@ -430,10 +430,9 @@ public:
 	// SendCommandToClients on start / speed-change / 5s heartbeat, so
 	// between MoveToCommand legs the v29c client would extrapolate off
 	// stale data (or worse, stall).  EQClassic sends fear position updates
-	// server-tick-frequent (~10Hz); this hook mirrors that cadence at the
-	// 250ms Tick interval to keep the rendered position tracking the
-	// authoritative server position.  No-op when not feared.
-	// Called from TrilogyZoneServer::Tick.
+	// on every server tick (~0.1s); this hook mirrors that at 100ms wire
+	// cadence — internally throttled in the implementation.  No-op when
+	// not feared.  Called from TrilogyZoneServer::Tick.
 	void MaybeSendFearHeartbeat();
 
 private:
@@ -648,13 +647,15 @@ private:
 	// instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
 
-	// Fear self-position heartbeat throttle.  MaybeSendFearHeartbeat runs on
-	// every 250ms Tick while IsFeared() is true — this stamp caps the actual
-	// wire rate to the same 250ms cadence as HandleClientUpdate's per-mob
-	// throttle so the two paths (event-driven MoveToCommand start pushes
-	// through HandleClientUpdate + tick top-ups here) can't double-fire.
-	// Reset to 0 in MaybeSendFearHeartbeat when IsFeared() flips false so
-	// the next fear cast logs its first push (see anti-spam log gate in
+	// Fear self-position heartbeat throttle.  MaybeSendFearHeartbeat runs
+	// from every TrilogyZoneServer::Tick while IsFeared() is true, throttled
+	// here to 100ms wire cadence for EQClassic parity (matches FearMovement's
+	// per-server-tick push rate; 250ms was visibly choppy from the client's
+	// perspective at fear-run speed).  Also serves as double-fire guard when
+	// HandleClientUpdate's self-branch pushes on the same tick as a
+	// MoveToCommand start / speed-change / 5s heartbeat.  Reset to 0 in
+	// MaybeSendFearHeartbeat when IsFeared() flips false so the next fear
+	// cast logs its first push (see anti-spam log gate in
 	// SendForcedSelfPositionUpdate).
 	uint64_t m_last_fear_self_push_ms = 0;
 	int8_t   m_last_fear_self_anim    = 0;

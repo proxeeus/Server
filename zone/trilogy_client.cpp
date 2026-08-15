@@ -1929,11 +1929,14 @@ void TrilogyClient::MaybeSendFearHeartbeat()
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
-	// Same throttle as HandleClientUpdate per-mob path.  If HandleClientUpdate
-	// just fired a self-push (from a MoveToCommand start / speed-change), the
-	// stamp is fresh and we skip.  If it didn't (mid-leg, no MovementManager
-	// event), the stamp is stale and we push a top-up.
-	static constexpr uint64_t kMinIntervalMs = 250;
+	// 100ms cadence = EQClassic parity.  EQClassic's FearMovement() fires on
+	// every server tick (~0.1s), and the v29c client renders each snap as
+	// smooth motion because the position deltas per push are small enough
+	// (~13 units at fear speed) that consecutive positions blur together.
+	// At 250ms per-push snaps were ~32 units — user reported visible chop.
+	// Guard against double-fire when HandleClientUpdate self-branch also
+	// pushes on the same tick (from a MoveToCommand start / speed-change).
+	static constexpr uint64_t kMinIntervalMs = 100;
 	if (now_ms - m_last_fear_self_push_ms < kMinIntervalMs) return;
 
 	// Synthesize a minimal PlayerPositionUpdateServer_Struct so
