@@ -628,6 +628,12 @@ private:
 	                          const uint8_t* payload, uint32_t plen);
 	void HandleInspectAnswer(const std::string& addr, int port, Session& s,
 	                         const uint8_t* payload, uint32_t plen);
+	// /surname (client -> zone).  Translates the 56 B Trilogy Surname_Struct
+	// into the 100 B EQEmu Surname_Struct and hands it to
+	// Client::Handle_OP_Surname so the existing level-20 / cooldown / name-
+	// filter checks + persistence path run unchanged.
+	void HandleSurname(const std::string& addr, int port, Session& s,
+	                   const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
