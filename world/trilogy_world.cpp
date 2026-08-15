@@ -749,6 +749,33 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
+
+	// Attempt 3: single-char auto-select weapon rendering.
+	// The wire capture (world_21496.log click cycle) showed real polls
+	// carrying flag=0xFA / 0xB0 in the WearChange_Struct. Attempts 1 & 2
+	// used flag=0 and were ignored by the client. This variant mirrors the
+	// click-cycle wire shape exactly: sub_op=9410, flag=0xFA. If the client
+	// gates unsolicited char-select WearChange on flag being non-zero, this
+	// unlocks it. If not, we've exhausted data-shape variants.
+	if (slot == 1) {
+		using TrilWC = Trilogy::structs::WearChange_Struct;
+		constexpr int16_t kPollTag = 9410;
+		constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
+		for (int hand = 0; hand < 2; ++hand) {
+			TrilWC wc{};
+			wc.wear_slot_id = static_cast<int8_t>(7 + hand);
+			wc.slot_graphic = s.cs_weapon_model[0][hand];
+			wc.sub_op       = kPollTag;
+			wc.flag         = kPollFlag;
+			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
+		}
+		LogInfo("[TrilogyWorld] SendCharSelect | single-char proactive WearChange "
+		        "(primary=[{}] secondary=[{}] sub_op=[{}] flag=0x{:02X}) to {}:{}",
+		        static_cast<int>(s.cs_weapon_model[0][0]),
+		        static_cast<int>(s.cs_weapon_model[0][1]),
+		        kPollTag, static_cast<uint8_t>(kPollFlag), addr, port);
+	}
 }
 
 // ============================================================
