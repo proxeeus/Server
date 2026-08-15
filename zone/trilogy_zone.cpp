@@ -4216,31 +4216,74 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
 
-		// ── /played offset sigil probe ──────────────────────────────────────
-		// Flip kProbePlayedOffsets to true, rebuild, zone in, type /played,
-		// paste both output lines back.  Each candidate int32 slot gets a
-		// distinct anchor-year timestamp:
-		//   3956 (time1)   -> 2000-01-01  (unix 946684800)
-		//   4160 (time2)   -> 2005-01-01  (unix 1104537600)
-		//   8100 (logtime) -> 2010-01-01  (unix 1262304000)
-		// If /played shows "Character created: <year>", the year decodes
-		// directly back to the offset the client reads for birthday.
-		// The "You have played this character for:" line reveals the
-		// time_played offset — if the client reads one of these slots and
-		// interprets it as MINUTES, expect an astronomical number
-		// (946684800 min = ~1800 years) — that's still diagnostic (tells us
-		// which slot is being read as time_played).  If /played still shows
-		// "1970" and "1 minute", NONE of the three candidate slots is right
-		// and the field lives elsewhere in the PP (probably unknown4508).
-		// Flip back to false and revert this block once the offsets are
-		// pinned.  Keep the DB reads elsewhere untouched — this only affects
-		// the wire PP.
+		// ── /played offset sigil probe (phase 2) ────────────────────────────
+		// PHASE 1 result: struct byte 4160 (`time2`) IS BirthdayTime.
+		// PHASE 2 goal: pin down TimePlayedMin.  It's NOT at 3956, 4160, or
+		// 8100 (all three tested — "You have played..." still showed session
+		// time).  Most likely candidates: bytes just after BirthdayTime
+		// (mirrors the 8244-byte alternate PP layout where TimePlayedMin
+		// sits 8 bytes after BirthdayTime with a 4-byte "Unknown" gap
+		// between), OR somewhere in `unknown4508[3592]`.
+		//
+		// Strategy: write each candidate int32 slot with a sigil equal to
+		// the STRUCT OFFSET itself.  Then whatever the client displays in
+		// "You have played this character for:" (a minute count) decodes
+		// directly to the offset it read.  Example: "8100 min = 5 days
+		// 15 hours 0 min" → the client read from struct byte 8100 (logtime).
+		//
+		// Coverage: 4164/4166 (immediate neighbours of BirthdayTime),
+		// 8100 (logtime, already tested but re-planted for completeness),
+		// then every ~250 bytes across unknown4508 (14 samples spanning the
+		// full 3592-byte block).
+		//
+		// Also keep time2 = 2005-01-01 sigil so BirthdayTime displays
+		// remain consistent as a sanity check.
 		constexpr bool kProbePlayedOffsets = true;
 		if (kProbePlayedOffsets) {
-			pp.time1   = static_cast<int32_t>(946684800u);   // 2000-01-01
-			pp.time2   = static_cast<int32_t>(1104537600u);  // 2005-01-01
-			pp.logtime = static_cast<int32_t>(1262304000u);  // 2010-01-01
-			LogInfo("[TrilogyPlayed] PROBE char [{}] wrote time1(3956)=946684800(2000) time2(4160)=1104537600(2005) logtime(8100)=1262304000(2010)",
+			// Sanity: birthday sigil (offset 4160)
+			pp.time2 = static_cast<int32_t>(1104537600u); // 2005-01-01
+
+			// Helper to write an int32 sigil into any struct byte offset.
+			// The value written == the byte offset, so a display of "N
+			// minutes" decodes to `offset = N`.
+			auto plant = [&pp](uint32_t byte_offset) {
+				const int32_t sigil = static_cast<int32_t>(byte_offset);
+				std::memcpy(reinterpret_cast<uint8_t*>(&pp) + byte_offset,
+				            &sigil, sizeof(sigil));
+			};
+
+			// Immediate neighbours of BirthdayTime (mirrors 8244-byte
+			// PP where TimePlayedMin was 8 bytes past BirthdayTime).
+			plant(4164);  // int32 in unknown4164[0..3]
+			// Skip 4166/4168 because they'd overlap fatigue(4170).
+
+			// logtime (already tested as birthday in phase 1 — replant
+			// as int32 sigil = 8100 in case it's TimePlayedMin)
+			plant(8100);
+
+			// unknown4508[3592] sweep — every ~250 bytes.  Values written
+			// are the byte offset, all fall in the 4508-8096 range as
+			// plausible minute counts (~3-5 days each).
+			plant(4508);
+			plant(4756);
+			plant(5000);
+			plant(5252);
+			plant(5500);
+			plant(5752);
+			plant(6000);
+			plant(6252);
+			plant(6500);
+			plant(6752);
+			plant(7000);
+			plant(7252);
+			plant(7500);
+			plant(7752);
+			plant(8000);
+			plant(8096);  // last valid int32 slot before logtime
+
+			LogInfo("[TrilogyPlayed] PROBE2 char [{}] time2(4160)=1104537600(2005-birthday); "
+			        "sigils=[4164,4508,4756,5000,5252,5500,5752,6000,6252,6500,6752,"
+			        "7000,7252,7500,7752,8000,8096,8100] (value == offset)",
 			        s.char_name);
 		}
 		// ────────────────────────────────────────────────────────────────────
