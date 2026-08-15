@@ -9368,14 +9368,69 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		std::vector<uint16_t> ghosts;
 		ghosts.reserve(8);
 
+		// ── Position-stale diagnostic (log-only, no wire packets) ──────
+		// Detects the second desync class: mob is ALIVE server-side but the
+		// last position we broadcast to the v29c client is meaningfully
+		// different from the mob's current server-side position.  User
+		// symptom in open zones (lakeofillomen, commons): NPC "just stands
+		// there" client-side; player runs up and attacks fail because the
+		// server-side entity is elsewhere.  Ghost-reconcile handles the
+		// "mob gone server-side" class; this catches the inverse.
+		//
+		// Trigger: current server XY differs from last broadcast wire XY
+		// (int16, 1 EQ unit each) by more than kDesyncGapXY EQ units.
+		// Per-spawn rate limit kDesyncLogIntervalMs prevents spamming a
+		// mob that stays desynced for minutes.
+		//
+		// Zero wire packets emitted — pure LogInfo.  Reuses the same
+		// known_spawns walk as ghost detection, no extra iteration cost.
+		static constexpr int      kDesyncGapXY            = 50;    // EQ units
+		static constexpr uint64_t kDesyncLogIntervalMs    = 10000; // per spawn
+
 		for (uint16_t spawn_id : s.known_spawns) {
 			// Skip the player's own spawn_id — sending 2B20 for self would
 			// remove the player from their own client view.  Also skip 0,
 			// which would not be in here normally but is harmless to guard.
 			if (spawn_id == s.player_spawn_id || spawn_id == 0) continue;
-			if (entity_list.GetMob(spawn_id) == nullptr) {
+
+			Mob* m = entity_list.GetMob(spawn_id);
+			if (m == nullptr) {
 				ghosts.push_back(spawn_id);
+				continue;
 			}
+
+			auto lb_it = s.last_broadcast.find(spawn_id);
+			if (lb_it == s.last_broadcast.end()) continue;
+			const auto& last = lb_it->second;
+
+			int cur_wire_x = static_cast<int16_t>(m->GetX());
+			int cur_wire_y = static_cast<int16_t>(m->GetY());
+			int gap_x = cur_wire_x - static_cast<int>(last.x_pos);
+			int gap_y = cur_wire_y - static_cast<int>(last.y_pos);
+			int gap_sq = gap_x * gap_x + gap_y * gap_y;
+			if (gap_sq <= kDesyncGapXY * kDesyncGapXY) continue;
+
+			auto& log_ts = s.last_desync_log_ms[spawn_id];
+			if (log_ts != 0 && now_ms - log_ts < kDesyncLogIntervalMs) continue;
+			log_ts = now_ms;
+
+			float dx_player = m->GetX() - s.pos_x;
+			float dy_player = m->GetY() - s.pos_y;
+			float dist_to_player = std::sqrt(dx_player * dx_player + dy_player * dy_player);
+
+			LogInfo("[Trilogy desync-pos] sid={} name='{}' moving={} "
+			        "client_last=({},{},{}/10) server=({:.1f},{:.1f},{:.1f}) "
+			        "gap_xy={} age_ms={} dist_to_player={:.1f}",
+			        static_cast<int>(spawn_id),
+			        m->GetCleanName() ? m->GetCleanName() : "?",
+			        m->IsMoving() ? 1 : 0,
+			        static_cast<int>(last.x_pos),
+			        static_cast<int>(last.y_pos),
+			        static_cast<int>(last.z_pos),
+			        m->GetX(), m->GetY(), m->GetZ(),
+			        static_cast<int>(std::sqrt(static_cast<float>(gap_sq))),
+			        static_cast<uint64_t>(now_ms - last.sent_ms),
+			        dist_to_player);
 		}
 
 		for (uint16_t spawn_id : ghosts) {
@@ -9391,6 +9446,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			s.known_spawns.erase(spawn_id);
 			// Drop any same-spawn-id residue from the position-broadcast cache.
 			s.last_broadcast.erase(spawn_id);
+			s.last_desync_log_ms.erase(spawn_id);
 		}
 	}
 }

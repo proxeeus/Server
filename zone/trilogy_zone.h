@@ -283,6 +283,12 @@ private:
 		std::unordered_set<uint16_t> known_spawns;
 		uint64_t                     last_ghost_reconcile_ms = 0;
 
+		// Per-spawn rate limiter for the position-stale diagnostic
+		// (see SendMobHeartbeat tail).  A mob that stays desynced for minutes
+		// would otherwise emit a LogInfo every 2 s per ghost-reconcile pass;
+		// this caps it to one line per spawn per kDesyncLogIntervalMs.
+		std::unordered_map<uint16_t, uint64_t> last_desync_log_ms;
+
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
 		// bursts of hundreds of broadcast packets in one tick (#repop, mass
