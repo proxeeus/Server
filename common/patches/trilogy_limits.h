@@ -69,7 +69,26 @@ namespace Trilogy
 		static const uint64 GENERAL_BITMASK     = 0x000000007F800000ULL;
 		static const uint64 CURSOR_BITMASK      = 0x0000000200000000ULL;
 		static const uint64 POSSESSIONS_BITMASK = EQUIPMENT_BITMASK | GENERAL_BITMASK | CURSOR_BITMASK;
-		static const uint64 CORPSE_BITMASK      = POSSESSIONS_BITMASK;
+		// Corpse loot window — same layout every other patch uses (titanium, sof, sod, uf,
+		// rof, rof2): general + cursor at their natural positions, plus equipment shifted
+		// above POSSESSIONS_END (33) so it doesn't collide with the SendItemPacket
+		// PossessionsBitmask check at inventory.cpp:3187 (a contiguous 23..52 mask lit
+		// slots 31/32 which fall in POSSESSIONS but not in PossessionsBitmask → rejection
+		// + "Item not sent to merchant" spam per loot).
+		//
+		//   bits 23-30 (GENERAL_BITMASK)           → wire slots 1-8   (via slot_id-22)
+		//   bit  33    (CURSOR_BITMASK)            → wire slot 11
+		//   bits 34-54 + 56 (EQUIPMENT_BITMASK<<34)→ wire slots 12-32 + 34
+		//
+		// Total = 30 loot slots.  The wire slot layout has gaps at 9, 10, 33 and a lone
+		// slot at 34 which v29c's fixed 30-entry corpse array would truncate — so
+		// HandleItemPacket ItemPacketLoot renumbers wire slots 1..N sequentially at the
+		// translation boundary (via TrilogyClient's per-session loot slot map).  Corpse::
+		// MakeLootRequestPackets iterates whichever bits are set here; renumbering keeps
+		// EQClassic wire semantics (Zone/Source/PlayerCorpse.cpp:626-653 `counter++`)
+		// while the EQEmu core keeps its bitmask-driven iteration untouched.
+		static const uint64 CORPSE_BITMASK      = GENERAL_BITMASK | CURSOR_BITMASK |
+		                                          (EQUIPMENT_BITMASK << 34);
 	}
 
 	namespace invbag {

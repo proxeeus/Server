@@ -3794,10 +3794,25 @@ void TrilogyClient::HandleOutgoingLootItem(const EQApplicationPacket* app)
 	const uint32_t tr_lootee = TranslateId(in_lootee);
 	const uint32_t tr_looter = TranslateId(in_looter);
 
+	// Reverse the emu→wire loot slot mapping so the echo carries the same wire
+	// slot the client sent us.  Scan the small (30-entry) map; emu_slot=0 sentinel
+	// means unmapped so we fall back to slot_id-22 for the (rare) case where the
+	// echo runs for a slot we never emitted (shouldn't happen, but defensive).
+	int16_t echo_wire_slot = -1;
+	for (int i = 0; i < kLootWireSlots; ++i) {
+		if (m_loot_wire_to_emu[i] == emu->slot_id) {
+			echo_wire_slot = static_cast<int16_t>(i + 1);
+			break;
+		}
+	}
+	if (echo_wire_slot < 0) {
+		echo_wire_slot = static_cast<int16_t>(emu->slot_id - 22);
+	}
+
 	m_pending_echo_out = {};
 	m_pending_echo_out.lootee    = static_cast<int32_t>(tr_lootee);
 	m_pending_echo_out.looter    = static_cast<int32_t>(tr_looter);
-	m_pending_echo_out.slot_id   = static_cast<int16_t>(emu->slot_id - 22);
+	m_pending_echo_out.slot_id   = echo_wire_slot;
 	m_pending_echo_out.auto_loot = static_cast<int32_t>(emu->auto_loot);
 	m_pending_loot_echo = true;
 
@@ -3830,6 +3845,119 @@ void TrilogyClient::FlushPendingLootEcho()
 	m_tzs->SendToSession(m_session_key, 0xa020,
 	                     reinterpret_cast<const uint8_t*>(&m_pending_echo_out),
 	                     static_cast<uint32_t>(sizeof(m_pending_echo_out)));
+}
+
+// ============================================================
+// v29c cursor deferred-delivery — mirrors EQClassic SummonItem /
+// summonedItems (Zone/Source/client.cpp:1614-1652 + client_process.cpp:1774).
+//
+// EnqueueOrSendSummonedItem: if the v29c client's cursor is already showing
+// an item, we can't send another OP_SummonedItem — it will be silently
+// dropped client-side and the loot appears to vanish (item lives on
+// server-side cursor queue at DB 8000+ until next zone-in relocation).
+// Instead we queue the pre-built wire bytes and dispatch them one at a
+// time as the client clears its cursor via OP_MoveItem.
+//
+// OnClientCursorCleared: called from TrilogyZoneServer::HandleMoveItem
+// after a from_wire=0 move (drop, equip, destroy, place-in-bag).  Clears
+// the busy flag, and if a queued summon is waiting, pops it and sends it —
+// this immediately re-arms busy so the next dequeue waits for another
+// cursor clear.  Net effect: rapid multi-loot works and every item lands
+// on cursor in sequence, matching EQClassic's SummonItem loop.
+// ============================================================
+
+void TrilogyClient::EnqueueOrSendSummonedItem(const uint8_t* wire, uint32_t size)
+{
+	if (!wire || size == 0) return;
+
+	if (!m_client_cursor_busy) {
+		m_client_cursor_busy = true;
+		LogInfo("[TRILOGY-LOOT] Cursor free — sending OP_SummonedItem now ({} bytes), busy=true",
+		        size);
+		m_tzs->SendToSession(m_session_key, 0x7821, wire, size);
+		return;
+	}
+
+	if (m_pending_summons.size() >= kMaxPendingSummons) {
+		LogInfo("[TRILOGY-LOOT] Cursor queue full ({}); dropping OP_SummonedItem "
+		        "(should never happen with normal loot volume)",
+		        m_pending_summons.size());
+		return;
+	}
+	m_pending_summons.emplace_back(wire, wire + size);
+	LogInfo("[TRILOGY-LOOT] Cursor busy — queued OP_SummonedItem ({} bytes); queue_depth={}",
+	        size, m_pending_summons.size());
+}
+
+void TrilogyClient::OnClientCursorCleared()
+{
+	m_client_cursor_busy = false;
+	if (m_pending_summons.empty()) {
+		return;
+	}
+	auto next = std::move(m_pending_summons.front());
+	m_pending_summons.pop_front();
+	m_client_cursor_busy = true;
+	LogInfo("[TRILOGY-LOOT] Cursor cleared — dispatching next queued OP_SummonedItem "
+	        "({} bytes); remaining_queue={}",
+	        static_cast<unsigned>(next.size()),
+	        m_pending_summons.size());
+	m_tzs->SendToSession(m_session_key, 0x7821, next.data(),
+	                     static_cast<uint32_t>(next.size()));
+}
+
+// ============================================================
+// Corpse loot slot renumbering + retransmit dedup.
+// See header for full rationale.
+// ============================================================
+
+void TrilogyClient::ResetLootSession()
+{
+	for (int i = 0; i < kLootWireSlots; ++i) m_loot_wire_to_emu[i] = 0;
+	m_next_loot_wire_slot = 1;
+	m_last_loot_lootee    = 0;
+	m_last_loot_wire_slot = -1;
+	m_last_loot_ts_ms     = 0;
+}
+
+int16_t TrilogyClient::AssignLootWireSlot(int16_t emu_slot)
+{
+	if (m_next_loot_wire_slot > kLootWireSlots) {
+		LogInfo("[TRILOGY-LOOT] AssignLootWireSlot: v29c 30-slot corpse array full, "
+		        "dropping emu_slot={} (over-cap items are invisible to the client)",
+		        emu_slot);
+		return 0;
+	}
+	const int16_t wire = m_next_loot_wire_slot++;
+	m_loot_wire_to_emu[wire - 1] = emu_slot;
+	return wire;
+}
+
+int16_t TrilogyClient::LookupLootEmuSlot(int16_t wire_slot) const
+{
+	if (wire_slot < 1 || wire_slot > kLootWireSlots) return -1;
+	const int16_t emu = m_loot_wire_to_emu[wire_slot - 1];
+	return (emu == 0) ? -1 : emu;
+}
+
+bool TrilogyClient::IsDuplicateLootItem(uint32_t lootee, int16_t wire_slot)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	if (lootee == m_last_loot_lootee && wire_slot == m_last_loot_wire_slot &&
+	    (now_ms - m_last_loot_ts_ms) <= kLootDedupWindowMs) {
+		LogInfo("[TRILOGY-LOOT] IsDuplicateLootItem: dropping ARQ retransmit "
+		        "lootee={} wire_slot={} age_ms={} (window={}ms)",
+		        lootee, wire_slot, (now_ms - m_last_loot_ts_ms), kLootDedupWindowMs);
+		return true;
+	}
+
+	m_last_loot_lootee    = lootee;
+	m_last_loot_wire_slot = wire_slot;
+	m_last_loot_ts_ms     = now_ms;
+	return false;
 }
 
 // ============================================================
@@ -4906,16 +5034,27 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 	uint16_t wire_opcode;
 
 	switch (pkt_type) {
-	case ItemPacketLoot:
-		// EQEmu corpse slots start at slotGeneral1 = 23.  EQClassic loot window
-		// uses 1-based indices (counter starts at 1 in MakeLootRequestPackets).
-		// Subtract 22 so EQEmu slot 23 → Trilogy slot 1, slot 24 → 2, etc.
-		equip_slot   = static_cast<int16_t>(slot_id - 22);
+	case ItemPacketLoot: {
+		// EQEmu's Corpse::MakeLootRequestPackets iterates loot_slot from CORPSE_BEGIN
+		// (23) skipping bits absent from CORPSE_BITMASK, so emu slots arrive sparse
+		// (e.g. 23-30, 33, 34-54, 56) — that's what the `<< 34` mask layout produces
+		// to avoid the PossessionsBitmask conflict at slots 31/32.  A raw slot_id-22
+		// translation would give the v29c client wire slots 1-8, 11, 12-32, 34 with
+		// gaps and a lone slot 34 that overflows the client's 30-entry corpse array.
+		//
+		// Renumber to sequential 1..30 to match EQClassic's `counter++` pattern
+		// (Zone/Source/PlayerCorpse.cpp:626-653) — the wire → emu mapping is stored
+		// on TrilogyClient so ZN_OP_LootItem's inbound handler can recover the
+		// correct emu slot for Handle_OP_LootItem.  Reset per LootRequest.
+		const int16_t wire = AssignLootWireSlot(slot_id);
+		if (wire == 0) return; // over-cap; dropped by AssignLootWireSlot
+		equip_slot   = wire;
 		wire_opcode  = 0x5220; // OP_ItemOnCorpse
-		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLoot: emu_slot={} wire_slot={} item_id={} (negative wire_slot is bad)",
+		LogInfo("[TRILOGY-LOOT] HandleItemPacket ItemPacketLoot: emu_slot={} → wire_slot={} item_id={}",
 		        slot_id, equip_slot,
 		        inst->GetItem() ? inst->GetItem()->ID : 0);
 		break;
+	}
 	case ItemPacketLimbo:
 		// Cursor delivery when cursor was already occupied (pre-RoF path in PutLootInInventory).
 		// Treat identically to ItemPacketTrade at slotCursor: send OP_SummonedItem (0x7821)
@@ -4931,6 +5070,17 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		// Using slot_id-1 for equipment slots would put an item in the wrong worn slot
 		// (e.g. slotPrimary=13 → 12=hands) and overwrite whatever is displayed there.
 		// • slotCursor (33): cursor delivery via OP_SummonedItem (0x7821), equip_slot=0.
+		// • cursor bag content (EQEmu 351-360): OP_ItemTradeIn (0x3120) at wire 330-339
+		//   — EQClassic's PutItemInInventory (client.cpp:2235-2273) writes
+		//   pp.cursorbaginventory[slotid-330] for wire slots 330-339, but EQEmu
+		//   internally addresses cursor bag content at invbag::CURSOR_BAG_BEGIN (351).
+		//   Without this remap the packet lands in an unmapped wire range and the
+		//   client renders the bag as empty — the reported "bag looted but arrives
+		//   empty" symptom for right-click loot of bags that landed on cursor.
+		// • general bag content (EQEmu 251-330): OP_ItemTradeIn (0x3120) at wire
+		//   250-329 (slot_id-1 shift); wire formula per EQClassic is
+		//   containerinv[slotid-250], and 250+(bag_wire-22)*10+i matches the
+		//   general slot 23-30 → wire 22-29 shift already applied to the parent bag.
 		// • all other slots: OP_ItemTradeIn (0x3120) with the correct EQClassic equip_slot.
 		// Bank slots (DB 2000-2110) are owned by SendInventoryItems (EQClassic-faithful
 		// 0x3120 pass) — drop here so the engine's m_inv post-zone-in pump doesn't
@@ -4939,6 +5089,12 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		if (slot_id == EQ::invslot::slotCursor) {
 			equip_slot  = 0;
 			wire_opcode = 0x7821; // OP_SummonedItem — cursor delivery
+		} else if (slot_id >= EQ::invbag::CURSOR_BAG_BEGIN &&
+		           slot_id <= EQ::invbag::CURSOR_BAG_END) {
+			// Server 351..360 → wire 330..339 (matches EQClassic client's
+			// pp.cursorbaginventory[slotid-330] parse).
+			equip_slot  = static_cast<int16_t>(slot_id - 21);
+			wire_opcode = 0x3120;
 		} else {
 			equip_slot  = (slot_id >= 22) ? static_cast<int16_t>(slot_id - 1)
 			                              : static_cast<int16_t>(slot_id);
@@ -5081,9 +5237,18 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		}
 	}
 
-	m_tzs->SendToSession(m_session_key, wire_opcode,
-	                     reinterpret_cast<const uint8_t*>(&ci),
-	                     static_cast<uint32_t>(sizeof(ci)));
+	// Cursor deliveries route through the deferred-summon queue so multi-item
+	// loot doesn't silently drop past the first item (v29c only renders one
+	// cursor item at a time).  ItemPacketLimbo, ItemPacketTrade@slotCursor, and
+	// (via ItemPacketLoot) OP_SummonedItem all share opcode 0x7821 wire-side.
+	if (wire_opcode == 0x7821) {
+		EnqueueOrSendSummonedItem(reinterpret_cast<const uint8_t*>(&ci),
+		                          static_cast<uint32_t>(sizeof(ci)));
+	} else {
+		m_tzs->SendToSession(m_session_key, wire_opcode,
+		                     reinterpret_cast<const uint8_t*>(&ci),
+		                     static_cast<uint32_t>(sizeof(ci)));
+	}
 
 	// Loot echo (0xa020) is flushed by the caller in trilogy_zone.cpp
 	// AFTER Handle_OP_LootItem returns — matching EQClassic order where

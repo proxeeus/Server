@@ -1352,8 +1352,24 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleClientUpdate(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ChannelMsg)
 			HandleChannelMessage(addr, port, s, payload, plen);
-		else if (opcode == ZN_OP_MoveItem)
+		else if (opcode == ZN_OP_MoveItem) {
+			// Snapshot from_slot BEFORE HandleMoveItem runs — if it was 0 the client
+			// just emptied its cursor (drop, destroy, equip, place-in-bag).  We use
+			// that as the trigger to dispatch any queued OP_SummonedItem (deferred
+			// cursor deliveries from rapid multi-loot / #si / spells) — matches
+			// EQClassic's client_process.cpp:1774-1779 "pop summonedItems when
+			// pp.inventory[0] == 0xFFFF" post-move check.  See
+			// TrilogyClient::OnClientCursorCleared for full rationale.
+			uint32_t cursor_clear_probe = 0xFFFFFFFFu;
+			if (plen >= sizeof(Trilogy::structs::MoveItem_Struct)) {
+				cursor_clear_probe =
+				    reinterpret_cast<const Trilogy::structs::MoveItem_Struct*>(payload)->from_slot;
+			}
 			HandleMoveItem(addr, port, s, payload, plen);
+			if (cursor_clear_probe == 0 && s.trilogy_client) {
+				s.trilogy_client->OnClientCursorCleared();
+			}
+		}
 		else if (opcode == ZN_OP_DropItem && s.trilogy_client)
 		{
 			// The Trilogy client sends a 240-byte EQClassic Object_Struct.
@@ -1391,6 +1407,11 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				obj->StartDecay();
 				safe_delete(inst);
 			}
+
+			// Drop-to-ground empties the client cursor — dispatch any deferred
+			// OP_SummonedItem waiting on this exact event.  See
+			// TrilogyClient::OnClientCursorCleared.
+			s.trilogy_client->OnClientCursorCleared();
 		}
 		else if (opcode == ZN_OP_PickupItem && s.trilogy_client)
 		{
@@ -2339,6 +2360,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				uint32_t corpse_id = static_cast<uint32_t>(
 				    payload[0] | (static_cast<uint32_t>(payload[1]) << 8) |
 				    (static_cast<uint32_t>(payload[2]) << 16) | (static_cast<uint32_t>(payload[3]) << 24));
+				// Fresh loot session — reset the wire slot map + retransmit dedup.
+				// MakeLootRequestPackets will re-assign wire slots 1..N via
+				// HandleItemPacket ItemPacketLoot's AssignLootWireSlot.
+				s.trilogy_client->ResetLootSession();
 				EQApplicationPacket lootreqpkt(OP_LootRequest, 4);
 				memcpy(lootreqpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_LootRequest(&lootreqpkt);
@@ -2351,8 +2376,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_LootItem && s.trilogy_client) {
 			// LootingItem_Struct (16 bytes) — compatible with EQEmu LootingItem_Struct.
-			// Translate Trilogy slot (1-based, from MakeLootRequestPackets counter=1) back to
-			// EQEmu corpse slot (23-based, slotGeneral1 = CORPSE_BEGIN).
+			// Wire slot is a 1-based counter (per EQClassic wire spec + our
+			// AssignLootWireSlot in HandleItemPacket).  Convert back to the EQEmu
+			// corpse slot using the per-session wire→emu map that was populated when
+			// MakeLootRequestPackets was translated outbound.
 			if (plen >= 16) {
 				EQApplicationPacket lootitempkt(OP_LootItem, 16);
 				memcpy(lootitempkt.pBuffer, payload, 16);
@@ -2361,9 +2388,73 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				const int32_t raw_lootee = li->lootee;
 				const int32_t raw_looter = li->looter;
 				const int32_t raw_auto = li->auto_loot;
-				li->slot_id = static_cast<int16_t>(li->slot_id + 22);
-				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem IN: raw_slot={} → corpse_slot={} lootee={} looter={} auto_loot={} session=[{}]",
-				        raw_slot, li->slot_id, raw_lootee, raw_looter, raw_auto,
+
+				// Retransmit dedup — v29c ARQ resends OP_LootItem when it thinks
+				// the server didn't ACK in time; the second delivery trips
+				// Corpse::LootCorpseItem's 10ms cooldown and ResetLooter() breaks
+				// subsequent loots until the corpse is closed and reopened.  See
+				// TrilogyClient::IsDuplicateLootItem.
+				if (s.trilogy_client->IsDuplicateLootItem(
+				        static_cast<uint32_t>(raw_lootee), raw_slot)) {
+					break;
+				}
+
+				// Translate wire slot → EQEmu corpse slot via the session map.
+				const int16_t emu_slot = s.trilogy_client->LookupLootEmuSlot(raw_slot);
+				if (emu_slot < 0) {
+					LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem: unknown wire_slot={} "
+					        "(never assigned or corpse re-opened) — dropping to avoid "
+					        "spurious LootCorpseItem miss + ResetLooter cascade",
+					        raw_slot);
+					break;
+				}
+				li->slot_id = emu_slot;
+
+				// If the corpse item at this slot is a bag with content, promote
+				// auto_loot to 1 so PutLootInInventory targets a general inventory
+				// slot (bag content follows via CalcSlotId(general_X, i) → DB
+				// 251+(X-23)*10+i → wire 250+... which the client parses correctly).
+				// Without this, right-click of a filled bag placed it on cursor →
+				// contents went to cursor bag (DB 351+) → HandleMoveItem has no
+				// cursor-bag content migration, so the bag arrived empty in
+				// inventory after the player moved it off cursor.  This mirrors
+				// EQClassic behaviour for the failure mode: EQClassic's server
+				// treats bags on cursor consistently because its cursor-bag DB
+				// storage matches its wire format 1:1, which is not true for us.
+				// Non-bag items and empty bags still honour the client's chosen
+				// auto_loot value (0=cursor, 1=auto-inventory).
+				if (raw_auto == 0 && raw_lootee > 0) {
+					Entity* corpse_ent = entity_list.GetID(static_cast<uint16>(raw_lootee));
+					if (corpse_ent && corpse_ent->IsCorpse()) {
+						Corpse* cp = corpse_ent->CastToCorpse();
+						const uint32 iid = cp->GetItemIDBySlot(static_cast<uint16>(li->slot_id));
+						if (iid > 0) {
+							const EQ::ItemData* itmd = database.GetItem(iid);
+							if (itmd && itmd->IsClassBag() && itmd->BagSlots > 0) {
+								// Peek at the corpse's m_item_list for any child at
+								// CalcSlotId(equip_slot, i) — if any content exists,
+								// promote to auto-loot.
+								bool has_content = false;
+								LootItem* dummy_bag_data[10] = {};
+								if (cp->GetItem(static_cast<uint16>(li->slot_id), dummy_bag_data)) {
+									for (int bi = 0; bi < 10; ++bi) {
+										if (dummy_bag_data[bi]) { has_content = true; break; }
+									}
+								}
+								if (has_content) {
+									LogInfo("[TRILOGY-LOOT] Promoting auto_loot 0→1 for filled bag "
+									        "(item_id={} bag_slots={}) — cursor-bag wire path lacks "
+									        "post-move content migration",
+									        iid, itmd->BagSlots);
+									li->auto_loot = 1;
+								}
+							}
+						}
+					}
+				}
+
+				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem IN: raw_slot={} → corpse_slot={} lootee={} looter={} raw_auto={} sent_auto={} session=[{}]",
+				        raw_slot, li->slot_id, raw_lootee, raw_looter, raw_auto, li->auto_loot,
 				        s.trilogy_client->GetName());
 				s.trilogy_client->Handle_OP_LootItem(&lootitempkt);
 				LogInfo("[TRILOGY-LOOT] ZN_OP_LootItem: Handle_OP_LootItem returned; flushing echo");
@@ -2380,6 +2471,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				EQApplicationPacket endlootpkt(OP_EndLootRequest, 4);
 				memcpy(endlootpkt.pBuffer, &corpse_id, 4);
 				s.trilogy_client->Handle_OP_EndLootRequest(&endlootpkt);
+				// Clear the wire→emu slot map + dedup state so the next corpse open
+				// starts fresh.  Safe even if the user reopens the same corpse.
+				s.trilogy_client->ResetLootSession();
 			}
 		}
 		else if (opcode == ZN_OP_Death && s.trilogy_client) {
