@@ -749,14 +749,14 @@ struct PlayerProfile_Struct
 /*3888*/	int8	unknown3888[24];
 /*3912*/	int32	bankinvitemPointers[8];		// zero-fill: client-side pointers
 /*3944*/	int8	unknown3944[12];
-/*3956*/	int32	birthday_time;				// Unix timestamp of character creation (formerly `time1`; unlabeled in EQClassic Common/Include/PlayerProfile.h, inferred by analogy with the alternate 8244-byte Trilogy-era PP where `BirthdayTime` sits at a similar int32 slot near the deity/guildid block). The v29c client reads this to display "Character created:" in `/played`.
+/*3956*/	int32	time1;						// Purpose unknown; matches EQClassic Common/Include/PlayerProfile.h.  NOT birthday — verified 2026-08-15 by writing character_data.birthday here and observing /played still displayed "Character created: 1970".
 /*3960*/	int8	unknown3960[20];
 /*3980*/	int16	bank_inv[8];
 /*3996*/	int16	bank_cont_inv[80];
 /*4156*/	int8	deity_wire;					// Deity displayed by the char sheet (raw EQEmu ID 140 or 201-216). Confirmed by capturing the CharCreate payload: client picks Innoruuk -> payload byte 4152 (= struct byte 4156) = 0xCE (206).
 /*4157*/	int8	unknown4157;				// Padding byte adjacent to deity_wire.
 /*4158*/	int16	guildid;
-/*4160*/	int32	time_played_min;			// Total minutes played across all sessions (formerly `time2`; unlabeled in EQClassic Common/Include/PlayerProfile.h, inferred by analogy with the alternate 8244-byte Trilogy-era PP `TimePlayedMin` field). The v29c client reads this for the "You have played this character for:" line in `/played`. Modern EQEmu already accumulates this in `character_data.time_played`; see SendPlayerProfile for the wire copy and InitTrilogyFields for the load-time seed that stops Client::Save() from clobbering it.
+/*4160*/	int32	time2;						// Purpose unknown; matches EQClassic Common/Include/PlayerProfile.h.  NOT time_played_min — verified 2026-08-15 by writing character_data.time_played here and observing /played still displayed session time only on a level-24 character.
 /*4164*/	int8	unknown4164[6];
 /*4170*/	int8	fatigue;
 /*4171*/	int8	unknown4171[2];

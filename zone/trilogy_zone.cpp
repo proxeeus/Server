@@ -2523,6 +2523,55 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				        (uint16_t)cpp->bank_inv[4], (uint16_t)cpp->bank_inv[5],
 				        (uint16_t)cpp->bank_inv[6], (uint16_t)cpp->bank_inv[7],
 				        cont);
+
+				// /played offset discovery: dump the three "unknown timestamp"
+				// fields as the CLIENT populated them at camp/NPC-trade time.
+				// The client keeps its /played state internally and writes it
+				// out with the rest of the PP; whichever slot holds a plausible
+				// unix ts (~1.7e9) or minute count (~0-1e6) IS the field the
+				// client's /played reads.  Zone-in doesn't tell us — the client
+				// takes what we send.  This log captures ground truth on the
+				// next 0x2e20 upload; ask the player to type /played once,
+				// then camp — compare these values against what /played showed.
+				//
+				// Also do a coarse scan of unknown4508[3592] for any int32 that
+				// looks like a recent unix timestamp (2001-2030 range) or a
+				// plausible minute count (< 5000000 min = ~9.5 years), so we
+				// can spot the field wherever it lives in that block.
+				{
+					const uint32_t t1 = static_cast<uint32_t>(cpp->time1);
+					const uint32_t t2 = static_cast<uint32_t>(cpp->time2);
+					const uint32_t lt = static_cast<uint32_t>(cpp->logtime);
+					LogInfo("[TrilogyPlayed] CLIENTBANK PP char={} time1(3956)={} time2(4160)={} logtime(8100)={}",
+					        s.char_id, t1, t2, lt);
+
+					// Scan unknown4508[3592] as 898 x uint32; report slots
+					// carrying a plausible timestamp or minute-count value.
+					constexpr uint32_t kUnixTsLow  = 978307200u;   // 2001-01-01
+					constexpr uint32_t kUnixTsHigh = 1893456000u;  // 2030-01-01
+					constexpr uint32_t kMinutesMax = 5000000u;     // ~9.5 years
+					const uint8_t* blk = reinterpret_cast<const uint8_t*>(cpp->unknown4508);
+					std::string hits;
+					int hit_count = 0;
+					for (int i = 0; i + 4 <= 3592 && hit_count < 20; ++i) {
+						uint32_t v;
+						std::memcpy(&v, blk + i, 4);
+						const bool looks_ts  = (v >= kUnixTsLow && v <= kUnixTsHigh);
+						const bool looks_min = (v > 0 && v < kMinutesMax);
+						if (looks_ts || looks_min) {
+							hits += fmt::format("{}(off={})={}{} ",
+							        (looks_ts ? "TS" : "MIN"),
+							        4508 + i,
+							        v,
+							        (looks_ts ? "" : "min"));
+							++hit_count;
+						}
+					}
+					if (!hits.empty()) {
+						LogInfo("[TrilogyPlayed] CLIENTBANK unknown4508 scan char={} hits=[{}]",
+						        s.char_id, hits);
+					}
+				}
 			} else {
 				LogInfo("[TrilogyZone] CLIENTBANK char={} upload too small plen={} (need {})",
 				        s.char_id, plen,
@@ -4060,8 +4109,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
-			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm`,"
-			" `birthday`, `time_played` "
+			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -4167,23 +4215,6 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
-
-		// /played wire fields (see [[project-trilogy-played-command]]).  The v29c
-		// client's /played handler is entirely client-side: it reads
-		//   birthday_time    (struct byte 3956, formerly `time1`) — unix creation ts
-		//   time_played_min  (struct byte 4160, formerly `time2`) — cumulative minutes
-		// and formats "Character created: ...", "You have played this character
-		// for: ...", and "You have played EverQuest for: ..." locally.  Without
-		// these two writes the client sees zeros and falls back to a session-only
-		// display, and any long-lived character shows a bogus creation date of
-		// 1970-01-01.  Both columns are populated by the modern EQEmu character
-		// path — character_data.birthday is set at CharCreate (trilogy_world.cpp)
-		// and character_data.time_played is accumulated by Client::Save() via
-		// TotalSecondsPlayed.  The seed in InitTrilogyFields (client.cpp) prevents
-		// the very first Trilogy-session Save() from clobbering the stored total.
-		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
-		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
-
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
@@ -4212,9 +4243,6 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f} boundary={} arm_trap={}",
 		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading,
 		        boundary_is_wide ? "WIDE" : "NARROW", s.pending_heading_sync ? "Y" : "N");
-
-		LogInfo("[TrilogyPlayed] SendPlayerProfile: char [{}] birthday_time={} time_played_min={} (feeds /played)",
-		        s.char_name, static_cast<uint32_t>(pp.birthday_time), static_cast<uint32_t>(pp.time_played_min));
 
 		// ============================================================
 		// Wide-boundary terrain snap (PRE-PP) — see also HandleZoneInComplete
