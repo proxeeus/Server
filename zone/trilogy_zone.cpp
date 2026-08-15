@@ -6775,6 +6775,20 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 		        plen, sizeof(Trilogy::structs::ClassTrain_Struct));
 		return;
 	}
+	// Diagnostic — investigating missing cost display in trainer window.
+	// EQClassic's ClassTrain_Struct is 148B (uint8 highesttrain[73] + unknowns);
+	// EQMacEmuTrilogy's OldGMTrainee_Struct is 244B and includes a `float greed`
+	// price modifier + language[32] + trailing ending block that modern EQEmu
+	// preserves via memcpy on Titanium's 448B struct.  If v29c actually expects
+	// the 244B layout, our 148B reply would leave the client without a valid
+	// greed field → no cost displayed.  Log the actual size so we can confirm.
+	if (plen != sizeof(Trilogy::structs::ClassTrain_Struct)) {
+		LogInfo("[TrilogyZone] ClassTraining REQ size={} (our struct={}) — extra {} bytes",
+		        plen, sizeof(Trilogy::structs::ClassTrain_Struct),
+		        plen - sizeof(Trilogy::structs::ClassTrain_Struct));
+	} else {
+		LogInfo("[TrilogyZone] ClassTraining REQ size={} (matches struct)", plen);
+	}
 	const auto* req = reinterpret_cast<const Trilogy::structs::ClassTrain_Struct*>(payload);
 
 	// v29c sends int16 entity IDs in the low 2 bytes of npcid; high 2 bytes are
