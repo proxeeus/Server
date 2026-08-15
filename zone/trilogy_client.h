@@ -347,18 +347,11 @@ private:
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
 	void HandleClientUpdate(const EQApplicationPacket* app);
 	// Server-authoritative self-position push (0xf320).  Called from
-	// HandleClientUpdate's self-branch when IsFeared() — restores fear
-	// movement that would otherwise be dropped as a rubber-band self-echo.
+	// HandleClientUpdate's self-branch when IsFeared() and from the public
+	// MaybeSendFearHeartbeat() — restores fear movement that would otherwise
+	// be dropped as a rubber-band self-echo.
 	void SendForcedSelfPositionUpdate(
 		const struct PlayerPositionUpdateServer_Struct* p);
-	// Per-Tick top-up during SE_Fear.  MovementManager only fires
-	// SendCommandToClients on start / speed-change / 5s heartbeat, so
-	// between MoveToCommand legs the v29c client would extrapolate off
-	// stale data (or worse, stall).  EQClassic sends fear position updates
-	// server-tick-frequent (~10Hz); this hook mirrors that cadence at the
-	// 250ms Tick interval to keep the rendered position tracking the
-	// authoritative server position.  No-op when not feared.
-	void MaybeSendFearHeartbeat();
 	void HandleIllusion(const EQApplicationPacket* app);
 	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
@@ -432,6 +425,16 @@ public:
 	// SendMobHeartbeat wire format), so moving-mob ARQ overhead is
 	// O(in-view-moving-mobs / 25) per Tick instead of one ARQ per mob.
 	void FlushPendingMobUpdates();
+
+	// Per-Tick top-up during SE_Fear.  MovementManager only fires
+	// SendCommandToClients on start / speed-change / 5s heartbeat, so
+	// between MoveToCommand legs the v29c client would extrapolate off
+	// stale data (or worse, stall).  EQClassic sends fear position updates
+	// server-tick-frequent (~10Hz); this hook mirrors that cadence at the
+	// 250ms Tick interval to keep the rendered position tracking the
+	// authoritative server position.  No-op when not feared.
+	// Called from TrilogyZoneServer::Tick.
+	void MaybeSendFearHeartbeat();
 
 private:
 
