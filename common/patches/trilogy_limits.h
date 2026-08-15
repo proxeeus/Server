@@ -69,7 +69,16 @@ namespace Trilogy
 		static const uint64 GENERAL_BITMASK     = 0x000000007F800000ULL;
 		static const uint64 CURSOR_BITMASK      = 0x0000000200000000ULL;
 		static const uint64 POSSESSIONS_BITMASK = EQUIPMENT_BITMASK | GENERAL_BITMASK | CURSOR_BITMASK;
-		static const uint64 CORPSE_BITMASK      = POSSESSIONS_BITMASK;
+		// Corpse loot window — 30 contiguous slots starting at CORPSE_BEGIN (server bit 23).
+		// Corpse::MakeLootRequestPackets walks loot_slot from CORPSE_BEGIN..CORPSE_END and
+		// only sends items when the corresponding bit is set in this mask. Aliasing this to
+		// POSSESSIONS_BITMASK (as this used to do) only sets 9 bits in that range
+		// (general 23-30 + cursor 33), so any player corpse with >9 items had the rest
+		// silently dropped from the loot window. A contiguous run of 30 bits maps 1:1 to
+		// EQClassic's `counter=1..N` sequential loot slots — see
+		// EQClassic Zone/Source/PlayerCorpse.cpp:626-653 (MakeLootRequestPackets).
+		//   loot_slot 23..52  → wire slot 1..30  (via slot_id-22 in HandleItemPacket).
+		static const uint64 CORPSE_BITMASK      = ((1ULL << 30) - 1) << 23;
 	}
 
 	namespace invbag {

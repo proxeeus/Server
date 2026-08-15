@@ -254,6 +254,34 @@ public:
 	uint16_t GetMerchantNpcId() const { return m_merchant_npc_id; }
 	void FlushPendingLootEcho();
 
+	// ---- v29c cursor deferred-delivery queue (EQClassic parity) ----
+	// The v29c client only renders ONE item on cursor at a time — sending a
+	// second OP_SummonedItem while the client already holds a cursor item is
+	// silently dropped client-side, so the item vanishes visually even though
+	// the server thinks it was delivered.  EQClassic solves this with a
+	// per-client deferred queue: SummonItem checks pp.inventory[0] (cursor),
+	// and if occupied it appends a SummonedItemWaiting_Struct to a vector and
+	// returns; the queue is popped when the client clears the cursor
+	// (EQClassic Zone/Source/client.cpp:1614-1652 + client_process.cpp:1774-1779).
+	//
+	// We mirror the same model here:
+	//   • Every cursor-directed delivery (ItemPacketTrade@slotCursor, ItemPacketLimbo,
+	//     any direct OP_SummonedItem) is routed through EnqueueOrSendSummonedItem.
+	//   • If the client cursor is free (m_client_cursor_busy == false) we send
+	//     the packet and set the flag true.
+	//   • Otherwise we queue the pre-built wire bytes (a full v29c
+	//     ClassicItem_Struct payload) and defer.
+	//   • When the client empties its cursor via OP_MoveItem, TrilogyZoneServer::
+	//     HandleMoveItem calls OnClientCursorCleared() which clears the flag,
+	//     pops the next queued item (if any), sends it and re-arms the flag.
+	//
+	// This is what fixes the "loot 1, close corpse, equip, reopen, loot 1
+	// more" grind on Trilogy: the client can now right-click as fast as it
+	// wants and every item is delivered — the ones past the first arrive as
+	// soon as the cursor clears.  See the PR that added this for context.
+	void OnClientCursorCleared();
+	void EnqueueOrSendSummonedItem(const uint8_t* wire, uint32_t size);
+
 	// ---- Bot ^invgive cursor materialization ----
 	// Bridge methods that delegate to TrilogyZoneServer.  See trilogy_zone.h
 	// for behaviour.  Called from bot_commands/inventory.cpp around
@@ -356,6 +384,12 @@ private:
 	// until after the item packet so the client processes them in the right order.
 	bool m_pending_loot_echo = false;
 	Trilogy::structs::LootingItem_Struct m_pending_echo_out{};
+
+	// v29c cursor deferred-delivery queue — see OnClientCursorCleared /
+	// EnqueueOrSendSummonedItem in the public section for the full rationale.
+	bool                             m_client_cursor_busy = false;
+	std::deque<std::vector<uint8_t>> m_pending_summons;
+	static constexpr size_t          kMaxPendingSummons = 64; // guardrail; a full inventory of bag content is ~30
 
 	// ---- Zoning state machine ----
 	// true from construction until the client sends its first ZN_OP_ClientUpdate
