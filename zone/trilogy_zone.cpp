@@ -6825,9 +6825,23 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 
 	// Build the response in a clean local — DO NOT modify the inbound payload
 	// (it's part of the EQNetwork RX buffer).
+	//
+	// CRITICAL: echo the client's own player_id from the request unchanged.
+	// v29c uses this field to match the response against its OWN self-ID (the
+	// wire spawn_id it was given on zone-in — for character Nekoto that's
+	// 16616, not the EQEmu GetID() which is a small entity index).  If the
+	// echoed value doesn't match the client's expected self-ID, subsystems
+	// like the per-skill cost/price display in the trainer window silently
+	// fail to render — the window itself opens (that path only needs the
+	// unknown[32] magic bytes), but the cost text stays blank.  Same trap as
+	// documented in TrilogyClient::HandleClickObjectAction (trilogy_client.cpp
+	// ~L820, "v29c client only opens the station UI when the packet's
+	// player_id matches its own self-ID").  EQClassic's ProcessOP_ClassTraining
+	// side-steps this by modifying the inbound packet in-place and re-queuing
+	// it (echoing both npcid and playerid).  We do the same explicitly.
 	Trilogy::structs::ClassTrain_Struct reply{};
 	reply.npcid    = req->npcid;
-	reply.playerid = static_cast<int32_t>(s.trilogy_client->GetID());
+	reply.playerid = req->playerid;
 
 	// Skill caps — highesttrain[i] is the max value this trainer can raise
 	// skill i to at the character's CURRENT level.  The v29c client uses this
