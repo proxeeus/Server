@@ -2003,9 +2003,28 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 						float dx = tgt_mob->GetX() - s.trilogy_client->GetX();
 						float dy = tgt_mob->GetY() - s.trilogy_client->GetY();
 						float dist = std::sqrt(dx*dx + dy*dy);
+						// Look up what we last told the client about this spawn.
+						// If client_last differs from server pos, the client's
+						// rendered position is stale and its local range check
+						// may reject actions the server would otherwise accept
+						// (loot on corpses, attack range on live mobs).
+						int client_last_x = 0, client_last_y = 0;
+						int client_gap    = -1;
+						auto lb_it = s.last_broadcast.find(static_cast<uint16_t>(tgt32));
+						if (lb_it != s.last_broadcast.end()) {
+							client_last_x = lb_it->second.x_pos;
+							client_last_y = lb_it->second.y_pos;
+							const int cur_wire_x = static_cast<int16_t>(tgt_mob->GetX());
+							const int cur_wire_y = static_cast<int16_t>(tgt_mob->GetY());
+							const int gx = cur_wire_x - client_last_x;
+							const int gy = cur_wire_y - client_last_y;
+							client_gap = static_cast<int>(std::sqrt(
+								static_cast<float>(gx * gx + gy * gy)));
+						}
 						LogInfo("[Trilogy attack-diag] TARGET wire_id={} sid={} name='{}' "
 						        "server_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
-						        "dist={:.1f} is_npc={} moving={} hp={}/{}",
+						        "dist={:.1f} client_last=({},{}) client_gap={} "
+						        "is_npc={} is_corpse={} moving={} hp={}/{}",
 						        static_cast<int>(tgt16),
 						        static_cast<int>(tgt_mob->GetID()),
 						        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?",
@@ -2013,7 +2032,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
 						        s.trilogy_client->GetZ(),
 						        dist,
+						        client_last_x, client_last_y, client_gap,
 						        tgt_mob->IsNPC() ? 1 : 0,
+						        tgt_mob->IsCorpse() ? 1 : 0,
 						        tgt_mob->IsMoving() ? 1 : 0,
 						        tgt_mob->GetHP(), tgt_mob->GetMaxHP());
 					} else if (tgt32 != 0) {
