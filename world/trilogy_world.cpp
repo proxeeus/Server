@@ -731,6 +731,35 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
+
+	// Single-character rosters: the v29c client auto-selects the sole character
+	// and displays it in the 3D viewport, but skips the per-character weapon
+	// polls it normally sends before drawing the paperdoll — armor renders,
+	// weapons don't (user has to re-click the portrait to trigger the polls).
+	// Push unsolicited OP_WearChange responses for slot 7 + 8 so the auto-
+	// selected paperdoll gets weapons immediately. At char-select the client
+	// applies incoming OP_WearChange to whichever character it's currently
+	// rendering, which is exactly the sole character here.
+	//
+	// Multi-character rosters don't have this problem: nothing is auto-selected
+	// until the user clicks, and that click triggers the normal poll cycle
+	// handled by HandleWearChange.
+	if (slot == 1) {
+		using TrilWC = Trilogy::structs::WearChange_Struct;
+		for (int hand = 0; hand < 2; ++hand) {
+			TrilWC wc{};
+			wc.wear_slot_id = static_cast<int8_t>(7 + hand); // 7 primary, 8 secondary
+			wc.slot_graphic = s.cs_weapon_model[0][hand];    // 0 for empty hand — harmless no-op
+			wc.sub_op       = 0;                             // unsolicited — no poll tag to echo
+			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
+		}
+		LogInfo("[TrilogyWorld] SendCharSelect | single-char roster: pushed proactive WearChange "
+		        "primary=[{}] secondary=[{}] to {}:{}",
+		        static_cast<int>(s.cs_weapon_model[0][0]),
+		        static_cast<int>(s.cs_weapon_model[0][1]),
+		        addr, port);
+	}
 }
 
 // ============================================================
