@@ -4060,7 +4060,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
-			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm` "
+			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm`,"
+			" `birthday`, `time_played` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -4166,6 +4167,23 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
+
+		// /played wire fields (see [[project-trilogy-played-command]]).  The v29c
+		// client's /played handler is entirely client-side: it reads
+		//   birthday_time    (struct byte 3956, formerly `time1`) — unix creation ts
+		//   time_played_min  (struct byte 4160, formerly `time2`) — cumulative minutes
+		// and formats "Character created: ...", "You have played this character
+		// for: ...", and "You have played EverQuest for: ..." locally.  Without
+		// these two writes the client sees zeros and falls back to a session-only
+		// display, and any long-lived character shows a bogus creation date of
+		// 1970-01-01.  Both columns are populated by the modern EQEmu character
+		// path — character_data.birthday is set at CharCreate (trilogy_world.cpp)
+		// and character_data.time_played is accumulated by Client::Save() via
+		// TotalSecondsPlayed.  The seed in InitTrilogyFields (client.cpp) prevents
+		// the very first Trilogy-session Save() from clobbering the stored total.
+		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
+		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
+
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
@@ -4194,6 +4212,9 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		LogInfo("[TrilogyZP] SendPlayerProfile: char [{}] zone [{}] DB pos ({:.2f},{:.2f},{:.2f},{:.2f}) cached_hdg={:.2f} boundary={} arm_trap={}",
 		        s.char_name, s.zone_short, s.pos_x, s.pos_y, s.pos_z, s.pos_heading, s.cached_exit_heading,
 		        boundary_is_wide ? "WIDE" : "NARROW", s.pending_heading_sync ? "Y" : "N");
+
+		LogInfo("[TrilogyPlayed] SendPlayerProfile: char [{}] birthday_time={} time_played_min={} (feeds /played)",
+		        s.char_name, static_cast<uint32_t>(pp.birthday_time), static_cast<uint32_t>(pp.time_played_min));
 
 		// ============================================================
 		// Wide-boundary terrain snap (PRE-PP) — see also HandleZoneInComplete

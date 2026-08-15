@@ -636,6 +636,19 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// Suppress zone-point detection for 3 s after zone-in to prevent an
 	// immediate re-trigger when the player spawns right on a zone boundary.
 	m_zone_entry_time = Timer::GetCurrentTime();
+
+	// Seed TotalSecondsPlayed from persisted timePlayedMin and reset lastlogin
+	// to now, mirroring what the standard zone-entry path does at
+	// client_packet.cpp Handle_Connect_OP_ZoneEntry (~L1371).  Trilogy bypasses
+	// that path entirely, so without this seed TotalSecondsPlayed stays at 0
+	// (its Client ctor value) and the first Save() computes
+	// `TotalSecondsPlayed += (now - lastlogin)` from a lastlogin loaded from the
+	// DB — which may be days old — then overwrites the real accumulated total
+	// with just that delta.  Net effect: `character_data.time_played` (and
+	// therefore `/played`) is clobbered on every camp/zone/relog.  Resetting
+	// lastlogin here means the next Save() only adds THIS session's delta.
+	TotalSecondsPlayed = m_pp.timePlayedMin * 60;
+	m_pp.lastlogin     = time(nullptr);
 }
 
 void Client::SendZoneInPackets()
