@@ -749,15 +749,16 @@ struct PlayerProfile_Struct
 /*3888*/	int8	unknown3888[24];
 /*3912*/	int32	bankinvitemPointers[8];		// zero-fill: client-side pointers
 /*3944*/	int8	unknown3944[12];
-/*3956*/	int32	time1;
+/*3956*/	int32	time1;						// Purpose unknown; matches EQClassic Common/Include/PlayerProfile.h.  NOT birthday — 2026-08-15 sigil probe wrote 946684800 (2000-01-01) here and /played displayed "Character created: Jan 1, 2005" (from time2), confirming this slot is not read by /played.
 /*3960*/	int8	unknown3960[20];
 /*3980*/	int16	bank_inv[8];
 /*3996*/	int16	bank_cont_inv[80];
 /*4156*/	int8	deity_wire;					// Deity displayed by the char sheet (raw EQEmu ID 140 or 201-216). Confirmed by capturing the CharCreate payload: client picks Innoruuk -> payload byte 4152 (= struct byte 4156) = 0xCE (206).
 /*4157*/	int8	unknown4157;				// Padding byte adjacent to deity_wire.
 /*4158*/	int16	guildid;
-/*4160*/	int32	time2;
-/*4164*/	int8	unknown4164[6];
+/*4160*/	int32	birthday_time;				// Unix timestamp of character creation, drives the "Character created:" line in `/played`.  Confirmed 2026-08-15 by sigil probe: wrote 1104537600 here, client displayed "Character created: Jan 1, 2005".
+/*4164*/	int32	time_played_min;			// Total minutes played across all sessions, drives the "You have played this character for:" line in `/played`.  Confirmed 2026-08-15 by sigil probe (int32 sigil = 4164 planted here, client displayed "2 days, 21 hours and 24 minutes" = 4164 min).  Occupies the first 4 bytes of the former `unknown4164[6]` block, leaving 2 padding bytes before fatigue at 4170.
+/*4168*/	int8	unknown4168[2];				// Padding bytes between time_played_min and fatigue (formerly the tail of unknown4164[6]).
 /*4170*/	int8	fatigue;
 /*4171*/	int8	unknown4171[2];
 /*4173*/	int8	anon;

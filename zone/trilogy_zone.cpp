@@ -4060,7 +4060,8 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `level`, `exp`, `mana`, `face`, `cur_hp`,"
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
-			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm` "
+			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm`,"
+			" `birthday`, `time_played` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -4166,6 +4167,21 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
+
+		// /played fields.  The v29c client's /played handler is entirely
+		// client-side: it reads two adjacent int32s from the PP and formats
+		// them locally.  Offsets pinned by sigil probe 2026-08-15:
+		//   birthday_time   (byte 4160) — unix timestamp of char creation
+		//   time_played_min (byte 4164) — cumulative minutes played
+		// Both columns are populated by the modern EQEmu character path:
+		// character_data.birthday is set at CharCreate (trilogy_world.cpp)
+		// and character_data.time_played is accumulated by Client::Save()
+		// via TotalSecondsPlayed.  The seed in InitTrilogyFields (client.cpp)
+		// prevents the very first Trilogy-session Save() from clobbering
+		// the stored total.
+		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
+		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
+
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
