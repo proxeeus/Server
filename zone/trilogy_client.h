@@ -22,8 +22,10 @@
 #include "../common/eq_stream_intf.h"
 #include "../common/patches/trilogy_structs.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <deque>
 #include <map>
 #include <unordered_map>
@@ -346,6 +348,21 @@ private:
 	void HandleNewSpawn(const EQApplicationPacket* app);
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
 	void HandleClientUpdate(const EQApplicationPacket* app);
+	// Server-authoritative self-position push via 0xa120 (OP_MobUpdate).
+	// Called from HandleClientUpdate's self-branch when IsFeared() — restores
+	// fear movement that would otherwise be dropped as a rubber-band self-echo.
+	// Uses A120 (not F320) because F320 to self is a hard XY position correction
+	// that teleports past client-side collision (walls). A120 tells the client
+	// "here's this mob + its animation" and the v29c client renders the run
+	// cycle with local collision applied — matches EQClassic SendPosUpdate
+	// (Zone/Source/mob.cpp:547) which is what SE_Fear calls.
+	void SendForcedSelfPositionUpdate(
+		const struct PlayerPositionUpdateServer_Struct* p);
+	// Small helper: wrap a single SpawnPositionUpdate_Struct in the A120
+	// payload frame ([int32 num_updates=1][SpawnPositionUpdate_Struct]).
+	std::array<uint8_t, 4 + sizeof(Trilogy::structs::SpawnPositionUpdate_Struct)>
+	BuildSingleA120Payload(
+		const Trilogy::structs::SpawnPositionUpdate_Struct& upd);
 	void HandleIllusion(const EQApplicationPacket* app);
 	void HandleOutgoingChannelMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
@@ -419,6 +436,17 @@ public:
 	// SendMobHeartbeat wire format), so moving-mob ARQ overhead is
 	// O(in-view-moving-mobs / 25) per Tick instead of one ARQ per mob.
 	void FlushPendingMobUpdates();
+
+	// Per-Tick hook called from TrilogyZoneServer::Tick.  In the current
+	// EQClassic-parity design this only resets the transition state
+	// (m_last_fear_self_push_ms + m_last_fear_self_anim) when IsFeared()
+	// flips false, so the next fear cast re-logs its first push.  No
+	// per-tick wire traffic — fear position updates are driven entirely
+	// by MoveToCommand's start / speed-change / 5s cadence through
+	// HandleClientUpdate's self-branch.  EQClassic sends one A120 per
+	// fear leg and the client extrapolates heading × anim_type between
+	// packets; a tick heartbeat over-corrects and causes visible jitter.
+	void MaybeSendFearHeartbeat();
 
 private:
 
@@ -631,6 +659,19 @@ private:
 	// SendMobHeartbeat for stationary mobs but driven by movement events
 	// instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
+
+	// Fear self-position heartbeat throttle.  MaybeSendFearHeartbeat runs
+	// from every TrilogyZoneServer::Tick while IsFeared() is true, throttled
+	// here to 100ms wire cadence for EQClassic parity (matches FearMovement's
+	// per-server-tick push rate; 250ms was visibly choppy from the client's
+	// perspective at fear-run speed).  Also serves as double-fire guard when
+	// HandleClientUpdate's self-branch pushes on the same tick as a
+	// MoveToCommand start / speed-change / 5s heartbeat.  Reset to 0 in
+	// MaybeSendFearHeartbeat when IsFeared() flips false so the next fear
+	// cast logs its first push (see anti-spam log gate in
+	// SendForcedSelfPositionUpdate).
+	uint64_t m_last_fear_self_push_ms = 0;
+	int8_t   m_last_fear_self_anim    = 0;
 
 	// Per-door last-sent action cache with TTL.  Doors::HandleClick in EQEmu
 	// has a bug where city-edge doors (HasDestinationZone() == true) never get
