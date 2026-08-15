@@ -775,27 +775,32 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
-	// Attempt 8: attempt 7's visible phantom proved multi-char roster triggers
-	// the client's auto-poll. Now try the MINIMUM phantom: keep name[1]="<none>"
-	// (the "empty slot / Create New Character" sentinel — the client won't
-	// draw a portrait for a slot with that name) but populate level/class/race.
-	// If the client's poll-loop counts populated slots by ANY non-zero field
-	// (not by name), we trigger the auto-poll without a visible second portrait.
-	// If the check is name-based, we'll iterate — we know the mechanism works.
+	// Attempt 9: attempt 8's minimum phantom successfully TRIGGERED the
+	// client's auto-poll cycle (verified in world_17392.log: 0x3521/0x3921
+	// checksums + SUB_ChangeChar + polls for slot_graphic=1 AND 2 fired
+	// automatically). BUT weapons still didn't render, because the client
+	// applies WearChange responses to the DISPLAYED CHAR regardless of
+	// which slot_graphic was polled — multiple responses overwrite in order.
+	// Sequence in attempt 8: response (7,model=2) for real → weapon on,
+	// then response (7,model=0) for empty phantom → weapon cleared → flicker.
+	//
+	// Attempt 9: keep the invisible minimum phantom (name=<none>, level/
+	// class/race set) BUT mirror the weapon-model cache to slot 1 so
+	// HandleWearChange returns the SAME model for both slot_graphic=1 and
+	// slot_graphic=2 polls. Both responses paint the same weapon on the
+	// displayed char → no overwrite-clear → weapon stays rendered.
 	if (slot == 1) {
-		LogInfo("[TrilogyWorld] SendCharSelect | attempt8 minimum phantom (name=<none>, "
-		        "class/race/level set) in slot 1 to {}:{}", addr, port);
-		// name[1] stays "<none>" (already set) — no portrait render
-		// zone[1] stays "" (already zero) — irrelevant if no portrait
+		LogInfo("[TrilogyWorld] SendCharSelect | attempt9 invisible phantom + mirrored "
+		        "weapon cache (slot1_wpn=slot0_wpn) to {}:{}", addr, port);
 		cs.level[1]  = 1;
 		cs.class_[1] = 1;
 		cs.race[1]   = 1;
 		cs.gender[1] = 0;
 		cs.face[1]   = 0;
-		// Leave equip[1][*] and cs_colors[1][*] at 0 (no equipment) — the
-		// point is to test if a "populated" slot with no visible portrait
-		// still triggers the auto-poll. Weapon-model cache for slot 1 stays 0
-		// so HandleWearChange returns model=0 for any slot_graphic=2 polls.
+		// Mirror the weapon-model cache so poll responses for phantom slot
+		// return the same model as the real char — avoids overwrite-clear.
+		s.cs_weapon_model[1][0] = s.cs_weapon_model[0][0];
+		s.cs_weapon_model[1][1] = s.cs_weapon_model[0][1];
 	}
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
