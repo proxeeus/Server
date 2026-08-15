@@ -9011,34 +9011,37 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 
 		bool is_playerbot = (npc->GetNPCTypeID() == playerbot_type_id);
 
-		// 2026-06-27: hand TRANSLATING NPCs off entirely to the event-driven
-		// path (TrilogyClient::HandleClientUpdate, which writes the
-		// MovementManager-authoritative delta_x/y/z into the wire bitfield).
-		// The heartbeat here forces delta=0, and at 2 Hz cadence the two
-		// paths alternate-overwrite the client's extrapolation state.
+		// 2026-06-27 → 2026-08-15: previously we skipped moving-but-not-
+		// turning NPCs entirely, on the theory that TrilogyClient::
+		// HandleClientUpdate (event-driven from EQEmu's OP_ClientUpdate
+		// broadcasts) was the sole source of position for movers.  That
+		// theory failed in open zones (commons/lakeofillomen): the
+		// [Trilogy desync-pos] detector caught patrolling NPCs going 4-15 s
+		// between position updates and rendering at stale coordinates
+		// while alive server-side — user-visible symptom "mob just stands
+		// there, attacks fail, then eventually poofs".  Root cause: EQEmu's
+		// per-NPC broadcast cadence for grid roamers is ~5 s (matching
+		// EQClassic's spawnUpdate_timer), and any packet drop in the ARQ
+		// pipeline widens the gap.
 		//
-		// EXCEPTION: turning mobs MUST stay in heartbeat.  Rotation in
-		// EQEmu's MobMovementManager (RotateToCommand at
-		// mob_movement_manager.cpp:67) calls SetMoving(true) so the mob
-		// is technically "moving" — but the event-driven path only fires
-		// TWO OP_ClientUpdates for an entire rotation (one at start, one
-		// at completion), leaving the client with nothing to render
-		// mid-rotation.  Pre-2026-06-27 heartbeat used `nearby_turning`
-		// cache to drop throttle to 10ms during rotation so the client
-		// got smooth per-tick heading updates; that bypass still exists
-		// below and is the right path for turning mobs.  Without this
-		// `!turning` carve-out, /hail-driven FaceTarget rotations show as
-		// "NPC waits then snaps to face player" — visible regression.
-		if (npc->IsMoving() && !npc->turning) {
-			continue;
-		}
-
-		// Stationary NPCs: staleness refresh only.  ~2 Hz (every 5th 100 ms
-		// tick) keeps the v29c spawn staleness timer satisfied without
-		// flooding the ARQ queue on zones with many idle NPCs.
-		if (!npc->IsMoving()) {
-			if ((now_ms / 100) % 5 != 0) continue;
-		}
+		// Fix: let moving NPCs flow through should_broadcast just like
+		// stationary ones.  The dirty-flag gate suppresses redundant
+		// sends when the client already has the current position; the
+		// STALENESS_REFRESH_MS forced refresh catches gaps.  The moving-
+		// mob branch below (~9078) already encodes proper anim_type and
+		// velocity delta from the MovementManager cache, so alternating
+		// with event-driven no longer breaks client extrapolation (the
+		// obsolete concern that motivated the original skip).
+		//
+		// Wire cost: at 2 s session heartbeat cadence and dirty-flag
+		// suppression, a moving mob costs at most ~0.5 Hz beyond event-
+		// driven — bounded by CULL_RADIUS_SQ and outer-ring 500 ms cap.
+		// Turning mobs still take the fast (10 ms) path via nearby_turning.
+		//
+		// Cadence gate: ~2 Hz (every 5th 100 ms tick) for BOTH stationary
+		// and moving mobs.  Turning mobs bypass this via the priority
+		// flag in should_broadcast.
+		if (!npc->turning && (now_ms / 100) % 5 != 0) continue;
 
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
