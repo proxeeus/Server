@@ -9421,9 +9421,30 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			float dy_player = m->GetY() - s.pos_y;
 			float dist_to_player = std::sqrt(dx_player * dx_player + dy_player * dy_player);
 
+			// Diagnostic funnel: figure out WHY this mob wasn't heartbeated.
+			// - hb_age = ms since SendMobHeartbeat's session throttle last passed
+			//   (body actually ran). If large, session throttle is starving.
+			// - cadence_ok = would this Tick's cadence gate pass now?
+			// - in_cull = is the mob currently within CULL_RADIUS_SQ (600u)?
+			// - would_be_dirty = would should_broadcast's dirty flag fire?
+			const uint64_t hb_age = now_ms - s.last_heartbeat_ms;
+			const bool m_turning = m->IsNPC() && m->CastToNPC()->turning;
+			const bool cadence_ok = m_turning || (now_ms / 100) % 5 == 0;
+			const float dist_player_sq =
+				dx_player * dx_player + dy_player * dy_player;
+			const bool in_cull = dist_player_sq <= 600.0f * 600.0f;
+			const int cur_wire_x_int = static_cast<int16_t>(m->GetX());
+			const int cur_wire_y_int = static_cast<int16_t>(m->GetY());
+			const int cur_wire_z_int = static_cast<int16_t>(m->GetZ() * 10.0f);
+			const bool would_be_dirty =
+				(last.x_pos     != cur_wire_x_int) ||
+				(last.y_pos     != cur_wire_y_int) ||
+				(last.z_pos     != cur_wire_z_int);
+
 			LogInfo("[Trilogy desync-pos] sid={} name='{}' moving={} "
 			        "client_last=({},{},{}/10) server=({:.1f},{:.1f},{:.1f}) "
-			        "gap_xy={} age_ms={} dist_to_player={:.1f}",
+			        "gap_xy={} age_ms={} dist_to_player={:.1f} "
+			        "hb_age_ms={} cadence_ok={} in_cull={} would_dirty={}",
 			        static_cast<int>(spawn_id),
 			        m->GetCleanName() ? m->GetCleanName() : "?",
 			        m->IsMoving() ? 1 : 0,
@@ -9433,7 +9454,9 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			        m->GetX(), m->GetY(), m->GetZ(),
 			        static_cast<int>(std::sqrt(static_cast<float>(gap_sq))),
 			        static_cast<uint64_t>(now_ms - last.sent_ms),
-			        dist_to_player);
+			        dist_to_player,
+			        hb_age, cadence_ok ? 1 : 0,
+			        in_cull ? 1 : 0, would_be_dirty ? 1 : 0);
 		}
 
 		for (uint16_t spawn_id : ghosts) {
