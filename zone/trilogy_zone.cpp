@@ -4215,6 +4215,36 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
+
+		// ── /played offset sigil probe ──────────────────────────────────────
+		// Flip kProbePlayedOffsets to true, rebuild, zone in, type /played,
+		// paste both output lines back.  Each candidate int32 slot gets a
+		// distinct anchor-year timestamp:
+		//   3956 (time1)   -> 2000-01-01  (unix 946684800)
+		//   4160 (time2)   -> 2005-01-01  (unix 1104537600)
+		//   8100 (logtime) -> 2010-01-01  (unix 1262304000)
+		// If /played shows "Character created: <year>", the year decodes
+		// directly back to the offset the client reads for birthday.
+		// The "You have played this character for:" line reveals the
+		// time_played offset — if the client reads one of these slots and
+		// interprets it as MINUTES, expect an astronomical number
+		// (946684800 min = ~1800 years) — that's still diagnostic (tells us
+		// which slot is being read as time_played).  If /played still shows
+		// "1970" and "1 minute", NONE of the three candidate slots is right
+		// and the field lives elsewhere in the PP (probably unknown4508).
+		// Flip back to false and revert this block once the offsets are
+		// pinned.  Keep the DB reads elsewhere untouched — this only affects
+		// the wire PP.
+		constexpr bool kProbePlayedOffsets = true;
+		if (kProbePlayedOffsets) {
+			pp.time1   = static_cast<int32_t>(946684800u);   // 2000-01-01
+			pp.time2   = static_cast<int32_t>(1104537600u);  // 2005-01-01
+			pp.logtime = static_cast<int32_t>(1262304000u);  // 2010-01-01
+			LogInfo("[TrilogyPlayed] PROBE char [{}] wrote time1(3956)=946684800(2000) time2(4160)=1104537600(2005) logtime(8100)=1262304000(2010)",
+			        s.char_name);
+		}
+		// ────────────────────────────────────────────────────────────────────
+
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
