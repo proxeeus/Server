@@ -289,6 +289,10 @@ private:
 		// this caps it to one line per spawn per kDesyncLogIntervalMs.
 		std::unordered_map<uint16_t, uint64_t> last_desync_log_ms;
 
+		// Rate limiter for [Trilogy attack-diag] TARGET log — click-spam
+		// on nearby NPCs would otherwise flood on every mouseover.
+		uint64_t last_target_log_ms = 0;
+
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
 		// bursts of hundreds of broadcast packets in one tick (#repop, mass

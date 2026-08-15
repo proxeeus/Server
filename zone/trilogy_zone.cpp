@@ -1914,6 +1914,41 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// 4-byte payload: pBuffer[0] = 0 (off) or 1 (on).
 			// Directly construct and queue a 4-byte OP_AutoAttack packet for Client::Handle_OP_AutoAttack.
 			if (plen >= 1) {
+				// Attack-diagnostic: capture target state at the moment the
+				// user toggled auto-attack on. Answers "why does attack do
+				// nothing?" — is target gone / out of range / not attackable.
+				if (payload[0] == 1) {
+					Mob* tgt = s.trilogy_client->GetTarget();
+					if (tgt) {
+						float dx = tgt->GetX() - s.trilogy_client->GetX();
+						float dy = tgt->GetY() - s.trilogy_client->GetY();
+						float dz = tgt->GetZ() - s.trilogy_client->GetZ();
+						float dist = std::sqrt(dx*dx + dy*dy + dz*dz);
+						LogInfo("[Trilogy attack-diag] AUTO_ON tgt_sid={} name='{}' "
+						        "tgt_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
+						        "dist={:.1f} is_npc={} is_client={} is_corpse={} moving={} "
+						        "hp={}/{}",
+						        static_cast<int>(tgt->GetID()),
+						        tgt->GetCleanName() ? tgt->GetCleanName() : "?",
+						        tgt->GetX(), tgt->GetY(), tgt->GetZ(),
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ(),
+						        dist,
+						        tgt->IsNPC() ? 1 : 0,
+						        tgt->IsClient() ? 1 : 0,
+						        tgt->IsCorpse() ? 1 : 0,
+						        tgt->IsMoving() ? 1 : 0,
+						        tgt->GetHP(), tgt->GetMaxHP());
+					} else {
+						LogInfo("[Trilogy attack-diag] AUTO_ON tgt=NULL "
+						        "player_pos=({:.1f},{:.1f},{:.1f})",
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ());
+					}
+				} else {
+					LogInfo("[Trilogy attack-diag] AUTO_OFF");
+				}
+
 				EQApplicationPacket atkpkt(OP_AutoAttack, 4);
 				memset(atkpkt.pBuffer, 0, 4);
 				atkpkt.pBuffer[0] = payload[0];
@@ -1932,6 +1967,39 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				int16_t tgt16;
 				memcpy(&tgt16, payload, 2);
 				uint32_t tgt32 = static_cast<uint32_t>(static_cast<int32_t>(tgt16));
+
+				// Attack-diagnostic: what does the server think of this target
+				// at the moment the client picks it? Rate-limited to once per
+				// second per session so click-spamming doesn't flood the log.
+				const uint64_t now_ms_tgt = static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now().time_since_epoch()).count());
+				if (now_ms_tgt - s.last_target_log_ms >= 1000) {
+					s.last_target_log_ms = now_ms_tgt;
+					Mob* tgt_mob = (tgt32 != 0) ? entity_list.GetMob(static_cast<uint16_t>(tgt32)) : nullptr;
+					if (tgt_mob) {
+						float dx = tgt_mob->GetX() - s.trilogy_client->GetX();
+						float dy = tgt_mob->GetY() - s.trilogy_client->GetY();
+						float dist = std::sqrt(dx*dx + dy*dy);
+						LogInfo("[Trilogy attack-diag] TARGET wire_id={} sid={} name='{}' "
+						        "server_pos=({:.1f},{:.1f},{:.1f}) player_pos=({:.1f},{:.1f},{:.1f}) "
+						        "dist={:.1f} is_npc={} moving={} hp={}/{}",
+						        static_cast<int>(tgt16),
+						        static_cast<int>(tgt_mob->GetID()),
+						        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?",
+						        tgt_mob->GetX(), tgt_mob->GetY(), tgt_mob->GetZ(),
+						        s.trilogy_client->GetX(), s.trilogy_client->GetY(),
+						        s.trilogy_client->GetZ(),
+						        dist,
+						        tgt_mob->IsNPC() ? 1 : 0,
+						        tgt_mob->IsMoving() ? 1 : 0,
+						        tgt_mob->GetHP(), tgt_mob->GetMaxHP());
+					} else if (tgt32 != 0) {
+						LogInfo("[Trilogy attack-diag] TARGET wire_id={} → GONE (entity_list has no mob for this sid)",
+						        static_cast<int>(tgt16));
+					}
+				}
+
 				EQApplicationPacket tgtpkt(OP_TargetMouse, sizeof(::ClientTarget_Struct));
 				memset(tgtpkt.pBuffer, 0, sizeof(::ClientTarget_Struct));
 				memcpy(tgtpkt.pBuffer, &tgt32, 4);
