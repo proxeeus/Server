@@ -739,17 +739,9 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 			// modern EQEmu code ignores that via PP.item_tint.UseTint, but v29c
 			// has no such flag and would render the piece pitch-black. Any real
 			// RGB dye gets alpha=FF re-armed so the tint actually applies.
-			// Weapons (eqidx 7-8): don't strip 0xFF000000 to zero — for armor
-			// that avoids pitch-black; for weapons alpha=0 wire may drop the
-			// model entirely at auto-select. Force alpha=0xFF on weapons.
-			uint32_t clr;
-			if (eqidx <= 6) {
-				clr = tint_color[eqidx];
-				if (clr == 0 && item_clr != 0) {
-					clr = Trilogy::NormalizeTintColor(item_clr);
-				}
-			} else {
-				clr = (item_clr & 0x00FFFFFFu) | 0xFF000000u;
+			uint32_t clr = (eqidx <= 6) ? tint_color[eqidx] : 0;
+			if (clr == 0 && item_clr != 0) {
+				clr = Trilogy::NormalizeTintColor(item_clr);
 			}
 			cs.cs_colors[slot][eqidx] = clr;
 		}
@@ -757,45 +749,6 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
-
-	// Diagnostic: log per-char weapon model cache so we can correlate against
-	// any incoming OP_WearChange traffic in the world log during auto-select
-	// investigation.
-	if (slot >= 1) {
-		std::string wpn_summary;
-		for (int i = 0; i < slot; ++i) {
-			wpn_summary += fmt::format(" char[{}]={}/{}",
-				i, static_cast<int>(s.cs_weapon_model[i][0]),
-				static_cast<int>(s.cs_weapon_model[i][1]));
-		}
-		LogInfo("[TrilogyWorld] SendCharSelect | weapon-model cache (primary/secondary):{}", wpn_summary);
-	}
-
-	// Single-char roster: the client auto-selects and displays the sole char
-	// but does NOT fire the OP_WearChange poll cycle (verified in world log —
-	// zero WearChange RX until the user manually clicks). Push proactive
-	// responses shaped exactly like the click cycle's poll responses:
-	// sub_op=9410 (the value the client uses in its own polls in world log)
-	// rather than sub_op=0.  The user reports a brief flicker where weapons
-	// appear then disappear on auto-select — suggesting the client is willing
-	// to render weapons but clears them without a response it accepts.
-	if (slot == 1) {
-		using TrilWC = Trilogy::structs::WearChange_Struct;
-		constexpr int16_t kPollTag = 9410; // observed sub_op in real poll responses
-		for (int hand = 0; hand < 2; ++hand) {
-			TrilWC wc{};
-			wc.wear_slot_id = static_cast<int8_t>(7 + hand);
-			wc.slot_graphic = s.cs_weapon_model[0][hand];
-			wc.sub_op       = kPollTag;
-			SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-			        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
-		}
-		LogInfo("[TrilogyWorld] SendCharSelect | single-char proactive WearChange sent "
-		        "(primary=[{}] secondary=[{}] sub_op=[{}]) to {}:{}",
-		        static_cast<int>(s.cs_weapon_model[0][0]),
-		        static_cast<int>(s.cs_weapon_model[0][1]),
-		        kPollTag, addr, port);
-	}
 }
 
 // ============================================================
