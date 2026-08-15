@@ -587,6 +587,46 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Illusion:
 		HandleIllusion(app);
 		break;
+	case OP_Surname: {
+		// Accept-echo for the sender only.  Client::Handle_OP_Surname built a
+		// 100 B EQEmu Surname_Struct with unknown0064=1; repack into the 56 B
+		// Trilogy Surname_Struct (name[16] + s_unknown1[20]=0x01 + Surname[20])
+		// so the v29c client marks the request as accepted.  The GMSurname
+		// broadcast below is what actually refreshes nameplates.
+		if (app->size >= sizeof(::Surname_Struct)) {
+			const auto* es = reinterpret_cast<const ::Surname_Struct*>(app->pBuffer);
+			Trilogy::structs::Surname_Struct ts{};
+			strn0cpy(ts.name, es->name, sizeof(ts.name));
+			memset(ts.s_unknown1, 1, sizeof(ts.s_unknown1));
+			strn0cpy(ts.Surname, es->lastname, sizeof(ts.Surname));
+			m_tzs->SendToSession(m_session_key, 0xc421,
+			                     reinterpret_cast<const uint8_t*>(&ts),
+			                     static_cast<uint32_t>(sizeof(ts)));
+		}
+		break;
+	}
+	case OP_GMLastName: {
+		// Broadcast surname change to nearby Trilogy players so their
+		// nameplates refresh.  EQEmu's GMLastName_Struct is 200 B (three
+		// 64-char name fields + uint16[4]); repack into the 94 B Trilogy
+		// GMSurname_Struct with unknown[0]=1 to trigger the client update.
+		// Sender is included in the broadcast (ChangeLastName calls
+		// entity_list.QueueClients with ignore_sender=false).
+		if (app->size >= sizeof(::GMLastName_Struct)) {
+			const auto* gmln = reinterpret_cast<const ::GMLastName_Struct*>(app->pBuffer);
+			Trilogy::structs::GMSurname_Struct ts{};
+			strn0cpy(ts.name,    gmln->name,     sizeof(ts.name));
+			strn0cpy(ts.gmname,  gmln->gmname,   sizeof(ts.gmname));
+			strn0cpy(ts.Surname, gmln->lastname, sizeof(ts.Surname));
+			// EQClassic ProcessOP_Surname (client_process.cpp:2196) memsets both
+			// bytes to 1 — that is the "display the new surname" signal.
+			memset(ts.unknown, 1, sizeof(ts.unknown));
+			m_tzs->SendToSession(m_session_key, 0x6e21,
+			                     reinterpret_cast<const uint8_t*>(&ts),
+			                     static_cast<uint32_t>(sizeof(ts)));
+		}
+		break;
+	}
 	case OP_WearChange:
 		HandleOutgoingWearChange(app);
 		break;

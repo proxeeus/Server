@@ -1659,6 +1659,30 @@ struct LootingItem_Struct
 /*016*/
 };
 
+// v29c OP_Surname (0xc421) — client sends when confirming /surname.  Server
+// echoes back with s_unknown1 filled with 1s to mark acceptance.
+// Source: EQClassic Common/Include/eq_packet_structs.h Surname_Struct.
+struct Surname_Struct
+{
+/*000*/	char	name[16];			// requesting player's first name
+/*016*/	int8	s_unknown1[20];		// filled with 1 by server to accept
+/*036*/	char	Surname[PC_SURNAME_LENGTH];		// new surname (up to 19 + NUL)
+/*056*/
+};
+
+// v29c OP_GMSurname (0x6e21) — broadcast to nearby clients after any surname
+// change so their nameplates refresh.  unknown[0]=1 tells the client to
+// display the new surname.
+// Source: EQClassic Common/Include/eq_packet_structs.h GMSurname_Struct.
+struct GMSurname_Struct
+{
+/*000*/	char	name[PC_MAX_NAME_LENGTH];		// character being renamed
+/*030*/	char	gmname[PC_MAX_NAME_LENGTH];		// source ("SurnameOP" or GM)
+/*060*/	char	Surname[32];					// new surname
+/*092*/	int8	unknown[2];						// {1, 0} triggers client update
+/*094*/
+};
+
 // -------------------------------------------------------------------------
 // Restore structure packing to default
 // -------------------------------------------------------------------------

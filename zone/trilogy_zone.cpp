@@ -223,6 +223,11 @@ static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[3
 static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
 static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+unknown[1]
 
+// /surname command
+// Source: EQClassic/Common/Include/eq_opcodes.h + client_process.cpp:2196
+static constexpr uint16_t ZN_OP_Surname       = 0xc421; // client -> zone: Surname_Struct (56B, /surname submit)
+static constexpr uint16_t ZN_OP_GMSurname     = 0x6e21; // zone -> nearby: GMSurname_Struct (94B, refresh nameplates)
+
 // Trade opcodes (NPC trade window)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
@@ -1829,6 +1834,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (opcode == ZN_OP_Surname && s.trilogy_client)
+			HandleSurname(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
@@ -7227,6 +7234,46 @@ void TrilogyZoneServer::HandleInspectAnswer(const std::string& /*addr*/, int /*p
 
 	SendApp(requester->source_addr, requester->source_port, *requester,
 	        ZN_OP_InspectAnswer, patched.data(), plen);
+}
+
+// ============================================================
+// HandleSurname — /surname command from a Trilogy client.
+//
+// Wire in : Trilogy::structs::Surname_Struct (56 B) at opcode 0xc421.
+// Wire out: relies on Client::ChangeLastName() broadcasting OP_GMLastName,
+//           which TrilogyClient::TranslateAndSend translates to the 94 B
+//           GMSurname_Struct at wire opcode 0x6e21 for every nearby Trilogy
+//           client (including the sender).  The sender's own OP_Surname
+//           accept-echo is emitted from Handle_OP_Surname via FastQueuePacket
+//           and is also translated to 0xc421 in TranslateAndSend.
+//
+// We do a light translation of the 56 B Trilogy struct into the 100 B EQEmu
+// struct so all the shared validation (level 20 gate, 7-day cooldown, name
+// filter, DB persistence) runs unchanged out of Client::Handle_OP_Surname.
+// ============================================================
+void TrilogyZoneServer::HandleSurname(const std::string& /*addr*/, int /*port*/, Session& s,
+                                      const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Surname_Struct)) {
+		LogInfo("[TrilogyZone] /surname: short payload {} from char={}", plen, s.char_name);
+		return;
+	}
+
+	const auto* ts = reinterpret_cast<const Trilogy::structs::Surname_Struct*>(payload);
+
+	EQApplicationPacket app(OP_Surname, sizeof(::Surname_Struct));
+	memset(app.pBuffer, 0, sizeof(::Surname_Struct));
+	auto* es = reinterpret_cast<::Surname_Struct*>(app.pBuffer);
+
+	// Trust the session's server-side name over the client-provided one — v29c
+	// only sends the first 15 chars and it isn't consulted server-side anyway.
+	strn0cpy(es->name, s.trilogy_client->GetName(), sizeof(es->name));
+	es->unknown0064 = 0;
+	strn0cpy(es->lastname, ts->Surname, sizeof(es->lastname));
+
+	LogInfo("[TrilogyZone] /surname: {} -> '{}'", s.char_name, es->lastname);
+	s.trilogy_client->Handle_OP_Surname(&app);
 }
 
 // ============================================================
