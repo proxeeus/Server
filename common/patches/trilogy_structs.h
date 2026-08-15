@@ -1683,6 +1683,36 @@ struct GMSurname_Struct
 /*094*/
 };
 
+// v29c Resurrect_Struct — used bidirectionally.
+//   OP_RezzRequest  (0x2a21, server -> client): pops the resurrection window;
+//                   client responds with OP_RezzAnswer (accept/decline).
+//   OP_RezzAnswer   (0x9b21, client -> server): action=1 accept, action=0 decline.
+//   OP_RezzComplete (0xec21, server -> client): terminates the pending-rez state.
+//
+// Length: 160 bytes.  Field offsets from EQClassic Common/Include/eq_packet_structs.h
+// Resurrect_Struct (Tazadar / Yeahlight annotations).  The v29c client only reads
+// targetName to decide whom the popup is aimed at ("If its wrong you wont see any
+// window"); the corpse entity ID drives lookup on the caster side.
+struct Resurrect_Struct
+{
+/*000*/	uint32	corpseEntityID;                        // corpse spawn id in caster's zone
+/*004*/	char	zoneName[16];                          // ZONE_SHORTNAME_LENGTH; corpse's zone
+/*020*/	uint8	unknown020[16];
+/*036*/	float	y;                                     // corpse position
+/*040*/	float	x;
+/*044*/	float	z;
+/*048*/	uint32	fullGMRez;                             // 1 = full-XP GM rez
+/*052*/	char	targetName[PC_MAX_NAME_LENGTH];        // corpse owner's char name (drives popup)
+/*082*/	uint8	unknown082[6];
+/*088*/	char	casterName[PC_MAX_NAME_LENGTH];        // caster's char name (shown in popup)
+/*118*/	uint16	unknown118;
+/*120*/	uint16	spellID;                               // resurrection spell id
+/*122*/	char	corpseName[28];                        // corpse spawn name (e.g. "Foo's corpse")
+/*150*/	uint8	unknown150[6];
+/*156*/	uint32	action;                                // reply: 1 = accept, 0 = decline
+/*160*/
+};
+
 // -------------------------------------------------------------------------
 // Restore structure packing to default
 // -------------------------------------------------------------------------
@@ -1759,6 +1789,10 @@ static_assert(sizeof(MoneyOnCorpse_Struct)  ==  20,
 
 static_assert(sizeof(LootingItem_Struct)    ==  16,
 	"Trilogy LootingItem_Struct must be 16 bytes");
+
+static_assert(sizeof(Resurrect_Struct)      == 160,
+	"Trilogy Resurrect_Struct must be 160 bytes "
+	"(bidirectional 0x2a21 / 0x9b21 / 0xec21)");
 
 	} /*structs*/
 

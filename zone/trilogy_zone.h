@@ -582,6 +582,15 @@ private:
 	                         const uint8_t* payload, uint32_t plen);
 	void HandleZoneChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
+	// Resurrection answer (client -> zone).  Translates v29c's 160B
+	// Resurrect_Struct (0x9b21) to the modern 228B form and dispatches through
+	// Client::Handle_OP_RezzAnswer, which runs the standard OPRezzAnswer flow
+	// (XP restore, MovePC to corpse location, RezzComplete back to the
+	// corpse's zone to mark it as rezzed).  On accept, follows up with
+	// OP_RezzComplete at 0xec21 so the v29c client tears down the pending-rez
+	// state cleanly (mirrors EQClassic ProcessOP_RezzAnswer).
+	void HandleRezzAnswer(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
 	// Merchant / vendor (client -> zone) handlers.  Buy/sell mutate the player
 	// inventory DB directly (m_inv goes stale after moves) while reusing EQEmu's
 	// zone merchant tables + money funcs.

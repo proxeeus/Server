@@ -313,6 +313,13 @@ private:
 	// BookText_Struct header so just the raw text reaches the v29c GUI.
 	void HandleOutgoingReadBook(const EQApplicationPacket* app);
 
+	// Resurrection popup (server → Trilogy client): translates the 228-byte
+	// modern Resurrect_Struct to v29c's 160-byte layout at opcode 0x2a21.
+	// The client shows the popup and echoes the struct back at 0x9b21 with
+	// action=1 (accept) or action=0 (decline).  Inbound side lives in
+	// TrilogyZoneServer::HandleRezzAnswer.
+	void HandleOutgoingRezzRequest(const EQApplicationPacket* app);
+
 	// ---- Group translators (server → Trilogy client) ----
 	// EQEmu's GroupUpdate_Struct is 452B (4B action + 6×64B names) and the
 	// invite/follow/cancel structs use 64B names; the v29c wire format uses
