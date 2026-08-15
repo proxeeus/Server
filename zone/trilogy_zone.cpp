@@ -8942,6 +8942,11 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// unaffected — by definition combat targets are close.
 	static constexpr float    INNER_RING_RADIUS_SQ        = 300.0f * 300.0f;
 	static constexpr uint64_t OUTER_RING_MIN_INTERVAL_MS  = 500;
+	// Inner-ring min-interval bounds wire cost during nearby-turning
+	// fast-cycles where body throttle_ms drops to 10 ms. Without this,
+	// inner-ring moving mobs would emit at ~100 Hz for the ~200-500 ms
+	// rotation window. 100 ms = 10 Hz per mob, plenty for melee smoothness.
+	static constexpr uint64_t INNER_RING_MIN_INTERVAL_MS  = 100;
 
 	// Dirty-flag gate (mirrors EQClassic EntityList::SendPositionUpdates'
 	// `GetLastChange() >= cLastUpdate` filter): only stage an update if the
@@ -8978,12 +8983,19 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	                            bool  priority = false) -> bool {
 		auto& last = s.last_broadcast[static_cast<uint16_t>(upd->spawn_id)];
 
-		// Outer ring (300-600 u): enforce 500 ms minimum interval regardless
-		// of motion.  Skipping this is the biggest single bandwidth lever —
-		// most NPCs in a 600-unit visible field sit in the outer annulus
-		// because it has 3× the area of the inner circle.
-		if (!priority && dist_sq > INNER_RING_RADIUS_SQ) {
-			if (now_ms - last.sent_ms < OUTER_RING_MIN_INTERVAL_MS)
+		// Per-mob min-interval throttle:
+		//   Outer ring (>300 u): 500 ms cap — biggest single bandwidth lever,
+		//                         most NPCs in the 600 u visible field sit in
+		//                         the outer annulus (3× the area of inner).
+		//   Inner ring (≤300 u): 100 ms cap — bounds worst case during the
+		//                         nearby-turning fast-cycle (body at 10 ms).
+		// Turning mobs bypass via priority=true (need every-tick rotation).
+		if (!priority) {
+			const uint64_t min_interval =
+				(dist_sq > INNER_RING_RADIUS_SQ)
+				    ? OUTER_RING_MIN_INTERVAL_MS
+				    : INNER_RING_MIN_INTERVAL_MS;
+			if (now_ms - last.sent_ms < min_interval)
 				return false;
 		}
 
@@ -9038,10 +9050,20 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// driven — bounded by CULL_RADIUS_SQ and outer-ring 500 ms cap.
 		// Turning mobs still take the fast (10 ms) path via nearby_turning.
 		//
-		// Cadence gate: ~2 Hz (every 5th 100 ms tick) for BOTH stationary
-		// and moving mobs.  Turning mobs bypass this via the priority
-		// flag in should_broadcast.
-		if (!npc->turning && (now_ms / 100) % 5 != 0) continue;
+		// Cadence: NO per-tick modulo gate.  The prior `(now_ms/100)%5==0`
+		// gate assumed a ~100 ms body cadence, but session throttle_ms is
+		// normally 2000 ms.  With body running every 2000 ms and gate
+		// checking `now_ms/100 % 5`, alignment is fixed relative to the
+		// first body run: if the first run lands off-modulo (e.g.
+		// s.last_heartbeat_ms=12345 → 123%5=3), every subsequent 2000 ms
+		// later run also lands off-modulo → gate blocks FOREVER, moving
+		// mobs never heartbeat.  Diagnosed 2026-08-15 via commons log
+		// showing `hb_age_ms=0 cadence_ok=0` on every desync-pos line.
+		//
+		// Rely on session throttle_ms (2000 ms idle / 200 ms combat / 10 ms
+		// during turning) for cadence.  should_broadcast enforces per-mob
+		// caps (INNER_RING_MIN_INTERVAL_MS=100 / OUTER_RING_MIN_INTERVAL_MS=500)
+		// to bound wire cost during the 10 ms turning fast-cycle.
 
 		float dx = npc->GetX() - s.pos_x;
 		float dy = npc->GetY() - s.pos_y;
