@@ -1546,28 +1546,37 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 			}
 			std::string prefix = client_hint.substr(0, 4);
 
+			// STRICT prefix filter: only accept a start_zones row whose zone shares
+			// a 4-char prefix with the client's chosen zone. This prevents
+			// cross-city teleports (e.g. Troll SK Innoruuk client=grobb — the
+			// only start_zones row is a bogus neriaka; without the prefix filter
+			// we'd send the player to Neriak. With the filter, priority 3 finds
+			// nothing and falls through to the client-zone safe point below,
+			// keeping pp.zone_id=grobb so grobb-gated starting_items still fire).
 			bool ok = false;
-			if (eqemu_deity != 0) {
+			if (!prefix.empty() && eqemu_deity != 0) {
 				ok = run(fmt::format(
 					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
 					" FROM `start_zones` sz"
 					" JOIN `zone` z ON z.`zoneidnumber`=sz.`start_zone` AND z.`version`=0"
 					" WHERE sz.`player_class`={} AND sz.`player_race`={} AND sz.`player_deity`={}"
-					" ORDER BY (SUBSTRING(z.`short_name`,1,4)='{}') DESC LIMIT 1",
+					"   AND SUBSTRING(z.`short_name`,1,4)='{}'"
+					" LIMIT 1",
 					class_, race, eqemu_deity, prefix));
 			}
-			if (!ok) {
+			if (!ok && !prefix.empty()) {
 				ok = run(fmt::format(
 					"SELECT sz.`x`, sz.`y`, sz.`z`, sz.`heading`, sz.`start_zone`"
 					" FROM `start_zones` sz"
 					" JOIN `zone` z ON z.`zoneidnumber`=sz.`start_zone` AND z.`version`=0"
 					" WHERE sz.`player_class`={} AND sz.`player_race`={}"
-					" ORDER BY (SUBSTRING(z.`short_name`,1,4)='{}') DESC, sz.`player_deity` ASC LIMIT 1",
+					"   AND SUBSTRING(z.`short_name`,1,4)='{}'"
+					" ORDER BY sz.`player_deity` ASC LIMIT 1",
 					class_, race, prefix));
 			}
 			if (ok) {
 				placed = true;
-				LogInfo("[TrilogyWorld] CharCreate | fallback race/class zone_id={} (deity={}, prefix-hint=[{}])",
+				LogInfo("[TrilogyWorld] CharCreate | fallback same-city row zone_id={} (deity={}, prefix=[{}])",
 				        pp.zone_id, eqemu_deity, prefix);
 			}
 
