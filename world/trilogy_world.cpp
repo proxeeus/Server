@@ -320,6 +320,15 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 {
 	LogNetcode("[TrilogyWorld] rx opcode 0x{:04X} plen={} from {}:{}", opcode, plen, addr, port);
 
+	// Temporary diagnostic: log every inbound opcode at char-select as LogInfo
+	// so we can see what the client actually sends during single-char auto-
+	// select (currently missing weapon render). Remove once root cause is
+	// understood. Skip GuildsList (huge, well-known) and CharCreate (huge).
+	if (opcode != OP_GUILDS_LIST && opcode != OP_CHAR_CREATE) {
+		LogInfo("[TrilogyWorld] RX opcode=0x{:04X} plen={} hdr1=0x{:02X} account_id=[{}] from {}:{}",
+		        opcode, plen, hdr1, s.account_id, addr, port);
+	}
+
 	switch (opcode) {
 	case WS_SEND_LOGIN_INFO:
 		HandleLoginInfo(addr, port, s, payload, plen);
@@ -334,6 +343,34 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		// WorldGuildManager::SendGuildsList replies with the full 30724-byte
 		// GuildsList_Struct (4-byte head + 512 entries).  See
 		// SendGuildsList below.
+		//
+		// Attempt 5 for 1-char auto-select weapon rendering: the OP_GuildsList
+		// request is the client's "I'm settled at char-select" signal — it
+		// arrives many seconds after CharacterSelect_Struct (the wire capture
+		// showed a 12-second gap). Attempts 1-4 sent proactive OP_WearChange
+		// immediately after SendCharSelect and were ignored / caused flicker.
+		// Pushing the weapon assignment right BEFORE the guilds list response
+		// puts it at a moment the client is definitively ready to process it.
+		if (s.cs_char_count == 1 && !s.cs_wpn_pushed_this_cs) {
+			using TrilWC = Trilogy::structs::WearChange_Struct;
+			constexpr int16_t kPollTag  = 9410;
+			constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
+			for (int hand = 0; hand < 2; ++hand) {
+				TrilWC wc{};
+				wc.wear_slot_id = static_cast<int8_t>(7 + hand);
+				wc.slot_graphic = s.cs_weapon_model[0][hand];
+				wc.sub_op       = kPollTag;
+				wc.flag         = kPollFlag;
+				SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
+				        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
+			}
+			s.cs_wpn_pushed_this_cs = true;
+			LogInfo("[TrilogyWorld] OP_GuildsList | attempt5 pushed WearChange primary=[{}] "
+			        "secondary=[{}] BEFORE guilds reply to {}:{}",
+			        static_cast<int>(s.cs_weapon_model[0][0]),
+			        static_cast<int>(s.cs_weapon_model[0][1]),
+			        addr, port);
+		}
 		SendGuildsList(addr, port, s);
 		break;
 	case OP_NAME_APPROVAL:
@@ -518,11 +555,20 @@ void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Ses
 {
 	using TrilWC = Trilogy::structs::WearChange_Struct;
 	if (plen < sizeof(TrilWC)) {
+		LogInfo("[TrilogyWorld] WearChange RX undersized plen={} from {}:{}", plen, addr, port);
 		if (s.ack_due) SendAck(addr, port, s);
 		return;
 	}
 
 	const auto* req = reinterpret_cast<const TrilWC*>(payload);
+
+	// Diagnostic: dump every inbound OP_WearChange we see at world so we can
+	// tell what the client sends during 1-char auto-select vs post-click.
+	LogInfo("[TrilogyWorld] WearChange RX hdr1=0x{:02X} spawn_id={} wear_slot={} slot_graphic={} "
+	        "sub_op={} color=0x{:08X} flag=0x{:02X} from {}:{}",
+	        hdr1, static_cast<int>(req->spawn_id), static_cast<int>(req->wear_slot_id),
+	        static_cast<int>(req->slot_graphic), static_cast<int>(req->sub_op),
+	        static_cast<uint32_t>(req->color), static_cast<int>(req->flag), addr, port);
 
 	// SUB_ChangeChar is informational — no response expected.
 	if (req->sub_op == WS_SUB_CHANGE_CHAR) {
@@ -729,8 +775,42 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
+	// Attempt 9: attempt 8's minimum phantom successfully TRIGGERED the
+	// client's auto-poll cycle (verified in world_17392.log: 0x3521/0x3921
+	// checksums + SUB_ChangeChar + polls for slot_graphic=1 AND 2 fired
+	// automatically). BUT weapons still didn't render, because the client
+	// applies WearChange responses to the DISPLAYED CHAR regardless of
+	// which slot_graphic was polled — multiple responses overwrite in order.
+	// Sequence in attempt 8: response (7,model=2) for real → weapon on,
+	// then response (7,model=0) for empty phantom → weapon cleared → flicker.
+	//
+	// Attempt 9: keep the invisible minimum phantom (name=<none>, level/
+	// class/race set) BUT mirror the weapon-model cache to slot 1 so
+	// HandleWearChange returns the SAME model for both slot_graphic=1 and
+	// slot_graphic=2 polls. Both responses paint the same weapon on the
+	// displayed char → no overwrite-clear → weapon stays rendered.
+	if (slot == 1) {
+		LogInfo("[TrilogyWorld] SendCharSelect | attempt9 invisible phantom + mirrored "
+		        "weapon cache (slot1_wpn=slot0_wpn) to {}:{}", addr, port);
+		cs.level[1]  = 1;
+		cs.class_[1] = 1;
+		cs.race[1]   = 1;
+		cs.gender[1] = 0;
+		cs.face[1]   = 0;
+		// Mirror the weapon-model cache so poll responses for phantom slot
+		// return the same model as the real char — avoids overwrite-clear.
+		s.cs_weapon_model[1][0] = s.cs_weapon_model[0][0];
+		s.cs_weapon_model[1][1] = s.cs_weapon_model[0][1];
+	}
+
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
+
+	// Stash roster count for the OP_GuildsList-timed push (attempt 5 backup).
+	s.cs_char_count         = static_cast<uint8_t>(slot);
+	s.cs_wpn_pushed_this_cs = false;
+	LogInfo("[TrilogyWorld] SendCharSelect | cs_char_count=[{}] to {}:{}",
+	        s.cs_char_count, addr, port);
 }
 
 // ============================================================
