@@ -799,15 +799,20 @@ uint32 Strings::TimeToSeconds(std::string time_string)
 
 bool Strings::ToBool(const std::string& bool_string)
 {
-	if (
-		Strings::Contains(bool_string, "true") ||
-		Strings::Contains(bool_string, "y") ||
-		Strings::Contains(bool_string, "yes") ||
-		Strings::Contains(bool_string, "on") ||
-		Strings::Contains(bool_string, "enable") ||
-		Strings::Contains(bool_string, "enabled") ||
-		(Strings::IsNumber(bool_string) && Strings::ToInt(bool_string))
-	) {
+	// Exact (case-insensitive) match against the accepted truthy tokens.
+	// The previous implementation used substring Contains(), which produced
+	// false positives — most notably Contains("off", "on") == true, causing
+	// commands like "#invul off" and "#set frozen off" to enable rather than
+	// disable the flag.  Semantics mirror the legacy atobool() in
+	// strings_legacy.cpp; see also atoboolTest::OffTest which pins the
+	// intended contract.
+	const std::string s = Strings::ToLower(bool_string);
+	if (s == "true" || s == "yes" || s == "y" ||
+	    s == "on"   || s == "enable" || s == "enabled") {
+		return true;
+	}
+
+	if (Strings::IsNumber(s) && Strings::ToInt(s)) {
 		return true;
 	}
 
