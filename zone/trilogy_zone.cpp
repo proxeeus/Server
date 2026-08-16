@@ -9298,14 +9298,40 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			                    ? s.trilogy_client->GetRecentMovementAnim(
 			                          static_cast<uint16_t>(npc->GetID()), now_ms)
 			                    : static_cast<int8_t>(0);
+			// Speed selection for both anim byte and wire velocity delta.
+			// Priority: fleeing/feared → GetFearSpeed() (HP-ratio scaled at
+			// mob.cpp:929-938: 1/3 walk at <5% HP, 1/2 walk at <15%,
+			// walk+1 at <25%, 82% at <50%, full fearspeed >=50%).  Engaged
+			// but not feared → runspeed.  Idle → walkspeed.
+			//
+			// IsFeared() at mob.h:1221 = (spellbonuses.IsFeared || flee_mode),
+			// so this covers both fear-spell victims and combat low-HP fleers.
+			//
+			// Prior code used IsEngaged()?run:walk unconditionally, which
+			// wire-encoded fleeing mobs at full runspeed (~50) even though the
+			// server was moving them at ~8-14 u/s.  v29c client extrapolated
+			// position ahead using the fake-fast delta → visible mob drifted
+			// ~5× further along the flee path than the server actually was →
+			// "can see but can't hit" until the next MoveToCommand 5 s refresh
+			// (mob_movement_manager.cpp:184-194), HP-bucket speed transition
+			// (mob.cpp:929-938 crossings), or OP_ClientTarget JIT drift-refresh
+			// (trilogy_zone.cpp:2020-2069) snapped the client back to real pos,
+			// producing the "sudden fast burst, briefly hittable, resume slow-
+			// but-unhittable" loop.  Regression from PR#24 which removed the
+			// moving-mob early-exit from SendMobHeartbeat.
+			auto pick_speed = [&](Mob* n) -> int {
+				if (n->IsFeared())  return n->GetFearSpeed();
+				if (n->IsEngaged()) return n->GetRunspeed();
+				return n->GetWalkspeed();
+			};
+
 			int eqemu_speed_for_delta = 0;
 			if (cached != 0) {
 				upd->anim_type = cached;
-				// Heuristic-derived speed for the velocity delta (cached anim
-				// byte is wire-encoded and not directly reversible to int).
-				eqemu_speed_for_delta = npc->IsEngaged()
-				                            ? npc->GetRunspeed()
-				                            : npc->GetWalkspeed();
+				// Cached anim byte is wire-encoded and not directly reversible;
+				// re-derive server-side speed for the delta so wire velocity
+				// matches actual server motion (see pick_speed comment above).
+				eqemu_speed_for_delta = pick_speed(npc);
 			} else if (npc->turning) {
 				// RotateToCommand sets SetMoving(true) + turning=true and sends
 				// MovementManager OP_ClientUpdate with animation=0 (rotation in
@@ -9318,9 +9344,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				upd->anim_type = 0;
 				// turning-in-place → no position translation, so delta stays 0.
 			} else {
-				const int eqemu_speed = npc->IsEngaged()
-				                            ? npc->GetRunspeed()
-				                            : npc->GetWalkspeed();
+				const int eqemu_speed = pick_speed(npc);
 				upd->anim_type        = EncodeTrilogyAnim(npc, eqemu_speed);
 				eqemu_speed_for_delta = eqemu_speed;
 			}
