@@ -1215,11 +1215,14 @@ bool Mob::CombatRange(Mob* other, float fixed_size_mod, bool aeRampage, ExtraAtt
 		//through a terrain seam, dropping it far below the attacker with LoS
 		//broken.  That trips this guard on a target the group was legitimately
 		//fighting one tick earlier, silently stalling autoattack + bot casts
-		//until the mob leashes back.  flee_mode is only set from active-combat
-		//paths (CheckFlee on damage, SE_Fear application), so exempting it
-		//doesn't open a new through-wall vector.
+		//until the mob leashes back.  Use `currently_fleeing` (set from all
+		//active-combat paths — CheckFlee on damage AND SE_Fear application)
+		//rather than IsFleeing() which only returns `flee_mode` (never set by
+		//spell-fear, so the earlier IsFleeing() exempt didn't cover spell-
+		//feared mobs and they were silently unhittable on any vertical
+		//terrain).  Matches the sibling 3x hitbox exempt above at line 1138.
 		if (flymode != GravityBehavior::Flying && _zDist > 500 && !CheckLastLosState()
-		    && !other->IsFleeing()) {
+		    && !other->currently_fleeing) {
 			return false;
 		}
 		return true;
