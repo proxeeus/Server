@@ -350,6 +350,18 @@ public:
 	// DB-authoritative (mirrors FindFreeTrilogyInvSlot in trilogy_zone.cpp).
 	int PickSummonTargetSlot() const;
 
+	// GM #summonitem escape hatch — purge any DB rows at cursor slots (33 /
+	// 8000-8010) matching item_id, plus the m_inv cursor entry if it matches.
+	// Trade cancel/close doesn't always fire on v29c (client sometimes closes
+	// the trade window without sending OP_CancelTrade), leaving items staged
+	// from cursor stranded in DB while the client cursor is visually empty.
+	// The next `#si <same_id>` then hits the lore check on the orphan and
+	// refuses forever.  A GM re-summoning the same item is asking for a fresh
+	// copy — nuke any stale cursor rows so PickSummonTargetSlot + the base
+	// SummonItem CheckLoreConflict see a clean state.  No-op if nothing
+	// matches.  Returns number of DB rows deleted (for logging).
+	int PurgeStaleCursorRowsForItem(uint32 item_id);
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;

@@ -104,7 +104,14 @@ void command_summonitem(Client *c, const Seperator *sep)
 	// item forever.  Land the item in a visible inventory slot instead.
 	uint16 to_slot = EQ::invslot::slotCursor;
 	if (c->IsTrilogyClient()) {
-		const int picked = static_cast<TrilogyClient*>(c)->PickSummonTargetSlot();
+		TrilogyClient* tc = static_cast<TrilogyClient*>(c);
+		// Escape hatch: trade closes on v29c don't always fire OP_CancelTrade,
+		// which can leave the previous #si of this same item stranded in DB
+		// at slot 33 / 8000-8010 while the client cursor is visually empty.
+		// Purge any such orphans so PickSummonTargetSlot + CheckLoreConflict
+		// see the same "empty cursor" state the GM does.
+		tc->PurgeStaleCursorRowsForItem(item_id);
+		const int picked = tc->PickSummonTargetSlot();
 		if (picked < 0) {
 			c->Message(
 				Chat::Red,
