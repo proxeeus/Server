@@ -220,6 +220,59 @@ bool TrilogyClient::CheckLoreConflict(const EQ::ItemData* item)
 }
 
 // ============================================================
+// PickSummonTargetSlot — pick a visible destination for #summonitem so
+// items never land in the invisible cursor queue (DB 8000-8010) that v29c
+// can't render.  See trilogy_client.h for the return-value contract.
+//
+// Kept parallel to FindFreeTrilogyInvSlot in trilogy_zone.cpp (shop-buy
+// path) — same layout knowledge (general = DB 23-30, bag content base =
+// 251 + (general-23) * 10), so if that helper changes, mirror it here.
+// ============================================================
+int TrilogyClient::PickSummonTargetSlot() const
+{
+	bool cursor_busy   = false;
+	bool occ_gen[31]   = {}; // DB 23..30 occupied
+	int  bagslots[31]  = {}; // container capacity at general DB 23..30 (0 = not a container)
+	bool occ_cont[331] = {}; // bag-content DB 251..330 occupied
+
+	auto r = database.QueryDatabase(fmt::format(
+	    "SELECT i.`slotid`, it.`itemclass`, it.`bagslots` FROM `inventory` i "
+	    "LEFT JOIN `items` it ON i.`itemid` = it.`id` "
+	    "WHERE i.`charid`={} AND (i.`slotid`=33 OR i.`slotid` BETWEEN 23 AND 30 "
+	    "OR i.`slotid` BETWEEN 251 AND 330)",
+	    CharacterID()));
+	if (r.Success())
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			const int sl        = Strings::ToInt(row[0]);
+			const int itemclass = row[1] ? Strings::ToInt(row[1]) : 0;
+			const int bs        = row[2] ? Strings::ToInt(row[2]) : 0;
+			if (sl == EQ::invslot::slotCursor) {
+				cursor_busy = true;
+			} else if (sl >= 23 && sl <= 30) {
+				occ_gen[sl] = true;
+				if (itemclass == 1 && bs > 0) bagslots[sl] = bs;
+			} else if (sl >= 251 && sl <= 330) {
+				occ_cont[sl] = true;
+			}
+		}
+
+	if (!cursor_busy) return EQ::invslot::slotCursor;
+
+	for (int sl = 23; sl <= 30; ++sl)
+		if (!occ_gen[sl]) return sl;
+
+	for (int G = 23; G <= 30; ++G) {
+		if (bagslots[G] <= 0) continue;
+		const int base = 251 + (G - 23) * 10;
+		const int n    = bagslots[G] > 10 ? 10 : bagslots[G];
+		for (int j = 0; j < n; ++j)
+			if (base + j <= 330 && !occ_cont[base + j]) return base + j;
+	}
+
+	return -1;
+}
+
+// ============================================================
 // CalcManaRegen — classic 1999 EQ formula (override)
 //
 // EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:

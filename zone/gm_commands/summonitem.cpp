@@ -1,4 +1,5 @@
 #include "../client.h"
+#include "../trilogy_client.h"
 
 void command_summonitem(Client *c, const Seperator *sep)
 {
@@ -97,6 +98,23 @@ void command_summonitem(Client *c, const Seperator *sep)
 		augment_six = Strings::ToUnsignedInt(sep->arg[8]);
 	}
 
+	// v29c only renders slot 33 as the cursor; the base SummonItem's cursor
+	// path stacks overflow into the invisible queue at DB 8000-8010, which
+	// then makes CheckLoreConflict refuse future summons of the same lore
+	// item forever.  Land the item in a visible inventory slot instead.
+	uint16 to_slot = EQ::invslot::slotCursor;
+	if (c->IsTrilogyClient()) {
+		const int picked = static_cast<TrilogyClient*>(c)->PickSummonTargetSlot();
+		if (picked < 0) {
+			c->Message(
+				Chat::Red,
+				"Your visible inventory is full — free a slot before summoning more items."
+			);
+			return;
+		}
+		to_slot = static_cast<uint16>(picked);
+	}
+
 	c->SummonItem(
 		item_id,
 		charges,
@@ -105,7 +123,9 @@ void command_summonitem(Client *c, const Seperator *sep)
 		augment_three,
 		augment_four,
 		augment_five,
-		augment_six
+		augment_six,
+		false,
+		to_slot
 	);
 
 	const auto *new_item = database.CreateItem(

@@ -335,6 +335,21 @@ public:
 	int  MaterializeCursorForBotTrade();
 	void FinalizeCursorAfterBotTrade(int src_db);
 
+	// ---- GM #summonitem target-slot picker ----
+	// v29c only renders one cursor item (slot 33); pushing to the queue at
+	// DB 8000-8010 makes items invisible and then CheckLoreConflict refuses
+	// future summons of the same lore item forever (server thinks the player
+	// owns it — because they do — but the client can't see it).
+	//
+	// Returns a DB slot the base SummonItem can hand `to_slot`:
+	//   • EQ::invslot::slotCursor (33) if the visible cursor is empty.
+	//   • First free general slot (DB 23-30) if cursor is busy.
+	//   • First free bag-content slot (DB 251-330 inside an equipped container)
+	//     if general is also full.
+	//   • -1 if the visible inventory is completely full; caller must refuse.
+	// DB-authoritative (mirrors FindFreeTrilogyInvSlot in trilogy_zone.cpp).
+	int PickSummonTargetSlot() const;
+
 private:
 	TrilogyZoneServer* m_tzs;
 	uint64_t           m_session_key;
