@@ -5553,6 +5553,13 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 	// ── NPC trade ────────────────────────────────────────────────────────────
 	if (other->IsNPC()) {
 		// Clear any leftover staged state from a previous (aborted) trade.
+		// v29c doesn't always send OP_CancelTrade on window-close, so items
+		// staged from cursor last time may still be orphaned in the DB —
+		// clean those up before we drop the metadata (same reason
+		// HandleTradeCancel does it).  Partial-pickup cursors also get their
+		// refund here so we don't strand items across a spam-click reopen.
+		RefundPartialCursorTradeItems(s);
+		CleanupOrphanedCursorTradeItems(s);
 		for (auto& st : s.trade_items) st = Session::TradeStageItem{};
 		s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
 		s.trade_npc_id = other_id;
@@ -6418,6 +6425,42 @@ void TrilogyZoneServer::RefundPartialCursorPcTradeItems(Session& s)
 	ResyncMInvForRefund(s, resync);
 }
 
+void TrilogyZoneServer::CleanupOrphanedCursorTradeItems(Session& s)
+{
+	if (!s.trilogy_client) return;
+
+	for (int i = 0; i < 4; ++i) {
+		const auto& st = s.trade_items[i];
+		if (st.item_id == 0) continue;
+		// Partial-pickup materialized cursors are handled by
+		// RefundPartialCursorTradeItems — skip so we don't double-touch.
+		if (st.original_source_db_slot >= 0) continue;
+
+		const bool is_cursor_row = (st.from_db_slot == 33) ||
+		                           (st.from_db_slot >= 8000 && st.from_db_slot <= 8010);
+		if (!is_cursor_row) continue;
+
+		// Match on itemid too so we don't accidentally nuke an unrelated row
+		// that happens to occupy the same slot after a race / desync.
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
+		    s.char_id, st.from_db_slot, st.item_id));
+
+		// Keep m_inv in sync — pop the cursor entry the base engine may hold
+		// so CheckLoreConflict / GetInv() reads don't lag the DB.  Only the
+		// EQEmu-slotCursor mirror is relevant here; the 8000-8010 queue lives
+		// only in DB, not m_inv.
+		if (st.from_db_slot == 33) {
+			auto& inv = s.trilogy_client->GetInv();
+			if (auto* old = inv.PopItem(EQ::invslot::slotCursor)) safe_delete(old);
+		}
+
+		LogInfo("[TrilogyZone] TradeOrphanCleanup char={} slot_idx={} item={} "
+		        "from_db={} — client already cleared cursor visually, DELETE row",
+		        s.char_id, i, st.item_id, st.from_db_slot);
+	}
+}
+
 void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Session& s)
 {
 	if (!s.trilogy_client) return;
@@ -6435,6 +6478,10 @@ void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Ses
 	// client's local return-to-source behaviour.  Must run BEFORE clearing
 	// trade_items (the refund needs the staged from_db_slot + origin).
 	RefundPartialCursorTradeItems(s);
+	// Delete any full-item cursor stages the client never gave (client visually
+	// cleared cursor on stage-in and v29c does NOT auto-restore on close).
+	// Also runs before trade_items clear because it reads from_db_slot.
+	CleanupOrphanedCursorTradeItems(s);
 
 	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
 	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;

@@ -273,6 +273,44 @@ int TrilogyClient::PickSummonTargetSlot() const
 }
 
 // ============================================================
+// PurgeStaleCursorRowsForItem — see trilogy_client.h for the contract.
+//
+// Trade staging on Trilogy is metadata-only (HandleTradeMoveItem doesn't
+// touch DB or m_inv), so a trade closed WITHOUT OP_CancelTrade leaves the
+// cursor row stranded in DB.  The client-side cursor is empty; the server's
+// CheckLoreConflict sees the row and blocks every future summon of that id.
+// A GM using `#si <same_id>` is asking for a fresh copy — deleting the
+// stale rows first is the intended semantic.  Also pops the m_inv cursor
+// stack of any entries with this item_id to keep in-memory consistent.
+// ============================================================
+int TrilogyClient::PurgeStaleCursorRowsForItem(uint32 item_id)
+{
+	if (item_id == 0) return 0;
+
+	auto r = database.QueryDatabase(fmt::format(
+	    "DELETE FROM `inventory` WHERE `charid`={} AND `itemid`={} "
+	    "AND (`slotid`=33 OR (`slotid` BETWEEN 8000 AND 8010))",
+	    CharacterID(), item_id));
+	const int deleted = r.Success() ? static_cast<int>(r.RowsAffected()) : 0;
+
+	// Drain m_inv cursor of any entries whose item id matches — the stack
+	// order isn't preserved by PopItem-and-repush, but we don't care: the
+	// caller (command_summonitem) is about to create a fresh instance.
+	auto& inv = GetInv();
+	while (auto* top = inv.GetItem(EQ::invslot::slotCursor)) {
+		if (!top->GetItem() || top->GetItem()->ID != item_id) break;
+		if (auto* popped = inv.PopItem(EQ::invslot::slotCursor)) safe_delete(popped);
+	}
+
+	if (deleted > 0) {
+		LogInfo("[TrilogyClient] PurgeStaleCursorRowsForItem char={} item={} "
+		        "deleted {} orphan cursor row(s)",
+		        CharacterID(), item_id, deleted);
+	}
+	return deleted;
+}
+
+// ============================================================
 // CalcManaRegen — classic 1999 EQ formula (override)
 //
 // EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:

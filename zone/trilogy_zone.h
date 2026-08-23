@@ -578,6 +578,16 @@ private:
 	// HandleTradeCancel + the non-quest branch of HandleTradeGive so the server's
 	// DB stays in sync with the client's local-return behaviour.
 	void RefundPartialCursorTradeItems(Session& s);
+	// Clean up full-item cursor stages that were never given (trade closed with
+	// items still staged from cursor).  The v29c client visually clears its
+	// cursor when the player drags cursor → trade slot; if the trade ends
+	// without a Give, the client cursor stays empty but the DB row at slot 33 /
+	// 8000-8010 was never touched (staging is metadata-only).  DELETE the
+	// orphan row so subsequent CheckLoreConflict / #si / cursor pickups match
+	// what the client actually shows.  Partial-pickup materialized cursors
+	// (original_source_db_slot >= 0) are handled by RefundPartialCursorTradeItems
+	// and skipped here to avoid double-deletion.
+	void CleanupOrphanedCursorTradeItems(Session& s);
 	// PC-trade equivalent — same per-row merge logic against pc_trade_main.
 	// Called from PcTradeAbortBoth.
 	void RefundPartialCursorPcTradeItems(Session& s);
