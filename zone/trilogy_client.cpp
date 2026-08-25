@@ -3396,8 +3396,22 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	// needs different unknown2[1] values depending on the outcome (0x04
 	// for landed, 0x00 for resisted).  We defer the send until the
 	// outcome is known (see FlushPendingCastOn).
+	//
+	// Silently overwrite any prior pending — do NOT emit landed=false here.
+	// spells.cpp sends TWO OP_Actions per successful cast (initial +
+	// effect_flag=0x04 resend at line 4667), and recourse spells inject a
+	// third pair before the primary's resend.  Flushing prior pending as
+	// landed=false on every new stash produced spurious 4620 packets with
+	// unknown2[1]=0x00, which the v29c client interpreted as "resisted —
+	// no icon added on target" even when the spell truly landed.  The
+	// definitive outcome is emitted by the flush points that DO know it:
+	// HandleBuff / HandleDamage / HandleManaChange (landed=true) or the
+	// resist string_id handler (landed=false).  A dropped pending whose
+	// outcome never arrives (e.g., a check failed after action_packet was
+	// queued) correctly results in "animation only, no icon" on the wire.
 	if (emu->type == 231) {
-		FlushPendingCastOn(false);
+		m_pending_caston_active = false;
+		memset(&m_pending_caston_data, 0, sizeof(m_pending_caston_data));
 		m_last_caston_was_self_resist = false;
 
 		Trilogy::structs::CastOn_Struct caston{};
