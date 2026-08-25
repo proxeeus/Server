@@ -531,6 +531,16 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	database.LoadCharacterData(char_id, &m_pp, &m_epp);
 	database.LoadCharacterSkills(char_id, &m_pp);
 
+	// character_bind lives in its own table.  The normal zone-entry path loads it at
+	// client_packet.cpp:1313; Trilogy bypasses that path entirely.  Without this,
+	// m_pp.binds[] stays zero-initialized for the whole session and every death /
+	// gate / bind-affinity return sends the player to (0,0,0) — ProcessMovePC's
+	// `if (zoneID == 0) zoneID = GetZoneID()` fallback makes it the current zone,
+	// so the v29c client gets an intra-zone teleport to (0,0,0.1), falls through
+	// the world, and re-syncs by sending OP_ZoneChange for whatever fall-through
+	// zone-line it trips into (e.g. qeynos → qcat 0,0,0).
+	database.LoadCharacterBindPoint(char_id, &m_pp);
+
 	// LoadCharacterData reads the character_data table only — currency lives in the
 	// separate character_currency table and must be loaded explicitly.  Without this,
 	// m_pp.platinum/gold/silver/copper stay 0 for the whole session, so every Save()
