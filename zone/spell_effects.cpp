@@ -161,6 +161,18 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 			EQApplicationPacket *outapp = MakeBuffsPacket(false);
 			CastToClient()->FastQueuePacket(&outapp);
 		}
+		// v29c (Trilogy) requires an OP_Buff on initial cast to populate the
+		// character-sheet buff bar.  Titanium and later derive that from
+		// OP_Action.effect_flag=4, but v29c's OP_CastOn (0x4620) only updates
+		// the target-window icon — not the buff bar.  Without this, self-buffs
+		// are applied server-side but never appear on the caster's UI and the
+		// client can't recompute buff stat bonuses (STR/AC/etc. display never
+		// moves).  Routed through Client::SendBuffDurationPacket → OP_Buff →
+		// TrilogyClient::HandleBuff → wire 0x3221 with buff bar info.
+		else if (IsClient() && CastToClient()->ClientVersion() == EQ::versions::ClientVersion::Trilogy)
+		{
+			CastToClient()->SendBuffDurationPacket(buffs[buffslot], buffslot);
+		}
 	}
 
 	if (IsClient()) {
