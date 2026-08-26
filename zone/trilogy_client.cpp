@@ -3352,6 +3352,38 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 // ============================================================
 
 // ============================================================
+// FindParentSpellForRecourse — reverse-recourse lookup for v29c.
+//
+// Modern EQEmu splits some classic-era spells into primary + recourse:
+// Siphon Strength (343) applies -5 STR on target, then fires spell
+// 2463 ("Siphon Strength Recourse") on the caster for the +5 STR
+// self-buff.  Classic v29c's local spells file predates this split —
+// the client only knows spell 343, whose classic data carried BOTH
+// effects in its slots.  Sending recourse spell_ids on the wire makes
+// the client fall through to the item icon table (user reported seeing
+// "Cloth Choker" on the buff bar), and the client can't compute buff
+// stat bonuses because the "spell" doesn't exist in its file.
+//
+// Used by HandleAction (CastOn 0x4620 with unknown2[1]=0x04 — the
+// packet that ADDS the icon) and HandleBuff (OP_Buff 0x3221 — duration
+// updates for existing buffs) to translate self-target recourse
+// spell_ids back to the parent's ID so the classic client sees the
+// spell it knows.
+// ============================================================
+
+static uint16 FindParentSpellForRecourse(uint16 recourse_spell_id)
+{
+	if (recourse_spell_id == 0 || recourse_spell_id >= SPDAT_RECORDS)
+		return 0;
+	for (int i = 1; i < SPDAT_RECORDS; ++i) {
+		if (i == recourse_spell_id) continue;
+		if (spells[i].recourse_link == recourse_spell_id)
+			return static_cast<uint16>(i);
+	}
+	return 0;
+}
+
+// ============================================================
 // FlushPendingCastOn — send a deferred OP_CastOn (0x4620).
 //
 // EQEmu fires OP_Action BEFORE the resist check; EQClassic fires
@@ -3396,9 +3428,39 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	// needs different unknown2[1] values depending on the outcome (0x04
 	// for landed, 0x00 for resisted).  We defer the send until the
 	// outcome is known (see FlushPendingCastOn).
+	//
+	// Silently overwrite any prior pending — do NOT emit landed=false here.
+	// spells.cpp sends TWO OP_Actions per successful cast (initial +
+	// effect_flag=0x04 resend at line 4667), and recourse spells inject a
+	// third pair before the primary's resend.  Flushing prior pending as
+	// landed=false on every new stash produced spurious 4620 packets with
+	// unknown2[1]=0x00, which the v29c client interpreted as "resisted —
+	// no icon added on target" even when the spell truly landed.  The
+	// definitive outcome is emitted by the flush points that DO know it:
+	// HandleBuff / HandleDamage / HandleManaChange (landed=true) or the
+	// resist string_id handler (landed=false).  A dropped pending whose
+	// outcome never arrives (e.g., a check failed after action_packet was
+	// queued) correctly results in "animation only, no icon" on the wire.
 	if (emu->type == 231) {
-		FlushPendingCastOn(false);
+		m_pending_caston_active = false;
+		memset(&m_pending_caston_data, 0, sizeof(m_pending_caston_data));
 		m_last_caston_was_self_resist = false;
+
+		// Recourse translation for self-cast buff icons.  See
+		// FindParentSpellForRecourse.  The CastOn packet with unknown2[1]=0x04
+		// is what tells the v29c client to ADD the icon to the buff bar; if
+		// spell_id is a recourse spell the client doesn't know (it predates
+		// modern EQEmu's primary/recourse split), the icon-add silently fails
+		// and buff stat bonuses can't be computed.  For self-cast recourse
+		// spells (source == target), send the parent spell_id so the client
+		// sees the classic spell (e.g. Siphon Strength 343 instead of Siphon
+		// Strength Recourse 2463).
+		uint16 wire_spell_id = static_cast<uint16>(emu->spell);
+		if (emu->source == emu->target) {
+			uint16 parent = FindParentSpellForRecourse(wire_spell_id);
+			if (parent != 0)
+				wire_spell_id = parent;
+		}
 
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
@@ -3409,7 +3471,7 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		caston.heading          = emu->hit_heading * 2.0f;
 		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
 		caston.action           = 231;
-		caston.spell_id         = static_cast<int16_t>(emu->spell);
+		caston.spell_id         = static_cast<int16_t>(wire_spell_id);
 
 		m_pending_caston_data   = caston;
 		m_pending_caston_active = true;
@@ -3750,10 +3812,21 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 	if (emu->bufffade == 0)
 		FlushPendingCastOn(true);
 
+	uint16 wire_spell_id = static_cast<uint16>(emu->buff.spellid);
+
+	// Recourse translation (self-buffs only).  See FindParentSpellForRecourse.
+	// Restrict to same-entity packets — a debuff landing on someone else
+	// keeps its own spell_id.
+	if (emu->entityid == GetID()) {
+		uint16 parent = FindParentSpellForRecourse(wire_spell_id);
+		if (parent != 0)
+			wire_spell_id = parent;
+	}
+
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
 	out.target_id = TranslateId(emu->entityid);
-	out.spell_id  = static_cast<uint16_t>(emu->buff.spellid);
+	out.spell_id  = wire_spell_id;
 	out.buff_slot = emu->slotid;
 
 	m_tzs->SendToSession(m_session_key, 0x3221,
