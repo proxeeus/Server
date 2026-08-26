@@ -3754,6 +3754,37 @@ void TrilogyClient::CheckSpellGemCooldowns()
 // the spell ID; Trilogy Buff_Struct is a flat 20-byte layout.
 // ============================================================
 
+// Reverse-recourse translation for v29c buff bar.
+//
+// Modern EQEmu splits some classic-era spells into a primary + a
+// separate "recourse" spell to model the caster-side effect (e.g.
+// Siphon Strength 343 fires recourse 2463 which grants the +5 STR on
+// the caster).  The v29c client's local spells file predates this
+// split — it only knows about the original spell (343) which in
+// classic data carried BOTH the target debuff and the caster buff in
+// its effect slots.  Sending OP_Buff with spell_id=2463 makes the
+// client render a garbage icon (its spells lookup misses and it
+// falls into the item icon table — user reports seeing "Cloth Choker"
+// on the buff bar), and worse: the client can't compute buff stat
+// bonuses because the "spell" doesn't exist in its file, so the
+// caster's displayed STR never moves.
+//
+// Fix: for self-target buff packets, if the spell is the recourse of
+// another spell, send that parent spell_id on the wire.  v29c then
+// sees the classic spell (343 = "Siphon Strength") in the buff bar
+// and can compute the +5 STR itself from its own effect data.
+static uint16 FindParentSpellForRecourse(uint16 recourse_spell_id)
+{
+	if (recourse_spell_id == 0 || recourse_spell_id >= SPDAT_RECORDS)
+		return 0;
+	for (int i = 1; i < SPDAT_RECORDS; ++i) {
+		if (i == recourse_spell_id) continue;
+		if (spells[i].recourse_link == recourse_spell_id)
+			return static_cast<uint16>(i);
+	}
+	return 0;
+}
+
 void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::SpellBuffPacket_Struct)) return;
@@ -3764,10 +3795,21 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 	if (emu->bufffade == 0)
 		FlushPendingCastOn(true);
 
+	uint16 wire_spell_id = static_cast<uint16>(emu->buff.spellid);
+
+	// Recourse translation (self-buffs only).  See FindParentSpellForRecourse.
+	// Restrict to same-entity packets — a debuff landing on someone else
+	// keeps its own spell_id.
+	if (emu->entityid == GetID()) {
+		uint16 parent = FindParentSpellForRecourse(wire_spell_id);
+		if (parent != 0)
+			wire_spell_id = parent;
+	}
+
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
 	out.target_id = TranslateId(emu->entityid);
-	out.spell_id  = static_cast<uint16_t>(emu->buff.spellid);
+	out.spell_id  = wire_spell_id;
 	out.buff_slot = emu->slotid;
 
 	m_tzs->SendToSession(m_session_key, 0x3221,
