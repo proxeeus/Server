@@ -4647,8 +4647,17 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 		eqFilterType filter;
 		Mob* skip = attacker;
 		Mob* owner = attacker ? attacker->GetOwner() : nullptr;
-		if (attacker && owner && !attacker->IsBot()) {
-			//attacker is a pet, let pet owners see their pet's damage
+		if (attacker && owner) {
+			// attacker is a pet or bot — let owners see their pet/bot's damage
+			// via the OP_Damage broadcast below.  Bots were previously excluded
+			// here (via !attacker->IsBot()) and fell through to a text-only
+			// HIT_NON_MELEE broadcast, so observers (notably the bot's owner)
+			// never received OP_Damage.  On Trilogy that broke the deferred
+			// OP_CastOn(0x4620) flush — no OP_Damage arrival meant no
+			// FlushPendingCastOn(true), so bot offensive spell landings showed
+			// no particles, no debuff icon, and no landing text on the wire.
+			// EQClassic sends OP_CastOn unconditionally to observers; here we
+			// achieve the equivalent by ensuring OP_Damage reaches them.
 			if (owner->IsClient()) {
 				if (FromDamageShield && damage > 0) {
 					//special crap for spell damage, looks hackish to me
