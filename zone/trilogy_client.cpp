@@ -3352,6 +3352,38 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 // ============================================================
 
 // ============================================================
+// FindParentSpellForRecourse — reverse-recourse lookup for v29c.
+//
+// Modern EQEmu splits some classic-era spells into primary + recourse:
+// Siphon Strength (343) applies -5 STR on target, then fires spell
+// 2463 ("Siphon Strength Recourse") on the caster for the +5 STR
+// self-buff.  Classic v29c's local spells file predates this split —
+// the client only knows spell 343, whose classic data carried BOTH
+// effects in its slots.  Sending recourse spell_ids on the wire makes
+// the client fall through to the item icon table (user reported seeing
+// "Cloth Choker" on the buff bar), and the client can't compute buff
+// stat bonuses because the "spell" doesn't exist in its file.
+//
+// Used by HandleAction (CastOn 0x4620 with unknown2[1]=0x04 — the
+// packet that ADDS the icon) and HandleBuff (OP_Buff 0x3221 — duration
+// updates for existing buffs) to translate self-target recourse
+// spell_ids back to the parent's ID so the classic client sees the
+// spell it knows.
+// ============================================================
+
+static uint16 FindParentSpellForRecourse(uint16 recourse_spell_id)
+{
+	if (recourse_spell_id == 0 || recourse_spell_id >= SPDAT_RECORDS)
+		return 0;
+	for (int i = 1; i < SPDAT_RECORDS; ++i) {
+		if (i == recourse_spell_id) continue;
+		if (spells[i].recourse_link == recourse_spell_id)
+			return static_cast<uint16>(i);
+	}
+	return 0;
+}
+
+// ============================================================
 // FlushPendingCastOn — send a deferred OP_CastOn (0x4620).
 //
 // EQEmu fires OP_Action BEFORE the resist check; EQClassic fires
@@ -3414,6 +3446,22 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		memset(&m_pending_caston_data, 0, sizeof(m_pending_caston_data));
 		m_last_caston_was_self_resist = false;
 
+		// Recourse translation for self-cast buff icons.  See
+		// FindParentSpellForRecourse.  The CastOn packet with unknown2[1]=0x04
+		// is what tells the v29c client to ADD the icon to the buff bar; if
+		// spell_id is a recourse spell the client doesn't know (it predates
+		// modern EQEmu's primary/recourse split), the icon-add silently fails
+		// and buff stat bonuses can't be computed.  For self-cast recourse
+		// spells (source == target), send the parent spell_id so the client
+		// sees the classic spell (e.g. Siphon Strength 343 instead of Siphon
+		// Strength Recourse 2463).
+		uint16 wire_spell_id = static_cast<uint16>(emu->spell);
+		if (emu->source == emu->target) {
+			uint16 parent = FindParentSpellForRecourse(wire_spell_id);
+			if (parent != 0)
+				wire_spell_id = parent;
+		}
+
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
 		caston.target_id        = static_cast<int32_t>(TranslateId(emu->target));
@@ -3423,7 +3471,7 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		caston.heading          = emu->hit_heading * 2.0f;
 		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
 		caston.action           = 231;
-		caston.spell_id         = static_cast<int16_t>(emu->spell);
+		caston.spell_id         = static_cast<int16_t>(wire_spell_id);
 
 		m_pending_caston_data   = caston;
 		m_pending_caston_active = true;
@@ -3753,37 +3801,6 @@ void TrilogyClient::CheckSpellGemCooldowns()
 // EQEmu SpellBuffPacket_Struct has a nested SpellBuff_Struct with
 // the spell ID; Trilogy Buff_Struct is a flat 20-byte layout.
 // ============================================================
-
-// Reverse-recourse translation for v29c buff bar.
-//
-// Modern EQEmu splits some classic-era spells into a primary + a
-// separate "recourse" spell to model the caster-side effect (e.g.
-// Siphon Strength 343 fires recourse 2463 which grants the +5 STR on
-// the caster).  The v29c client's local spells file predates this
-// split — it only knows about the original spell (343) which in
-// classic data carried BOTH the target debuff and the caster buff in
-// its effect slots.  Sending OP_Buff with spell_id=2463 makes the
-// client render a garbage icon (its spells lookup misses and it
-// falls into the item icon table — user reports seeing "Cloth Choker"
-// on the buff bar), and worse: the client can't compute buff stat
-// bonuses because the "spell" doesn't exist in its file, so the
-// caster's displayed STR never moves.
-//
-// Fix: for self-target buff packets, if the spell is the recourse of
-// another spell, send that parent spell_id on the wire.  v29c then
-// sees the classic spell (343 = "Siphon Strength") in the buff bar
-// and can compute the +5 STR itself from its own effect data.
-static uint16 FindParentSpellForRecourse(uint16 recourse_spell_id)
-{
-	if (recourse_spell_id == 0 || recourse_spell_id >= SPDAT_RECORDS)
-		return 0;
-	for (int i = 1; i < SPDAT_RECORDS; ++i) {
-		if (i == recourse_spell_id) continue;
-		if (spells[i].recourse_link == recourse_spell_id)
-			return static_cast<uint16>(i);
-	}
-	return 0;
-}
 
 void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 {
