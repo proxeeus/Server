@@ -326,6 +326,23 @@ public:
 	// Updates the tracked state as a side effect when returning false.
 	bool IsDuplicateLootItem(uint32_t lootee, int16_t wire_slot);
 
+	// Retransmit dedup for client-reported environmental damage (OP_Action 0x5820,
+	// type 0xFA lava / 0xFB drowning / 0xFC falling / 0xFD trap).  Returns true if
+	// this report is an ARQ resend of the previous one — same damage type and amount
+	// inside kEnvDamageDedupWindowMs — and updates the tracked state otherwise.
+	// Unlike loot, env damage MUTATES HP on arrival, so a duplicate is not merely a
+	// no-op: it double-charges the player.  Real ticks arrive at 1 Hz (measured:
+	// drowning at exactly one per second), and ARQ resends land within 75-250 ms, so
+	// the window sits comfortably between the two.
+	bool IsDuplicateEnvDamage(uint8_t dmgtype, int32_t damage);
+
+	// Apply one client-reported environmental damage tick (OP_Action 0x5820).
+	// Enforces the zone-in grace window and the retransmit dedup, then hands off
+	// to the stock Client::Handle_OP_EnvDamage so Trilogy gets the same GM /
+	// invulnerability / fall-into-water / EnvironmentDamageMulipliter /
+	// EVENT_ENVIRONMENTAL_DAMAGE / Death() behaviour as every other client.
+	void HandleEnvDamage(uint8_t dmgtype, int32_t damage);
+
 	// ---- Bot ^invgive cursor materialization ----
 	// Bridge methods that delegate to TrilogyZoneServer.  See trilogy_zone.h
 	// for behaviour.  Called from bot_commands/inventory.cpp around
@@ -501,6 +518,20 @@ private:
 	uint32_t m_last_loot_lootee    = 0;
 	int16_t  m_last_loot_wire_slot = -1;
 	uint64_t m_last_loot_ts_ms     = 0;
+
+	// Environmental-damage retransmit dedup — see IsDuplicateEnvDamage.
+	static constexpr uint32_t kEnvDamageDedupWindowMs = 500;
+	uint8_t  m_last_env_dmgtype = 0;
+	int32_t  m_last_env_damage  = 0;
+	uint64_t m_last_env_ts_ms   = 0;
+
+	// Zone-in timestamp (steady-clock ms), for the environmental-damage grace
+	// window.  Modern EQEmu gates env damage on !ClientFinishedLoading(), which is
+	// useless here: InitTrilogyFields sets conn_state = ClientConnectFinished
+	// immediately, so a Trilogy client "finishes loading" before it has received
+	// its PlayerProfile.  See HandleEnvDamage.
+	static constexpr uint32_t kEnvDamageZoneInGraceMs = 3000;
+	uint64_t m_zonein_ms = 0;
 
 	// ---- Zoning state machine ----
 	// true from construction until the client sends its first ZN_OP_ClientUpdate

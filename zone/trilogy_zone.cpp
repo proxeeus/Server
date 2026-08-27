@@ -34,6 +34,7 @@
 #include "../common/patches/trilogy_structs.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/eq_constants.h"
+#include "../common/emu_constants.h"
 #include "../common/strings.h"
 #include "../common/item_data.h"
 #include "../common/spdat.h"
@@ -132,11 +133,27 @@ static constexpr uint16_t ZN_OP_DeleteSpawn = 0x5021;
 // OP_DeleteSpawn during camp-out (and again on zone transitions).  EQClassic
 // just calls Save() and does not ack — the client does not wait for a reply.
 static constexpr uint16_t ZN_OP_PlayerSave2 = 0x5521;
+// Sibling of ZN_OP_PlayerSave2: EQClassic dispatches BOTH 0x5421 and 0x5521 to
+// the same ProcessOP_PlayerSave (Client_Packet.cpp:157-158); Harakiri's note is
+// that the client picks one of the two "before zoning or every couple minutes".
+// We only mirror the Save() on 0x5521 (0x5421 previously fell through to the
+// UNHANDLED logger); 0x5421 is wired up so the air probe sees that sample too.
+static constexpr uint16_t ZN_OP_PlayerSave  = 0x5421;
 static constexpr uint16_t ZN_OP_ZoneChange  = 0xa320; // bidirectional: ZoneChange_Struct (68 bytes)
 
 // Combat / looting opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_Death          = 0x4a20; // client -> zone: Death_Struct (20 bytes) — client-initiated death
+// Environmental damage, client -> zone.  v29c aliases OP_Action / OP_Damage /
+// OP_EnvDamage onto the SAME opcode (EQClassic eq_opcodes.h:145 and :246), so a
+// 28-byte inbound 0x5820 is the client telling us it hurt itself: Action_Struct
+// with type = 0xFA lava / 0xFB drowning / 0xFC falling / 0xFD trap and the amount
+// in `damage`.  0x1e20 (OP_ENVDAMAGE2) is the 36-byte sibling the client sends in
+// the same tick; EQClassic relays it to everyone so observers see the hit, and
+// never treats it as damage — it carries the same type and amount, so applying
+// both would charge the player twice.
+static constexpr uint16_t ZN_OP_EnvDamage      = 0x5820; // client -> zone: Action_Struct (28 bytes)
+static constexpr uint16_t ZN_OP_EnvDamage2     = 0x1e20; // client -> zone: 36 bytes, rebroadcast only
 static constexpr uint16_t ZN_OP_AutoAttack     = 0x5121; // client -> zone: 4 bytes, [0]=0 off / 1 on
 static constexpr uint16_t ZN_OP_AutoAttack2    = 0x6021; // client -> zone: same as above (dual-wield follow-up)
 static constexpr uint16_t ZN_OP_ClientTarget   = 0x6221; // client -> zone: ClientTarget_Struct (4 bytes)
@@ -336,6 +353,12 @@ static constexpr uint8_t HDR1_ARSP     = 0x04;
 // drive the player's own animation rate). Wiring GM-speed is a follow-up.
 static constexpr float kTrilogyPlayerWalkSpeed = 0.46f;
 static constexpr float kTrilogyPlayerRunSpeed  = 0.70f;
+
+// Full breath meter, in the v29c client's own units, for PlayerProfile.air_supply
+// (struct byte 2633).  Not a guess: this is the value the client reports for itself
+// while standing on dry land, read straight out of one of its own PP uploads.  See
+// the field comment in trilogy_structs.h and [TrilogyAirProbe] for how it was pinned.
+static constexpr uint16_t kTrilogyFullAirSupply = 45;
 
 // EQEmu stores speeds as int = float × 40 (see Mob::Mob in mob.cpp:192).
 // Reverse the conversion for the Trilogy spawn wire format.
@@ -1271,6 +1294,197 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 }
 
 // ============================================================
+// [TrilogyAirProbe] — dump the CLIENT-UPLOADED PlayerProfile so we can locate
+//   the v29c "air / breath remaining" slot.
+//
+// WHY THIS EXISTS
+//   Drowning in this era is client-authoritative: the v29c client owns the
+//   breath meter and only tells us "I took 0xFB damage" via OP_Action (0x5820).
+//   Our PlayerProfile encoder has NO air field mapped, so SendPlayerProfile
+//   ships 0x00 in whatever slot the client reads its breath from — which is
+//   why a player who crosses a zone line while submerged arrives with an empty
+//   bar and drowns immediately, regardless of how much breath he had.
+//   Modern EQEmu fixes this by stamping the field at zone-entry
+//   (client_packet.cpp:1647 "Reset to max so they dont drown on zone in if its
+//   underwater"), and EQMacEmu does the same for the Mac client
+//   (mac_structs.h:1245 air_remaining @5900).  Neither EQClassic nor EQMacEmu
+//   ever located the field for the 8104-byte Trilogy PP — EQMacEmu still lists
+//   `OUT(air_remaining);` in its unresolved "Find these:" block
+//   (EQMacEmuTrilogy/common/patches/trilogy.cpp:302).  We cannot port the fix
+//   until we know the offset, hence this probe.
+//
+// HOW IT WORKS
+//   The v29c client hands us its OWN full PlayerProfile on camp / NPC-trade
+//   (0x2e20) and before zoning (0x5421 / 0x5521 — Harakiri: "Client sends this
+//   before zoning or every couple minutes", EQClassic client_process.cpp:6862).
+//   That upload is ground truth for every field the client maintains locally,
+//   air included.  We ship the unknown regions as zeros, so any NON-ZERO byte
+//   in them is client-owned state.  Take two samples and diff the NONZERO line:
+//     A) stand on dry land, breath bar full, zone (or camp)
+//     B) submerge, let the bar drain most of the way WITHOUT dying, zone
+//   The air slot is the small integer that shrank between A and B.
+//
+// PAYLOAD FRAMING
+//   0x2e20 arrives as the full 8104-byte struct.  The 0x54xx / 0x55xx saves
+//   arrive checksum-stripped at 8100 bytes — EQClassic performs the same
+//   rebase (`pBuffer - PLAYERPROFILE_CHECKSUM_LENGTH`) in ProcessOP_PlayerSave.
+//   Both are normalised into an 8104-byte view here so every printed offset is
+//   a real struct offset you can look up in trilogy_structs.h.
+//
+// This is read-only.  Nothing here writes to the DB or to m_pp; the uploaded
+// profile is never trusted (same stance as EQClassic, which keeps only
+// `drunkeness` from it).  air_supply (byte 2633) was pinned this way on
+// 2026-08-27; the probe is kept because the same two lines will crack the next
+// unknown PP field, and it only fires on a PP upload (camp / NPC-trade / the
+// client's periodic save), not per tick.
+// ============================================================
+
+namespace {
+
+struct PPUnknownRange {
+	uint16_t    off;
+	uint16_t    len;
+	const char* tag;
+};
+
+// Every declared-unknown span in Trilogy::structs::PlayerProfile_Struct.
+// The client-owned POINTER arrays (inventoryitemPointers @228,
+// bankinvitemPointers @3912) are deliberately excluded: they are heap
+// addresses that change on every sample and would bury the signal.
+constexpr PPUnknownRange kPPUnknownRanges[] = {
+	{   59,    1, "u59"   },
+	{   61,    3, "u61"   },
+	{   73,   47, "u73"   },
+	{  122,    1, "u122"  },
+	{  154,   14, "u154"  },
+	{ 2406,    2, "u2406" },
+	{ 2439,   21, "u2439" },
+	{ 2582,  162, "u2582" },  // PRIME suspect — dumped in full below
+	{ 2745,    3, "u2745" },
+	{ 2749,   15, "u2749" },
+	{ 2765,   23, "u2765" },
+	{ 2789,   23, "u2789" },
+	{ 2820,   24, "u2820" },
+	{ 3824,    4, "u3824" },
+	{ 3888,   24, "u3888" },
+	{ 3944,   12, "u3944" },
+	{ 3960,   20, "u3960" },
+	{ 4157,    1, "u4157" },
+	{ 4168,    2, "u4168" },
+	{ 4171,    2, "u4171" },
+	{ 4174,    1, "u4174" },
+	{ 4178,    2, "u4178" },
+	{ 4212,    4, "u4212" },
+	{ 4508, 3592, "u4508" },
+};
+
+// Little-endian scalar read out of the normalised PP view.  memcpy rather than
+// a reinterpret_cast because these offsets are deliberately unaligned.
+template <typename T>
+static T PPRead(const std::vector<uint8_t>& pp, size_t off)
+{
+	T v{};
+	if (off + sizeof(T) <= pp.size()) {
+		memcpy(&v, pp.data() + off, sizeof(T));
+	}
+	return v;
+}
+
+static void LogTrilogyAirProbe(uint32_t char_id, const char* src,
+							   const uint8_t* payload, uint32_t plen)
+{
+	constexpr uint32_t kPPSize      = sizeof(Trilogy::structs::PlayerProfile_Struct); // 8104
+	constexpr uint32_t kChecksumLen = 4;
+
+	uint32_t base = 0;
+	if (plen >= kPPSize) {
+		base = 0;                 // 0x2e20: full struct including checksum
+	} else if (plen >= kPPSize - kChecksumLen) {
+		base = kChecksumLen;      // 0x5421 / 0x5521: checksum stripped
+	} else {
+		LogInfo("[TrilogyAirProbe] char={} src={} SKIP plen={} (need {} or {})",
+				char_id, src, plen, kPPSize, kPPSize - kChecksumLen);
+		return;
+	}
+
+	std::vector<uint8_t> pp(kPPSize, 0);
+	memcpy(pp.data() + base, payload, kPPSize - base);
+
+	// Alignment sanity check.  If name / zone / level / hunger decode to
+	// nonsense then the rebase above is wrong and EVERY offset below is
+	// garbage - read this line first before trusting anything else.
+	char name[31]      = {0};
+	char zone_name[16] = {0};
+	memcpy(name,      pp.data() +    4, 30);
+	memcpy(zone_name, pp.data() + 2424, 15);
+	LogInfo("[TrilogyAirProbe] char={} src={} plen={} base={} | ALIGN name='{}' zone='{}'"
+			" level={} hp={} hunger={} thirst={} fatigue={} drunk={}",
+			char_id, src, plen, base,
+			static_cast<const char*>(name), static_cast<const char*>(zone_name),
+			static_cast<unsigned>(pp[60]),
+			PPRead<int16_t>(pp, 120),
+			PPRead<int32_t>(pp, 2812),
+			PPRead<int32_t>(pp, 2816),
+			static_cast<unsigned>(pp[4170]),
+			static_cast<unsigned>(pp[4176]));
+
+	// PRIME suspect window: struct 2582..2743, the gap between skills[74] and
+	// autosplit.  In the PoP-era Mac PlayerProfile - the direct descendant of
+	// this layout - the same gap holds innate[], a 1-byte void, air_supply
+	// (uint16), texture, height/width/length/view_height, boat[32] and 60 bytes
+	// of pad (mac_structs.h 3136..3348 = 212 bytes).  Widening skills[] and
+	// innate[] from int8 to uint16 accounts for the size difference EXACTLY
+	// (212 - 162 = 50 = the innate entry count), which lands air at ~2633 here.
+	// Dumped in full so the hypothesis can be confirmed or killed by eye.
+	{
+		std::string hex;
+		hex.reserve(162 * 3);
+		for (int i = 0; i < 162; ++i) {
+			hex += fmt::format("{:02X} ", pp[2582 + i]);
+		}
+		LogInfo("[TrilogyAirProbe] char={} src={} PRIME 2582..2743=[{}]", char_id, src, hex);
+		LogInfo("[TrilogyAirProbe] char={} src={} CANDIDATE air_2633_u16={}"
+				" b2632={} b2633={} b2634={} b2635={}",
+				char_id, src, PPRead<uint16_t>(pp, 2633),
+				static_cast<unsigned>(pp[2632]), static_cast<unsigned>(pp[2633]),
+				static_cast<unsigned>(pp[2634]), static_cast<unsigned>(pp[2635]));
+	}
+
+	// Every declared-unknown span, non-zero bytes only, as offset=value pairs.
+	// SendPlayerProfile ships these as 0x00, so anything non-zero is a value
+	// the CLIENT put there - exactly what we are hunting.  Diff this line
+	// between a full-bar sample and a low-bar sample.
+	std::string pairs;
+	std::string counts;
+	unsigned    shown = 0;
+	unsigned    total = 0;
+	for (const auto& r : kPPUnknownRanges) {
+		unsigned in_range = 0;
+		for (uint16_t i = 0; i < r.len; ++i) {
+			const uint16_t off = static_cast<uint16_t>(r.off + i);
+			if (!pp[off]) {
+				continue;
+			}
+			++in_range;
+			++total;
+			if (shown < 400) {   // hard cap so one bad sample cannot flood the log
+				++shown;
+				pairs += fmt::format("{}={:02X} ", off, pp[off]);
+			}
+		}
+		if (in_range) {
+			counts += fmt::format("{}:{} ", r.tag, in_range);
+		}
+	}
+	if (pairs.empty())  { pairs  = "(all zero)"; }
+	if (counts.empty()) { counts = "(none)"; }
+	LogInfo("[TrilogyAirProbe] char={} src={} NONZERO-UNKNOWN shown={}/{} per-range=[{}] [{}]",
+			char_id, src, shown, total, counts, pairs);
+}
+
+} // namespace
+
+// ============================================================
 // Opcode dispatch — state-machine gated
 // ============================================================
 
@@ -1924,13 +2138,24 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			RemoveSession(key);
 			return;
 		}
-		else if (opcode == ZN_OP_PlayerSave2 && s.trilogy_client) {
+		else if ((opcode == ZN_OP_PlayerSave || opcode == ZN_OP_PlayerSave2) &&
+		         s.trilogy_client) {
 			// Fragmented PlayerProfile dump the client sends alongside
 			// OP_DeleteSpawn (and on zone-out).  EQClassic just Save()s
 			// and sends no ack — the client does not wait for a reply.
-			// Content of the packet is not parsed; our DB save from
+			// Content of the packet is not trusted; our DB save from
 			// TrilogyClient::Save() is authoritative.
-			s.trilogy_client->Save();
+			//
+			// It IS read, though: this upload is the client's own view of its
+			// PlayerProfile and therefore the only ground truth we have for the
+			// fields v29c maintains locally — see [TrilogyAirProbe] above for
+			// why we care (breath / drowning on zone-in).
+			LogTrilogyAirProbe(s.char_id,
+			                   opcode == ZN_OP_PlayerSave ? "0x5421" : "0x5521",
+			                   payload, plen);
+			if (opcode == ZN_OP_PlayerSave2) {
+				s.trilogy_client->Save();
+			}
 		}
 		else if ((opcode == ZN_OP_AutoAttack || opcode == ZN_OP_AutoAttack2) && s.trilogy_client) {
 			// 4-byte payload: pBuffer[0] = 0 (off) or 1 (on).
@@ -2660,6 +2885,74 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				                        KilledByTypes::Killed_NPC);
 			}
 		}
+		else if (opcode == ZN_OP_EnvDamage && s.trilogy_client) {
+			// Client-reported environmental damage (drowning / lava / falling /
+			// trap).  v29c reuses OP_Action for this, so the same 28-byte
+			// Action_Struct that carries combat notifications outbound arrives
+			// inbound meaning "I hurt myself".  EQClassic: Process_Action
+			// (client_process.cpp:5918) switches on exactly these type bytes.
+			//
+			// Guard on the type range: 0x5820 is only ever an environmental
+			// report in the client -> server direction, and refusing anything
+			// outside 250..253 keeps a malformed or hostile packet from being
+			// laundered into an arbitrary self-damage primitive.
+			if (plen >= sizeof(Trilogy::structs::Action_Struct)) {
+				const auto* ta =
+				    reinterpret_cast<const Trilogy::structs::Action_Struct*>(payload);
+				const uint8_t dmgtype = static_cast<uint8_t>(ta->type);
+				const int32_t damage  = static_cast<int32_t>(ta->damage);
+
+				if (dmgtype < EQ::constants::EnvironmentalDamage::Lava ||
+				    dmgtype > EQ::constants::EnvironmentalDamage::Trap) {
+					LogInfo("[TrilogyEnvDmg] ignoring 0x5820 with non-environmental "
+					        "type={} damage={} from char={}",
+					        dmgtype, damage, s.char_id);
+				}
+				else if (damage < 0) {
+					// Upstream turns a negative into 31337 (an instant kill) on a
+					// field it reads as unsigned, so the branch is dead there.  We
+					// will not resurrect it on a client-supplied value.
+					LogInfo("[TrilogyEnvDmg] ignoring 0x5820 with negative damage={} "
+					        "type={} from char={}",
+					        damage, dmgtype, s.char_id);
+				}
+				else {
+					s.trilogy_client->HandleEnvDamage(dmgtype, damage);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_EnvDamage2 && s.trilogy_client) {
+			// The 36-byte sibling the client emits in the same tick as 0x5820.
+			// EQClassic relays it verbatim so bystanders see the hit
+			// (ProcessOP_Default -> entity_list.QueueClients(this, app, false),
+			// client_process.cpp:6411) and never reads a damage value out of it.
+			// We must not either: it repeats the type and amount from 0x5820, so
+			// treating both as damage would charge the player twice.
+			//
+			// Relayed per-session rather than through entity_list because this is
+			// a raw v29c wire format with no modern opcode behind it — only other
+			// Trilogy clients can parse it.  Unlike EQClassic we skip the sender:
+			// it generated the packet and renders its own hit locally, and the
+			// acknowledgement it actually waits for is the HP update that
+			// Handle_OP_EnvDamage already sent.
+			//
+			// The spawn id is overwritten with the sender's own rather than
+			// trusted, so a modified client cannot paint damage onto someone else.
+			if (plen >= 4) {
+				std::vector<uint8_t> relay(payload, payload + plen);
+				const uint32_t my_id = s.trilogy_client->GetID();
+				memcpy(relay.data(), &my_id, sizeof(my_id));
+
+				const uint64_t my_key = SessionKey(addr, port);
+				for (const auto& kv : m_sessions) {
+					if (kv.first == my_key || kv.second.state != CONNECTED) {
+						continue;
+					}
+					SendToSession(kv.first, ZN_OP_EnvDamage2,
+					              relay.data(), static_cast<uint32_t>(relay.size()));
+				}
+			}
+		}
 		else if (opcode == 0x2e20) {
 			// ── DIAGNOSTIC (CLIENTBANK): decode the client's OWN uploaded PlayerProfile ──
 			// The Trilogy client uploads its full, UNCOMPRESSED 8104-byte PP via 0x2e20 on
@@ -2671,6 +2964,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// we never write the uploaded PP back.  Compare cont_nonempty[] here against the
 			// outbound BankPP log (what we sent).  Remove once the banked-bag-content path is
 			// settled.
+
+			// Same upload also feeds the breath/air offset hunt.
+			LogTrilogyAirProbe(s.char_id, "0x2e20", payload, plen);
 			if (plen >= sizeof(Trilogy::structs::PlayerProfile_Struct)) {
 				const auto* cpp =
 				    reinterpret_cast<const Trilogy::structs::PlayerProfile_Struct*>(payload);
@@ -4333,6 +4629,25 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.anon            = static_cast<int8_t>(Strings::ToInt(row[25]));
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
+
+		// Breath meter.  Drowning on v29c is client-authoritative: the client
+		// counts air down while submerged and reports the damage back as
+		// OP_Action (0x5820) type 0xFB.  It re-fills on its own once your head
+		// is above water, but at zone-in it seeds from the PlayerProfile — and
+		// we zero-fill the struct, so anyone who arrives UNDERWATER (swimming a
+		// zone line, e.g. qeynos -> qcat) started at zero air and drowned on the
+		// spot: 185 damage per tick, ten ticks, then a client-reported OP_Death.
+		//
+		// Stamping it to full here is the same fix every other EQEmu client path
+		// already has — client_packet.cpp:1647 "Reset to max so they dont drown
+		// on zone in if its underwater", and EQMacEmu's equivalent for the Mac
+		// client (client_packet.cpp:1316).  A zone-in is always a fresh arrival,
+		// so full is the correct value; there is nothing to carry across.
+		//
+		// 45 is what the client itself reports at rest on dry land, captured
+		// from its own PP upload (see [TrilogyAirProbe]).  Writing more than the
+		// client's own maximum has not been tested, so we do not inflate it.
+		pp.air_supply      = kTrilogyFullAirSupply;
 
 		// /played fields.  The v29c client's /played handler is entirely
 		// client-side: it reads two adjacent int32s from the PP and formats
