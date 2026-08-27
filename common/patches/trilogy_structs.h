@@ -728,7 +728,9 @@ struct PlayerProfile_Struct
 /*2508*/	int8	skills[74];
 /*2582*/	int8	unknown2582[34];
 /*2616*/	int8	test_unknown;
-/*2617*/	int8	unknown2617[127];
+/*2617*/	int8	unknown2617[16];			// Harakiri: some of these bits are very important, if they are not 0 the client will request something from the server with opcode 0x0e40 during login and will not load the zone further (there seems be a 60sec timeout on this), the opcode will be sent from sub_4D5968 if at byte 2648 there is a bit > 0, this bit is set by sending OP_ZoneUnavailable 0xa220. Byte 2632 is the 0xFF terminator the client writes at the end of its innate/skill block (mirrors `unknown_skillvoid` in the PoP-era Mac PP).
+/*2633*/	uint16	air_supply;					// Breath meter, in the client's own units.  Drowning is client-authoritative on v29c: the client counts this down while submerged and reports the damage back as OP_Action (0x5820) type 0xFB; nothing server-side tracks it.  The client re-fills the value on its own once your head is above water, but at zone-in it seeds from THIS field — so shipping 0 here makes anyone who arrives underwater drown instantly (qeynos -> qcat aqueduct: 185 dmg/tick, 10 ticks, then a client-reported OP_Death).  Same role as air_remaining in the Titanium PP (@14900) and air_supply in the Mac PP (@3237); EQClassic and EQMacEmu both left it unmapped.  Offset pinned 2026-08-27 from a client PP upload (0x2e20): the ONLY byte the client writes anywhere in 2582..2743, sitting immediately after the 0xFF at 2632, exactly where the Mac layout puts air_supply after unknown_skillvoid.  Observed at-rest (on land) value: 45.
+/*2635*/	int8	unknown2635[109];			// 2635..2743.  Per the Mac layout this is texture / height / width / length / view_height / boat[32] / pad; none of it confirmed for v29c, and byte 2648 in particular must stay 0 (see above).
 /*2744*/	int8	autosplit;
 /*2745*/	int8	unknown2745[3];
 /*2748*/	int8	pvpEnabled;

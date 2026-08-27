@@ -140,6 +140,12 @@ TrilogyClient::TrilogyClient(
 	// Set private Client fields that bypass the normal zone-entry handshake.
 	InitTrilogyFields(char_id, acct_id, acct_name, char_name);
 
+	// Start of the environmental-damage grace window — see HandleEnvDamage.  A
+	// TrilogyClient is constructed fresh on every zone-in, so "now" is zone-in.
+	m_zonein_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
 	// Mob-level race/class/gender so GetRace()/GetClass()/GetGender() return correct values.
 	ChangeRace(race);
 	SetClass(class_);
@@ -4257,6 +4263,89 @@ bool TrilogyClient::IsDuplicateLootItem(uint32_t lootee, int16_t wire_slot)
 	m_last_loot_wire_slot = wire_slot;
 	m_last_loot_ts_ms     = now_ms;
 	return false;
+}
+
+bool TrilogyClient::IsDuplicateEnvDamage(uint8_t dmgtype, int32_t damage)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	if (dmgtype == m_last_env_dmgtype && damage == m_last_env_damage &&
+	    (now_ms - m_last_env_ts_ms) <= kEnvDamageDedupWindowMs) {
+		LogInfo("[TrilogyEnvDmg] IsDuplicateEnvDamage: dropping ARQ retransmit "
+		        "dmgtype={} damage={} age_ms={} (window={}ms)",
+		        dmgtype, damage, (now_ms - m_last_env_ts_ms), kEnvDamageDedupWindowMs);
+		return true;
+	}
+
+	m_last_env_dmgtype = dmgtype;
+	m_last_env_damage  = damage;
+	m_last_env_ts_ms   = now_ms;
+	return false;
+}
+
+// ============================================================
+// HandleEnvDamage — apply one client-reported environmental damage tick.
+//
+// Drowning, lava, falling and traps are all client-authoritative on v29c: the
+// client decides it hurt itself and reports the amount up as OP_Action (0x5820)
+// with the type in Action_Struct::type.  EQClassic applies it directly in
+// Process_Action (client_process.cpp:5918, `SetHP(GetHP() - s->damage)`); we go
+// through the stock Client::Handle_OP_EnvDamage instead so Trilogy inherits the
+// whole modern path — GM / invulnerability absorption, fall damage cancelled
+// when landing in liquid, ReduceFallDamage bonuses, EnvironmentDamageMulipliter,
+// EVENT_ENVIRONMENTAL_DAMAGE, traps breaking invis/sneak, Death() at 0 HP, and
+// the SendHPUpdate that the client waits on before it will report another tick.
+//
+// Until this existed nothing consumed 0x5820 at all: the packets fell through to
+// the UNHANDLED logger, the server's HP never moved, and the player only died
+// because the CLIENT tracked its own HP locally and eventually sent OP_Death.
+// ============================================================
+void TrilogyClient::HandleEnvDamage(uint8_t dmgtype, int32_t damage)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Zone-in grace.  Modern EQEmu opens Handle_OP_EnvDamage with
+	//   if (!ClientFinishedLoading()) { SetHP(GetHP() - 1); return; }
+	// (client_packet.cpp:6415; EQMacEmu client_packet.cpp:3516) so a client that
+	// is still loading cannot hurt itself.  That guard is inert for Trilogy —
+	// InitTrilogyFields sets conn_state = ClientConnectFinished immediately, so
+	// ClientFinishedLoading() is true before the client has even received its
+	// PlayerProfile — so reproduce the intent with our own window.  It matters
+	// most for falling damage, which the client can report while it is still
+	// settling onto the arrival Z we sent it.
+	//
+	// The 1 HP is not decoration: both upstream paths carry the comment "needed
+	// or else the client wont acknowledge" — without an HP change coming back the
+	// client keeps re-reporting the same tick.
+	if (m_zonein_ms && (now_ms - m_zonein_ms) < kEnvDamageZoneInGraceMs) {
+		LogInfo("[TrilogyEnvDmg] absorbing damage={} dmgtype={} during zone-in grace "
+		        "({} ms in, window={}ms)",
+		        damage, dmgtype, (now_ms - m_zonein_ms), kEnvDamageZoneInGraceMs);
+		SetHP(GetHP() - 1);
+		return;
+	}
+
+	// ARQ retransmits are normal at 75-250 ms and this handler MUTATES HP, so a
+	// duplicate is not a harmless replay — it double-charges the player.
+	if (IsDuplicateEnvDamage(dmgtype, damage)) {
+		return;
+	}
+
+	EQApplicationPacket pkt(OP_EnvDamage, sizeof(EnvDamage2_Struct));
+	auto* ed     = reinterpret_cast<EnvDamage2_Struct*>(pkt.pBuffer);
+	ed->id       = GetID();
+	ed->damage   = static_cast<uint32>(damage);
+	ed->dmgtype  = dmgtype;
+	ed->constant = 0xFFFF;
+
+	LogInfo("[TrilogyEnvDmg] char='{}' dmgtype={} damage={} hp_before={}/{}",
+	        GetCleanName(), dmgtype, damage, GetHP(), GetMaxHP());
+
+	Handle_OP_EnvDamage(&pkt);
 }
 
 // ============================================================
