@@ -801,6 +801,18 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Consider:
 		HandleOutgoingConsider(app);
 		break;
+	case OP_Assist:
+		HandleOutgoingAssist(app);
+		break;
+	case OP_YellForHelp:
+		HandleOutgoingYellForHelp(app);
+		break;
+	case OP_RandomReply:
+		HandleOutgoingRandomReply(app);
+		break;
+	case OP_ConsentResponse:
+		HandleOutgoingConsentResponse(app);
+		break;
 	case OP_ExpUpdate:
 		HandleExpUpdate(app);
 		break;
@@ -2865,8 +2877,18 @@ static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
 		case 334: return 15; // Chat::Experience  → YELLOW (matches EQClassic Message(15,...))
 		case 289: return 13; // Chat::SpellFailure → RED
 	}
-	if (chat_type <= 20u)   return chat_type; // raw v29c color
-	if (chat_type >= 256u)  return chat_type; // assume EQClassic MT_* compatible
+	if (chat_type <= 20u) return chat_type; // raw v29c color
+
+	// MESSAGETYPE_* is a CLOSED range: EQClassic defines 256 (MT_Say) through
+	// 271 (Common/Include/MessageTypes.h) and nothing above it.  This used to
+	// pass every value >= 256 through unchecked, which meant any modern Chat::
+	// constant above 271 reached the client as a message type it does not know
+	// and was dropped -- silently, and only for those messages, so it read as
+	// "that one command does nothing".  Chat::MoneySplit (285) hid both /split
+	// confirmations that way.  Bound the range instead of hand-patching types
+	// into the switch above one report at a time.
+	if (chat_type >= 256u && chat_type <= 271u) return chat_type;
+
 	return 269u; // MESSAGETYPE_Broadcasts — visible white fallback
 }
 
@@ -3063,6 +3085,19 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// /pet taunt toggle above.  This is what surfaced as a bare "1095".
 		case 1095:  return "I'll teach you to interfere with me %3.";                // SUCCESSFUL_TAUNT
 		case 5811:  return "You have failed to taunt your target.";                  // FAILED_TAUNT
+		// /split and /consent feedback.  Both commands worked before these were
+		// added — the coin moved and the consent was recorded — but every
+		// success AND failure message resolved to nothing, so in-game both read
+		// as "the command did nothing at all".
+		case 390:   return "You do not have consent to summon that corpse.";          // CONSENT_DENIED
+		case 397:   return "Not a valid consent name.";                               // CONSENT_INVALID_NAME
+		case 398:   return "You cannot consent NPC's.";                               // CONSENT_NPC
+		case 399:   return "You cannot consent yourself.";                           // CONSENT_YOURSELF
+		case 400:   return "You must wait 2 seconds between consents.";               // CONSENT_WAIT
+		case 511:   return "%1 shares money with the group.";                         // SHARE_MONEY
+		case 12071: return "You receive %1 as your split.";                           // YOU_RECEIVE_AS_SPLIT
+		case 12328: return "You are not in a group! Keep it all.";                    // SPLIT_NO_GROUP
+		case 13112: return "There is not enough to split, keep it.";                  // SPLIT_FAIL
 		// Remaining Mob::SayString users in the zone code: quest item return and
 		// merchant refusals.  Included so they do not become the next bare number.
 		case 1105:  return "I have no need for this %3, you can have it back.";      // TRADE_BACK
@@ -3359,6 +3394,116 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 // as OP_SimpleMessage: a bare string_id + color, no text.  The Trilogy client has
 // no equivalent, so resolve the known string-ids to text and relay as OP_SpecialMesg.
 // ============================================================
+// ============================================================
+// HandleOutgoingAssist — OP_Assist (0x0022) back to the requester.
+//
+// Handle_OP_Assist resolves the assisted mob's target and echoes the packet
+// with that entity id, which is what actually moves the client's target.  The
+// id needs TranslateId: assisting someone who is targeting US must come back
+// as this client's synthetic player_spawn_id, not its EQEmu entity id.
+// ============================================================
+void TrilogyClient::HandleOutgoingAssist(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::EntityId_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::EntityId_Struct*>(app->pBuffer);
+
+	uint32_t out_id = TranslateId(emu->entity_id);
+	LogInfo("[TrilogyClient] OUT /assist reply entity={} -> wire={}", emu->entity_id, out_id);
+	m_tzs->SendToSession(m_session_key, 0x0022,
+	                     reinterpret_cast<const uint8_t*>(&out_id), sizeof(out_id));
+}
+
+// ============================================================
+// HandleOutgoingYellForHelp — OP_YellForHelp (0xda21) to nearby players.
+//
+// EQEmu broadcasts a 4-byte entity id to close clients; EQClassic relays the
+// same packet verbatim (ProcessOP_YellForHelp).  Only the id needs translating.
+// ============================================================
+void TrilogyClient::HandleOutgoingYellForHelp(const EQApplicationPacket* app)
+{
+	if (!app || app->size < 4) return;
+	uint32_t yeller = 0;
+	memcpy(&yeller, app->pBuffer, sizeof(yeller));
+
+	uint32_t out_id = TranslateId(yeller);
+	LogInfo("[TrilogyClient] OUT /yell relay yeller={} -> wire={}", yeller, out_id);
+	m_tzs->SendToSession(m_session_key, 0xda21,
+	                     reinterpret_cast<const uint8_t*>(&out_id), sizeof(out_id));
+}
+
+// ============================================================
+// HandleOutgoingRandomReply — /random result.
+//
+// EQEmu answers OP_RandomReq with a structured OP_RandomReply.  v29c has no
+// such packet: EQClassic broadcasts the result as ordinary chat
+// (client_process.cpp ProcessOP_Random, entity_list.Message).  So render the
+// reply into that same sentence and send it as OP_SpecialMesg, which is both
+// era-accurate and avoids inventing a wire format the client cannot parse.
+// ============================================================
+void TrilogyClient::HandleOutgoingRandomReply(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::RandomReply_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::RandomReply_Struct*>(app->pBuffer);
+
+	char roller[64] = {};
+	strncpy(roller, emu->name, sizeof(roller) - 1);
+
+	LogInfo("[TrilogyClient] OUT /random reply low={} high={} result={} name=[{}]", emu->low, emu->high, emu->result, emu->name);
+	std::string msg = fmt::format("{} rolled their dice and got a {} out of {} to {}!",
+	                              roller[0] ? roller : GetCleanName(),
+	                              emu->result, emu->low, emu->high);
+	msg += '\0';
+
+	// Colour 8 = LIGHTEN_GREEN in the v29c palette (EQC/Include/EQCUtils.hpp:60),
+	// which is what EQClassic passes to entity_list.Message for this line.  Do
+	// NOT route Chat::Green through ChatTypeToTrilogyMsgType here: Chat::Green is
+	// 2, which passes through raw as DARK_GREEN and reads visibly wrong.
+	static constexpr uint32_t kTrilogyLightenGreen = 8;
+
+	uint32_t out_size = 4 + static_cast<uint32_t>(msg.size());
+	auto* out = new uint8_t[out_size]();
+	*reinterpret_cast<uint32_t*>(out) = kTrilogyLightenGreen;
+	memcpy(out + 4, msg.data(), msg.size());
+	QueueTextPacket(0x8021, out, out_size);
+	delete[] out;
+}
+
+// ============================================================
+// HandleOutgoingConsentResponse — OP_ConsentResponse (0xb721).
+//
+// /consent for another player round-trips through worldserver
+// (Client::ConsentCorpses -> ServerOP_Consent -> ServerOP_Consent_Response),
+// which answers with OP_ConsentResponse to BOTH the consenter and the
+// consentee.  With no translator that reply was dropped, so consenting another
+// player produced no message on either client while the grant itself recorded
+// fine — the self-consent case looked like it worked only because it fails
+// early with a local CONSENT_YOURSELF message and never reaches world.
+//
+// EQEmu ConsentResponse_Struct uses char[64] name fields; the Trilogy struct
+// (EQClassic eq_packet_structs.h:739) uses char[32].  Field ORDER also differs
+// in naming: their "consentee" is the granted player (EQEmu grantname) and
+// "consenter" is the corpse owner (EQEmu ownername).
+// ============================================================
+void TrilogyClient::HandleOutgoingConsentResponse(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::ConsentResponse_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::ConsentResponse_Struct*>(app->pBuffer);
+
+	// 32 + 32 + 1 + 32.  Built by hand rather than via a struct because the
+	// offsets commented in the EQClassic header do not match its own field
+	// widths, so the field list is the only trustworthy part of it.
+	uint8_t out[97] = {};
+	strncpy(reinterpret_cast<char*>(out) + 0,  emu->grantname, 31);
+	strncpy(reinterpret_cast<char*>(out) + 32, emu->ownername, 31);
+	out[64] = emu->permission;
+	strncpy(reinterpret_cast<char*>(out) + 65, emu->zonename, 31);
+
+	LogInfo("[TrilogyClient] OUT /consent response grant=[{}] owner=[{}] allow={}",
+	        emu->grantname, emu->ownername, static_cast<int>(emu->permission));
+
+	m_tzs->SendToSession(m_session_key, 0xb721, out, sizeof(out));
+}
+
 void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(SimpleMessage_Struct)) return;

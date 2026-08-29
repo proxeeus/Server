@@ -412,6 +412,13 @@ private:
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
+	// Social-command responses.  Assist and yell relay a translated entity id;
+	// /random has no v29c wire format and is rendered as chat, the way
+	// EQClassic broadcasts it.
+	void HandleOutgoingAssist(const EQApplicationPacket* app);
+	void HandleOutgoingYellForHelp(const EQApplicationPacket* app);
+	void HandleOutgoingRandomReply(const EQApplicationPacket* app);
+	void HandleOutgoingConsentResponse(const EQApplicationPacket* app);
 	void HandleOutgoingWearChange(const EQApplicationPacket* app);
 	void HandleOutgoingSpawnAppearance(const EQApplicationPacket* app);
 	// Spell / combat translators (server → Trilogy client)
