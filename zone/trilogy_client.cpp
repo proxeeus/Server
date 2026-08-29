@@ -1437,6 +1437,18 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	sp.z_pos     = static_cast<int16_t>(mob->GetZ() * 10.0f);
 	sp.spawn_id  = static_cast<int16_t>(spawn_id);
 	sp.body_type = static_cast<int16_t>(mob->GetBodyType());
+	// Spawn_Struct::pet_owner_id (offset 66).  This is the path a freshly
+	// summoned pet arrives on, so it is the one that decides whether the
+	// client will accept /pet commands at all.  TranslateId maps the owner
+	// to this client's own synthetic player_spawn_id when the owner is us,
+	// which is the comparison v29c makes to decide "is this mine?".
+	sp.pet_owner_id = static_cast<int16_t>(
+	    TranslateId(static_cast<uint32_t>(mob->GetOwnerID())));
+	if (mob->GetOwnerID() != 0) {
+		LogInfo("[TrilogyZone] NewSpawn pet: spawn_id={} name=[{}] owner_entity={} wire_owner={} (self={})",
+		        spawn_id, mob->GetCleanName(), mob->GetOwnerID(),
+		        static_cast<uint16_t>(sp.pet_owner_id), GetPlayerSpawnId());
+	}
 	sp.cur_hp    = static_cast<int16_t>(mob->GetHPRatio());
 	sp.GuildID   = static_cast<uint16_t>(0xFFFF); // no guild by default
 	sp.race      = static_cast<int8_t>(mob->GetRace());
@@ -3019,6 +3031,52 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 3456:  return "Sorry, but you don't have everything you need for this recipe in your general inventory."; // TRADESKILL_MISSING_COMPONENTS
 		case 3457:  return "You have learned the recipe %1!";                        // TRADESKILL_LEARN_RECIPE
 		case 6199:  return "Combine would result in a LORE item (%1) you already possess."; // TRADESKILL_COMBINE_LORE
+		// Pet responses.  v29c has no pet opcode — orders arrive as tells and are
+		// dispatched into Handle_OP_PetCommands, which answers with MessageString
+		// string IDs.  Without these entries the orders execute silently, which
+		// reads in-game as "the pet ignored me".  Wording follows EQClassic's
+		// literals (Zone/Source/Client_Messaging.cpp:199-330) so the responses
+		// match what a 2001 client would have shown.
+		// 554 is the carrier for every Mob::SayString call in the codebase, not
+		// just pets — "%T2" holds the real string id.  See the %T pass in
+		// HandleOutgoingFormattedMessage.
+		case 554:   return "%1 says '%T2'";                                          // GENERIC_STRINGID_SAY
+		case 438:   return "Taunting attacker, Master.";                             // PET_TAUNTING
+		case 489:   return "No longer taunting attackers, Master.";                  // PET_NO_TAUNT
+		case 490:   return "Taunting attackers as normal, Master.";                  // PET_DO_TAUNT
+		case 488:   return "I have %1 percent of my hit points left.";               // PET_REPORT_HP
+		case 1130:  return "Changing position, Master.";                             // PET_SIT_STRING
+		case 1131:  return "Sorry, Master..calming down.";                           // PET_CALMING
+		case 1132:  return "Following you, Master.";                                 // PET_FOLLOWING
+		case 1134:  return "Guarding with my life..oh splendid one.";                // PET_GUARDINGLIFE
+		case 1135:  return "As you wish, oh great one.";                             // PET_GETLOST_STRING
+		case 1136:  return "My leader is %3.";                                       // PET_LEADERIS
+		case 1137:  return "I follow no one.";                                       // I_FOLLOW_NOONE
+		case 1133:  return "Guarding you, Master.";                                  // PET_GUARDME_STRING
+		case 1138:  return "Waiting for your order to attack, Master.";              // PET_ON_HOLD
+		case 1139:  return "I beg forgiveness, Master. That is not a legal target."; // NOT_LEGAL_TARGET
+		case 6834:  return "Now holding, Master.  I will not start attacks until ordered."; // PET_NOW_HOLDING
+		case 6847:  return "Now greater holding master.  I will only attack something new if ordered."; // PET_GHOLD_ON_MSG
+		case 6854:  return "Now regrouping, master.";                                // PET_ON_REGROUPING
+		case 6855:  return "No longer regrouping, master.";                          // PET_OFF_REGROUPING
+		// Combat taunt — a pet (or any mob) landing a taunt, distinct from the
+		// /pet taunt toggle above.  This is what surfaced as a bare "1095".
+		case 1095:  return "I'll teach you to interfere with me %3.";                // SUCCESSFUL_TAUNT
+		case 5811:  return "You have failed to taunt your target.";                  // FAILED_TAUNT
+		// Remaining Mob::SayString users in the zone code: quest item return and
+		// merchant refusals.  Included so they do not become the next bare number.
+		case 1105:  return "I have no need for this %3, you can have it back.";      // TRADE_BACK
+		case 1155:  return "It's %3 like you that are ruining the continent...get OUT!"; // WONT_SELL_CLASS1
+		case 1159:  return "I don't have anything to do with %3..move along.";       // WONT_SELL_CLASS5
+		case 1166:  return "Creatures like you make me sick..the things you do..get out of here Pagan!"; // WONT_SELL_DEEDS1
+		case 1167:  return "After all the things you've done..the things you believe in..leave my shop!"; // WONT_SELL_DEEDS2
+		case 1171:  return "I cannot abide you or your actions against all that is right..BE GONE!"; // WONT_SELL_DEEDS6
+		case 1199:  return "I don't have time for that now.";                        // MERCHANT_CLOSED_ONE
+		case 1201:  return "I am not open for business right now.";                  // MERCHANT_CLOSED_THREE
+		case 5501:  return "%1 tells you, 'Attacking %2 Master.'";                   // PET_ATTACKING
+		case 555:   return "%1 tells you, 'I am unable to wake %2, master.'";        // CANNOT_WAKE
+		case 9263:  return "No longer focusing on one target, Master.";              // PET_NOT_FOCUSING
+		case 9264:  return "Not casting spells, Master.";                            // PET_NOT_CASTING
 		default:    return nullptr;
 	}
 }
@@ -3153,11 +3211,58 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		}
 
 		std::string out_text = StripSayLinks(tmpl, strlen(tmpl));
+
+
+		// %Tn — nested string id.  Every Mob::SayString overload (mob.cpp:5126,
+		// 5148, 5170, 5187) sends GENERIC_STRINGID_SAY (554, "%1 says '%T2'")
+		// with the REAL string id passed as a text argument rather than as the
+		// message id.  The %T marker means "this argument is itself a string id
+		// — resolve it".  Without this pass the outer template resolves and the
+		// inner one renders as a bare number, or the whole message is dropped.
+		//
+		// Resolve %Tn BEFORE the plain %n pass, because a nested template may
+		// itself contain %n tokens that index the SAME argument array — that is
+		// exactly how PET_LEADERIS ("My leader is %3.") reaches its argument.
+		for (size_t i = 0; i < args.size(); ++i) {
+			const std::string token = "%T" + std::to_string(i + 1);
+			size_t pos = out_text.find(token);
+			if (pos == std::string::npos) continue;
+
+			const uint32_t nested_id  = static_cast<uint32_t>(Strings::ToInt(args[i]));
+			const char*    nested_tmpl = nested_id ? TrilogySystemStringTemplate(nested_id) : nullptr;
+
+			// Fall back to the raw argument rather than dropping the line: an
+			// unmapped id then shows up in-game as a visible number instead of
+			// silently vanishing, which is how missing entries stayed invisible.
+			std::string replacement = nested_tmpl
+			                        ? StripSayLinks(nested_tmpl, strlen(nested_tmpl))
+			                        : args[i];
+			if (!nested_tmpl) {
+				LogInfo("[TrilogyClient] FormattedMessage: unmapped nested string_id={} "
+				        "(outer={}) - add it to TrilogySystemStringTemplate",
+				        nested_id, fm->string_id);
+			}
+			for (; (pos = out_text.find(token)) != std::string::npos; )
+				out_text.replace(pos, token.size(), replacement);
+		}
+
 		for (size_t i = 0; i < args.size(); ++i) {
 			const std::string token = "%" + std::to_string(i + 1);
 			for (size_t pos; (pos = out_text.find(token)) != std::string::npos; )
 				out_text.replace(pos, token.size(), args[i]);
 		}
+
+		// PET_REPORT_HP (488) is the pet answering /pet health, sent from
+		// Handle_OP_PetCommands as MessageString(Chat::PetResponse, PET_REPORT_HP,
+		// <ratio>).  It carries an argument, so unlike PET_TAUNTING it arrives as
+		// an OP_FormattedMessage — but it has the same defect: no speaker.  Add
+		// the prefix after substitution so the percentage is already filled in.
+		if (fm->string_id == 488) {
+			if (Mob* mypet = GetPet()) {
+				out_text = fmt::format("{} says '{}'", mypet->GetCleanName(), out_text);
+			}
+		}
+
 		out_text += '\0';
 
 		// Honor the modern Chat::* channel the server picked (fm->type) instead
@@ -3263,6 +3368,26 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	if (!tmpl) return; // not a string-id we relay
 
 	std::string text = tmpl;
+
+	// Pet lines that the server sends WITHOUT a speaker.  With no format
+	// arguments these build an OP_SimpleMessage (client.cpp:3615) rather than an
+	// OP_FormattedMessage, so they land here as a bare sentence:
+	//
+	//   438 PET_TAUNTING  — special_attacks.cpp:1871, once per pet taunt
+	//   489 PET_NO_TAUNT  — Handle_OP_PetCommands, /pet taunt toggled off
+	//   490 PET_DO_TAUNT  — Handle_OP_PetCommands, /pet taunt toggled on
+	//
+	// PET_ATTACKING and CANNOT_WAKE do NOT belong here: their templates already
+	// begin "%1 tells you, ...", so they carry a speaker of their own.
+	//
+	// Kept in the Trilogy layer so shared combat code and other clients are
+	// untouched.
+	if (sm->string_id == 438 || sm->string_id == 489 || sm->string_id == 490) {
+		if (Mob* mypet = GetPet()) {
+			text = fmt::format("{} says '{}'", mypet->GetCleanName(), text);
+		}
+	}
+
 	text += '\0';
 
 	uint32_t out_color = ChatTypeToTrilogyMsgType(sm->color);
