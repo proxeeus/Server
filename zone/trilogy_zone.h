@@ -609,6 +609,28 @@ private:
 	// Find the OTHER Trilogy session by entity id (partner's player_spawn_id).
 	// Returns nullptr if no Trilogy session in this zone matches.
 	Session* FindSessionByEntityId(uint16_t entity_id);
+
+	// Translate a pet's owner entity id into the wire id a given observer knows
+	// that owner by, for Spawn_Struct::pet_owner_id (offset 66).
+	//
+	// This needs a per-observer translation rather than a straight copy: a
+	// Trilogy client knows ITSELF as the synthetic player_spawn_id assigned at
+	// zone entry (0x4000 | char_id), and every other entity by its EQEmu entity
+	// id.  A pet owned by the observer must therefore carry that observer's
+	// player_spawn_id, or the client compares it against its own id, finds no
+	// match, and refuses every pet command with "you have no pet to control".
+	//
+	// Returns 0 for a non-pet — the same "no owner" sentinel EQClassic uses.
+	static int16_t WireOwnerIdForSession(const Session& s, uint16_t owner_entity_id);
+	// session_key overload for the spawn builders that do not carry a Session&.
+	int16_t WireOwnerIdForSessionKey(uint64_t session_key, uint16_t owner_entity_id);
+
+	// v29c has no pet opcode.  /pet <order> is a client-side shortcut that emits
+	// a TELL addressed to the pet's name, so pet commands arrive as ordinary
+	// chan-7 chat.  Called from HandleChannelMessage before the message is
+	// routed onward; returns true when the tell was consumed as a pet order and
+	// must NOT be forwarded to the chat system as a real tell.
+	bool TryHandlePetCommand(Session& s, const char* targetname, const char* msg);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,

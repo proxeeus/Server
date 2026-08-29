@@ -56,6 +56,7 @@ extern EntityList  entity_list;
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -3959,6 +3960,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		sp.z_pos     = static_cast<int16_t>(tc->GetZ() * 10.0f);
 		sp.spawn_id  = static_cast<int16_t>(s.player_spawn_id);
 		sp.body_type = static_cast<int16_t>(tc->GetBodyType());
+		// Self spawn — only non-zero while this player is charmed.
+		sp.pet_owner_id = WireOwnerIdForSession(s, tc->GetOwnerID());
 		sp.cur_hp    = 100;
 		sp.GuildID   = static_cast<uint16_t>(tc->GuildID());
 		sp.race      = static_cast<int8_t>(tc->GetRace());
@@ -5531,8 +5534,15 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 	if (lang <= Language::Unknown27)
 		lang_skill = s.trilogy_client->GetPP().languages[lang];
 
-	LogInfo("[TrilogyZone] ChannelMessage chan={} lang={} msg='{}' from {}",
-	        chan, lang, msg, s.char_name);
+	LogInfo("[TrilogyZone] ChannelMessage chan={} lang={} to=[{}] msg='{}' from {}",
+	        chan, lang, target, msg, s.char_name);
+
+	// v29c sends pet orders as a tell addressed to the pet (there is no pet
+	// opcode in this protocol).  Intercept those before they reach the chat
+	// system, which would otherwise try to deliver them as a real tell.
+	if (chan == ChatChannel_Tell && TryHandlePetCommand(s, target, msg)) {
+		return;
+	}
 
 	s.trilogy_client->ChannelMessageReceived(chan, lang, lang_skill, msg, target[0] ? target : nullptr);
 }
@@ -5577,6 +5587,175 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // refunds staged coin via AddMoneyToPP (PP was debited at stage time by
 // HandleMoveCoin's carried→trade path).
 // ============================================================
+
+// ============================================================
+// TryHandlePetCommand — pet orders arrive as tells, not an opcode
+//
+// v29c has no pet opcode at all.  Typing `/pet attack` makes the CLIENT emit a
+// TELL addressed to the pet's name, with the order as the message body — the
+// same mechanism EQClassic parses in its tell branch
+// (Zone/Source/Client_Messaging.cpp:199-330).  Captured from a live session:
+//
+//     ChannelMessage chan=7 msg='attack Al`eik_K`vorr000'
+//     ChannelMessage chan=7 msg='guard'
+//     ChannelMessage chan=7 msg='sit'
+//
+// Note that `attack` appends the current target's name.  We therefore match on
+// a leading-keyword PREFIX rather than EQClassic's strstr over the whole
+// string: a target called "a_guard000" makes "attack a_guard000" contain both
+// ATTACK and GUARD, and substring order is a fragile way to disambiguate that.
+//
+// Rather than reimplement the orders, translate to the modern PetCommand_Struct
+// and dispatch into Client::Handle_OP_PetCommands, which already owns hate-list
+// handling, pet-order state, hold/focus semantics and the response messages.
+// ============================================================
+bool TrilogyZoneServer::TryHandlePetCommand(Session& s, const char* targetname, const char* msg)
+{
+	if (!s.trilogy_client || !msg || !*msg) return false;
+
+	Mob* mypet = s.trilogy_client->GetPet();
+	if (!mypet) return false;
+
+	// Is this tell addressed to our own pet?  Be lenient about the exact form:
+	// the client addresses the wire name, which for player-race pets carries the
+	// MakeNameUnique suffix, and charmed NPCs get a "_CHARM" suffix in some
+	// paths.  Compare case-insensitively against both the raw and cleaned names.
+	if (!targetname || !*targetname) return false;
+	auto name_matches = [&](const char* candidate) -> bool {
+		if (!candidate || !*candidate) return false;
+		return strncasecmp(candidate, targetname, strlen(targetname)) == 0 ||
+		       strncasecmp(targetname, candidate, strlen(candidate)) == 0;
+	};
+	if (!name_matches(mypet->GetName()) && !name_matches(mypet->GetCleanName())) {
+		return false; // a genuine tell to another player
+	}
+
+	// Uppercase a trimmed copy for prefix matching.
+	char upper[128] = {};
+	{
+		const char* p = msg;
+		while (*p == ' ') ++p;
+		size_t n = 0;
+		for (; p[n] && n < sizeof(upper) - 1; ++n) {
+			upper[n] = static_cast<char>(toupper(static_cast<unsigned char>(p[n])));
+		}
+		upper[n] = '\0';
+	}
+
+	auto starts_with = [&](const char* kw) -> bool {
+		return strncmp(upper, kw, strlen(kw)) == 0;
+	};
+
+	// Longest phrases first so "GUARD ME" is not swallowed by "GUARD".
+	// is_control marks the orders that DIRECT the pet, as opposed to the three
+	// that merely query or dismiss it — see the Enchanter gate below.
+	uint32 command;
+	bool   is_control = true;
+	if      (starts_with("ATTACK"))        command = PET_ATTACK;
+	else if (starts_with("BACK OFF"))      command = PET_BACKOFF;
+	else if (starts_with("AS YOU WERE"))   command = PET_BACKOFF;
+	else if (starts_with("GET LOST"))    { command = PET_GETLOST;      is_control = false; }
+	else if (starts_with("GUARD ME"))      command = PET_FOLLOWME;
+	else if (starts_with("GUARD HERE"))    command = PET_GUARDHERE;
+	else if (starts_with("GUARD"))         command = PET_GUARDHERE;
+	else if (starts_with("FOLLOW ME"))     command = PET_FOLLOWME;
+	else if (starts_with("FOLLOW"))        command = PET_FOLLOWME;
+	else if (starts_with("REPORT HEALTH")){ command = PET_HEALTHREPORT; is_control = false; }
+	else if (starts_with("HEALTH"))      { command = PET_HEALTHREPORT; is_control = false; }
+	else if (starts_with("WHO LEADER"))  { command = PET_LEADER;        is_control = false; }
+	else if (starts_with("LEADER"))      { command = PET_LEADER;        is_control = false; }
+	// v29c also emits a bare "master" for the leader query.  EQClassic does not
+	// handle this verb either, so it is mapped on semantics rather than from a
+	// reference implementation — same question, same answer.
+	else if (starts_with("MASTER"))      { command = PET_LEADER;        is_control = false; }
+	else if (starts_with("TAUNT"))         command = PET_TAUNT;
+	else if (starts_with("SIT"))           command = PET_SITDOWN;
+	else if (starts_with("STAND"))         command = PET_STANDUP;
+	else {
+		// Not a recognised order.  Log it rather than swallowing it — an
+		// unmapped /pet verb should show up here rather than vanishing into
+		// the chat system as a tell to a mob.
+		LogInfo("[TrilogyZone] PetCommand: char={} pet=[{}] UNRECOGNISED order=[{}]",
+		        s.char_name, mypet->GetCleanName(), msg);
+		return false;
+	}
+
+	// Enchanter Animation pets are reactive by design and take no orders — this
+	// is classic behaviour, not a limitation.  A CHARMED pet is a different
+	// thing and obeys normally, so the gate is on the pet, not just the class.
+	// Mirrors EQClassic (Client_Messaging.cpp:221), including the scope: their
+	// class check wraps only the directing orders, leaving get-lost / leader /
+	// report-health available, so an Enchanter can still dismiss or query an
+	// Animation even though it will not take direction.
+	if (is_control &&
+	    s.trilogy_client->GetClass() == Class::Enchanter &&
+	    !mypet->IsCharmed()) {
+		LogInfo("[TrilogyZone] PetCommand: char={} pet=[{}] order=[{}] refused "
+		        "(Enchanter Animation pets are reactive)",
+		        s.char_name, mypet->GetCleanName(), msg);
+		return true; // consumed — must not fall through to the chat system
+	}
+
+	// PET_ATTACK needs a target; the client leaves it to the server's notion of
+	// the player's current target, which OP_ClientTarget already keeps current.
+	uint32 target_id = 0;
+	if (command == PET_ATTACK || command == PET_LEADER) {
+		if (Mob* t = s.trilogy_client->GetTarget()) {
+			target_id = static_cast<uint32>(t->GetID());
+		}
+	}
+
+	LogInfo("[TrilogyZone] PetCommand: char={} pet=[{}] order=[{}] -> command={} target={}",
+	        s.char_name, mypet->GetCleanName(), msg, command, target_id);
+
+	auto* app = new EQApplicationPacket(OP_PetCommands, sizeof(PetCommand_Struct));
+	auto* pc  = reinterpret_cast<PetCommand_Struct*>(app->pBuffer);
+	pc->command = command;
+	pc->target  = target_id;
+	s.trilogy_client->Handle_OP_PetCommands(app);
+	delete app;
+
+	return true;
+}
+
+// ============================================================
+// WireOwnerIdForSession — Spawn_Struct::pet_owner_id (offset 66)
+//
+// EQClassic sets this unconditionally for every mob it packs
+// (Zone/Source/mob.cpp:333, `ns->spawn.pet_owner_id = ownerid`).
+// We never wrote the field at all, so it was always 0 — the v29c
+// "not a pet" sentinel — and the client consequently refused every
+// pet command with "you have no pet to control", never putting a
+// packet on the wire for us to handle.
+//
+// The value is per-observer, not a straight copy of GetOwnerID().
+// A Trilogy client knows itself by the synthetic player_spawn_id
+// minted at zone entry (0x4000 | char_id, see HandleZoneEntry) and
+// every other entity by its EQEmu entity id.  So a pet owned by the
+// observer has to carry that observer's player_spawn_id; sending the
+// raw entity id means the client's "is this mine?" comparison fails
+// and the pet reads as somebody else's.
+// ============================================================
+int16_t TrilogyZoneServer::WireOwnerIdForSession(const Session& s, uint16_t owner_entity_id)
+{
+	if (owner_entity_id == 0) return 0; // not a pet
+
+	// TranslateId() already encapsulates the self-substitution rule.
+	if (s.trilogy_client) {
+		return static_cast<int16_t>(
+		    s.trilogy_client->TranslateId(static_cast<uint32_t>(owner_entity_id)));
+	}
+	return static_cast<int16_t>(owner_entity_id);
+}
+
+int16_t TrilogyZoneServer::WireOwnerIdForSessionKey(uint64_t session_key, uint16_t owner_entity_id)
+{
+	if (owner_entity_id == 0) return 0;
+
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return static_cast<int16_t>(owner_entity_id);
+	return WireOwnerIdForSession(it->second, owner_entity_id);
+}
 
 // Look up another Trilogy session in this zone by its wire entity id.  Each
 // TrilogyClient registers itself in entity_list under its player_spawn_id which
@@ -8199,6 +8378,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
 		sp.spawn_id  = static_cast<int16_t>(npc->GetID());
 		sp.body_type = static_cast<int16_t>(npc->GetBodyType());
+		// Pets already in the zone when this client zones in.
+		sp.pet_owner_id = WireOwnerIdForSession(s, npc->GetOwnerID());
 		sp.cur_hp    = 100;
 		sp.race      = static_cast<int8_t>(npc->GetRace());
 		// Playerbots appear as player characters (blue nameplate, client behaviour)
@@ -8340,6 +8521,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.z_pos     = static_cast<int16_t>(bot->GetZ() * 10.0f);
 		sp.spawn_id  = static_cast<int16_t>(bot->GetID());
 		sp.body_type = static_cast<int16_t>(bot->GetBodyType());
+		sp.pet_owner_id = WireOwnerIdForSession(s, bot->GetOwnerID());
 		sp.cur_hp    = static_cast<int16_t>(bot->GetHPRatio());
 		// Bot::IsInAGuild() treats both _guildId==0 (newly-created bot) and
 		// _guildId==GUILD_NONE as "no guild", but only GUILD_NONE (0xFFFFFFFF)
@@ -8410,6 +8592,7 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.z_pos     = static_cast<int16_t>(c->GetZ() * 10.0f);
 		sp.spawn_id  = static_cast<int16_t>(c->GetID());
 		sp.body_type = static_cast<int16_t>(c->GetBodyType());
+		sp.pet_owner_id = WireOwnerIdForSession(s, c->GetOwnerID());
 		sp.cur_hp    = static_cast<int16_t>(c->GetHPRatio());
 		sp.GuildID   = static_cast<uint16_t>(c->GuildID());
 		sp.race      = static_cast<int8_t>(c->GetRace());
@@ -8569,6 +8752,7 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	sp.z_pos     = static_cast<int16_t>(c->GetZ() * 10.0f);
 	sp.spawn_id  = static_cast<int16_t>(c->GetID());
 	sp.body_type = static_cast<int16_t>(c->GetBodyType());
+	sp.pet_owner_id = WireOwnerIdForSessionKey(session_key, c->GetOwnerID());
 	sp.cur_hp    = static_cast<int16_t>(c->GetHPRatio());
 	sp.GuildID   = static_cast<uint16_t>(c->GuildID());
 	sp.race      = static_cast<int8_t>(c->GetRace());
@@ -8658,6 +8842,7 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 	sp.z_pos     = static_cast<int16_t>(npc->GetZ() * 10.0f);
 	sp.spawn_id  = static_cast<int16_t>(npc->GetID());
 	sp.body_type = static_cast<int16_t>(npc->GetBodyType());
+	sp.pet_owner_id = WireOwnerIdForSessionKey(session_key, npc->GetOwnerID());
 	sp.cur_hp    = static_cast<int16_t>(npc->GetHPRatio());
 	// Guild tag.  This helper is reused for both Playerbot NPCs and Bot
 	// subsystem entities (Bot inherits from NPC).  Real Bots carry a stored
