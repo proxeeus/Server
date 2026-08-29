@@ -25,6 +25,7 @@
 #include "worlddb.h"
 #include "world_config.h"
 #include "../common/crc32.h"
+#include "../common/deity.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
@@ -1264,9 +1265,33 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	}
 	uint32_t eqemu_deity = 0;
 	const bool client_deity_valid =
-		(client_deity == 140) || (client_deity >= 201 && client_deity <= 216);
+		(client_deity == Deity::Agnostic1) ||
+		(client_deity >= Deity::Bertoxxulous && client_deity <= Deity::Veeshan);
 	if (client_deity_valid) {
 		eqemu_deity = client_deity;
+
+		// Agnostic normalisation.  EQEmu carries TWO ids for Agnostic (deity.h):
+		// Agnostic1 = 140, which the older clients — v29c included — put on the wire,
+		// and Agnostic2 = 396, which is what every content table uses.  In stock data
+		// there are 0 rows at 140 and 165 rows at 396 across start_zones,
+		// char_create_combinations and starting_items.deity_list.
+		//
+		// Left un-normalised, an Agnostic character never matches the level-1
+		// start_zones lookup below (`player_deity=140` returns nothing) and silently
+		// drops to the level-2 "lowest deity in this city" fallback, and any
+		// starting_items row whose deity_list names 396 can never fire for them.
+		//
+		// Normalising here rather than at each lookup keeps character_data.deity
+		// consistent with characters made on modern clients.  It is safe to store:
+		// SendPlayerProfile encodes anything outside 201..216 as 140 for the v29c
+		// character sheet (trilogy_zone.cpp, pp.deity_wire), so the client still shows
+		// "Agnostic", and Deity::GetName()/GetBitmask() already treat both ids as equal.
+		//
+		// Note the wire byte is a uint8, so 140 is the only Agnostic value the client
+		// can physically send — the validity check above must keep accepting it.
+		if (eqemu_deity == Deity::Agnostic1) {
+			eqemu_deity = Deity::Agnostic2;
+		}
 	}
 
 	// Dump payload bytes 46-60 (covers gender@50, deity@51, race@52-53, class@54)
@@ -1655,7 +1680,7 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 					class_, race));
 				inferred_deity = (dq.RowCount() > 0)
 					? static_cast<uint32_t>(Strings::ToInt(dq.begin()[0]))
-					: 140; // Agnostic
+					: Deity::Agnostic2; // Agnostic — content-table id, see normalisation above
 				LogInfo("[TrilogyWorld] CharCreate | deity inferred from class/race: {}", inferred_deity);
 			}
 
