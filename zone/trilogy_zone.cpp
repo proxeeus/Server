@@ -205,6 +205,10 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
+// ZN_OP_Buff is bidirectional: outbound it carries duration refreshes and the
+// buff bar (TrilogyClient::HandleBuff); inbound it is the client asking to drop
+// a buff, which is what right-clicking a buff icon sends.
+static constexpr uint16_t ZN_OP_Buff          = 0x3221; // bidirectional: Buff_Struct (20 bytes)
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
 
@@ -2116,6 +2120,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
 			HandleZoneChange(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Buff && s.trilogy_client)
+			HandleBuffCancel(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
 			HandleCastSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
@@ -5587,6 +5593,61 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // refunds staged coin via AddMoneyToPP (PP was debited at stage time by
 // HandleMoveCoin's carried→trade path).
 // ============================================================
+
+// ============================================================
+// HandleBuffCancel — inbound 0x3221, player clicked a buff off
+//
+// 0x3221 is bidirectional.  Outbound we use it for duration refreshes and the
+// buff bar; inbound it is the client asking to drop a buff, which is what
+// right-clicking a buff icon sends.  Nothing consumed the inbound direction, so
+// buffs could not be removed at all — and an icon that did disappear left the
+// client and server disagreeing, because the server never learned.
+//
+// Wire layout is the 20-byte Trilogy Buff_Struct, which maps onto the first 20
+// bytes of EQClassic's SpellBuffFade_Struct (eq_packet_structs.h:349).  Observed:
+//
+//   12 40 00 00  00 00 00 00  CF 06 ...   -> spell 1743, drop it
+//   12 40 00 00  00 00 00 00  FF FF ...   -> 0xFFFF, the "no spell" sentinel
+//
+// Translate and dispatch into Client::Handle_OP_Buff rather than calling
+// BuffFadeBySpellID directly: that handler owns the rule that DETRIMENTAL
+// spells cannot be clicked off, and refuses them by echoing the packet back
+// (client_packet.cpp:4249).  EQClassic's ProcessOP_Buff has no such check and
+// fades anything, which would let a player click off their own debuffs.
+// ============================================================
+void TrilogyZoneServer::HandleBuffCancel(const std::string& addr, int port, Session& s,
+                                         const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Buff_Struct)) {
+		LogInfo("[TrilogyZone] BuffCancel: char={} short packet plen={} (need {})",
+		        s.char_name, plen,
+		        static_cast<unsigned>(sizeof(Trilogy::structs::Buff_Struct)));
+		return;
+	}
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::Buff_Struct*>(payload);
+
+	// 0xFFFF is the client's "no spell" sentinel.  Handle_OP_Buff treats it the
+	// same way it treats a detrimental spell (echo, do not fade), so pass it
+	// through rather than filtering here and diverging from that rule.
+	const uint16 spell_id = static_cast<uint16>(tri->spell_id);
+
+	LogInfo("[TrilogyZone] BuffCancel: char={} spell_id={} buff_slot={}",
+	        s.char_name, spell_id, tri->buff_slot);
+
+	auto* app = new EQApplicationPacket(OP_Buff, sizeof(::SpellBuffPacket_Struct));
+	auto* emu = reinterpret_cast<::SpellBuffPacket_Struct*>(app->pBuffer);
+	memset(emu, 0, sizeof(::SpellBuffPacket_Struct));
+
+	emu->entityid      = static_cast<uint32>(s.trilogy_client->GetID());
+	emu->buff.spellid  = static_cast<uint32>(spell_id);
+	emu->slotid        = static_cast<uint32>(tri->buff_slot);
+	emu->bufffade      = 1;
+
+	s.trilogy_client->Handle_OP_Buff(app);
+	delete app;
+}
 
 // ============================================================
 // TryHandlePetCommand — pet orders arrive as tells, not an opcode

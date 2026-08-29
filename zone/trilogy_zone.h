@@ -631,6 +631,13 @@ private:
 	// routed onward; returns true when the tell was consumed as a pet order and
 	// must NOT be forwarded to the chat system as a real tell.
 	bool TryHandlePetCommand(Session& s, const char* targetname, const char* msg);
+
+	// Inbound 0x3221 — the client asking to drop a buff (right-click on a buff
+	// icon).  Translates the 20-byte Trilogy Buff_Struct into the modern
+	// SpellBuffPacket_Struct and dispatches Client::Handle_OP_Buff, which owns
+	// the "detrimental spells cannot be clicked off" rule.
+	void HandleBuffCancel(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
