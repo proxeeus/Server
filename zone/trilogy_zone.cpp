@@ -203,6 +203,27 @@ static constexpr uint16_t ZN_OP_Disarm       = 0xaa20; // 12 B {uint32 source; u
 static constexpr uint16_t ZN_OP_ConsumeItem      = 0x4621; // 12 B {int16 slot; int8[2]; int32[2]} — right-click alcohol / arrow consumed
 static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; int32 auto; int8[4]; int8 type; int8[3]}
 
+// Social / party commands (client -> zone).
+// Wire sizes below are measured from a live v29c session, not inferred.  Every
+// struct except LFG is byte-identical to its modern EQEmu counterpart, so these
+// translate to a plain memcpy plus a dispatch into the existing handler.
+//
+//   0x0022 /assist        4 B  {uint32 entity_id}          == EntityId_Struct
+//   0xfe21 /target <name> 4 B  {uint32 entity_id}          == ClientTarget_Struct
+//                              (client resolves the name; we get an id)
+//   0xe721 /random        8 B  {uint32 low, high}          == RandomReq_Struct
+//   0x3121 /split        16 B  {uint32 pp, gp, sp, cp}     == Split_Struct
+//   0xda21 /yell          4 B  {uint32 entity_id}          — relayed to nearby
+//   0xf021 /lfg          36 B  {char name[32]; int32 on}   != EQEmu LFG_Struct
+//   0xb720 /consent       8 B  {char name[]}               == Consent_Struct
+static constexpr uint16_t ZN_OP_Assist         = 0x0022;
+static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21;
+static constexpr uint16_t ZN_OP_Random         = 0xe721;
+static constexpr uint16_t ZN_OP_SplitMoney     = 0x3121;
+static constexpr uint16_t ZN_OP_Yell           = 0xda21;
+static constexpr uint16_t ZN_OP_LFG            = 0xf021;
+static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
+
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
 // ZN_OP_Buff is bidirectional: outbound it carries duration refreshes and the
@@ -2122,6 +2143,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Buff && s.trilogy_client)
 			HandleBuffCancel(addr, port, s, payload, plen);
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_Assist     || opcode == ZN_OP_Random ||
+		          opcode == ZN_OP_SplitMoney || opcode == ZN_OP_Yell   ||
+		          opcode == ZN_OP_LFG        || opcode == ZN_OP_ConsentRequest))
+		{
+			HandleSocialCommand(addr, port, s, opcode, payload, plen);
+		}
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
 			HandleCastSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
@@ -2209,7 +2237,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				s.trilogy_client->Handle_OP_AutoAttack(&atkpkt);
 			}
 		}
-		else if (opcode == ZN_OP_ClientTarget && s.trilogy_client) {
+		else if ((opcode == ZN_OP_ClientTarget || opcode == ZN_OP_TargetByName) &&
+		         s.trilogy_client) {
+			// 0xfe21 is /target <name>: the CLIENT resolves the name and sends the
+			// resulting entity id, so the payload is the same ClientTarget_Struct
+			// that a mouse click sends on 0x6221.  Share the path — it already
+			// carries the drift-refresh and the TargetMouse-not-TargetCommand rule
+			// documented below, both of which /target needs just as much.
 			// Trilogy ClientTarget_Struct: { int16 new_target; int16 pad } = 4 bytes.
 			// EQEmu ClientTarget_Struct: { uint32 new_target } = 4 bytes.
 			// Sign-extend int16 → uint32 so negative entity IDs are preserved.
@@ -5593,6 +5627,139 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // refunds staged coin via AddMoneyToPP (PP was debited at stage time by
 // HandleMoveCoin's carried→trade path).
 // ============================================================
+
+// ============================================================
+// HandleSocialCommand — /assist /random /split /yell /lfg /consent
+//
+// Six commands that shared one cause: the opcode was never dispatched, so the
+// client sent a well-formed packet into the unhandled logger.  EQEmu already
+// implements every one of them; only the Trilogy inbound branch was missing.
+//
+// Wire sizes are measured, not inferred (see the opcode block at the top of this
+// file).  Every struct except LFG is byte-identical to its modern counterpart —
+// EQClassic's Split_Struct, Random_Struct and ConsentRequest_Struct match
+// EQEmu's field for field — so these are a memcpy plus a dispatch.  Sizes are
+// checked with >= rather than == because v29c pads some of these.
+// ============================================================
+void TrilogyZoneServer::HandleSocialCommand(const std::string& addr, int port, Session& s,
+                                            uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	TrilogyClient* tc = s.trilogy_client;
+
+	auto too_short = [&](uint32_t need, const char* what) -> bool {
+		if (plen >= need) return false;
+		LogInfo("[TrilogyZone] Social: char={} {} short packet plen={} (need {})",
+		        s.char_name, what, plen, need);
+		return true;
+	};
+
+	switch (opcode) {
+
+	case ZN_OP_Assist: {
+		if (too_short(sizeof(::EntityId_Struct), "/assist")) return;
+		auto* app = new EQApplicationPacket(OP_Assist, sizeof(::EntityId_Struct));
+		memcpy(app->pBuffer, payload, sizeof(::EntityId_Struct));
+		LogInfo("[TrilogyZone] Social: char={} /assist entity={}",
+		        s.char_name, reinterpret_cast<const ::EntityId_Struct*>(payload)->entity_id);
+		tc->Handle_OP_Assist(app);
+		delete app;
+		break;
+	}
+
+	case ZN_OP_Random: {
+		if (too_short(sizeof(::RandomReq_Struct), "/random")) return;
+		auto* app = new EQApplicationPacket(OP_RandomReq, sizeof(::RandomReq_Struct));
+		memcpy(app->pBuffer, payload, sizeof(::RandomReq_Struct));
+		const auto* rr = reinterpret_cast<const ::RandomReq_Struct*>(payload);
+		LogInfo("[TrilogyZone] Social: char={} /random {}-{}", s.char_name, rr->low, rr->high);
+		tc->Handle_OP_RandomReq(app);
+		delete app;
+		break;
+	}
+
+	case ZN_OP_SplitMoney: {
+		if (too_short(sizeof(::Split_Struct), "/split")) return;
+		auto* app = new EQApplicationPacket(OP_Split, sizeof(::Split_Struct));
+		memcpy(app->pBuffer, payload, sizeof(::Split_Struct));
+		const auto* sp = reinterpret_cast<const ::Split_Struct*>(payload);
+		LogInfo("[TrilogyZone] Social: char={} /split {}p {}g {}s {}c",
+		        s.char_name, sp->platinum, sp->gold, sp->silver, sp->copper);
+		tc->Handle_OP_Split(app);
+		delete app;
+		break;
+	}
+
+	case ZN_OP_Yell: {
+		// Payload is the yeller's own id, which we do not need: EQEmu's handler
+		// builds its own outbound from GetID() and broadcasts to close clients.
+		LogInfo("[TrilogyZone] Social: char={} /yell", s.char_name);
+		EQApplicationPacket app(OP_YellForHelp, 0);
+		tc->Handle_OP_YellForHelp(&app);
+		break;
+	}
+
+	case ZN_OP_LFG: {
+		// The one struct that is NOT shared.  Trilogy sends
+		// { char name[32]; int32 value } (EQClassic eq_packet_structs.h:1288,
+		// PC_MAX_NAME_LENGTH + 2), against EQEmu's larger LFG_Struct with match
+		// filter and level range.  Only the on/off flag carries over; the rest
+		// stay zeroed, which is correct for an era with no LFG filters.
+		if (too_short(36, "/lfg")) return;
+		int32_t value = 0;
+		memcpy(&value, payload + 32, sizeof(value));
+
+		auto* app = new EQApplicationPacket(OP_LFGCommand, sizeof(::LFG_Struct));
+		auto* lfg = reinterpret_cast<::LFG_Struct*>(app->pBuffer);
+		memset(lfg, 0, sizeof(::LFG_Struct));
+		lfg->value = static_cast<uint8>(value ? 1 : 0);
+		LogInfo("[TrilogyZone] Social: char={} /lfg {}", s.char_name, value ? "on" : "off");
+		tc->Handle_OP_LFGCommand(app);
+		delete app;
+
+		// Relay to the other Trilogy clients in the zone so their nameplates
+		// show the LFG asterisk.  EQClassic only sets the flag and calls
+		// UpdateWho, which is why the marker never appears there either — but
+		// the Trilogy LFG_Struct carries a NAME field, and a name is only useful
+		// to a recipient who has to decide WHICH nameplate to mark.  Relaying
+		// the packet verbatim is the reading that makes that field meaningful.
+		// Sender is skipped: its own client already applied the state locally
+		// (it prints "now looking for group" before we see anything).
+		for (auto& kv : m_sessions) {
+			Session& other = kv.second;
+			if (&other == &s || !other.trilogy_client) continue;
+			SendToSession(kv.first, ZN_OP_LFG, payload, plen);
+		}
+		break;
+	}
+
+	case ZN_OP_ConsentRequest: {
+		// Variable-length null-terminated name.  Handle_OP_Consent requires
+		// size < 64 and reads Consent_Struct::name, which is a char[1] the
+		// handler walks as a C string, so send name + terminator and nothing more.
+		// Cap at 62 chars so name + terminator can never reach 64 — the handler
+		// guards on `size < 64` and would silently drop a longer one.
+		char name[63] = {};
+		const uint32_t cap = plen < sizeof(name) ? plen : static_cast<uint32_t>(sizeof(name) - 1);
+		memcpy(name, payload, cap);
+		name[sizeof(name) - 1] = '\0';
+		if (!name[0]) {
+			LogInfo("[TrilogyZone] Social: char={} /consent with empty name - ignored", s.char_name);
+			return;
+		}
+		const uint32_t len = static_cast<uint32_t>(strlen(name)) + 1;
+		auto* app = new EQApplicationPacket(OP_Consent, len);
+		memcpy(app->pBuffer, name, len);
+		LogInfo("[TrilogyZone] Social: char={} /consent [{}]", s.char_name, name);
+		tc->Handle_OP_Consent(app);
+		delete app;
+		break;
+	}
+
+	default:
+		break;
+	}
+}
 
 // ============================================================
 // HandleBuffCancel — inbound 0x3221, player clicked a buff off

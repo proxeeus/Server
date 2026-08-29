@@ -638,6 +638,12 @@ private:
 	// the "detrimental spells cannot be clicked off" rule.
 	void HandleBuffCancel(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
+
+	// /assist, /random, /split, /yell, /lfg, /consent.  All six are thin
+	// translate-and-dispatch paths into existing Client::Handle_OP_* handlers;
+	// grouped into one function because they share that shape entirely.
+	void HandleSocialCommand(const std::string& addr, int port, Session& s,
+	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
