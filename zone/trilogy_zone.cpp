@@ -11855,13 +11855,57 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 	}
 
 	// ---- Normal spell path: translate and forward to Handle_OP_CastSpell ----
+	//
+	// Casting-slot translation.  v29c and modern EQEmu agree on the spell gems
+	// (0..7 -> Gem1..Gem8) and on nothing else:
+	//
+	//   v29c SLOT_ITEMSPELL = 10, but EQEmu's CastingSlot::Gem11 is also 10 and
+	//   CastingSlot::Item is 22 (emu_constants.h:417-422).  Forwarding the raw 10
+	//   made Handle_OP_CastSpell read every item click as an 11th spell gem, which
+	//   trips its Mnemonic Retention guard — ValueWithin(slot, 8, 11) against
+	//   GetAA(aaMnemonicRetention) — and a Trilogy character has no AAs.  Result:
+	//   every clicky in the game died on "You do not have the required AA to use
+	//   this spell slot", before inventoryslot was ever looked at.
+	//
+	//   v29c slot 9 (the Ability button) is deliberately NOT mapped to
+	//   CastingSlot::Ability here.  Lay on Hands and Harm Touch are the only two
+	//   abilities that use it and both are intercepted above, precisely because
+	//   the modern Ability path emits a packet burst that crashes v29c.  Leaving 9
+	//   unmapped keeps anything unexpected out of that path.
+	auto to_emu_casting_slot = [](uint32 wire) -> uint32 {
+		if (wire == 10) return static_cast<uint32>(EQ::spells::CastingSlot::Item);
+		return wire; // gems 0..7 are identity; 9 handled by the intercepts above
+	};
+
 	auto* app = new EQApplicationPacket(OP_CastSpell, sizeof(::CastSpell_Struct));
 	auto* emu = reinterpret_cast<::CastSpell_Struct*>(app->pBuffer);
 	memset(emu, 0, sizeof(::CastSpell_Struct));
 
-	emu->slot          = static_cast<uint32>(tri->slot);
-	emu->spell_id      = static_cast<uint32>(tri->spell_id);
-	emu->inventoryslot = static_cast<uint32>(static_cast<uint16>(tri->inventoryslot));
+	emu->slot     = to_emu_casting_slot(static_cast<uint32>(tri->slot));
+	emu->spell_id = static_cast<uint32>(tri->spell_id);
+
+	// Item clicks carry a wire inventory slot, which needs the same translation
+	// every other inbound path in this file already uses (wire 0 = cursor, 21-29
+	// general shift by one, 250-339 bag contents shift by one).  Gem casts leave
+	// the field unused, so only translate when it actually addresses an item.
+	if (emu->slot == static_cast<uint32>(EQ::spells::CastingSlot::Item)) {
+		const int emu_slot = TrilogyWireSlotToEmuSlot(
+		    static_cast<uint32_t>(static_cast<uint16>(tri->inventoryslot)),
+		    s.cursor_from_db);
+		if (emu_slot < 0) {
+			LogInfo("[TrilogyZone] CastSpell: char={} item click from unmappable "
+			        "wire slot {} - dropped", s.char_name,
+			        static_cast<uint16>(tri->inventoryslot));
+			delete app;
+			return;
+		}
+		emu->inventoryslot = static_cast<uint32>(emu_slot);
+		LogInfo("[TrilogyZone] CastSpell: char={} item click wire_slot={} -> emu_slot={} spell={}",
+		        s.char_name, static_cast<uint16>(tri->inventoryslot), emu_slot, spell_id);
+	} else {
+		emu->inventoryslot = static_cast<uint32>(static_cast<uint16>(tri->inventoryslot));
+	}
+
 	emu->target_id     = emu_target;
 	emu->y_pos = s.pos_y;
 	emu->x_pos = s.pos_x;
