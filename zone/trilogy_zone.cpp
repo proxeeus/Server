@@ -261,6 +261,33 @@ static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
 // one is 0xFFFFFFFF -- so it is mapped explicitly in HandleWhoAll.
 static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
 
+// 0x4121 OP_ZoneEntryResend.  2 B: { int16 spawn_id }.  Client -> zone.
+//
+// The client asking us to send a spawn again.  It arrives as a sweep: one
+// packet per entry in the client's spawn list, in ascending id order, and the
+// whole sweep repeats a few seconds later if nothing comes back.  Live capture
+// of a single burst: 21 ids (30, 31, 35..37, 39..42, 44..50, 52..56) requested
+// three times over about one second, immediately after a batch of 0x2b20
+// DeleteSpawn went out.
+//
+// This is the client's own repair path for spawn desync, and it has been
+// discarded for the entire life of the branch -- 140 requests in one logged
+// session, the loudest thing v29c says that we do not answer.  Worth stating
+// plainly: every "NPC is invisible" and "clicked it, nothing happened" bug this
+// branch has chased had the client asking us to fix it, and being ignored.
+//
+// The name is from EQMacEmuTrilogy's patch_Trilogy.conf, which is the only
+// place either reference tree names it -- EQClassic has neither the opcode nor
+// the concept.  Only the name was taken; the handler below is built on our own
+// spawn senders.
+static constexpr uint16_t ZN_OP_ZoneEntryResend = 0x4121;
+
+// 0x1120 OP_PetitionRefresh.  0 B, fires on every zone-in.  Source: EQClassic
+// Common/Include/eq_opcodes.h:262.  The client polling for petition-queue
+// changes; with no petition UI wired up there is nothing to answer with, so it
+// is consumed silently rather than left to the unhandled logger.
+static constexpr uint16_t ZN_OP_PetitionRefresh = 0x1120;
+
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
 // ZN_OP_Buff is bidirectional: outbound it carries duration refreshes and the
@@ -2184,6 +2211,12 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleServerFilter(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_WhoAll && s.trilogy_client)
 			HandleWhoAll(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ZoneEntryResend && s.trilogy_client)
+			HandleZoneEntryResend(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_PetitionRefresh) {
+			// Nothing to answer with — see the constant.  Consumed so it stops
+			// showing up as unhandled and hiding real gaps in the log.
+		}
 		else if (s.trilogy_client &&
 		         (opcode == ZN_OP_Assist     || opcode == ZN_OP_Random ||
 		          opcode == ZN_OP_SplitMoney || opcode == ZN_OP_Yell   ||
@@ -5879,6 +5912,95 @@ void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session&
 	memcpy(app->pBuffer, &out, sizeof(out));
 	tc->Handle_OP_WhoAllRequest(app);
 	delete app;
+}
+
+// ============================================================
+// HandleZoneEntryResend — inbound 0x4121, "send me this spawn again"
+//
+// See the constant for what the traffic looks like on the wire.  Three cases:
+//
+//   1. The mob still exists and this session should see it -> rebuild its spawn
+//      packet and push it through TrilogyClient::QueuePacket.  That lands in
+//      HandleNewSpawn, which already routes players / bots / Playerbots to
+//      0x6121 (zone-permanent, never staled by the client) and regular NPCs to
+//      0x4921, so the resend inherits the correct treatment per mob type for
+//      free.  known_spawns is refreshed so the ghost reconciler and the
+//      position-broadcast cache stay in step.
+//
+//   2. The mob is gone server-side -> answer with DeleteSpawn instead.  The
+//      client is holding a reference we can never satisfy, and the original
+//      delete evidently did not stick; this is the same repair the ghost
+//      reconciler performs on its own schedule, just triggered by the client.
+//
+//   3. The id is this client's own synthetic player_spawn_id -> ignore.  Echoing
+//      a player their own spawn is what HandleNewSpawn already refuses to do.
+//
+// Answering is what stops the sweep: the retries exist only because nothing
+// came back.  The per-spawn cooldown below is not for the normal case, it is a
+// backstop against a request we can never satisfy turning into a hot loop.
+// ============================================================
+void TrilogyZoneServer::HandleZoneEntryResend(const std::string& addr, int port, Session& s,
+                                              const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (plen < sizeof(int16_t)) {
+		LogInfo("[TrilogyZone] ZoneEntryResend: char={} short packet plen={}",
+		        s.char_name, plen);
+		return;
+	}
+
+	int16_t raw = 0;
+	memcpy(&raw, payload, sizeof(raw));
+	const uint16_t spawn_id = static_cast<uint16_t>(raw);
+
+	// The client refers to itself by the synthetic player_spawn_id.
+	if (spawn_id == s.player_spawn_id) return;
+
+	// Backstop only.  One second is far longer than the client's own retry
+	// cadence (the observed sweep repeated within ~1s), so a request we answer
+	// correctly is never throttled -- only one we keep failing to satisfy.
+	static constexpr uint64_t kResendCooldownMs = 1000;
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	auto it = s.last_resend_ms.find(spawn_id);
+	if (it != s.last_resend_ms.end() && now_ms - it->second < kResendCooldownMs) {
+		return;
+	}
+	s.last_resend_ms[spawn_id] = now_ms;
+
+	Mob* mob = entity_list.GetMob(spawn_id);
+	if (!mob) {
+		Trilogy::structs::DeleteSpawn_Struct ds{};
+		ds.spawn_id    = raw;
+		ds.ds_unknown1 = 0;
+		SendToSession(SessionKey(addr, port), 0x2b20,
+		              reinterpret_cast<const uint8_t*>(&ds),
+		              static_cast<uint32_t>(sizeof(ds)));
+		s.known_spawns.erase(spawn_id);
+		s.last_broadcast.erase(spawn_id);
+		s.last_desync_log_ms.erase(spawn_id);
+		LogInfo("[TrilogyZone] ZoneEntryResend: char={} sid={} GONE — sent 2B20 delete",
+		        s.char_name, spawn_id);
+		return;
+	}
+
+	// QueuePacket lands in TrilogyClient::HandleNewSpawn, which picks 0x6121 vs
+	// 0x4921 by mob type and registers the spawn in known_spawns itself, so the
+	// resend is indistinguishable from any other spawn send.
+	EQApplicationPacket app;
+	mob->CreateSpawnPacket(&app, tc);
+	tc->QueuePacket(&app);
+
+	LogInfo("[TrilogyZone] ZoneEntryResend: char={} sid={} name='{}' type={} "
+	        "pos=({:.1f},{:.1f},{:.1f}) — resent",
+	        s.char_name, spawn_id, mob->GetCleanName(),
+	        mob->IsClient() ? "client" : (mob->IsCorpse() ? "corpse"
+	                       : (mob->IsBot() ? "bot" : "npc")),
+	        mob->GetX(), mob->GetY(), mob->GetZ());
 }
 
 // ============================================================
