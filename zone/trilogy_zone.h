@@ -408,6 +408,13 @@ private:
 		// Set to the DB slot of the item picked up; cleared after it lands.
 		int cursor_from_db = -1;
 
+		// Last 0xff21 Options-panel filter payload, so HandleServerFilter can
+		// report only what CHANGED between two packets.  The client sends one
+		// packet per toggle, so a delta log turns mapping the 15 unknown slots
+		// into reading a single line per option instead of eyeballing 15 numbers.
+		int32_t filters[15]   = {};
+		bool    filters_seen  = false;
+
 		// When HandleMoveItem materialises a partial-stack pickup as a real
 		// cursor row (DB slot 33 or 8000-8010), this records the player's
 		// ORIGINAL inventory slot so trade cancel / non-quest NPC give can
@@ -644,6 +651,13 @@ private:
 	// grouped into one function because they share that shape entirely.
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
+
+	// Inbound 0xff21 — Options-panel chat/combat filters.  Decodes and LOGS the
+	// 15 slots without applying them: the slot-to-filter mapping is undocumented
+	// and guessing it would silently hide real messages.  See the implementation
+	// for the procedure that pins it.
+	void HandleServerFilter(const std::string& addr, int port, Session& s,
+	                        const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
