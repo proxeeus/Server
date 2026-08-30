@@ -359,8 +359,53 @@ void ClientList::CLCheckStale() {
 	}
 }
 
+// Match an update to the client-list entry it belongs to.
+//
+// Normally by wid: world hands the zone its CLE id at auth time (ZoneServer::
+// IncomingClient -> Zone::AddAuth -> GetAuth -> Client::SetWID), and every
+// UpdateWho echoes it back.  CLE ids start at 1, so a zero wid means only one
+// thing -- the zone has no id for this client yet.
+//
+// That is the normal state for a Trilogy client.  Its world session gets a CLE
+// from the login path (TrilogyWorldServer::HandleEnterWorld sets the character
+// on it), but nothing sends ServerOP_ZoneIncClient, so the zone-side Client is
+// constructed with WID = 0 and never learns otherwise.  Falling straight
+// through to the insert below then MINTS A NEW CLE ON EVERY UpdateWho: one from
+// UpdateAdmin, another from CompleteConnect, more on every anon / level /
+// guild change.  The login CLE stays behind too, holding a name but no level,
+// class, race or zone because no zone ever updated it.
+//
+// Visible as one player appearing several times in /who all, once as a row of
+// UNKNOWNs.  Silently wrong for everything else keyed on the CLE as well --
+// tells, cross-zone chat routing, LFG and guild state can all land on a stale
+// duplicate.
+//
+// So when there is no wid, fall back to the character id, which is unique per
+// character and always set by UpdateWho.  Then hand the zone the id it should
+// have had via ChangeWID, so subsequent updates take the fast path.  This is
+// unreachable for clients that authenticate normally: they cannot reach
+// UpdateWho with WID still 0.
 void ClientList::ClientUpdate(ZoneServer *zoneserver, ServerClientList_Struct *scl)
 {
+	if (scl->wid == 0 && scl->charid != 0) {
+		if (ClientListEntry *by_char = FindCLEByCharacterID(scl->charid)) {
+			if (scl->remove == 2) {
+				by_char->LeavingZone(zoneserver, CLE_Status::Offline);
+			}
+			else if (scl->remove == 1) {
+				by_char->LeavingZone(zoneserver, CLE_Status::Zoning);
+			}
+			else {
+				by_char->Update(zoneserver, scl);
+				// Only worth doing on a live update: on a remove the zone-side
+				// Client is going away, and the next zone builds a fresh one
+				// that starts at WID 0 again and takes this same path.
+				zoneserver->ChangeWID(scl->charid, by_char->GetID());
+			}
+			return;
+		}
+	}
+
 	LinkedListIterator<ClientListEntry *> iterator(clientlist);
 	ClientListEntry                       *cle;
 	iterator.Reset();

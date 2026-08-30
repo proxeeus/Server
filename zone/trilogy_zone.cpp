@@ -218,15 +218,15 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 //   0xb720 /consent       8 B  {char name[]}               == Consent_Struct
 // 0xff21 /options — chat and combat message filters.  60 bytes = 15 int32
 // toggles, and the busiest inbound opcode the client sends that we do not
-// consume, so every preference set in the Options panel is discarded today.
+// consume — every preference set in the Options panel used to be discarded.
 //
 // The slot ORDER is documented nowhere: EQClassic declares this struct as
 // `int8 unknown[60]` (eq_packet_structs.h:1622) and never decodes it, and
 // EQEmu's SetServerFilter_Struct is a 29-entry array on its own ordering
 // (eqFilterType, eq_constants.h:736-764).  Mapping it by guesswork would
 // silently mis-filter real messages, which is worse than the current no-op —
-// so this decodes and LOGS only, until the slots are pinned empirically.
-// See HandleServerFilter for the procedure.
+// so the slots were pinned empirically before anything was applied.  See
+// HandleServerFilter for the resulting map and the procedure that produced it.
 static constexpr uint16_t ZN_OP_SetServerFilter = 0xff21;
 static constexpr uint16_t ZN_OP_Assist         = 0x0022;
 static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21;
@@ -235,6 +235,31 @@ static constexpr uint16_t ZN_OP_SplitMoney     = 0x3121;
 static constexpr uint16_t ZN_OP_Yell           = 0xda21;
 static constexpr uint16_t ZN_OP_LFG            = 0xf021;
 static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
+
+// 0xf420 /who all.  76 B Trilogy::structs::WhoAll_Struct.  A bare /who sends
+// nothing — v29c builds the zone roster client-side, like the Tracking list.
+//
+//   /*000*/ char  whom[32]   name / zone / guild substring; empty = no filter
+//   /*032*/ int16 wrace      0xFFFF = no race filter
+//   /*034*/ int16 wclass     0xFFFF = no class filter
+//   /*036*/ int16 firstlvl   0xFFFF = no level filter
+//   /*038*/ int16 secondlvl
+//   /*040*/ int16 gmlookup   0xFFFF = not /who all gm
+//   /*042*/ int16 wguild     guild ID, 0xFFFF = no guild filter.  EQClassic
+//                            folds this into its trailing unknown[34]; a bare
+//                            /who all shows SIX 0xFFFF words at 32..43, one
+//                            more filter slot than it declares.  Confirmed a
+//                            guild ID and not a flag: /who all "Fire" against a
+//                            server whose guild 1 is "Fire and Fury" arrives as
+//                            whom="Fire" wguild=1 -- the client resolves the
+//                            name against the list it got at login and sends
+//                            both halves.
+//
+// Every "no filter" sentinel is 0xFFFF, and EQEmu's Who_All_Struct compares its
+// uint32 fields against 0xFFFF as well (world/clientlist.cpp:597-612), so those
+// zero-extend unchanged.  guildid is the exception -- EQEmu's "none" for that
+// one is 0xFFFFFFFF -- so it is mapped explicitly in HandleWhoAll.
+static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
 
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
@@ -2157,6 +2182,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleBuffCancel(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SetServerFilter && s.trilogy_client)
 			HandleServerFilter(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_WhoAll && s.trilogy_client)
+			HandleWhoAll(addr, port, s, payload, plen);
 		else if (s.trilogy_client &&
 		         (opcode == ZN_OP_Assist     || opcode == ZN_OP_Random ||
 		          opcode == ZN_OP_SplitMoney || opcode == ZN_OP_Yell   ||
@@ -5645,18 +5672,16 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // ============================================================
 // HandleServerFilter — inbound 0xff21, Options panel filters
 //
-// DIAGNOSTIC ONLY, deliberately.  This decodes the 15 int32 slots and logs
-// them; it does NOT apply them, because the slot-to-filter mapping is
-// genuinely unknown:
+// The slot-to-filter mapping had no reference to take it from:
 //
 //   - EQClassic never decoded this packet.  Its struct is `int8 unknown[60]`
-//     (Common/Include/eq_packet_structs.h:1622), so there is no reference
-//     implementation to take the ordering from.
+//     (Common/Include/eq_packet_structs.h:1622).
 //   - EQEmu's SetServerFilter_Struct is uint32 filters[29] on the RoF2
 //     ordering (eqFilterType, eq_constants.h:736-764).  v29c sends 15.
 //
-// A wrong mapping silently hides real combat or chat messages — a worse
-// failure than the current no-op, and far harder to notice.  So:
+// Guessing it would silently hide real combat or chat messages — a worse
+// failure than a no-op, and far harder to notice — so it was pinned by
+// observation instead.
 //
 // MAPPING (pinned empirically 2026-08-29): the client sends one packet per
 // toggle, so walking the Options panel top to bottom one click at a time
@@ -5768,6 +5793,92 @@ void TrilogyZoneServer::HandleServerFilter(const std::string& addr, int port, Se
 
 	memcpy(s.filters, v, sizeof(s.filters));
 	s.filters_seen = true;
+}
+
+// ============================================================
+// HandleWhoAll — inbound 0xf420, /who all
+//
+// This is /who ALL only.  A bare /who sends no packet at all: v29c assembles
+// the zone roster client-side from spawn data it already has, the same way it
+// builds the Tracking list, and that has always worked.  Confirmed by capture —
+// /who produced nothing on the wire, /who all produced this 76-byte packet.
+//
+// So there is no /who-vs-/who-all ambiguity to resolve here and no need for a
+// type field, which is why v29c has none and why EQClassic forwards every
+// request straight to world (Zone/Source/client_process.cpp:4515,
+// World/Source/ZSList.cpp:498).  Route to the server-wide path unconditionally
+// and let whom[] narrow it.
+//
+// The forwarded struct is EQEmu's 156 B Who_All_Struct with type=3.  Handle_OP_
+// WhoAllRequest routes type==0 to entity_list.ZoneWho, which builds an
+// OP_ZoneEntry-based list that v29c has no handler for; type!=0 goes to
+// Client::WhoAll → world → ServerOP_WhoAllReply → OP_WhoAllResponse, which is
+// the path TrilogyClient::HandleOutgoingWhoAllResponse renders into chat lines.
+//
+// Filter fields zero-extend: every v29c "no filter" sentinel is 0xFFFF and
+// EQEmu compares its uint32 fields against 0xFFFF, not 0xFFFFFFFF.
+// ============================================================
+void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session& s,
+                                     const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (plen < sizeof(Trilogy::structs::WhoAll_Struct)) {
+		LogInfo("[TrilogyZone] WhoAll: char={} short packet plen={} (need {})",
+		        s.char_name, plen,
+		        static_cast<unsigned>(sizeof(Trilogy::structs::WhoAll_Struct)));
+		return;
+	}
+
+	const auto* in = reinterpret_cast<const Trilogy::structs::WhoAll_Struct*>(payload);
+
+	// whom[32] is not guaranteed null-terminated on the wire.
+	char whom_buf[sizeof(in->whom) + 1] = {};
+	memcpy(whom_buf, in->whom, sizeof(in->whom));
+
+	// Read the filters through uint16 so the 0xFFFF sentinel survives the
+	// widening (int16 -1 would sign-extend to 0xFFFFFFFF and stop matching).
+	auto widen = [](int16_t raw) -> uint32 {
+		return static_cast<uint32>(static_cast<uint16_t>(raw));
+	};
+
+	::Who_All_Struct out{};
+	strn0cpy(out.whom, whom_buf, sizeof(out.whom));
+	out.wrace    = widen(in->wrace);
+	out.wclass   = widen(in->wclass);
+	out.lvllow   = widen(in->firstlvl);
+	out.lvlhigh  = widen(in->secondlvl);
+	out.gmlookup = widen(in->gmlookup);
+	out.type     = 3;          // /who all — see above
+
+	// wguild is a real guild ID, not a filter sentinel: /who all "Fire" on a
+	// server whose guild 1 is "Fire and Fury" arrives as whom="Fire" wguild=1.
+	// The client resolves the name against the guild list it was handed at
+	// login (TrilogyWorldServer OP_GuildsList) and sends both halves.
+	//
+	// Its "none" value is 0xFFFF, while EQEmu's is 0xFFFFFFFF, so this one does
+	// NOT zero-extend -- map the sentinel explicitly.  Nothing on the /who all
+	// path reads it (ClientList::SendWhoAll matches guilds by name from whom[],
+	// and the only reader, EntityList::ZoneWho, is the type==0 branch we never
+	// take), but carry it correctly rather than hardcode a lie.
+	out.guildid  = (static_cast<uint16_t>(in->wguild) == 0xFFFF)
+		? 0xFFFFFFFF
+		: static_cast<uint32>(static_cast<uint16_t>(in->wguild));
+
+	// Logged in full: the filter fields are the part with no reference to check
+	// against.  wguild in particular is a slot EQClassic does not declare, and
+	// only /who all <guildname> will show what the client puts there.
+	LogInfo("[TrilogyZone] WhoAll: char={} whom='{}' race={:#x} class={:#x} "
+	        "lvl={:#x}-{:#x} gm={:#x} guild={:#x}",
+	        s.char_name, std::string(whom_buf), out.wrace, out.wclass,
+	        out.lvllow, out.lvlhigh, out.gmlookup,
+	        static_cast<uint32>(static_cast<uint16_t>(in->wguild)));
+
+	auto* app = new EQApplicationPacket(OP_WhoAllRequest, sizeof(::Who_All_Struct));
+	memcpy(app->pBuffer, &out, sizeof(out));
+	tc->Handle_OP_WhoAllRequest(app);
+	delete app;
 }
 
 // ============================================================

@@ -1530,7 +1530,13 @@ struct WhoAll_Struct
 /*036*/	int16	firstlvl;	// 0xFFFF = no level filter
 /*038*/	int16	secondlvl;
 /*040*/	int16	gmlookup;	// 0xFFFF = not /who all gm
-/*042*/	int8	unknown[34];
+/*042*/	int16	wguild;		// guild ID, 0xFFFF = no guild filter.  EQClassic folds
+					// this into its trailing unknown[]; a bare /who all
+					// shows SIX 0xFFFF words at 32..43, one more filter
+					// slot than it declares.  Confirmed a guild ID:
+					// /who all "Fire" against a server whose guild 1 is
+					// "Fire and Fury" arrives as whom="Fire" wguild=1.
+/*044*/	int8	unknown[32];
 /*076*/
 };
 
