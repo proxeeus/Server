@@ -1542,6 +1542,51 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 	}
 	strncpy(sp.Surname, mob->GetLastName(),  sizeof(sp.Surname) - 1);
 
+	// Seed the client-known-material model BEFORE the encryption below.
+	//
+	// sp is a reference into `out` (see its declaration at the top of this
+	// function) and EncryptSpawnPacket works IN PLACE, so every read of sp
+	// after that call returns ciphertext.  This seed used to run after the
+	// send and was therefore filling m_client_known_material with 9 random
+	// bytes per spawn.
+	//
+	// That matters because the map is the authoritative model of what the
+	// client has already rendered, and HandleWearChange SUPPRESSES any
+	// WearChange whose material matches it.  Garbage seeds break it both ways:
+	// the redundant WearChange bursts EQEmu emits on CompleteConnect / illusion
+	// / pet summon / per-loot-slot stopped being suppressed at all (the whole
+	// point of the cache), and a real equipment change was silently dropped
+	// whenever the new material happened to collide with the random byte for
+	// that slot -- 1-in-256 per slot, which over a session in a populated zone
+	// is a handful of NPCs quietly wearing the wrong thing.
+	//
+	// Doing it here also means the deferred zoning branch below gets a seed,
+	// which it never did: it returns before the old call site.
+	//
+	// Only this 4921 path was affected.  The 6121 builders in trilogy_zone.cpp
+	// serialise sp into a separate buffer and compress THAT, leaving their own
+	// sp plaintext, so their seed calls were always correct.
+	SeedKnownMaterials(static_cast<uint16_t>(spawn_id), sp.equipment);
+
+	// Diag: log NPC properties when broadcasting NewSpawn — correlates a fresh
+	// mob arrival with the freeze trigger so we can identify what's unusual
+	// about a specific named when it enters the player's view.  Uses the local
+	// spawn_id for the same aliasing reason: sp.spawn_id read post-encryption
+	// printed ciphertext, which is why this line used to show ids like -24912
+	// and 32601 for entities whose real ids were two digits.
+	LogInfo("[TrilogyDiag] 4921 NewSpawn sid={} name='{}' race={} class={} level={} gender={} texture={} helmtex={} size={} npctypeid={} player_race={}",
+	        static_cast<int>(spawn_id),
+	        mob->GetCleanName(),
+	        static_cast<int>(mob->GetRace()),
+	        static_cast<int>(mob->GetClass()),
+	        static_cast<int>(mob->GetLevel()),
+	        static_cast<int>(mob->GetGender()),
+	        static_cast<int>(mob->GetTexture()),
+	        static_cast<int>(mob->GetHelmTexture()),
+	        static_cast<double>(mob->GetSize()),
+	        mob->IsNPC() ? static_cast<int>(mob->CastToNPC()->GetNPCTypeID()) : -1,
+	        IsPlayerRace(mob->GetRace()) ? 1 : 0);
+
 	// CRC32 over bytes [4..168) stored in out.ns_unknown1 (bytes [0..3]).
 	CRC32::SetEQChecksum(reinterpret_cast<unsigned char*>(&out), sizeof(out));
 
@@ -1561,29 +1606,10 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 		return;
 	}
 
-	// Diag: log NPC properties when broadcasting NewSpawn — correlates a fresh
-	// mob arrival with the freeze trigger so we can identify what's unusual
-	// about a specific named when it enters the player's view.
-	LogInfo("[TrilogyDiag] 4921 NewSpawn sid={} name='{}' race={} class={} level={} gender={} texture={} helmtex={} size={} npctypeid={} player_race={}",
-	        static_cast<int>(sp.spawn_id),
-	        mob->GetCleanName(),
-	        static_cast<int>(mob->GetRace()),
-	        static_cast<int>(mob->GetClass()),
-	        static_cast<int>(mob->GetLevel()),
-	        static_cast<int>(mob->GetGender()),
-	        static_cast<int>(mob->GetTexture()),
-	        static_cast<int>(mob->GetHelmTexture()),
-	        static_cast<double>(mob->GetSize()),
-	        mob->IsNPC() ? static_cast<int>(mob->CastToNPC()->GetNPCTypeID()) : -1,
-	        IsPlayerRace(mob->GetRace()) ? 1 : 0);
-
 	m_tzs->SendToSession(m_session_key, 0x4921,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 	m_tzs->NoteKnownSpawn(m_session_key, static_cast<uint16_t>(spawn_id));
-
-	// Seed v29c-client-known-material model from the spawn struct equipment.
-	SeedKnownMaterials(static_cast<uint16_t>(spawn_id), sp.equipment);
 
 	// Explicit OP_WearChange for the helm slot — v29c does not render the helm
 	// from the spawn struct's npc_helm_graphic field for player-race NPC=1
