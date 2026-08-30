@@ -3753,6 +3753,15 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 		if (!account.empty()) line += fmt::format(" AccName: {}", account);
 		if (admin != 0xFFFFFFFF) line += fmt::format(" Status: {}", admin);
 
+		// One line per row.  /who all is user-initiated and rare, and when a
+		// listing looks wrong the question is always "what did world actually
+		// send" -- which is exactly this, and is not recoverable from the
+		// rendered text alone.
+		LogInfo("[TrilogyZone] WhoAllResponse row: fmt={} name='{}' rank={} guild='{}' "
+		        "admin={:#x} zonestring={:#x} zone={} class={} level={} race={} acct='{}'",
+		        formatstring, name, rankstring, guild, admin, zonestring,
+		        zone_id, class_id, level, race_id, account);
+
 		SendSystemLine(kWhite, line);
 		++shown;
 	}

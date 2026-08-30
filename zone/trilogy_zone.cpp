@@ -245,14 +245,20 @@ static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
 //   /*036*/ int16 firstlvl   0xFFFF = no level filter
 //   /*038*/ int16 secondlvl
 //   /*040*/ int16 gmlookup   0xFFFF = not /who all gm
-//   /*042*/ int16 wguild     0xFFFF = no guild filter.  EQClassic folds this
-//                            into its trailing unknown[34]; a live capture of a
-//                            bare /who all shows SIX 0xFFFF words at 32..43, so
-//                            there is one more filter slot than it declares.
+//   /*042*/ int16 wguild     guild ID, 0xFFFF = no guild filter.  EQClassic
+//                            folds this into its trailing unknown[34]; a bare
+//                            /who all shows SIX 0xFFFF words at 32..43, one
+//                            more filter slot than it declares.  Confirmed a
+//                            guild ID and not a flag: /who all "Fire" against a
+//                            server whose guild 1 is "Fire and Fury" arrives as
+//                            whom="Fire" wguild=1 -- the client resolves the
+//                            name against the list it got at login and sends
+//                            both halves.
 //
 // Every "no filter" sentinel is 0xFFFF, and EQEmu's Who_All_Struct compares its
-// uint32 fields against 0xFFFF as well (world/clientlist.cpp:597-612), so a
-// plain zero-extend carries the meaning across unchanged.
+// uint32 fields against 0xFFFF as well (world/clientlist.cpp:597-612), so those
+// zero-extend unchanged.  guildid is the exception -- EQEmu's "none" for that
+// one is 0xFFFFFFFF -- so it is mapped explicitly in HandleWhoAll.
 static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
 
 // Spell opcodes (bidirectional)
@@ -5844,8 +5850,21 @@ void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session&
 	out.lvllow   = widen(in->firstlvl);
 	out.lvlhigh  = widen(in->secondlvl);
 	out.gmlookup = widen(in->gmlookup);
-	out.guildid  = 0xFFFFFFFF; // unused by ClientList::SendWhoAll (guilds match by name)
 	out.type     = 3;          // /who all — see above
+
+	// wguild is a real guild ID, not a filter sentinel: /who all "Fire" on a
+	// server whose guild 1 is "Fire and Fury" arrives as whom="Fire" wguild=1.
+	// The client resolves the name against the guild list it was handed at
+	// login (TrilogyWorldServer OP_GuildsList) and sends both halves.
+	//
+	// Its "none" value is 0xFFFF, while EQEmu's is 0xFFFFFFFF, so this one does
+	// NOT zero-extend -- map the sentinel explicitly.  Nothing on the /who all
+	// path reads it (ClientList::SendWhoAll matches guilds by name from whom[],
+	// and the only reader, EntityList::ZoneWho, is the type==0 branch we never
+	// take), but carry it correctly rather than hardcode a lie.
+	out.guildid  = (static_cast<uint16_t>(in->wguild) == 0xFFFF)
+		? 0xFFFFFFFF
+		: static_cast<uint32>(static_cast<uint16_t>(in->wguild));
 
 	// Logged in full: the filter fields are the part with no reference to check
 	// against.  wguild in particular is a slot EQClassic does not declare, and
