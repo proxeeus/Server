@@ -298,6 +298,12 @@ private:
 		// this caps it to one line per spawn per kDesyncLogIntervalMs.
 		std::unordered_map<uint16_t, uint64_t> last_desync_log_ms;
 
+		// Per-spawn backstop for inbound OP_ZoneEntryResend (0x4121).  Answering
+		// a resend is what stops the client retrying, so this never throttles the
+		// normal case; it exists so a request we can never satisfy cannot turn
+		// into a hot loop.  See HandleZoneEntryResend.
+		std::unordered_map<uint16_t, uint64_t> last_resend_ms;
+
 		// Rate limiter for [Trilogy attack-diag] TARGET log — click-spam
 		// on nearby NPCs would otherwise flood on every mouseover.
 		uint64_t last_target_log_ms = 0;
@@ -664,6 +670,13 @@ private:
 	// by TrilogyClient::HandleOutgoingWhoAllResponse.
 	void HandleWhoAll(const std::string& addr, int port, Session& s,
 	                  const uint8_t* payload, uint32_t plen);
+
+	// Inbound 0x4121 OP_ZoneEntryResend — the client asking for a spawn again.
+	// Resends it if the mob is still there, or answers with a DeleteSpawn if it
+	// is gone.  This is v29c's own repair path for spawn desync; see the
+	// implementation for the wire behaviour it responds to.
+	void HandleZoneEntryResend(const std::string& addr, int port, Session& s,
+	                           const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
