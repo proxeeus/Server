@@ -216,6 +216,18 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 //   0xda21 /yell          4 B  {uint32 entity_id}          — relayed to nearby
 //   0xf021 /lfg          36 B  {char name[32]; int32 on}   != EQEmu LFG_Struct
 //   0xb720 /consent       8 B  {char name[]}               == Consent_Struct
+// 0xff21 /options — chat and combat message filters.  60 bytes = 15 int32
+// toggles, and the busiest inbound opcode the client sends that we do not
+// consume, so every preference set in the Options panel is discarded today.
+//
+// The slot ORDER is documented nowhere: EQClassic declares this struct as
+// `int8 unknown[60]` (eq_packet_structs.h:1622) and never decodes it, and
+// EQEmu's SetServerFilter_Struct is a 29-entry array on its own ordering
+// (eqFilterType, eq_constants.h:736-764).  Mapping it by guesswork would
+// silently mis-filter real messages, which is worse than the current no-op —
+// so this decodes and LOGS only, until the slots are pinned empirically.
+// See HandleServerFilter for the procedure.
+static constexpr uint16_t ZN_OP_SetServerFilter = 0xff21;
 static constexpr uint16_t ZN_OP_Assist         = 0x0022;
 static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21;
 static constexpr uint16_t ZN_OP_Random         = 0xe721;
@@ -2143,6 +2155,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Buff && s.trilogy_client)
 			HandleBuffCancel(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_SetServerFilter && s.trilogy_client)
+			HandleServerFilter(addr, port, s, payload, plen);
 		else if (s.trilogy_client &&
 		         (opcode == ZN_OP_Assist     || opcode == ZN_OP_Random ||
 		          opcode == ZN_OP_SplitMoney || opcode == ZN_OP_Yell   ||
@@ -5627,6 +5641,134 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // refunds staged coin via AddMoneyToPP (PP was debited at stage time by
 // HandleMoveCoin's carried→trade path).
 // ============================================================
+
+// ============================================================
+// HandleServerFilter — inbound 0xff21, Options panel filters
+//
+// DIAGNOSTIC ONLY, deliberately.  This decodes the 15 int32 slots and logs
+// them; it does NOT apply them, because the slot-to-filter mapping is
+// genuinely unknown:
+//
+//   - EQClassic never decoded this packet.  Its struct is `int8 unknown[60]`
+//     (Common/Include/eq_packet_structs.h:1622), so there is no reference
+//     implementation to take the ordering from.
+//   - EQEmu's SetServerFilter_Struct is uint32 filters[29] on the RoF2
+//     ordering (eqFilterType, eq_constants.h:736-764).  v29c sends 15.
+//
+// A wrong mapping silently hides real combat or chat messages — a worse
+// failure than the current no-op, and far harder to notice.  So:
+//
+// MAPPING (pinned empirically 2026-08-29): the client sends one packet per
+// toggle, so walking the Options panel top to bottom one click at a time
+// produced one CHANGED line per option, in panel order.  Result:
+//
+//   idx  Options panel label      EQEmu eqFilterType
+//    5   Guildchat                FilterGuildChat
+//    6   Socials                  FilterSocials
+//    7   Group chat               FilterGroupChat
+//    8   Shouts                   FilterShouts
+//    9   Auctions                 FilterAuctions
+//   10   OOC                      FilterOOC
+//   11   My misses                FilterMyMisses
+//   12   Other misses             FilterOthersMiss
+//   13   Other hits               FilterOthersHit
+//   14   Attacker missing me      FilterMissedMe
+//    2   PC Spells   (multi)      FilterPCSpells
+//    1   NPC Spells               FilterNPCSpells
+//    3   Bard songs  (multi)      FilterBardSongs
+//   --   Damage shields           NOT SENT (see below)
+//    0   never observed changing  unknown
+//    4   never observed changing  unknown
+//
+// POLARITY: v29c's values pass through unchanged.  EQEmu splits filters into
+// two conventions (Client::ServerFilter's Filter0 macro = 1:show/0:hide, used
+// by the chat and miss filters; Filter1 = 0:show/1:hide, used by the spell
+// filters), and a fresh v29c client's defaults match both -- chat filters
+// default to 1, spell filters to 0, i.e. everything shown.  So the raw value
+// is already in EQEmu's units for each filter it maps to.
+//
+// PC Spells and Bard songs are multi-state and were observed stepping 0-3.
+// Their values pass through too; EQEmu reads 0=show, and the higher states are
+// the narrowing ones in both.
+//
+// Damage shields is deliberately absent because the client does NOT send it.
+// The panel walk produced 13 CHANGED lines for 14 clicks, and an isolated
+// click on Damage shields alone then moved NOTHING: five packets arrived with
+// all 15 slots unchanged, against a baseline byte-identical to the previous
+// session's end state.  So v29c filters damage shields locally and never tells
+// the server.  Slots 0 and 4 were likewise never observed moving from any
+// panel toggle -- 13 of the 15 slots are all the Options panel drives.
+//
+// Only the filters v29c actually reports are applied, via SetFilter, rather
+// than fabricating a full 29-entry SetServerFilter_Struct: the other 16
+// filters have no v29c control and must keep their current values.
+// ============================================================
+void TrilogyZoneServer::HandleServerFilter(const std::string& addr, int port, Session& s,
+                                           const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+
+	static constexpr uint32_t kTrilogyFilterCount = 15; // 60 bytes / sizeof(int32)
+	if (plen < kTrilogyFilterCount * sizeof(int32_t)) {
+		LogInfo("[TrilogyZone] ServerFilter: char={} short packet plen={} (need {})",
+		        s.char_name, plen,
+		        static_cast<unsigned>(kTrilogyFilterCount * sizeof(int32_t)));
+		return;
+	}
+
+	int32_t v[kTrilogyFilterCount] = {};
+	memcpy(v, payload, sizeof(v));
+
+	// v29c slot -> eqFilterType.  Damage shields is absent on purpose; see above.
+	struct FilterSlot { uint32_t idx; eqFilterType type; };
+	static const FilterSlot kMap[] = {
+		{  5, FilterGuildChat  },
+		{  6, FilterSocials    },
+		{  7, FilterGroupChat  },
+		{  8, FilterShouts     },
+		{  9, FilterAuctions   },
+		{ 10, FilterOOC        },
+		{ 11, FilterMyMisses   },
+		{ 12, FilterOthersMiss },
+		{ 13, FilterOthersHit  },
+		{ 14, FilterMissedMe   },
+		{  2, FilterPCSpells   },
+		{  1, FilterNPCSpells  },
+		{  3, FilterBardSongs  },
+	};
+
+	for (const auto& m : kMap) {
+		// Values are already in EQEmu's units for each filter (see the polarity
+		// note above), so the raw value indexes eqFilterMode directly.  Clamp
+		// anyway: a value outside the enum would be an out-of-range write.
+		int32_t val = v[m.idx];
+		if (val < 0 || val > FilterShowSelfOnly) {
+			LogInfo("[TrilogyZone] ServerFilter: char={} idx={} out-of-range value {} — ignored",
+			        s.char_name, m.idx, val);
+			continue;
+		}
+		s.trilogy_client->SetFilter(m.type, static_cast<eqFilterMode>(val));
+	}
+
+	if (!s.filters_seen) {
+		std::string dump;
+		for (uint32_t i = 0; i < kTrilogyFilterCount; ++i) {
+			dump += fmt::format("{}:{}{}", i, v[i], (i + 1 < kTrilogyFilterCount) ? " " : "");
+		}
+		LogInfo("[TrilogyZone] ServerFilter: char={} BASELINE [{}]", s.char_name, dump);
+	}
+	else {
+		for (uint32_t i = 0; i < kTrilogyFilterCount; ++i) {
+			if (v[i] != s.filters[i]) {
+				LogInfo("[TrilogyZone] ServerFilter: char={} CHANGED idx={} {}->{}",
+				        s.char_name, i, s.filters[i], v[i]);
+			}
+		}
+	}
+
+	memcpy(s.filters, v, sizeof(s.filters));
+	s.filters_seen = true;
+}
 
 // ============================================================
 // HandleSocialCommand — /assist /random /split /yell /lfg /consent
