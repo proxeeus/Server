@@ -677,6 +677,17 @@ private:
 	// implementation for the wire behaviour it responds to.
 	void HandleZoneEntryResend(const std::string& addr, int port, Session& s,
 	                           const uint8_t* payload, uint32_t plen);
+
+	// Inbound 0x1f20 OP_SetRunMode — walk/run toggle.  Same four bytes as
+	// EQEmu's SetRunMode_Struct; without it Client::runmode never leaves its
+	// false default and the server models every v29c player as walking.
+	void HandleSetRunMode(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+
+	// Inbound 0x4721 OP_ClientError — the client reporting its own fault.
+	// Logged rather than parsed; no reference tree declares a struct for it.
+	void HandleClientError(const std::string& addr, int port, Session& s,
+	                       const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,

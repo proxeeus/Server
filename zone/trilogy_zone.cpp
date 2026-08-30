@@ -282,6 +282,47 @@ static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
 // spawn senders.
 static constexpr uint16_t ZN_OP_ZoneEntryResend = 0x4121;
 
+// 0x1f20 OP_SetRunMode.  4 B, byte-identical to EQEmu's SetRunMode_Struct
+// { uint8 mode; uint8 unknown[3] } — the wire only ever carries 01 00 00 00 or
+// 00 00 00 00, which is exactly that shape.
+//
+// EQClassic named it OP_MovementUpdate and left the case empty with the comment
+// "Noticed this was going unknown opcode between run/walk"
+// (Zone/Source/client_process.cpp:6406), so the semantics are settled by its own
+// note even though it never used the value.
+//
+// We should: Client::runmode is initialised false (zone/client.cpp:242) and,
+// with nothing dispatching this, stays false for the whole session on a Trilogy
+// client.  Two places read it — Mob::GetMovementSpeed picks GetBaseWalkspeed()
+// over GetBaseRunspeed() for a Client (zone/mob.cpp:907), so the server models
+// every v29c player as walking regardless of what they are doing; and
+// client_mods.cpp:1680 gates its is_running term on it.
+static constexpr uint16_t ZN_OP_SetRunMode      = 0x1f20;
+
+// 0x4721 OP_ClientError.  92 B.  The client reporting its OWN faults — EQClassic
+// (Common/Include/eq_opcodes.h:222) describes it as "client sents this when an
+// error client side happend i.e. a stackable item without charges sent to the
+// client, or an invalid item (got a bogus item) etc".
+//
+// Neither reference tree declares a struct for it, so this is logged rather than
+// parsed.  What the captures do show, consistently:
+//
+//   /*000*/ int32  0xFFFFFFFC   (-4)      constant across every sample
+//   /*004*/ int32  0xFFFFFFFF   (-1)      constant across every sample
+//   /*008*/ int32  error code              observed 2 and 6
+//   /*012*/ ...    context, code-dependent
+//
+// Code 6 carries what look like client-side code addresses (0x00410B5F,
+// 0x0FE7A748) followed by four floats that read as a position — 136.0, 167.0,
+// -52.6, 92.0.  Code 2 carries a system-DLL address (0x77062B60) and little
+// else.  Both smell like fault reports with a return address, which is only
+// decodable against the client binary.
+//
+// Logging the whole payload is the useful move regardless: this is the client
+// telling us something we sent it was malformed, and on a branch whose history
+// is largely inventory and spawn desync that is signal worth keeping.
+static constexpr uint16_t ZN_OP_ClientError     = 0x4721;
+
 // 0x1120 OP_PetitionRefresh.  0 B, fires on every zone-in.  Source: EQClassic
 // Common/Include/eq_opcodes.h:262.  The client polling for petition-queue
 // changes; with no petition UI wired up there is nothing to answer with, so it
@@ -2213,6 +2254,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleWhoAll(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ZoneEntryResend && s.trilogy_client)
 			HandleZoneEntryResend(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_SetRunMode && s.trilogy_client)
+			HandleSetRunMode(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ClientError && s.trilogy_client)
+			HandleClientError(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_PetitionRefresh) {
 			// Nothing to answer with — see the constant.  Consumed so it stops
 			// showing up as unhandled and hiding real gaps in the log.
@@ -6001,6 +6046,68 @@ void TrilogyZoneServer::HandleZoneEntryResend(const std::string& addr, int port,
 	        mob->IsClient() ? "client" : (mob->IsCorpse() ? "corpse"
 	                       : (mob->IsBot() ? "bot" : "npc")),
 	        mob->GetX(), mob->GetY(), mob->GetZ());
+}
+
+// ============================================================
+// HandleSetRunMode — inbound 0x1f20, walk/run toggle
+//
+// The Trilogy wire struct and EQEmu's SetRunMode_Struct are the same four
+// bytes, so this is a straight memcpy into the existing handler.  See the
+// constant for why it matters: without it Client::runmode is stuck false for
+// the whole session and the server models every v29c player as walking.
+// ============================================================
+void TrilogyZoneServer::HandleSetRunMode(const std::string& addr, int port, Session& s,
+                                         const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (plen < sizeof(::SetRunMode_Struct)) {
+		LogInfo("[TrilogyZone] SetRunMode: char={} short packet plen={} (need {})",
+		        s.char_name, plen,
+		        static_cast<unsigned>(sizeof(::SetRunMode_Struct)));
+		return;
+	}
+
+	auto* app = new EQApplicationPacket(OP_SetRunMode, sizeof(::SetRunMode_Struct));
+	memcpy(app->pBuffer, payload, sizeof(::SetRunMode_Struct));
+	tc->Handle_OP_SetRunMode(app);
+	delete app;
+
+	LogInfo("[TrilogyZone] SetRunMode: char={} mode={}",
+	        s.char_name,
+	        reinterpret_cast<const ::SetRunMode_Struct*>(payload)->mode ? "run" : "walk");
+}
+
+// ============================================================
+// HandleClientError — inbound 0x4721, the client reporting its own fault
+//
+// Logged, not parsed: neither reference tree declares a struct for it.  The
+// leading two int32s are constant across every capture and the third is an
+// error code; everything after that is code-dependent and reads like a fault
+// report with a return address, which needs the client binary to decode.  See
+// the constant for the full breakdown.
+//
+// The whole payload goes to the log because the point of consuming this opcode
+// is to stop throwing the signal away, and a truncated dump would defeat that.
+// It is rare — single digits per session — so there is no volume concern.
+// ============================================================
+void TrilogyZoneServer::HandleClientError(const std::string& addr, int port, Session& s,
+                                          const uint8_t* payload, uint32_t plen)
+{
+	uint32_t code = 0;
+	if (plen >= 12) {
+		memcpy(&code, payload + 8, sizeof(code));
+	}
+
+	std::string hex;
+	hex.reserve(plen * 3);
+	for (uint32_t i = 0; i < plen; ++i) {
+		hex += fmt::format("{:02X} ", payload[i]);
+	}
+
+	LogInfo("[TrilogyZone] ClientError: char={} code={} plen={} payload=[{}]",
+	        s.char_name, code, plen, hex);
 }
 
 // ============================================================
