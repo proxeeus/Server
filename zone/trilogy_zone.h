@@ -652,12 +652,18 @@ private:
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
 
-	// Inbound 0xff21 — Options-panel chat/combat filters.  Decodes and LOGS the
-	// 15 slots without applying them: the slot-to-filter mapping is undocumented
-	// and guessing it would silently hide real messages.  See the implementation
-	// for the procedure that pins it.
+	// Inbound 0xff21 — Options-panel chat/combat filters.  Applies the 13 slots
+	// v29c actually reports; the slot-to-filter mapping is undocumented and was
+	// pinned empirically.  See the implementation for the map and the procedure.
 	void HandleServerFilter(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);
+
+	// Inbound 0xf420 — /who and /who all.  Widens the 76 B Trilogy filter struct
+	// into EQEmu's Who_All_Struct and dispatches Client::Handle_OP_WhoAllRequest;
+	// the reply comes back as OP_WhoAllResponse and is rendered into chat lines
+	// by TrilogyClient::HandleOutgoingWhoAllResponse.
+	void HandleWhoAll(const std::string& addr, int port, Session& s,
+	                  const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,

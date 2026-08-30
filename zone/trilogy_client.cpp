@@ -672,6 +672,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_SimpleMessage:
 		HandleOutgoingSimpleMessage(app);
 		break;
+	case OP_WhoAllResponse:
+		HandleOutgoingWhoAllResponse(app);
+		break;
 	case OP_Sound: {
 		// quest::ding()/e.other:Ding() → Client::SendSound(), and Client::QuestReward()
 		// also emits OP_Sound.  Map to the classic quest "fanfare" trumpet:
@@ -2907,6 +2910,11 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 470:   return "Your faction standing with %1 got worse.";
 		case 471:   return "Your faction standing with %1 could not possibly get any better.";
 		case 472:   return "Your faction standing with %1 got better.";
+		// /who all with filters that match nobody.  Sent by the zone as a bare
+		// MessageString when world returns a 64-byte (header-only) reply
+		// (zone/worldserver.cpp:473) — no OP_WhoAllResponse is sent at all in
+		// that case, so without this the search silently produces nothing.
+		case 5029:  return "There are no players in EverQuest that match those who filters."; // WHOALL_NO_RESULTS
 		case 5085:  return "You gained raid experience!";                             // GAIN_RAIDEXP
 		case 9298:  return "You gain party experience (with a bonus)!";               // GAIN_GROUPXP_BONUS
 		case 9301:  return "You gain party experience (with a penalty)!";             // GAIN_GROUPXP_PENALTY
@@ -3543,6 +3551,225 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	memcpy(out + 4, text.data(), text.size());
 	QueueTextPacket(0x8021, out, out_size);
 	delete[] out;
+}
+
+// ============================================================
+// SendSystemLine — one line of server text as OP_SpecialMesg (0x8021).
+//
+// The wire form is int32 MESSAGETYPE_* followed by the null-terminated string;
+// msg_type doubles as a raw colour below 21 and as a real MESSAGETYPE_* at 256+
+// (see ChatTypeToTrilogyMsgType).  Goes through QueueTextPacket so multi-line
+// output shares the combat/chat token bucket and stays in FIFO order.
+// ============================================================
+void TrilogyClient::SendSystemLine(uint32_t msg_type, const std::string& text)
+{
+	std::string buf = text;
+	buf += '\0';
+
+	uint32_t out_size = 4 + static_cast<uint32_t>(buf.size());
+	auto* out = new uint8_t[out_size]();
+	*reinterpret_cast<uint32_t*>(out) = msg_type;
+	memcpy(out + 4, buf.data(), buf.size());
+	QueueTextPacket(0x8021, out, out_size);
+	delete[] out;
+}
+
+// ============================================================
+// HandleOutgoingWhoAllResponse — OP_WhoAllResponse (server -> client)
+//
+// v29c has no /who window and no OP_WhoAllResponse handler: in 1999 the server
+// answered /who by writing plain chat lines, which is exactly what EQClassic
+// still does (World/Source/ZSList.cpp:498 loops the client list and calls
+// SendEmoteMessage(to, 0, 10, line) per player, colour 10 = WHITE).
+//
+// Modern EQEmu instead ships a packed struct of eqstr format-string ids that
+// the Titanium+ client resolves and lays out itself.  Rather than reimplement
+// world's filtering (anon / roleplay / GM visibility / level / class / race /
+// name / guild / account, plus the 20-row cap for non-GMs), this takes that
+// response and renders it back down to the 1999 line format.  The zone->world->
+// zone round trip and every visibility rule stay shared with the other clients.
+//
+// Wire layout, as written by ClientList::SendWhoAll (world/clientlist.cpp:660):
+//
+//   header, 64 bytes
+//     /*000*/ uint32 id                    requesting entity id
+//     /*004*/ uint32 playerineqstring      5001
+//     /*008*/ char   line[27]              "---------------------------" (no null)
+//     /*035*/ uint8  0x0A
+//     /*036*/ uint32 unknown
+//     /*040*/ uint32 playersinzonestring   5028 / 5033 / 5036
+//     /*044*/ uint32 unknown[2]
+//     /*052*/ uint32 totalusers
+//     /*056*/ uint32 1
+//     /*060*/ uint32 playercount
+//
+//   then playercount entries, each VARIABLE length:
+//     uint32 formatstring                  5022 / 5023 / 5024 / 5025
+//     uint32 pidstring                     5003 or 0xFFFFFFFF
+//     char   name[]                        null-terminated
+//     uint32 rankstring                    5007..5021 (GM rank) or 0xFFFFFFFF
+//     char   guild[]                       null-terminated, already "<Name>"
+//     uint32 admin                         status, or 0xFFFFFFFF if not visible
+//     uint32 unknown
+//     uint32 zonestring                    5006, or 0xFFFFFFFF if hidden
+//     uint32 zone                          zone id
+//     uint32 class / uint32 level / uint32 race
+//     char   account[]                     null-terminated, empty unless GM
+//     uint32 207                           entry terminator
+//
+// zonestring is the reliable "this row is hidden" signal: world zeroes class,
+// level, race and zone together and sets it to 0xFFFFFFFF whenever the viewer
+// is not allowed to see them, so it gates the whole detail half of the line.
+// formatstring only decides whether the guild survives on a hidden row (5023
+// roleplay keeps it, 5024 anonymous does not).
+//
+// Known gap: no LFG marker.  EQClassic appends " LFG" from ClientListEntry::
+// LFG(), but the modern response carries no per-player LFG field and every slot
+// in an entry is consumed by the client's format strings, so surfacing it means
+// changing what world sends to ALL clients.  Left out rather than risk that here.
+// ============================================================
+
+// Map a WhoAll rankstring (5007..5021) to its GM tag.  The ids come from the
+// descending if-ladder in ClientList::SendWhoAll, so the order below is exact.
+static std::string WhoAllRankTag(uint32_t rankstring)
+{
+	static const uint8 kRanks[] = {
+		AccountStatus::Steward,         // 5007
+		AccountStatus::ApprenticeGuide, // 5008
+		AccountStatus::Guide,           // 5009
+		AccountStatus::QuestTroupe,     // 5010
+		AccountStatus::SeniorGuide,     // 5011
+		AccountStatus::GMTester,        // 5012
+		AccountStatus::EQSupport,       // 5013
+		AccountStatus::GMStaff,         // 5014
+		AccountStatus::GMAdmin,         // 5015
+		AccountStatus::GMLeadAdmin,     // 5016
+		AccountStatus::QuestMaster,     // 5017
+		AccountStatus::GMAreas,         // 5018
+		AccountStatus::GMCoder,         // 5019
+		AccountStatus::GMMgmt,          // 5020
+		AccountStatus::GMImpossible,    // 5021
+	};
+
+	if (rankstring < 5007 || rankstring > 5021) return std::string();
+	return fmt::format("* {} * ", AccountStatus::GetName(kRanks[rankstring - 5007]));
+}
+
+void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
+{
+	static constexpr uint32_t kHeaderSize = 64;
+	static constexpr uint32_t kWhite      = 10; // EQClassic MessageFormat::WHITE
+
+	if (!app || app->size < kHeaderSize) return;
+
+	const uint8_t* p    = app->pBuffer;
+	const uint32_t size = app->size;
+
+	uint32_t playersinzonestring = 0;
+	uint32_t playercount         = 0;
+	memcpy(&playersinzonestring, p + 40, sizeof(uint32_t));
+	memcpy(&playercount,         p + 60, sizeof(uint32_t));
+
+	// The separator rule is already on the wire; use it verbatim.  It is written
+	// without a terminator (memcpy of exactly strlen), so bound the read at 27
+	// and cut at the first null in case a future writer shortens it.
+	std::string rule(reinterpret_cast<const char*>(p + 8),
+	                 strnlen(reinterpret_cast<const char*>(p + 8), 27));
+	if (rule.empty()) rule.assign(27, '-');
+
+	SendSystemLine(kWhite, "Players on EverQuest:");
+	SendSystemLine(kWhite, rule);
+
+	uint32_t o = kHeaderSize;
+	auto room  = [&](uint32_t n) { return o + n <= size; };
+	auto rd32  = [&]() -> uint32_t {
+		uint32_t v = 0;
+		memcpy(&v, p + o, sizeof(v));
+		o += sizeof(v);
+		return v;
+	};
+	auto rdstr = [&]() -> std::string {
+		const uint32_t start = o;
+		while (o < size && p[o] != 0) ++o;
+		std::string v(reinterpret_cast<const char*>(p + start), o - start);
+		if (o < size) ++o; // consume the terminator
+		return v;
+	};
+
+	uint32_t shown = 0;
+	for (uint32_t i = 0; i < playercount; ++i) {
+		if (!room(8)) break;
+		const uint32_t formatstring = rd32();
+		rd32();                                  // pidstring — the id itself is not shown
+		const std::string name = rdstr();
+
+		if (!room(4)) break;
+		const uint32_t rankstring = rd32();
+		const std::string guild   = rdstr();     // already wrapped in <>, or empty
+
+		if (!room(28)) break;
+		const uint32_t admin      = rd32();
+		rd32();                                  // unknown
+		const uint32_t zonestring = rd32();
+		const uint32_t zone_id    = rd32();
+		const uint32_t class_id   = rd32();
+		const uint32_t level      = rd32();
+		const uint32_t race_id    = rd32();
+		const std::string account = rdstr();
+
+		if (!room(4)) break;
+		rd32();                                  // entry terminator (207)
+
+		if (name.empty()) continue;
+
+		const std::string gm_tag     = WhoAllRankTag(rankstring);
+		const std::string guild_part = guild.empty() ? std::string() : " " + guild;
+
+		std::string line;
+		if (zonestring == 0xFFFFFFFF) {
+			// Hidden row.  5023 is /roleplay, which still shows the guild;
+			// 5024 is /anon, which shows nothing but the name.
+			line = fmt::format(" {}[ANONYMOUS] {}{}", gm_tag, name,
+			                   formatstring == 5023 ? guild_part : std::string());
+		}
+		else {
+			// 5022 is world's "viewer outranks an anon / roleplaying player" case:
+			// full detail, but flagged so the viewer knows the row is hidden from
+			// everyone else.  The response does not distinguish anon from roleplay
+			// at that point, so both render as [ANON ...].
+			const char* class_name = GetClassIDName(static_cast<uint8>(class_id),
+			                                        static_cast<uint8>(level));
+			const char* race_name  = GetRaceIDName(static_cast<uint16>(race_id));
+			const std::string tag  = (formatstring == 5022)
+				? fmt::format("[ANON {} {}]", level, class_name)
+				: fmt::format("[{} {}]", level, class_name);
+
+			line = fmt::format(" {}{} {} ({}){} ZONE: {}",
+			                   gm_tag, tag, name, race_name, guild_part,
+			                   zone_store.GetZoneName(zone_id, true));
+		}
+
+		// Account and status are only populated for privileged viewers.
+		if (!account.empty()) line += fmt::format(" AccName: {}", account);
+		if (admin != 0xFFFFFFFF) line += fmt::format(" Status: {}", admin);
+
+		SendSystemLine(kWhite, line);
+		++shown;
+	}
+
+	if (playersinzonestring == 5033) {
+		SendSystemLine(kWhite, "There are more than 20 players in EverQuest.  "
+		                       "Type /who all [name] to search for a specific person.");
+	}
+	else if (playercount == 1) {
+		SendSystemLine(kWhite, "There is 1 player in EverQuest.");
+	}
+	else {
+		SendSystemLine(kWhite, fmt::format("There are {} players in EverQuest.", playercount));
+	}
+
+	LogInfo("[TrilogyZone] WhoAllResponse: char={} bytes={} playercount={} rendered={} footer={}",
+	        GetCleanName(), size, playercount, shown, playersinzonestring);
 }
 
 // ============================================================

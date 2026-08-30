@@ -412,6 +412,14 @@ private:
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
+	// /who and /who all.  v29c has no /who window; the 1999 server answered in
+	// plain chat lines and so does this, rendering EQEmu's packed
+	// OP_WhoAllResponse back down to text.  See the implementation for the
+	// wire layout and the visibility rules it preserves.
+	void HandleOutgoingWhoAllResponse(const EQApplicationPacket* app);
+	// One line of server text as OP_SpecialMesg (0x8021), rate-limited through
+	// the shared chat token bucket.
+	void SendSystemLine(uint32_t msg_type, const std::string& text);
 	// Social-command responses.  Assist and yell relay a translated entity id;
 	// /random has no v29c wire format and is rendered as chat, the way
 	// EQClassic broadcasts it.
