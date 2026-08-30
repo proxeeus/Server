@@ -236,7 +236,8 @@ static constexpr uint16_t ZN_OP_Yell           = 0xda21;
 static constexpr uint16_t ZN_OP_LFG            = 0xf021;
 static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
 
-// 0xf420 /who and /who all.  76 B Trilogy::structs::WhoAll_Struct.
+// 0xf420 /who all.  76 B Trilogy::structs::WhoAll_Struct.  A bare /who sends
+// nothing — v29c builds the zone roster client-side, like the Tracking list.
 //
 //   /*000*/ char  whom[32]   name / zone / guild substring; empty = no filter
 //   /*032*/ int16 wrace      0xFFFF = no race filter
@@ -5789,16 +5790,18 @@ void TrilogyZoneServer::HandleServerFilter(const std::string& addr, int port, Se
 }
 
 // ============================================================
-// HandleWhoAll — inbound 0xf420, /who and /who all
+// HandleWhoAll — inbound 0xf420, /who all
 //
-// v29c sends this for BOTH /who and /who all; there is no "type" field to tell
-// them apart the way SoF+ has.  EQClassic handles it the same way — its
-// ProcessOP_WhoAll forwards every request to world and lists the whole server
-// (Zone/Source/client_process.cpp:4515, World/Source/ZSList.cpp:498) — and the
-// distinction still works in practice, because the client puts the current zone
-// short name into whom[] for a bare /who, which the server-side filter matches
-// against each candidate's zone.  So: always route to the server-wide path and
-// let whom[] narrow it.
+// This is /who ALL only.  A bare /who sends no packet at all: v29c assembles
+// the zone roster client-side from spawn data it already has, the same way it
+// builds the Tracking list, and that has always worked.  Confirmed by capture —
+// /who produced nothing on the wire, /who all produced this 76-byte packet.
+//
+// So there is no /who-vs-/who-all ambiguity to resolve here and no need for a
+// type field, which is why v29c has none and why EQClassic forwards every
+// request straight to world (Zone/Source/client_process.cpp:4515,
+// World/Source/ZSList.cpp:498).  Route to the server-wide path unconditionally
+// and let whom[] narrow it.
 //
 // The forwarded struct is EQEmu's 156 B Who_All_Struct with type=3.  Handle_OP_
 // WhoAllRequest routes type==0 to entity_list.ZoneWho, which builds an
@@ -5844,10 +5847,9 @@ void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session&
 	out.guildid  = 0xFFFFFFFF; // unused by ClientList::SendWhoAll (guilds match by name)
 	out.type     = 3;          // /who all — see above
 
-	// Logged in full because one open question remains: v29c has no "type" field,
-	// so whether a bare /who differs from /who all on the wire at all — and if so
-	// how (zone name in whom[]? a flag in wguild?) — can only be settled by
-	// comparing two live captures.  Until then both list the whole server.
+	// Logged in full: the filter fields are the part with no reference to check
+	// against.  wguild in particular is a slot EQClassic does not declare, and
+	// only /who all <guildname> will show what the client puts there.
 	LogInfo("[TrilogyZone] WhoAll: char={} whom='{}' race={:#x} class={:#x} "
 	        "lvl={:#x}-{:#x} gm={:#x} guild={:#x}",
 	        s.char_name, std::string(whom_buf), out.wrace, out.wclass,

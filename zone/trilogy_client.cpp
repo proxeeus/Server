@@ -3577,8 +3577,8 @@ void TrilogyClient::SendSystemLine(uint32_t msg_type, const std::string& text)
 // ============================================================
 // HandleOutgoingWhoAllResponse — OP_WhoAllResponse (server -> client)
 //
-// v29c has no /who window and no OP_WhoAllResponse handler: in 1999 the server
-// answered /who by writing plain chat lines, which is exactly what EQClassic
+// v29c has no /who-all window and no OP_WhoAllResponse handler: in 1999 the
+// server answered by writing plain chat lines, which is exactly what EQClassic
 // still does (World/Source/ZSList.cpp:498 loops the client list and calls
 // SendEmoteMessage(to, 0, 10, line) per player, colour 10 = WHITE).
 //

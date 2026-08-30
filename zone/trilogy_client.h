@@ -412,7 +412,7 @@ private:
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
-	// /who and /who all.  v29c has no /who window; the 1999 server answered in
+	// /who all.  v29c has no /who-all window; the 1999 server answered in
 	// plain chat lines and so does this, rendering EQEmu's packed
 	// OP_WhoAllResponse back down to text.  See the implementation for the
 	// wire layout and the visibility rules it preserves.

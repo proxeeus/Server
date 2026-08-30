@@ -658,7 +658,7 @@ private:
 	void HandleServerFilter(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);
 
-	// Inbound 0xf420 — /who and /who all.  Widens the 76 B Trilogy filter struct
+	// Inbound 0xf420 — /who all.  Widens the 76 B Trilogy filter struct
 	// into EQEmu's Who_All_Struct and dispatches Client::Handle_OP_WhoAllRequest;
 	// the reply comes back as OP_WhoAllResponse and is rendered into chat lines
 	// by TrilogyClient::HandleOutgoingWhoAllResponse.
