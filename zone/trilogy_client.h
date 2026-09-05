@@ -709,9 +709,56 @@ public:
 		return true;
 	}
 
+	// ── Turning-in-place tracking ────────────────────────────────────────
+	// A player pivoting on the spot changes heading with no position delta, so
+	// IsMoving() is false and nothing else marks the state: `turning` is set by
+	// RotateToCommand for server-driven mobs, and a human turning their own
+	// character never goes through MovementManager at all.  Stamped from
+	// TrilogyPositionUpdate whenever the reported heading actually changes.
+	//
+	// Only exists so SendMobHeartbeat can tell a pivoting player apart from an
+	// idle one and raise its refresh rate for the duration; without it a
+	// rotation is sampled at the 2 s idle baseline and observers see the
+	// character snap between a handful of facings.
+	void NoteHeadingChanged(uint64_t now_ms) { m_last_heading_change_ms = now_ms; }
+
+	bool IsRotating(uint64_t now_ms, uint64_t window_ms = 500) const {
+		return m_last_heading_change_ms != 0 &&
+		       now_ms - m_last_heading_change_ms <= window_ms;
+	}
+
+	// ── Self-reported turn rate ──────────────────────────────────────────
+	// v29c fills delta_heading on its own position updates and EQClassic
+	// relays it verbatim to observers for PCs (client_process.cpp:2390 stores
+	// it, mob.cpp:571 sends it).  Measured on the wire at ~3.2 updates/sec
+	// during a sustained pivot, holding a steady -12 and returning to 0 when
+	// the turn stops.  It is the only field that lets an observing v29c sweep
+	// between two headings rather than snap, which is what 3.2 Hz of absolute
+	// heading looks like without it.
+	//
+	// Deliberately short staleness window.  v29c reads a non-zero
+	// delta_heading as a SUSTAINED rate, so a value left standing after the
+	// client goes quiet spins the observed character indefinitely -- the
+	// failure mode recorded against synthesised values in trilogy_zone.cpp.
+	// 600 ms is about two report intervals: long enough to ride out a dropped
+	// update, short enough that a silent client stops rather than spins.
+	void SetSelfReportedDeltaHeading(int8_t dh, uint64_t now_ms) {
+		m_self_delta_heading        = dh;
+		m_self_delta_heading_set_ms = now_ms;
+	}
+
+	int8_t GetSelfReportedDeltaHeading(uint64_t now_ms, uint64_t max_age_ms = 600) const {
+		if (m_self_delta_heading_set_ms == 0) return 0;
+		if (now_ms - m_self_delta_heading_set_ms > max_age_ms) return 0;
+		return m_self_delta_heading;
+	}
+
 private:
 	int8_t   m_self_anim_type   = 0;
 	uint64_t m_self_anim_set_ms = 0;
+	uint64_t m_last_heading_change_ms = 0;
+	int8_t   m_self_delta_heading        = 0;
+	uint64_t m_self_delta_heading_set_ms = 0;
 
 
 	// Authoritative model of the v29c client's current equipment-material

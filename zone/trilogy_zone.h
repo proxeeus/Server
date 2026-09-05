@@ -284,6 +284,13 @@ private:
 			int16_t  z_pos     = 0;
 			int8_t   heading   = 0;
 			int8_t   anim_type = 0;
+			// Tracked so the END of a turn is a dirty state.  v29c treats
+			// delta_heading as a sustained rate, and when a pivot stops both
+			// the heading and the position go still -- so without this field
+			// in the comparison the update carrying delta_heading=0 would be
+			// suppressed as "nothing changed" and the observed character would
+			// keep rotating until the staleness refresh.
+			int8_t   delta_heading = 0;
 			uint64_t sent_ms   = 0;
 		};
 		std::unordered_map<uint16_t, LastBroadcast> last_broadcast;
@@ -530,6 +537,17 @@ private:
 		// what animation id a given emote maps to.
 		bool             social_text_logged      = false;
 		bool             social_action_logged    = false;
+
+		// Rotation probe — 1 Hz window over inbound 0xF320 while the wire
+		// heading byte is changing.  Answers whether observed-rotation
+		// smoothness is bounded by OUR broadcast cadence or by how often the
+		// turning client reports, and whether v29c populates delta_heading
+		// (the only field that would let an observer sweep rather than snap).
+		uint64_t         rot_window_start_ms       = 0;
+		uint32_t         rot_updates               = 0;
+		uint32_t         rot_heading_changes       = 0;
+		uint32_t         rot_nonzero_delta_heading = 0;
+		uint8_t          rot_last_heading_wire     = 0;
 
 		// ── Money-display reconciliation ─────────────────────────────────────
 		// The client's coin counter only refreshes from the PlayerProfile at zone-in.

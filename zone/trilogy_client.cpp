@@ -2154,9 +2154,22 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	// triggers an access violation in the movement manager).
 	// SetPosition + SetHeading update the mob's world position for NPC aggro
 	// and proximity checks without triggering the movement manager broadcast.
+	const float prev_heading = GetHeading();
+
 	SetPosition(x, y, z);
 	SetHeading(heading);
 	SetMoving(!(x == prev_x && y == prev_y));
+
+	// Note a pivot so SendMobHeartbeat can raise this player's refresh rate
+	// while it lasts.  Compared against the wire quantum rather than the float:
+	// heading goes out as a single byte (heading / 2), so sub-quantum jitter is
+	// invisible to observers and must not be allowed to hold the fast cadence
+	// open indefinitely.
+	if (static_cast<uint8_t>(prev_heading / 2.0f) != static_cast<uint8_t>(heading / 2.0f)) {
+		NoteHeadingChanged(static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count()));
+	}
 
 	// Proximity events — mirrors modern Handle_OP_ClientUpdate
 	// (client_packet.cpp:4996-5002).  Without this call, EVENT_ENTER /
