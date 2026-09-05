@@ -128,12 +128,42 @@ void command_guild(Client* c, const Seperator* sep)
 						c->Message(Chat::White, "Note: Run #guild set to resolve this.");
 					}
 
-					// Push the new guild into every connected client's guild-name
-					// table.  Without this the leader carries the new guild id but
-					// no client knows the name for it, so the tag renders as
-					// "<Unknown Guild>" until relog.  Client::Handle_OP_GuildCreate
-					// does the same thing for the client-driven create path.
+					// Announce the new guild.  BaseGuildManager::SetGuild writes
+					// the database row and nothing else -- its SendGuildRefresh
+					// and SendCharRefresh calls are commented out upstream -- so
+					// on its own this command told no one.  World never learned
+					// the guild existed (its own table stayed stale, so the guild
+					// was still missing from the list handed out at character
+					// select), the leader's in-zone Client kept guild_id
+					// GUILD_NONE, and no guild SpawnAppearance was ever sent.
+					// The net effect was a guild that existed only in the
+					// database until the whole server was restarted.
+					//
+					// Mirror what Client::Handle_OP_GuildCreate does for the
+					// client-driven path.  MemberAdd replaces the row SetGuild
+					// just wrote (ReplaceOne) and, more importantly, sends
+					// ServerOP_GuildMemberAdd, which is what makes world refresh
+					// its guild table for an id it does not know yet.
+					auto leader_client = entity_list.GetClientByCharID(leader_id);
+					if (leader_client) {
+						leader_client->SetGuildID(guild_id);
+						leader_client->SetGuildRank(GUILD_LEADER);
+					}
+
+					guild_mgr.MemberAdd(
+						guild_id,
+						leader_id,
+						leader_client ? leader_client->GetLevel() : 0,
+						leader_client ? leader_client->GetClass() : 0,
+						GUILD_LEADER,
+						leader_client ? leader_client->GetZoneID() : 0,
+						leader_name
+					);
 					guild_mgr.SendToWorldSendGuildList();
+
+					if (leader_client) {
+						leader_client->SendGuildSpawnAppearance();
+					}
 				}
 			}
 		}

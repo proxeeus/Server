@@ -430,8 +430,9 @@ private:
 	void HandleOutgoingConsentResponse(const EQApplicationPacket* app);
 	// Guild responses.  The invite popup has a real v29c opcode; the MOTD does
 	// not and is rendered as guild-channel chat, the way EQClassic does it.
-	// The guilds list becomes a run of single-slot 0x7b21 table updates, which
-	// is how a guild created mid-session reaches clients already in a zone.
+	// The guilds list is re-sent as the same 0x9221 table world builds at
+	// char-select, which is how a guild created mid-session reaches clients
+	// already in a zone.
 	void HandleOutgoingGuildInvite(const EQApplicationPacket* app);
 	void HandleOutgoingGuildMOTD(const EQApplicationPacket* app);
 	void HandleOutgoingGuildsList();
@@ -644,13 +645,6 @@ private:
 	// have nothing to do with the MOTD; without this the same line repeats in
 	// the chat window on unrelated guild events.
 	std::string m_last_guild_motd;
-
-	// Ceiling on how many single-slot guild-table updates one refresh may push.
-	// A refresh walks every guild on the server, and on a server with hundreds
-	// of them that would be a burst of small packets into v29c's ARQ window for
-	// no gain — a player only ever sees the tags of guilds that are actually
-	// represented in the zone.
-	static constexpr uint32_t kMaxGuildUpdatePush = 128;
 
 	// Per-mob position-broadcast throttle for the EQClassic-faithful
 	// event-driven A120 path (HandleClientUpdate).  Without this, EQEmu's

@@ -21,7 +21,6 @@
 #include "trilogy_zone.h"
 #include "../common/eq_constants.h"
 #include "entity.h"
-#include "guild_mgr.h"
 #include "doors.h"
 #include "object.h"
 #include "npc.h"
@@ -3658,60 +3657,29 @@ void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
 }
 
 // ============================================================
-// HandleOutgoingGuildsList — OP_GuildsList -> per-guild 0x7b21
+// HandleOutgoingGuildsList — OP_GuildsList -> 0x9221 from the zone
 //
-// The client's guild-name table is only filled once, by world's 30 KB 0x9221
-// at char-select, so a guild created or renamed while players are already in a
-// zone renders as "<Unknown Guild>" above every member until they relog.  EQEmu
-// answers that by resending the whole list (EntityList::SendGuildList); v29c's
-// equivalent is 0x7b21, which replaces one slot at a time (EQClassic
-// LS/zone/worldserver.cpp builds exactly this on a guild refresh).
+// The client's guild-name table is filled once, by world's 30 KB 0x9221 at
+// char-select, so a guild created or renamed while players are already in a
+// zone has no name on any client until they relog.  EQEmu answers that by
+// resending the whole list (EntityList::SendGuildList) and this is the Trilogy
+// form of the same thing — byte-identical to what world sends, only from the
+// zone connection.
 //
-// Every guild is pushed rather than only the changed one, because the modern
-// packet that triggers this carries the whole table and does not say which
-// entry moved.  Rewriting a slot the client already has is a no-op for it, and
-// the trigger is rare — guild create, delete and rename.
+// The first attempt used 0x7b21, the single-slot update EQClassic's LS tree
+// builds on a guild refresh.  That put 122 packets into the ARQ window in one
+// tick for 61 guilds and could not be shown to have worked, so it is gone: one
+// fragmented send of a format already proven on this client beats sixty-one
+// small sends of a format that is not.
 // ============================================================
 void TrilogyClient::HandleOutgoingGuildsList()
 {
 	// Skip the zone-in copy.  CompleteConnect calls SendGuildList for every
 	// guilded player, and at that point the client's table is already the one
-	// world handed it at char-select, so the whole run would be a redundant
-	// burst of small packets during the most fragile part of the session — the
-	// same window the deferred-spawn path exists to keep clear.
+	// world handed it at char-select.
 	if (m_is_zoning) return;
 
-	auto guilds = guild_mgr.MakeGuildList();
-
-	uint32_t sent = 0;
-	uint32_t skipped = 0;
-	for (auto const& entry : guilds.guild_detail) {
-		if (entry.guild_id >= Trilogy::structs::MAX_GUILDS) {
-			// The spawn struct's GuildID is a uint16 and the client's table is
-			// bounded at 512, so these can never be rendered — same limit the
-			// world-side full table hits.
-			++skipped;
-			continue;
-		}
-		if (sent >= kMaxGuildUpdatePush) {
-			++skipped;
-			continue;
-		}
-
-		Trilogy::structs::GuildUpdate_Struct gu{};
-		memset(&gu, 0, sizeof(gu));
-		gu.guild_id = static_cast<int32_t>(entry.guild_id);
-		Trilogy::structs::FillGuildsListEntry(gu.entry, entry.guild_id,
-		                                      entry.guild_name.c_str());
-
-		m_tzs->SendToSession(m_session_key, 0x7b21,
-		                     reinterpret_cast<const uint8_t*>(&gu),
-		                     static_cast<uint32_t>(sizeof(gu)));
-		++sent;
-	}
-
-	LogInfo("[TrilogyGuild] OUT guild table refresh char=[{}] pushed={} skipped={}",
-	        GetCleanName(), sent, skipped);
+	m_tzs->SendGuildsList(m_session_key);
 }
 
 void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)

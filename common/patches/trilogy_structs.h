@@ -537,10 +537,10 @@ struct GuildsList_Struct
 /*30724*/
 };
 
-// Fill one guilds-table slot.  Both senders of guild-table data — the world's
-// full 0x9221 table at char-select and the zone's per-guild 0x7b21 update —
-// must lay a slot out identically or the client renders a tag for one and not
-// the other, so the pattern lives here rather than being written out twice.
+// Fill one guilds-table slot.  Both senders of the 0x9221 table — world at
+// char-select, and the zone when the client asks for it again with 0x2821 —
+// must lay a slot out identically, so the pattern lives here rather than being
+// written out twice and drifting.
 // Empty slots use guild_id = 0xFFFFFFFF and exists = 0; the 0xFF/0x00 fill is
 // from EQClassic WorldGuildManager::CreateBlankGuildsListEntry_Struct.
 static inline void FillGuildsListEntry(GuildsListEntry_Struct& e,
@@ -558,28 +558,6 @@ static inline void FillGuildsListEntry(GuildsListEntry_Struct& e,
 	memset(e.unknown3, 0xFF, sizeof(e.unknown3));
 	memset(e.unknown4, 0x00, sizeof(e.unknown4));
 }
-
-/*
-** GuildUpdate_Struct
-** Opcode:  OP_GuildUpdate = 0x7b21  (EQMacEmu's patch_Trilogy.conf calls the
-**          same opcode OP_GuildAdded, and EQClassic's LS tree has it commented
-**          as CODE_NEW_GUILD — all three agree it adds/replaces ONE slot in the
-**          client's guild table.)
-** Direction: zone server -> client
-** Size:    64 bytes (4 + one 60-byte guilds-list entry)
-** Source:  EQClassic LS/zone/worldserver.cpp ServerOP_RefreshGuild, which
-**          builds exactly this on a guild refresh and QueueClients()es it.
-**
-** The full 0x9221 table is only sent by world at char-select, so a guild
-** created or renamed mid-session is invisible to every client already in a
-** zone until this is pushed.
-*/
-struct GuildUpdate_Struct
-{
-/*00*/	int32	guild_id;
-/*04*/	GuildsListEntry_Struct entry;
-/*64*/
-};
 
 /*
 ** GuildCommand_Struct
