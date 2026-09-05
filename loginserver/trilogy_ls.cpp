@@ -733,8 +733,9 @@ std::vector<uint8_t> TrilogyLoginServer::BuildServerList() const
 {
 	// Use the first authorized world server connected to this login server.
 	// Fall back to sensible defaults if none are connected yet.
-	std::string name = "EQEmu";
-	std::string addr = "127.0.0.1";
+	std::string name    = "EQEmu";
+	std::string addr    = "127.0.0.1";
+	uint32_t    players = 0;
 
 	if (server.server_manager) {
 		for (auto& ws : server.server_manager->getWorldServers()) {
@@ -743,6 +744,7 @@ std::vector<uint8_t> TrilogyLoginServer::BuildServerList() const
 				const std::string& waddr = ws->GetRemoteIP();
 				if (!wname.empty()) name = wname;
 				if (!waddr.empty()) addr = waddr;
+				players = ws->GetPlayersOnline();
 				break;
 			}
 		}
@@ -782,8 +784,15 @@ std::vector<uint8_t> TrilogyLoginServer::BuildServerList() const
 
 	// ServerListServerFlags_Struct: greenname(1) + usercount(4, LE) + unknown[8]
 	out[o++] = 0;    // greenname = 0 (white name)
-	// usercount[4] = 0 (already zero from vector init)
-	o += 4;
+	// usercount[4], little-endian. The header byte above sets showusercount=0xFF
+	// ("display the real number"), so leaving this zero made the server-select
+	// screen read "0 players" no matter how many were online. World pushes the
+	// count to us via ServerOP_LSStatus every LoginServer_StatusUpdateInterval
+	// (15s), so this can lag a player's login by up to one interval.
+	out[o++] = static_cast<uint8_t>( players        & 0xFF);
+	out[o++] = static_cast<uint8_t>((players >>  8) & 0xFF);
+	out[o++] = static_cast<uint8_t>((players >> 16) & 0xFF);
+	out[o++] = static_cast<uint8_t>((players >> 24) & 0xFF);
 	// unknown[8] = 0
 	o += 8;
 
