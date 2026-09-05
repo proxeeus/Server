@@ -2025,14 +2025,7 @@ void TrilogyWorldServer::SendGuildsList(const std::string& addr, int port, Sessi
 
 	// Initialise every slot to the empty pattern.
 	for (uint32_t i = 0; i < Trilogy::structs::MAX_GUILDS; ++i) {
-		auto& e = gl.Guilds[i];
-		e.guild_id = static_cast<int32_t>(0xFFFFFFFF);
-		std::memset(e.name, 0, sizeof(e.name));
-		std::memset(e.unknown1, 0xFF, sizeof(e.unknown1));
-		e.exists = 0;
-		std::memset(e.unknown2, 0x00, sizeof(e.unknown2));
-		std::memset(e.unknown3, 0xFF, sizeof(e.unknown3));
-		std::memset(e.unknown4, 0x00, sizeof(e.unknown4));
+		Trilogy::structs::FillGuildsListEntry(gl.Guilds[i], 0, nullptr);
 	}
 
 	// Fill from the world's loaded guild table.  guild_mgr is the world-side
@@ -2047,10 +2040,9 @@ void TrilogyWorldServer::SendGuildsList(const std::string& addr, int port, Sessi
 			// table is bounded at 512; out-of-range guilds cannot be rendered.
 			continue;
 		}
-		auto& slot = gl.Guilds[entry.guild_id];
-		slot.guild_id = static_cast<int32_t>(entry.guild_id);
-		strncpy(slot.name, entry.guild_name.c_str(), sizeof(slot.name) - 1);
-		slot.exists = 1;
+		Trilogy::structs::FillGuildsListEntry(gl.Guilds[entry.guild_id],
+		                                      entry.guild_id,
+		                                      entry.guild_name.c_str());
 		++populated;
 	}
 

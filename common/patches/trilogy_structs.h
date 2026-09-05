@@ -26,6 +26,8 @@
 #ifndef COMMON_TRILOGY_STRUCTS_H
 #define COMMON_TRILOGY_STRUCTS_H
 
+#include <cstring>
+
 namespace Trilogy
 {
 	namespace structs {
@@ -68,6 +70,47 @@ static inline uint8 TranslateClassToTrilogy(uint8 c)
 			return c; // player classes 1-15 (and anything unmapped) pass through
 	}
 }
+
+// v29c guild ranks (EQClassic Common/Include/GuildNetwork.h::GUILDRANK).
+// The client only understands these three in-guild values; 0xFF is the
+// "unknown / not in a guild" sentinel already proven on the wire by the
+// no-guild spawn path.
+static const int8 GUILDRANK_MEMBER  = 0;
+static const int8 GUILDRANK_OFFICER = 1;
+static const int8 GUILDRANK_LEADER  = 2;
+static const int8 GUILDRANK_NONE    = static_cast<int8>(0xFF);
+
+// Translate an EQEmu guild rank to the v29c GUILDRANK above.
+//
+// EQEmu numbers ranks on the RoF2 scale (common/guilds.h): 0 = none,
+// 1 = Leader, 2 = Senior Officer, 3 = Officer, 4 = Senior Member,
+// 5 = Member, 6 = Junior Member, 7 = Initiate, 8 = Recruit — descending
+// authority, the opposite direction from Trilogy's ascending 0/1/2.  Handing
+// the raw EQEmu number to v29c therefore renders a plain member as an officer
+// and a recruit as a value off the end of the enum entirely.
+//
+// Everything at Officer or above collapses to Officer, and everything below
+// collapses to Member, because those are the only ranks this client can show.
+static inline int8 TranslateGuildRankToTrilogy(uint8 emu_rank, bool in_guild)
+{
+	if (!in_guild) {
+		return GUILDRANK_NONE;
+	}
+	switch (emu_rank) {
+		case 0:  return GUILDRANK_NONE;    // GUILD_RANK_NONE
+		case 1:  return GUILDRANK_LEADER;  // GUILD_LEADER
+		case 2:                            // GUILD_SENIOR_OFFICER
+		case 3:  return GUILDRANK_OFFICER; // GUILD_OFFICER
+		default: return GUILDRANK_MEMBER;  // Senior Member .. Recruit
+	}
+}
+
+// There is deliberately no inverse of this.  Inbound guild ranks are left on
+// the v29c scale and handed to Client::Handle_OP_GuildInvite unchanged, because
+// that handler runs its own GUILD_MEMBER_TI / OFFICER_TI / LEADER_TI conversion
+// for every client below RoF and those constants are exactly Trilogy's 0/1/2.
+// Pre-converting here would feed an EQEmu rank into that switch, whose default
+// arm maps anything it does not recognise to GUILD_RANK_NONE.
 
 /*
 ** Compiler override to ensure byte-aligned structures.
@@ -492,6 +535,95 @@ struct GuildsList_Struct
 /*00000*/	uint8	head[4];
 /*00004*/	GuildsListEntry_Struct Guilds[MAX_GUILDS];
 /*30724*/
+};
+
+// Fill one guilds-table slot.  Both senders of the 0x9221 table — world at
+// char-select, and the zone when the client asks for it again with 0x2821 —
+// must lay a slot out identically, so the pattern lives here rather than being
+// written out twice and drifting.
+// Empty slots use guild_id = 0xFFFFFFFF and exists = 0; the 0xFF/0x00 fill is
+// from EQClassic WorldGuildManager::CreateBlankGuildsListEntry_Struct.
+static inline void FillGuildsListEntry(GuildsListEntry_Struct& e,
+                                       uint32 guild_id, const char* guild_name)
+{
+	const bool exists = (guild_name != nullptr && guild_name[0] != '\0');
+	e.guild_id = exists ? static_cast<int32>(guild_id) : static_cast<int32>(0xFFFFFFFF);
+	memset(e.name, 0, sizeof(e.name));
+	if (exists) {
+		strncpy(e.name, guild_name, sizeof(e.name) - 1);
+	}
+	memset(e.unknown1, 0xFF, sizeof(e.unknown1));
+	e.exists = exists ? 1 : 0;
+	memset(e.unknown2, 0x00, sizeof(e.unknown2));
+	memset(e.unknown3, 0xFF, sizeof(e.unknown3));
+	memset(e.unknown4, 0x00, sizeof(e.unknown4));
+}
+
+/*
+** GuildCommand_Struct
+** Opcode:  OP_GuildInvite = 0x1721 (bidirectional), OP_GuildRemove = 0x1921
+**          (client -> zone)
+** Size:    68 bytes
+** Source:  EQClassic Common/Include/GuildNetwork.h::GuildCommand_Struct
+**
+** Field ORDER is the one thing here worth stating carefully, because
+** EQClassic labels it inconsistently: GuildNetwork.h names the leading field
+** "Invitee" for invites but "Remover" for removes.  The working code in
+** EQClassic LS/zone/worldserver.cpp (ServerOP_GuildInvite) settles it —
+** it fills othername (offset 0) with the TARGET and myname (offset 30) with
+** the SENDER, which is also the modern EQEmu GuildCommand_Struct layout.
+** The inbound handlers do not rely on this: they identify the sender by
+** matching either name field against the session's own character, so a
+** swapped client would still be read correctly.
+*/
+struct GuildCommand_Struct
+{
+/*00*/	char	othername[PC_MAX_NAME_LENGTH];	// invite: invitee, remove: member being removed
+/*30*/	char	myname[PC_MAX_NAME_LENGTH];	    // the player who typed the command
+/*60*/	int16	guildeqid;
+/*62*/	uint8	unknown[2];	                    // invite: 0x0000; remove: 0x02,0x56 observed
+/*64*/	int32	rank;	                        // GUILDRANK: 0=Member, 1=Officer, 2=Leader
+/*68*/
+};
+
+/*
+** GuildMOTD_Struct
+** Opcode:  OP_GuildMOTD = 0x0322  (client -> zone)
+** Size:    548 bytes
+** Source:  eqgame.exe 0x4a54c8, the client's own /guildmotd handler.  It builds
+**          a 0x224-byte buffer, copies the sender's name to offset 0, stores
+**          the guild id as an int32 at 0x20, and formats "%s - %s" (name, text)
+**          into offset 0x24 before sending opcode 0x0322.  EQClassic's server
+**          reads the text at [36] for the same reason.
+**
+** An empty motd is the request form: the client only appends text when its
+** guild rank is above member, and sends the packet either way.
+*/
+struct GuildMOTD_Struct
+{
+/*000*/	char	name[32];	// the player who typed the command
+/*032*/	int32	guildid;
+/*036*/	char	motd[512];	// "<Name> - <text>", empty when only asking
+/*548*/
+};
+
+/*
+** GuildInviteAccept_Struct
+** Opcode:  OP_GuildInviteAccept = 0x1821  (client -> zone)
+** Size:    68 bytes — same length as GuildCommand_Struct, different layout
+** Source:  EQClassic Common/Include/eq_packet_structs.h::GuildInviteAccept_Struct
+**
+** response carries the GUILDRANK enum from GuildNetwork.h: 0/1/2 accept at
+** that rank, 4 = the client's invite window timed out, 5 = the player clicked
+** decline.  Anything other than 0/1/2 is a refusal.
+*/
+struct GuildInviteAccept_Struct
+{
+/*00*/	char	inviter[PC_MAX_NAME_LENGTH];
+/*30*/	char	new_member[PC_MAX_NAME_LENGTH];
+/*60*/	int32	response;
+/*64*/	int32	guildeqid;
+/*68*/
 };
 
 /*

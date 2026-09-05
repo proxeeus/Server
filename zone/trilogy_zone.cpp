@@ -62,6 +62,8 @@ extern EntityList  entity_list;
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
+#include <memory>
+#include <utility>
 #include <vector>
 
 // ============================================================
@@ -235,6 +237,40 @@ static constexpr uint16_t ZN_OP_SplitMoney     = 0x3121;
 static constexpr uint16_t ZN_OP_Yell           = 0xda21;
 static constexpr uint16_t ZN_OP_LFG            = 0xf021;
 static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
+
+// Guild management (client -> zone unless noted).
+//
+// Names come from EQClassic Common/Include/eq_opcodes.h; the two it does not
+// declare (0x0422, 0x1a21) are named in EQMacEmu's patch_Trilogy.conf, which is
+// a name table only.  EQClassic's OP_GuildMOTD covers 0x0322 alone and treats
+// it as bidirectional, so we do the same and never emit 0x0422 — its payload
+// shape is unverified and guessing at it risks the client, while the MOTD text
+// itself reaches the player as guild-channel chat, exactly as EQClassic does it
+// (LS/zone/client_process.cpp:2531 Message(MT_Guild, "Guild MOTD: %s")).
+//
+//   0x1721 OP_GuildInvite        68 B  GuildCommand_Struct       bidirectional
+//   0x1821 OP_GuildInviteAccept  68 B  GuildInviteAccept_Struct
+//   0x1921 OP_GuildRemove        68 B  GuildCommand_Struct
+//   0x0322 OP_GuildMOTD          var   name + motd text          bidirectional
+//   0x9521 OP_GuildLeader        var   bare null-terminated name
+//   0x1a21 OP_GuildDelete        var   payload unused
+//   0x6f21 OP_GuildWar           var   never implemented in this era
+//   0x9121 OP_GuildPeace         var   never implemented in this era
+//   0x2821 OP_GetGuildsList       4 B  guild id the client cannot resolve
+static constexpr uint16_t ZN_OP_GuildInvite       = 0x1721;
+static constexpr uint16_t ZN_OP_GuildInviteAccept = 0x1821;
+static constexpr uint16_t ZN_OP_GuildRemove       = 0x1921;
+static constexpr uint16_t ZN_OP_GuildMOTD         = 0x0322;
+static constexpr uint16_t ZN_OP_GuildLeader       = 0x9521;
+static constexpr uint16_t ZN_OP_GuildDelete       = 0x1a21;
+static constexpr uint16_t ZN_OP_GuildWar          = 0x6f21;
+static constexpr uint16_t ZN_OP_GuildPeace        = 0x9121;
+// Client -> zone, 4 B: "I have a guild id I cannot resolve, send me the table."
+// EQClassic does not declare this opcode at all; the name is from EQMacEmu's
+// patch_Trilogy.conf, and the meaning is from a live session — it arrived with
+// payload 65 01 00 00 (= 357) moments after guild 357 was created, on a client
+// whose char-select table predated it.  Answered with the full 0x9221 table.
+static constexpr uint16_t ZN_OP_GetGuildsList     = 0x2821;
 
 // 0xf420 /who all.  76 B Trilogy::structs::WhoAll_Struct.  A bare /who sends
 // nothing — v29c builds the zone roster client-side, like the Tracking list.
@@ -1702,19 +1738,40 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	LogNetcode("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
 	        opcode, plen, static_cast<int>(s.state), addr, port);
 
+	// Connect-handshake blind spot.  Every CONNECTING state below drops an
+	// opcode it does not match, silently — there is no equivalent of the
+	// CONNECTED-state UNHANDLED logger, so anything the client says during
+	// zone-in has never been visible.  That is the same failure the handbook
+	// records for 0xff21: scored as handled because nothing complained.
+	// Log it once per (state, opcode) pair so a chatty handshake cannot flood.
+	const auto note_unhandled = [&](const char* state_name) {
+		const uint32_t key = (static_cast<uint32_t>(s.state) << 16) | opcode;
+		if (!s.connect_unhandled_seen.insert(key).second) return;
+		std::string hex;
+		const uint32_t cap = plen > 64 ? 64u : plen;
+		for (uint32_t i = 0; i < cap; ++i) hex += fmt::format("{:02X} ", payload[i]);
+		if (plen > cap) hex += "...";
+		LogInfo("[TrilogyZone] UNHANDLED rx opcode={:04X} state={} plen={} payload=[{}]",
+		        opcode, state_name, plen, hex);
+	};
+
 	switch (s.state) {
 	case CONNECTING1:
 		if (opcode == ZN_OP_SetDataRate)
 			HandleSetDataRate(addr, port, s);
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING1");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING2:
 		if (opcode == ZN_OP_ZoneEntry)
 			HandleZoneEntry(addr, port, s, payload, plen);
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING2");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING3:
@@ -1726,8 +1783,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, ZN_OP_WearChange, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING3");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING4:
@@ -1748,8 +1807,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, 0x4721, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING4");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING5:
@@ -1769,8 +1830,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, 0x4721, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING5");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTED:
@@ -2349,6 +2412,15 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		          opcode == ZN_OP_LFG        || opcode == ZN_OP_ConsentRequest))
 		{
 			HandleSocialCommand(addr, port, s, opcode, payload, plen);
+		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_GuildInvite  || opcode == ZN_OP_GuildInviteAccept ||
+		          opcode == ZN_OP_GuildRemove  || opcode == ZN_OP_GuildMOTD ||
+		          opcode == ZN_OP_GuildLeader  || opcode == ZN_OP_GuildDelete ||
+		          opcode == ZN_OP_GuildWar     || opcode == ZN_OP_GuildPeace ||
+		          opcode == ZN_OP_GetGuildsList))
+		{
+			HandleGuildCommand(addr, port, s, opcode, payload, plen);
 		}
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
 			HandleCastSpell(addr, port, s, payload, plen);
@@ -3218,6 +3290,24 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 						cont += fmt::format("{}={} ", i, v);
 				}
 				if (cont.empty()) cont = "(all empty)";
+
+				// Guild fields, read back out of the client's own profile.  The
+				// offsets are settled (see the static_asserts in SendPlayerProfile),
+				// so this is now a round-trip check rather than a hunt: whatever we
+				// sent should come back unchanged.
+				{
+					std::string window;
+					for (uint32_t off = 4150; off < 4186 && off < plen; ++off) {
+						window += fmt::format("{}:{:02X} ", off, payload[off]);
+					}
+					LogInfo("[TrilogyGuildProbe] char={} ours guildid@4158={} guildrank@4175={} "
+					        "raw[4150..4185]=[{}]",
+					        s.char_id,
+					        static_cast<uint16_t>(cpp->guildid),
+					        static_cast<int>(cpp->guildrank),
+					        window);
+				}
+
 				LogInfo("[TrilogyZone] CLIENTBANK char={} bank_inv=[{} {} {} {} {} {} {} {}] "
 				        "cont_nonempty=[{}]",
 				        s.char_id,
@@ -4055,6 +4145,35 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
 
+		// Guild appearance on zone-in.
+		//
+		// v29c keeps TWO copies of a player's guild id and reads a different one
+		// depending on what it is doing.  Both were found in eqgame.exe:
+		//
+		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
+		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
+		//                   by the SpawnAppearance type-22 handler (0x493d31).
+		//                   This is what the guild COMMANDS gate on.
+		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
+		//                   the same appearance handler (0x493cb4).  This is what
+		//                   /guildinvite and /guildremove check.
+		//
+		// The local player's own actor is not built from a Spawn_Struct, so its
+		// copy stays at the 0xFFFF "no guild" default for the whole session unless
+		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
+		// only fires SendGuildSpawnAppearance on a membership change, so a player
+		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
+		//
+		// The visible symptom was oddly narrow.  The guild TAG still rendered —
+		// that comes from a different actor field the spawn parser does fill — and
+		// /guildinvite worked once the profile copy was populated.  Only
+		// /guildmotd failed, with "You are not in a guild." printed by the client
+		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
+		// before it will send anything), so the server never saw a packet at all.
+		if (tc->IsInAGuild()) {
+			tc->SendGuildSpawnAppearance();
+		}
+
 		// Group restoration on zone-in.
 		//
 		// EQEmu's standard restoration block lives in Client::Handle_Connect_OP_ZoneEntry
@@ -4212,12 +4331,8 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		sp.anim_type = 0x64;
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
-		if (tc->IsInAGuild()) {
-			sp.guildrank = static_cast<int8_t>(tc->GuildRank());
-			sp.GuildID   = static_cast<uint16_t>(tc->GuildID());
-		} else {
-			sp.guildrank = static_cast<int8_t>(0xFF);
-		}
+		sp.guildrank = Trilogy::structs::TranslateGuildRankToTrilogy(
+		    static_cast<uint8_t>(tc->GuildRank()), tc->IsInAGuild());
 		sp.light = static_cast<int8_t>(tc->GetEquipmentLightType());
 		strncpy(sp.name,    tc->GetCleanName(), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, tc->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -4963,6 +5078,45 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
 		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
 
+		// Guild identity.  These two were never written, and that is not the
+		// cosmetic gap it looks like: the client gates /guildinvite,
+		// /guildremove and /guildmotd on its OWN copy of the rank, and a
+		// zero-filled guildrank is GUILDRANK_MEMBER.  A real guild leader was
+		// therefore told "You are not a guild officer or leader, and therefore
+		// cannot invite members to join your guild" — the client refused before
+		// a packet was ever sent, which is why the invite opcode never appeared
+		// in the log.
+		//
+		// The guild TAG comes from spawn data, which is why this stayed hidden:
+		// the tag rendered correctly while the commands did not.
+		//
+		// The offsets are confirmed against eqgame.exe, not taken on trust from
+		// EQClassic's header (which is four bytes off for deity in this same
+		// region): the client's own /guildinvite gate reads them at object
+		// 0x103a / 0x104b.  See the static_asserts below.
+		{
+			uint32 g_id   = GUILD_NONE;
+			uint8  g_rank = GUILD_RANK_NONE;
+			auto   gq     = fmt::format(
+			    "SELECT `guild_id`, `rank` FROM `guild_members` WHERE `char_id` = {} LIMIT 1",
+			    s.char_id);
+			auto gr = database.QueryDatabase(gq);
+			if (gr.RowCount() > 0) {
+				auto grow = gr.begin();
+				if (grow[0] && Strings::ToInt(grow[0]) > 0) {
+					g_id   = static_cast<uint32>(Strings::ToInt(grow[0]));
+					g_rank = grow[1] ? static_cast<uint8>(Strings::ToInt(grow[1]))
+					                 : static_cast<uint8>(GUILD_RANK_NONE);
+				}
+			}
+			const bool in_guild = (g_id != GUILD_NONE);
+			pp.guildid   = in_guild ? static_cast<int16_t>(g_id)
+			                        : static_cast<int16_t>(0xFFFF);
+			pp.guildrank = Trilogy::structs::TranslateGuildRankToTrilogy(g_rank, in_guild);
+			LogInfo("[TrilogyGuild] PP char={} guild_id={} emu_rank={} wire_rank={}",
+			        s.char_id, g_id, g_rank, static_cast<int>(pp.guildrank));
+		}
+
 		strncpy(pp.current_zone, s.zone_short, sizeof(pp.current_zone) - 1);
 
 		// Cache appearance + position so HandleZoneInComplete can create TrilogyClient.
@@ -5408,6 +5562,16 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	              "deity_wire must be at PP struct byte 4156 (= wire byte 4152) for the char sheet to read it");
 	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, bank_cont_inv) == 3996,
 	              "bank_cont_inv must start at struct byte 3996");
+	// Both pinned from eqgame.exe rather than from EQClassic's header: the
+	// client's /guildinvite gate reads the profile at object offset 0x103a and
+	// 0x104b (0x4c9f07 and 0x4c9f22), and the SpawnAppearance type-22 handler
+	// writes the same word at 0x103a (0x493cb4).  Object offsets run four bytes
+	// behind struct offsets because the object holds the profile with the
+	// checksum stripped — the same relationship deity_wire above is pinned by.
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, guildid) == 4158,
+	              "guildid must be at PP struct byte 4158 (= client object 0x103a)");
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, guildrank) == 4175,
+	              "guildrank must be at PP struct byte 4175 (= client object 0x104b)");
 	{
 		const uint8_t* rb = reinterpret_cast<const uint8_t*>(&pp);
 		LogInfo("[TrilogyZone] SendPlayerProfile | pre-CRC final bytes | "
@@ -6476,6 +6640,438 @@ void TrilogyZoneServer::HandleSocialCommand(const std::string& addr, int port, S
 		LogInfo("[TrilogyZone] Social: char={} /consent [{}]", s.char_name, name);
 		tc->Handle_OP_Consent(app);
 		delete app;
+		break;
+	}
+
+	default:
+		break;
+	}
+}
+
+
+// ============================================================
+// SendGuildsList — 0x9221, the client's guild-name table
+//
+// World sends this once at char-select and the client keeps it for the life of
+// the process, so a guild created or renamed mid-session has no name on any
+// client already in a zone.  The client has its own repair channel for exactly
+// that: it sends 0x2821 carrying the guild id it cannot resolve (observed
+// 2026-09-05, payload 65 01 00 00 = 357, the guild that had just been created)
+// and waits for the table.  Same shape as the 0x4121 spawn-resend sweep.
+//
+// Byte-identical to TrilogyWorldServer::SendGuildsList — both fill slots
+// through Trilogy::structs::FillGuildsListEntry so the two cannot drift.
+// 30724 bytes, which SendApp fragments into ~60 datagrams.
+// ============================================================
+void TrilogyZoneServer::SendGuildsList(uint64_t session_key)
+{
+	static constexpr uint64_t kGuildsListMinIntervalMs = 30000;
+
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	Session& s = it->second;
+
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (s.last_guilds_list_ms != 0 &&
+	    now_ms - s.last_guilds_list_ms < kGuildsListMinIntervalMs) {
+		LogInfo("[TrilogyGuild] guilds table for char={} suppressed ({} ms since last)",
+		        s.char_name, now_ms - s.last_guilds_list_ms);
+		return;
+	}
+	s.last_guilds_list_ms = now_ms;
+
+	auto gl = std::make_unique<Trilogy::structs::GuildsList_Struct>();
+	memset(gl.get(), 0, sizeof(*gl));
+	for (uint32_t i = 0; i < Trilogy::structs::MAX_GUILDS; ++i) {
+		Trilogy::structs::FillGuildsListEntry(gl->Guilds[i], 0, nullptr);
+	}
+
+	auto     guilds    = guild_mgr.MakeGuildList();
+	uint32_t populated = 0;
+	uint32_t skipped   = 0;
+	for (auto const& entry : guilds.guild_detail) {
+		// The spawn struct's GuildID is a uint16 and the client's table is
+		// bounded at 512, so anything past that can never be rendered.
+		if (entry.guild_id >= Trilogy::structs::MAX_GUILDS) {
+			++skipped;
+			continue;
+		}
+		Trilogy::structs::FillGuildsListEntry(gl->Guilds[entry.guild_id],
+		                                      entry.guild_id,
+		                                      entry.guild_name.c_str());
+		++populated;
+	}
+
+	LogInfo("[TrilogyGuild] OUT guilds table char={} ({} guild(s), {} out of range, {} bytes)",
+	        s.char_name, populated, skipped,
+	        static_cast<uint32_t>(sizeof(*gl)));
+
+	SendToSession(session_key, 0x9221,
+	              reinterpret_cast<const uint8_t*>(gl.get()),
+	              static_cast<uint32_t>(sizeof(*gl)));
+}
+
+// ============================================================
+// HandleGuildCommand — the whole guild command family
+//
+// Nothing in this family was dispatched, so a guild could only be created and
+// populated by GM command or direct SQL.  Every piece of the logic already
+// exists in guild_mgr and the Handle_OP_Guild* family; the Trilogy inbound
+// branch was the only missing part, exactly like the social batch in #38.
+//
+// Two things about this family need care:
+//
+//   Name field order.  EQClassic labels the leading name field "Invitee" in
+//   one struct and "Remover" in another, for what is the same 68-byte packet.
+//   Rather than pick one and find out in play, every handler below identifies
+//   the sender by matching either name against the session's own character and
+//   takes the other as the target.  That is correct under both readings.
+//
+//   The refusal codes.  v29c answers an invite with a GUILDRANK value: 0/1/2
+//   accept at that rank, 4 = the popup timed out, 5 = declined.  It cannot be
+//   forwarded raw: Client::Handle_OP_GuildInviteAccept converts pre-RoF ranks
+//   with a switch whose default arm maps anything unrecognised to
+//   GUILD_RANK_NONE (0), and its decline test is `response >= 9`.  A decline
+//   would therefore arrive as an acceptance at rank 0.  Refusals are answered
+//   here instead and never reach that handler.
+// ============================================================
+
+// Read a fixed-width v29c name field that may not be null-terminated.
+static std::string TrilogyGuildName(const char* field, size_t width)
+{
+	size_t len = 0;
+	while (len < width && field[len] != '\0') ++len;
+	return std::string(field, len);
+}
+
+static bool TrilogyNameIs(const std::string& a, const char* b)
+{
+	return b != nullptr && strcasecmp(a.c_str(), b) == 0;
+}
+
+void TrilogyZoneServer::HandleGuildCommand(const std::string& addr, int port, Session& s,
+                                           uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	TrilogyClient* tc = s.trilogy_client;
+
+	// Unconditional payload dump.  No packet in this family has ever been seen
+	// on this branch and there are no captures, so the offsets below come from
+	// EQClassic's headers rather than from observation.  The first live run of
+	// each command is the only chance to confirm them, and a hex line costs
+	// nothing at the rate a player types guild commands.
+	{
+		std::string hex;
+		const uint32_t cap = plen > 96 ? 96u : plen;
+		hex.reserve(cap * 3);
+		for (uint32_t i = 0; i < cap; ++i) {
+			hex += fmt::format("{:02X} ", payload[i]);
+		}
+		if (plen > cap) hex += "...";
+		LogInfo("[TrilogyGuild] rx opcode={:04X} char={} plen={} payload=[{}]",
+		        opcode, s.char_name, plen, hex);
+	}
+
+	// GetName(), not GetCleanName(): every Handle_OP_Guild* below compares the
+	// name field against GetName(), and the self-remove path in
+	// Handle_OP_GuildRemove is an exact-match test on it.
+	const char* self = tc->GetName();
+
+	auto too_short = [&](uint32_t need, const char* what) -> bool {
+		if (plen >= need) return false;
+		LogInfo("[TrilogyGuild] char={} {} short packet plen={} (need {})",
+		        s.char_name, what, plen, need);
+		return true;
+	};
+
+	switch (opcode) {
+
+	// ------------------------------------------------------------------
+	// /guildinvite and /guildremove share one 68-byte struct.  Both modern
+	// handlers take the 136-byte EQEmu GuildCommand_Struct, so this is a
+	// name-and-rank copy into the wider struct plus a dispatch.
+	//
+	// The rank byte is left on the v29c scale deliberately: the modern
+	// handler already converts GUILD_MEMBER_TI / OFFICER_TI / LEADER_TI for
+	// any client below RoF, and Trilogy's 0/1/2 are exactly those values.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildInvite:
+	case ZN_OP_GuildRemove: {
+		const bool is_invite = (opcode == ZN_OP_GuildInvite);
+		const char* what = is_invite ? "/guildinvite" : "/guildremove";
+		if (too_short(sizeof(Trilogy::structs::GuildCommand_Struct), what)) return;
+
+		const auto* in =
+		    reinterpret_cast<const Trilogy::structs::GuildCommand_Struct*>(payload);
+		const std::string first  = TrilogyGuildName(in->othername, sizeof(in->othername));
+		const std::string second = TrilogyGuildName(in->myname,    sizeof(in->myname));
+
+		// Whichever field is not us is the target.  A self-remove (leaving your
+		// own guild) puts our own name in both, which still resolves to us.
+		std::string target = first;
+		if (TrilogyNameIs(first, self) && !TrilogyNameIs(second, self)) {
+			target = second;
+		}
+
+		LogInfo("[TrilogyGuild] char={} {} target=[{}] fields=[{}|{}] guildeqid={} rank={}",
+		        s.char_name, what, target, first, second,
+		        static_cast<int>(in->guildeqid), static_cast<int>(in->rank));
+
+		if (target.empty()) {
+			tc->Message(Chat::Red, "You must name a player.");
+			return;
+		}
+
+		EQApplicationPacket app(is_invite ? OP_GuildInvite : OP_GuildRemove,
+		                        sizeof(::GuildCommand_Struct));
+		// EQApplicationPacket zeroes the buffer it allocates.
+		auto* gc = reinterpret_cast<::GuildCommand_Struct*>(app.pBuffer);
+		strn0cpy(gc->othername, target.c_str(), sizeof(gc->othername));
+		strn0cpy(gc->myname,    self,           sizeof(gc->myname));
+		gc->guildeqid = static_cast<uint16>(in->guildeqid);
+		gc->officer   = static_cast<uint32>(in->rank);
+
+		if (is_invite) {
+			tc->Handle_OP_GuildInvite(&app);
+		} else {
+			tc->Handle_OP_GuildRemove(&app);
+		}
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// Answer to the invite popup.  Layout differs from the invite itself:
+	// the inviter comes first here, the new member second.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildInviteAccept: {
+		if (too_short(sizeof(Trilogy::structs::GuildInviteAccept_Struct), "guild invite answer"))
+			return;
+
+		const auto* in =
+		    reinterpret_cast<const Trilogy::structs::GuildInviteAccept_Struct*>(payload);
+		const std::string first  = TrilogyGuildName(in->inviter,    sizeof(in->inviter));
+		const std::string second = TrilogyGuildName(in->new_member, sizeof(in->new_member));
+
+		// We are the new member; the other field names the inviter.
+		std::string inviter = first;
+		if (TrilogyNameIs(first, self) && !TrilogyNameIs(second, self)) {
+			inviter = second;
+		}
+
+		// Trust the inviter's own guild over the wire value: v29c echoes a
+		// guild id here whose meaning is unconfirmed, and getting it wrong
+		// would put the player into whatever guild that number names.
+		Client* inviter_client = inviter.empty() ? nullptr
+		                                         : entity_list.GetClientByName(inviter.c_str());
+		const uint32 wire_guild  = static_cast<uint32>(in->guildeqid);
+		const uint32 guild_id    = inviter_client ? inviter_client->GuildID() : wire_guild;
+
+		LogInfo("[TrilogyGuild] char={} invite answer inviter=[{}] fields=[{}|{}] "
+		        "response={} wire_guild={} resolved_guild={}",
+		        s.char_name, inviter, first, second,
+		        static_cast<int>(in->response), wire_guild, guild_id);
+
+		// Anything outside the three in-guild ranks is a refusal — see the
+		// header comment for why this cannot be forwarded.
+		if (in->response < Trilogy::structs::GUILDRANK_MEMBER ||
+		    in->response > Trilogy::structs::GUILDRANK_LEADER) {
+			tc->SetPendingGuildInvitation(false);
+			guild_mgr.VerifyAndClearInvite(tc->CharacterID(), guild_id,
+			                               static_cast<uint8>(in->response));
+			const bool timed_out = (in->response == 4); // GuildInviteTimeOut
+			tc->Message(Chat::Yellow, timed_out ? "The guild invite timed out."
+			                                    : "You declined the guild invite.");
+			if (inviter_client) {
+				inviter_client->Message(Chat::Yellow,
+				                        timed_out ? "%s's guild invite window timed out."
+				                                  : "%s has declined to join the guild.",
+				                        self);
+			}
+			return;
+		}
+
+		EQApplicationPacket app(OP_GuildInviteAccept, sizeof(::GuildInviteAccept_Struct));
+		auto* gia = reinterpret_cast<::GuildInviteAccept_Struct*>(app.pBuffer);
+		strn0cpy(gia->inviter,    inviter.c_str(), sizeof(gia->inviter));
+		strn0cpy(gia->new_member, self,            sizeof(gia->new_member));
+		gia->response = static_cast<uint32>(in->response);
+		gia->guild_id = guild_id;
+		tc->Handle_OP_GuildInviteAccept(&app);
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// /guildmotd, both directions on one opcode.
+	//
+	// There is no verified struct for this.  EQClassic's zone handler is a
+	// dead stub (it returns on a guilddbid it never assigns) and its LS
+	// ancestor reads the text at offset 68, which is name[64] + 4 on a
+	// client whose names are 64 bytes wide — not this one.  So rather than
+	// pick an offset, walk the payload for null-terminated printable strings.
+	// The client sends its own name first and the new MOTD in the
+	// "Name - text" form the LS handler documents, with "Name - none" as the
+	// clear.  A packet with no text is the request form, which v29c also
+	// sends once at login even for a player with no guild.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildMOTD: {
+		// Only the fixed head is required.  The client allocates the full 548
+		// bytes but there is no guarantee it sends all of them, and the text is
+		// read bounded by what actually arrived rather than by the struct.
+		constexpr uint32_t kMOTDTextOffset =
+		    offsetof(Trilogy::structs::GuildMOTD_Struct, motd);
+		if (too_short(kMOTDTextOffset, "/guildmotd")) return;
+
+		const auto* in =
+		    reinterpret_cast<const Trilogy::structs::GuildMOTD_Struct*>(payload);
+		const std::string setter = TrilogyGuildName(in->name, sizeof(in->name));
+		const uint32_t    text_avail =
+		    std::min<uint32_t>(plen - kMOTDTextOffset, sizeof(in->motd));
+		std::string motd = TrilogyGuildName(in->motd, text_avail);
+
+		LogInfo("[TrilogyGuild] char={} /guildmotd setter=[{}] wire_guild={} text=[{}]",
+		        s.char_name, setter, in->guildid, motd);
+
+		// The client sends the text as "<Name> - <text>", and "<Name> - none"
+		// is its documented clear form.  Empty means it is asking, not setting.
+		const bool is_set = !motd.empty();
+		if (is_set) {
+			const size_t sep = motd.find(" - ");
+			if (sep != std::string::npos &&
+			    (TrilogyNameIs(motd.substr(0, sep), self) ||
+			     strcasecmp(motd.substr(0, sep).c_str(), setter.c_str()) == 0)) {
+				motd = motd.substr(sep + 3);
+			}
+			if (strcasecmp(motd.c_str(), "none") == 0) {
+				motd.clear();
+			}
+		}
+
+		if (!tc->IsInAGuild()) {
+			// v29c polls this at login regardless of guild membership; only
+			// say something if the player actually tried to set one.
+			if (is_set) {
+				tc->Message(Chat::Red, "You are not a member of any guild.");
+			}
+			return;
+		}
+
+		if (!is_set) {
+			// Request form, and it is always answered.  v29c asks for its MOTD
+			// once on its own immediately after zone-in — confirmed on the wire,
+			// and what EQClassic documents — and sends the identical packet when
+			// the player types a bare /guildmotd.  Nothing in the packet tells
+			// the two apart.
+			//
+			// So the login display is driven entirely by the client's own poll:
+			// HandleOutgoingGuildMOTD drops the copy CompleteConnect emits during
+			// zone-in, which is what stops the two printing the same line twice.
+			// That leaves every request here free to force a display, which is
+			// the only behaviour that is right for a command the player typed.
+			//
+			// An earlier attempt treated the first request of a session as the
+			// poll.  It had a hole: the client only polls when it already
+			// believes it is in a guild (the gate at eqgame.exe 0x4a54c8 rejects
+			// 0xFFFF before sending), so a player who logs in unguilded and joins
+			// mid-session never sends one — and their first typed /guildmotd was
+			// swallowed as though it were the poll.
+			char cur[512]  = {};
+			char setby[64] = {};
+			if (guild_mgr.GetGuildMOTD(tc->GuildID(), cur, setby) && cur[0]) {
+				tc->SendGuildMOTD(true); // OP_GetGuildMOTDReply — always displayed
+			} else if (!tc->IsZoning()) {
+				// Nothing to send: the outbound path drops an empty MOTD, so say
+				// it here or a player who types /guildmotd on a guild that has
+				// none set gets silence and reads it as a broken command.
+				//
+				// Skipped for the automatic poll, which is the one request that
+				// is reliably distinguishable: it arrives before the client's
+				// first position update, and a player cannot type until after
+				// their world is up.  Otherwise every zone-in on a guild with no
+				// MOTD would open with a line nobody asked for.
+				tc->Message(Chat::Guild, "Your guild has no message of the day set.");
+			}
+			return;
+		}
+
+		if (!guild_mgr.CheckPermission(tc->GuildID(), tc->GuildRank(),
+		                               GUILD_ACTION_CHANGE_THE_MOTD)) {
+			tc->Message(Chat::Red, "You do not have permission to set the guild message of the day.");
+			return;
+		}
+
+		LogInfo("[TrilogyGuild] char={} setting guild {} MOTD to [{}]",
+		        s.char_name, tc->GuildID(), motd);
+
+		if (!guild_mgr.SetGuildMOTD(tc->GuildID(), motd, self)) {
+			tc->Message(Chat::Red, "Failed to update the guild message of the day.");
+		}
+		// The confirmation to the whole guild rides the refresh guild_mgr
+		// pushes through world, which lands back here as SendGuildMOTD.
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// /guildleader <name> — bare null-terminated name, no struct.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildLeader: {
+		char new_leader[64] = {};
+		const uint32_t cap = plen < sizeof(new_leader) ? plen
+		                                               : static_cast<uint32_t>(sizeof(new_leader) - 1);
+		memcpy(new_leader, payload, cap);
+		new_leader[sizeof(new_leader) - 1] = '\0';
+
+		LogInfo("[TrilogyGuild] char={} /guildleader [{}]", s.char_name, new_leader);
+
+		if (!new_leader[0]) {
+			tc->Message(Chat::Red, "You must name the new guild leader.");
+			return;
+		}
+
+		EQApplicationPacket app(OP_GuildLeader, sizeof(::GuildMakeLeader_Struct));
+		auto* gml = reinterpret_cast<::GuildMakeLeader_Struct*>(app.pBuffer);
+		strn0cpy(gml->requestor,  self,       sizeof(gml->requestor));
+		strn0cpy(gml->new_leader, new_leader, sizeof(gml->new_leader));
+		tc->Handle_OP_GuildLeader(&app);
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// /guilddelete — the modern handler reads nothing from the payload and
+	// does the leader check itself.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildDelete: {
+		LogInfo("[TrilogyGuild] char={} /guilddelete guild={}", s.char_name, tc->GuildID());
+		EQApplicationPacket app(OP_GuildDelete, 0);
+		tc->Handle_OP_GuildDelete(&app);
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// The client asking for the guild-name table, carrying the id it could
+	// not resolve.  This is its own repair channel for a guild that was
+	// created after it received its char-select table.
+	// ------------------------------------------------------------------
+	case ZN_OP_GetGuildsList: {
+		uint32_t wanted = 0;
+		if (plen >= sizeof(wanted)) memcpy(&wanted, payload, sizeof(wanted));
+		LogInfo("[TrilogyGuild] char={} requested guilds table (unresolved guild id {})",
+		        s.char_name, wanted);
+		SendGuildsList(SessionKey(addr, port));
+		break;
+	}
+
+	// ------------------------------------------------------------------
+	// Guild wars never shipped in this era.  EQClassic answers the same way
+	// rather than leaving the command silent, and a silent command reads as
+	// a broken client.
+	// ------------------------------------------------------------------
+	case ZN_OP_GuildWar:
+	case ZN_OP_GuildPeace: {
+		LogInfo("[TrilogyGuild] char={} {} - not implemented",
+		        s.char_name, opcode == ZN_OP_GuildWar ? "/guildwar" : "/guildpeace");
+		tc->Message(Chat::Red, "Guild wars are not implemented on this server.");
 		break;
 	}
 
@@ -9655,9 +10251,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.anim_type         = 0x64; // standing
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC equipment mode
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
-		sp.guildrank         = bot->IsInAGuild()
-		                           ? static_cast<int8_t>(bot->GuildRank())
-		                           : static_cast<int8_t>(0xFF);
+		sp.guildrank         = Trilogy::structs::TranslateGuildRankToTrilogy(
+		    static_cast<uint8_t>(bot->GuildRank()), bot->IsInAGuild());
 		sp.light = static_cast<int8_t>(bot->GetEquipmentLightType());
 		strncpy(sp.name,    TrilogyWireName(bot), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, bot->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -9727,10 +10322,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		// in MakeSpawnUpdate (LS/zone/mob.cpp:572).
 		sp.LD = (c->IsTrilogyClient() &&
 		         static_cast<TrilogyClient*>(c)->IsLinkdead()) ? 1 : 0;
-		if (c->IsInAGuild())
-			sp.guildrank = static_cast<int8_t>(c->GuildRank());
-		else
-			sp.guildrank = static_cast<int8_t>(0xFF);
+		sp.guildrank = Trilogy::structs::TranslateGuildRankToTrilogy(
+		    static_cast<uint8_t>(c->GuildRank()), c->IsInAGuild());
 		sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 		strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 		strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -9890,10 +10483,8 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	// LD flag (offset 085) — see the SendZoneSpawns copy above.
 	sp.LD = (c->IsTrilogyClient() &&
 	         static_cast<TrilogyClient*>(c)->IsLinkdead()) ? 1 : 0;
-	if (c->IsInAGuild())
-		sp.guildrank = static_cast<int8_t>(c->GuildRank());
-	else
-		sp.guildrank = static_cast<int8_t>(0xFF);
+	sp.guildrank = Trilogy::structs::TranslateGuildRankToTrilogy(
+	    static_cast<uint8_t>(c->GuildRank()), c->IsInAGuild());
 	sp.light = static_cast<int8_t>(c->GetEquipmentLightType());
 	strncpy(sp.name,    c->GetCleanName(), sizeof(sp.name) - 1);
 	strncpy(sp.Surname, c->GetLastName(),  sizeof(sp.Surname) - 1);
@@ -10006,9 +10597,9 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 		sp.GuildID   = npc->CastToBot()->IsInAGuild()
 		                   ? static_cast<uint16_t>(npc->CastToBot()->GuildID())
 		                   : static_cast<uint16_t>(0xFFFF);
-		sp.guildrank = npc->CastToBot()->IsInAGuild()
-		                   ? static_cast<int8_t>(npc->CastToBot()->GuildRank())
-		                   : static_cast<int8_t>(0xFF);
+		sp.guildrank = Trilogy::structs::TranslateGuildRankToTrilogy(
+		    static_cast<uint8_t>(npc->CastToBot()->GuildRank()),
+		    npc->CastToBot()->IsInAGuild());
 	} else {
 		if (RuleB(PlayerBots, PlayerBotsCanBeGuilded)) {
 			sp.GuildID = static_cast<uint16_t>(database.GetPlayerBotGuildId());

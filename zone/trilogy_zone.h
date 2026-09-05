@@ -72,6 +72,13 @@ public:
 	                   const uint8_t* data, uint32_t size,
 	                   bool ack_req = true);
 
+	// 0x9221 — the client's guild-name table, the same 30 KB payload world
+	// sends at char-select.  Needed from the zone too: a guild created
+	// mid-session has no name on any client already in a zone, and the client
+	// asks for the table with 0x2821 when it meets an id it cannot resolve.
+	// Public because TrilogyClient drives it from the OP_GuildsList translation.
+	void SendGuildsList(uint64_t session_key);
+
 	// Send a server-initiated EQNetwork CLOSE to the session.  Called immediately
 	// after the 0xa320 zone-change approval so EQNetwork cleanly nulls out this
 	// zone's connection-table entry (entry.connection = NULL) before the player
@@ -324,6 +331,20 @@ private:
 		// Rate limiter for [Trilogy attack-diag] TARGET log — click-spam
 		// on nearby NPCs would otherwise flood on every mouseover.
 		uint64_t last_target_log_ms = 0;
+
+		// Backstop for the 30 KB guilds table (0x9221).  Answering the client's
+		// 0x2821 request is what stops it asking, so this never throttles the
+		// normal case — it exists so a request we cannot satisfy (a guild id the
+		// table genuinely has no entry for, or a reply shape the client rejects)
+		// cannot turn into a 30 KB-per-spawn loop.  Same reasoning as
+		// last_resend_ms above.
+		uint64_t last_guilds_list_ms = 0;
+
+
+		// (state << 16 | opcode) pairs already reported by the connect-handshake
+		// unhandled logger, so a client that repeats an opcode during zone-in
+		// prints one line rather than one per retry.
+		std::unordered_set<uint32_t> connect_unhandled_seen;
 
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
@@ -707,6 +728,15 @@ private:
 	// grouped into one function because they share that shape entirely.
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
+
+	// Guild management: /guildinvite, the invite answer, /guildremove,
+	// /guildmotd, /guildleader, /guilddelete and the two guild-war commands.
+	// Same translate-and-dispatch shape as the social batch — guild_mgr and the
+	// Client::Handle_OP_Guild* family already implement all of it.  Grouped
+	// because they share the 68-byte name-pair struct and the same sender-
+	// identification rule; see the implementation for both.
+	void HandleGuildCommand(const std::string& addr, int port, Session& s,
+	                        uint16_t opcode, const uint8_t* payload, uint32_t plen);
 
 	// Inbound 0xff21 — Options-panel chat/combat filters.  Applies the 13 slots
 	// v29c actually reports; the slot-to-filter mapping is undocumented and was
