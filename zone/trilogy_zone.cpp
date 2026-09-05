@@ -376,6 +376,17 @@ static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+u
 static constexpr uint16_t ZN_OP_Surname       = 0xc421; // client -> zone: Surname_Struct (56B, /surname submit)
 static constexpr uint16_t ZN_OP_GMSurname     = 0x6e21; // zone -> nearby: GMSurname_Struct (94B, refresh nameplates)
 
+// Socials (/bow, /wave, /emote ...).  EQClassic splits one user action into two
+// independent packets and the client sends whichever apply:
+//   OP_Social_Text   — the chat line.  Payload is the PREDICATE ONLY (" bows.");
+//                      the server prepends the actor's name.
+//   OP_Social_Action — the body animation.  Same 12-byte struct we already emit
+//                      outbound for OP_Animation, so `action` sits at byte 4.
+// Source: EQClassic/Common/Include/eq_opcodes.h:265-266,
+//         client_process.cpp:4203 (ProcessOP_Social_Text) and :6525 (OP_Social_Action).
+static constexpr uint16_t ZN_OP_SocialText    = 0x1520; // client <-> nearby: bare NUL-terminated string
+static constexpr uint16_t ZN_OP_SocialAction  = 0x9f20; // client -> zone: Attack_Struct shape, anim id at +4
+
 // Resurrection (all 160B Resurrect_Struct).
 // Source: EQClassic Common/Include/eq_opcodes.h + eq_packet_structs.h
 // - ZN_OP_RezzRequest  is bidirectional but we only translate zone->client
@@ -2235,6 +2246,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_Surname && s.trilogy_client)
 			HandleSurname(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_SocialText && s.trilogy_client)
+			HandleSocialText(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_SocialAction && s.trilogy_client)
+			HandleSocialAction(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_RezzAnswer && s.trilogy_client)
 			HandleRezzAnswer(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_RezzRequest && s.trilogy_client) {
@@ -8895,6 +8910,136 @@ void TrilogyZoneServer::HandleSurname(const std::string& /*addr*/, int /*port*/,
 
 	LogInfo("[TrilogyZone] /surname: {} -> '{}'", s.char_name, es->lastname);
 	s.trilogy_client->Handle_OP_Surname(&app);
+}
+
+// ============================================================
+// HandleSocialText — the chat line half of a social (/bow, /wave, /emote).
+//
+// Wire in : opcode 0x1520, a bare NUL-terminated string holding only the
+//           PREDICATE — " bows." — with its own leading space.  The actor's
+//           name is the server's job to prepend.
+//
+// EQClassic's ProcessOP_Social_Text (client_process.cpp:4203) does exactly
+// that and nothing else:
+//     cptr += sprintf(cptr, "%s", GetName());
+//     cptr += sprintf(cptr, "%s", pApp->pBuffer);
+//     entity_list.QueueCloseClients(this, outapp, true, 100);
+//
+// We route the equivalent through Client::Handle_OP_Emote instead of relaying
+// by hand.  That handler is the same code with the same ancestry — it prepends
+// GetName() and calls QueueCloseClients with ignore_sender=true (both even
+// carry the identical commented-out `replacestr` block for rewriting the
+// target's copy to "you", abandoned in both trees).  Going through it buys
+// cross-client delivery: a Titanium observer gets a native OP_Emote while
+// Trilogy observers get 0x1520 back via TranslateAndSend, instead of the
+// Trilogy-only relay a literal port would have given us.
+//
+// Range differs deliberately: EQClassic hardcodes 100 units, EQEmu uses
+// RuleI(Range, Emote).  Keeping the rule means one knob for every client.
+//
+// Payload offset: EQClassic's Emote_Text declares `int16 unknown1` before
+// `message`, but its live "new client method" reads and writes the string from
+// byte 0, overwriting that field; the +2 form is commented out as the "old
+// client method".  We follow the live path and fall back to +2 only when byte 0
+// is NUL but a string starts at +2, logging which layout was used the first
+// time per session so a mismatch shows up immediately rather than as silence.
+// ============================================================
+void TrilogyZoneServer::HandleSocialText(const std::string& /*addr*/, int /*port*/, Session& s,
+                                          const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client || plen == 0) return;
+
+	// Locate the predicate string, tolerating either layout.
+	const char* body   = reinterpret_cast<const char*>(payload);
+	uint32_t    avail  = plen;
+	const char* layout = "offset0";
+	if (payload[0] == '\0' && plen > 2 && payload[2] != '\0') {
+		body   = reinterpret_cast<const char*>(payload + 2);
+		avail  = plen - 2;
+		layout = "offset2";
+	}
+
+	// Bound the copy: the buffer is not guaranteed NUL-terminated on the wire,
+	// and Handle_OP_Emote wants a fixed-size Emote_Struct.
+	char msg[512] = {};
+	uint32_t n = 0;
+	while (n < avail && n < sizeof(msg) - 1 && body[n] != '\0') {
+		msg[n] = body[n];
+		++n;
+	}
+	msg[n] = '\0';
+	if (n == 0) return;
+
+	if (!s.social_text_logged) {
+		s.social_text_logged = true;
+		LogInfo("[TrilogyZone] social text: char=[{}] layout={} plen={} predicate=['{}']",
+		        s.char_name, layout, plen, msg);
+	}
+
+	EQApplicationPacket app(OP_Emote, sizeof(::Emote_Struct));
+	memset(app.pBuffer, 0, sizeof(::Emote_Struct));
+	auto* es = reinterpret_cast<::Emote_Struct*>(app.pBuffer);
+	es->type = 0;
+	strn0cpy(es->message, msg, sizeof(es->message));
+
+	s.trilogy_client->Handle_OP_Emote(&app);
+}
+
+// ============================================================
+// HandleSocialAction — the body-animation half of a social.
+//
+// Wire in : opcode 0x9f20, the same 12-byte shape we already emit outbound for
+//           OP_Animation (Trilogy Attack_Struct): int32 spawn_id at 0, the
+//           animation id at byte 4.  EQClassic calls it Social_Action_Struct
+//           (`uint8 unknown1[4]; uint8 action; uint8 unknown2[7]`) — identical
+//           layout, which is why one opcode carries both melee swings and /bow.
+//
+// EQClassic relays the client's packet verbatim and does nothing else:
+//     case OP_Social_Action: entity_list.QueueCloseClients(this, app, true);
+//
+// We re-emit as OP_Animation rather than echoing the raw bytes, so the
+// animation reaches Titanium observers too; TranslateAndSend turns it back into
+// 0x9f20 for Trilogy observers via HandleAnimation, which already stamps the
+// 0x80/0x3F trailer EQClassic's DoAnim writes.
+//
+// Built by hand instead of calling Mob::DoAnim because DoAnim hardcodes
+// ignore_sender=false.  EQClassic passes true here: the emoting client plays
+// its own animation locally, and echoing it back re-triggers the gesture.
+// ============================================================
+void TrilogyZoneServer::HandleSocialAction(const std::string& /*addr*/, int /*port*/, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < 5) {
+		LogInfo("[TrilogyZone] social action: short payload {} from char=[{}]", plen, s.char_name);
+		return;
+	}
+
+	const uint8_t action = payload[4];
+	if (action == 0) return;
+
+	if (!s.social_action_logged) {
+		s.social_action_logged = true;
+		LogInfo("[TrilogyZone] social action: char=[{}] plen={} anim={}",
+		        s.char_name, plen, static_cast<int>(action));
+	}
+
+	auto outapp = new EQApplicationPacket(OP_Animation, sizeof(::Animation_Struct));
+	auto* a = reinterpret_cast<::Animation_Struct*>(outapp->pBuffer);
+	a->spawnid = s.trilogy_client->GetID();
+	a->action  = action;
+	a->speed   = 10; // DoAnim's default when the caller passes 0
+
+	entity_list.QueueCloseClients(
+		s.trilogy_client, /* sender          */
+		outapp,           /* packet          */
+		true,             /* ignore sender   */
+		RuleI(Range, Anims),
+		0,                /* skip this mob   */
+		true              /* ack required    */
+	);
+
+	safe_delete(outapp);
 }
 
 // ============================================================

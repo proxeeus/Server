@@ -431,6 +431,9 @@ private:
 	void HandleOutgoingSpawnAppearance(const EQApplicationPacket* app);
 	// Spell / combat translators (server → Trilogy client)
 	void HandleAnimation(const EQApplicationPacket* app);
+	// OP_Emote -> 0x1520.  Strips EQEmu's 4-byte type header; the name is
+	// already prepended by Client::Handle_OP_Emote.
+	void HandleEmote(const EQApplicationPacket* app);
 	void HandleBeginCast(const EQApplicationPacket* app);
 	void HandleAction(const EQApplicationPacket* app);
 	void HandleDamage(const EQApplicationPacket* app);

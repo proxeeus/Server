@@ -523,6 +523,14 @@ private:
 		bool             inspect_captured        = false;
 		uint16_t         pending_inspect_target_id = 0;
 
+		// One-shot log latches for the two social packets.  Socials fire often
+		// enough during normal play to be noisy, but the first of each carries
+		// what we actually want on record: which payload layout 0x1520 arrived
+		// in (EQClassic has a live offset-0 path and a dead offset-2 one) and
+		// what animation id a given emote maps to.
+		bool             social_text_logged      = false;
+		bool             social_action_logged    = false;
+
 		// ── Money-display reconciliation ─────────────────────────────────────
 		// The client's coin counter only refreshes from the PlayerProfile at zone-in.
 		// Tick() compares these last-pushed counts to the live PlayerProfile and relays
@@ -769,6 +777,16 @@ private:
 	// filter checks + persistence path run unchanged.
 	void HandleSurname(const std::string& addr, int port, Session& s,
 	                   const uint8_t* payload, uint32_t plen);
+
+	// Socials (client -> zone).  A /bow can produce either or both of these,
+	// independently: 0x1520 carries the chat line (predicate only — the server
+	// prepends the actor's name), 0x9f20 carries the body animation.  Both are
+	// re-emitted through the EQEmu broadcast path so non-Trilogy observers in
+	// the zone see them too.
+	void HandleSocialText(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+	void HandleSocialAction(const std::string& addr, int port, Session& s,
+	                        const uint8_t* payload, uint32_t plen);
 
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
