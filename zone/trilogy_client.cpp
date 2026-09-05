@@ -740,6 +740,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Emote:
 		HandleEmote(app);
 		break;
+	case OP_LFGAppearance:
+		HandleLFGAppearance(app);
+		break;
 	case OP_BeginCast:
 		HandleBeginCast(app);
 		break;
@@ -3791,6 +3794,24 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 			                   zone_store.GetZoneName(zone_id, true));
 		}
 
+		// LFG marker.  EQClassic appends " LFG" from ClientListEntry::LFG()
+		// while world is building the text (World/Source/ZSList.cpp:569-621).
+		// Our world sends structured rows instead and WhoAllPlayer carries no
+		// LFG field, so the flag is recovered here from the live entity.
+		//
+		// That limits it to players in THIS zone.  Accepted deliberately: the
+		// alternative is adding a field to what world sends every client, and
+		// a same-zone-only marker is strictly better than none — it is additive
+		// text, so a remote row simply reads as it does today rather than
+		// claiming the player is not LFG.
+		//
+		// Worth knowing when testing: a bare /who never reaches the server at
+		// all (v29c builds that roster from its own spawn list), so this only
+		// shows up under /who all.
+		if (Client* who_c = entity_list.GetClientByName(name.c_str())) {
+			if (who_c->IsLFG()) line += " LFG";
+		}
+
 		// Account and status are only populated for privileged viewers.
 		if (!account.empty()) line += fmt::format(" AccName: {}", account);
 		if (admin != 0xFFFFFFFF) line += fmt::format(" Status: {}", admin);
@@ -4472,6 +4493,50 @@ void TrilogyClient::HandleBecomeCorpse(const EQApplicationPacket* app)
 	// SAT_SendToBind(1) in HandleDeath from triggering the 3rd-person
 	// death camera.  The corpse is handled by the post-death send +
 	// EQEmu's Corpse entity (visible on zone re-entry via OP_NewSpawn).
+}
+
+// ============================================================
+// HandleLFGAppearance — OP_LFGAppearance (server → Trilogy client), 0xf021.
+//
+// Client::Handle_OP_LFGCommand broadcasts LFG_Appearance_Struct {spawn_id,
+// lfg} to every other client whenever the flag changes (client_packet.cpp:
+// 10071).  Nothing translated it, so Trilogy observers dropped it and a
+// player's LFG state never left their own screen.
+//
+// v29c's wire form is the same 36-byte LFG_Struct it sends for /lfg --
+// { char name[32]; int32 value } (EQClassic eq_packet_structs.h:1288) -- so
+// the translation is to resolve the entity id to the name that client knows
+// and restate the flag against it.  The id is the authoritative part: the
+// inbound packet's own name field is filled by the sender's client and cannot
+// be trusted to identify anyone to a third party.
+//
+// Sent to observers only.  The toggling client already applied
+// the state locally when it printed "you are now looking for a group", and an
+// echo would be at best redundant; EQEmu's broadcast already passes
+// ignore_sender=true, so a self-copy never reaches here anyway.
+// ============================================================
+void TrilogyClient::HandleLFGAppearance(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::LFG_Appearance_Struct)) return;
+	const auto* in = reinterpret_cast<const ::LFG_Appearance_Struct*>(app->pBuffer);
+
+	// 0xf021 is bidirectional but the two directions do NOT share a struct.
+	// Inbound (client -> zone) is LFG_Struct { char name[32]; int32 value }.
+	// Outbound (zone -> client) is LFG_Appearance_Struct:
+	//     int16 entityid; int16 unknown; int32 value;      // 8 bytes
+	// Echoing the inbound name form back is what failed every earlier attempt
+	// -- the client simply drops it.  It wants the ENTITY ID.
+	uint8_t out[8] = {};
+	const int16_t eid = static_cast<int16_t>(
+		TranslateId(static_cast<uint32_t>(in->spawn_id)));
+	const int32_t value = in->lfg ? 1 : 0;
+	memcpy(out + 0, &eid,   sizeof(eid));
+	memcpy(out + 4, &value, sizeof(value));
+
+	LogInfo("[TrilogyLFG] relay | observer=[{}] eid={} lfg={}",
+	        GetCleanName(), static_cast<int>(eid), value);
+
+	m_tzs->SendToSession(m_session_key, 0xf021, out, sizeof(out));
 }
 
 // ============================================================

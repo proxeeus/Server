@@ -434,6 +434,9 @@ private:
 	// OP_Emote -> 0x1520.  Strips EQEmu's 4-byte type header; the name is
 	// already prepended by Client::Handle_OP_Emote.
 	void HandleEmote(const EQApplicationPacket* app);
+	// OP_LFGAppearance -> 0xf021.  Resolves the broadcast's entity id to the
+	// name this client knows and restates the flag against it.
+	void HandleLFGAppearance(const EQApplicationPacket* app);
 	void HandleBeginCast(const EQApplicationPacket* app);
 	void HandleAction(const EQApplicationPacket* app);
 	void HandleDamage(const EQApplicationPacket* app);
@@ -720,6 +723,16 @@ public:
 	// idle one and raise its refresh rate for the duration; without it a
 	// rotation is sampled at the 2 s idle baseline and observers see the
 	// character snap between a handful of facings.
+	// ── Linkdead ─────────────────────────────────────────────────────────
+	// Set when the client stops talking without camping out.  The Client
+	// object deliberately stays alive and in entity_list for a grace period,
+	// mirroring EQClassic, where CLIENT_LINKDEAD is still "in zone"
+	// (LS/zone/client.h:96) so the body can be aggroed and killed rather than
+	// vanishing mid-fight.  Read by the spawn builders to stamp Spawn_Struct
+	// .LD, so someone zoning in during the window sees the flag too.
+	void SetLinkdead(bool v) { m_linkdead = v; }
+	bool IsLinkdead() const  { return m_linkdead; }
+
 	void NoteHeadingChanged(uint64_t now_ms) { m_last_heading_change_ms = now_ms; }
 
 	bool IsRotating(uint64_t now_ms, uint64_t window_ms = 500) const {
@@ -754,6 +767,7 @@ public:
 	}
 
 private:
+	bool     m_linkdead        = false;
 	int8_t   m_self_anim_type   = 0;
 	uint64_t m_self_anim_set_ms = 0;
 	uint64_t m_last_heading_change_ms = 0;
