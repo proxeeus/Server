@@ -577,6 +577,18 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	if (zone)
 		m_pp.zone_id = static_cast<uint16>(zone->GetZoneID());
 
+	// Seed the Mob-level `lastname` from the profile.  LoadCharacterData already
+	// filled m_pp.last_name from character_data, but the ONLY place that copies it
+	// down onto the Mob is client_packet.cpp:1378 in Handle_Connect_OP_ZoneEntry,
+	// which the Trilogy path never enters — so it stayed empty for the whole
+	// session while the DB and m_pp both held the right value.
+	//
+	// Every Trilogy spawn builder writes `sp.Surname` from GetLastName(), so an
+	// empty member meant observers saw a bare first name on every other player.
+	// Same class of gap as the bind points, buffs, currency and guild fields that
+	// InitTrilogyFields already backfills.
+	strn0cpy(lastname, m_pp.last_name, sizeof(lastname));
+
 	// Load language skills from DB so ChannelMessageSend can correctly determine
 	// whether the player understands a given language (skill ≥ 24 = understood).
 	database.LoadCharacterLanguages(char_id, &m_pp);
@@ -2402,6 +2414,14 @@ void Client::Sit() {
 void Client::ChangeLastName(std::string last_name) {
 	memset(m_pp.last_name, 0, sizeof(m_pp.last_name));
 	strn0cpy(m_pp.last_name, last_name.c_str(), sizeof(m_pp.last_name));
+
+	// Keep the Mob-level copy in step.  Only Handle_Connect_OP_ZoneEntry refreshed
+	// it, so between a /surname and the next zone every spawn packet built from
+	// GetLastName() still carried the OLD name.  Invisible on clients that take
+	// the live OP_GMLastName broadcast below, but the Trilogy spawn struct is the
+	// only carrier there, so a player entering view mid-session saw stale text.
+	strn0cpy(lastname, last_name.c_str(), sizeof(lastname));
+
 	auto outapp = new EQApplicationPacket(OP_GMLastName, sizeof(GMLastName_Struct));
 	auto gmn = (GMLastName_Struct*) outapp->pBuffer;
 	strn0cpy(gmn->name, name, sizeof(gmn->name));
