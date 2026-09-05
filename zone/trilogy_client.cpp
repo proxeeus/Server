@@ -3650,7 +3650,17 @@ void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
 
 	// Repeat suppression: the MOTD is re-sent on every guild refresh, and world
 	// pushes one for changes that have nothing to do with the MOTD text.
-	if (m_last_guild_motd == motd) return;
+	//
+	// OP_GetGuildMOTDReply is exempt.  Upstream's own note on Client::SendGuildMOTD
+	// draws the same line: the plain OP_GuildMOTD is a state update the client
+	// compares against what it already has, while the Reply form is an answer to
+	// something the player asked for and is always displayed.  Without the
+	// exemption a typed /guildmotd on an unchanged MOTD prints nothing and reads
+	// as a broken command.
+	const bool forced = (app->GetOpcode() == OP_GetGuildMOTDReply);
+	if (!forced) {
+		if (m_last_guild_motd == motd) return;
+	}
 	m_last_guild_motd = motd;
 
 	Message(Chat::Guild, "Guild MOTD: %s", motd);

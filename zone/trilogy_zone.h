@@ -340,6 +340,12 @@ private:
 		// last_resend_ms above.
 		uint64_t last_guilds_list_ms = 0;
 
+		// v29c asks for its guild MOTD once on its own at login, with the same
+		// packet a typed /guildmotd sends.  The first request of a session is
+		// therefore that poll; everything after it is the player asking.  See
+		// the OP_GuildMOTD request branch in HandleGuildCommand.
+		bool guild_motd_polled = false;
+
 		// (state << 16 | opcode) pairs already reported by the connect-handshake
 		// unhandled logger, so a client that repeats an opcode during zone-in
 		// prints one line rather than one per retry.

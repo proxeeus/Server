@@ -6958,17 +6958,25 @@ void TrilogyZoneServer::HandleGuildCommand(const std::string& addr, int port, Se
 		}
 
 		if (!is_set) {
-			// Request form: echo what we have, the way EQClassic does — the MOTD
-			// reaches the player as guild-channel chat.  Route it through
-			// Client::SendGuildMOTD rather than writing the line here so it
-			// shares the repeat suppression in HandleOutgoingGuildMOTD with the
-			// zone-in copy; v29c polls this opcode once at login, which would
-			// otherwise print the MOTD twice on every zone-in.
+			// Request form.  v29c sends this once on its own at login — confirmed
+			// on the wire, and the behaviour EQClassic documents — and again every
+			// time the player types a bare /guildmotd.  The two need different
+			// handling and the packet is identical, so the first request of a
+			// session is taken as the client's automatic poll.
+			//
+			// Login poll: route through the deduped path so it cannot double up
+			// with the copy CompleteConnect already sent, and stay silent when
+			// the guild has no MOTD.
+			// Typed request: force the display, because the answer to a command
+			// the player just typed must not be suppressed as a repeat.
+			const bool is_login_poll = !s.guild_motd_polled;
+			s.guild_motd_polled = true;
+
 			char cur[512]  = {};
 			char setby[64] = {};
 			if (guild_mgr.GetGuildMOTD(tc->GuildID(), cur, setby) && cur[0]) {
-				tc->SendGuildMOTD();
-			} else {
+				tc->SendGuildMOTD(!is_login_poll);
+			} else if (!is_login_poll) {
 				// The outbound path drops an empty MOTD, so say it here or a
 				// player who types /guildmotd on a guild with none set gets
 				// silence and reads it as a broken command.
