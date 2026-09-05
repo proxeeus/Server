@@ -543,6 +543,11 @@ public:
 
 	inline const char* GetLastName() const { return lastname; }
 
+	// LFG is private and had no reader.  Needed by the Trilogy /who all
+	// renderer, which recovers the flag from the live entity because
+	// WhoAllPlayer carries no LFG field for it to read out of world's reply.
+	inline bool IsLFG() const { return LFG; }
+
 	inline float ProximityX() const { return m_Proximity.x; }
 	inline float ProximityY() const { return m_Proximity.y; }
 	inline float ProximityZ() const { return m_Proximity.z; }

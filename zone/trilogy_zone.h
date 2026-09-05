@@ -538,6 +538,20 @@ private:
 		bool             social_text_logged      = false;
 		bool             social_action_logged    = false;
 
+		// Linkdead grace window.  Non-zero once the session has gone quiet
+		// without camping; the session and its Client stay alive until the
+		// window expires, then the normal teardown runs.  See the Tick
+		// comment for why an unclean drop is detected by silence here rather
+		// than by a socket state the way EQClassic does it.
+		uint64_t         linkdead_since_ms       = 0;
+		// last_pkt as it stood when the hold began.  The resume check compares
+		// against THIS rather than against wall-clock silence: entry is usually
+		// triggered by a CLOSE, and that CLOSE stamps last_pkt on its way in,
+		// so a plain "has it been quiet for N seconds" test is satisfied
+		// immediately and cancels the hold on the very next tick.  Only a
+		// genuinely newer packet means the client came back.
+		std::time_t      linkdead_entry_pkt      = 0;
+
 		// Rotation probe — 1 Hz window over inbound 0xF320 while the wire
 		// heading byte is changing.  Answers whether observed-rotation
 		// smoothness is bounded by OUR broadcast cadence or by how often the
@@ -801,6 +815,14 @@ private:
 	// prepends the actor's name), 0x9f20 carries the body animation.  Both are
 	// re-emitted through the EQEmu broadcast path so non-Trilogy observers in
 	// the zone see them too.
+
+	// Linkdead grace window.  EQClassic's CLIENT_LD_TIMEOUT (LS/zone/client.h:39):
+	// how long the body stays in the world under server AI after the link dies.
+	static constexpr uint64_t kLinkdeadHoldMs = 30000;
+
+	// Begin that window for a session whose client is gone.  Idempotent.
+	void EnterLinkdead(Session& s, uint64_t now_ms);
+
 	void HandleSocialText(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleSocialAction(const std::string& addr, int port, Session& s,

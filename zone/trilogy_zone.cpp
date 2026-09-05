@@ -762,6 +762,7 @@ static void BuildTrilogyCorpseName(const char* raw_name, char* out, size_t out_s
 	}
 }
 
+
 // ============================================================
 // FillIllusionBuf — build a 72-byte Trilogy Illusion packet.
 //
@@ -1115,6 +1116,47 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	if (zone) zone->SetHasActiveTrilogySessions(!m_sessions.empty());
 }
 
+// ============================================================
+// EnterLinkdead — begin the grace window for a session whose client is gone.
+//
+// EQClassic (LS/zone/client_process.cpp:6769): on a dead connection it sets
+// CLIENT_LINKDEAD, starts server AI for CLIENT_LD_TIMEOUT and sends
+// AT_LD=1.  CLIENT_LINKDEAD still counts as in-zone (client.h:96), so the
+// body keeps taking aggro and can die rather than blinking out mid-fight.
+//
+// Called from two places: the CLOSE handler, which is what an abrupt /q or a
+// killed client produces, and the silence sweep in Tick for a link that dies
+// without even managing a CLOSE.
+// ============================================================
+void TrilogyZoneServer::EnterLinkdead(Session& s, uint64_t now_ms)
+{
+	if (!s.trilogy_client || s.linkdead_since_ms != 0) return;
+
+	s.linkdead_since_ms  = now_ms;
+	s.linkdead_entry_pkt = s.last_pkt;
+	s.trilogy_client->SetLinkdead(true);
+
+	// Observers show the LD tag.  The Trilogy appearance translator forwards
+	// any type verbatim, so this reaches v29c as 0xf520 type 18 and other
+	// client versions natively.
+	auto outapp = new EQApplicationPacket(
+	    OP_SpawnAppearance, sizeof(::SpawnAppearance_Struct));
+	auto* sa = reinterpret_cast<::SpawnAppearance_Struct*>(outapp->pBuffer);
+	sa->spawn_id  = s.trilogy_client->GetID();
+	sa->type      = AppearanceType::Linkdead; // 18
+	sa->parameter = 1;
+	entity_list.QueueClients(s.trilogy_client, outapp, true); // ignore self
+	safe_delete(outapp);
+
+	// Hand the body to server AI for the window.  The client is gone, so the
+	// input freeze AI_Start imposes costs nothing, and a mob mid-fight keeps a
+	// target that can flee and die instead of one that evaporates.
+	s.trilogy_client->AI_Start(static_cast<uint32>(kLinkdeadHoldMs));
+
+	LogInfo("[TrilogyZone] Linkdead: char=[{}] holding {} ms before teardown",
+	        s.char_name, kLinkdeadHoldMs);
+}
+
 void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
                                       const uint8_t* data, uint32_t size,
                                       bool ack_req)
@@ -1123,6 +1165,9 @@ void TrilogyZoneServer::SendToSession(uint64_t session_key, uint16_t opcode,
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	if (s.state != CONNECTED) return;
+	// Nothing is listening at the far end during a linkdead hold — the socket
+	// peer is gone.  The session is kept only so the body stays in the world.
+	if (s.linkdead_since_ms != 0) return;
 	SendApp(s.source_addr, s.source_port, s, opcode, data, size, ack_req);
 }
 
@@ -1362,9 +1407,30 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		uint64_t key = SessionKey(addr, port);
 		auto it = m_sessions.find(key);
 		if (it != m_sessions.end()) {
+			Session& cs = it->second;
 			LogInfo("[TrilogyZone] CLIENT sent CLOSE from {}:{} (client-initiated disconnect)", addr, port);
-			SendClose(addr, port, it->second);
-			RemoveSession(key);
+			SendClose(addr, port, cs);
+
+			// A CLOSE is not automatically a clean exit.  v29c sends one for
+			// /q, for Alt-F4 and for a killed process, with no OP_Camp (0x0722)
+			// beforehand — verified in the zone log, where a /q produces the
+			// CLOSE line and nothing else.  Only two cases are genuinely clean:
+			// a completed camp-out, which sets `camping` when 0x0722 arrives,
+			// and a zone transfer, where the client closes the old zone's
+			// connection on purpose.  Everything else is the link going away
+			// while the character is still standing in the world, which is
+			// exactly what EQClassic treats as linkdead.
+			const bool clean_exit =
+				cs.camping ||
+				(cs.trilogy_client && cs.trilogy_client->IsZoning());
+
+			if (clean_exit) {
+				RemoveSession(key);
+			} else {
+				EnterLinkdead(cs, static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now().time_since_epoch()).count()));
+			}
 		}
 		return;
 	}
@@ -4359,6 +4425,30 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		}
 	}
 
+	// Tell the arriving client who in the zone is already LFG.  The toggle
+	// broadcast only reaches people who were present when it happened, so
+	// without this pass a player who zones in never learns about anyone's
+	// existing flag.  One 0xf021 per LFG client, entity-id form.
+	{
+		int lfg_sent = 0;
+		for (const auto& kv : entity_list.GetClientList()) {
+			Client* other = kv.second;
+			if (!other || !other->InZone() || !other->IsLFG()) continue;
+			if (s.trilogy_client && other == s.trilogy_client) continue; // self is local
+			uint8_t buf[8] = {};
+			const int16_t eid   = static_cast<int16_t>(other->GetID());
+			const int32_t value = 1;
+			memcpy(buf + 0, &eid,   sizeof(eid));
+			memcpy(buf + 4, &value, sizeof(value));
+			SendApp(addr, port, s, ZN_OP_LFG, buf, sizeof(buf));
+			++lfg_sent;
+		}
+		if (lfg_sent > 0) {
+			LogInfo("[TrilogyLFG] zone-in | told [{}] about {} LFG player(s)",
+			        s.char_name, lfg_sent);
+		}
+	}
+
 	// Illusion packets for player-race corpses — sets the correct face.
 	// Spawn names include the trailing digit suffix (e.g. "Name`s_corpse0",
 	// "Name`s_corpse1") so each corpse is a unique illusion target.
@@ -6302,6 +6392,20 @@ void TrilogyZoneServer::HandleSocialCommand(const std::string& addr, int port, S
 		int32_t value = 0;
 		memcpy(&value, payload + 32, sizeof(value));
 
+		// Probe: does the client populate the name field on the way out, or
+		// leave it for the server?  Decides whether 0xf021 is meaningful in the
+		// server->client direction at all -- an echo carrying a name the client
+		// never uses is a different problem from one whose layout is wrong.
+		{
+			char sent_name[33] = {};
+			memcpy(sent_name, payload, 32);
+			std::string hex;
+			for (uint32_t i = 0; i < 36 && i < plen; ++i)
+				hex += fmt::format("{:02X} ", payload[i]);
+			LogInfo("[TrilogyLFG] inbound | char=[{}] name_field=['{}'] value={} raw=[{}]",
+			        s.char_name, sent_name, value, hex);
+		}
+
 		auto* app = new EQApplicationPacket(OP_LFGCommand, sizeof(::LFG_Struct));
 		auto* lfg = reinterpret_cast<::LFG_Struct*>(app->pBuffer);
 		memset(lfg, 0, sizeof(::LFG_Struct));
@@ -6310,19 +6414,45 @@ void TrilogyZoneServer::HandleSocialCommand(const std::string& addr, int port, S
 		tc->Handle_OP_LFGCommand(app);
 		delete app;
 
-		// Relay to the other Trilogy clients in the zone so their nameplates
-		// show the LFG asterisk.  EQClassic only sets the flag and calls
-		// UpdateWho, which is why the marker never appears there either — but
-		// the Trilogy LFG_Struct carries a NAME field, and a name is only useful
-		// to a recipient who has to decide WHICH nameplate to mark.  Relaying
-		// the packet verbatim is the reading that makes that field meaningful.
-		// Sender is skipped: its own client already applied the state locally
-		// (it prints "now looking for group" before we see anything).
-		for (auto& kv : m_sessions) {
-			Session& other = kv.second;
-			if (&other == &s || !other.trilogy_client) continue;
-			SendToSession(kv.first, ZN_OP_LFG, payload, plen);
-		}
+		// ── LFG channel search: what has been ruled out ─────────────────────
+		// All three by measurement, not inference:
+		//
+		//   0xf021 echo — the client fills name@0 / value@32 outbound and
+		//     ignores that exact layout inbound, so the opcode is one-way.
+		//   SpawnAppearance — every unexplained type in the enum (2, 6-13)
+		//     swept with param=1; nothing rendered on the observer.
+		//   Spawn_Struct unknowns 078/084/087/090 — set together on a re-sent
+		//     spawn.  The re-send visibly re-placed the entity client-side, so
+		//     the packet was parsed; the bytes did nothing.
+		//
+		// The spawn re-send is NOT repeated here: re-issuing a 0x6121 for a
+		// live entity makes v29c re-place it, which renders as the character
+		// dropping out of the sky.  Any further spawn-byte probing has to ride
+		// an actual zone-in rather than a mid-session re-send.
+		//
+		// Remaining surface is /who all, which unlike a bare /who does reach
+		// the server (bare /who is client-side — the roster is built from the
+		// client's own spawn list, confirmed by zero WhoAll log lines while
+		// testing).  That path is rendered by
+		// TrilogyClient::HandleOutgoingWhoAllResponse, where the LFG marker is
+		// now appended.
+
+
+		// No hand-rolled relay here any more.  Handle_OP_LFGCommand above
+		// already does both halves of the job: UpdateWho() pushes the flag to
+		// world (ServerClientList_Struct::LFG, servertalk.h:600) so /who can
+		// report it, and it broadcasts OP_LFGAppearance {spawn_id, lfg} to
+		// every other client in the zone.  That broadcast reaches Trilogy
+		// observers through TranslateAndSend -> HandleLFGAppearance, which is
+		// where the wire packet is now built.
+		//
+		// The previous loop forwarded this client's own inbound bytes to every
+		// other session.  It never worked, and it could not: the payload is
+		// whatever the SENDER's client put in the name field, forwarded
+		// unchanged, so a recipient had no reliable way to know which nameplate
+		// the flag belonged to.  Driving it off the entity id in
+		// OP_LFGAppearance removes that ambiguity and means LFG set by any
+		// other path is relayed too, not just a typed /lfg.
 		break;
 	}
 
@@ -6955,14 +7085,50 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*port*/, Session& s,
                                             const uint8_t* /*payload*/, uint32_t /*plen*/)
 {
-	// Inbound 0xe620 from the v29c client.  In the current PC-trade model the
-	// server opens BOTH windows itself when 0xd120 arrives (HandleTradeRequest),
-	// so any inbound 0xe620 is either an unsolicited echo from the recipient's
-	// client or a duplicate; in either case there is nothing more to do.  Logged
-	// for visibility while we observe v29c's exact behaviour.
+	// Inbound 0xe620 is the ACCEPT click, and it must be relayed to the other
+	// party — that relay is what turns their copy of your name green.
+	//
+	// The earlier reading, that this packet was a redundant echo because
+	// HandleTradeRequest already opened both windows, was wrong.  Opening the
+	// window and accepting the trade share an opcode but are different events,
+	// and only the first was being handled.  EQClassic's ProcessOP_TradeAccepted
+	// (client_process.cpp:3459) does the relay in one line:
+	//     tmp->CastToClient()->QueuePacket(pApp);
+	// forwarding the client's own packet to the partner it looked up from
+	// msg->fromid, alongside the InTrade/TradeWithEnt bookkeeping we already do
+	// in HandleTradeRequest.
+	//
+	// It looked order-dependent because the accepter's own window is already
+	// open and its client renders its own click locally; only the partner
+	// depended on a packet that never arrived.  Whichever side clicked second
+	// appeared to work, because by then the observer had already seen the
+	// window-opening 0xe620 for that trade and had a green name to show.
 	if (!s.trilogy_client) return;
-	LogInfo("[TrilogyZone] PCTrade accepted (inbound 0xe620 ignored — both windows already opened by HandleTradeRequest) char={}",
-	        s.char_name);
+
+	if (!s.pc_trade_active || s.pc_trade_partner_id == 0) {
+		// Accept outside an active PC trade — an NPC trade or a stale click.
+		// Nothing to relay; NPC trades have no second window to update.
+		return;
+	}
+
+	Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+	if (!partner || !partner->trilogy_client) return;
+
+	// Rebuild rather than forward the client's bytes.  The ids in this 8-byte
+	// payload are read from the RECIPIENT's point of view — HandleTradeRequest
+	// opens each window with {fromid = that side's own entity, toid = the other}
+	// — so the accepter's copy cannot be passed through unchanged.
+	uint8_t resp[8] = {};
+	const uint32_t f = static_cast<uint32_t>(partner->trilogy_client->GetID());
+	const uint32_t t = static_cast<uint32_t>(s.trilogy_client->GetID());
+	std::memcpy(resp + 0, &f, 4);
+	std::memcpy(resp + 4, &t, 4);
+
+	SendApp(partner->source_addr, partner->source_port, *partner,
+	        ZN_OP_TradeAccept, resp, 8);
+
+	LogInfo("[TrilogyZone] PCTrade accept relayed | from=[{}] to=[{}]",
+	        s.char_name, partner->char_name);
 }
 
 void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
@@ -9555,6 +9721,12 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC — no NPC armor graphic
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 		sp.anon              = static_cast<int8_t>(c->GetAnon());
+		// LD flag (offset 085) so a client zoning in DURING someone's grace
+		// window sees the marker too, not just the observers who were present
+		// when the SpawnAppearance went out.  EQClassic stamps it the same way
+		// in MakeSpawnUpdate (LS/zone/mob.cpp:572).
+		sp.LD = (c->IsTrilogyClient() &&
+		         static_cast<TrilogyClient*>(c)->IsLinkdead()) ? 1 : 0;
 		if (c->IsInAGuild())
 			sp.guildrank = static_cast<int8_t>(c->GuildRank());
 		else
@@ -9715,6 +9887,9 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 	sp.anon              = static_cast<int8_t>(c->GetAnon());
+	// LD flag (offset 085) — see the SendZoneSpawns copy above.
+	sp.LD = (c->IsTrilogyClient() &&
+	         static_cast<TrilogyClient*>(c)->IsLinkdead()) ? 1 : 0;
 	if (c->IsInAGuild())
 		sp.guildrank = static_cast<int8_t>(c->GuildRank());
 	else
@@ -10042,6 +10217,74 @@ void TrilogyZoneServer::Tick()
 		RemoveSession(key);
 	}
 
+	// ── Linkdead ─────────────────────────────────────────────────────────
+	// EQClassic goes linkdead off a dead socket -- `!eqnc->CheckActive()` at
+	// LS/zone/client_process.cpp:6769 -- then keeps the body for
+	// CLIENT_LD_TIMEOUT (30 s, client.h:39) under server AI control, with
+	// CLIENT_LINKDEAD still counting as in-zone (client.h:96) so it can be
+	// aggroed and killed.  We have no socket to test: EQNetwork sessions are
+	// UDP and TrilogyStream reports ESTABLISHED unconditionally.  Silence is
+	// the equivalent signal, and it is a reliable one here because the
+	// A120 -> 0x4121 heartbeat chain means a live client stamps last_pkt about
+	// every 2 s no matter what the player is doing.  kLinkdeadQuietSeconds is
+	// set well clear of that cadence but far below the 300 s reap above, which
+	// stays as the backstop for anything this misses.
+	//
+	// A clean camp-out is NOT this path: it tears the session down through the
+	// client-driven camp flow before silence ever accumulates, which is the
+	// EQClassic split too -- a deliberate quit camps, a dropped link goes LD.
+	static constexpr std::time_t kLinkdeadQuietSeconds = 15;
+
+	const uint64_t now_ms_ld = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	std::vector<uint64_t> ld_expired;
+	for (auto& kv : m_sessions) {
+		Session& cs = kv.second;
+		if (cs.state != CONNECTED || !cs.trilogy_client) continue;
+
+		if (cs.linkdead_since_ms == 0) {
+			// Silence backstop: a link that dies without managing even a CLOSE
+			// (power cut, NAT drop).  The CLOSE handler covers the common case.
+			if (now - cs.last_pkt <= kLinkdeadQuietSeconds) continue;
+			EnterLinkdead(cs, now_ms_ld);
+			continue;
+		}
+
+		// Already linkdead.  A genuinely NEW packet means the client came back
+		// -- clear the flag and tell observers rather than reaping a live
+		// player.  Compared against the stamp taken at entry, not against
+		// wall-clock silence: the CLOSE that usually triggers the hold updates
+		// last_pkt itself, so a silence test passes instantly and cancels the
+		// hold on the next tick.
+		if (cs.last_pkt > cs.linkdead_entry_pkt) {
+			cs.linkdead_since_ms  = 0;
+			cs.linkdead_entry_pkt = 0;
+			cs.trilogy_client->SetLinkdead(false);
+
+			auto outapp = new EQApplicationPacket(
+			    OP_SpawnAppearance, sizeof(::SpawnAppearance_Struct));
+			auto* sa = reinterpret_cast<::SpawnAppearance_Struct*>(outapp->pBuffer);
+			sa->spawn_id  = cs.trilogy_client->GetID();
+			sa->type      = AppearanceType::Linkdead;
+			sa->parameter = 0;
+			entity_list.QueueClients(cs.trilogy_client, outapp, true);
+			safe_delete(outapp);
+
+			cs.trilogy_client->AI_Stop();
+			LogInfo("[TrilogyZone] Linkdead cleared (client resumed): char=[{}]", cs.char_name);
+			continue;
+		}
+
+		if (now_ms_ld - cs.linkdead_since_ms >= kLinkdeadHoldMs)
+			ld_expired.push_back(kv.first);
+	}
+	for (uint64_t key : ld_expired) {
+		LogInfo("[TrilogyZone] Linkdead hold expired, removing session");
+		RemoveSession(key);
+	}
+
 	uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -10049,6 +10292,10 @@ void TrilogyZoneServer::Tick()
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
 		if (s.state != CONNECTED) continue;
+		// Linkdead hold: the body stays in the world but the far end is gone,
+		// so skip every per-session outbound (heartbeat, cooldown pushes,
+		// queued text).  The LD sweep above owns this session until it expires.
+		if (s.linkdead_since_ms != 0) continue;
 
 		// Stale TrilogyClient* guard.  EQEmu's entity_list can drop the Client
 		// object out from under us (Client::Process() returns false → entity.cpp
