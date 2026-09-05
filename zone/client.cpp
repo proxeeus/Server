@@ -589,6 +589,31 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// InitTrilogyFields already backfills.
 	strn0cpy(lastname, m_pp.last_name, sizeof(lastname));
 
+	// Same gap, same block: client_packet.cpp:1398-1413 copies the whole
+	// appearance set from m_pp down onto the Mob, and Trilogy never runs it.
+	// Every one of these stayed at the constructor's 0 (client.cpp:122) for the
+	// session, so both Trilogy PC spawn builders — which do read them, via
+	// GetLuclinFace()/GetHairColor()/... into Spawn_Struct.unknown163[0..6] —
+	// shipped a default-faced, default-haired character to every observer.
+	//
+	// race/base_race/gender/base_gender are NOT here: those arrive as
+	// constructor arguments and Mob's ctor seeds the base_ pair from them
+	// (mob.cpp:169-170), so they were already correct.  deity is, because the
+	// ctor takes it as 0 and only LoadCharacterData knows the real value —
+	// leaving it would keep feeding a wrong deity into the spawn struct
+	// (mob.cpp:1296) even though the char sheet reads correctly off the PP.
+	deity            = m_pp.deity;
+	haircolor        = m_pp.haircolor;
+	beardcolor       = m_pp.beardcolor;
+	eyecolor1        = m_pp.eyecolor1;
+	eyecolor2        = m_pp.eyecolor2;
+	hairstyle        = m_pp.hairstyle;
+	luclinface       = m_pp.face;
+	beard            = m_pp.beard;
+	drakkin_heritage = m_pp.drakkin_heritage;
+	drakkin_tattoo   = m_pp.drakkin_tattoo;
+	drakkin_details  = m_pp.drakkin_details;
+
 	// Load language skills from DB so ChannelMessageSend can correctly determine
 	// whether the player understands a given language (skill ≥ 24 = understood).
 	database.LoadCharacterLanguages(char_id, &m_pp);

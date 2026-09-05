@@ -4324,6 +4324,39 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			    static_cast<int16_t>(bot->GetLuclinFace()));
 			SendApp(addr, port, s, 0x9120, il_buf, 72);
 		}
+
+		// Other players.  They were the one player-race class missing from this
+		// loop, which is what made a real player's face default for anyone who
+		// zoned in after them: the face byte IS in the bulk spawn struct, but
+		// v29c does not apply it to entities delivered in the bulk 0x6121 --
+		// that is the whole reason this fixup pass exists for NPCs and bots.
+		//
+		// Only the bulk direction was broken, which is why the bug looked
+		// order-dependent: a player who spawns MID-session arrives as a single
+		// 0x6121 through SendPlayerSpawnPermanent, and a single spawn's face
+		// byte is honoured.  So whoever logged in first saw the second player
+		// correctly, and only the later arrival saw a default face -- with the
+		// asymmetry hidden entirely if the second character's face happens to
+		// be the default one anyway.
+		for (const auto& kv : entity_list.GetClientList()) {
+			Client* other = kv.second;
+			if (!other || !other->InZone()) continue;
+			if (s.trilogy_client && other == s.trilogy_client) continue; // not self
+			if (!IsPlayerRace(other->GetRace())) continue;
+			uint8_t il_buf[72];
+			FillIllusionBuf(il_buf, other->GetCleanName(),
+			    static_cast<int16_t>(other->GetRace()),
+			    static_cast<int16_t>(other->GetGender()),
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current texture/mode
+			    static_cast<int16_t>(-1),   // 0xFFFF: keep current helm
+			    static_cast<int16_t>(other->GetLuclinFace()));
+			SendApp(addr, port, s, 0x9120, il_buf, 72);
+			LogInfo("[TrilogyFace] zone-in illusion | observer=[{}] target=[{}] "
+			        "race={} gender={} face={}",
+			        s.char_name, other->GetCleanName(),
+			        other->GetRace(), other->GetGender(),
+			        static_cast<int>(other->GetLuclinFace()));
+		}
 	}
 
 	// Illusion packets for player-race corpses — sets the correct face.
@@ -5628,6 +5661,52 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 		}
 	}
 
+	// ── Rotation probe ───────────────────────────────────────────────────
+	// The [Trilogy/delta IN] diagnostic above is gated on anim_type != 0, so a
+	// player pivoting on the spot -- no movement, anim_type 0 -- never reaches
+	// it and we have no measurement of what the client actually sends while
+	// turning.  That gap is why the first attempt at smoothing observed
+	// rotation was aimed at our own broadcast cadence: a guess, and wrong.
+	//
+	// Two numbers decide where the real ceiling is, and this answers both:
+	//   updates/sec while the heading byte is changing — if the CLIENT only
+	//     reports a few times a second, no outbound cadence can beat that and
+	//     interpolation is the only route;
+	//   the client's reported delta_heading — EQClassic relays this field for
+	//     PCs (client_process.cpp:2390 -> mob.cpp:571), and it is the only
+	//     mechanism that lets v29c sweep between two headings instead of
+	//     snapping.  If it arrives non-zero, the relay is worth doing; if it
+	//     is always zero, the field is not the answer here either.
+	{
+		const uint8_t hb_now  = static_cast<uint8_t>(upd.heading);
+		const uint64_t now_rot = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+
+		if (s.rot_window_start_ms == 0) s.rot_window_start_ms = now_rot;
+		++s.rot_updates;
+		if (hb_now != s.rot_last_heading_wire) {
+			++s.rot_heading_changes;
+			s.rot_last_heading_wire = hb_now;
+		}
+		if (upd.delta_heading != 0) ++s.rot_nonzero_delta_heading;
+
+		const uint64_t span = now_rot - s.rot_window_start_ms;
+		if (span >= 1000) {
+			if (s.rot_heading_changes > 0) {
+				LogInfo("[Trilogy/rot IN] char=[{}] updates={} heading_changes={} "
+				        "nonzero_delta_heading={} last_delta_heading={} span_ms={}",
+				        s.char_name, s.rot_updates, s.rot_heading_changes,
+				        s.rot_nonzero_delta_heading,
+				        static_cast<int>(upd.delta_heading), span);
+			}
+			s.rot_window_start_ms       = now_rot;
+			s.rot_updates               = 0;
+			s.rot_heading_changes       = 0;
+			s.rot_nonzero_delta_heading = 0;
+		}
+	}
+
 	s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
 
 	// Update entity_list position so NPC aggro, proximity, and Titanium broadcasts work.
@@ -5643,11 +5722,16 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 		// the value the diagnostic below has been printing all along; it was
 		// decoded and discarded.  EQClassic keeps it on the Mob
 		// (client_process.cpp:2373) for exactly this purpose.
-		s.trilogy_client->SetSelfReportedAnim(
-			upd.anim_type,
-			static_cast<uint64_t>(
-				std::chrono::duration_cast<std::chrono::milliseconds>(
-					std::chrono::steady_clock::now().time_since_epoch()).count()));
+		const uint64_t self_report_ms = static_cast<uint64_t>(
+			std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now().time_since_epoch()).count());
+
+		s.trilogy_client->SetSelfReportedAnim(upd.anim_type, self_report_ms);
+
+		// Same treatment for the turn rate.  Measured at ~3.2 reports/sec while
+		// pivoting, which is far too sparse for absolute heading alone to read
+		// as motion -- this is the field that carries the sweep between them.
+		s.trilogy_client->SetSelfReportedDeltaHeading(upd.delta_heading, self_report_ms);
 
 		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
 
@@ -9679,6 +9763,30 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	EncryptZoneSpawnPacket(cbuf.data(), clen);
 
 	SendToSession(session_key, ZN_OP_ZoneSpawns, cbuf.data(), clen);
+
+	// Follow-up Illusion, matching what every other player-race class gets
+	// after its spawn (NPCs and bots in the post-D820 loop, NPCs again in
+	// TrilogyClient::HandleNewSpawn).  A single-entry 0x6121 does appear to
+	// honour the struct's face byte, so this is belt-and-braces here rather
+	// than the fix itself -- but it costs one 72-byte packet per player spawn
+	// and removes the last path where a face depends on which delivery route
+	// the spawn happened to take.  Safe to send immediately: unlike the bulk
+	// zone-in case, the entity is already registered client-side by the time a
+	// single spawn lands, which is the condition the post-D820 deferral exists
+	// to satisfy.
+	if (IsPlayerRace(c->GetRace())) {
+		uint8_t il_buf[72];
+		FillIllusionBuf(il_buf, c->GetCleanName(),
+		    static_cast<int16_t>(c->GetRace()),
+		    static_cast<int16_t>(c->GetGender()),
+		    static_cast<int16_t>(-1),   // keep current texture/mode
+		    static_cast<int16_t>(-1),   // keep current helm
+		    static_cast<int16_t>(c->GetLuclinFace()));
+		SendToSession(session_key, 0x9120, il_buf, 72);
+		LogInfo("[TrilogyFace] mid-session illusion | target=[{}] race={} gender={} face={}",
+		        c->GetCleanName(), c->GetRace(), c->GetGender(),
+		        static_cast<int>(c->GetLuclinFace()));
+	}
 }
 
 // ============================================================
@@ -10503,11 +10611,25 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// moving -- nothing lowered the throttle and each observed the other
 		// at the 2 s baseline.  At run speed that is ~90 units of travel per
 		// update, which is the bulk of the "ghosty players" report.
+		//
+		// Pivoting counts as well as translating.  A player turning on the spot
+		// is invisible to every other signal: position does not change so
+		// IsMoving() is false, and `turning` is only set by RotateToCommand,
+		// which a human turning their own character never goes through.  It
+		// rides the same 200 ms bucket rather than the NPC turning path's
+		// 10 ms: the wire says a pivoting client reports ~3.2 times a second,
+		// so 5 Hz already delivers every heading it sends, and 100 Hz would
+		// just spin the loop for nothing.
 		s.nearby_moving_player = false;
 		for (const auto& kv : entity_list.GetClientList()) {
 			Client* other = kv.second;
-			if (!other || !other->InZone() || !other->IsMoving()) continue;
+			if (!other || !other->InZone()) continue;
 			if (s.trilogy_client && other == s.trilogy_client) continue;
+			const bool active =
+				other->IsMoving() ||
+				(other->IsTrilogyClient() &&
+				 static_cast<TrilogyClient*>(other)->IsRotating(now_ms));
+			if (!active) continue;
 			float dx = other->GetX() - s.pos_x;
 			float dy = other->GetY() - s.pos_y;
 			if (dx * dx + dy * dy <= MOVE_RADIUS_SQ) {
@@ -10642,13 +10764,15 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		            || (last.y_pos     != upd->y_pos)
 		            || (last.z_pos     != upd->z_pos)
 		            || (last.heading   != upd->heading)
-		            || (last.anim_type != upd->anim_type);
+		            || (last.anim_type != upd->anim_type)
+		            || (last.delta_heading != upd->delta_heading);
 		if (!stale && !changed) return false;
 		last.x_pos     = upd->x_pos;
 		last.y_pos     = upd->y_pos;
 		last.z_pos     = upd->z_pos;
 		last.heading   = upd->heading;
 		last.anim_type = upd->anim_type;
+		last.delta_heading = upd->delta_heading;
 		last.sent_ms   = now_ms;
 		return true;
 	};
@@ -10880,7 +11004,27 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->y_pos    = static_cast<int16_t>(c->GetY());
 		upd->x_pos    = static_cast<int16_t>(c->GetX());
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
-		// delta_heading stays 0 — v29c spin-stun semantics, not a smoothing hint.
+
+		// delta_heading: relay what the turning client reported about itself,
+		// exactly as EQClassic does for PCs (client_process.cpp:2390 stores
+		// cu->delta_heading, mob.cpp:571 sends it back out).
+		//
+		// This is NOT the synthesised-value experiment warned about above.
+		// That one computed a rate from successive headings for NPCs, with no
+		// authoritative signal for when the turn ended, so v29c spun forever.
+		// Here the value is the client's own, and the wire shows it returning
+		// to 0 as soon as the player stops -- the stop is reported, not
+		// inferred.  The getter's short staleness window is the backstop for
+		// the case the client goes silent mid-turn.
+		//
+		// Measured need: a pivoting client reports ~3.2 times a second, so an
+		// observer receiving absolute heading alone gets ~3 discrete facings
+		// per second no matter how fast we broadcast.  This field is what
+		// makes v29c sweep between them.
+		if (c->IsTrilogyClient()) {
+			upd->delta_heading =
+				static_cast<TrilogyClient*>(c)->GetSelfReportedDeltaHeading(now_ms);
+		}
 
 		// Players self-render locally; this anim only matters for the other
 		// observers receiving the broadcast.  Prefer the byte the moving
@@ -10921,7 +11065,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// delta_x/delta_y stay 0 — see the kVelocityWireScale note above;
 		// EQClassic's /125 makes the relayed PC delta 0 in practice too.
 
-		if (!should_broadcast(upd, dist_sq)) continue;
+		// A pivoting player takes the same priority path as a turning NPC:
+		// without it the inner-ring 100 ms cap inside should_broadcast throws
+		// away most of the rotation regardless of how fast the outer loop runs,
+		// because heading is the only field changing and it changes on every
+		// client update.
+		const bool rotating =
+			c->IsTrilogyClient() &&
+			static_cast<TrilogyClient*>(c)->IsRotating(now_ms);
+
+		if (!should_broadcast(upd, dist_sq, /*priority=*/rotating)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)
 			flush_packet();
 	}
