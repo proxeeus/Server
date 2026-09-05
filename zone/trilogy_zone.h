@@ -247,6 +247,16 @@ private:
 		uint64_t    last_moving_scan_ms  = 0;
 		bool        nearby_moving        = false;
 
+		// Nearby-moving-PLAYER cache.  Split from nearby_moving because the
+		// two want different rates: kMovingThrottleMs is pinned at the 2 s
+		// baseline for NPCs (faster re-broadcast reintroduced the int16
+		// truncation wobble), but a human-driven character changes speed and
+		// direction constantly and cannot be dead-reckoned across 2 s.
+		// EQClassic never polls for this at all — it broadcasts PC position
+		// event-driven on every delta change (client_process.cpp:2413), i.e.
+		// at the mover's own update rate.
+		bool        nearby_moving_player = false;
+
 		// Rate-limit timestamps for the velocity-delta calibration logs.
 		// Fired at 1 Hz per session — one line for incoming player F320
 		// (reference scale) and one for outbound NPC A120 (current setting).
