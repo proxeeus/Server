@@ -28,6 +28,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -427,6 +428,13 @@ private:
 	void HandleOutgoingYellForHelp(const EQApplicationPacket* app);
 	void HandleOutgoingRandomReply(const EQApplicationPacket* app);
 	void HandleOutgoingConsentResponse(const EQApplicationPacket* app);
+	// Guild responses.  The invite popup has a real v29c opcode; the MOTD does
+	// not and is rendered as guild-channel chat, the way EQClassic does it.
+	// The guilds list becomes a run of single-slot 0x7b21 table updates, which
+	// is how a guild created mid-session reaches clients already in a zone.
+	void HandleOutgoingGuildInvite(const EQApplicationPacket* app);
+	void HandleOutgoingGuildMOTD(const EQApplicationPacket* app);
+	void HandleOutgoingGuildsList();
 	void HandleOutgoingWearChange(const EQApplicationPacket* app);
 	void HandleOutgoingSpawnAppearance(const EQApplicationPacket* app);
 	// Spell / combat translators (server → Trilogy client)
@@ -630,6 +638,19 @@ private:
 	// on OP_DeleteSpawn; whole map cleared at a soft cap to bound memory.
 	static constexpr size_t kMaxAppearanceCache = 1024;
 	std::map<uint16_t, std::pair<int16_t, int32_t>> m_last_appearance;
+
+	// Last guild MOTD text delivered to this client.  Client::SendGuildMOTD is
+	// called on zone-in and on every guild refresh world pushes, most of which
+	// have nothing to do with the MOTD; without this the same line repeats in
+	// the chat window on unrelated guild events.
+	std::string m_last_guild_motd;
+
+	// Ceiling on how many single-slot guild-table updates one refresh may push.
+	// A refresh walks every guild on the server, and on a server with hundreds
+	// of them that would be a burst of small packets into v29c's ARQ window for
+	// no gain — a player only ever sees the tags of guilds that are actually
+	// represented in the zone.
+	static constexpr uint32_t kMaxGuildUpdatePush = 128;
 
 	// Per-mob position-broadcast throttle for the EQClassic-faithful
 	// event-driven A120 path (HandleClientUpdate).  Without this, EQEmu's

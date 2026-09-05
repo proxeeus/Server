@@ -708,6 +708,15 @@ private:
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
 
+	// Guild management: /guildinvite, the invite answer, /guildremove,
+	// /guildmotd, /guildleader, /guilddelete and the two guild-war commands.
+	// Same translate-and-dispatch shape as the social batch — guild_mgr and the
+	// Client::Handle_OP_Guild* family already implement all of it.  Grouped
+	// because they share the 68-byte name-pair struct and the same sender-
+	// identification rule; see the implementation for both.
+	void HandleGuildCommand(const std::string& addr, int port, Session& s,
+	                        uint16_t opcode, const uint8_t* payload, uint32_t plen);
+
 	// Inbound 0xff21 — Options-panel chat/combat filters.  Applies the 13 slots
 	// v29c actually reports; the slot-to-filter mapping is undocumented and was
 	// pinned empirically.  See the implementation for the map and the procedure.

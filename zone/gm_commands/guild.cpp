@@ -127,6 +127,13 @@ void command_guild(Client* c, const Seperator* sep)
 
 						c->Message(Chat::White, "Note: Run #guild set to resolve this.");
 					}
+
+					// Push the new guild into every connected client's guild-name
+					// table.  Without this the leader carries the new guild id but
+					// no client knows the name for it, so the tag renders as
+					// "<Unknown Guild>" until relog.  Client::Handle_OP_GuildCreate
+					// does the same thing for the client-driven create path.
+					guild_mgr.SendToWorldSendGuildList();
 				}
 			}
 		}

@@ -21,6 +21,7 @@
 #include "trilogy_zone.h"
 #include "../common/eq_constants.h"
 #include "entity.h"
+#include "guild_mgr.h"
 #include "doors.h"
 #include "object.h"
 #include "npc.h"
@@ -821,6 +822,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_ConsentResponse:
 		HandleOutgoingConsentResponse(app);
+		break;
+	case OP_GuildInvite:
+		HandleOutgoingGuildInvite(app);
+		break;
+	case OP_GuildMOTD:
+	case OP_GetGuildMOTDReply:
+		HandleOutgoingGuildMOTD(app);
+		break;
+	case OP_GuildsList:
+		HandleOutgoingGuildsList();
 		break;
 	case OP_ExpUpdate:
 		HandleExpUpdate(app);
@@ -2854,11 +2865,27 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 	// controls for fear/charm/mez) and AI_Stop (Standing=100, restores
 	// controls) — both must be forwarded.
 
+	// AppearanceType::GuildShow (52) is a post-RoF "may this rank display the
+	// guild name" flag with no slot in the v29c SAT enum, which stops at 30.
+	// Client::SendGuildSpawnAppearance emits one alongside every guild tag
+	// update, so it would otherwise reach v29c as an undefined type on every
+	// join, promotion and zone-in.
+	if (src->type == AppearanceType::GuildShow) return;
+
 	Trilogy::structs::SpawnAppearance_Struct out{};
 	// Trilogy entities use the spawn_id space we hand out via TranslateId.
 	out.spawn_id  = static_cast<int16_t>(TranslateId(static_cast<uint32_t>(src->spawn_id)));
 	out.type      = static_cast<int16_t>(src->type);
 	out.parameter = static_cast<int32_t>(src->parameter);
+
+	// SAT_Guild_Rank carries a GUILDRANK (0 member / 1 officer / 2 leader), not
+	// the RoF2-scale rank EQEmu tracks internally — the two run in opposite
+	// directions, so an unconverted guild leader (EQEmu rank 1) would display
+	// as an officer and a recruit (8) as a value the client has no case for.
+	if (src->type == AppearanceType::GuildRank) {
+		out.parameter = Trilogy::structs::TranslateGuildRankToTrilogy(
+		    static_cast<uint8>(src->parameter), true);
+	}
 
 	// Dedup: same (spawn_id, type, parameter) as the last one we already sent
 	// for this spawn is pure noise — the v29c client has already applied that
@@ -3555,6 +3582,136 @@ void TrilogyClient::HandleOutgoingConsentResponse(const EQApplicationPacket* app
 	        emu->grantname, emu->ownername, static_cast<int>(emu->permission));
 
 	m_tzs->SendToSession(m_session_key, 0xb721, out, sizeof(out));
+}
+
+// ============================================================
+// HandleOutgoingGuildInvite — OP_GuildInvite -> 0x1721
+//
+// Client::Handle_OP_GuildInvite forwards the inviter's packet verbatim to the
+// invitee, which means the 136-byte modern GuildCommand_Struct arrives here and
+// has to be narrowed to the 68-byte v29c one before the popup can open.  The
+// same packet is used for a promotion, where the target is already a guild
+// member and the client asks them to confirm the new rank.
+//
+// The rank field goes out on the v29c scale (0 member / 1 officer / 2 leader).
+// Handle_OP_GuildInvite only rewrites gc->officer when one of the two parties
+// is RoF or newer, so on a Trilogy/Titanium server it is still the 0/1/2 the
+// inviter's client sent and needs no conversion.  A promotion pushed from a
+// RoF+ client is the one case that arrives on the EQEmu scale; values above 2
+// are unambiguously that and get translated, while 1 and 2 cannot be told
+// apart from the pre-RoF meaning and are passed through.
+// ============================================================
+void TrilogyClient::HandleOutgoingGuildInvite(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::GuildCommand_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::GuildCommand_Struct*>(app->pBuffer);
+
+	Trilogy::structs::GuildCommand_Struct out{};
+	memset(&out, 0, sizeof(out));
+	strn0cpy(out.othername, emu->othername, sizeof(out.othername));
+	strn0cpy(out.myname,    emu->myname,    sizeof(out.myname));
+	out.guildeqid = static_cast<int16_t>(emu->guildeqid);
+	out.rank = (emu->officer <= static_cast<uint32>(Trilogy::structs::GUILDRANK_LEADER))
+	               ? static_cast<int32_t>(emu->officer)
+	               : Trilogy::structs::TranslateGuildRankToTrilogy(
+	                     static_cast<uint8>(emu->officer), true);
+
+	LogInfo("[TrilogyGuild] OUT invite to=[{}] from=[{}] guildeqid={} rank={}",
+	        out.othername, out.myname, static_cast<int>(out.guildeqid),
+	        static_cast<int>(out.rank));
+
+	m_tzs->SendToSession(m_session_key, 0x1721,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleOutgoingGuildMOTD — OP_GuildMOTD / OP_GetGuildMOTDReply -> guild chat
+//
+// v29c has no MOTD window.  EQClassic delivers the MOTD as a guild-channel
+// chat line (LS/zone/client_process.cpp:2531, Message(MT_Guild, "Guild MOTD:
+// %s")) and so do we — 0x0422 is named OP_GuildMOTD in EQMacEmu's opcode table
+// but its payload shape is unverified, and sending a guessed layout to this
+// client is how you get a crash rather than a message.
+//
+// Client::SendGuildMOTD fires on zone-in and on every MOTD change, including
+// for players with no guild (it deliberately sends an empty one), so an empty
+// MOTD is silently dropped rather than announced.
+// ============================================================
+void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::GuildMOTD_Struct)) return;
+	const auto* emu = reinterpret_cast<const ::GuildMOTD_Struct*>(app->pBuffer);
+
+	// Bound the read by the source field, not the destination: motd[] is not
+	// guaranteed terminated when the sender fills all 512 bytes.
+	char motd[sizeof(emu->motd)] = {};
+	strn0cpy(motd, emu->motd, sizeof(motd));
+	if (!motd[0]) return;
+
+	// Repeat suppression: the MOTD is re-sent on every guild refresh, and world
+	// pushes one for changes that have nothing to do with the MOTD text.
+	if (m_last_guild_motd == motd) return;
+	m_last_guild_motd = motd;
+
+	Message(Chat::Guild, "Guild MOTD: %s", motd);
+}
+
+// ============================================================
+// HandleOutgoingGuildsList — OP_GuildsList -> per-guild 0x7b21
+//
+// The client's guild-name table is only filled once, by world's 30 KB 0x9221
+// at char-select, so a guild created or renamed while players are already in a
+// zone renders as "<Unknown Guild>" above every member until they relog.  EQEmu
+// answers that by resending the whole list (EntityList::SendGuildList); v29c's
+// equivalent is 0x7b21, which replaces one slot at a time (EQClassic
+// LS/zone/worldserver.cpp builds exactly this on a guild refresh).
+//
+// Every guild is pushed rather than only the changed one, because the modern
+// packet that triggers this carries the whole table and does not say which
+// entry moved.  Rewriting a slot the client already has is a no-op for it, and
+// the trigger is rare — guild create, delete and rename.
+// ============================================================
+void TrilogyClient::HandleOutgoingGuildsList()
+{
+	// Skip the zone-in copy.  CompleteConnect calls SendGuildList for every
+	// guilded player, and at that point the client's table is already the one
+	// world handed it at char-select, so the whole run would be a redundant
+	// burst of small packets during the most fragile part of the session — the
+	// same window the deferred-spawn path exists to keep clear.
+	if (m_is_zoning) return;
+
+	auto guilds = guild_mgr.MakeGuildList();
+
+	uint32_t sent = 0;
+	uint32_t skipped = 0;
+	for (auto const& entry : guilds.guild_detail) {
+		if (entry.guild_id >= Trilogy::structs::MAX_GUILDS) {
+			// The spawn struct's GuildID is a uint16 and the client's table is
+			// bounded at 512, so these can never be rendered — same limit the
+			// world-side full table hits.
+			++skipped;
+			continue;
+		}
+		if (sent >= kMaxGuildUpdatePush) {
+			++skipped;
+			continue;
+		}
+
+		Trilogy::structs::GuildUpdate_Struct gu{};
+		memset(&gu, 0, sizeof(gu));
+		gu.guild_id = static_cast<int32_t>(entry.guild_id);
+		Trilogy::structs::FillGuildsListEntry(gu.entry, entry.guild_id,
+		                                      entry.guild_name.c_str());
+
+		m_tzs->SendToSession(m_session_key, 0x7b21,
+		                     reinterpret_cast<const uint8_t*>(&gu),
+		                     static_cast<uint32_t>(sizeof(gu)));
+		++sent;
+	}
+
+	LogInfo("[TrilogyGuild] OUT guild table refresh char=[{}] pushed={} skipped={}",
+	        GetCleanName(), sent, skipped);
 }
 
 void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
