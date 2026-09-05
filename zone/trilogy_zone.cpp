@@ -5622,6 +5622,18 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 		const bool was_zoning = s.trilogy_client->IsZoning();
 		if (was_zoning)
 			s.trilogy_client->OnClientReady();
+
+		// Stash the client's OWN signed anim byte so SendMobHeartbeat can
+		// relay it to other observers instead of fabricating one.  This is
+		// the value the diagnostic below has been printing all along; it was
+		// decoded and discarded.  EQClassic keeps it on the Mob
+		// (client_process.cpp:2373) for exactly this purpose.
+		s.trilogy_client->SetSelfReportedAnim(
+			upd.anim_type,
+			static_cast<uint64_t>(
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now().time_since_epoch()).count()));
+
 		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
 
 		// Flush deferred bank-bag-content per-item packets now that the 3D world is up.
@@ -10339,9 +10351,40 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				}
 			}
 		}
+
+		// Separate pass for players.  Neither this scan nor the combat and
+		// turning scans above ever looked at GetClientList(), so with two
+		// players alone in a zone -- no NPC engaged, none turning, none
+		// moving -- nothing lowered the throttle and each observed the other
+		// at the 2 s baseline.  At run speed that is ~90 units of travel per
+		// update, which is the bulk of the "ghosty players" report.
+		s.nearby_moving_player = false;
+		for (const auto& kv : entity_list.GetClientList()) {
+			Client* other = kv.second;
+			if (!other || !other->InZone() || !other->IsMoving()) continue;
+			if (s.trilogy_client && other == s.trilogy_client) continue;
+			float dx = other->GetX() - s.pos_x;
+			float dy = other->GetY() - s.pos_y;
+			if (dx * dx + dy * dy <= MOVE_RADIUS_SQ) {
+				s.nearby_moving_player = true;
+				break;
+			}
+		}
 	}
 	if (s.nearby_moving && throttle_ms > kMovingThrottleMs)
 		throttle_ms = kMovingThrottleMs;
+
+	// A moving player in range gets the combat cadence.  200 ms is not a new
+	// number -- it is the rate this heartbeat already sustains for the whole
+	// entity set whenever any NPC is engaged nearby, so it is known to sit
+	// inside the v29c ARQ budget.  (A120 is sent unreliable, so these do not
+	// consume ARQ round-trips at all; see flush_packet.)  Per-entity caps in
+	// should_broadcast -- 100 ms inner ring, 500 ms outer -- plus its
+	// dirty-flag check still bound what actually goes on the wire, so a zone
+	// full of stationary NPCs costs nothing extra while a player runs past.
+	static constexpr uint32_t kMovingPlayerThrottleMs = 200;
+	if (s.nearby_moving_player && throttle_ms > kMovingPlayerThrottleMs)
+		throttle_ms = kMovingPlayerThrottleMs;
 
 	if (now_ms - s.last_heartbeat_ms < throttle_ms) return;
 	s.last_heartbeat_ms = now_ms;
@@ -10694,17 +10737,44 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		upd->z_pos    = static_cast<int16_t>(c->GetZ() * 10.0f);
 		// delta_heading stays 0 — v29c spin-stun semantics, not a smoothing hint.
 
-		if (c->IsMoving()) {
-			// Players self-render locally; this anim only matters for the
-			// other observers receiving the broadcast.  v29c has no reliable
-			// "is this player walking or running" signal server-side (the
-			// client decides locally), so default to run — most player
-			// movement in EQ is run-mode and showing the run animation to
-			// other clients is a smaller error than always showing walk.
+		// Players self-render locally; this anim only matters for the other
+		// observers receiving the broadcast.  Prefer the byte the moving
+		// client reported for itself (captured in HandleClientUpdate) and
+		// relay it verbatim, matching EQClassic's MakeSpawnUpdate
+		// (mob.cpp:568 `spu->anim_type = animation`, where `animation` was
+		// assigned from cu->anim_type on the way in).
+		//
+		// The previous `EncodeTrilogyAnim(c, c->GetRunspeed())` could not be
+		// right for a human-driven entity: GetRunspeed() is unsigned, so the
+		// encoded byte was ALWAYS positive (EncodeTrilogyAnim carries sign
+		// through from its input) and always the same magnitude.  A player
+		// running backward reports a NEGATIVE anim_type; re-deriving it
+		// server-side threw that sign away and the observer's client played
+		// the forward run cycle -- and extrapolated forward along heading --
+		// while the position snaps pulled the character backward.
+		//
+		// It is passed through unmodified: this byte is already in v29c wire
+		// units.  EncodeTrilogyAnim exists to map EQEmu speed integers INTO
+		// that space and would corrupt a value already there.
+		int8_t self_anim = 0;
+		const bool have_self_anim =
+			c->IsTrilogyClient() &&
+			static_cast<TrilogyClient*>(c)->GetSelfReportedAnim(now_ms, self_anim);
+
+		if (have_self_anim) {
+			// Includes a reported 0 -- stopped, or strafing (v29c sends
+			// anim_type=0 while strafing even though it is moving; see
+			// EQClassic client_process.cpp:2396).
+			upd->anim_type = self_anim;
+		} else if (c->IsMoving()) {
+			// No fresh self-report: a non-Trilogy client (Titanium et al.)
+			// never sends a v29c anim byte, and a Trilogy client that has
+			// gone quiet is past the staleness bound.  Fall back to the
+			// previous synthesis.
 			upd->anim_type = EncodeTrilogyAnim(c, c->GetRunspeed());
-			// delta_x/delta_y left at 0 — see NPC block above.
 		}
-		// else: anim_type=0, delta=0 — client confirms position without moving
+		// delta_x/delta_y stay 0 — see the kVelocityWireScale note above;
+		// EQClassic's /125 makes the relayed PC delta 0 in practice too.
 
 		if (!should_broadcast(upd, dist_sq)) continue;
 		if (++n == MAX_UPDATES_PER_PKT)

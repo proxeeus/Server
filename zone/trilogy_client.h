@@ -673,7 +673,43 @@ public:
 		m_movement_anim_cache.erase(spawn_id);
 	}
 
+	// ── Self-reported movement state (from this client's own 0xF320) ─────
+	// The v29c client reports its OWN signed anim_type in every position
+	// update.  The sign is the only signal that distinguishes a player
+	// backpedalling from one running forward: heading does not change when
+	// a player walks backward, and every server-side speed accessor
+	// (GetRunspeed/GetWalkspeed) is unsigned.  It cannot be re-derived.
+	//
+	// EQClassic stores exactly this (client_process.cpp:2373
+	// `animation = cu->anim_type`) and relays it to observers untouched
+	// (mob.cpp:568 `spu->anim_type = animation` in MakeSpawnUpdate).  We
+	// mirror that: capture on the way in, relay on the way out.
+	//
+	// Stored raw — it is ALREADY a v29c wire byte and must NOT be passed
+	// through EncodeTrilogyAnim, whose /40 and x10/x12 factors are tuned
+	// for converting EQEmu NPC speed integers into that same wire space.
+	void SetSelfReportedAnim(int8_t anim_type, uint64_t now_ms) {
+		m_self_anim_type   = anim_type;
+		m_self_anim_set_ms = now_ms;
+	}
+
+	// True when this client sent a position update within max_age_ms, with
+	// the reported byte in out_anim.  A fresh report of 0 is meaningful
+	// (stopped, or strafing -- see the maalanar note at
+	// EQClassic client_process.cpp:2396), so "have a report" is returned
+	// separately from its value rather than overloading 0 as a sentinel.
+	bool GetSelfReportedAnim(uint64_t now_ms, int8_t& out_anim,
+	                         uint64_t max_age_ms = 1500) const {
+		if (m_self_anim_set_ms == 0) return false;
+		if (now_ms - m_self_anim_set_ms > max_age_ms) return false;
+		out_anim = m_self_anim_type;
+		return true;
+	}
+
 private:
+	int8_t   m_self_anim_type   = 0;
+	uint64_t m_self_anim_set_ms = 0;
+
 
 	// Authoritative model of the v29c client's current equipment-material
 	// state, per (spawn_id, slot).  Mirrors EQClassic's `equipment[]` arrays
