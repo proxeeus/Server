@@ -3642,14 +3642,24 @@ void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::GuildMOTD_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::GuildMOTD_Struct*>(app->pBuffer);
 
-	// Drop the zone-in copy.  CompleteConnect sends one for every guilded player,
-	// and the client asks for its own a moment later (a 0x0322 with no text, sent
-	// on its own initiative) which is answered as OP_GetGuildMOTDReply below.
-	// Letting both through prints the same line twice on every zone-in, and the
-	// client's request is the better of the two to keep: it arrives after the
-	// world is up, and it is the only one that exists for a player who joins a
-	// guild mid-session.
-	if (m_is_zoning) return;
+	// The two opcodes mean different things, and the split is what keeps the
+	// login line from either doubling up or going missing.  Upstream's own note
+	// on Client::SendGuildMOTD draws it too: the plain OP_GuildMOTD is a state
+	// update the client compares against what it already has, while the Reply
+	// form is an answer to something that was asked for.
+	//
+	//   OP_GuildMOTD          state update.  Suppressed as a repeat, and dropped
+	//                         outright during zone-in because CompleteConnect
+	//                         emits one for every guilded player and the client
+	//                         is about to ask for its own anyway.
+	//   OP_GetGuildMOTDReply  an answer.  Always displayed.
+	//
+	// The Reply must be exempt from BOTH guards, not just the repeat check.  It
+	// is produced only by the 0x0322 request branch, and that request arrives
+	// before the first position update — which is what clears m_is_zoning — so a
+	// blanket zoning drop here swallows the login display entirely.
+	const bool forced = (app->GetOpcode() == OP_GetGuildMOTDReply);
+	if (!forced && m_is_zoning) return;
 
 	// Bound the read by the source field, not the destination: motd[] is not
 	// guaranteed terminated when the sender fills all 512 bytes.
@@ -3657,19 +3667,7 @@ void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
 	strn0cpy(motd, emu->motd, sizeof(motd));
 	if (!motd[0]) return;
 
-	// Repeat suppression: the MOTD is re-sent on every guild refresh, and world
-	// pushes one for changes that have nothing to do with the MOTD text.
-	//
-	// OP_GetGuildMOTDReply is exempt.  Upstream's own note on Client::SendGuildMOTD
-	// draws the same line: the plain OP_GuildMOTD is a state update the client
-	// compares against what it already has, while the Reply form is an answer to
-	// something the player asked for and is always displayed.  Without the
-	// exemption a typed /guildmotd on an unchanged MOTD prints nothing and reads
-	// as a broken command.
-	const bool forced = (app->GetOpcode() == OP_GetGuildMOTDReply);
-	if (!forced) {
-		if (m_last_guild_motd == motd) return;
-	}
+	if (!forced && m_last_guild_motd == motd) return;
 	m_last_guild_motd = motd;
 
 	Message(Chat::Guild, "Guild MOTD: %s", motd);

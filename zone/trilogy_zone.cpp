@@ -6980,10 +6980,16 @@ void TrilogyZoneServer::HandleGuildCommand(const std::string& addr, int port, Se
 			char setby[64] = {};
 			if (guild_mgr.GetGuildMOTD(tc->GuildID(), cur, setby) && cur[0]) {
 				tc->SendGuildMOTD(true); // OP_GetGuildMOTDReply — always displayed
-			} else {
-				// The outbound path drops an empty MOTD, so say it here or a
-				// player who types /guildmotd on a guild with none set gets
-				// silence and reads it as a broken command.
+			} else if (!tc->IsZoning()) {
+				// Nothing to send: the outbound path drops an empty MOTD, so say
+				// it here or a player who types /guildmotd on a guild that has
+				// none set gets silence and reads it as a broken command.
+				//
+				// Skipped for the automatic poll, which is the one request that
+				// is reliably distinguishable: it arrives before the client's
+				// first position update, and a player cannot type until after
+				// their world is up.  Otherwise every zone-in on a guild with no
+				// MOTD would open with a line nobody asked for.
 				tc->Message(Chat::Guild, "Your guild has no message of the day set.");
 			}
 			return;
