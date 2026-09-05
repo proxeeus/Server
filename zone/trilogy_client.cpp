@@ -737,6 +737,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Animation:
 		HandleAnimation(app);
 		break;
+	case OP_Emote:
+		HandleEmote(app);
+		break;
 	case OP_BeginCast:
 		HandleBeginCast(app);
 		break;
@@ -4456,6 +4459,43 @@ void TrilogyClient::HandleBecomeCorpse(const EQApplicationPacket* app)
 	// SAT_SendToBind(1) in HandleDeath from triggering the 3rd-person
 	// death camera.  The corpse is handled by the post-death send +
 	// EQEmu's Corpse entity (visible on zone re-entry via OP_NewSpawn).
+}
+
+// ============================================================
+// HandleEmote — OP_Emote (server → Trilogy client), wire opcode 0x1520.
+//
+// The counterpart to TrilogyZoneServer::HandleSocialText.  Client::Handle_OP_Emote
+// has already prepended the actor's name, so `message` is the finished line
+// ("Perseus bows.") and all that is left is to strip EQEmu's 4-byte `type`
+// header — the v29c wire form is the bare NUL-terminated string, written from
+// byte 0 (EQClassic ProcessOP_Social_Text, client_process.cpp:4217).
+//
+// EQClassic sends a fixed sizeof(Emote_Text) = 1026 bytes regardless of the
+// message length.  We send only what the string needs: anything past ~512 bytes
+// fragments, and fragmented packets through our ARQ machinery confuse the v29c
+// client (same constraint that caps the A120 batch at 25 entries).  Emote lines
+// are far shorter than that in practice, but the cap makes it structural rather
+// than incidental.
+// ============================================================
+void TrilogyClient::HandleEmote(const EQApplicationPacket* app)
+{
+	if (!app || app->size <= sizeof(uint32)) return;
+	const auto* emu = reinterpret_cast<const ::Emote_Struct*>(app->pBuffer);
+
+	// message is not guaranteed NUL-terminated within the received size.
+	const uint32_t body_max = app->size - static_cast<uint32_t>(sizeof(uint32));
+
+	char line[400] = {};
+	uint32_t n = 0;
+	while (n < body_max && n < sizeof(line) - 1 && emu->message[n] != '\0') {
+		line[n] = emu->message[n];
+		++n;
+	}
+	line[n] = '\0';
+	if (n == 0) return;
+
+	m_tzs->SendToSession(m_session_key, 0x1520,
+	                     reinterpret_cast<const uint8_t*>(line), n + 1);
 }
 
 // ============================================================
