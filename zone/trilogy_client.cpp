@@ -3642,6 +3642,15 @@ void TrilogyClient::HandleOutgoingGuildMOTD(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::GuildMOTD_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::GuildMOTD_Struct*>(app->pBuffer);
 
+	// Drop the zone-in copy.  CompleteConnect sends one for every guilded player,
+	// and the client asks for its own a moment later (a 0x0322 with no text, sent
+	// on its own initiative) which is answered as OP_GetGuildMOTDReply below.
+	// Letting both through prints the same line twice on every zone-in, and the
+	// client's request is the better of the two to keep: it arrives after the
+	// world is up, and it is the only one that exists for a player who joins a
+	// guild mid-session.
+	if (m_is_zoning) return;
+
 	// Bound the read by the source field, not the destination: motd[] is not
 	// guaranteed terminated when the sender fills all 512 bytes.
 	char motd[sizeof(emu->motd)] = {};

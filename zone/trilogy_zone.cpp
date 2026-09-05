@@ -6958,25 +6958,29 @@ void TrilogyZoneServer::HandleGuildCommand(const std::string& addr, int port, Se
 		}
 
 		if (!is_set) {
-			// Request form.  v29c sends this once on its own at login — confirmed
-			// on the wire, and the behaviour EQClassic documents — and again every
-			// time the player types a bare /guildmotd.  The two need different
-			// handling and the packet is identical, so the first request of a
-			// session is taken as the client's automatic poll.
+			// Request form, and it is always answered.  v29c asks for its MOTD
+			// once on its own immediately after zone-in — confirmed on the wire,
+			// and what EQClassic documents — and sends the identical packet when
+			// the player types a bare /guildmotd.  Nothing in the packet tells
+			// the two apart.
 			//
-			// Login poll: route through the deduped path so it cannot double up
-			// with the copy CompleteConnect already sent, and stay silent when
-			// the guild has no MOTD.
-			// Typed request: force the display, because the answer to a command
-			// the player just typed must not be suppressed as a repeat.
-			const bool is_login_poll = !s.guild_motd_polled;
-			s.guild_motd_polled = true;
-
+			// So the login display is driven entirely by the client's own poll:
+			// HandleOutgoingGuildMOTD drops the copy CompleteConnect emits during
+			// zone-in, which is what stops the two printing the same line twice.
+			// That leaves every request here free to force a display, which is
+			// the only behaviour that is right for a command the player typed.
+			//
+			// An earlier attempt treated the first request of a session as the
+			// poll.  It had a hole: the client only polls when it already
+			// believes it is in a guild (the gate at eqgame.exe 0x4a54c8 rejects
+			// 0xFFFF before sending), so a player who logs in unguilded and joins
+			// mid-session never sends one — and their first typed /guildmotd was
+			// swallowed as though it were the poll.
 			char cur[512]  = {};
 			char setby[64] = {};
 			if (guild_mgr.GetGuildMOTD(tc->GuildID(), cur, setby) && cur[0]) {
-				tc->SendGuildMOTD(!is_login_poll);
-			} else if (!is_login_poll) {
+				tc->SendGuildMOTD(true); // OP_GetGuildMOTDReply — always displayed
+			} else {
 				// The outbound path drops an empty MOTD, so say it here or a
 				// player who types /guildmotd on a guild with none set gets
 				// silence and reads it as a broken command.
