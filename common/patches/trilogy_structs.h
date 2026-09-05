@@ -587,6 +587,27 @@ struct GuildCommand_Struct
 };
 
 /*
+** GuildMOTD_Struct
+** Opcode:  OP_GuildMOTD = 0x0322  (client -> zone)
+** Size:    548 bytes
+** Source:  eqgame.exe 0x4a54c8, the client's own /guildmotd handler.  It builds
+**          a 0x224-byte buffer, copies the sender's name to offset 0, stores
+**          the guild id as an int32 at 0x20, and formats "%s - %s" (name, text)
+**          into offset 0x24 before sending opcode 0x0322.  EQClassic's server
+**          reads the text at [36] for the same reason.
+**
+** An empty motd is the request form: the client only appends text when its
+** guild rank is above member, and sends the packet either way.
+*/
+struct GuildMOTD_Struct
+{
+/*000*/	char	name[32];	// the player who typed the command
+/*032*/	int32	guildid;
+/*036*/	char	motd[512];	// "<Name> - <text>", empty when only asking
+/*548*/
+};
+
+/*
 ** GuildInviteAccept_Struct
 ** Opcode:  OP_GuildInviteAccept = 0x1821  (client -> zone)
 ** Size:    68 bytes — same length as GuildCommand_Struct, different layout

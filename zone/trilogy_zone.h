@@ -340,6 +340,11 @@ private:
 		// last_resend_ms above.
 		uint64_t last_guilds_list_ms = 0;
 
+		// (state << 16 | opcode) pairs already reported by the connect-handshake
+		// unhandled logger, so a client that repeats an opcode during zone-in
+		// prints one line rather than one per retry.
+		std::unordered_set<uint32_t> connect_unhandled_seen;
+
 		// ── Per-session outbound rate limiter ────────────────────────────────
 		// v29c's UDP receive buffer is small and the client can't keep up with
 		// bursts of hundreds of broadcast packets in one tick (#repop, mass

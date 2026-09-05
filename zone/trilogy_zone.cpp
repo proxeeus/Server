@@ -1738,19 +1738,40 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 	LogNetcode("[TrilogyZone] rx opcode={:04X} plen={} state={} from {}:{}",
 	        opcode, plen, static_cast<int>(s.state), addr, port);
 
+	// Connect-handshake blind spot.  Every CONNECTING state below drops an
+	// opcode it does not match, silently — there is no equivalent of the
+	// CONNECTED-state UNHANDLED logger, so anything the client says during
+	// zone-in has never been visible.  That is the same failure the handbook
+	// records for 0xff21: scored as handled because nothing complained.
+	// Log it once per (state, opcode) pair so a chatty handshake cannot flood.
+	const auto note_unhandled = [&](const char* state_name) {
+		const uint32_t key = (static_cast<uint32_t>(s.state) << 16) | opcode;
+		if (!s.connect_unhandled_seen.insert(key).second) return;
+		std::string hex;
+		const uint32_t cap = plen > 64 ? 64u : plen;
+		for (uint32_t i = 0; i < cap; ++i) hex += fmt::format("{:02X} ", payload[i]);
+		if (plen > cap) hex += "...";
+		LogInfo("[TrilogyZone] UNHANDLED rx opcode={:04X} state={} plen={} payload=[{}]",
+		        opcode, state_name, plen, hex);
+	};
+
 	switch (s.state) {
 	case CONNECTING1:
 		if (opcode == ZN_OP_SetDataRate)
 			HandleSetDataRate(addr, port, s);
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING1");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING2:
 		if (opcode == ZN_OP_ZoneEntry)
 			HandleZoneEntry(addr, port, s, payload, plen);
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING2");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING3:
@@ -1762,8 +1783,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, ZN_OP_WearChange, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING3");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING4:
@@ -1784,8 +1807,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, 0x4721, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING4");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTING5:
@@ -1805,8 +1830,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, 0x4721, payload, plen);
 		}
-		else if (s.ack_due)
-			SendAck(addr, port, s);
+		else {
+			note_unhandled("CONNECTING5");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		break;
 
 	case CONNECTED:
@@ -3264,14 +3291,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 				if (cont.empty()) cont = "(all empty)";
 
-				// Guild offset probe.  The client's own PP upload is the only
-				// ground truth we have for where v29c keeps guildid and
-				// guildrank, and EQClassic's PlayerProfile.h has already been
-				// wrong once in this exact region (deity is four bytes off what
-				// it declares).  Print what our fields read plus the raw window
-				// around them: with the character in a guild, the guild id
-				// should appear as a little-endian word somewhere in here, and
-				// wherever it actually sits is the real offset.
+				// Guild fields, read back out of the client's own profile.  The
+				// offsets are settled (see the static_asserts in SendPlayerProfile),
+				// so this is now a round-trip check rather than a hunt: whatever we
+				// sent should come back unchanged.
 				{
 					std::string window;
 					for (uint32_t off = 4150; off < 4186 && off < plen; ++off) {
@@ -4121,6 +4144,35 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
+
+		// Guild appearance on zone-in.
+		//
+		// v29c keeps TWO copies of a player's guild id and reads a different one
+		// depending on what it is doing.  Both were found in eqgame.exe:
+		//
+		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
+		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
+		//                   by the SpawnAppearance type-22 handler (0x493d31).
+		//                   This is what the guild COMMANDS gate on.
+		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
+		//                   the same appearance handler (0x493cb4).  This is what
+		//                   /guildinvite and /guildremove check.
+		//
+		// The local player's own actor is not built from a Spawn_Struct, so its
+		// copy stays at the 0xFFFF "no guild" default for the whole session unless
+		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
+		// only fires SendGuildSpawnAppearance on a membership change, so a player
+		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
+		//
+		// The visible symptom was oddly narrow.  The guild TAG still rendered —
+		// that comes from a different actor field the spawn parser does fill — and
+		// /guildinvite worked once the profile copy was populated.  Only
+		// /guildmotd failed, with "You are not in a guild." printed by the client
+		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
+		// before it will send anything), so the server never saw a packet at all.
+		if (tc->IsInAGuild()) {
+			tc->SendGuildSpawnAppearance();
+		}
 
 		// Group restoration on zone-in.
 		//
@@ -5038,10 +5090,10 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		// The guild TAG comes from spawn data, which is why this stayed hidden:
 		// the tag rendered correctly while the commands did not.
 		//
-		// Offsets are from EQClassic PlayerProfile.h.  That header has been
-		// wrong in this exact region before — deity is four bytes off where it
-		// claims to be — so [TrilogyGuildProbe] below reads the offsets back
-		// out of the client's own PP upload rather than trusting them.
+		// The offsets are confirmed against eqgame.exe, not taken on trust from
+		// EQClassic's header (which is four bytes off for deity in this same
+		// region): the client's own /guildinvite gate reads them at object
+		// 0x103a / 0x104b.  See the static_asserts below.
 		{
 			uint32 g_id   = GUILD_NONE;
 			uint8  g_rank = GUILD_RANK_NONE;
@@ -5510,6 +5562,16 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 	              "deity_wire must be at PP struct byte 4156 (= wire byte 4152) for the char sheet to read it");
 	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, bank_cont_inv) == 3996,
 	              "bank_cont_inv must start at struct byte 3996");
+	// Both pinned from eqgame.exe rather than from EQClassic's header: the
+	// client's /guildinvite gate reads the profile at object offset 0x103a and
+	// 0x104b (0x4c9f07 and 0x4c9f22), and the SpawnAppearance type-22 handler
+	// writes the same word at 0x103a (0x493cb4).  Object offsets run four bytes
+	// behind struct offsets because the object holds the profile with the
+	// checksum stripped — the same relationship deity_wire above is pinned by.
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, guildid) == 4158,
+	              "guildid must be at PP struct byte 4158 (= client object 0x103a)");
+	static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, guildrank) == 4175,
+	              "guildrank must be at PP struct byte 4175 (= client object 0x104b)");
 	{
 		const uint8_t* rb = reinterpret_cast<const uint8_t*>(&pp);
 		LogInfo("[TrilogyZone] SendPlayerProfile | pre-CRC final bytes | "
@@ -6854,46 +6916,35 @@ void TrilogyZoneServer::HandleGuildCommand(const std::string& addr, int port, Se
 	// sends once at login even for a player with no guild.
 	// ------------------------------------------------------------------
 	case ZN_OP_GuildMOTD: {
-		std::vector<std::pair<uint32_t, std::string>> fields;
-		for (uint32_t i = 0; i < plen; ) {
-			if (payload[i] == 0) { ++i; continue; }
-			uint32_t j = i;
-			bool printable = true;
-			while (j < plen && payload[j] != 0) {
-				if (payload[j] < 0x20 || payload[j] > 0x7E) printable = false;
-				++j;
-			}
-			if (printable && j > i) {
-				fields.emplace_back(i, std::string(reinterpret_cast<const char*>(payload + i), j - i));
-			}
-			i = j;
-		}
-		{
-			std::string dump;
-			for (const auto& f : fields) dump += fmt::format("@{}=[{}] ", f.first, f.second);
-			LogInfo("[TrilogyGuild] char={} /guildmotd fields: {}",
-			        s.char_name, dump.empty() ? "(none)" : dump);
-		}
+		// Only the fixed head is required.  The client allocates the full 548
+		// bytes but there is no guarantee it sends all of them, and the text is
+		// read bounded by what actually arrived rather than by the struct.
+		constexpr uint32_t kMOTDTextOffset =
+		    offsetof(Trilogy::structs::GuildMOTD_Struct, motd);
+		if (too_short(kMOTDTextOffset, "/guildmotd")) return;
 
-		// The packet always carries the sender's own name.  Anything else in
-		// it is the new MOTD, so take the last string that is not that name
-		// rather than counting fields — that holds whether the client sends
-		// the text in a field of its own or folded into the name field.
-		std::string motd;
-		for (const auto& f : fields) {
-			if (!TrilogyNameIs(f.second, self)) {
-				motd = f.second;
-			}
-		}
+		const auto* in =
+		    reinterpret_cast<const Trilogy::structs::GuildMOTD_Struct*>(payload);
+		const std::string setter = TrilogyGuildName(in->name, sizeof(in->name));
+		const uint32_t    text_avail =
+		    std::min<uint32_t>(plen - kMOTDTextOffset, sizeof(in->motd));
+		std::string motd = TrilogyGuildName(in->motd, text_avail);
+
+		LogInfo("[TrilogyGuild] char={} /guildmotd setter=[{}] wire_guild={} text=[{}]",
+		        s.char_name, setter, in->guildid, motd);
+
+		// The client sends the text as "<Name> - <text>", and "<Name> - none"
+		// is its documented clear form.  Empty means it is asking, not setting.
 		const bool is_set = !motd.empty();
 		if (is_set) {
-			// Strip the "Name - " the client prepends, if it is there.
 			const size_t sep = motd.find(" - ");
-			if (sep != std::string::npos && TrilogyNameIs(motd.substr(0, sep), self)) {
+			if (sep != std::string::npos &&
+			    (TrilogyNameIs(motd.substr(0, sep), self) ||
+			     strcasecmp(motd.substr(0, sep).c_str(), setter.c_str()) == 0)) {
 				motd = motd.substr(sep + 3);
 			}
 			if (strcasecmp(motd.c_str(), "none") == 0) {
-				motd.clear(); // documented clear form
+				motd.clear();
 			}
 		}
 
