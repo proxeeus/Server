@@ -1094,6 +1094,38 @@ struct MemorizeSpell_Struct
 /*012*/
 };
 
+/*
+** SwapSpell_Struct
+** Opcode:  OP_SwapSpell = 0xce21
+** Direction: both (client requests the swap, server echoes it to apply it)
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: SwapSpell_Struct,
+**          confirmed against eqgame.exe (send site 0x462019 pushes size 8;
+**          inbound handler 0x49bd86 reads two dwords).
+** Size:    8 bytes
+**
+** Reordering a spell book in v29c is a two-click gesture: right-click a scribe
+** slot to pick it up (the client prints "Right click on another Scribe Slot in
+** your Spell Book to swap this Spell position with the new one." and remembers
+** the slot), then right-click a second slot.  On the second click the client
+** sends this struct and parks itself in a "swap pending" state — it does NOT
+** touch its own spell_book[] array.
+**
+** The server MUST echo the packet back.  Only the echo makes the client apply
+** the swap (spell_book[from] <-> spell_book[to]) and clear the pending state.
+** Echoing with either slot negative is the client's own reject path: it clears
+** the pending state without swapping.  Sending nothing at all leaves the book
+** stuck — every later pick-up is silently discarded until the player zones.
+**
+** Slot numbering is the flat spell-book index the client computes as
+** page * 10 + (widget_id - 43), i.e. the same index used by spell_book[].
+*/
+struct SwapSpell_Struct
+{
+/*000*/	int32	from_slot;
+/*004*/	int32	to_slot;
+/*008*/
+};
+
 // -------------------------------------------------------------------------
 // Chat
 // -------------------------------------------------------------------------
