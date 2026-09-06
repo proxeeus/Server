@@ -305,6 +305,13 @@ private:
 			// suppressed as "nothing changed" and the observed character would
 			// keep rotating until the staleness refresh.
 			int8_t   delta_heading = 0;
+			// Same argument for the velocity word.  v29c extrapolates from
+			// the last delta it was given until it is given another, so the
+			// update that carries "velocity back to zero" has to count as a
+			// change even when the position has not moved since -- otherwise
+			// a jumping player keeps climbing on the observer's screen until
+			// the staleness refresh catches it.
+			uint32_t delta_bits = 0;
 			uint64_t sent_ms   = 0;
 		};
 		std::unordered_map<uint16_t, LastBroadcast> last_broadcast;

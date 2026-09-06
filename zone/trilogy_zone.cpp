@@ -590,39 +590,76 @@ static inline float ToTrilogySpeed(int eqemu_speed)
 }
 
 // ============================================================
-// SpawnPositionUpdate delta_x / delta_y / delta_z 10-bit bitfield
-// helpers.  The wire layout (trilogy_structs.h:573-577) is:
-//   /*011*/  int32 delta_y:10, spacer1:1, delta_z:10, spacer2:1, delta_x:10;
-// The struct comment explicitly warns against relying on the compiler's
-// bitfield packing — different compilers / packing pragmas can produce
-// different byte orders.  Use these explicit shifts so the wire format is
-// stable across MSVC / GCC / Clang.
+// SpawnPositionUpdate delta_x / delta_y / delta_z bitfield helpers.
 //
-// Layout (LSB-first, little-endian 32-bit word at offset 11):
-//   bits  0-9   : delta_y  (signed 10-bit, range -512..511)
-//   bit  10     : spacer1
-//   bits 11-20  : delta_z
-//   bit  21     : spacer2
-//   bits 22-31  : delta_x
-static inline uint32_t PackDelta10(int32_t v)
+// The struct declares (trilogy_structs.h):
+//   /*011*/  int32 delta_y:10, spacer1:1, delta_z:10, spacer2:1, delta_x:10;
+// and that declaration is WRONG.  There are no spacer bits: the two low
+// fields are ELEVEN bits each, and only the high field is ten.  Settled in
+// eqgame.exe, which contains both halves of the codec back to back —
+// the encoder at 0x4a36b4 and the decoder at 0x4a3807.
+//
+// Encoder (0x4a36de-0x4a3705), building the word it stores at entry+9:
+//     ebx  = (int)(dy_float * 16)
+//     ebx <<= 11
+//     ebx |= (int)(dz_float * 16) & 0x7ff      <-- ELEVEN-bit mask
+//     ebx <<= 11
+//     ebx |= (int)(dx_float * 16) & 0x7ff
+//
+// Decoder (0x4a3807-0x4a3864), reading it back:
+//     ecx = word & 0x7ff                       ; bits  0-10
+//     edx = (word >> 11) & 0x7ff               ; bits 11-21
+//     eax =  word >> 22                        ; bits 22-31
+//     if (ecx & 0x400) ecx |= 0xfffff800       ; 11-bit sign extend
+//     if (edx & 0x400) edx |= 0xfffff800       ; 11-bit sign extend
+//     if (eax & 0x200) eax |= 0xfffffc00       ; 10-bit sign extend
+//     each then multiplied by 0.0625 (= 1/16)
+//
+// So the real layout, LSB-first in the 32-bit word at offset 11:
+//   bits  0-10  : delta_y  (signed 11-bit, -1024..1023)
+//   bits 11-21  : delta_z  (signed 11-bit, -1024..1023)
+//   bits 22-31  : delta_x  (signed 10-bit,  -512..511)
+// 11 + 11 + 10 = 32, which is the tell that the spacer reading was wrong.
+//
+// The units are EQ-units-per-client-tick scaled by 16.  The client clamps
+// the float before scaling — delta_y/delta_z to [-64, 63] and delta_x to
+// [-32, 31] (ds:0x5356a4/0x5356a0 and ds:0x53569c/0x535698) — which is
+// exactly what makes each field's post-scale range fill its bit width.
+// The clamps here mirror that, so a value we send can never overflow into
+// the neighbouring field.
+//
+// WHY THIS MATTERS BEYOND PEDANTRY: writing a 10-bit two's-complement value
+// into an 11-bit slot leaves the field's sign bit (0x400) clear, so every
+// NEGATIVE delta arrives at the client as a large POSITIVE one — -15
+// becomes +1009, i.e. -0.94 units/tick becomes +63.  That is a sign flip
+// plus a 60x magnitude error on any axis that happens to be going the other
+// way, and it is the most likely explanation for the "strafing as if the
+// destination is evolving" that killed both earlier attempts at non-zero
+// deltas (see the kVelocityWireScale note below).  Those experiments were
+// not wrong to want the field; they were writing it in the wrong width.
+static inline uint32_t PackDeltaField(int32_t v, int bits)
 {
-	if (v >  511) v =  511;
-	if (v < -512) v = -512;
-	return static_cast<uint32_t>(v) & 0x3FF;
+	const int32_t hi =  (static_cast<int32_t>(1) << (bits - 1)) - 1;
+	const int32_t lo = -(static_cast<int32_t>(1) << (bits - 1));
+	if (v > hi) v = hi;
+	if (v < lo) v = lo;
+	const uint32_t mask = (static_cast<uint32_t>(1) << bits) - 1u;
+	return static_cast<uint32_t>(v) & mask;
 }
-static inline int32_t UnpackDelta10(uint32_t raw)
+static inline int32_t UnpackDeltaField(uint32_t raw, int bits)
 {
-	raw &= 0x3FF;
-	// Sign-extend 10-bit to 32-bit: bit 9 is the sign bit.
-	return (raw & 0x200) ? static_cast<int32_t>(raw | 0xFFFFFC00u)
-	                     : static_cast<int32_t>(raw);
+	const uint32_t mask = (static_cast<uint32_t>(1) << bits) - 1u;
+	raw &= mask;
+	const uint32_t sign = static_cast<uint32_t>(1) << (bits - 1);
+	return (raw & sign) ? static_cast<int32_t>(raw | ~mask)
+	                    : static_cast<int32_t>(raw);
 }
 static inline void WriteDeltaBitfield(Trilogy::structs::SpawnPositionUpdate_Struct* upd,
                                       int32_t dx, int32_t dy, int32_t dz)
 {
-	const uint32_t bits =  PackDelta10(dy)
-	                    | (PackDelta10(dz) << 11)
-	                    | (PackDelta10(dx) << 22);
+	const uint32_t bits =  PackDeltaField(dy, 11)
+	                    | (PackDeltaField(dz, 11) << 11)
+	                    | (PackDeltaField(dx, 10) << 22);
 	uint8_t* p = reinterpret_cast<uint8_t*>(upd);
 	std::memcpy(p + 11, &bits, 4);
 }
@@ -632,9 +669,9 @@ static inline void ReadDeltaBitfield(const Trilogy::structs::SpawnPositionUpdate
 	uint32_t bits;
 	const uint8_t* p = reinterpret_cast<const uint8_t*>(upd);
 	std::memcpy(&bits, p + 11, 4);
-	dy = UnpackDelta10(bits);
-	dz = UnpackDelta10(bits >> 11);
-	dx = UnpackDelta10(bits >> 22);
+	dy = UnpackDeltaField(bits,       11);
+	dz = UnpackDeltaField(bits >> 11, 11);
+	dx = UnpackDeltaField(bits >> 22, 10);
 }
 
 // Server-side velocity (EQ-units/sec) → 10-bit wire delta value.
@@ -647,21 +684,32 @@ static inline void ReadDeltaBitfield(const Trilogy::structs::SpawnPositionUpdate
 //   - For PCs observed by others: cu->delta_y (the small wire value the v29c
 //     client itself sent inbound, typically 5-25), divided by 125 → also 0.
 // So the v29c client receives delta = 0 for ALL entities from EQClassic's
-// server.  delta_x/y/z is an INBOUND-only field in practice — the client
-// uses it locally to compute its own player motion, but receivers do NOT
-// trust it for inter-entity extrapolation.
+// server.
 //
 // Both empirical iterations (scale=10 and scale=1) reproduced the same
 // "strafing as if destination is evolving" symptom — varying-direction
 // delta each heartbeat made the client extrapolate erratically in
 // directions that didn't match the path.  Magnitude shrank between
-// iterations but the directional confusion persisted, confirming the
-// problem is the *fact* of non-zero delta rather than its size.
+// iterations but the directional confusion persisted.
 //
-// Keep at 0 unless we positively identify a v29c client behavior that
-// requires non-zero delta_x/y from the server side.  Residual position-snap
-// jagginess from the 4 Hz heartbeat cadence is a separate problem to solve
-// via higher heartbeat rate or event-driven updates.
+// AMENDED 2026-09-06.  The conclusion drawn from those two runs — that the
+// problem is "the *fact* of non-zero delta rather than its size", and that
+// receivers do not trust the field — was almost certainly wrong, and the
+// reason is in WriteDeltaBitfield above: it was writing 10-bit values into
+// the 11-bit slots the client actually reads, so every NEGATIVE delta_x or
+// delta_y arrived sign-flipped and ~60x too large.  A synthesised velocity
+// whose sign inverts on half the compass IS "strafing in directions that
+// didn't match the path".  The field width was the bug; the scale never got
+// a fair test.
+//
+// This scale stays 0 regardless, because the server-derived case is still
+// the weak one: for an NPC we are guessing a velocity from pathing state,
+// and any divergence between that guess and the rendered heading shows up
+// as drift.  The observed-PC case does not have that problem and is now
+// wired separately — TrilogyClient::HandleClientUpdate relays the velocity
+// the moving client reported for ITSELF, verbatim, which cannot disagree
+// with what that client is doing.  Revisit this constant only with the
+// width fix in hand and a specific NPC symptom to chase.
 static constexpr float    kVelocityWireScale = 0.0f;
 static constexpr uint64_t kDeltaDebugMs      = 1000;   // 1 sec per log line
 
@@ -6071,17 +6119,25 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 		uint64_t now_dbg = static_cast<uint64_t>(
 			std::chrono::duration_cast<std::chrono::milliseconds>(
 				std::chrono::steady_clock::now().time_since_epoch()).count());
-		if (upd.anim_type != 0 && now_dbg - s.last_delta_dbg_in_ms >= kDeltaDebugMs) {
-			s.last_delta_dbg_in_ms = now_dbg;
-			int32_t dx, dy, dz;
-			ReadDeltaBitfield(&upd, dx, dy, dz);
+		int32_t dx, dy, dz;
+		ReadDeltaBitfield(&upd, dx, dy, dz);
+		// Vertical motion bypasses the rate limit.  v29c reports a whole jump
+		// as ONE sample, so a 1/sec limiter would swallow the only packet that
+		// carries it — and the anim_type gate alone would never let it through
+		// at all, because a jump leaves anim_type at 0.  Jumps run about four
+		// a session, so there is nothing here to flood.
+		const bool vertical = (dz != 0);
+		if ((upd.anim_type != 0 || vertical) &&
+		    (vertical || now_dbg - s.last_delta_dbg_in_ms >= kDeltaDebugMs)) {
+			if (!vertical) s.last_delta_dbg_in_ms = now_dbg;
 			LogInfo("[Trilogy/delta IN] char=[{}] anim={} heading={} dx={} dy={} dz={} "
-			        "|v|={:.2f}",
+			        "|v|={:.2f} z={:.1f}",
 			        s.char_name,
 			        static_cast<int>(upd.anim_type),
 			        static_cast<int>(static_cast<uint8_t>(upd.heading)),
 			        dx, dy, dz,
-			        std::sqrt(static_cast<float>(dx * dx + dy * dy)));
+			        std::sqrt(static_cast<float>(dx * dx + dy * dy)),
+			        z);
 		}
 	}
 
@@ -6156,6 +6212,19 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 		// pivoting, which is far too sparse for absolute heading alone to read
 		// as motion -- this is the field that carries the sweep between them.
 		s.trilogy_client->SetSelfReportedDeltaHeading(upd.delta_heading, self_report_ms);
+
+		// And for the per-tick velocity, which was likewise decoded for the
+		// diagnostic above and then thrown away.  Kept in raw wire units so
+		// the relay in TrilogyClient::HandleClientUpdate is a pass-through:
+		// this is the client's own measurement of its own motion, so echoing
+		// it verbatim to observers is the one encoding that cannot disagree
+		// with what the moving client is actually doing.
+		{
+			int32_t self_dx, self_dy, self_dz;
+			ReadDeltaBitfield(&upd, self_dx, self_dy, self_dz);
+			s.trilogy_client->SetSelfReportedDelta(self_dx, self_dy, self_dz,
+			                                       self_report_ms);
+		}
 
 		s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
 
@@ -11767,13 +11836,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				return false;
 		}
 
+		uint32_t upd_delta_bits;
+		std::memcpy(&upd_delta_bits,
+		            reinterpret_cast<const uint8_t*>(upd) + 11, 4);
+
 		bool stale   = (now_ms - last.sent_ms) >= STALENESS_REFRESH_MS;
 		bool changed = (last.x_pos     != upd->x_pos)
 		            || (last.y_pos     != upd->y_pos)
 		            || (last.z_pos     != upd->z_pos)
 		            || (last.heading   != upd->heading)
 		            || (last.anim_type != upd->anim_type)
-		            || (last.delta_heading != upd->delta_heading);
+		            || (last.delta_heading != upd->delta_heading)
+		            || (last.delta_bits    != upd_delta_bits);
 		if (!stale && !changed) return false;
 		last.x_pos     = upd->x_pos;
 		last.y_pos     = upd->y_pos;
@@ -11781,6 +11855,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		last.heading   = upd->heading;
 		last.anim_type = upd->anim_type;
 		last.delta_heading = upd->delta_heading;
+		last.delta_bits    = upd_delta_bits;
 		last.sent_ms   = now_ms;
 		return true;
 	};
@@ -12070,8 +12145,34 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			// previous synthesis.
 			upd->anim_type = EncodeTrilogyAnim(c, c->GetRunspeed());
 		}
-		// delta_x/delta_y stay 0 — see the kVelocityWireScale note above;
-		// EQClassic's /125 makes the relayed PC delta 0 in practice too.
+		// Velocity: relay what the moving client reported about itself, the
+		// same way delta_heading and anim_type above are relayed.
+		//
+		// THIS is the path that carries one player's position to another.
+		// TrilogyClient::HandleClientUpdate looks like the place for it and
+		// is not: that runs off EQEmu's OP_ClientUpdate broadcast, which only
+		// Mob::SentPositionPacket emits, and nothing calls that for a v29c
+		// player — their position arrives through TrilogyPositionUpdate,
+		// which calls SetPosition() and broadcasts nothing.  The same
+		// mistaken assumption is recorded in the moving-NPC comment further
+		// down; it cost a round here too.
+		//
+		// What this buys: v29c reports an entire jump as ONE raised-Z sample
+		// carrying an upward delta_z (13-18 raw, ~1 unit/tick).  With the
+		// delta dropped the observer had a bare Z step and nothing to
+		// interpolate, so the model arrived in the air already at the top of
+		// the arc.  EQClassic zeroes this field too, but only as an accident
+		// of its `/125` integer divide — see the kVelocityWireScale note.
+		//
+		// NPCs are untouched: this is the client's own measurement of its own
+		// motion, which cannot diverge in direction from what that client is
+		// doing.  A server-derived NPC velocity can, and that is the failure
+		// the earlier experiments hit.
+		if (c->IsTrilogyClient()) {
+			int32_t sdx = 0, sdy = 0, sdz = 0;
+			static_cast<TrilogyClient*>(c)->GetSelfReportedDelta(now_ms, sdx, sdy, sdz);
+			WriteDeltaBitfield(upd, sdx, sdy, sdz);
+		}
 
 		// A pivoting player takes the same priority path as a turning NPC:
 		// without it the inner-ring 100 ms cap inside should_broadcast throws

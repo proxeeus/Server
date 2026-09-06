@@ -685,6 +685,15 @@ private:
 	struct MovementAnim {
 		int8_t   anim;
 		uint64_t set_ms;
+		// Last relayed velocity for this spawn, raw wire units.  Held here
+		// so HandleClientUpdate can treat a velocity change as a state
+		// transition and bypass the send throttle, exactly as it does for
+		// anim: the v29c client extrapolates from the last delta it was
+		// given until it is given another, so a throttled "back to zero"
+		// leaves an observed player drifting.
+		int32_t  dx;
+		int32_t  dy;
+		int32_t  dz;
 	};
 	std::unordered_map<uint16_t, MovementAnim> m_movement_anim_cache;
 
@@ -793,6 +802,51 @@ public:
 		return m_self_delta_heading;
 	}
 
+	// The per-tick velocity the v29c client reports for itself, kept in RAW
+	// WIRE UNITS (EQ-units-per-tick x 16) so the relay to other Trilogy
+	// clients is a straight pass-through with no rescaling.
+	//
+	// This is the only source of velocity we have for a Trilogy PC: the
+	// Trilogy position path calls SetPosition() and never populates
+	// Mob::m_Delta, so the outbound relay's p->delta_* are permanently zero
+	// and observed players arrive with no extrapolation hint at all.  The
+	// visible cost is jumps: v29c reports a jump as ONE raised-Z sample
+	// carrying an upward delta_z, so with the delta dropped the observer
+	// gets a single teleport up and back instead of an arc.
+	//
+	// Age-bounded as a backstop only, NOT as the primary way a velocity is
+	// cleared.  Every position report carries this field, and a stationary
+	// client still reports about once a second, so the ordinary "stopped"
+	// case arrives as a fresh report of zero — which lands the new velocity
+	// and the new position in the SAME broadcast.
+	//
+	// That distinction matters more here than it does for delta heading. If
+	// the timer expired first, the heartbeat would broadcast "velocity zero"
+	// carrying whatever position the server still believed — and mid-jump
+	// the server's Z is the stale apex, because the landing has not been
+	// reported yet.  Re-asserting the apex would yank a falling model back
+	// up.  1500 ms sits well clear of the ~1 s idle report interval so the
+	// real report always wins; it only fires for a client that has actually
+	// gone silent, where the staleness refresh corrects the position anyway.
+
+	void SetSelfReportedDelta(int32_t dx, int32_t dy, int32_t dz, uint64_t now_ms) {
+		m_self_delta_x      = dx;
+		m_self_delta_y      = dy;
+		m_self_delta_z      = dz;
+		m_self_delta_set_ms = now_ms;
+	}
+
+	bool GetSelfReportedDelta(uint64_t now_ms, int32_t& dx, int32_t& dy, int32_t& dz,
+	                          uint64_t max_age_ms = 1500) const {
+		dx = dy = dz = 0;
+		if (m_self_delta_set_ms == 0) return false;
+		if (now_ms - m_self_delta_set_ms > max_age_ms) return false;
+		dx = m_self_delta_x;
+		dy = m_self_delta_y;
+		dz = m_self_delta_z;
+		return true;
+	}
+
 private:
 	bool     m_linkdead        = false;
 	int8_t   m_self_anim_type   = 0;
@@ -800,6 +854,10 @@ private:
 	uint64_t m_last_heading_change_ms = 0;
 	int8_t   m_self_delta_heading        = 0;
 	uint64_t m_self_delta_heading_set_ms = 0;
+	int32_t  m_self_delta_x      = 0;
+	int32_t  m_self_delta_y      = 0;
+	int32_t  m_self_delta_z      = 0;
+	uint64_t m_self_delta_set_ms = 0;
 
 
 	// Authoritative model of the v29c client's current equipment-material

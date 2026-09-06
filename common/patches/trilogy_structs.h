@@ -692,6 +692,19 @@ struct Illusion_Struct
 ** Size:    15 bytes
 **
 ** NOTE: same velocity bitfield caveat as Spawn_Struct — use explicit bit ops.
+**
+** The delta bitfield below is declared the way EQClassic declares it, and
+** EQClassic has it WRONG.  There are no spacer bits: the client reads three
+** signed fields of 11 / 11 / 10 bits, which is what makes them add to 32.
+** Confirmed in eqgame.exe — encoder at 0x4a36b4 masks with 0x7ff and shifts
+** by 11 twice; decoder at 0x4a3807 sign-extends bits 0-10 and 11-21 from
+** 0x400 and bits 22-31 from 0x200.  Units are EQ-units-per-tick x 16.
+**
+** Never read or write these members directly.  Use ReadDeltaBitfield /
+** WriteDeltaBitfield in trilogy_zone.cpp, which encode the real widths;
+** the declaration is kept only so the struct's size and field order stay
+** self-documenting.  Writing 10-bit values into the 11-bit slots leaves the
+** sign bit clear and turns every negative delta into a large positive one.
 */
 struct SpawnPositionUpdate_Struct
 {
@@ -702,10 +715,10 @@ struct SpawnPositionUpdate_Struct
 /*005*/	int16	y_pos;				// signed
 /*007*/	int16	x_pos;				// signed
 /*009*/	int16	z_pos;				// signed
-/*011*/	int32	delta_y:10,
-				spacer1:1,
-				delta_z:10,
-				spacer2:1,
+/*011*/	int32	delta_y:10,			// REALLY 11 bits — see note above
+				spacer1:1,			// REALLY the sign bit of delta_y
+				delta_z:10,			// REALLY 11 bits
+				spacer2:1,			// REALLY the sign bit of delta_z
 				delta_x:10;
 /*015*/
 };
