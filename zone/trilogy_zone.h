@@ -791,6 +791,18 @@ private:
 	// Logged rather than parsed; no reference tree declares a struct for it.
 	void HandleClientError(const std::string& addr, int port, Session& s,
 	                       const uint8_t* payload, uint32_t plen);
+
+	// Petition / bug-report family — see the opcode block in trilogy_zone.cpp.
+	// HandlePetition is /petition; HandleBugReport covers both /bug (0xb320)
+	// and /feedback (0x3c21), which share one struct; HandlePetitionAdmin is
+	// the GM petition window (checkout / check-in / un-checkout / delete) and
+	// gates on Admin() itself.
+	void HandlePetition(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+	void HandleBugReport(const std::string& addr, int port, Session& s,
+	                     uint16_t opcode, const uint8_t* payload, uint32_t plen);
+	void HandlePetitionAdmin(const std::string& addr, int port, Session& s,
+	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
 	void HandleConnectedWearChange(const std::string& addr, int port, Session& s,
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
