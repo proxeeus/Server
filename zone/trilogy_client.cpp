@@ -870,6 +870,11 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_ConsentResponse:
 		HandleOutgoingConsentResponse(app);
 		break;
+	case OP_RequestDuel:
+	case OP_DuelAccept:
+	case OP_DuelDecline:
+		HandleOutgoingDuel(app);
+		break;
 	case OP_GuildInvite:
 		HandleOutgoingGuildInvite(app);
 		break;
@@ -3252,6 +3257,33 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 555:   return "%1 tells you, 'I am unable to wake %2, master.'";        // CANNOT_WAKE
 		case 9263:  return "No longer focusing on one target, Master.";              // PET_NOT_FOCUSING
 		case 9264:  return "Not casting spells, Master.";                            // PET_NOT_CASTING
+		// Duels.  v29c prints every message a duel PARTICIPANT sees from its own
+		// string table, driven by the packets in TrilogyZoneServer::HandleDuelCommand
+		// — these six are the ones EQEmu answers with as a string id instead, and
+		// there is no overlap with what the client prints for itself:
+		//   1383/1384/1385 are the server's own busy/refusal notices, sent by
+		//     Handle_OP_RequestDuel to a challenger whose target cannot duel, and
+		//     by Handle_OP_DuelDecline when a NON-Trilogy player declines (a
+		//     Trilogy decline is relayed as a 0xd020 packet instead, so this
+		//     wording only ever appears on the cross-client path).
+		//   13251 is the refusal you get for challenging while already dueling.
+		//   1088/1408 are EntityList::DuelMessage, which announces the result to
+		//     every OBSERVER — winner and loser are explicitly excluded there, and
+		//     the winner's client prints its own line locally.
+		// Wording matches the v29c strings byte for byte (eqgame.exe 0x560064,
+		// 0x560030, 0x560004, 0x56ac10, 0x55f96c) so a Trilogy player and a
+		// Titanium player watching the same duel read the same sentence.
+		case 1383:  return "%1 has declined your challenge to duel to the death.";   // DUEL_DECLINE
+		case 1384:  return "%1 has already accepted a duel with someone else.";      // DUEL_ACCEPTED
+		case 1385:  return "%1 is considering a duel with someone else.";            // DUEL_CONSIDERING
+		case 13251: return "You have already accepted a duel with someone else cowardly dog."; // DUEL_INPROGRESS
+		case 1088:  return "%1 has defeated %2 in a duel to the death!";             // DUEL_FINISHED
+		case 1408:  return "%1 has defeated %2 in a duel to the death! %3 has fled like a cowardly dog!"; // DUEL_FLED
+		// The PVP toggle's own confirmation.  Client::SetPVP answers with this
+		// string id but with a literal Message() when switching back off, so
+		// without the entry "#pvp on" was silent and "#pvp off" was not.
+		// Wording matches the v29c string table.
+		case 552:   return "You are now player kill and follow the ways of Discord."; // PVP_ON
 		default:    return nullptr;
 	}
 }
@@ -3642,6 +3674,83 @@ void TrilogyClient::HandleOutgoingConsentResponse(const EQApplicationPacket* app
 	        emu->grantname, emu->ownername, static_cast<int>(emu->permission));
 
 	m_tzs->SendToSession(m_session_key, 0xb721, out, sizeof(out));
+}
+
+// ============================================================
+// HandleOutgoingDuel — OP_RequestDuel / OP_DuelAccept / OP_DuelDecline
+//
+// Duel_Struct (8 B) and DuelResponse_Struct (12 B) are byte-identical between
+// EQEmu and v29c — confirmed against the client itself, which pushes 8 and 12
+// as its send sizes and reads its two entity ids with 32-bit moves (the /duel
+// handler at VA 0x4aa8da).  So the only real work here is the id space: v29c
+// knows THIS player by m_player_spawn_id rather than Client::GetID(), which is
+// what TranslateId exists for.  Every other spawn is published under its real
+// entity id and passes through untouched.
+//
+// The three opcodes are not symmetric:
+//
+//   OP_RequestDuel  -> 0xcf20.  Carries both the challenge and, from
+//                      Handle_OP_DuelAccept, the "your challenge was accepted"
+//                      echo — v29c distinguishes them by comparing the sender
+//                      against its own g_duelPartner.
+//   OP_DuelAccept   -> dropped.  0x5d21 exists, but only client -> server:
+//                      v29c's inbound dispatcher sends it to jump-table slot
+//                      0x1c, which is the default (discard) case.  EQEmu's
+//                      Handle_OP_DuelAccept queues three of them per accept,
+//                      so dropping them here keeps the reliable pipe clear
+//                      instead of spending three sequenced sends on packets
+//                      the client will throw away.
+//   OP_DuelDecline  -> 0xd020.  EQEmu never emits this by itself; it is sent
+//                      from TrilogyZoneServer::HandleDuelCommand so a v29c
+//                      challenger gets the refusal as a packet (which also
+//                      clears its client-side duel state) rather than as a
+//                      line of text.  See the 0xd020 case there.
+// ============================================================
+void TrilogyClient::HandleOutgoingDuel(const EQApplicationPacket* app)
+{
+	if (!app) return;
+
+	switch (app->GetOpcode()) {
+
+	case OP_RequestDuel: {
+		if (app->size < sizeof(::Duel_Struct)) return;
+		const auto* emu = reinterpret_cast<const ::Duel_Struct*>(app->pBuffer);
+
+		::Duel_Struct out{};
+		out.duel_initiator = TranslateId(emu->duel_initiator);
+		out.duel_target    = TranslateId(emu->duel_target);
+
+		LogInfo("[TrilogyDuel] OUT 0xcf20 to {} initiator={} target={}",
+		        GetCleanName(), out.duel_initiator, out.duel_target);
+
+		m_tzs->SendToSession(m_session_key, 0xcf20,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+		break;
+	}
+
+	case OP_DuelDecline: {
+		if (app->size < sizeof(::DuelResponse_Struct)) return;
+		const auto* emu = reinterpret_cast<const ::DuelResponse_Struct*>(app->pBuffer);
+
+		::DuelResponse_Struct out{};
+		out.target_id = TranslateId(emu->target_id);
+		out.entity_id = TranslateId(emu->entity_id);
+		out.unknown   = emu->unknown;   // 0 declined / 1 already dueling / 2 considering
+
+		LogInfo("[TrilogyDuel] OUT 0xd020 to {} from entity={} response={}",
+		        GetCleanName(), out.entity_id, out.unknown);
+
+		m_tzs->SendToSession(m_session_key, 0xd020,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+		break;
+	}
+
+	case OP_DuelAccept:
+	default:
+		break;
+	}
 }
 
 // ============================================================

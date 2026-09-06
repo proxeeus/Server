@@ -238,6 +238,54 @@ static constexpr uint16_t ZN_OP_Yell           = 0xda21;
 static constexpr uint16_t ZN_OP_LFG            = 0xf021;
 static constexpr uint16_t ZN_OP_ConsentRequest = 0xb720;
 
+// Duels (client -> zone; 0xcf20 and 0xd020 are bidirectional).
+//
+// Every struct here is byte-identical to its modern EQEmu counterpart, so the
+// translation is a memcpy plus one entity-id fixup.  Sizes, field order and the
+// exact state machine below were read out of the v29c binary itself
+// (eqgame.exe, the /duel command handler at VA 0x4aa8da, /decline at 0x4aa817,
+// the inbound OP_RequestDuel handler at 0x496598 and the inbound
+// OP_DuelResponse handler at 0x4968be) rather than inferred, because EQClassic
+// carries two conflicting declarations of Duel_Struct — 32-bit fields in
+// Common/Include/eq_packet_structs.h and 16-bit fields in
+// LS/common/eq_packet_structs.h.  The client pushes 8 and 12 as the send sizes
+// and reads its ids with 32-bit moves, so the 32-bit pair is the correct one.
+//
+//   0xcf20 OP_RequestDuel    8 B  Duel_Struct         { uint32 other, uint32 self }
+//   0xd020 OP_DuelResponse  12 B  DuelResponse_Struct { uint32 challenger, uint32 self, uint32 response }
+//   0x5d21 OP_DuelResponse2  8 B  Duel_Struct         { uint32 challenger, uint32 self }
+//   0x5e21 (unnamed)         8 B  Duel_Struct         { uint32 opponent, uint32 self }
+//
+// v29c owns almost all of the duel UI locally.  It keeps three globals —
+// g_duelPartner (0x6b64c8), g_duelPending (0x6b64cc) and g_duelAccepted
+// (0x6b64d0) — and drives them from its own command handlers, so the server's
+// only jobs are relaying the challenge, mirroring the accept back to the
+// challenger, and keeping Client::SetDueling / SetDuelTarget in step so
+// IsAttackAllowed (zone/aggro.cpp:811) lets the two hit each other.
+//
+// The flow, as the client actually implements it:
+//   /duel with a target that has NOT challenged you   -> 0xcf20 { target, self }
+//   /duel with a target that HAS challenged you       -> 0xcf20 AND 0x5d21,
+//                                                        both { target, self }
+//   /decline                                          -> 0xd020 { challenger, self, 0 }
+//   inbound 0xcf20 while already in a duel            -> auto 0xd020 response 1
+//   inbound 0xcf20 while considering another duel     -> auto 0xd020 response 2
+//   inbound 0xcf20 from a /ignore'd player            -> auto 0xd020 response 0
+//   duel opponent dies to you, or despawns mid-duel   -> 0x5e21 { opponent, self }
+//
+// Two consequences worth writing down:
+//   * The accepter's 0xcf20 is a duplicate of its 0x5d21 and must be a no-op.
+//     It is: by then the accepter already has a duel target set, which is
+//     exactly the condition Handle_OP_RequestDuel refuses on.
+//   * 0x5d21 is client -> server ONLY.  The inbound dispatcher routes it
+//     through jump-table slot 0x1c, which is the default case (0x4985a0), so
+//     v29c discards any 0x5d21 we send.  The challenger learns the duel was
+//     accepted from the 0xcf20 echo instead — see HandleOutgoingDuel.
+static constexpr uint16_t ZN_OP_RequestDuel   = 0xcf20;
+static constexpr uint16_t ZN_OP_DuelResponse  = 0xd020;
+static constexpr uint16_t ZN_OP_DuelAccept    = 0x5d21;
+static constexpr uint16_t ZN_OP_DuelFinished  = 0x5e21;
+
 // Guild management (client -> zone unless noted).
 //
 // Names come from EQClassic Common/Include/eq_opcodes.h; the two it does not
@@ -2628,6 +2676,12 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		          opcode == ZN_OP_LFG        || opcode == ZN_OP_ConsentRequest))
 		{
 			HandleSocialCommand(addr, port, s, opcode, payload, plen);
+		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_RequestDuel || opcode == ZN_OP_DuelResponse ||
+		          opcode == ZN_OP_DuelAccept  || opcode == ZN_OP_DuelFinished))
+		{
+			HandleDuelCommand(addr, port, s, opcode, payload, plen);
 		}
 		else if (s.trilogy_client &&
 		         (opcode == ZN_OP_GuildInvite  || opcode == ZN_OP_GuildInviteAccept ||
@@ -5156,7 +5210,7 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			" `str`, `sta`, `cha`, `dex`, `int`, `agi`, `wis`,"
 			" `y`, `x`, `z`, `heading`, `zone_id`,"
 			" `hunger_level`, `thirst_level`, `anon`, `points`, `gm`,"
-			" `birthday`, `time_played` "
+			" `birthday`, `time_played`, `pvp_status` "
 			"FROM `character_data` WHERE `id` = {} LIMIT 1",
 			s.char_id
 		);
@@ -5295,6 +5349,15 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		// the stored total.
 		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
 		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
+
+		// PVP flag.  v29c keeps its own copy at PP byte 2748 and uses it for the
+		// name-colour rule behind SAT_NameColor (EQClassic eq_packet_structs.h:60:
+		// PVP names render dark/light red where non-PVP ones render blue/purple),
+		// so leaving it zero made a flagged player look unflagged on their own
+		// character sheet even though the server was treating them as PVP.  The
+		// same value is stamped into every Spawn_Struct we build, which is what
+		// gives the OTHER players in the zone the correct colour.
+		pp.pvpEnabled      = static_cast<int8_t>(Strings::ToInt(row[30]) ? 1 : 0);
 
 		// Guild identity.  These two were never written, and that is not the
 		// cosmetic gap it looks like: the client gates /guildinvite,
@@ -5834,7 +5897,7 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	// Load character appearance + position
 	auto q = fmt::format(
 		"SELECT `name`, `last_name`, `race`, `class`, `gender`, `level`,"
-		" `face`, `y`, `x`, `z`, `heading`, `anon`, `deity` "
+		" `face`, `y`, `x`, `z`, `heading`, `anon`, `deity`, `pvp_status` "
 		"FROM `character_data` WHERE `id` = {} LIMIT 1",
 		s.char_id
 	);
@@ -5865,6 +5928,10 @@ void TrilogyZoneServer::SendZoneEntrySpawn(const std::string& addr, int port, Se
 	sze.z         = s.pos_z;
 	sze.heading   = s.pos_heading;
 	sze.anon      = static_cast<int8_t>(Strings::ToInt(row[11]));
+	// PVP flag on the player's own zone-entry spawn.  EQClassic stamps the same
+	// field the same way (LS/zone/client.cpp:5909) and it is what drives the
+	// name colour on every other client that renders this spawn.
+	sze.pvp       = static_cast<int8_t>(Strings::ToInt(row[13]) ? 1 : 0);
 	// sze.deity: the client reads character sheet deity from ZoneEntry, not pp.deity.
 	// EQClassic sends DEITY_AGNOSTIC=140 in NewSpawn → full EQEmu IDs, not compact.
 	// Hypothesis: sze.deity uses full EQEmu ID (203=Cazic, 0=Agnostic).
@@ -6950,6 +7017,263 @@ void TrilogyZoneServer::SendGuildsList(uint64_t session_key)
 	SendToSession(session_key, 0x9221,
 	              reinterpret_cast<const uint8_t*>(gl.get()),
 	              static_cast<uint32_t>(sizeof(*gl)));
+}
+
+// ============================================================
+// HandleDuelCommand — /duel, /decline and the client's duel bookkeeping
+//
+// See the ZN_OP_RequestDuel block at the top of this file for the wire formats
+// and for the v29c state machine these four opcodes drive.  In short: the
+// client owns the whole duel UI and every message a duel participant sees; the
+// server owns the two authoritative facts (who is dueling whom) that
+// Mob::IsAttackAllowed reads, plus the relay that gets a challenge from one
+// player to the other.
+//
+// Two things needed care:
+//
+//   * Entity ids arrive in the client's own id space.  v29c knows the player it
+//     is driving as its wire spawn id (TrilogyClient::GetPlayerSpawnId), not as
+//     Client::GetID(), so every self-reference has to be mapped back before it
+//     reaches entity_list — the same fixup ZN_OP_BindWound needs.
+//
+//   * EQEmu's Handle_OP_RequestDuel dereferences entity_list.GetID() with no
+//     null check (zone/client_packet.cpp:13587) and Handle_OP_DuelDecline does
+//     the same (client_packet.cpp:6141).  A stale or bogus id off the wire is
+//     therefore a zone crash rather than a rejected packet, so both ids are
+//     resolved to live Clients here before anything is forwarded.
+// ============================================================
+void TrilogyZoneServer::HandleDuelCommand(const std::string& addr, int port, Session& s,
+                                          uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	TrilogyClient* tc = s.trilogy_client;
+
+	auto too_short = [&](uint32_t need, const char* what) -> bool {
+		if (plen >= need) return false;
+		LogInfo("[TrilogyDuel] char={} {} short packet plen={} (need {})",
+		        s.char_name, what, plen, need);
+		return true;
+	};
+
+	// Wire id -> EQEmu entity id.  Only the player's own id differs; every other
+	// spawn was published to this client under its real Client::GetID().
+	const uint32_t wire_self = static_cast<uint32_t>(tc->GetPlayerSpawnId());
+	const uint32_t emu_self  = static_cast<uint32_t>(tc->GetID());
+	auto to_emu_id = [&](uint32_t id) -> uint32_t {
+		return (id == wire_self) ? emu_self : id;
+	};
+
+	auto client_by_id = [](uint32_t id) -> Client* {
+		if (!id || id > 0xFFFF) return nullptr;
+		Entity* e = entity_list.GetID(static_cast<uint16>(id));
+		return (e && e->IsClient()) ? e->CastToClient() : nullptr;
+	};
+
+	switch (opcode) {
+
+	// --------------------------------------------------------------
+	// 0xcf20 — "I challenge you", and the duplicate the client also emits
+	// when it is ACCEPTING a challenge (see the opcode block).  Payload is
+	// { other, self }; Handle_OP_RequestDuel swaps the pair itself, so it is
+	// forwarded in wire order.
+	//
+	// The accept-time duplicate has to be a no-op, and is: by that point the
+	// accepter already has a duel target (set when the challenge came in),
+	// which is exactly the !GetDuelTarget() condition the handler refuses on.
+	// --------------------------------------------------------------
+	case ZN_OP_RequestDuel: {
+		if (too_short(sizeof(::Duel_Struct), "/duel")) return;
+
+		::Duel_Struct ds{};
+		memcpy(&ds, payload, sizeof(ds));
+		ds.duel_initiator = to_emu_id(ds.duel_initiator);   // the challenged player
+		ds.duel_target    = to_emu_id(ds.duel_target);      // the sender
+
+		Client* target = client_by_id(ds.duel_initiator);
+		if (!target || target == tc) {
+			// Most often a bot: v29c refuses to challenge anything it renders as
+			// an NPC, but Trilogy clients see bots as PCs (they are published
+			// through the player spawn path), so /duel on one gets this far.  The
+			// client has already printed "You have challenged X..." and latched
+			// g_duelPartner, and it has no timeout — dropping the packet here
+			// would leave that state set until the next /duel.  Answering with a
+			// refusal it can actually parse clears it and prints the decline
+			// line, which is the honest outcome: bots cannot duel.
+			LogInfo("[TrilogyDuel] char={} /duel: target id={} is not another player",
+			        s.char_name, ds.duel_initiator);
+
+			::DuelResponse_Struct refuse{};
+			refuse.target_id = emu_self;
+			refuse.entity_id = ds.duel_initiator;   // must match the client's g_duelPartner
+			refuse.unknown   = 0;                   // 0 = declined
+			auto* out = new EQApplicationPacket(OP_DuelDecline, sizeof(refuse));
+			memcpy(out->pBuffer, &refuse, sizeof(refuse));
+			tc->QueuePacket(out);
+			safe_delete(out);
+			return;
+		}
+		if (ds.duel_target != emu_self) {
+			LogInfo("[TrilogyDuel] char={} /duel: self id={} does not match entity {}",
+			        s.char_name, ds.duel_target, emu_self);
+			return;
+		}
+
+		LogInfo("[TrilogyDuel] char={} challenges {} (ids {} -> {})",
+		        s.char_name, target->GetCleanName(), emu_self, ds.duel_initiator);
+
+		EQApplicationPacket app(OP_RequestDuel, sizeof(ds));
+		memcpy(app.pBuffer, &ds, sizeof(ds));
+		tc->Handle_OP_RequestDuel(&app);
+		break;
+	}
+
+	// --------------------------------------------------------------
+	// 0x5d21 — "I accept".  Payload is { challenger, self }, which is the
+	// order Handle_OP_DuelAccept reads (duel_initiator, duel_target).  That
+	// handler is what actually starts the duel: it sets both sides dueling
+	// and echoes an OP_RequestDuel back to the challenger, whose client reads
+	// it as "your challenge was accepted" (v29c ignores inbound 0x5d21).
+	// --------------------------------------------------------------
+	case ZN_OP_DuelAccept: {
+		if (too_short(sizeof(::Duel_Struct), "/duel accept")) return;
+
+		::Duel_Struct ds{};
+		memcpy(&ds, payload, sizeof(ds));
+		ds.duel_initiator = to_emu_id(ds.duel_initiator);   // the challenger
+		ds.duel_target    = to_emu_id(ds.duel_target);      // the accepter (us)
+
+		Client* challenger = client_by_id(ds.duel_initiator);
+		if (!challenger || challenger == tc || ds.duel_target != emu_self) {
+			LogInfo("[TrilogyDuel] char={} accept: bad id pair {} / {}",
+			        s.char_name, ds.duel_initiator, ds.duel_target);
+			return;
+		}
+
+		LogInfo("[TrilogyDuel] char={} accepts a challenge from {}",
+		        s.char_name, challenger->GetCleanName());
+
+		EQApplicationPacket app(OP_DuelAccept, sizeof(ds));
+		memcpy(app.pBuffer, &ds, sizeof(ds));
+		tc->Handle_OP_DuelAccept(&app);
+		break;
+	}
+
+	// --------------------------------------------------------------
+	// 0xd020 — the refusal, in all four flavours: an explicit /decline
+	// (response 0), the automatic "already dueling" (1), "considering another
+	// duel" (2), and the auto-decline v29c sends when the challenger is on
+	// your ignore list (also 0).  Payload is { challenger, self, response }.
+	//
+	// This deliberately does NOT go through Client::Handle_OP_DuelDecline.
+	// That handler answers with MessageString(DUEL_DECLINE), and a text line
+	// is not what a v29c challenger needs: its own inbound 0xd020 handler
+	// (VA 0x4968be) is what prints the refusal — picking the wording from the
+	// response byte — AND clears g_duelPartner / g_duelAccepted.  Relaying the
+	// packet gives both; sending only the text would leave the challenger's
+	// client believing a duel is still pending, and the next challenge from
+	// the same player would then be misread as an acceptance.
+	//
+	// A non-Trilogy challenger has no 0xd020, so they get the string id
+	// instead — which is what EQEmu's own handler would have sent.
+	// --------------------------------------------------------------
+	case ZN_OP_DuelResponse: {
+		if (too_short(sizeof(::DuelResponse_Struct), "/decline")) return;
+
+		::DuelResponse_Struct dr{};
+		memcpy(&dr, payload, sizeof(dr));
+		dr.target_id = to_emu_id(dr.target_id);   // the challenger
+		dr.entity_id = to_emu_id(dr.entity_id);   // the decliner (us)
+
+		// The client only ever writes the LOW BYTE of the response field —
+		// every one of its four send sites does `mov BYTE PTR [ebp-0x4], n`
+		// over a stack slot it never cleared — so the upper three bytes are
+		// uninitialised junk.  Its own reader looks at byte 0 alone, so
+		// normalising here is lossless and keeps both the log line and the
+		// relayed packet readable.
+		dr.unknown &= 0xFF;
+
+		Client* challenger = client_by_id(dr.target_id);
+		if (!challenger || challenger == tc || dr.entity_id != emu_self) {
+			LogInfo("[TrilogyDuel] char={} decline: bad id pair {} / {}",
+			        s.char_name, dr.target_id, dr.entity_id);
+			return;
+		}
+
+		LogInfo("[TrilogyDuel] char={} declines {} (response={})",
+		        s.char_name, challenger->GetCleanName(), dr.unknown);
+
+		// Unwind only the pairing this refusal is actually about.  0xd020 is
+		// not just /decline: the client fires it automatically with response 1
+		// while it believes it is already dueling, and an unconditional clear
+		// there would end the duel the player is in rather than the one they
+		// are turning down.  A pending challenge is the state where both sides
+		// point at each other with IsDueling() still false — the pairing
+		// Handle_OP_RequestDuel set up — so that is what gets undone.
+		if (!challenger->IsDueling() && challenger->GetDuelTarget() == tc->GetID()) {
+			challenger->SetDuelTarget(0);
+		}
+		if (!tc->IsDueling() && tc->GetDuelTarget() == challenger->GetID()) {
+			tc->SetDuelTarget(0);
+		}
+
+		if (challenger->IsTrilogyClient()) {
+			auto* out = new EQApplicationPacket(OP_DuelDecline, sizeof(dr));
+			memcpy(out->pBuffer, &dr, sizeof(dr));
+			challenger->QueuePacket(out);
+			safe_delete(out);
+		} else {
+			challenger->MessageString(Chat::NPCQuestSay, DUEL_DECLINE, tc->GetCleanName());
+		}
+		break;
+	}
+
+	// --------------------------------------------------------------
+	// 0x5e21 — "the duel is over", sent by the winner's client when it sees
+	// its opponent die at its hand, and by either client when the opponent
+	// despawns mid-duel.  The client has already printed its own line and
+	// cleared its three duel globals by the time this arrives; all that is
+	// left is to make sure the server agrees, so the two stop being able to
+	// hit each other.
+	//
+	// On the death path Client::Death (zone/attack.cpp:1947) has normally
+	// cleared both sides already and this is a no-op — but the despawn path
+	// (opponent zoned, camped or went linkdead) has no server-side equivalent,
+	// and without it a duel could outlive the opponent leaving the zone.
+	// --------------------------------------------------------------
+	case ZN_OP_DuelFinished: {
+		if (too_short(sizeof(::Duel_Struct), "duel finished")) return;
+
+		::Duel_Struct ds{};
+		memcpy(&ds, payload, sizeof(ds));
+		const uint32_t opponent_id = to_emu_id(ds.duel_initiator);
+
+		LogInfo("[TrilogyDuel] char={} reports the duel with entity {} finished",
+		        s.char_name, opponent_id);
+
+		// Guarded on the reported opponent so a stale or replayed 0x5e21 cannot
+		// end an unrelated duel.  The opponent lookup is allowed to fail: the
+		// despawn case fires precisely because they are no longer in the zone,
+		// and our own side still has to be released.
+		if (tc->GetDuelTarget() != opponent_id) {
+			LogInfo("[TrilogyDuel] char={} duel-finished for entity {} but duel target is {} - ignored",
+			        s.char_name, opponent_id, tc->GetDuelTarget());
+			break;
+		}
+
+		tc->SetDueling(false);
+		tc->SetDuelTarget(0);
+
+		Client* opponent = client_by_id(opponent_id);
+		if (opponent && opponent != tc && opponent->GetDuelTarget() == tc->GetID()) {
+			opponent->SetDueling(false);
+			opponent->SetDuelTarget(0);
+		}
+		break;
+	}
+
+	default:
+		break;
+	}
 }
 
 // ============================================================
@@ -10555,6 +10879,14 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		sp.npc_armor_graphic = static_cast<int8_t>(0xFF); // PC — no NPC armor graphic
 		sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 		sp.anon              = static_cast<int8_t>(c->GetAnon());
+		// PVP flag (offset 079).  v29c uses it for the name colour: a PVP spawn
+		// renders dark/light red where a non-PVP one renders blue/purple
+		// (EQClassic eq_packet_structs.h:60).  EQClassic sets it the same way at
+		// spawn-build time (LS/zone/client.cpp:5909); the runtime toggle rides in
+		// on SpawnAppearance type 4, which v29c and EQEmu happen to number
+		// identically (SAT_PvP == AppearanceType::PVP), so it already passes
+		// through HandleOutgoingSpawnAppearance untouched.
+		sp.pvp               = static_cast<int8_t>(c->GetPVP(false) ? 1 : 0);
 		// LD flag (offset 085) so a client zoning in DURING someone's grace
 		// window sees the marker too, not just the observers who were present
 		// when the SpawnAppearance went out.  EQClassic stamps it the same way
@@ -10719,6 +11051,8 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	sp.npc_armor_graphic = static_cast<int8_t>(0xFF);
 	sp.npc_helm_graphic  = static_cast<int8_t>(0xFF);
 	sp.anon              = static_cast<int8_t>(c->GetAnon());
+	// PVP flag (offset 079) — see the SendZoneSpawns copy above.
+	sp.pvp               = static_cast<int8_t>(c->GetPVP(false) ? 1 : 0);
 	// LD flag (offset 085) — see the SendZoneSpawns copy above.
 	sp.LD = (c->IsTrilogyClient() &&
 	         static_cast<TrilogyClient*>(c)->IsLinkdead()) ? 1 : 0;
