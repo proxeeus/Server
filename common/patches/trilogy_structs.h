@@ -878,7 +878,7 @@ struct PlayerProfile_Struct
 /*2635*/	int8	unknown2635[109];			// 2635..2743.  Per the Mac layout this is texture / height / width / length / view_height / boat[32] / pad; none of it confirmed for v29c, and byte 2648 in particular must stay 0 (see above).
 /*2744*/	int8	autosplit;
 /*2745*/	int8	unknown2745[3];
-/*2748*/	int8	pvpEnabled;
+/*2748*/	int8	pk_acknowledge;				// NOT the PVP flag, despite EQClassic naming it `pvpEnabled`.  This is the byte the CLIENT writes when it answers the "ARE YOU SURE you wish to be player kill (Pkill)..." dialog (EQClassic PlayerProfile.h:113: "Harakiri Client sets this bit when sending OP_PKAcknowledge back with 1, player name does not go red tho").  Writing it server-side changes nothing the client renders or gates on; the live flag is `pvp` at 4171.
 /*2749*/	int8	unknown2749[15];
 /*2764*/	int8	gm;
 /*2765*/	int8	unknown2765[23];
@@ -907,7 +907,8 @@ struct PlayerProfile_Struct
 /*4164*/	int32	time_played_min;			// Total minutes played across all sessions, drives the "You have played this character for:" line in `/played`.  Confirmed 2026-08-15 by sigil probe (int32 sigil = 4164 planted here, client displayed "2 days, 21 hours and 24 minutes" = 4164 min).  Occupies the first 4 bytes of the former `unknown4164[6]` block, leaving 2 padding bytes before fatigue at 4170.
 /*4168*/	int8	unknown4168[2];				// Padding bytes between time_played_min and fatigue (formerly the tail of unknown4164[6]).
 /*4170*/	int8	fatigue;
-/*4171*/	int8	unknown4171[2];
+/*4171*/	int8	pvp;						// The client's own copy of the PVP flag, and the only PP byte it associates with PVP.  Pinned 2026-09-06 from eqgame.exe: the OP_SpawnAppearance type 4 (AppearanceType::PVP) handler at 0x493a64 writes the parameter byte to the mob object AND, when the mob is the local player, mirrors it to profile-object +0x1047 — which is PP byte 4171 (player-object offsets run 4 behind PP struct offsets; see the deity/guildid confirmations above).  Sits between `fatigue` and `anon`, exactly where the Mac and Titanium profiles put `pvp`.
+/*4172*/	int8	unknown4172;
 /*4173*/	int8	anon;
 /*4174*/	int8	unknown4174;
 /*4175*/	int8	guildrank;		// GUILDRANK: 0=Member, 1=Officer, 2=Leader

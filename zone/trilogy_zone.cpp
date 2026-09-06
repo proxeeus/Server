@@ -4639,11 +4639,39 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		SendApp(addr, port, s, ZN_OP_NewSpawn, ns_buf, sizeof(ns_buf));
 	}
 
-	// EQClassic Process_ClientConnection5 sends 0xc321 (8 zeroed bytes) immediately
-	// before the final 0xd820.
+	// 0xc321 is OP_LogServer, not the "unknown" EQClassic calls it (their
+	// eq_opcodes.h names it OP_SetServerFilterAck; EQMacEmu's Trilogy conf has
+	// the right name).  EQClassic Process_ClientConnection5 sends it with 8
+	// zeroed bytes immediately before the final 0xd820, and we copied that.
+	//
+	// The dword at offset 4 is the PVP ruleset — the same slot LogServer_Struct
+	// calls enable_pvp.  The v29c handler at 0x49be2c does `mov eax,[ebx+4]` and
+	// stores it to ds:0x596330, and the client's attack gate (0x4b2561) branches
+	// on that global to pick WHICH PVP model applies:
+	//
+	//   2  race teams   (Tallon/Vallon Zek) — compares race,  fn 0x4b2303
+	//   4  deity teams  (Sullon Zek)        — compares deity, fn 0x4b21fc
+	//   *  anything else, including 0       — per-player Discord flags, inline
+	//                                         at 0x4b295a: both spawns must have
+	//                                         pvp set, both level >= 6, and be
+	//                                         within 4 levels of each other
+	//
+	// Those two values line up 1:1 with RULE_INT(World, PVPSettings), which world
+	// already forwards to modern clients (world/client.cpp: l->enable_pvp), so
+	// forward the same rule here rather than hardcoding zero.  A blue server is
+	// unaffected — the rule defaults to 0 and 0 is the per-player-flag path,
+	// which is what we were already getting from the zeroed payload.
+	//
+	// Note that PVPSettings 1 (Rallos Zek) and 6 (Discord) have no arm in this
+	// client and degrade to the per-player-flag path.  That is right for Discord
+	// and wrong for Rallos; making free-for-all work would mean flagging every
+	// spawn, which is a separate change.
 	{
-		uint8_t unknown_8[8]{};
-		SendApp(addr, port, s, 0xc321, unknown_8, 8);
+		uint8_t log_server[8]{};
+		const uint32_t enable_pvp = static_cast<uint32_t>(RuleI(World, PVPSettings));
+		memcpy(log_server + 4, &enable_pvp, sizeof(enable_pvp));
+		LogInfo("[TrilogyZone] LogServer | char='{}' enable_pvp={}", s.char_name, enable_pvp);
+		SendApp(addr, port, s, 0xc321, log_server, sizeof(log_server));
 	}
 
 	// Final 0xd820 — matches EQClassic Process_ClientConnection5 exactly.
@@ -5350,14 +5378,20 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.birthday_time   = static_cast<int32_t>(Strings::ToUnsignedInt(row[28]));
 		pp.time_played_min = static_cast<int32_t>(Strings::ToUnsignedInt(row[29]));
 
-		// PVP flag.  v29c keeps its own copy at PP byte 2748 and uses it for the
-		// name-colour rule behind SAT_NameColor (EQClassic eq_packet_structs.h:60:
-		// PVP names render dark/light red where non-PVP ones render blue/purple),
-		// so leaving it zero made a flagged player look unflagged on their own
-		// character sheet even though the server was treating them as PVP.  The
-		// same value is stamped into every Spawn_Struct we build, which is what
-		// gives the OTHER players in the zone the correct colour.
-		pp.pvpEnabled      = static_cast<int8_t>(Strings::ToInt(row[30]) ? 1 : 0);
+		// PVP flag.  This was previously written to PP byte 2748 on EQClassic's
+		// `pvpEnabled` naming, which is the wrong byte: 2748 is where the CLIENT
+		// stores its answer to the Pkill confirmation dialog, and EQClassic's own
+		// header notes the name does not go red when it is set.  The byte v29c
+		// actually keeps the flag in is 4171 — the OP_SpawnAppearance type 4
+		// handler mirrors the parameter there for the local player.
+		//
+		// Neither byte is what gates combat.  The client's attack gate reads the
+		// per-mob copy at object+0xa0, which is fed by Spawn_Struct.pvp (offset
+		// 79) and by OP_SpawnAppearance type 4 — both already wired.  No reader of
+		// the PP byte turned up in the binary, so this write is layout parity: it
+		// keeps the profile we ship consistent with the one the client maintains,
+		// rather than leaving a live field zeroed under a wrong name.
+		pp.pvp             = static_cast<int8_t>(Strings::ToInt(row[30]) ? 1 : 0);
 
 		// Guild identity.  These two were never written, and that is not the
 		// cosmetic gap it looks like: the client gates /guildinvite,

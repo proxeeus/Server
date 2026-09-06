@@ -482,7 +482,7 @@ This is the most complex translation. Encode from EQEmu internal `PlayerProfile_
 | `cursor_platinum/…` | 2492–2504 | 4 × int32 |
 | `skills[74]` | 2508 | 74 bytes |
 | `autosplit` | 2744 | int8 |
-| `pvpEnabled` | 2748 | int8 |
+| `pk_acknowledge` | 2748 | int8 — client-written Pkill dialog answer, NOT the PVP flag |
 | `gm` | 2764 | int8 |
 | `discplineAvailable` | 2788 | int8 |
 | `hungerlevel` | 2812 | int32 |
@@ -496,6 +496,7 @@ This is the most complex translation. Encode from EQEmu internal `PlayerProfile_
 | `bank_cont_inv[80]` | 3996 | 80 × int16 bank container IDs |
 | `guildid` | 4158 | int16 |
 | `fatigue` | 4170 | int8 |
+| `pvp` | 4171 | int8 — the client's live PVP flag (mirrored from SpawnAppearance type 4) |
 | `anon` | 4173 | int8 |
 | `guildrank` | 4175 | GUILDRANK (int8) |
 | `drunkeness` | 4176 | int8 |
