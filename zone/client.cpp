@@ -670,8 +670,11 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	database.GetInventory(char_id, &m_inv);
 	m_inv.SetGMInventory((bool)m_pp.gm);
 
-	// Trilogy clients never send OP_SetServerFilter so ClientFilters[] stays
-	// zero-initialized (= FilterHide) unless we seed it here.  With FilterHide,
+	// Trilogy clients reach us through TrilogyZoneServer::HandleServerFilter
+	// (0xff21) rather than OP_SetServerFilter, and that only runs once the
+	// client has sent its Options panel state — so ClientFilters[] would stay
+	// zero-initialized (= FilterHide) for the whole zone-in unless seeded here.
+	// With FilterHide,
 	// QueueCloseClients drops every FilterNPCSpells / FilterPCSpells packet
 	// (OP_Action for spell effects, OP_Damage, OP_Death, etc.) before they even
 	// reach TranslateAndSend.  Set all filters to FilterShow so the Trilogy

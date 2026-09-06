@@ -225,10 +225,10 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 // The slot ORDER is documented nowhere: EQClassic declares this struct as
 // `int8 unknown[60]` (eq_packet_structs.h:1622) and never decodes it, and
 // EQEmu's SetServerFilter_Struct is a 29-entry array on its own ordering
-// (eqFilterType, eq_constants.h:736-764).  Mapping it by guesswork would
-// silently mis-filter real messages, which is worse than the current no-op —
-// so the slots were pinned empirically before anything was applied.  See
-// HandleServerFilter for the resulting map and the procedure that produced it.
+// (eqFilterType, eq_constants.h:736-764).  The order was pinned by walking the
+// Options panel; the VALUE semantics — which are not eqFilterMode, and which
+// slot 4 gates the whole packet — come from eqgame.exe.  See HandleServerFilter
+// for the map, the disassembly addresses behind it, and the /serverfilter gate.
 static constexpr uint16_t ZN_OP_SetServerFilter = 0xff21;
 static constexpr uint16_t ZN_OP_Assist         = 0x0022;
 static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21;
@@ -6470,45 +6470,75 @@ void TrilogyZoneServer::HandleChannelMessage(const std::string& addr, int port, 
 // toggle, so walking the Options panel top to bottom one click at a time
 // produced one CHANGED line per option, in panel order.  Result:
 //
-//   idx  Options panel label      EQEmu eqFilterType
-//    5   Guildchat                FilterGuildChat
-//    6   Socials                  FilterSocials
-//    7   Group chat               FilterGroupChat
-//    8   Shouts                   FilterShouts
-//    9   Auctions                 FilterAuctions
-//   10   OOC                      FilterOOC
-//   11   My misses                FilterMyMisses
-//   12   Other misses             FilterOthersMiss
-//   13   Other hits               FilterOthersHit
-//   14   Attacker missing me      FilterMissedMe
-//    2   PC Spells   (multi)      FilterPCSpells
-//    1   NPC Spells               FilterNPCSpells
-//    3   Bard songs  (multi)      FilterBardSongs
-//   --   Damage shields           NOT SENT (see below)
-//    0   never observed changing  unknown
-//    4   never observed changing  unknown
+//   idx  Options panel label   eqFilterType         v29c value semantics
+//    0   Damage shields        FilterDamageShields  0 show / 1 hide
+//    1   NPC spells            FilterNPCSpells      0 show / 1 hide
+//    2   PC spells             FilterPCSpells       0 ALL / 1 ME / 2 GRP / 3 OFF
+//    3   Bard songs            FilterBardSongs      0 ALL / 1 ME / 2 GRP / 3 OFF
+//    4   /serverfilter on|off  (gate — see below)   0 off  / 1 on
+//    5   Guildchat             FilterGuildChat      0 hide / 1 show
+//    6   Socials               FilterSocials              "
+//    7   Group chat            FilterGroupChat            "
+//    8   Shouts                FilterShouts               "
+//    9   Auctions              FilterAuctions             "
+//   10   OOC                   FilterOOC                  "
+//   11   My misses             FilterMyMisses             "
+//   12   Other misses          FilterOthersMiss           "
+//   13   Other hits            FilterOthersHit            "
+//   14   Attacker missing me   FilterMissedMe             "
 //
-// POLARITY: v29c's values pass through unchanged.  EQEmu splits filters into
-// two conventions (Client::ServerFilter's Filter0 macro = 1:show/0:hide, used
-// by the chat and miss filters; Filter1 = 0:show/1:hide, used by the spell
-// filters), and a fresh v29c client's defaults match both -- chat filters
-// default to 1, spell filters to 0, i.e. everything shown.  So the raw value
-// is already in EQEmu's units for each filter it maps to.
+// THE VALUES ARE NOT eqFilterMode.  This is the bug that shipped first: the raw
+// wire value was cast straight to eqFilterMode.  eqFilterMode is
+// { FilterHide=0, FilterShow=1, FilterShowGroupOnly=2, FilterShowSelfOnly=3 }
+// (eq_constants.h:768), while the wire value is the v29c option's state index —
+// and for the spell filters the two run OPPOSITE ways: 0 means SHOW on the wire
+// and HIDE as a mode.  The chat and miss filters happened to line up (0/1 means
+// hide/show in both), which is why only spell traffic broke and it went
+// unnoticed.  Every Trilogy client came out of zone-in with FilterNPCSpells and
+// FilterBardSongs = FilterHide, so QueueCloseClients dropped every NPC-cast
+// OP_Action / OP_Damage before the translation layer ever saw it — no
+// particles, no landing text, no debuff icon for anything a mob cast.  And a
+// client that asked to see ALL player spells (wire 0) got FilterPCSpells =
+// FilterHide for the same reason.  Translate per filter instead, the way
+// Client::ServerFilter (client.cpp:3531) does for every other client.
 //
-// PC Spells and Bard songs are multi-state and were observed stepping 0-3.
-// Their values pass through too; EQEmu reads 0=show, and the higher states are
-// the narrowing ones in both.
+// The four-state options are settled by eqgame.exe.  At 0x4464ff the panel
+// draws the PC-spells label from ds:0x6b6ee4: 0 -> "ALL", 1 -> "ME",
+// 2 -> "GRP", 3 -> "OFF".  The client's own message gate at 0x4c6ca6 reads the
+// same globals and confirms what those states mean:
 //
-// Damage shields is deliberately absent because the client does NOT send it.
-// The panel walk produced 13 CHANGED lines for 14 clicks, and an isolated
-// click on Damage shields alone then moved NOTHING: five packets arrived with
-// all 15 slots unchanged, against a baseline byte-identical to the previous
-// session's end state.  So v29c filters damage shields locally and never tells
-// the server.  Slots 0 and 4 were likewise never observed moving from any
-// panel toggle -- 13 of the 15 slots are all the Options panel drives.
+//   caster is an NPC       -> print only if NPC spells == 0
+//   caster is me           -> print unless PC spells == 3 (OFF)
+//   caster is a group mate -> print if PC spells is 0 (ALL) or 2 (GRP)
+//   any other PC           -> print only if PC spells == 0 (ALL)
+//
+// (Bard songs run the same ladder, gated on class 8.)  all/self/group/hide is
+// exactly how EQEmu already reads FilterBardSongs, so one translation serves
+// both four-state options.
+//
+// SLOT 4 IS THE /serverfilter GATE, not a filter.  eqgame.exe 0x4ac24b and
+// 0x4ac2ac are the "off" and "on" arms of the /serverfilter command handler,
+// writing 0 / 1 to ds:0x6b6424, which the packet builder at 0x4cf8a1 copies
+// into slot 4.  The client's own help text spells out the contract: "This
+// command will prevent you from receiving spell messages and combat hits.
+// Previously these messages were only filtered on the client, now they can be
+// filtered on the server."  The client ALWAYS filters locally; asking the
+// server to filter too is an opt-in bandwidth saving.  So with the gate off —
+// the default, and what eqclient.ini's ServerFilter=0 means — the server must
+// send everything and let the client decide.  Applying the panel values anyway
+// is how this handler hid messages from players who had explicitly told it not
+// to.
+//
+// SLOT 0 IS DAMAGE SHIELDS, contrary to the note this comment used to carry.
+// The panel-click handler at 0x45dc84 xors ds:0x6b6f00 and prints "You will now
+// / no longer see a message when other players are damaged by their damage
+// shield"; 0x4cf899 copies that global into slot 0.  The earlier "an isolated
+// click moved nothing" observation is unexplained, but the binary outranks it,
+// and every baseline seen so far has slot 0 at 0 (show), so mapping it changes
+// nothing today.
 //
 // Only the filters v29c actually reports are applied, via SetFilter, rather
-// than fabricating a full 29-entry SetServerFilter_Struct: the other 16
+// than fabricating a full 29-entry SetServerFilter_Struct: the other 15
 // filters have no v29c control and must keep their current values.
 // ============================================================
 void TrilogyZoneServer::HandleServerFilter(const std::string& addr, int port, Session& s,
@@ -6527,35 +6557,68 @@ void TrilogyZoneServer::HandleServerFilter(const std::string& addr, int port, Se
 	int32_t v[kTrilogyFilterCount] = {};
 	memcpy(v, payload, sizeof(v));
 
-	// v29c slot -> eqFilterType.  Damage shields is absent on purpose; see above.
-	struct FilterSlot { uint32_t idx; eqFilterType type; };
-	static const FilterSlot kMap[] = {
-		{  5, FilterGuildChat  },
-		{  6, FilterSocials    },
-		{  7, FilterGroupChat  },
-		{  8, FilterShouts     },
-		{  9, FilterAuctions   },
-		{ 10, FilterOOC        },
-		{ 11, FilterMyMisses   },
-		{ 12, FilterOthersMiss },
-		{ 13, FilterOthersHit  },
-		{ 14, FilterMissedMe   },
-		{  2, FilterPCSpells   },
-		{  1, FilterNPCSpells  },
-		{  3, FilterBardSongs  },
+	// How a slot's value is read.  It is the v29c option's state index, never an
+	// eqFilterMode — see the comment above.
+	enum class FilterUnits {
+		ShowFlag,  // 0 = hide, 1 = show                 (chat + miss filters)
+		HideFlag,  // 0 = show, 1 = hide                 (NPC spells, damage shields)
+		FourState, // 0 = ALL, 1 = ME, 2 = GRP, 3 = OFF  (PC spells, bard songs)
 	};
 
+	// v29c slot -> eqFilterType.  Slot 4 is the /serverfilter gate, handled below.
+	struct FilterSlot { uint32_t idx; eqFilterType type; FilterUnits units; };
+	static const FilterSlot kMap[] = {
+		{  0, FilterDamageShields, FilterUnits::HideFlag  },
+		{  1, FilterNPCSpells,     FilterUnits::HideFlag  },
+		{  2, FilterPCSpells,      FilterUnits::FourState },
+		{  3, FilterBardSongs,     FilterUnits::FourState },
+		{  5, FilterGuildChat,     FilterUnits::ShowFlag  },
+		{  6, FilterSocials,       FilterUnits::ShowFlag  },
+		{  7, FilterGroupChat,     FilterUnits::ShowFlag  },
+		{  8, FilterShouts,        FilterUnits::ShowFlag  },
+		{  9, FilterAuctions,      FilterUnits::ShowFlag  },
+		{ 10, FilterOOC,           FilterUnits::ShowFlag  },
+		{ 11, FilterMyMisses,      FilterUnits::ShowFlag  },
+		{ 12, FilterOthersMiss,    FilterUnits::ShowFlag  },
+		{ 13, FilterOthersHit,     FilterUnits::ShowFlag  },
+		{ 14, FilterMissedMe,      FilterUnits::ShowFlag  },
+	};
+
+	static constexpr uint32_t kServerFilterGateSlot = 4;
+	const bool gate_on = (v[kServerFilterGateSlot] != 0);
+
 	for (const auto& m : kMap) {
-		// Values are already in EQEmu's units for each filter (see the polarity
-		// note above), so the raw value indexes eqFilterMode directly.  Clamp
-		// anyway: a value outside the enum would be an out-of-range write.
-		int32_t val = v[m.idx];
-		if (val < 0 || val > FilterShowSelfOnly) {
+		// /serverfilter off: the client filters locally and has asked the server
+		// not to.  Send it everything.
+		if (!gate_on) {
+			s.trilogy_client->SetFilter(m.type, FilterShow);
+			continue;
+		}
+
+		const int32_t val = v[m.idx];
+		if (val < 0 || val > 3) {
 			LogInfo("[TrilogyZone] ServerFilter: char={} idx={} out-of-range value {} — ignored",
 			        s.char_name, m.idx, val);
 			continue;
 		}
-		s.trilogy_client->SetFilter(m.type, static_cast<eqFilterMode>(val));
+
+		eqFilterMode mode = FilterShow;
+		switch (m.units) {
+			case FilterUnits::ShowFlag:
+				mode = val ? FilterShow : FilterHide;
+				break;
+			case FilterUnits::HideFlag:
+				mode = val ? FilterHide : FilterShow;
+				break;
+			case FilterUnits::FourState:
+				mode = (val == 0) ? FilterShow
+				     : (val == 1) ? FilterShowSelfOnly
+				     : (val == 2) ? FilterShowGroupOnly
+				     :              FilterHide;
+				break;
+		}
+
+		s.trilogy_client->SetFilter(m.type, mode);
 	}
 
 	if (!s.filters_seen) {
