@@ -1930,14 +1930,31 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 			m, static_cast<int>(p->animation));
 	}
 
-	// Throttle gate — but bypass if anim_type differs from the last cached
-	// value for this spawn (state transition).  Transitions need immediate
-	// delivery; the throttle is only there to cap steady-state rate.
+	// Velocity hint, computed here rather than at the encode site below so a
+	// change in it can bypass the throttle alongside anim_type.  See the
+	// EncodeTrilogyDelta call for why this comes from the observed client
+	// rather than from p->delta_*.
+	int32_t rel_dx = 0, rel_dy = 0, rel_dz = 0;
+	if (m->IsClient() && m->CastToClient()->IsTrilogyClient()) {
+		static_cast<TrilogyClient*>(m->CastToClient())
+			->GetSelfReportedDelta(now_ms, rel_dx, rel_dy, rel_dz);
+	}
+
+	// Throttle gate — but bypass if anim_type or the velocity differs from
+	// the last cached value for this spawn (state transition).  Transitions
+	// need immediate delivery; the throttle is only there to cap steady-state
+	// rate.  Velocity has to be in this test for the same reason anim is:
+	// v29c keeps extrapolating from the last delta it received, so a jump's
+	// "back to zero" update arriving a throttle interval late would have the
+	// observed player still climbing after they have landed.
 	auto cache_it = m_movement_anim_cache.find(static_cast<uint16_t>(spawn_id));
-	const bool anim_changed =
+	const bool state_changed =
 		(cache_it == m_movement_anim_cache.end()) ||
-		(cache_it->second.anim != upd.anim_type);
-	if (!anim_changed) {
+		(cache_it->second.anim != upd.anim_type) ||
+		(cache_it->second.dx   != rel_dx) ||
+		(cache_it->second.dy   != rel_dy) ||
+		(cache_it->second.dz   != rel_dz);
+	if (!state_changed) {
 		auto it = m_mob_update_last.find(spawn_id);
 		if (it != m_mob_update_last.end() && now_ms - it->second < kMinIntervalMs)
 			return;
@@ -1949,47 +1966,37 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	// patrol NPCs with "run" or running Playerbots with "walk" via its
 	// IsEngaged()-based heuristic.  Cache age-bounded inside the getter.
 	m_movement_anim_cache[static_cast<uint16_t>(spawn_id)] =
-		MovementAnim{ upd.anim_type, now_ms };
+		MovementAnim{ upd.anim_type, now_ms, rel_dx, rel_dy, rel_dz };
 
-	// Per-tick velocity vector from EQEmu's MobMovementManager (filled by
-	// FillCommandStruct → FloatToEQ13(delta) = delta * 64).  Titanium
-	// client consumes these same delta_x/y/z values to interpolate
-	// position between OP_ClientUpdate broadcasts — that's why Titanium
-	// NPCs look smooth on the same server that produces jaggy NPCs on
-	// v29c.  Pass through directly into the v29c 10-bit signed bitfield
-	// (PackDelta10 clamps to [-512, 511]; typical run velocities encode
-	// to ~45, well within range; only fall/knockback would clamp).
+	// Velocity hint.  The 2026-06-27 "2× FloatToEQ13" experiment that used
+	// to live here was scaffolding for a scale question the client binary
+	// has now answered outright: the wire value is EQ-units-per-tick × 16,
+	// encoder at eqgame.exe 0x4a36b4 and decoder at 0x4a3807, and the two
+	// constants are exact reciprocals (16.0 at ds:0x535638, 0.0625 at
+	// ds:0x5356b4).  There is no scale left to guess at, so the guess is
+	// gone with it.
 	//
-	// Why this isn't the prior "strafing" failure:  earlier attempts in
-	// SendMobHeartbeat computed a fake delta from heading × speed via
-	// kVelocityWireScale, which strafed because the rendered heading
-	// direction diverged from the actual server motion vector on any
-	// tick with z-correction or sub-degree pathing drift.  EQEmu's
-	// MovementManager-fed delta IS the actual motion vector the server's
-	// pathing code is using, so direction matches by construction — the
-	// v29c client's extrapolation lands on the server's next-tick
-	// position rather than drifting off-axis.  This is the event-driven
-	// path; SendMobHeartbeat's polled fallback keeps delta=0 for
-	// stationary mobs (which is correct — no extrapolation hint needed
-	// when there's no motion).
-	// EXPERIMENT 2026-06-27: 2× delta magnitude to test whether v29c
-	// expects a different fixed-point scale than Titanium's FloatToEQ13
-	// (×64).  If v29c internally divides incoming delta by, say, 128
-	// instead of 64, our raw FloatToEQ13 values would render as half
-	// the actual velocity — client extrapolates at half server speed
-	// and we observe a forward snap every broadcast.  Doubling here
-	// tests that hypothesis.  PackDelta10 clamps to ±511, so typical
-	// walk/run values (45/90 baseline → 90/180 doubled) stay in range;
-	// only severe knockback/fall would clamp.
-	TrilogyZoneServer::EncodeTrilogyDelta(&upd,
-	                                      static_cast<int32_t>(p->delta_x) * 2,
-	                                      static_cast<int32_t>(p->delta_y) * 2,
-	                                      static_cast<int32_t>(p->delta_z) * 2);
+	// For an observed Trilogy PC we relay the velocity the moving client
+	// reported for itself, verbatim.  p->delta_* cannot serve here: the
+	// Trilogy inbound path calls SetPosition() and never writes Mob::m_Delta,
+	// so those are always zero for a v29c player and the observer gets no
+	// extrapolation hint at all.  The visible symptom is jumps — v29c
+	// reports a jump as a SINGLE raised-Z sample carrying an upward delta_z
+	// (measured 13-18 raw, i.e. 0.8-1.1 units/tick), so dropping the delta
+	// turns a one-second arc into one teleport up and one back down while
+	// the jump animation plays out on the ground underneath it.
+	//
+	// Deliberately NOT extended to NPCs: kVelocityWireScale stays 0 and the
+	// server-derived case stays off.  The difference is that this value is
+	// not derived — it is the client's own measurement of its own motion, so
+	// it cannot diverge in direction from what that client is actually
+	// doing, which is the failure the earlier NPC experiments hit.
+	TrilogyZoneServer::EncodeTrilogyDelta(&upd, rel_dx, rel_dy, rel_dz);
 
 	// Dedup within the current Tick's flush window: if this spawn_id is
 	// already queued, replace its entry in place so only the freshest state
 	// hits the wire.  The 250ms per-mob throttle above caps *steady-state*
-	// rate, but the anim_changed bypass right below the throttle lets state
+	// rate, but the state_changed bypass right below the throttle lets state
 	// transitions through unthrottled — under a 70-bot follow on the move,
 	// bots frequently flip walk↔run to match owner speed, so a single Tick
 	// can accumulate 2-3 updates per spawn.  Dedup collapses those to one
