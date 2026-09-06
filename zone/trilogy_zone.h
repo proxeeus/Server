@@ -776,6 +776,12 @@ private:
 	                     const uint8_t* payload, uint32_t plen);
 	void HandleMemorizeSpell(const std::string& addr, int port, Session& s,
 	                         const uint8_t* payload, uint32_t plen);
+	// Spell-book reordering (0xce21, bidirectional).  Self-contained rather
+	// than routed through Client::Handle_OP_SwapSpell because the stock handler
+	// has three early returns that send nothing, and a v29c client that gets no
+	// reply to a swap request wedges its spell book until the player zones.
+	void HandleSwapSpell(const std::string& addr, int port, Session& s,
+	                     const uint8_t* payload, uint32_t plen);
 	void HandleZoneChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	// Resurrection answer (client -> zone).  Translates v29c's 160B

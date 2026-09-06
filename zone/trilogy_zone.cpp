@@ -374,6 +374,13 @@ static constexpr uint16_t ZN_OP_Buff          = 0x3221; // bidirectional: Buff_S
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
 
+// 0xce21 OP_SwapSpell — spell-book reordering, bidirectional, 8 bytes.
+// Client sends {from_slot, to_slot} on the second right-click of a swap
+// gesture, then blocks further pick-ups until the server echoes the packet
+// back; only the echo makes the client swap its own spell_book[] entries.
+// See the SwapSpell_Struct banner in trilogy_structs.h for the full contract.
+static constexpr uint16_t ZN_OP_SwapSpell     = 0xce21; // bidirectional: SwapSpell_Struct (8 bytes)
+
 // Door opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_SpawnDoor   = 0x9520; // zone -> client: Door_Struct (44 bytes), one packet per door
@@ -2426,6 +2433,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleCastSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
 			HandleMemorizeSpell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_SwapSpell && s.trilogy_client)
+			HandleSwapSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Camp && s.trilogy_client && !s.camping) {
 			// Diagnostic only — the client owns the 30 s countdown and
 			// signals completion via ZN_OP_DeleteSpawn (0x5021).  See the
@@ -14127,6 +14136,117 @@ void TrilogyZoneServer::HandleMemorizeSpell(const std::string& addr, int port, S
 
 	s.trilogy_client->Handle_OP_MemorizeSpell(app);
 	delete app;
+}
+
+// ============================================================
+// HandleSwapSpell — client sent 0xce21 (SwapSpell_Struct, 8 bytes).
+//
+// v29c reorders a spell book with a two-click gesture: right-click a scribe
+// slot to pick it up ("Right click on another Scribe Slot in your Spell Book
+// to swap this Spell position with the new one."), then right-click the slot
+// it should move to.  On that second click the client sends {from, to} and
+// parks itself in a swap-pending state — eqgame.exe 0x462019 sends the packet
+// and 0x462027 immediately writes -2 into its pending-slot field.  It does not
+// touch its own spell_book[] array.
+//
+// The reply is what performs the move client-side.  The v29c inbound handler
+// (eqgame.exe 0x49bd86) swaps its own spell_book[from] and spell_book[to],
+// prints "Swapping Spell Book Scribe slots." and clears the pending field.
+// A reply carrying a negative slot takes the client's own reject path at
+// 0x49bdd6: pending field cleared, nothing moved.
+//
+// So every request has to be answered, invalid ones included.  Dropping the
+// packet leaves the pending field at -2, and the pick-up path bails out on any
+// non-negative value (0x461fe9 `test eax,eax / jl`), so the spell book stops
+// responding to right-clicks for the rest of the session.  Having no handler
+// at all is what made Trilogy spell books append-only.
+//
+// Blank slots are legal on both sides — the client happily picks up an empty
+// scribe slot (no emptiness check at 0x461f60), and dragging a gap onto a
+// spell is how a book gets compacted.  Server-side a blank slot is
+// 0xFFFFFFFF in m_pp.spell_book and simply no row in `character_spells`.
+//
+// Persistence has to touch both: in-session server logic reads m_pp.spell_book
+// (HasSpellScribed, memorize validation), but the Trilogy zone-in profile is
+// rebuilt straight from `character_spells` in SendPlayerProfile, so a swap
+// that only updated m_pp would silently revert on the next zone.
+// ============================================================
+
+void TrilogyZoneServer::HandleSwapSpell(const std::string& addr, int port, Session& s,
+                                        const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::SwapSpell_Struct)) {
+		LogInfo("[TrilogyZone] SwapSpell: char={} short packet plen={} (need {})",
+		        s.char_name, plen,
+		        static_cast<unsigned>(sizeof(Trilogy::structs::SwapSpell_Struct)));
+		return;
+	}
+
+	const auto* tri = reinterpret_cast<const Trilogy::structs::SwapSpell_Struct*>(payload);
+	const int32_t from_slot = tri->from_slot;
+	const int32_t to_slot   = tri->to_slot;
+
+	// Answer every request.  A negative pair is the client's cancel path — it
+	// releases the pending state without moving anything.
+	const auto reply = [&](int32_t from, int32_t to) {
+		Trilogy::structs::SwapSpell_Struct out{};
+		out.from_slot = from;
+		out.to_slot   = to;
+		SendApp(addr, port, s, ZN_OP_SwapSpell,
+		        reinterpret_cast<const uint8_t*>(&out),
+		        static_cast<uint32_t>(sizeof(out)));
+	};
+
+	const int32_t book_size = static_cast<int32_t>(Trilogy::structs::SPELL_BOOK_SIZE);
+
+	if (from_slot < 0 || from_slot >= book_size ||
+	    to_slot   < 0 || to_slot   >= book_size) {
+		LogInfo("[TrilogyZone] SwapSpell: char={} rejected out-of-range from={} to={} (book={})",
+		        s.char_name, from_slot, to_slot, book_size);
+		reply(-1, -1);
+		return;
+	}
+
+	if (from_slot == to_slot) {
+		// Dropped back onto the slot it came from.  Nothing to move, but the
+		// client is still waiting to be released.
+		reply(-1, -1);
+		return;
+	}
+
+	auto& pp = s.trilogy_client->GetPP();
+
+	const uint32 from_spell = pp.spell_book[from_slot];
+	const uint32 to_spell   = pp.spell_book[to_slot];
+
+	if (from_spell == 0xFFFFFFFFu && to_spell == 0xFFFFFFFFu) {
+		// Two blank slots — nothing to persist, just release the client.
+		reply(-1, -1);
+		return;
+	}
+
+	pp.spell_book[from_slot] = to_spell;
+	pp.spell_book[to_slot]   = from_spell;
+
+	// SaveCharacterSpell refuses an invalid spell id, which is how a slot that
+	// just went blank gets its `character_spells` row removed instead of
+	// keeping the stale one.  Same pattern as Client::Handle_OP_SwapSpell.
+	const uint32 char_id = s.trilogy_client->CharacterID();
+	if (!database.SaveCharacterSpell(char_id, pp.spell_book[from_slot], from_slot)) {
+		database.DeleteCharacterSpell(char_id, from_slot);
+	}
+	if (!database.SaveCharacterSpell(char_id, pp.spell_book[to_slot], to_slot)) {
+		database.DeleteCharacterSpell(char_id, to_slot);
+	}
+
+	LogInfo("[TrilogyZone] SwapSpell: char={} slot {} (spell {}) <-> slot {} (spell {})",
+	        s.char_name,
+	        from_slot, (from_spell == 0xFFFFFFFFu) ? 0 : from_spell,
+	        to_slot,   (to_spell   == 0xFFFFFFFFu) ? 0 : to_spell);
+
+	// The echo is what actually moves the spells in the client's own book.
+	reply(from_slot, to_slot);
 }
 
 // ============================================================
