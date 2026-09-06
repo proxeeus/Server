@@ -1497,6 +1497,8 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		existing.gsq        = 0;
 		existing.arq        = 0;
 		existing.acked_arq  = 0;
+		existing.last_rx_arq      = 0;
+		existing.have_last_rx_arq = false;
 		existing.asq_hi     = 1;
 		existing.asq_lo     = 0;
 		existing.ack_due    = false;
@@ -1534,6 +1536,65 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 
 	LogNetcode("[TrilogyZone] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} plen={} state={}",
 	        hdr0, hdr1, has_arq, cli_arq, opcode, plen, static_cast<int>(session.state));
+
+	// ---- ARQ retransmit handling ------------------------------------------
+	//
+	// v29c resends a reliable packet when it has not seen our ACK, and the
+	// resend carries the SAME arq.  Two things follow.  The fragment path
+	// above already does both; this is that logic applied to whole packets,
+	// not a new design.
+	//
+	// 1. ACK before dispatching.  The ACK used to go out at the tail of
+	//    OnOpcode's CONNECTED branch, or piggybacked on whatever the handler
+	//    sent first — which puts handler latency inside the client's
+	//    retransmit window.  A GM command doing an item-table search, or
+	//    #summonitem building a 292-byte OP_SummonedItem behind a dozen
+	//    hex-dump log lines, overran it: measured in a live session where
+	//    three of four commands arrived twice and the one fast command did
+	//    not.  Acknowledging up front takes processing time out of that loop.
+	//
+	//    CONNECTED only, deliberately.  Each CONNECTING state decides when to
+	//    ACK as part of a handshake whose pacing is load-bearing — echoing
+	//    0x9220 too late races ZoneSpawns and crashes the client — and none of
+	//    those handlers is slow enough to provoke a retransmit anyway.  Not
+	//    worth perturbing to fix a problem that only exists in CONNECTED.
+	//
+	// 2. Skip the duplicate regardless of state.  Early-ACKing makes
+	//    retransmits rare, not impossible: on a real link the ACK itself gets
+	//    lost and the client is right to resend.  Dropping the re-dispatch is
+	//    the correctness half, and it belongs here rather than in each
+	//    handler — the Trilogy handlers and the Client::Handle_* they forward
+	//    into were all written assuming one delivery, and every one that
+	//    mutates state on receipt is exposed.  OP_LootItem was patched
+	//    individually for exactly this in #16.
+	//
+	//    A skipped duplicate must still be ACKed: the missing ACK is why the
+	//    client resent, and in the CONNECTING states the handler we are
+	//    skipping is what would otherwise have sent it.  Without that the
+	//    handshake would resend forever.
+	//
+	// Equality only, never a range comparison, so the 16-bit wrap needs no
+	// special case — a false positive would require two consecutive reliable
+	// packets carrying the same arq, which is the definition of a retransmit.
+	// Unreliable traffic (has_arq false: position updates and the like) is
+	// never deduplicated; it carries no sequence to compare, and two genuine
+	// updates in a row must both be processed.
+	if (session.state == CONNECTED && session.ack_due) {
+		SendAck(addr, port, session);
+	}
+
+	if (has_arq) {
+		if (session.have_last_rx_arq && session.last_rx_arq == cli_arq) {
+			if (session.ack_due) SendAck(addr, port, session);
+			LogInfo("[TrilogyZone] rx DUPLICATE arq={:04X} opcode={:04X} plen={} state={} — "
+			        "retransmit of a packet already dispatched; skipping handler",
+			        cli_arq, opcode, plen, static_cast<int>(session.state));
+			return;
+		}
+		session.last_rx_arq      = cli_arq;
+		session.have_last_rx_arq = true;
+	}
+
 	OnOpcode(addr, port, session, opcode, payload, plen);
 }
 
