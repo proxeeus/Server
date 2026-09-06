@@ -440,6 +440,9 @@ private:
 	void HandleOutgoingYellForHelp(const EQApplicationPacket* app);
 	void HandleOutgoingRandomReply(const EQApplicationPacket* app);
 	void HandleOutgoingConsentResponse(const EQApplicationPacket* app);
+	// Duels — OP_RequestDuel (0xcf20) and OP_DuelDecline (0xd020); OP_DuelAccept
+	// is accepted here and dropped, because v29c discards inbound 0x5d21.
+	void HandleOutgoingDuel(const EQApplicationPacket* app);
 	// Guild responses.  The invite popup has a real v29c opcode; the MOTD does
 	// not and is rendered as guild-channel chat, the way EQClassic does it.
 	// The guilds list is re-sent as the same 0x9221 table world builds at

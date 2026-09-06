@@ -743,6 +743,15 @@ private:
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
 
+	// Duels: /duel (challenge and accept), /decline, the client's automatic
+	// "I'm busy" responses, and its end-of-duel notification.  v29c drives most
+	// of the duel UI from three client-side globals and only needs the server to
+	// relay the challenge, mirror the accept back, and keep SetDueling /
+	// SetDuelTarget in step so IsAttackAllowed lets the two fight.  See the
+	// opcode block at the top of trilogy_zone.cpp for the full state machine.
+	void HandleDuelCommand(const std::string& addr, int port, Session& s,
+	                       uint16_t opcode, const uint8_t* payload, uint32_t plen);
+
 	// Guild management: /guildinvite, the invite answer, /guildremove,
 	// /guildmotd, /guildleader, /guilddelete and the two guild-war commands.
 	// Same translate-and-dispatch shape as the social batch — guild_mgr and the
