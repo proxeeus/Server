@@ -110,7 +110,21 @@ void command_summonitem(Client *c, const Seperator *sep)
 		// at slot 33 / 8000-8010 while the client cursor is visually empty.
 		// Purge any such orphans so PickSummonTargetSlot + CheckLoreConflict
 		// see the same "empty cursor" state the GM does.
-		tc->PurgeStaleCursorRowsForItem(item_id);
+		//
+		// Lore items only.  The purge deletes by item id and cannot tell a
+		// stranded row from one the player is legitimately holding, so on
+		// anything else it is pure loss: a second #si of the same id deletes
+		// the first copy's row while the client still renders the item, and
+		// every later operation on it — drop, pick up, scribe — then runs
+		// against a slot with no row behind it.  Nothing is gained either,
+		// because CheckLoreConflict is the only thing the purge exists to get
+		// past and it refuses lore items exclusively (same predicate as
+		// TrilogyClient::CheckLoreConflict).  A busy cursor needs no help
+		// here: PickSummonTargetSlot already falls through to a free general
+		// or bag-content slot on its own.
+		if (item->LoreFlag && item->LoreGroup != 0) {
+			tc->PurgeStaleCursorRowsForItem(item_id);
+		}
 		const int picked = tc->PickSummonTargetSlot();
 		if (picked < 0) {
 			c->Message(
