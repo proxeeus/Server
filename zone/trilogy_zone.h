@@ -181,6 +181,13 @@ private:
 		uint8_t     asq_hi    = 1;
 		uint8_t     asq_lo    = 0;
 		uint16_t    cli_arq   = 0;
+		// Last client ARQ sequence actually dispatched to OnOpcode, and whether
+		// one has been seen yet.  v29c resends a reliable packet when it has not
+		// seen our ACK, and a resend carries the SAME arq — so without this the
+		// retransmit runs the handler a second time.  Equality only, never a
+		// range comparison, so the 16-bit wrap needs no special case.
+		uint16_t    last_rx_arq      = 0;
+		bool        have_last_rx_arq = false;
 		// EQClassic-style outbound-pending throttle: client cumulatively acks our ARQs
 		// via ARSP header field; we keep the highest seen value here so SendApp can
 		// gate on (s.arq - s.acked_arq) and avoid the v29c gap-16 buffered-packet
