@@ -122,6 +122,7 @@ private:
 	                      const uint8_t* payload, uint32_t plen);
 
 	void SendTimeOfDay(const std::string& addr, int port, Session& s);
+	void SendServerMOTD(const std::string& addr, int port, Session& s);
 	void SendZoneServerInfo(const std::string& addr, int port, Session& s, ZoneServer* zs);
 	void CheckPendingZoneEntry(const std::string& addr, int port, Session& s);
 
