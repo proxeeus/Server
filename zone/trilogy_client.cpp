@@ -2996,8 +2996,8 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 //   int32  z
 //   string message     actual text
 //
-// EQEmu Chat::* ≥ 256 and EQClassic MESSAGETYPE_* share the same values.
-// EQEmu Chat::* 0-255 (raw color codes) map to MESSAGETYPE_Broadcasts (269).
+// EQEmu Chat::* 256-289 and the v29c user colors share the same values.
+// EQEmu Chat::* 0-20 are raw color codes and pass through unchanged.
 // ============================================================
 
 // Map EQEmu Chat::* type to a v29c OP_SpecialMesg msg_type value.
@@ -3005,31 +3005,44 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 // MESSAGETYPE_* (256+).  EQEmu Chat::* values fall into three buckets:
 //   - 0-20:    raw color codes (Chat::Yellow=15, Chat::Red=13).  Pass through;
 //              v29c renders these as that color directly.
-//   - 256+:    EQClassic MESSAGETYPE_* (Say/Tell/Skills/...).  Pass through;
-//              v29c knows MT_Say..MT_Disciplines (256-271).  Modern EQEmu types
-//              beyond that range (Chat::Experience=334, Chat::SpellFailure=289)
-//              with no v29c equivalent are remapped to the matching raw color
-//              via the switch.
-//   - 21-255: undefined.  Default to MT_Broadcasts (269) so text stays visible.
+//   - 256-289: user colors (MESSAGETYPE_Say..).  Pass through; v29c holds 34 of
+//              them.  Modern EQEmu types beyond that range with no v29c
+//              equivalent (Chat::Experience=334, Chat::PetResponse=337) are
+//              remapped through the switch.
+//   - 21-255: undefined.  Fall through to the out-of-range rule below.
 static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
 {
 	switch (chat_type) {
-		case 334: return 15; // Chat::Experience  → YELLOW (matches EQClassic Message(15,...))
-		case 289: return 13; // Chat::SpellFailure → RED
+		case 334: return 15;  // Chat::Experience  → YELLOW (matches EQClassic Message(15,...))
+		case 289: return 13;  // Chat::SpellFailure → RED
+		// Chat::PetResponse (337) is a modern-only channel: v29c has no pet
+		// user colour, and a pet answering an order is simply a mob talking.
+		// Render it as NPC speech, which is also what the client itself does
+		// with an index this far out of range (see the clamp below).
+		case 337: return 256; // Chat::PetResponse → MESSAGETYPE_Say
 	}
 	if (chat_type <= 20u) return chat_type; // raw v29c color
 
-	// MESSAGETYPE_* is a CLOSED range: EQClassic defines 256 (MT_Say) through
-	// 271 (Common/Include/MessageTypes.h) and nothing above it.  This used to
-	// pass every value >= 256 through unchecked, which meant any modern Chat::
-	// constant above 271 reached the client as a message type it does not know
-	// and was dropped -- silently, and only for those messages, so it read as
-	// "that one command does nothing".  Chat::MoneySplit (285) hid both /split
-	// confirmations that way.  Bound the range instead of hand-patching types
-	// into the switch above one report at a time.
-	if (chat_type >= 256u && chat_type <= 271u) return chat_type;
+	// The real bound comes from the client, not from EQClassic's header.
+	// eqgame.exe resolves a type >= 256 as user-colour index (type - 256)
+	// (0x48d452 `sub eax,0x100` → call GetUserColor) and GetUserColor at
+	// 0x40bb3f CLAMPS that index:
+	//
+	//     cmp eax,0x21 / jg clamp / test eax,eax / jge ok / clamp: xor eax,eax
+	//
+	// So there are 34 user colours, 256..289 — WIDER than the 256-271 listed in
+	// EQClassic's Common/Include/MessageTypes.h — and an out-of-range type is
+	// NOT dropped: it renders in user colour 0, i.e. MESSAGETYPE_Say.
+	//
+	// This function used to assume the opposite (closed at 271, out-of-range
+	// dropped) and mapped everything above it to MT_Broadcasts (269) to keep it
+	// "visible".  269 is a real, distinct colour — yellow — so that turned every
+	// modern-only Chat:: type yellow instead of leaving it as the plain speech
+	// the client had been painting all along.  Chat::PetResponse was the loud
+	// case: every /pet order answered in yellow.  Mirror the client instead.
+	if (chat_type >= 256u && chat_type <= 289u) return chat_type;
 
-	return 269u; // MESSAGETYPE_Broadcasts — visible white fallback
+	return 256u; // out of range — v29c clamps to user colour 0 (MESSAGETYPE_Say)
 }
 
 // Resolve a handful of common system string-ids (faction / experience / level) to
@@ -3253,8 +3266,13 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 1171:  return "I cannot abide you or your actions against all that is right..BE GONE!"; // WONT_SELL_DEEDS6
 		case 1199:  return "I don't have time for that now.";                        // MERCHANT_CLOSED_ONE
 		case 1201:  return "I am not open for business right now.";                  // MERCHANT_CLOSED_THREE
-		case 5501:  return "%1 tells you, 'Attacking %2 Master.'";                   // PET_ATTACKING
-		case 555:   return "%1 tells you, 'I am unable to wake %2, master.'";        // CANNOT_WAKE
+		// These two are the only pet lines whose live template frames the pet as
+		// telling you something rather than saying it ("%1 tells you, '...'").
+		// On v29c the pet is an NPC standing next to you, so it talks like one —
+		// every order gets the same "<Pet> says '...'" shape as the SayString
+		// responses above, rather than switching voice depending on the order.
+		case 5501:  return "%1 says 'Attacking %2 Master.'";                         // PET_ATTACKING
+		case 555:   return "%1 says 'I am unable to wake %2, Master.'";              // CANNOT_WAKE
 		case 9263:  return "No longer focusing on one target, Master.";              // PET_NOT_FOCUSING
 		case 9264:  return "Not casting spells, Master.";                            // PET_NOT_CASTING
 		// Duels.  v29c prints every message a duel PARTICIPANT sees from its own
@@ -3286,6 +3304,39 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 552:   return "You are now player kill and follow the ways of Discord."; // PVP_ON
 		default:    return nullptr;
 	}
+}
+
+// Pet responses that reach us as a plain string id instead of through
+// Mob::SayString — they are built by Client::MessageString in
+// Handle_OP_PetCommands, so nothing prefixes the speaker the way the
+// GENERIC_STRINGID_SAY (554) template "%1 says '%T2'" does.  Without a name
+// they arrive as a disembodied sentence ("Taunting attacker, Master.") with no
+// clue which mob said it.
+static bool IsPetSpeechNeedingSpeaker(uint32_t string_id)
+{
+	switch (string_id) {
+		case 438:  // PET_TAUNTING
+		case 488:  // PET_REPORT_HP
+		case 489:  // PET_NO_TAUNT
+		case 490:  // PET_DO_TAUNT
+		case 9263: // PET_NOT_FOCUSING
+		case 9264: // PET_NOT_CASTING
+			return true;
+		default:
+			return false;
+	}
+}
+
+// Every string id that is the PET talking, whether or not we have to supply the
+// speaker.  555 and 5501 already carry "%1" (the pet's name) in their template.
+// All of them render on MESSAGETYPE_Say so a pet answering an order reads
+// exactly like any other NPC speaking, regardless of which modern Chat::
+// channel the shared pet code happened to pick for that particular order.
+static bool IsPetSpeech(uint32_t string_id)
+{
+	return IsPetSpeechNeedingSpeaker(string_id) ||
+	       string_id == 555 ||  // CANNOT_WAKE
+	       string_id == 5501;   // PET_ATTACKING
 }
 
 void TrilogyClient::HandleOutgoingSpecialMesg(const EQApplicationPacket* app)
@@ -3459,12 +3510,11 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 				out_text.replace(pos, token.size(), args[i]);
 		}
 
-		// PET_REPORT_HP (488) is the pet answering /pet health, sent from
-		// Handle_OP_PetCommands as MessageString(Chat::PetResponse, PET_REPORT_HP,
-		// <ratio>).  It carries an argument, so unlike PET_TAUNTING it arrives as
-		// an OP_FormattedMessage — but it has the same defect: no speaker.  Add
-		// the prefix after substitution so the percentage is already filled in.
-		if (fm->string_id == 488) {
+		// Speakerless pet lines (PET_REPORT_HP 488 is the one that reaches this
+		// handler — it carries the hp ratio as an argument, so unlike
+		// PET_TAUNTING it arrives formatted rather than simple).  Add the prefix
+		// after substitution so the percentage is already filled in.
+		if (IsPetSpeechNeedingSpeaker(fm->string_id)) {
 			if (Mob* mypet = GetPet()) {
 				out_text = fmt::format("{} says '{}'", mypet->GetCleanName(), out_text);
 			}
@@ -3475,9 +3525,19 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 		// Honor the modern Chat::* channel the server picked (fm->type) instead
 		// of hardcoding white.  ChatTypeToTrilogyMsgType handles the special
 		// modern-only types we care about (Chat::Experience → YELLOW,
-		// Chat::SpellFailure → RED), passes raw colors 0-20 through, and falls
-		// back to broadcasts for the rest.
+		// Chat::SpellFailure → RED) and passes the v29c user colors through.
 		uint32_t out_color = ChatTypeToTrilogyMsgType(fm->type);
+
+		// A mob talking is a mob talking.  GENERIC_STRINGID_SAY (554) is
+		// Mob::SayString's carrier and IsPetSpeech covers the pet lines that
+		// bypass it, so both render on MESSAGETYPE_Say — the same colour NPC
+		// dialogue uses — rather than on whichever Chat:: channel the shared
+		// code chose.  Handle_OP_PetCommands is inconsistent about this on its
+		// own (Chat::PetResponse for most orders, Chat::NPCQuestSay for the
+		// mezzed-target and illegal-target refusals), which showed up in-game
+		// as the pet changing colour depending on the order.
+		if (fm->string_id == GENERIC_STRINGID_SAY || IsPetSpeech(fm->string_id))
+			out_color = 256u; // MESSAGETYPE_Say
 
 		uint32_t out_size = 4 + static_cast<uint32_t>(out_text.size());
 		auto* out = new uint8_t[out_size]();
@@ -3881,18 +3941,16 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 
 	// Pet lines that the server sends WITHOUT a speaker.  With no format
 	// arguments these build an OP_SimpleMessage (client.cpp:3615) rather than an
-	// OP_FormattedMessage, so they land here as a bare sentence:
+	// OP_FormattedMessage, so they land here as a bare sentence — 438
+	// PET_TAUNTING (special_attacks.cpp:1871, once per pet taunt) and the two
+	// /pet taunt toggle replies are the ones a v29c player can actually reach.
 	//
-	//   438 PET_TAUNTING  — special_attacks.cpp:1871, once per pet taunt
-	//   489 PET_NO_TAUNT  — Handle_OP_PetCommands, /pet taunt toggled off
-	//   490 PET_DO_TAUNT  — Handle_OP_PetCommands, /pet taunt toggled on
-	//
-	// PET_ATTACKING and CANNOT_WAKE do NOT belong here: their templates already
-	// begin "%1 tells you, ...", so they carry a speaker of their own.
+	// PET_ATTACKING and CANNOT_WAKE do NOT need this: their templates already
+	// begin with "%1", so they carry a speaker of their own.
 	//
 	// Kept in the Trilogy layer so shared combat code and other clients are
 	// untouched.
-	if (sm->string_id == 438 || sm->string_id == 489 || sm->string_id == 490) {
+	if (IsPetSpeechNeedingSpeaker(sm->string_id)) {
 		if (Mob* mypet = GetPet()) {
 			text = fmt::format("{} says '{}'", mypet->GetCleanName(), text);
 		}
@@ -3900,7 +3958,11 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 
 	text += '\0';
 
-	uint32_t out_color = ChatTypeToTrilogyMsgType(sm->color);
+	// Same rule as the formatted path: the pet speaks in the NPC say colour, not
+	// in whichever Chat:: channel the shared pet code picked.
+	uint32_t out_color = IsPetSpeech(sm->string_id)
+	                   ? 256u // MESSAGETYPE_Say
+	                   : ChatTypeToTrilogyMsgType(sm->color);
 
 	uint32_t out_size = 4 + static_cast<uint32_t>(text.size());
 	auto* out = new uint8_t[out_size]();
