@@ -708,6 +708,26 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		if (app->size == 8)
 			m_tzs->SendToSession(m_session_key, 0x3621, app->pBuffer, 8);
 		break;
+	case OP_PetitionUpdate:
+		// GM petition queue, one row per packet.  The modern struct is wider
+		// than the 116-byte v29c row (64-byte name fields, an 8-byte time_t on
+		// a 64-bit build), so it cannot be forwarded as-is — re-pack.
+		//
+		// The client memcpy's the whole 116 bytes into its queue slot
+		// (eqgame.exe 0x491c78), matches slots on petnumber, and drops a row
+		// whose status reads 0xFFFFFFFF, which is how EntityList::Send
+		// PetitionToAdmins and Handle_OP_PetitionDelete both clear entries.
+		// accountid is queue column 1 and charname is column 2.
+		HandleOutgoingPetitionUpdate(app);
+		break;
+	case OP_PetitionCheckout:
+		// The answer to a GM checking a petition out — the full detail the
+		// petition window renders.  See Trilogy::structs::Petition_Struct for
+		// where every offset came from; the two that matter most are zone,
+		// which is a short name here and a zone id in the modern struct, and
+		// senttime, which sits at 160 and not at 148 as EQClassic claims.
+		HandleOutgoingPetitionCheckout(app);
+		break;
 	case OP_ChannelMessage:
 		HandleOutgoingChannelMessage(app);
 		break;
@@ -3971,6 +3991,94 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 	QueueTextPacket(0x8021, out, out_size);
 	delete[] out;
 }
+
+// ============================================================
+// HandleOutgoingPetitionUpdate — OP_PetitionUpdate -> 0x0f20, 116 bytes
+//
+// One row of the GM petition queue.  Reached from three places, all of which
+// already filter on AccountStatus::QuestTroupe before queueing:
+// EntityList::SendPetitionToAdmins (both overloads) and
+// Client::Handle_OP_PetitionDelete's own echo.
+//
+// The modern PetitionUpdate_Struct and the v29c row disagree on almost every
+// width — 64-byte gmsenttoo and charname against 32, and a time_t that is 8
+// bytes on a 64-bit build against 4 — so this is a field-by-field re-pack, not
+// a truncation.  The one semantic that has to survive intact is status:
+// 0xFFFFFFFF is what makes the client drop the row (eqgame.exe 0x491c81), and
+// it is how both the checked-out case and the delete case clear an entry.
+// ============================================================
+void TrilogyClient::HandleOutgoingPetitionUpdate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::PetitionUpdate_Struct)) return;
+
+	const auto* in = reinterpret_cast<const ::PetitionUpdate_Struct*>(app->pBuffer);
+
+	Trilogy::structs::PetitionUpdate_Struct out{};
+	out.petnumber = in->petnumber;
+	out.color     = in->color;
+	out.status    = in->status;
+	out.senttime  = static_cast<uint32>(in->senttime);
+	out.quetotal  = static_cast<uint32>(in->quetotal);
+	strn0cpy(out.accountid, in->accountid, sizeof(out.accountid));
+	strn0cpy(out.gmsenttoo, in->gmsenttoo, sizeof(out.gmsenttoo));
+	strn0cpy(out.charname,  in->charname,  sizeof(out.charname));
+
+	m_tzs->SendToSession(m_session_key, 0x0f20,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleOutgoingPetitionCheckout — OP_PetitionCheckout -> 0x8e21
+//
+// The petition detail, sent in answer to a GM checking one out.  Built by
+// Petition::SendPetitionToPlayer.
+//
+// Sent as the 1188-byte body plus a NUL-terminated gmtext, which is the shape
+// the client itself uses when it sends the same struct back on check-in
+// (eqgame.exe 0x437c90).  Two translations are doing real work:
+//
+//   zone      the modern struct carries a zone id; v29c wants the short name,
+//             which is what its "ZONE: %s" line renders.
+//   senttime  32-bit here and fed straight to ctime() by the client, from
+//             offset 160 — EQClassic puts it at 148, which would render the
+//             wrong field as the timestamp.
+// ============================================================
+void TrilogyClient::HandleOutgoingPetitionCheckout(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Petition_Struct)) return;
+
+	const auto* in = reinterpret_cast<const ::Petition_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Petition_Struct out{};
+	out.petnumber  = in->petnumber;
+	out.urgency    = in->urgency;
+	out.charlevel  = in->charlevel;
+	out.charclass  = in->charclass;
+	out.charrace   = in->charrace;
+	out.checkouts  = in->checkouts;
+	out.unavail    = in->unavail;
+	out.senttime   = static_cast<uint32>(in->senttime);
+
+	strn0cpy(out.accountid, in->accountid, sizeof(out.accountid));
+	strn0cpy(out.lastgm,    in->lastgm,    sizeof(out.lastgm));
+	strn0cpy(out.charname,  in->charname,  sizeof(out.charname));
+
+	const char* zone_name = ZoneName(in->zone);
+	strn0cpy(out.zone, zone_name ? zone_name : "unknown", sizeof(out.zone));
+
+	strn0cpy(out.petitiontext, in->petitiontext, sizeof(out.petitiontext));
+	strn0cpy(out.gmtext,       in->gmtext,       sizeof(out.gmtext));
+
+	// Body + text + terminator, matching what the client sends back.
+	const uint32_t send_len =
+		Trilogy::structs::PETITION_FIXED_SIZE +
+		static_cast<uint32_t>(strlen(out.gmtext)) + 1;
+
+	m_tzs->SendToSession(m_session_key, 0x8e21,
+	                     reinterpret_cast<const uint8_t*>(&out), send_len);
+}
+
 
 // ============================================================
 // SendSystemLine — one line of server text as OP_SpecialMesg (0x8021).

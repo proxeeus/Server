@@ -26,6 +26,7 @@
 #ifndef COMMON_TRILOGY_STRUCTS_H
 #define COMMON_TRILOGY_STRUCTS_H
 
+#include <cstddef>
 #include <cstring>
 
 namespace Trilogy
@@ -910,7 +911,7 @@ struct PlayerProfile_Struct
 /*4171*/	int8	pvp;						// The client's own copy of the PVP flag, and the only PP byte it associates with PVP.  Pinned 2026-09-06 from eqgame.exe: the OP_SpawnAppearance type 4 (AppearanceType::PVP) handler at 0x493a64 writes the parameter byte to the mob object AND, when the mob is the local player, mirrors it to profile-object +0x1047 — which is PP byte 4171 (player-object offsets run 4 behind PP struct offsets; see the deity/guildid confirmations above).  Sits between `fatigue` and `anon`, exactly where the Mac and Titanium profiles put `pvp`.
 /*4172*/	int8	unknown4172;
 /*4173*/	int8	anon;
-/*4174*/	int8	unknown4174;
+/*4174*/	int8	gm_flag;					// The byte that unlocks the in-client GM console.  NOT the `gm` field at 2764 — that one is what EQClassic (Common/Include/PlayerProfile.h:115) and we have always called gm, and nothing in the client reads it.  Pinned 2026-09-06 from eqgame.exe: at 0x4b0a2d the local player's entity copies profile-object byte 0x104a into entity+0xf1, and entity+0xf1 is the gate every GM entry point tests — the GM console toggle at 0x4c2928 and the /praise, /warn, /edit and /private handlers at 0x4a91b3..0x4a86f6.  Profile-object offsets run 4 behind PP struct offsets (see deity/guildid above), so 0x104a is PP byte 4174.  Corroborated by position: Titanium's profile has pvp, anon, gm, guildrank in that order, and this byte sits directly before guildrank at 4175.
 /*4175*/	int8	guildrank;		// GUILDRANK: 0=Member, 1=Officer, 2=Leader
 /*4176*/	int8	drunkeness;
 /*4177*/	int8	eqbackground;
@@ -1901,6 +1902,137 @@ struct Resurrect_Struct
 };
 
 // -------------------------------------------------------------------------
+// Petition / bug-report family
+//
+// Every offset below was pinned against eqgame.exe (v29c, 22 Aug 2001)
+// rather than taken from a reference server -- EQClassic's declarations for
+// this family are wrong in two places (noted inline).
+// -------------------------------------------------------------------------
+
+/*
+** PetitionUpdate_Struct -- outbound 0x0f20, one row of the GM petition queue
+**
+** Size: 116 bytes (0x74), fixed.  Pinned at eqgame.exe 0x491c78: the queue
+** handler memcpy's exactly 0x74 bytes of the packet into the slot it matched,
+** so the packet IS the client-side row.  The table is 25 slots living at
+** chatobj+0x4c, chatobj = ds:0x6efe2c.
+**
+** Client behaviour that the field semantics come from:
+**   0x491c71  row match is on petnumber (offset 0)
+**   0x491c81  status (offset 8) == 0xFFFFFFFF or == 1 -> the row is dropped
+**   0x491c47  accountid (offset 16) is defaulted to "Unknown User" if empty
+**   0x491c2b  quetotal (offset 80) is stored to chatobj+0xba0
+**   0x4369db  color (offset 4) picks the row's text colour:
+**             0 -> 0x0e (green), 1 -> 0x0f (yellow), >=2 -> 0x0d (red)
+**   0x436a09  accountid is drawn as column 1
+**   0x436a42  charname (offset 84) is drawn as column 2
+**   0x43786a  accountid is also the argument the client builds "/who all %s"
+**             from when a GM checks the petition out
+*/
+struct PetitionUpdate_Struct
+{
+/*000*/	uint32	petnumber;
+/*004*/	uint32	color;                 // 0 green, 1 yellow, 2 red
+/*008*/	uint32	status;                // 0xFFFFFFFF drops the row from the queue
+/*012*/	uint32	senttime;
+/*016*/	char	accountid[32];         // queue column 1 / "/who all" argument
+/*048*/	char	gmsenttoo[32];
+/*080*/	uint32	quetotal;              // stored to chatobj+0xba0
+/*084*/	char	charname[32];          // queue column 2
+/*116*/
+};
+
+/*
+** Petition_Struct -- 0x8e21 (server -> client, the checked-out petition) and
+** 0x9e21 (client -> server, check-in).  0x8e21 in the other direction is a
+** bare uint32 petition id, as are 0x9f21 (un-checkout) and 0xa021 (delete).
+**
+** Fixed part is 1188 bytes; gmtext is appended as a variable-length string.
+** The client stores the whole thing at petitionwnd+0x118 and sends it back
+** verbatim on check-in (eqgame.exe 0x437c90) with
+**     size = strlen(gmtext) + 0x4a8
+** i.e. the 1188-byte body plus the text plus slack.
+**
+** Every field offset below is a read the detail renderer makes, so the labels
+** are the client's own (eqgame.exe 0x436d2b onward):
+**   +000 "ID NUMBER: %d"     +136 "LEVEL: %d"
+**   +004 urgency ->          +140 "CLASS: %s"   (read as a WORD)
+**        0 "NORMAL PETITION" +144 "RACE: %s %d" (read as a WORD)
+**        1 "URGENT"          +152 "CHECKOUTS: %d"
+**        2 "EMERGENCY"       +156 "UNAVAILABLE: %d"
+**   +008 "USER HANDLE: %s"   +160 "TIME: %s"    (ctime of a 32-bit time_t)
+**   +040 "LAST GUIDE: %s"    +164 "USER TEXT: %s"
+**   +072 "ZONE: %s"          +1188 "GM TEXT: %s"
+**   +104 "CHARACTER: %s"
+**
+** NOTE vs EQClassic (Common/Include/eq_packet_structs.h:1520): it declares
+** senttime at 148 and a 4-byte unknown at 160.  The client reads TIME from
+** 160 -- the two are swapped.  It also stops at petitiontext and never
+** declares gmtext, which the client does send.  EQEmu's own internal
+** Petition_Struct has the field ORDER right (unknown, checkouts, unavail,
+** senttime); only the widths differ.
+*/
+struct Petition_Struct
+{
+/*0000*/	uint32	petnumber;
+/*0004*/	uint32	urgency;               // 0 normal, 1 urgent, 2 emergency
+/*0008*/	char	accountid[32];
+/*0040*/	char	lastgm[32];
+/*0072*/	char	zone[32];              // zone SHORT NAME, not an id
+/*0104*/	char	charname[32];
+/*0136*/	uint32	charlevel;
+/*0140*/	uint32	charclass;
+/*0144*/	uint32	charrace;
+/*0148*/	uint32	unknown148;
+/*0152*/	uint32	checkouts;
+/*0156*/	uint32	unavail;
+/*0160*/	uint32	senttime;              // 32-bit time_t, fed to ctime()
+/*0164*/	char	petitiontext[1024];
+/*1188*/	char	gmtext[1024];          // variable-length on the wire
+/*2212*/
+};
+
+// Wire size of the fixed part of Petition_Struct -- everything up to and
+// including petitiontext.  gmtext is appended after this, NUL-terminated.
+static const uint32 PETITION_FIXED_SIZE = 1188;
+
+/*
+** BugReport_Struct -- inbound 0xb320 (/bug, /bugreport) and 0x3c21
+** (/feedback).  Same struct both ways; the client picks the opcode from the
+** window's mode field, set by the command that opened it (eqgame.exe
+** 0x4dbf36: /bugreport passes 0, /feedback passes 1) and branched on at
+** 0x463622.  Neither opcode appears in EQClassic's opcode list, and 0x3c21
+** appears in no reference tree at all.
+**
+** Size: 1099 bytes (0x44b), pinned at the send site (eqgame.exe 0x46362d).
+** playername is strcpy'd from the player object at 0x46360e, so offset 0 is
+** the character name.  The reset routine at eqgame.exe 0x4520a5 clears
+** sub-strings at 0, 32, 64 and 69 and the two flag bytes at 73 and 74, so
+** the first 72 bytes are four separate UI-entered fields rather than one
+** long name -- only the first is written by code, the rest are bound
+** straight to edit controls.  They are carried through verbatim and logged
+** rather than guessed at.
+**
+** Flag polarity is taken from the client's own label rendering, NOT from
+** EQClassic's comments, which say the opposite for both bytes:
+**   offset 73 (eqgame.exe 0x44e96b): 0 draws "cannot", non-zero draws "can"
+**   offset 74 (eqgame.exe 0x44eaa7): 0 draws "non-crash", non-zero "crash"
+** Both raw bytes are also copied into the stored report body so a live
+** capture can settle it without a code change.
+*/
+struct BugReport_Struct
+{
+/*0000*/	char	playername[32];        // strcpy'd from the player object
+/*0032*/	char	unknown032[32];        // UI field, contents unidentified
+/*0064*/	char	unknown064[5];         // UI field, contents unidentified
+/*0069*/	char	unknown069[3];         // UI field, contents unidentified
+/*0072*/	uint8	blankspot;             // never written by the client
+/*0073*/	uint8	can_duplicate;         // non-zero -> "can duplicate"
+/*0074*/	uint8	is_crash;              // non-zero -> "crash"
+/*0075*/	char	bugdescription[1024];
+/*1099*/
+};
+// -------------------------------------------------------------------------
 // Restore structure packing to default
 // -------------------------------------------------------------------------
 #pragma pack()
@@ -1980,6 +2112,23 @@ static_assert(sizeof(LootingItem_Struct)    ==  16,
 static_assert(sizeof(Resurrect_Struct)      == 160,
 	"Trilogy Resurrect_Struct must be 160 bytes "
 	"(bidirectional 0x2a21 / 0x9b21 / 0xec21)");
+
+static_assert(sizeof(PetitionUpdate_Struct) == 116,
+	"Trilogy PetitionUpdate_Struct must be 116 bytes "
+	"(0x0f20 queue row; eqgame.exe 0x491c78 memcpy's exactly 0x74)");
+
+static_assert(offsetof(Petition_Struct, gmtext) == PETITION_FIXED_SIZE,
+	"Trilogy Petition_Struct fixed part must be 1188 bytes "
+	"(eqgame.exe 0x437c90 appends gmtext at petitionwnd+0x5bc)");
+
+static_assert(offsetof(Petition_Struct, senttime) == 160,
+	"Trilogy Petition_Struct senttime must be at offset 160 "
+	"(eqgame.exe 0x43702b renders TIME from +0x1b8; EQClassic has it at 148)");
+
+static_assert(sizeof(BugReport_Struct)      == 1099,
+	"Trilogy BugReport_Struct must be 1099 bytes "
+	"(0xb320 / 0x3c21; eqgame.exe 0x46362d pushes size 0x44b)");
+
 
 	} /*structs*/
 

@@ -422,10 +422,78 @@ static constexpr uint16_t ZN_OP_Jump            = 0x2020; // client -> zone: 0 B
 static constexpr uint16_t ZN_OP_ClientError     = 0x4721;
 
 // 0x1120 OP_PetitionRefresh.  0 B, fires on every zone-in.  Source: EQClassic
-// Common/Include/eq_opcodes.h:262.  The client polling for petition-queue
-// changes; with no petition UI wired up there is nothing to answer with, so it
-// is consumed silently rather than left to the unhandled logger.
+// Common/Include/eq_opcodes.h:262.  The client polling the server for petition
+// queue changes.  EQClassic answers it with a deliberate no-op ("it floods the
+// zones and causes lag if it were to actually do something -- we update on our
+// own schedule now") and so does EQEmu's Handle_OP_PetitionRefresh; the queue
+// is pushed by PetitionList::UpdateGMQueue instead.  Kept as a consumed no-op.
 static constexpr uint16_t ZN_OP_PetitionRefresh = 0x1120;
+
+// ============================================================
+// Petition / bug-report family
+//
+// The whole family was unhandled until now, which meant a v29c player had no
+// way to reach a GM and no way to report anything: /petition, /bug and
+// /feedback all built a well-formed packet and dropped it into the unhandled
+// logger.  EQEmu already has both back-ends -- the `petitions` table plus
+// PetitionList, and the `bug_reports` table plus Client::RegisterBug -- so
+// what was missing was purely the Trilogy wire layer.
+//
+// Wire layouts are in trilogy_structs.h and were pinned against eqgame.exe,
+// not against a reference server: EQClassic gets two fields of Petition_Struct
+// wrong, declares neither 0x3c21 nor 0x9f21, and states the inverse polarity
+// for both bug-report flag bytes.
+//
+// Player -> GM:
+//   0x0e20 OP_Petition   /petition <text>.  Payload is the raw text, NUL
+//                        terminated, strlen+1 bytes, refused client-side above
+//                        1023 characters (eqgame.exe 0x4a0813).  A blank
+//                        /petition never reaches the wire -- the client prints
+//                        "You may not submit a blank petition" itself.
+//   0xb320 OP_BugReport  /bug and /bugreport.  1099 B BugReport_Struct.
+//   0x3c21 OP_Feedback   /feedback.  The SAME 1099 B struct -- one window with
+//                        a mode flag picks the opcode (eqgame.exe 0x463622).
+//                        In no reference tree; found in the client binary.
+//
+// GM side (the native petition window, gated on Admin() like every other GM
+// opcode on this branch):
+//   0x0f20 OP_PetitionUpdate     server -> client, 116 B, one queue row.
+//   0x8e21 OP_PetitionCheckout   client -> server: uint32 petition id.
+//                                server -> client: the full Petition_Struct.
+//   0x9e21 OP_PetitionCheckIn    client -> server: Petition_Struct + gmtext.
+//   0x9f21 OP_PetitionUnCheckout client -> server: uint32 petition id.
+//                                Not in EQClassic's opcode list; identified
+//                                from the client's own "UNDOING CHECK OUT"
+//                                branch at eqgame.exe 0x437cba.
+//   0xa021 OP_PetitionDelete     client -> server: uint32 petition id.
+//
+// The console also has three "file this petition away" buttons, which send the
+// SAME Petition_Struct as check-in on three more opcodes.  All six senders sit
+// in one block (eqgame.exe 0x437b90-0x437c5c), share the petitionwnd+0x118
+// buffer and use the identical `strlen(gmtext) + 0x4a8` size, so the struct is
+// common to the family; only the opcode and the status line differ.  None of
+// the three is in any reference tree, and 0xa121 is the one that turned up as
+// an UNHANDLED 1192-byte packet in the first live GM session:
+//
+//   0xa121 "LOGGING THIS PETITION TO BUG FILE"       (0x437bc3)
+//   0xa221 "LOGGING THIS PETITION TO FEEDBACK FILE"  (0x437c0e)
+//   0xa321 "LOGGING THIS PETITION TO GUIDE LOG"      (0x437c56)
+//
+// Each is one-shot per petition — the client latches a flag (+0xa4/+0xa8/+0xac)
+// and refuses a second press — and none of them closes the petition, so all
+// three leave it in the queue for a later check-in or delete.
+// ============================================================
+static constexpr uint16_t ZN_OP_Petition            = 0x0e20;
+static constexpr uint16_t ZN_OP_PetitionUpdate      = 0x0f20;
+static constexpr uint16_t ZN_OP_PetitionCheckout    = 0x8e21;
+static constexpr uint16_t ZN_OP_PetitionCheckIn     = 0x9e21;
+static constexpr uint16_t ZN_OP_PetitionUnCheckout  = 0x9f21;
+static constexpr uint16_t ZN_OP_PetitionDelete      = 0xa021;
+static constexpr uint16_t ZN_OP_PetitionLogBug      = 0xa121;
+static constexpr uint16_t ZN_OP_PetitionLogFeedback = 0xa221;
+static constexpr uint16_t ZN_OP_PetitionLogGuide    = 0xa321;
+static constexpr uint16_t ZN_OP_BugReport           = 0xb320;
+static constexpr uint16_t ZN_OP_Feedback            = 0x3c21;
 
 // Spell opcodes (bidirectional)
 // Source: EQClassic/Common/Include/eq_opcodes.h + trilogy_structs.h comments
@@ -2654,8 +2722,26 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_ClientError && s.trilogy_client)
 			HandleClientError(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_PetitionRefresh) {
-			// Nothing to answer with — see the constant.  Consumed so it stops
-			// showing up as unhandled and hiding real gaps in the log.
+			// Polled on every zone-in.  Deliberately answered with nothing —
+			// the GM queue is pushed by PetitionList::UpdateGMQueue, not
+			// pulled.  Consumed so it stops showing up as unhandled and
+			// hiding real gaps in the log.  See the constant.
+		}
+		else if (opcode == ZN_OP_Petition && s.trilogy_client)
+			HandlePetition(addr, port, s, payload, plen);
+		else if ((opcode == ZN_OP_BugReport || opcode == ZN_OP_Feedback) &&
+		         s.trilogy_client)
+			HandleBugReport(addr, port, s, opcode, payload, plen);
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_PetitionCheckout    ||
+		          opcode == ZN_OP_PetitionCheckIn     ||
+		          opcode == ZN_OP_PetitionUnCheckout  ||
+		          opcode == ZN_OP_PetitionDelete      ||
+		          opcode == ZN_OP_PetitionLogBug      ||
+		          opcode == ZN_OP_PetitionLogFeedback ||
+		          opcode == ZN_OP_PetitionLogGuide))
+		{
+			HandlePetitionAdmin(addr, port, s, opcode, payload, plen);
 		}
 		else if (opcode == 0xd820) {
 			// OP_SendExpZonein arriving a second time, after the handshake has
@@ -5345,6 +5431,18 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.trainingpoints  = static_cast<int16_t>(Strings::ToInt(row[26]));
 		pp.gm              = static_cast<int8_t>(Strings::ToInt(row[27]));
 
+		// The byte the client actually reads.  pp.gm at 2764 is the field both
+		// we and EQClassic have always called gm, and nothing in eqgame.exe
+		// looks at it — the in-client GM console and the /praise, /warn, /edit
+		// and /private commands all gate on PP byte 4174 instead.  See
+		// gm_flag's comment in trilogy_structs.h for how that was pinned.
+		//
+		// Without this, v29c has no GM console at all: the toggle is bound to
+		// the G key (scancode 34, dispatched at eqgame.exe 0x4c28e7, and not
+		// user-rebindable), and it silently does nothing while this byte is 0.
+		// That console is the only way to reach the native petition queue.
+		pp.gm_flag         = static_cast<int8_t>(Strings::ToInt(row[27]));
+
 		// Breath meter.  Drowning on v29c is client-authoritative: the client
 		// counts air down while submerged and reports the damage back as
 		// OP_Action (0x5820) type 0xFB.  It re-fills on its own once your head
@@ -6876,6 +6974,485 @@ void TrilogyZoneServer::HandleClientError(const std::string& addr, int port, Ses
 
 	LogInfo("[TrilogyZone] ClientError: char={} code={} plen={} payload=[{}]",
 	        s.char_name, code, plen, hex);
+}
+
+// ============================================================
+// HandlePetition — inbound 0x0e20, /petition <text>
+//
+// The payload is the raw petition text and nothing else: the client strcpy's
+// what the player typed into its chat object at +0xba8 and sends strlen+1
+// bytes (eqgame.exe 0x4a0826).  It refuses anything over 1023 characters and
+// prints "You may not submit a blank petition.  Try again." itself for an
+// empty one, so neither case can reach here — but both are still guarded,
+// because a length check on a client-supplied buffer is not something to take
+// on trust.
+//
+// EQEmu's Handle_OP_Petition is exactly the right back-end: it enforces one
+// open petition per account, inserts into the `petitions` table, pushes the
+// GM queue (UpdateGMQueue / UpdateZoneListQueue) and broadcasts a server-wide
+// notice to staff.  The modern struct for this opcode IS the raw text, so
+// this is a bounded copy into an EQApplicationPacket and a dispatch.
+// ============================================================
+void TrilogyZoneServer::HandlePetition(const std::string& addr, int port, Session& s,
+                                       const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (plen < 2) {
+		// Handle_OP_Petition drops size <= 1 silently; say something instead,
+		// or a player whose petition did not survive the wire gets no feedback
+		// at all and assumes a GM has it.
+		tc->Message(Chat::Red, "Your petition was empty and was not filed.");
+		LogInfo("[TrilogyZone] Petition: char={} empty payload plen={}",
+		        s.char_name, plen);
+		return;
+	}
+
+	// The wire text is not guaranteed NUL-terminated even though the client
+	// always terminates it.  Copy into a bounded buffer and terminate here.
+	static constexpr uint32_t kMaxText = 1024;
+	const uint32_t copy_len = std::min(plen, kMaxText - 1);
+	std::vector<char> text(copy_len + 1, 0);
+	memcpy(text.data(), payload, copy_len);
+
+	const size_t text_len = strlen(text.data());
+	if (text_len == 0) {
+		tc->Message(Chat::Red, "Your petition was empty and was not filed.");
+		return;
+	}
+
+	LogInfo("[TrilogyZone] Petition: char={} len={} text='{}'",
+	        s.char_name, static_cast<unsigned>(text_len), text.data());
+
+	// Handle_OP_Petition is silent on success — it messages only on the
+	// duplicate-petition refusal and the world-down error — and v29c prints
+	// its own "You petition, '<text>'" echo locally *before* sending, so
+	// without a confirmation the player cannot tell a filed petition from one
+	// that went nowhere.  Sample first: a player who already had one open gets
+	// the refusal, and must not also be told the new one was filed.
+	const bool had_open = petition_list.FindPetitionByAccountName(tc->AccountName());
+
+	auto* app = new EQApplicationPacket(OP_Petition, static_cast<uint32>(text_len + 1));
+	memcpy(app->pBuffer, text.data(), text_len + 1);
+	tc->Handle_OP_Petition(app);
+	delete app;
+
+	if (!had_open && petition_list.FindPetitionByAccountName(tc->AccountName())) {
+		tc->Message(Chat::Yellow,
+		            "Your petition has been filed.  A GM will respond when one is available.");
+	}
+}
+
+// ============================================================
+// HandleBugReport — inbound 0xb320 (/bug, /bugreport) and 0x3c21 (/feedback)
+//
+// One 1099-byte struct, two opcodes: the client opens a single window and the
+// command that opened it sets a mode flag which picks the opcode at send time
+// (eqgame.exe 0x4dbf36 stores the flag, 0x463622 branches on it).  0x3c21 is
+// in no reference tree at all — it came out of the client binary.
+//
+// The v29c struct carries far less than the modern BugReport_Struct wants, so
+// the mapping is deliberate rather than a memcpy:
+//
+//   * category is Other for /bug and named "Feedback" for /feedback, since
+//     v29c has no category picker.
+//   * position / heading / target / time played are filled from server state.
+//     v29c does not send them, the bug_reports table has the columns, and
+//     leaving them blank would throw away context we already hold.
+//   * the two flag bytes map onto optional_info_mask.  Their polarity is taken
+//     from the client's own label rendering (see BugReport_Struct), which is
+//     the inverse of what EQClassic's comments claim — so both raw bytes are
+//     also appended to the report body.  If the polarity turns out to be
+//     backwards, the stored reports still say which, without a rebuild.
+//   * the three unidentified UI strings in the first 72 bytes are logged and,
+//     when non-empty, appended to the body rather than dropped.
+//
+// Dispatched through Client::Handle_OP_Bug rather than RegisterBug directly so
+// the RuleB(Bugs, ReportingSystemActive) gate, the size check and the staff
+// notification all stay in one place.
+// ============================================================
+void TrilogyZoneServer::HandleBugReport(const std::string& addr, int port, Session& s,
+                                        uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	const bool  is_feedback = (opcode == ZN_OP_Feedback);
+	const char* what        = is_feedback ? "feedback" : "bug report";
+
+	if (plen < sizeof(Trilogy::structs::BugReport_Struct)) {
+		LogInfo("[TrilogyZone] BugReport: char={} op={:#06x} short packet plen={} (need {})",
+		        s.char_name, opcode, plen,
+		        static_cast<unsigned>(sizeof(Trilogy::structs::BugReport_Struct)));
+		tc->Message(Chat::Red, "Your %s could not be read and was not filed.", what);
+		return;
+	}
+
+	const auto* in = reinterpret_cast<const Trilogy::structs::BugReport_Struct*>(payload);
+
+	// None of the wire strings are guaranteed NUL-terminated.
+	auto bounded = [](const char* src, size_t cap) -> std::string {
+		size_t n = 0;
+		while (n < cap && src[n] != '\0') ++n;
+		return std::string(src, n);
+	};
+
+	const std::string reporter = bounded(in->playername,     sizeof(in->playername));
+	const std::string desc     = bounded(in->bugdescription, sizeof(in->bugdescription));
+	const std::string ui032    = bounded(in->unknown032,     sizeof(in->unknown032));
+	const std::string ui064    = bounded(in->unknown064,     sizeof(in->unknown064));
+	const std::string ui069    = bounded(in->unknown069,     sizeof(in->unknown069));
+
+	// Logged in full: the three unidentified fields are the part with no
+	// reference to check against, and this opcode is rare enough that volume
+	// is not a concern.  One live report names them.
+	LogInfo("[TrilogyZone] BugReport: char={} op={:#06x} kind={} reporter='{}' "
+	        "dup_byte={} crash_byte={} blank={} unk032='{}' unk064='{}' unk069='{}' "
+	        "desc_len={} desc='{}'",
+	        s.char_name, opcode, what, reporter,
+	        static_cast<unsigned>(in->can_duplicate),
+	        static_cast<unsigned>(in->is_crash),
+	        static_cast<unsigned>(in->blankspot),
+	        ui032, ui064, ui069,
+	        static_cast<unsigned>(desc.size()), desc);
+
+	if (desc.empty()) {
+		tc->Message(Chat::Red, "Your %s was empty and was not filed.", what);
+		return;
+	}
+
+	// Body = what the player wrote, plus the wire facts that have nowhere else
+	// to live.  Keeping the raw flag bytes here is what makes the polarity
+	// question answerable from data instead of from a rebuild.
+	std::string body = desc;
+	if (!ui032.empty() || !ui064.empty() || !ui069.empty()) {
+		body += fmt::format("\n\n[v29c fields] '{}' / '{}' / '{}'", ui032, ui064, ui069);
+	}
+	body += fmt::format("\n[v29c flags] duplicate_byte={} crash_byte={}",
+	                    static_cast<unsigned>(in->can_duplicate),
+	                    static_cast<unsigned>(in->is_crash));
+
+	auto* app = new EQApplicationPacket(OP_Bug, sizeof(::BugReport_Struct));
+	auto* r   = reinterpret_cast<::BugReport_Struct*>(app->pBuffer);
+	memset(r, 0, sizeof(::BugReport_Struct));
+
+	// v29c has no category picker, so /bug lands in Other and /feedback gets a
+	// name of its own -- the only thing distinguishing the two once filed.
+	r->category_id = Bug::Category::Other;
+	const std::string category =
+		is_feedback ? std::string("Feedback") : Bug::GetName(Bug::Category::Other);
+	strn0cpy(r->category_name, category.c_str(), sizeof(r->category_name));
+
+	// reporter_name comes off the wire so Client::RegisterBug's reporter_spoof
+	// check keeps working: the client strcpy's it from its own player object
+	// (eqgame.exe 0x46360e), so a mismatch with GetCleanName() is meaningful.
+	strn0cpy(r->reporter_name, reporter.c_str(), sizeof(r->reporter_name));
+	strn0cpy(r->ui_path, is_feedback ? "/feedback" : "/bug", sizeof(r->ui_path));
+
+	// Server-side context the packet does not carry.
+	r->pos_x       = tc->GetX();
+	r->pos_y       = tc->GetY();
+	r->pos_z       = tc->GetZ();
+	r->heading     = static_cast<uint32>(tc->GetHeading());
+	r->time_played = tc->GetTotalSecondsPlayed();
+
+	Mob* target = tc->GetTarget();
+	if (target) {
+		r->target_id = target->GetID();
+		strn0cpy(r->target_name,
+		         target->GetCleanName() ? target->GetCleanName() : "",
+		         sizeof(r->target_name));
+		r->optional_info_mask |= Bug::InformationFlag::TargetInfo;
+	}
+
+	if (in->can_duplicate) r->optional_info_mask |= Bug::InformationFlag::Repeatable;
+	if (in->is_crash)      r->optional_info_mask |= Bug::InformationFlag::Crash;
+
+	strn0cpy(r->bug_report,  body.c_str(),               sizeof(r->bug_report));
+	strn0cpy(r->system_info, "EverQuest Trilogy (v29c)", sizeof(r->system_info));
+
+	tc->Handle_OP_Bug(app);
+	delete app;
+
+	// v29c prints no confirmation of its own for either command, and
+	// Handle_OP_Bug only messages on failure.
+	if (RuleB(Bugs, ReportingSystemActive)) {
+		tc->Message(Chat::Yellow, "Your %s has been recorded.  Thank you.", what);
+	}
+}
+
+// ============================================================
+// HandlePetitionAdmin — the GM petition window
+//
+//   0x8e21 checkout      uint32 petition id -> reply with the Petition_Struct
+//   0x9e21 check-in      Petition_Struct + gmtext
+//   0x9f21 un-checkout   uint32 petition id
+//   0xa021 delete        uint32 petition id
+//
+// EQEmu already implements all four (Handle_OP_PetitionCheckout / CheckIn /
+// UnCheckout / Delete), so the work here is the size and field translation
+// plus an Admin() gate.
+//
+// The gate is not optional.  On every other client these opcodes are only
+// reachable through a window the client opens for a flagged account; v29c is
+// no different, but this branch talks to the client over a raw UDP path where
+// nothing upstream has checked account status, so the check belongs here.  It
+// uses the same threshold entity.cpp uses when deciding who receives queue
+// updates (AccountStatus::QuestTroupe), so a GM who can see the queue can act
+// on it and nobody else can.
+//
+// Two lookups are re-done here that EQEmu's handlers skip: Handle_OP_Petition
+// Checkout says nothing when the id is stale, which leaves v29c sitting on
+// "RETRIEVING PETITION...PLEASE WAIT" forever, and Handle_OP_PetitionCheckIn
+// dereferences GetPetitionByID without a null check, which would fault the
+// zone if two GMs raced on the same petition.
+// ============================================================
+void TrilogyZoneServer::HandlePetitionAdmin(const std::string& addr, int port, Session& s,
+                                            uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (tc->Admin() < AccountStatus::QuestTroupe) {
+		LogInfo("[TrilogyZone] PetitionAdmin: char={} op={:#06x} REFUSED admin={}",
+		        s.char_name, opcode, static_cast<int>(tc->Admin()));
+		return;
+	}
+
+	// Checkout / un-checkout / delete all carry a bare petition id.
+	auto read_id = [&](uint32& out) -> bool {
+		if (plen < sizeof(uint32)) {
+			LogInfo("[TrilogyZone] PetitionAdmin: char={} op={:#06x} short packet plen={}",
+			        s.char_name, opcode, plen);
+			return false;
+		}
+		memcpy(&out, payload, sizeof(out));
+		return true;
+	};
+
+	switch (opcode) {
+
+	case ZN_OP_PetitionCheckout: {
+		uint32 id = 0;
+		if (!read_id(id)) return;
+		LogInfo("[TrilogyZone] PetitionAdmin: char={} checkout id={}", s.char_name, id);
+
+		if (!petition_list.GetPetitionByID(id)) {
+			// v29c has a refusal path of its own: the 0x8e21 parser checks the
+			// petition number first and, if it reads 0xFFFFFFFF, prints
+			// "FAILED TO CHECKOUT PETITION.  IT IS ALREADY CHECKED OUT OR HAS
+			// BEEN DELETED." and leaves the window alone (eqgame.exe 0x49abf6).
+			// Use it rather than a chat line — it is the message the client was
+			// built to show for exactly this case, and without *some* answer
+			// the window sits on "RETRIEVING PETITION...PLEASE WAIT" forever.
+			//
+			// Only the first dword is read on this path, but a short packet
+			// would leave the window's copy of the struct half-overwritten
+			// (the parser memcpy's the packet size verbatim), so send a full
+			// body of zeroes with the sentinel in front.
+			Trilogy::structs::Petition_Struct refusal{};
+			refusal.petnumber = 0xFFFFFFFF;
+			SendApp(addr, port, s, ZN_OP_PetitionCheckout,
+			        reinterpret_cast<const uint8_t*>(&refusal),
+			        Trilogy::structs::PETITION_FIXED_SIZE + 1);
+			petition_list.UpdateGMQueue();
+			return;
+		}
+
+		// Handle_OP_PetitionCheckout answers via Petition::SendPetitionToPlayer,
+		// which queues OP_PetitionCheckout back at us; TranslateAndSend turns
+		// that into the 0x8e21 reply the window is waiting for.
+		auto* app = new EQApplicationPacket(OP_PetitionCheckout, sizeof(uint32));
+		memcpy(app->pBuffer, &id, sizeof(id));
+		tc->Handle_OP_PetitionCheckout(app);
+		delete app;
+		break;
+	}
+
+	case ZN_OP_PetitionUnCheckout: {
+		uint32 id = 0;
+		if (!read_id(id)) return;
+		LogInfo("[TrilogyZone] PetitionAdmin: char={} un-checkout id={}", s.char_name, id);
+
+		auto* app = new EQApplicationPacket(OP_PetitionUnCheckout, sizeof(uint32));
+		memcpy(app->pBuffer, &id, sizeof(id));
+		tc->Handle_OP_PetitionUnCheckout(app);
+		delete app;
+		break;
+	}
+
+	case ZN_OP_PetitionDelete: {
+		uint32 id = 0;
+		if (!read_id(id)) return;
+		LogInfo("[TrilogyZone] PetitionAdmin: char={} delete id={}", s.char_name, id);
+
+		// Handle_OP_PetitionDelete reads a PetitionUpdate_Struct but only ever
+		// touches its first dword, and answers on OP_PetitionUpdate — which
+		// TranslateAndSend renders as the 0x0f20 row removal the client needs.
+		auto* app = new EQApplicationPacket(OP_PetitionUpdate,
+		                                    sizeof(::PetitionUpdate_Struct));
+		memset(app->pBuffer, 0, app->size);
+		memcpy(app->pBuffer, &id, sizeof(id));
+		tc->Handle_OP_PetitionDelete(app);
+		delete app;
+		break;
+	}
+
+	// Check-in and the three "log this petition to X" buttons all carry the
+	// same struct on different opcodes, so they share one parse.
+	case ZN_OP_PetitionCheckIn:
+	case ZN_OP_PetitionLogBug:
+	case ZN_OP_PetitionLogFeedback:
+	case ZN_OP_PetitionLogGuide: {
+		const bool is_checkin = (opcode == ZN_OP_PetitionCheckIn);
+		const char* action =
+			is_checkin                            ? "check-in"       :
+			(opcode == ZN_OP_PetitionLogBug)      ? "log-bug"        :
+			(opcode == ZN_OP_PetitionLogFeedback) ? "log-feedback"   : "log-guide";
+
+		// 1188-byte body plus a variable-length gmtext.  The client sends
+		// strlen(gmtext) + 0x4a8, i.e. the body, the text and slack — so the
+		// only thing worth asserting is that the body arrived whole.
+		if (plen < Trilogy::structs::PETITION_FIXED_SIZE) {
+			LogInfo("[TrilogyZone] PetitionAdmin: char={} {} short packet "
+			        "plen={} (need {})",
+			        s.char_name, action, plen,
+			        static_cast<unsigned>(Trilogy::structs::PETITION_FIXED_SIZE));
+			return;
+		}
+
+		const auto* in =
+			reinterpret_cast<const Trilogy::structs::Petition_Struct*>(payload);
+
+		Petition* pet = petition_list.GetPetitionByID(in->petnumber);
+		if (!pet) {
+			LogInfo("[TrilogyZone] PetitionAdmin: char={} {} id={} GONE",
+			        s.char_name, action, in->petnumber);
+			tc->Message(Chat::Red, "Petition %u no longer exists.", in->petnumber);
+			petition_list.UpdateGMQueue();
+			return;
+		}
+
+		// gmtext runs from the end of the body to the end of the packet and is
+		// not guaranteed terminated.  Clamped to the client's own 1024-byte
+		// field: Petition::SetGMText strcpy's into char[1024], so an
+		// over-long tail here would be a stack-adjacent overflow driven
+		// straight off the wire.
+		std::string gmtext;
+		if (plen > Trilogy::structs::PETITION_FIXED_SIZE) {
+			const char* g     = reinterpret_cast<const char*>(payload) +
+			                    Trilogy::structs::PETITION_FIXED_SIZE;
+			uint32_t    avail = plen - Trilogy::structs::PETITION_FIXED_SIZE;
+			if (avail > sizeof(in->gmtext) - 1) {
+				avail = sizeof(in->gmtext) - 1;
+			}
+			uint32_t    n     = 0;
+			while (n < avail && g[n] != '\0') ++n;
+			gmtext.assign(g, n);
+		}
+
+		LogInfo("[TrilogyZone] PetitionAdmin: char={} {} id={} urgency={} "
+		        "gmtext_len={}",
+		        s.char_name, action, in->petnumber, in->urgency,
+		        static_cast<unsigned>(gmtext.size()));
+
+		if (is_checkin) {
+			// Only petnumber, urgency and gmtext are read by
+			// Handle_OP_PetitionCheckIn — everything else it takes from the
+			// server-side Petition, so echoing the rest of the client's copy
+			// back would only risk overwriting good state with a stale
+			// round-trip.
+			::Petition_Struct out{};
+			out.petnumber = in->petnumber;
+			out.urgency   = in->urgency;
+			strn0cpy(out.gmtext, gmtext.c_str(), sizeof(out.gmtext));
+
+			auto* app = new EQApplicationPacket(OP_PetitionCheckIn,
+			                                    sizeof(::Petition_Struct));
+			memcpy(app->pBuffer, &out, sizeof(out));
+			tc->Handle_OP_PetitionCheckIn(app);
+			delete app;
+			break;
+		}
+
+		// The three log buttons.  None of them closes the petition — the client
+		// leaves it in the queue and expects to check it in or delete it
+		// separately — so persist what the GM has typed so far and then file a
+		// copy wherever the button says.
+		pet->SetUrgency(in->urgency);
+		pet->SetLastGM(tc->GetName());
+		if (!gmtext.empty()) {
+			pet->SetGMText(gmtext.c_str());
+		}
+		petition_list.UpdatePetition(pet);
+		petition_list.UpdateGMQueue();
+		petition_list.UpdateZoneListQueue();
+
+		if (opcode == ZN_OP_PetitionLogGuide) {
+			// EQEmu has no guide-log table, and inventing one to hold three
+			// fields would be a schema change for a button.  The petition
+			// itself already persists the GM's notes above, so the useful part
+			// of "logging" is a durable, greppable record of who filed what.
+			LogInfo("[TrilogyGuideLog] petition={} from='{}' account='{}' "
+			        "gm='{}' urgency={} text='{}' notes='{}'",
+			        pet->GetID(), pet->GetCharName(), pet->GetAccountName(),
+			        tc->GetName(), in->urgency,
+			        pet->GetPetitionText(), gmtext);
+			tc->Message(Chat::Yellow,
+			            "Petition %u logged to the guide log.", pet->GetID());
+			break;
+		}
+
+		// Bug and feedback both land in bug_reports, which is exactly what the
+		// player-side /bug and /feedback handlers above use — a petition a GM
+		// triages into a bug should be indistinguishable from one the player
+		// filed directly, except for who reported it.
+		const bool as_feedback = (opcode == ZN_OP_PetitionLogFeedback);
+
+		auto* app = new EQApplicationPacket(OP_Bug, sizeof(::BugReport_Struct));
+		auto* r   = reinterpret_cast<::BugReport_Struct*>(app->pBuffer);
+		memset(r, 0, sizeof(::BugReport_Struct));
+
+		r->category_id = Bug::Category::Other;
+		const std::string category =
+			as_feedback ? std::string("Feedback") : Bug::GetName(Bug::Category::Other);
+		strn0cpy(r->category_name, category.c_str(), sizeof(r->category_name));
+
+		// The petitioner is the reporter, not the GM pressing the button.  That
+		// makes RegisterBug's reporter_spoof flag fire, which is correct and
+		// informative here: the row really was filed by someone other than the
+		// character it names.  ui_path records who actually filed it.
+		strn0cpy(r->reporter_name, pet->GetCharName(), sizeof(r->reporter_name));
+		strn0cpy(r->ui_path,
+		         fmt::format("petition {} filed by {}", pet->GetID(), tc->GetName()).c_str(),
+		         sizeof(r->ui_path));
+
+		std::string body = fmt::format("[petition {} from {}]\n{}",
+		                               pet->GetID(), pet->GetCharName(),
+		                               pet->GetPetitionText());
+		if (!gmtext.empty()) {
+			body += fmt::format("\n\n[GM notes by {}]\n{}", tc->GetName(), gmtext);
+		}
+		strn0cpy(r->bug_report, body.c_str(), sizeof(r->bug_report));
+		strn0cpy(r->system_info, "EverQuest Trilogy (v29c)", sizeof(r->system_info));
+
+		// Position and target describe the GM triaging it, not the petitioner,
+		// so leave them zero rather than record something misleading.  The
+		// petition row keeps the reporter's real zone.
+		tc->Handle_OP_Bug(app);
+		delete app;
+
+		if (RuleB(Bugs, ReportingSystemActive)) {
+			tc->Message(Chat::Yellow, "Petition %u logged to the %s file.",
+			            pet->GetID(), as_feedback ? "feedback" : "bug");
+		}
+		break;
+	}
+
+	default:
+		break;
+	}
 }
 
 // ============================================================

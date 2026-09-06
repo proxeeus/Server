@@ -425,6 +425,12 @@ private:
 	void HandleOutgoingSpecialMesg(const EQApplicationPacket* app);
 	void HandleOutgoingFormattedMessage(const EQApplicationPacket* app);
 	void HandleOutgoingSimpleMessage(const EQApplicationPacket* app);
+	// GM petition window.  0x0f20 is one queue row (116 B); 0x8e21 is the
+	// petition detail sent when a GM checks one out.  Both modern structs are
+	// wider than their v29c counterparts, so both are re-packed rather than
+	// forwarded — see the implementations and Trilogy::structs::Petition_Struct.
+	void HandleOutgoingPetitionUpdate(const EQApplicationPacket* app);
+	void HandleOutgoingPetitionCheckout(const EQApplicationPacket* app);
 	// /who all.  v29c has no /who-all window; the 1999 server answered in
 	// plain chat lines and so does this, rendering EQEmu's packed
 	// OP_WhoAllResponse back down to text.  See the implementation for the
