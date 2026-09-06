@@ -66,6 +66,7 @@ static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: P
 static constexpr uint16_t OP_DELETE_CHARACTER    = 0x5a20; // client -> world: 30-byte char name (null-terminated)
 static constexpr uint16_t OP_WORLD_LOGOUT        = 0x2320; // client -> world: user clicked "Quit" at char select (no payload)
 static constexpr uint16_t WS_OP_TimeOfDay        = 0xf220; // world -> client: TimeOfDay_Struct (6 bytes, Trilogy wire)
+static constexpr uint16_t WS_SEND_SERVER_MOTD    = 0xdd21; // world -> client: server MOTD, raw null-terminated text
 
 // EQNetwork header flags
 static constexpr uint8_t HDR0_ARQ      = 0x02;
@@ -865,6 +866,11 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	s.char_id = char_id;
 	s.zone_id = zone_id;
 
+	// Server MOTD.  The client buffers this and only prints it once it has
+	// finished entering the zone, so it has to go out before the redirect —
+	// see SendServerMOTD for the client-side handler that requires this.
+	SendServerMOTD(addr, port, s);
+
 	// Find or boot the zone
 	ZoneServer* zs = zoneserver_list.FindByZoneID(zone_id);
 	if (!zs) {
@@ -945,6 +951,67 @@ void TrilogyWorldServer::HandleDeleteCharacter(const std::string& addr, int port
 
 	// Refresh the character select screen so the deleted slot shows "<none>".
 	SendCharSelect(addr, port, s);
+}
+
+// ============================================================
+// Send OP_ServerMOTD (0xdd21) — the server Message Of The Day.
+//
+// Wire payload: the raw MOTD text plus its terminating null (size =
+// strlen + 1).  An empty MOTD is sent as a single 0x00 byte.  This mirrors
+// EQClassic (ClientNetwork::SendServerMOTD) and EQEmu's own world OP_MOTD
+// send in world/client.cpp, so Trilogy clients get the same text — and the
+// same rule-then-variable precedence — as every other client.
+//
+// v29c handling, from eqgame.exe (handler at 0x49fb3f):
+//     buf[size - 1] = 0;
+//     if (pending_motd[0] == '~')  strcpy(pending_motd, buf);
+//     else                         pending_motd[0] = 0;
+//     strcpy(last_motd, pending_motd);
+// `pending_motd` is the 512-byte global at 0x6b7128, seeded with "~" at
+// client startup (0x4c3250 / 0x4d3083).  The zone-entry routine at 0x4d5d0f
+// — the one that prints "Welcome to EverQuest!" / "You have entered %s." —
+// then prints "MESSAGE OF THE DAY: <text>" at chat colour 15 and zeroes the
+// buffer (0x4d62b4).
+//
+// Two consequences drive where this is called from:
+//   * it must reach the client BEFORE it enters a zone.  The print site has
+//     already run by the time an in-zone send would land, so this goes out at
+//     EnterWorld — exactly where EQClassic sends it.
+//   * the '~' sentinel means the client consumes a MOTD only once per
+//     process, so it shows on the first zone-in and not on every zone change.
+//     Re-sending on a later EnterWorld is harmless (it just clears the
+//     already-empty pending buffer), which is what EQClassic does too.
+//
+// Capped at 500 bytes to match EQClassic's SERVER_MOTD_LENGTH and to stay
+// inside the client's 512-byte buffer.
+// ============================================================
+
+void TrilogyWorldServer::SendServerMOTD(const std::string& addr, int port, Session& s)
+{
+	static constexpr size_t TRI_SERVER_MOTD_MAX = 500;
+
+	// Same precedence as world/client.cpp: the World:MOTD rule wins, and the
+	// `MOTD` row in `variables` is the fallback.  #set motd writes the rule.
+	std::string motd = RuleS(World, MOTD);
+	if (motd.empty()) {
+		database.GetVariable("MOTD", motd);
+	}
+
+	if (motd.length() > TRI_SERVER_MOTD_MAX) {
+		motd.resize(TRI_SERVER_MOTD_MAX);
+	}
+
+	// Payload carries the terminating null; a null MOTD is a single 0 byte.
+	std::vector<uint8_t> payload(motd.length() + 1, 0);
+	if (!motd.empty()) {
+		memcpy(payload.data(), motd.c_str(), motd.length());
+	}
+
+	LogInfo("[TrilogyWorld] SendServerMOTD | len [{}] text [{}] to {}:{}",
+	        motd.length(), motd, addr, port);
+
+	SendApp(addr, port, s, WS_SEND_SERVER_MOTD,
+	        payload.data(), static_cast<uint32_t>(payload.size()));
 }
 
 // ============================================================
