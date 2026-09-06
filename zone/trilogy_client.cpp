@@ -317,6 +317,38 @@ int TrilogyClient::PurgeStaleCursorRowsForItem(uint32 item_id)
 }
 
 // ============================================================
+// CanMeditate — pre-Luclin meditation gate (override)
+//
+// In the Trilogy era, "meditating" is literally having the spell book open:
+// the book fills the screen, the character sits, and mana returns.  The skill
+// description the client shows at level 35 is the other half of the rule —
+// from 35 on, a class that can meditate does so seated, book or no book.
+//
+// v29c reports the book state with OP_Medding 0x5821, a 4-byte packet whose
+// first byte is 1 when the book opens and 0 when it closes (confirmed on the
+// wire: strictly alternating 01/00 pairs around every book toggle, matching
+// EQClassic Zone/Source/client_process.cpp:6470).  TrilogyZoneServer feeds it
+// into Client::medding, which is what IsMedding() reads.
+//
+// Note this is deliberately stricter than EQClassic, whose regen tick does
+//   if (GetLevel() > 0) medding = true;
+// immediately before testing `medding` — i.e. it forces the flag on for every
+// seated player and the open-book requirement never actually applies.  The
+// packet is parsed there and then overwritten one function later.
+//
+// Falling through to the base class keeps the mount case and the
+// HasSkill(Meditate) requirement, so pure melee and the hybrids (who never
+// trained Meditate in this era) still get only the plain seated tick.
+// ============================================================
+
+bool TrilogyClient::CanMeditate()
+{
+	if (!Client::CanMeditate()) return false;
+	if (GetLevel() >= kMeditateNoBookLevel) return true;
+	return IsMedding();
+}
+
+// ============================================================
 // CalcManaRegen — classic 1999 EQ formula (override)
 //
 // EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:
@@ -326,12 +358,22 @@ int TrilogyClient::PurgeStaleCursorRowsForItem(uint32 item_id)
 //       regen = skill/10 + (level - level/4) + 4
 //     else:                                         // approaching cap
 //       regen = level + 6
-//   else if (!sitting):
+//   else if (sitting):
+//     regen = 4
+//   else:
 //     regen = 2
 //
+// The one place we diverge from that listing is which players reach the
+// meditation branch: EQClassic forces `medding` true for everyone seated, so
+// its `else regen = 4` arm is dead code and a level-1 caster meditates without
+// ever opening the book.  CanMeditate() restores the real rule (open book below
+// 35, seated is enough from 35 on) and the +4 seated tick becomes live again —
+// it is what a hybrid, or a caster sitting with the book closed, gets.
+//
 // Bards historically did not med. Mediate skillups are handled by the base
-// DoManaRegen() (which calls CheckIncreaseSkill before SetMana) so we don't
-// duplicate that here — we just return the per-tick delta.
+// DoManaRegen() (which calls CheckIncreaseSkill before SetMana, on the same
+// CanMeditate() gate) so we don't duplicate that here — we just return the
+// per-tick delta.
 //
 // AreaManaRegen and item/spell mana-regen bonuses are intentionally left out:
 // the user wants the classic feel, and those modifiers didn't exist in 1999.
@@ -347,6 +389,12 @@ int64 TrilogyClient::CalcManaRegen(bool bCombat)
 
 	if (!IsSitting()) {
 		return 2;
+	}
+
+	// Seated, but not meditating — no Meditate skill, or below 35 with the
+	// spell book closed.  EQClassic's own else-arm for this case.
+	if (!CanMeditate()) {
+		return 4;
 	}
 
 	const int skill = static_cast<int>(GetSkill(EQ::skills::SkillMeditate));

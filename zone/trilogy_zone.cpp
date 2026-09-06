@@ -335,6 +335,20 @@ static constexpr uint16_t ZN_OP_ZoneEntryResend = 0x4121;
 // client_mods.cpp:1680 gates its is_running term on it.
 static constexpr uint16_t ZN_OP_SetRunMode      = 0x1f20;
 
+// 0x2020 OP_Jump.  0 B, client -> zone, one per jump.  EQClassic's handler
+// (Zone/Source/client_process.cpp:5855) does two things: adds 10 fatigue, and
+// calls DoAnim(20) with the comment "trick to send the jump animation to other
+// players" — v29c renders its own jump locally but broadcasts nothing, so
+// without the server relay a jump is invisible to everyone else in the zone.
+//
+// We take the DoAnim half only.  The fatigue half cannot apply here: the
+// Trilogy ZN_OP_Stamina refresh deliberately pins the wire fatigue byte to 0 so
+// v29c never depletes endurance (see the sta.fatigue = 0 line in the 5 s Tick
+// refresh), so incrementing a value that is overwritten with 0 every 5 s would
+// be dead weight.  EQEmu's own Handle_OP_Jump drains endurance instead, which
+// this era has no concept of.
+static constexpr uint16_t ZN_OP_Jump            = 0x2020; // client -> zone: 0 B
+
 // 0x4721 OP_ClientError.  92 B.  The client reporting its OWN faults — EQClassic
 // (Common/Include/eq_opcodes.h:222) describes it as "client sents this when an
 // error client side happend i.e. a stackable item without charges sent to the
@@ -380,6 +394,29 @@ static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: Memor
 // back; only the echo makes the client swap its own spell_book[] entries.
 // See the SwapSpell_Struct banner in trilogy_structs.h for the full contract.
 static constexpr uint16_t ZN_OP_SwapSpell     = 0xce21; // bidirectional: SwapSpell_Struct (8 bytes)
+
+// 0x5821 OP_Medding — "Player opens or closes a spell book"
+// (EQClassic Common/Include/eq_opcodes.h:201).  Client -> zone, 4 bytes, and
+// only byte 0 carries anything: 1 when the book opens, 0 when it closes.
+// Confirmed on the wire — every toggle arrives as a strictly alternating
+// 01 00 00 00 / 00 00 00 00 pair — and matches the reference handler
+// (EQClassic Zone/Source/client_process.cpp:6470) byte for byte.
+//
+// This is the meditate half of sitting.  Pre-Luclin, meditating IS having the
+// book open: below level 35 a seated caster gets no Meditate return and no
+// Meditate skill-ups until the book is up.  Sitting itself already arrives via
+// SpawnAppearance 0xf520 (type=Animation); this is the other half, and without
+// it Client::medding stayed at its uninitialised value for the whole session.
+//
+// The two halves arrive together and in a fixed order — the book button is also
+// the sit toggle, so every capture reads:
+//   f520 type=0x0e parameter=110 (Sitting)   then  5821 [01 00 00 00]
+//   f520 type=0x0e parameter=100 (Standing)  then  5821 [00 00 00 00]
+// Sitting with the sit key alone sends the f520 and no 5821, which is exactly
+// the "seated but not meditating" case.
+//
+// Dispatched into Client::SetMedding; TrilogyClient::CanMeditate reads it back.
+static constexpr uint16_t ZN_OP_Medding       = 0x5821; // client -> zone: 4 B, [0] = book open
 
 // Door opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
@@ -1875,6 +1912,46 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			if (s.ack_due) SendAck(addr, port, s);
 			SendApp(addr, port, s, 0x4721, payload, plen);
 		}
+		else if (opcode == ZN_OP_Appearance) {
+			// The client reporting its light source once it has the inventory it
+			// was sent in CONNECTING3.  Every capture is type=5
+			// (AppearanceType::Light) with parameter 1/5/7 — the light level of
+			// whatever lightstone or shiny shield it just equipped.
+			//
+			// Consumed, not echoed and not dispatched:
+			//   * EQEmu's Handle_OP_SpawnAppearance has an explicit Light arm
+			//     that does nothing (client_packet.cpp, "don't do anything with
+			//     this"), and the server computes worn-item light itself, so
+			//     there is no state to record.
+			//   * EQClassic tried the echo here and backed it out — the
+			//     `else if (app->opcode == 0xf520) { QueuePacket(app); }` arm of
+			//     Process_ClientConnection4 is commented out in the reference.
+			//     CONNECTING5 is where the echo is actually required.
+			//
+			// Anything other than Light during this state would be a genuine
+			// state change mid-handshake, so that still gets logged.
+			if (plen >= sizeof(Trilogy::structs::SpawnAppearance_Struct)) {
+				const auto* tri =
+					reinterpret_cast<const Trilogy::structs::SpawnAppearance_Struct*>(payload);
+				if (static_cast<uint32>(tri->type) != AppearanceType::Light)
+					note_unhandled("CONNECTING4");
+			}
+			if (s.ack_due) SendAck(addr, port, s);
+		}
+		else if (opcode == 0x5d20) {
+			// OP_ReqNewZone repeating after CONNECTING3 already consumed it.
+			// Payload is the character name again — EQClassic's own comment on
+			// this packet is "the client sends tha character name again.. not
+			// sure why, nothing else in this packet".
+			//
+			// Deliberately NOT re-running HandlePostInventory: that is the bulk
+			// inventory send, and doing it twice would push every item at a
+			// client that is mid-way through acknowledging the first copy.
+			// EQClassic drops it here too.
+			LogInfo("[TrilogyZone] ReqNewZone (0x5d20) repeated in CONNECTING4 — "
+			        "inventory already sent, ignoring");
+			if (s.ack_due) SendAck(addr, port, s);
+		}
 		else {
 			note_unhandled("CONNECTING4");
 			if (s.ack_due) SendAck(addr, port, s);
@@ -2170,6 +2247,16 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleConnectedWearChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Appearance && s.trilogy_client)
 			HandleConnectedSpawnAppearance(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Medding && s.trilogy_client)
+			HandleMedding(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Jump && s.trilogy_client) {
+			// Relay the jump so everyone else in the zone sees it — see the
+			// constant for why the fatigue half of EQClassic's handler is
+			// dropped.  Animation 20 is EQClassic's jump pose, and
+			// TrilogyClient::HandleAnimation re-encodes OP_Animation as the
+			// 0x9f20 Attack_Struct v29c expects.
+			s.trilogy_client->DoAnim(20);
+		}
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
 		// 0xe620 is also sent by the receiving client to ACCEPT a PC-trade request
@@ -2473,6 +2560,19 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_PetitionRefresh) {
 			// Nothing to answer with — see the constant.  Consumed so it stops
 			// showing up as unhandled and hiding real gaps in the log.
+		}
+		else if (opcode == 0xd820) {
+			// OP_SendExpZonein arriving a second time, after the handshake has
+			// already finished.  CONNECTING5 answers the first one in
+			// HandleZoneInComplete, which ends by sending its own 0xd820 back;
+			// this is the client re-signalling "scene ready" a beat later.
+			//
+			// Nothing to do: the zone-in is complete by definition, and re-running
+			// HandleZoneInComplete would re-broadcast the spawn and re-send the
+			// closing sequence to a client already playing.  EQClassic has no
+			// CONNECTED-state case for it either — it falls through
+			// ProcessOP_Default and is dropped.  Consumed so the handshake echo
+			// stops reading as a gap.
 		}
 		else if (s.trilogy_client &&
 		         (opcode == ZN_OP_Assist     || opcode == ZN_OP_Random ||
@@ -13930,7 +14030,53 @@ void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, 
 	emu->type      = static_cast<uint16>(tri->type);
 	emu->parameter = static_cast<uint32>(tri->parameter);
 
+	// Standing up closes the spell book, so drop the medding flag on any
+	// animation that isn't Sitting.  v29c does send the matching
+	// OP_Medding 0 of its own accord, but IsMedding() is also read by Lua,
+	// Perl and the API, and a flag that outlives the posture it describes
+	// would read as "meditating while running around" to all three.
+	if (static_cast<uint32>(tri->type) == AppearanceType::Animation &&
+	    static_cast<uint32>(tri->parameter) != Animation::Sitting &&
+	    s.trilogy_client->IsMedding()) {
+		s.trilogy_client->SetMedding(false);
+	}
+
 	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
+}
+
+// ============================================================
+// HandleMedding — client sent 0x5821 (OP_Medding, 4 bytes).
+//
+// byte 0 is 1 when the spell book opens and 0 when it closes; the remaining
+// three bytes are padding and are always zero on the wire.  Straight out of
+// EQClassic Zone/Source/client_process.cpp:6470:
+//
+//     case OP_Medding:
+//         if (app->pBuffer[0]) medding = true; else medding = false;
+//
+// Why this matters rather than being another handshake ack: pre-Luclin, the
+// open book IS the meditate action.  TrilogyClient::CanMeditate turns this flag
+// into the gate on both halves of meditation — the Meditate mana return in
+// TrilogyClient::CalcManaRegen, and the Meditate skill-up chance in
+// Client::DoManaRegen — for any caster below level 35.  From 35 on the book
+// stops being required and sitting alone is enough, which is the classic
+// level-35 Meditate rule.
+// ============================================================
+
+void TrilogyZoneServer::HandleMedding(const std::string& addr, int port, Session& s,
+                                      const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < 1) return;
+
+	const bool book_open = (payload[0] != 0);
+	s.trilogy_client->SetMedding(book_open);
+
+	LogInfo("[TrilogyZone] Medding char={} book={} level={} sitting={} meditating={}",
+	        s.char_name, book_open ? "open" : "closed",
+	        static_cast<int>(s.trilogy_client->GetLevel()),
+	        s.trilogy_client->IsSitting() ? 1 : 0,
+	        s.trilogy_client->CanMeditate() ? 1 : 0);
 }
 
 // ============================================================

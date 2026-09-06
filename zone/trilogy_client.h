@@ -150,6 +150,18 @@ public:
 	//   sitting + at/above 50% mana → +(Level + 6)
 	int64 CalcManaRegen(bool bCombat = false) override;
 
+	// Meditation gate (override) — pre-Luclin, meditating IS having the spell
+	// book open, and the book only stops being required at level 35.  Below that
+	// a seated caster who has not opened the book gets the plain seated tick, not
+	// the Meditate return, and earns no Meditate skill-ups.  The open/closed state
+	// arrives as OP_Medding 0x5821 and lives in Client::medding.
+	bool CanMeditate() override;
+
+	// Level at which Meditate stops requiring an open spell book.  Classic EQ
+	// announced this in the level-35 skill message; from 35 on, a seated caster
+	// meditates whether or not the book is up.
+	static constexpr uint8 kMeditateNoBookLevel = 35;
+
 	// XP-for-level (override) — use the exact EQClassic v29c race×class formula
 	// from EQClassic\Zone\Source\client.cpp:771-857.  The v29c eqgame.exe computes
 	// the XP-bar fill internally using this same hardcoded table, so the

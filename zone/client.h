@@ -916,6 +916,13 @@ public:
 
 	void GMKill();
 	inline bool IsMedding() const {return medding;}
+	inline void SetMedding(bool m) { medding = m; }
+	// True when this character is in a state that earns the Meditate skill's mana
+	// return, and a Meditate skill-up chance, on the regen tick.  Virtual so a
+	// client patch can add an era-specific requirement on top of it: TrilogyClient
+	// overrides it to also require an open spell book below level 35, which is
+	// what `medding` (OP_Medding 0x5821, sent only by the v29c client) tracks.
+	virtual bool CanMeditate();
 	inline uint32 GetDuelTarget() const { return duel_target; }
 	inline bool IsDueling() const { return duelaccepted; }
 	inline void SetDuelTarget(uint32 set_id) { duel_target = set_id; }

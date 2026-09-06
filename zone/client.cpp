@@ -235,6 +235,10 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	LFP = false;
 	gmspeed = 0;
 	gminvul = false;
+	// medding tracks OP_Medding (spell book open / closed).  Only the Trilogy
+	// client sends that opcode, but the flag is read unconditionally by
+	// IsMedding() (api_service, Lua, Perl), so it has to start defined.
+	medding = false;
 	playeraction = 0;
 	SetTarget(0);
 	auto_attack = false;

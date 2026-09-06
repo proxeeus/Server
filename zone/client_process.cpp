@@ -1951,11 +1951,18 @@ void Client::DoHPRegen() {
 	SendHPUpdate();
 }
 
+// Baseline meditation gate: seated (or on a mount that allows it) and trained
+// in Meditate.  Overridden per client patch where the era adds a requirement —
+// see TrilogyClient::CanMeditate for the pre-Luclin open-spell-book rule.
+bool Client::CanMeditate() {
+	return (IsSitting() || CanMedOnHorse()) && HasSkill(EQ::skills::SkillMeditate);
+}
+
 void Client::DoManaRegen() {
 	if (GetMana() >= max_mana && spellbonuses.ManaRegen >= 0)
 		return;
 
-	if (GetMana() < max_mana && (IsSitting() || CanMedOnHorse()) && HasSkill(EQ::skills::SkillMeditate))
+	if (GetMana() < max_mana && CanMeditate())
 		CheckIncreaseSkill(EQ::skills::SkillMeditate, nullptr, -5);
 
 	SetMana(GetMana() + CalcManaRegen());

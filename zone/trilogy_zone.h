@@ -779,6 +779,10 @@ private:
 	                               const uint8_t* payload, uint32_t plen);
 	void HandleConnectedSpawnAppearance(const std::string& addr, int port, Session& s,
 	                                    const uint8_t* payload, uint32_t plen);
+	// Spell book opened / closed (0x5821).  The meditate half of sitting —
+	// see ZN_OP_Medding in trilogy_zone.cpp.
+	void HandleMedding(const std::string& addr, int port, Session& s,
+	                   const uint8_t* payload, uint32_t plen);
 	void HandleCastSpell(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
 	void HandleMemorizeSpell(const std::string& addr, int port, Session& s,
