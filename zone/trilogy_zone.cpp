@@ -11836,13 +11836,18 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 				return false;
 		}
 
+		uint32_t upd_delta_bits;
+		std::memcpy(&upd_delta_bits,
+		            reinterpret_cast<const uint8_t*>(upd) + 11, 4);
+
 		bool stale   = (now_ms - last.sent_ms) >= STALENESS_REFRESH_MS;
 		bool changed = (last.x_pos     != upd->x_pos)
 		            || (last.y_pos     != upd->y_pos)
 		            || (last.z_pos     != upd->z_pos)
 		            || (last.heading   != upd->heading)
 		            || (last.anim_type != upd->anim_type)
-		            || (last.delta_heading != upd->delta_heading);
+		            || (last.delta_heading != upd->delta_heading)
+		            || (last.delta_bits    != upd_delta_bits);
 		if (!stale && !changed) return false;
 		last.x_pos     = upd->x_pos;
 		last.y_pos     = upd->y_pos;
@@ -11850,6 +11855,7 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		last.heading   = upd->heading;
 		last.anim_type = upd->anim_type;
 		last.delta_heading = upd->delta_heading;
+		last.delta_bits    = upd_delta_bits;
 		last.sent_ms   = now_ms;
 		return true;
 	};
@@ -12139,8 +12145,34 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			// previous synthesis.
 			upd->anim_type = EncodeTrilogyAnim(c, c->GetRunspeed());
 		}
-		// delta_x/delta_y stay 0 — see the kVelocityWireScale note above;
-		// EQClassic's /125 makes the relayed PC delta 0 in practice too.
+		// Velocity: relay what the moving client reported about itself, the
+		// same way delta_heading and anim_type above are relayed.
+		//
+		// THIS is the path that carries one player's position to another.
+		// TrilogyClient::HandleClientUpdate looks like the place for it and
+		// is not: that runs off EQEmu's OP_ClientUpdate broadcast, which only
+		// Mob::SentPositionPacket emits, and nothing calls that for a v29c
+		// player — their position arrives through TrilogyPositionUpdate,
+		// which calls SetPosition() and broadcasts nothing.  The same
+		// mistaken assumption is recorded in the moving-NPC comment further
+		// down; it cost a round here too.
+		//
+		// What this buys: v29c reports an entire jump as ONE raised-Z sample
+		// carrying an upward delta_z (13-18 raw, ~1 unit/tick).  With the
+		// delta dropped the observer had a bare Z step and nothing to
+		// interpolate, so the model arrived in the air already at the top of
+		// the arc.  EQClassic zeroes this field too, but only as an accident
+		// of its `/125` integer divide — see the kVelocityWireScale note.
+		//
+		// NPCs are untouched: this is the client's own measurement of its own
+		// motion, which cannot diverge in direction from what that client is
+		// doing.  A server-derived NPC velocity can, and that is the failure
+		// the earlier experiments hit.
+		if (c->IsTrilogyClient()) {
+			int32_t sdx = 0, sdy = 0, sdz = 0;
+			static_cast<TrilogyClient*>(c)->GetSelfReportedDelta(now_ms, sdx, sdy, sdz);
+			WriteDeltaBitfield(upd, sdx, sdy, sdz);
+		}
 
 		// A pivoting player takes the same priority path as a turning NPC:
 		// without it the inner-ring 100 ms cap inside should_broadcast throws

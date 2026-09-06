@@ -814,12 +814,21 @@ public:
 	// carrying an upward delta_z, so with the delta dropped the observer
 	// gets a single teleport up and back instead of an arc.
 	//
-	// Age-bounded for the same reason as the delta heading above — a stale
-	// velocity replayed by the stationary-mob heartbeat would have the
-	// observed player drifting after their client went quiet.  300 ms is
-	// tighter than the heading window because velocity integrates into
-	// position: roughly one report interval, so a dropped update stops the
-	// extrapolation rather than extending it.
+	// Age-bounded as a backstop only, NOT as the primary way a velocity is
+	// cleared.  Every position report carries this field, and a stationary
+	// client still reports about once a second, so the ordinary "stopped"
+	// case arrives as a fresh report of zero — which lands the new velocity
+	// and the new position in the SAME broadcast.
+	//
+	// That distinction matters more here than it does for delta heading. If
+	// the timer expired first, the heartbeat would broadcast "velocity zero"
+	// carrying whatever position the server still believed — and mid-jump
+	// the server's Z is the stale apex, because the landing has not been
+	// reported yet.  Re-asserting the apex would yank a falling model back
+	// up.  1500 ms sits well clear of the ~1 s idle report interval so the
+	// real report always wins; it only fires for a client that has actually
+	// gone silent, where the staleness refresh corrects the position anyway.
+
 	void SetSelfReportedDelta(int32_t dx, int32_t dy, int32_t dz, uint64_t now_ms) {
 		m_self_delta_x      = dx;
 		m_self_delta_y      = dy;
@@ -828,7 +837,7 @@ public:
 	}
 
 	bool GetSelfReportedDelta(uint64_t now_ms, int32_t& dx, int32_t& dy, int32_t& dz,
-	                          uint64_t max_age_ms = 300) const {
+	                          uint64_t max_age_ms = 1500) const {
 		dx = dy = dz = 0;
 		if (m_self_delta_set_ms == 0) return false;
 		if (now_ms - m_self_delta_set_ms > max_age_ms) return false;

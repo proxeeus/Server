@@ -1977,14 +1977,20 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 	// gone with it.
 	//
 	// For an observed Trilogy PC we relay the velocity the moving client
-	// reported for itself, verbatim.  p->delta_* cannot serve here: the
-	// Trilogy inbound path calls SetPosition() and never writes Mob::m_Delta,
-	// so those are always zero for a v29c player and the observer gets no
-	// extrapolation hint at all.  The visible symptom is jumps — v29c
-	// reports a jump as a SINGLE raised-Z sample carrying an upward delta_z
-	// (measured 13-18 raw, i.e. 0.8-1.1 units/tick), so dropping the delta
-	// turns a one-second arc into one teleport up and one back down while
-	// the jump animation plays out on the ground underneath it.
+	// reported for itself, verbatim.  p->delta_* cannot serve: the Trilogy
+	// inbound path calls SetPosition() and never writes Mob::m_Delta, so
+	// those are always zero for a v29c player.
+	//
+	// NOTE ON WHICH PATH RUNS.  For a v29c player observed by another v29c
+	// player this branch does not fire at all — EQEmu emits OP_ClientUpdate
+	// only from Mob::SentPositionPacket, which is MovementManager-driven and
+	// never called for a client whose position arrives through
+	// TrilogyPositionUpdate.  SendMobHeartbeat in trilogy_zone.cpp is the
+	// real PC-to-PC carrier and does the same relay there; that is where the
+	// jump fix actually lives.  This one covers the server-moved cases that
+	// DO come through SentPositionPacket, and costs nothing when the
+	// self-report is stale (a feared or charmed client is not reporting, so
+	// the getter returns zero).
 	//
 	// Deliberately NOT extended to NPCs: kVelocityWireScale stays 0 and the
 	// server-derived case stays off.  The difference is that this value is
