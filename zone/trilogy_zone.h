@@ -821,6 +821,13 @@ private:
 	// reply to a swap request wedges its spell book until the player zones.
 	void HandleSwapSpell(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
+	// `/discipline <name>` (0xe621).  Payload is a class-scoped index that only
+	// v29c's own name table gives meaning to; resolved against
+	// kTrilogyDisciplines and fired with SpellOnTarget rather than CastSpell —
+	// see the banner on the implementation for why the modern pipeline is not
+	// safe here.
+	void HandleUseDiscipline(const std::string& addr, int port, Session& s,
+	                         const uint8_t* payload, uint32_t plen);
 	void HandleZoneChange(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	// Resurrection answer (client -> zone).  Translates v29c's 160B

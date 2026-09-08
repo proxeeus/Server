@@ -4519,6 +4519,21 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 				wire_spell_id = parent;
 		}
 
+		// Never hand v29c a spell id it cannot index.  The client's spdat.eff
+		// holds exactly CLIENT_SPELL_COUNT records and it uses the id as a raw
+		// index into `ds:0x6e33a4`; several of those reads have no bounds check
+		// in front of them, so an id past the end is a read off the end of the
+		// table.  Disciplines (4498-4677) are the case that made this reachable
+		// — they fire through SpellOnTarget like any other self-buff, and their
+		// ids are far outside anything this client shipped with.  Dropping the
+		// CastOn costs the animation and the icon, neither of which the client
+		// could have drawn (it has no art or name for the spell either way);
+		// the effect itself is entirely server-side and unaffected.  The user
+		// and nearby players get the discipline message instead — see
+		// TrilogyZoneServer::HandleUseDiscipline.
+		if (static_cast<uint32>(wire_spell_id) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+			return;
+
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
 		caston.target_id        = static_cast<int32_t>(TranslateId(emu->target));
@@ -4545,7 +4560,12 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 	out.target = static_cast<int32_t>(TranslateId(emu->target));
 	out.source = static_cast<int32_t>(TranslateId(emu->source));
 	out.type   = static_cast<int8_t>(emu->type);
-	out.spell  = static_cast<int16_t>(emu->spell);
+	// A spell id past the end of the client's own spell table becomes the
+	// "no spell" sentinel it already sees on every melee swing (0xFFFF) rather
+	// than an out-of-range index into `ds:0x6e33a4`.  See CLIENT_SPELL_COUNT.
+	out.spell  = (static_cast<uint32>(emu->spell) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+	           ? static_cast<int16_t>(0xFFFF)
+	           : static_cast<int16_t>(emu->spell);
 
 	// Routed through combat-event token bucket — see QueueTextPacket comment.
 	QueueTextPacket(0x5820, reinterpret_cast<const uint8_t*>(&out),
@@ -4587,7 +4607,13 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 	out.target = static_cast<int32_t>(TranslateId(emu->target));
 	out.source = static_cast<int32_t>(TranslateId(emu->source));
 	out.type   = static_cast<int8_t>(emu->type);
-	out.spell  = static_cast<int16_t>(emu->spellid);
+	// Same ceiling as HandleAction — a spell id the client has no record for
+	// goes out as the melee "no spell" sentinel instead of an index off the end
+	// of its spell table.  The damage number itself is unaffected, which is what
+	// matters here: this is the packet a Trilogy observer reads for the hit.
+	out.spell  = (static_cast<uint32>(emu->spellid) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+	           ? static_cast<int16_t>(0xFFFF)
+	           : static_cast<int16_t>(emu->spellid);
 	// Reinterpret as signed int32.  EQEmu stores miss/block/parry/dodge/riposte/rune
 	// as negative sentinels (DMG_BLOCKED=-1, DMG_PARRIED=-2, … DMG_RUNE=-6) in an
 	// int64 that then gets packed into CombatDamage_Struct::damage as uint32.
@@ -4879,6 +4905,13 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 		if (parent != 0)
 			wire_spell_id = parent;
 	}
+
+	// Same ceiling as HandleAction: the duration update is a buff-bar lookup by
+	// spell id, and the client's table stops at CLIENT_SPELL_COUNT.  A buff it
+	// has no record for has no bar entry to refresh, so there is nothing this
+	// packet could usefully do even if the index were safe.
+	if (static_cast<uint32>(wire_spell_id) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+		return;
 
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
