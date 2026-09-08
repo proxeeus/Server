@@ -504,6 +504,31 @@ static constexpr uint16_t ZN_OP_Buff          = 0x3221; // bidirectional: Buff_S
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
 
+// 0xe621 OP_UseDiscipline — `/discipline <name>`, client -> zone, 4 bytes.
+//
+// Two halves had to land together for this to do anything at all:
+//
+//  1. PlayerProfile byte 2788 (discplineAvailable) gates the SEND.  The command
+//     handler at eqgame.exe 0x4a5984 opens with
+//     `cmp DWORD PTR [player+0xae0],0 / je return`, so with a zero-filled
+//     profile the client never put a packet on the wire and the command looked
+//     like it did not exist.  See the field comment in trilogy_structs.h for
+//     the three tier bits; SendPlayerProfile now ships 7.
+//
+//  2. The payload is a CLASS-SCOPED INDEX, not a spell id.  v29c owns the
+//     discipline name table — `/discipline ashenhand` is matched locally
+//     against per-class prefix strings and only the resulting small integer is
+//     sent.  Index 5 means Ashenhand to a monk and nothing to anyone else;
+//     index 6 is Furious to a warrior, Whirlwind to a monk and Counterattack
+//     to a rogue.  Resolving it therefore needs the class, which is why
+//     kTrilogyDisciplines below is keyed on (class, index).
+//
+// The client also enforces its own level requirement before sending, prints
+// "You are not sufficient level to use this discipline." itself, and prints a
+// per-class usage line for an unrecognised name — so a well-behaved client only
+// ever sends indexes it believes are legal.  We re-check everything anyway.
+static constexpr uint16_t ZN_OP_UseDiscipline = 0xe621; // client -> zone: UseDiscipline_Struct (4 bytes)
+
 // 0xce21 OP_SwapSpell — spell-book reordering, bidirectional, 8 bytes.
 // Client sends {from_slot, to_slot} on the second right-click of a swap
 // gesture, then blocks further pick-ups until the server echoes the packet
@@ -2784,6 +2809,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleMemorizeSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SwapSpell && s.trilogy_client)
 			HandleSwapSpell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_UseDiscipline && s.trilogy_client)
+			HandleUseDiscipline(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Camp && s.trilogy_client && !s.camping) {
 			// Diagnostic only — the client owns the 30 s countdown and
 			// signals completion via ZN_OP_DeleteSpawn (0x5021).  See the
@@ -5307,6 +5334,15 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 				const int inst_mod = row[4] ? Strings::ToInt(row[4]) : 10;
 				if (slot < 0 || slot >= 15) continue;               // v29c BUFF_COUNT = 15
 				if (spell_id <= 0 || spell_id >= 0xFFFF) continue;  // wire is int16
+				// The client resolves every buff-bar entry through its own
+				// spell table, which holds exactly 3000 records.  A modern-only
+				// spell id would index past the end of `ds:0x6e33a4` at zone-in,
+				// so drop it rather than hand v29c an out-of-range index — the
+				// buff still exists server-side and still ticks, it just has no
+				// icon this client could draw.  Disciplines (4498-4677) normally
+				// land in the dedicated disc buff slot (>= 15) and never reach
+				// here, but nothing guarantees that for every ruleset.
+				if (spell_id >= static_cast<int>(Trilogy::structs::CLIENT_SPELL_COUNT)) continue;
 				pp.buffs[slot].spellid       = static_cast<int16_t>(spell_id);
 				pp.buffs[slot].duration      = static_cast<int32_t>(tics);
 				pp.buffs[slot].level         = static_cast<int8_t>(level);
@@ -5442,6 +5478,29 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		// user-rebindable), and it silently does nothing while this byte is 0.
 		// That console is the only way to reach the native petition queue.
 		pp.gm_flag         = static_cast<int8_t>(Strings::ToInt(row[27]));
+
+		// Discipline / expansion-feature bitfield (byte 2788).  Never written
+		// before, and a zero here is why `/discipline` was silently inert for
+		// every class: eqgame.exe 0x4a5993 reads bytes 2788-2791 as a dword and
+		// returns from the command handler without sending anything when it is
+		// zero.  The wiring on our side was therefore unreachable no matter how
+		// the opcode was handled.
+		//
+		// 7 = all three tiers the client knows about: bit 0 warrior/monk/rogue,
+		// bit 1 Paladin/Ranger/Shadowknight/Bard, bit 2 Beastlord.  EQClassic
+		// ships 1, which leaves the hybrids depending on two client-side
+		// expansion globals and leaves Beastlords out entirely; there is no
+		// reason to under-set it — the client still refuses the command for any
+		// class outside that list ("This is a warrior/monk/rogue/Paladin/Ranger/
+		// Shadowknight/Bard/Beastlord only ability."), and the server re-checks
+		// class and level in HandleUseDiscipline regardless.
+		//
+		// Documented side effect: a non-zero value also lifts v29c's own level
+		// cap from 50 to 60 (eqgame.exe 0x4a22c0).  That is correct for this
+		// branch — the Trilogy content here is Kunark/Velious — but it is a
+		// behaviour change beyond disciplines, so it is called out here rather
+		// than buried.  The three bytes after it stay zero (see struct comment).
+		pp.discplineAvailable = 7;
 
 		// Breath meter.  Drowning on v29c is client-authoritative: the client
 		// counts air down while submerged and reports the damage back as
@@ -15339,6 +15398,347 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 
 	s.trilogy_client->Handle_OP_CastSpell(app);
 	delete app;
+}
+
+// ============================================================
+// Discipline table — (class, client index) -> spell.
+//
+// Recovered from eqgame.exe 0x4a5984 (`/discipline`), which is one long
+// per-class chain of `strnicmp(arg, "<prefix>", n)` tests; each match writes a
+// small integer into the outgoing 4-byte packet and enforces a level.  Nothing
+// in the packet identifies the class, and the indexes are REUSED across classes
+// (6 = Furious for a warrior, Whirlwind for a monk, Counterattack for a rogue;
+// 14 = Fellstrike / Innerflame / Duelist), so the class is part of the key.
+//
+// `client_level` is the gate the client applies to itself before sending.  It
+// agrees with spells_new.classesN for 22 of the 23 warrior/monk/rogue
+// disciplines that have class levels in PEQ's data — independent confirmation
+// that the whole table was read out of the binary correctly.  The one
+// disagreement is Duelist: the client lets a rogue use it at 52, PEQ's spell
+// data says 59.  We prefer the spell data where it exists, so a Trilogy rogue
+// is held to the same number a Titanium one is, and fall back to `client_level`
+// only for the ten disciplines PEQ leaves at 255 for every class (the four
+// hybrid pairs plus Resistant and Fearless), which would otherwise be unusable
+// on any client.
+//
+// The v29c index space is 1..31 with 7-9, 18 unassigned and 10 reserved for
+// /resetdiscipline (eqgame.exe 0x4a58f5).
+// ============================================================
+
+struct TrilogyDisciplineEntry {
+	uint8       class_id;     // EQEmu class id (identical to v29c's for player classes)
+	uint8       index;        // the value the client puts in the 0xe621 payload
+	uint16      spell_id;     // spells_new id
+	uint8       client_level; // level v29c enforces before it will send
+	const char* command;      // the name the player types, for messages and logs
+};
+
+// A bare `/discipline` with no argument.  The client prints its own per-class
+// usage line locally and then sends this anyway (eqgame.exe 0x4a5a17 falls
+// through to the same send with the value still zero).
+static constexpr int32 kTrilogyDisciplineListIndex  = 0;
+
+// /resetdiscipline sends this index instead of a discipline.  GM-only in the
+// client ("Test server only function will not remain in game."), re-checked here.
+static constexpr int32 kTrilogyDisciplineResetIndex = 10;
+
+static const TrilogyDisciplineEntry kTrilogyDisciplines[] = {
+	// Warrior
+	{ Class::Warrior,       1, 4498, 60, "aggressive"     },
+	{ Class::Warrior,       2, 4501, 57, "precise"        },
+	{ Class::Warrior,       3, 4499, 55, "defensive"      },
+	{ Class::Warrior,       4, 4503, 52, "evasive"        },
+	{ Class::Warrior,       6, 4674, 56, "furious"        },
+	{ Class::Warrior,      13, 4670, 59, "fortitude"      },
+	{ Class::Warrior,      14, 4675, 58, "fellstrike"     },
+	{ Class::Warrior,      16, 4672, 53, "charge"         },
+	{ Class::Warrior,      17, 4514, 54, "mightystrike"   },
+	{ Class::Warrior,      30, 4585, 30, "resistant"      },
+	{ Class::Warrior,      31, 4587, 40, "fearless"       },
+	// Paladin
+	{ Class::Paladin,      22, 4500, 55, "holyforge"      },
+	{ Class::Paladin,      23, 4518, 60, "sanctification" },
+	{ Class::Paladin,      30, 4585, 51, "resistant"      },
+	{ Class::Paladin,      31, 4587, 54, "fearless"       },
+	// Ranger
+	{ Class::Ranger,       24, 4506, 55, "trueshot"       },
+	{ Class::Ranger,       25, 4519, 60, "weaponshield"   },
+	{ Class::Ranger,       30, 4585, 51, "resistant"      },
+	{ Class::Ranger,       31, 4587, 54, "fearless"       },
+	// Shadowknight
+	{ Class::ShadowKnight, 26, 4520, 55, "unholyaura"     },
+	{ Class::ShadowKnight, 27, 4504, 60, "leechcurse"     },
+	{ Class::ShadowKnight, 30, 4585, 51, "resistant"      },
+	{ Class::ShadowKnight, 31, 4587, 54, "fearless"       },
+	// Monk
+	{ Class::Monk,          5, 4508, 60, "ashenhand"      },
+	{ Class::Monk,          6, 4509, 53, "whirlwind"      },
+	{ Class::Monk,         11, 4510, 51, "stonestance"    },
+	{ Class::Monk,         12, 4511, 52, "thunderkick"    },
+	{ Class::Monk,         13, 4502, 54, "voiddance"      },
+	{ Class::Monk,         14, 4512, 56, "innerflame"     },
+	{ Class::Monk,         15, 4513, 57, "hundredfist"    },
+	{ Class::Monk,         20, 4507, 59, "silentfist"     },
+	{ Class::Monk,         30, 4585, 30, "resistant"      },
+	{ Class::Monk,         31, 4587, 40, "fearless"       },
+	// Bard
+	{ Class::Bard,         28, 4516, 55, "deftdance"      },
+	{ Class::Bard,         29, 4586, 60, "puretone"       },
+	{ Class::Bard,         30, 4585, 51, "resistant"      },
+	{ Class::Bard,         31, 4587, 54, "fearless"       },
+	// Rogue
+	{ Class::Rogue,         6, 4673, 53, "counterattack"  },
+	{ Class::Rogue,        14, 4676, 52, "duelist"        },
+	{ Class::Rogue,        15, 4677, 58, "blindingspeed"  },
+	{ Class::Rogue,        16, 4505, 54, "deadeye"        },
+	{ Class::Rogue,        19, 4515, 55, "nimble"         },
+	{ Class::Rogue,        21, 4517, 57, "kinesthetics"   },
+	{ Class::Rogue,        30, 4585, 30, "resistant"      },
+	{ Class::Rogue,        31, 4587, 40, "fearless"       },
+	// Beastlord — the client offers only the two universal disciplines, and
+	// gates them behind bit 2 of discplineAvailable (eqgame.exe 0x4197bf).
+	{ Class::Beastlord,    30, 4585, 51, "resistant"      },
+	{ Class::Beastlord,    31, 4587, 54, "fearless"       },
+};
+
+static const TrilogyDisciplineEntry* FindTrilogyDiscipline(uint8 class_id, int32 index)
+{
+	for (const auto& e : kTrilogyDisciplines) {
+		if (e.class_id == class_id && static_cast<int32>(e.index) == index)
+			return &e;
+	}
+	return nullptr;
+}
+
+// First table entry for a class, or nullptr if the class has no disciplines.
+// Used only to reach a representative spell for the shared reuse timer.
+static const TrilogyDisciplineEntry* FirstTrilogyDisciplineForClass(uint8 class_id)
+{
+	for (const auto& e : kTrilogyDisciplines) {
+		if (e.class_id == class_id)
+			return &e;
+	}
+	return nullptr;
+}
+
+// Effective level gate for one discipline: the server's own spell data when it
+// has a level for this class, otherwise the level v29c enforces on itself.  See
+// the table banner for why the fallback exists.  255 = not usable at all.
+static uint8 TrilogyDisciplineRequiredLevel(const TrilogyDisciplineEntry& e, uint8 class_id)
+{
+	if (!IsValidSpell(e.spell_id))
+		return 255;
+	const uint8 data_level = spells[e.spell_id].classes[class_id - 1];
+	return (data_level > 0 && data_level < 255) ? data_level : e.client_level;
+}
+
+// Resolve the persistent-timer slot a discipline shares.  Every classic
+// discipline carries EndurTimerIndex 1, so in practice they all land on the
+// same slot — one discipline, then a long wait, which is the classic rule.
+static pTimerType TrilogyDisciplineTimer(uint16 spell_id)
+{
+	int slot = pTimerDisciplineReuseStart + static_cast<int>(spells[spell_id].timer_id);
+	if (slot < pTimerDisciplineReuseStart || slot > pTimerDisciplineReuseEnd)
+		slot = pTimerDisciplineReuseStart;
+	return static_cast<pTimerType>(slot);
+}
+
+// ============================================================
+// HandleUseDiscipline — client sent 0xe621 (UseDiscipline_Struct, 4 bytes).
+//
+// Fires the discipline with SpellOnTarget rather than CastSpell, for the same
+// reason Lay on Hands and Harm Touch do (see HandleCastSpell): every classic
+// discipline has cast_time 0, and the CastSpell -> DoCastSpell ->
+// CastedSpellFinished fast path emits a burst of packets v29c does not survive.
+// SpellOnTarget applies the buff, broadcasts OP_Action / OP_Damage to nearby
+// clients, and stops there.  All the bookkeeping CastSpell would have done —
+// the reuse timer, the one-discipline-at-a-time rule, the incapacitation
+// checks — is done explicitly below, mirroring Client::UseDiscipline.
+//
+// Client::UseDiscipline itself is deliberately NOT reused: it requires the
+// discipline to be present in m_pp.disciplines (a tome the player scribed,
+// which does not exist in this era — v29c grants disciplines by class and
+// level) and it rejects any spell whose spells_new.classesN is 255, which is
+// true for ten of the thirty-three disciplines in PEQ's data.  Routing through
+// it would have meant writing rows into character_disciplines for a mechanic
+// that is not tome-based, and would still have refused the hybrid set.
+//
+// FEEDBACK, and why the Trilogy half of it is text.  The user gets the real
+// spell: the buff lands, SpellOnTarget's OP_Action/OP_Damage go out to everyone
+// in range, and a modern client nearby renders the particle and the target-window
+// icon normally.  A Trilogy observer cannot: v29c's spdat.eff holds 3000 records
+// and the disciplines are spell 4498-4677, so the client has no name, icon or
+// particle for them, and handing it an out-of-range spell-table index is exactly
+// the kind of thing that crashes it (see CLIENT_SPELL_COUNT in trilogy_structs.h
+// and the filter in TrilogyClient::HandleAction).  So the observable half is a
+// message in the client's own discipline colour — Chat::Disciplines (271) is
+// EQClassic's MESSAGETYPE_Disciplines and lands inside v29c's 256..289 user
+// colour range — sent to the user and to everyone in spell-message range.
+// ============================================================
+
+void TrilogyZoneServer::HandleUseDiscipline(const std::string& addr, int port, Session& s,
+                                            const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::UseDiscipline_Struct)) return;
+
+	const auto* tri   = reinterpret_cast<const Trilogy::structs::UseDiscipline_Struct*>(payload);
+	const int32 index = tri->discipline;
+
+	Client*     c        = s.trilogy_client;
+	const uint8 class_id = static_cast<uint8>(c->GetClass());
+	const uint8 level    = c->GetLevel();
+
+	LogInfo("[TrilogyZone] UseDiscipline: char={} class={} level={} index={}",
+	        s.char_name, static_cast<int>(class_id), static_cast<int>(level), index);
+
+	// Bare `/discipline`.  The client has already printed its own list of the
+	// names this class can type, so do not repeat it — answer the question that
+	// list cannot: whether a discipline is actually available right now.  The
+	// client's list is fixed per class and says nothing about level, so this has
+	// to check eligibility first; reporting the timer alone told a level-11 monk
+	// "You are ready to use a discipline" when the earliest one it has is 30.
+	if (index == kTrilogyDisciplineListIndex) {
+		const TrilogyDisciplineEntry* usable = nullptr;
+		for (const auto& e : kTrilogyDisciplines) {
+			if (e.class_id != class_id)
+				continue;
+			const uint8 req = TrilogyDisciplineRequiredLevel(e, class_id);
+			if (req != 255 && level >= req) {
+				usable = &e;
+				break;
+			}
+		}
+
+		if (!usable) {
+			// Nothing earned yet.  Stay quiet for a class that has no
+			// disciplines at all — the client already refuses those outright
+			// and never reaches us.
+			if (FirstTrilogyDisciplineForClass(class_id))
+				c->Message(Chat::Disciplines, "You have not yet learned any disciplines.");
+			return;
+		}
+
+		// Every discipline shares one reuse timer, so this is a single line.
+		auto&            timers     = c->GetPTimers();
+		const pTimerType list_timer = TrilogyDisciplineTimer(usable->spell_id);
+		if (timers.Expired(&database, list_timer, false)) {
+			c->Message(Chat::Disciplines, "You are ready to use a discipline.");
+		} else {
+			c->Message(
+				Chat::Disciplines,
+				fmt::format(
+					"You can use a discipline in {}.",
+					Strings::SecondsToTime(timers.GetRemainingTime(list_timer))
+				).c_str()
+			);
+		}
+		return;
+	}
+
+	// /resetdiscipline.  The client gates this on its own GM byte before
+	// sending, but the packet is four bytes on a UDP socket — re-check.
+	if (index == kTrilogyDisciplineResetIndex) {
+		if (!c->GetGM()) {
+			LogInfo("[TrilogyZone] UseDiscipline: char={} sent /resetdiscipline "
+			        "without GM status - ignored", s.char_name);
+			return;
+		}
+		c->ResetAllDisciplineTimers();
+		c->Message(Chat::Disciplines, "Your discipline timers have been reset.");
+		return;
+	}
+
+	const TrilogyDisciplineEntry* disc = FindTrilogyDiscipline(class_id, index);
+	if (!disc) {
+		// Either a class with no disciplines, or an index this class does not
+		// own.  The client filters both, so this is a malformed or stale packet.
+		LogInfo("[TrilogyZone] UseDiscipline: char={} class={} has no discipline "
+		        "at index {} - ignored", s.char_name, static_cast<int>(class_id), index);
+		return;
+	}
+
+	const uint16 spell_id = disc->spell_id;
+	if (!IsValidSpell(spell_id)) {
+		c->Message(Chat::Red, "The %s discipline is not available on this server.", disc->command);
+		LogInfo("[TrilogyZone] UseDiscipline: char={} discipline '{}' maps to spell {} "
+		        "which is not in the spell table", s.char_name, disc->command, spell_id);
+		return;
+	}
+
+	const SPDat_Spell_Struct& spell = spells[spell_id];
+
+	// Level gate — see TrilogyDisciplineRequiredLevel.
+	const uint8 required = TrilogyDisciplineRequiredLevel(*disc, class_id);
+	if (level < required) {
+		c->Message(Chat::Red, "You must be level %d to use the %s discipline.",
+		           static_cast<int>(required), disc->command);
+		return;
+	}
+
+	// Incapacitation gates — same set Client::UseDiscipline applies, so a
+	// Trilogy warrior cannot pop Defensive while mezzed when a Titanium one
+	// cannot.  Spending the reuse timer on a refused attempt would be worse
+	// than the refusal itself, which is why these come before the timer.
+	// Plain text rather than MessageString(MELEE_SILENCE): v29c has no
+	// formatted-string path from us, so a string-id we have not added to
+	// TrilogySystemStringTemplate is dropped on the floor and the player is
+	// told nothing at all.
+	if (c->IsAmnesiad()) {
+		c->Message(Chat::Red, "You cannot use this ability, you are suffering from amnesia!");
+		return;
+	}
+	if (c->IsFeared() || c->IsStunned() || c->IsMezzed() || c->DivineAura()) {
+		c->Message(Chat::Red, "You cannot use a discipline right now.");
+		return;
+	}
+
+	// One discipline buff at a time — the same rule Client::UseDiscipline
+	// enforces silently.  v29c prints nothing of its own here, so say it.
+	if (spell.buff_duration_formula != 0 && spell.target_type == ST_Self && c->HasDiscBuff()) {
+		c->Message(Chat::Disciplines, "You must wait for your current discipline to expire.");
+		return;
+	}
+
+	// Reuse timer — see TrilogyDisciplineTimer.
+	const pTimerType disc_timer = TrilogyDisciplineTimer(spell_id);
+
+	auto& timers = c->GetPTimers();
+	if (!timers.Expired(&database, disc_timer, false)) {
+		c->Message(
+			Chat::Disciplines,
+			fmt::format(
+				"You can use this discipline in {}.",
+				Strings::SecondsToTime(timers.GetRemainingTime(disc_timer))
+			).c_str()
+		);
+		return;
+	}
+
+	const uint32 recast_seconds = spell.recast_time / 1000;
+	if (recast_seconds > 0)
+		timers.Start(disc_timer, recast_seconds);
+
+	// Apply.  Every discipline in the table is target_type 6 (ST_Self), so the
+	// target is always the user; there is no target field in the packet either.
+	c->SpellOnTarget(spell_id, static_cast<Mob*>(c));
+
+	// Feedback.  The user's own line, then the observable one for everybody
+	// else in range — the only discipline feedback a Trilogy observer can get,
+	// since the spell itself is outside this client's spell table.
+	c->Message(Chat::Disciplines, "You activate the %s discipline.", disc->command);
+	entity_list.MessageClose(
+		c,                              /* sender */
+		true,                           /* skip sender - already messaged above */
+		RuleI(Range, SpellMessages),
+		Chat::Disciplines,
+		"%s activates the %s discipline.",
+		c->GetCleanName(),
+		disc->command
+	);
+
+	LogInfo("[TrilogyZone] UseDiscipline: char={} fired '{}' spell={} recast={}s",
+	        s.char_name, disc->command, spell_id, recast_seconds);
 }
 
 // ============================================================

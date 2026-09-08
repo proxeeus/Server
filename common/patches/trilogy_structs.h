@@ -51,6 +51,21 @@ static const uint32 PC_MAX_NAME_LENGTH   = 30;
 static const uint32 PC_SURNAME_LENGTH    = 20;
 static const uint32 NPC_MAX_NAME_LENGTH  = 30;
 
+// Size of the client's own spell table.  `spdat.eff` shipped with v29c is
+// exactly 1,824,000 bytes of 608-byte records = 3000 entries, indexed directly
+// by spell id (record N is spell N — verified against spells_new: record 381 is
+// "Resistant Skin", 1539 is "Fortitude"), and eqgame.exe bounds-checks every
+// lookup of both spell arrays with `cmp eax,0xbb8 / jge skip`
+// (`ds:0x6e33a4` = spdat records, `ds:0x5fe9a0` = spell effects).
+//
+// So a spell id >= 3000 has NO name, icon, description or particle data in this
+// client, and several `ds:0x6e33a4` reads are NOT bounds-checked.  Anything we
+// put on the wire that the client will use as a spell-table index (OP_CastOn
+// spell_id, OP_Buff spell_id, the PlayerProfile buff bar) must be filtered
+// against this ceiling.  Disciplines (4498-4677) are the systematic case: the
+// server knows them, this client does not.
+static const uint32 CLIENT_SPELL_COUNT   = 3000;
+
 // Translate an EQEmu class id (Server/common/classes.h) to the Trilogy/EQClassic
 // class id (EQClassic Common/Include/classes.h).  Player classes 1-15 are
 // identical; NPC/special classes differ.  Most importantly Merchant
@@ -883,8 +898,8 @@ struct PlayerProfile_Struct
 /*2749*/	int8	unknown2749[15];
 /*2764*/	int8	gm;
 /*2765*/	int8	unknown2765[23];
-/*2788*/	int8	discplineAvailable;
-/*2789*/	int8	unknown2789[23];
+/*2788*/	int8	discplineAvailable;			// Discipline / expansion-feature BITFIELD, not a boolean.  EQClassic (PlayerProfile.h:117) only records "needs to be 1 or the client wont sent opcode"; eqgame.exe has three separate accessors over this byte and they gate different classes.  Bit 0 (`0x4197a7`, `& 1`): base tier — the /discipline handler's very first test is `cmp DWORD PTR [player+0xae0],0` (0x4a5993, i.e. struct 2788 read as a dword, so the three pad bytes must stay zero) and it returns silently when clear, which is why warrior/monk/rogue disciplines were inert.  Bit 1 (`0x4197b2`, `& 2`): hybrid tier — Paladin/Ranger/Shadowknight/Bard route through `0x4a31a5`, which needs `[player+0xae0] >= 2` (or one of two client expansion globals set).  Bit 2 (`0x4197bf`, `& 4`): Beastlord tier, checked at 0x4a59ca.  Side effect worth knowing: any non-zero value also raises the client's own level cap from 50 to 60 (`0x4a22c0`: `push 0x32` default, `push 0x3c` when this field is set) and feeds a 51/56/60 counter at 0x4270e4.  We ship 7 (all three tiers) — see SendPlayerProfile.
+/*2789*/	int8	unknown2789[23];			// The first THREE of these must stay zero: 2788 is read as a DWORD by the /discipline gate above, so a stray byte in 2789-2791 would turn the bitfield into garbage (still non-zero, so bit 0 keeps working, but `>= 2` and `& 4` would answer for the wrong tiers).
 /*2812*/	int32	hungerlevel;
 /*2816*/	int32	thirstlevel;
 /*2820*/	int8	unknown2820[24];
@@ -1035,6 +1050,40 @@ struct CastSpell_Struct
 /*008*/	uint32	target_id;
 /*012*/	int32	cs_unknown2;
 /*016*/
+};
+
+/*
+** UseDiscipline_Struct
+** Opcode:  OP_UseDiscipline = 0xe621
+** Direction: client -> zone server
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: UseDiscipline_Struct
+**          plus eqgame.exe 0x4a5984 (the /discipline command handler).
+** Size:    4 bytes
+**
+** Sent when the player types `/discipline <name>`.  The whole payload is a
+** single int32 holding a CLASS-SCOPED discipline index, not a spell id — the
+** client resolves the typed name against its own per-class name table and
+** puts the matching index here (eqgame.exe 0x4a5aa7 pushes opcode 0x21e6 with
+** size 4 and `&[ebp-4]`).
+**
+** Index 0 means "bare `/discipline`, no argument".  The client prints its own
+** per-class usage line and then falls THROUGH to the same send with the value
+** still zero (eqgame.exe 0x4a5a17: `strlen(arg) < 1` -> print -> 0x4a5a9f),
+** so this arrives on the wire like any other index — matching EQClassic's
+** "0 = without param" note.  Confirmed on the wire 2026-09-08:
+** `rx opcode=E621 plen=4 payload=[00 00 00 00]` from a bare /discipline.
+**
+** Index 10 is `/resetdiscipline`, a GM-only test-server command
+** (eqgame.exe 0x4a5951).  See kTrilogyDisciplines in trilogy_zone.cpp for the
+** full (class, index) -> spell mapping recovered from the binary.
+**
+** The client refuses to send this at all unless PlayerProfile byte 2788
+** (discplineAvailable) is non-zero — see that field's comment below.
+*/
+struct UseDiscipline_Struct
+{
+/*000*/	int32	discipline;		// class-scoped discipline index (see kTrilogyDisciplines)
+/*004*/
 };
 
 /*
@@ -2128,6 +2177,10 @@ static_assert(offsetof(Petition_Struct, senttime) == 160,
 static_assert(sizeof(BugReport_Struct)      == 1099,
 	"Trilogy BugReport_Struct must be 1099 bytes "
 	"(0xb320 / 0x3c21; eqgame.exe 0x46362d pushes size 0x44b)");
+
+static_assert(sizeof(UseDiscipline_Struct)  ==   4,
+	"Trilogy UseDiscipline_Struct must be 4 bytes "
+	"(0xe621; eqgame.exe 0x4a5aa4 pushes size 4 with &[ebp-4])");
 
 
 	} /*structs*/
