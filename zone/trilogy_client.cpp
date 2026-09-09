@@ -967,6 +967,9 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_RezzRequest:
 		HandleOutgoingRezzRequest(app);
 		break;
+	case OP_Translocate:
+		HandleOutgoingTranslocate(app);
+		break;
 	case OP_GroupInvite:
 		// Popup invite emitted by Handle_OP_GroupInvite2 → GroupInvite_Struct.
 		HandleOutgoingGroupInvite(app);
@@ -5808,6 +5811,73 @@ void TrilogyClient::HandleOutgoingRezzRequest(const EQApplicationPacket* app)
 		out.zoneName, out.x, out.y, out.z);
 
 	m_tzs->SendToSession(m_session_key, 0x2a21,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
+}
+
+// ============================================================
+// HandleOutgoingTranslocate — translate the 92-byte modern Translocate_Struct
+// to the 88-byte v29c layout and fire it out at opcode 0x0622 with
+// confirmed = 0, which is what makes the client raise the accept/decline box.
+//
+// Client::SendOPTranslocateConfirm (client.cpp) is the only producer; it runs
+// off SE_Translocate in spell_effects.cpp and has already stashed the real
+// destination in PendingTranslocateData before queueing this packet.  That
+// matters, because the v29c reply carries nothing back (see below) — the
+// server is the sole owner of where the player actually ends up.
+//
+// Field mapping (modern → v29c):
+//   ZoneID  (uint32)  -> zone[16]   via zone_store.GetZoneName (SHORT name;
+//                                   the client resolves the long name for the
+//                                   prompt and strcmp's the short one against
+//                                   the current zone to pick move vs zone)
+//   SpellID (uint32)  -> spellID    (read as a DWORD at eqgame.exe 0x4959e3;
+//                                   1422 / 1334 switch the prompt to the
+//                                   "to your bind point?" wording)
+//   Caster[64]        -> caster[16]
+//   y / x / z         -> y / x / z  (same order, same offsets)
+//   Complete          -> confirmed = 0 (always: this is the ASK)
+//
+// The coords are cosmetic on this leg — the client only reads them once the
+// player accepts and we send confirmed = 1, which we never do (see
+// TrilogyZoneServer::HandleTranslocateResponse for why).  They are populated
+// anyway so a packet capture matches what EQClassic emits.
+// ============================================================
+void TrilogyClient::HandleOutgoingTranslocate(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Translocate_Struct)) return;
+
+	const auto* t_in = reinterpret_cast<const ::Translocate_Struct*>(app->pBuffer);
+
+	Trilogy::structs::Translocate_Struct out{};
+
+	// Bail rather than prompt with an empty destination: the box would read
+	// "...translocated by Bob to ?" and accepting it would MovePC to zone 0.
+	// An unresolvable id means bad spells_new.teleport_zone data, so say so.
+	// Clear PendingTranslocate on the way out — SendOPTranslocateConfirm set it
+	// before queueing us, and leaving it set would block every later cast.
+	const char* zone_short = zone_store.GetZoneName(t_in->ZoneID, false);
+	if (!zone_short || !*zone_short) {
+		LogError("[TrilogyTranslocate] spell {} has unresolvable destination zone id {} — dropping prompt for {}",
+		         t_in->SpellID, t_in->ZoneID, GetName());
+		PendingTranslocate = false;
+		return;
+	}
+	strn0cpy(out.zone, zone_short, sizeof(out.zone));
+
+	out.spellID   = t_in->SpellID;
+	out.y         = t_in->y;
+	out.x         = t_in->x;
+	out.z         = t_in->z;
+	out.confirmed = 0; // 0 = ask the player
+
+	strn0cpy(out.caster, t_in->Caster, sizeof(out.caster));
+
+	LogSpells(
+		"[TrilogyTranslocate] send OP_Translocate caster={} spell={} zone={}({}) pos=({:.1f},{:.1f},{:.1f})",
+		out.caster, out.spellID, out.zone, t_in->ZoneID, out.x, out.y, out.z);
+
+	m_tzs->SendToSession(m_session_key, 0x0622,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 }

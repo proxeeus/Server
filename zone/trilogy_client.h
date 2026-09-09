@@ -502,6 +502,14 @@ private:
 	// TrilogyZoneServer::HandleRezzAnswer.
 	void HandleOutgoingRezzRequest(const EQApplicationPacket* app);
 
+	// Translocate confirmation (server → Trilogy client): translates the 92-byte
+	// modern Translocate_Struct to v29c's 88-byte layout at opcode 0x0622 with
+	// confirmed=0, which is what makes the client raise the accept/decline box.
+	// The client replies on the same opcode with confirmed=1 (accept) or
+	// 0xFFFFFFFF (decline); inbound side lives in
+	// TrilogyZoneServer::HandleTranslocateResponse.
+	void HandleOutgoingTranslocate(const EQApplicationPacket* app);
+
 	// ---- Group translators (server → Trilogy client) ----
 	// EQEmu's GroupUpdate_Struct is 452B (4B action + 6×64B names) and the
 	// invite/follow/cancel structs use 64B names; the v29c wire format uses

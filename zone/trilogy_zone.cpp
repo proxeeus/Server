@@ -619,6 +619,15 @@ static constexpr uint16_t ZN_OP_RezzRequest   = 0x2a21; // bidirectional; used s
 static constexpr uint16_t ZN_OP_RezzAnswer    = 0x9b21; // client -> zone: accept / decline
 static constexpr uint16_t ZN_OP_RezzComplete  = 0xec21; // zone -> client: rez finished
 
+// Translocate (88B Translocate_Struct, one bidirectional opcode).
+// Handler pinned at eqgame.exe 0x495996; the accept/decline reply is emitted by
+// the generic confirmation-dialog handler at 0x4818cb for dialog kind 0x19.
+// Sent out with confirmed=0 to raise the box; the client replies on the SAME
+// opcode with confirmed=1 (accept) or 0xFFFFFFFF (decline).  We never send the
+// confirmed=1 third leg EQClassic uses — Client::Handle_OP_Translocate drives
+// MovePC/GoToBind, which already has Trilogy translators.
+static constexpr uint16_t ZN_OP_Translocate   = 0x0622; // bidirectional: ask / answer
+
 // Trade opcodes (NPC trade window)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
@@ -2732,6 +2741,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// completes on a corpse target, so processing this inbound would
 			// double-fire the popup on the corpse owner.  Silently drop.
 		}
+		else if (opcode == ZN_OP_Translocate && s.trilogy_client)
+			HandleTranslocateResponse(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Buff && s.trilogy_client)
@@ -11255,6 +11266,55 @@ void TrilogyZoneServer::HandleRezzAnswer(const std::string& addr, int port, Sess
 	if (rin->action == 1) {
 		SendApp(addr, port, s, ZN_OP_RezzComplete, payload, plen, true);
 	}
+}
+
+// ============================================================
+// HandleTranslocateResponse — player clicked yes/no on the translocate box.
+//
+// Wire in: 88 bytes at opcode 0x0622.  Read `confirmed` (offset 84) AND NOTHING
+// ELSE.  The v29c confirmation-dialog handler (eqgame.exe 0x4818cb, dialog kind
+// 0x19) builds its reply from an uninitialised 88-byte stack local and writes
+// only that one field before sending:
+//     0x481e4f  accept  -> confirmed = 1
+//     0x481fdb  decline -> confirmed = 0xFFFFFFFF (and the client prints
+//                          "You declined the request to be translocated."
+//                          locally, so we owe no message on that path)
+// Every other byte is stack garbage.  That is fine because the destination was
+// stashed in Client::PendingTranslocateData by SendOPTranslocateConfirm before
+// the popup went out — the server, not the client, owns where the player lands.
+//
+// Wire out: nothing on this opcode.  EQClassic answers an accept with a third
+// leg (OP_Translocate, confirmed=1) that makes the client move itself, but
+// Client::Handle_OP_Translocate instead runs GoToBind() (translocate-to-bind
+// while already in the bind zone) or MovePC(..., ZoneSolicited).  Both already
+// reach v29c through the existing OP_TeleportPC / OP_RequestClientZoneChange
+// translators, the same way the resurrection accept path moves a player, and
+// going through the server keeps the destination unspoofable.
+// ============================================================
+void TrilogyZoneServer::HandleTranslocateResponse(const std::string& addr, int port, Session& s,
+                                                   const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < sizeof(Trilogy::structs::Translocate_Struct)) {
+		LogInfo("[TrilogyTranslocate] OP_Translocate short payload {} from char={}", plen, s.char_name);
+		return;
+	}
+
+	const auto* tin = reinterpret_cast<const Trilogy::structs::Translocate_Struct*>(payload);
+	const bool  accepted = (tin->confirmed == 1);
+
+	EQApplicationPacket app(OP_Translocate, sizeof(::Translocate_Struct));
+	memset(app.pBuffer, 0, sizeof(::Translocate_Struct));
+	auto* tout = reinterpret_cast<::Translocate_Struct*>(app.pBuffer);
+
+	// Complete is the only field Handle_OP_Translocate reads; the rest stays
+	// zeroed deliberately so no garbage from the client's stack can leak in.
+	tout->Complete = accepted ? 1 : 0;
+
+	LogInfo("[TrilogyTranslocate] OP_Translocate answer from {} confirmed=0x{:08x} -> {}",
+	        s.char_name, tin->confirmed, accepted ? "ACCEPT" : "DECLINE");
+
+	s.trilogy_client->Handle_OP_Translocate(&app);
 }
 
 // ============================================================
