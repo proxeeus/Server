@@ -839,6 +839,14 @@ private:
 	// state cleanly (mirrors EQClassic ProcessOP_RezzAnswer).
 	void HandleRezzAnswer(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
+	// Translocate answer (client -> zone).  The v29c reply on 0x0622 is an
+	// uninitialised 88-byte stack buffer with only `confirmed` written
+	// (eqgame.exe 0x481e4f / 0x481fdb), so ONLY that field may be read; the
+	// destination lives in Client::PendingTranslocateData server-side.
+	// Normalises confirmed (1 = accept, 0xFFFFFFFF = decline) into the modern
+	// Complete flag and dispatches through Client::Handle_OP_Translocate.
+	void HandleTranslocateResponse(const std::string& addr, int port, Session& s,
+	                               const uint8_t* payload, uint32_t plen);
 	// Merchant / vendor (client -> zone) handlers.  Buy/sell mutate the player
 	// inventory DB directly (m_inv goes stale after moves) while reusing EQEmu's
 	// zone merchant tables + money funcs.

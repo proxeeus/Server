@@ -1950,6 +1950,56 @@ struct Resurrect_Struct
 /*160*/
 };
 
+// v29c Translocate_Struct -- OP_Translocate (0x0622), used bidirectionally and
+// in three steps (handler pinned at eqgame.exe 0x495996):
+//
+//   1. zone -> client, confirmed = 0
+//        0x4959a0  `cmp DWORD PTR [esi+0x54],1` misses, so the client builds a
+//        confirmation box: spellID (+0x20) 1422 / 1334 selects "Are you sure you
+//        wish to be translocated to your bind point?", anything else formats
+//        "Are you sure you wish to be translocated by %s to %s?" from caster
+//        (+0x28) and the LONG name the client resolves from zone (+0x00).
+//        0x495a4e stamps the dialog kind byte 0x19 -- that is what routes the
+//        answer back to this opcode.
+//
+//   2. client -> zone, 88 bytes at 0x0622 (dialog handler at 0x4818cb)
+//        Accept  (0x481e4f): confirmed = 1
+//        Decline (0x481fdb): confirmed = 0xFFFFFFFF, and the client prints
+//                            "You declined the request to be translocated."
+//        NOTE: the reply buffer is an uninitialised 88-byte stack local -- only
+//        offset 84 is written.  Every other field is garbage and must be
+//        ignored; the server owns the pending translocate state.
+//
+//   3. zone -> client, confirmed = 1 (EQClassic's TranslocatePC) would make the
+//        client move itself.  We do NOT use step 3 -- Client::Handle_OP_Translocate
+//        drives MovePC/GoToBind instead, which reaches v29c through the existing
+//        OP_TeleportPC / OP_RequestClientZoneChange translators.  Recorded here
+//        because the client still implements it: with confirmed = 1 and a spellID
+//        that is not 1422/1334 it reads y/x/z from the packet (0x495aad), and with
+//        1422/1334 it ignores them and uses its own PlayerProfile bind coords
+//        (0x495aee) -- the X/Y-reversed move the modern GoToBind path exists to
+//        avoid.
+//
+// Length: 88 bytes.  Offsets 0x20 (spellID), 0x28 (caster), 0x48/0x4c/0x50
+// (y/x/z) and 0x54 (confirmed) are all direct reads in the disassembly above;
+// field names follow EQClassic Common/Include/eq_packet_structs.h.
+struct Translocate_Struct
+{
+/*000*/	char	zone[16];       // destination zone SHORT name; client resolves the
+                                // long name for the prompt and strcmp's this
+                                // against the current zone to pick move vs zone
+/*016*/	uint8	unknown016[16];
+/*032*/	uint32	spellID;        // read as a DWORD at 0x4959e3; 1422 / 1334 = to-bind
+/*036*/	uint8	unknown036[4];
+/*040*/	char	caster[16];     // caster name shown in the prompt
+/*056*/	uint8	unknown056[16];
+/*072*/	float	y;
+/*076*/	float	x;
+/*080*/	float	z;
+/*084*/	uint32	confirmed;      // out: 0 = ask.  in: 1 = accept, 0xFFFFFFFF = decline
+/*088*/
+};
+
 // -------------------------------------------------------------------------
 // Petition / bug-report family
 //
@@ -2161,6 +2211,18 @@ static_assert(sizeof(LootingItem_Struct)    ==  16,
 static_assert(sizeof(Resurrect_Struct)      == 160,
 	"Trilogy Resurrect_Struct must be 160 bytes "
 	"(bidirectional 0x2a21 / 0x9b21 / 0xec21)");
+
+static_assert(sizeof(Translocate_Struct)    ==  88,
+	"Trilogy Translocate_Struct must be 88 bytes "
+	"(0x0622; eqgame.exe 0x481e4c pushes 0x58 as the reply size)");
+
+static_assert(offsetof(Translocate_Struct, confirmed) == 84,
+	"Trilogy Translocate_Struct confirmed must be at offset 84 "
+	"(eqgame.exe 0x4959a0 reads [packet+0x54])");
+
+static_assert(offsetof(Translocate_Struct, spellID) == 32,
+	"Trilogy Translocate_Struct spellID must be at offset 32 "
+	"(eqgame.exe 0x4959e3 reads [packet+0x20])");
 
 static_assert(sizeof(PetitionUpdate_Struct) == 116,
 	"Trilogy PetitionUpdate_Struct must be 116 bytes "
