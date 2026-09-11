@@ -918,6 +918,68 @@ private:
 	void HandleSocialAction(const std::string& addr, int port, Session& s,
 	                        const uint8_t* payload, uint32_t plen);
 
+	// Player dropped the cursor item on the ground (0x3520 OP_DropItem,
+	// client -> zone, 240-byte EQClassic Object_Struct).  Resolves the item
+	// from the inventory DB (with any container contents), removes those rows
+	// and spawns an EQEmu Object, which broadcasts back out as OP_GroundSpawn.
+	void HandleDropItem(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+
+	// ── Dropped coin piles (0x0720 OP_DropCoin / 0x0820 OP_PickupCoin) ──────
+	//
+	// v29c keeps coin piles in a list of its own (ds:0x6e4d60), separate from
+	// the ground-object list (ds:0x6e4d5c) that OP_GroundSpawn feeds.  EQEmu
+	// has no coin-object concept at all, so the piles are tracked here and
+	// broadcast natively rather than being forced through Object/entity_list.
+	//
+	// The client destroys its own local pile immediately after sending the
+	// drop (0x4cc6ba: destructor + free), so the server echo is what actually
+	// puts the coin on the ground for the dropper as well as for everyone else.
+	struct DroppedCoin {
+		uint32_t id        = 0;   // wire id; the client echoes it back in 0x0820
+		uint32_t platinum  = 0;
+		uint32_t gold      = 0;
+		uint32_t silver    = 0;
+		uint32_t copper    = 0;
+		float    x         = 0.0f;
+		float    y         = 0.0f;
+		float    z         = 0.0f;
+		char     model[16] = {};  // PLAT_/GOLD_/SILVER_/COPPER_ACTORDEF
+		uint64_t expire_ms = 0;   // steady_clock ms; kCoinDecayMs after the drop
+	};
+
+	// EQClassic DROPPED_ITEM_DURATION (Common/Include/config.h:224) and
+	// EQEmu's own Object decay_timer both use 300 s.
+	static constexpr uint64_t kCoinDecayMs = 300000;
+	// v29c's own click-range gate: ds:0x534498 == 20.0f, compared against the
+	// straight-line distance from the player to the pile at 0x4cc88d.  Mirrored
+	// server-side with slack so a legitimate click is never refused.
+	static constexpr float    kCoinPickupRangeSq = 40.0f * 40.0f;
+
+	std::vector<DroppedCoin> m_dropped_coins;
+	uint32_t                 m_next_coin_id = 1;
+
+	void HandleDropCoin(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+	void HandlePickupCoin(const std::string& addr, int port, Session& s,
+	                      const uint8_t* payload, uint32_t plen);
+
+	// Serialize one pile into the 112-byte DropCoins_Struct v29c expects.
+	void BuildCoinSpawnPacket(const DroppedCoin& c, uint8_t out[112]) const;
+	// 0x0720 to every CONNECTED Trilogy session in the zone (including the
+	// dropper — see the DroppedCoin comment above).
+	void BroadcastCoinSpawn(const DroppedCoin& c);
+	// 0x0820 to every CONNECTED Trilogy session.  `picker_entity_id` is the
+	// EQEmu entity id of the player who picked it up, or 0 for a decay/expire
+	// despawn: each recipient is sent its own wire spawn id when it is the
+	// picker (v29c then moves the coin onto its cursor and plays the pickup
+	// sound) and 0 otherwise (silent removal).
+	void BroadcastCoinDespawn(uint32_t coin_id, uint16_t picker_entity_id);
+	// Replay every live pile to a client that just entered the zone.
+	void SendGroundCoins(Session& s);
+	// Decay sweep, driven from Tick().
+	void ExpireGroundCoins();
+
 	// Packet builders
 	void SendPlayerProfile(const std::string& addr, int port, Session& s);
 	void SendInventoryItems(const std::string& addr, int port, Session& s);

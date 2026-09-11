@@ -651,6 +651,25 @@ static constexpr uint16_t ZN_OP_ShopEndConfirm = 0x4521; // zone -> client: clos
 // Source: EQClassic/Common/Include/eq_opcodes.h :: OP_MoveCoin
 static constexpr uint16_t ZN_OP_MoveCoin       = 0x2d21; // client -> zone: MoveCoin_Struct (20 bytes)
 
+// ── Dropped coin piles ──────────────────────────────────────────────────────
+// Both opcodes are BIDIRECTIONAL and both directions use the same struct.
+//
+//   0x0720 OP_DropCoin   — client -> zone: "I dropped my cursor coin here"
+//                          zone -> client: "render a coin pile here"
+//                          DropCoins_Struct, 112 bytes (see kCoin* offsets below)
+//   0x0820 OP_PickupCoin — client -> zone: "I clicked that coin pile"
+//                          zone -> client: "remove that pile" (+ credit my cursor)
+//                          ClickObject_Struct-shaped: { uint32 coin_id, uint32 player_id }
+//
+// Coin piles are NOT EQEmu Objects.  v29c keeps two independent lists —
+// ds:0x6e4d5c for ground objects (0x3520 / 0x3620) and ds:0x6e4d60 for coin
+// piles — and the click handler at 0x4cc6e5 searches the object list first,
+// falling back to the coin list, emitting 0x3620 or 0x0820 accordingly.  A
+// coin pile pushed through OP_GroundSpawn would land in the wrong list, so the
+// piles live here instead (m_dropped_coins) and are broadcast natively.
+static constexpr uint16_t ZN_OP_DropCoin       = 0x0720;
+static constexpr uint16_t ZN_OP_PickupCoin     = 0x0820;
+
 // Tradeskill / world container opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
 //   OP_CraftingStation (0xd720) is BIDIRECTIONAL on the same wire opcode:
@@ -2221,48 +2240,7 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			}
 		}
 		else if (opcode == ZN_OP_DropItem && s.trilogy_client)
-		{
-			// The Trilogy client sends a 240-byte EQClassic Object_Struct.
-			// itemid  (int32) is at offset  8 — the EQEmu item ID the client received
-			//                                   via ClassicItem_Struct.id when the item
-			//                                   was delivered (always fits in uint16).
-			// stack_size (int8) is at offset 118 — quantity / charges.
-			//
-			// Using the payload item_id (rather than a DB query) avoids the cursor-queue
-			// ordering pitfall: EQ::InventoryProfile::PushCursor appends to the BACK of
-			// the cursor deque, so slot 33 in the DB is the FRONT item (potentially an
-			// older item), not necessarily the one the player just looted.
-			if (plen < 240) {
-				s.cursor_from_db = -1;
-				break;
-			}
-
-			const uint32_t item_id = *reinterpret_cast<const uint32_t*>(payload + 8);
-			const int16_t  charges = static_cast<int16_t>(static_cast<int8_t>(payload[118]));
-
-			EQ::ItemInstance* inst = (item_id > 0) ? database.CreateItem(item_id, charges) : nullptr;
-
-			// Remove the item from the inventory DB at the cursor slot.
-			// cursor_from_db is set if the player picked this item up from a bag slot
-			// (two-step move) before dropping; otherwise the item is at slot 33 (cursor).
-			const int slot = (s.cursor_from_db >= 0) ? s.cursor_from_db : 33;
-			database.QueryDatabase(fmt::format(
-			    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
-			    s.char_id, slot));
-			s.cursor_from_db = -1;
-
-			if (inst) {
-				auto* obj = new Object(s.trilogy_client, inst);
-				entity_list.AddObject(obj, true);
-				obj->StartDecay();
-				safe_delete(inst);
-			}
-
-			// Drop-to-ground empties the client cursor — dispatch any deferred
-			// OP_SummonedItem waiting on this exact event.  See
-			// TrilogyClient::OnClientCursorCleared.
-			s.trilogy_client->OnClientCursorCleared();
-		}
+			HandleDropItem(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_PickupItem && s.trilogy_client)
 		{
 			// Player clicked a ground item to pick it up.
@@ -2283,6 +2261,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (opcode == ZN_OP_DropCoin && s.trilogy_client)
+			HandleDropCoin(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_PickupCoin && s.trilogy_client)
+			HandlePickupCoin(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClickDoor && s.trilogy_client)
 		{
 			// Player clicked a door.  EQClassic ClickDoor_Struct (12 bytes):
@@ -5035,6 +5017,9 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		LogInfo("[TrilogyZone] Sending {} zone object(s) to '{}'",
 		        entity_list.GetObjectList().size(), s.char_name);
 		entity_list.SendZoneObjects(s.trilogy_client);
+		// Coin piles are not EQEmu Objects (see the DroppedCoin comment in
+		// trilogy_zone.h), so they need their own replay — same deferred queue.
+		SendGroundCoins(s);
 	}
 
 	// Prime the heartbeat: first A120 sent immediately so client sees NPC positions at once.
@@ -10235,14 +10220,34 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 			if (dir > 0) f += amount;
 			else         f  = (f > amount) ? f - amount : 0;
 		};
+		// Cursor coin is tracked (see the cursor mirror further down this
+		// function for why), so trade moves that pass through it have to keep
+		// m_pp.*_cursor in step or a later ground drop will validate against
+		// a stale figure.
+		auto adjust_cursor = [&](int dir) {
+			auto& f = (denom == 0) ? pp.copper_cursor :
+			          (denom == 1) ? pp.silver_cursor :
+			          (denom == 2) ? pp.gold_cursor   :
+			                         pp.platinum_cursor;
+			if (dir > 0) {
+				f += static_cast<int32>(amount);
+			} else {
+				// Signed compare: a stale negative must floor at 0, not wrap.
+				const int64_t left =
+				    static_cast<int64_t>(f) - static_cast<int64_t>(amount);
+				f = (left > 0) ? static_cast<int32>(left) : 0;
+			}
+		};
 
 		if (to_slot == 3) {
 			// Depositing into trade window.
 			add_offer(+1);
 			// Source = carried (1) → debit PP now.
 			// Source = cursor  (0) → PP was already debited by the prior
-			//                        MoveCoin(carried→cursor) pickup, no change.
+			//                        MoveCoin(carried→cursor) pickup, so only
+			//                        the cursor mirror moves.
 			if (from_slot == 1) adjust_pp(-1);
+			if (from_slot == 0) adjust_cursor(-1);
 
 			// Notify partner so their window paints our offer.
 			Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
@@ -10268,8 +10273,9 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 		} else { // from_slot == 3 — withdrawing from trade window
 			add_offer(-1);
 			// Dest = carried (1) → credit PP now.
-			// Dest = cursor  (0) → coin sits on cursor visually; no PP change.
+			// Dest = cursor  (0) → coin sits on the cursor; only the mirror moves.
 			if (to_slot == 1) adjust_pp(+1);
+			if (to_slot == 0) adjust_cursor(+1);
 
 			LogInfo("[TrilogyZone] PCTrade coin withdraw char={} denom={} amount={} to={} "
 			        "(offer cp={} sp={} gp={} pp={})",
@@ -10304,6 +10310,28 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	const uint32_t denom = ct2;
 
 	auto& pp = s.trilogy_client->GetPP();
+
+	// ── Cursor coin mirror (slot 0) ──────────────────────────────────────
+	// The cursor is transient for display purposes, but it is NOT untracked:
+	// m_pp.{platinum,gold,silver,copper}_cursor are real persisted fields
+	// (ZoneDatabase::SaveCharacterCurrency / LoadCharacterCurrency), and
+	// SendPlayerProfile ships them at zone-in so the client restores the coin
+	// it was holding.  Keeping them in step here is what lets HandleDropCoin
+	// validate the amount the client claims to be dropping instead of minting
+	// whatever it asks for — the drop packet is the only place the server
+	// hears about that coin, and 0x0820 hands it straight back to a cursor.
+	// Denominations are kept separate (never normalised), same as carried/bank.
+	auto adjust_cursor = [&](int dir) {
+		auto& f = (denom == 0) ? pp.copper_cursor :
+		          (denom == 1) ? pp.silver_cursor :
+		          (denom == 2) ? pp.gold_cursor   :
+		                         pp.platinum_cursor;
+		if (dir > 0) f += static_cast<int32>(amount);
+		else         f  = (static_cast<int64_t>(f) > amount)
+		                  ? static_cast<int32>(f - amount) : 0;
+	};
+	if (from_slot == 0) adjust_cursor(-1);
+	if (to_slot   == 0) adjust_cursor(+1);
 
 	// Deduct from source (floor at 0).
 	if (from_slot == 1) {
@@ -10348,10 +10376,600 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	s.money_synced = true;
 
 	LogInfo("[TrilogyZone] MoveCoin char={} from={} to={} denom={} amount={} "
-	        "(carried p={} g={} s={} c={} | bank p={} g={} s={} c={})",
+	        "(carried p={} g={} s={} c={} | bank p={} g={} s={} c={} "
+	        "| cursor p={} g={} s={} c={})",
 	        s.char_id, from_slot, to_slot, denom, static_cast<long long>(amount),
 	        pp.platinum, pp.gold, pp.silver, pp.copper,
-	        pp.platinum_bank, pp.gold_bank, pp.silver_bank, pp.copper_bank);
+	        pp.platinum_bank, pp.gold_bank, pp.silver_bank, pp.copper_bank,
+	        pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor);
+}
+
+// ============================================================
+// TrilogyBagContentBase — first DB slotid of the 10 content rows belonging to a
+// container sitting at `db_slot`, or -1 if that slot cannot hold bag contents.
+//
+// Mirrors EQ::InventoryProfile::CalcSlotId(db_slot, 0):
+//   general bag @DB 23-30    → 251  + (slot-23)  *10
+//   cursor      @DB 33 / 8000 → 351               (invbag::CURSOR_BAG_BEGIN)
+//   bank bag    @DB 2000-2007 → 2031 + (slot-2000)*10
+//
+// NOTE the cursor arm, which HandleMoveItem's own cont_base_for lambda does not
+// have.  Only the FRONT cursor item can persist contents at all — CalcSlotId
+// maps both slotCursor and 8000 to 351, and returns INVALID_INDEX for
+// 8001-8010 — so 351-360 unambiguously belongs to DB slot 33, and anything
+// sitting there when slot 33 goes away is either that bag's contents or an
+// already-orphaned row.  Either way it should go with it.
+// ============================================================
+static int TrilogyBagContentBase(int db_slot)
+{
+	if (db_slot >= 23   && db_slot <= 30)   return 251  + (db_slot - 23)   * 10;
+	if (db_slot == 33   || db_slot == 8000) return 351;
+	if (db_slot >= 2000 && db_slot <= 2007) return 2031 + (db_slot - 2000) * 10;
+	return -1;
+}
+
+// ============================================================
+// HandleDropItem — player dropped the cursor item on the ground (0x3520).
+//
+// The client fills in a 240-byte EQClassic Object_Struct from its own cursor
+// item and sends it (eqgame.exe 0x4cb7f0-0x4cb9db).  It writes very little:
+//
+//   [  8] int16  itemid       — `mov WORD PTR [esi+0x8], ax`, 16 bits ONLY.
+//                               Bytes 10-11 are never initialised, by either
+//                               the ground-object constructor (0x4a02e5, which
+//                               also only writes a WORD there) or the drop
+//                               path, so they carry whatever the recycled heap
+//                               block happened to hold.
+//   [ 40] float  y  [44] x  [48] z   — the player's own position
+//   [112] int32  cost
+//   [116] 10 B   item_data[0] — verbatim copy of the client's item struct +0xd8
+//   [228] int32  weight
+//
+// Everything else — dropid, objectname, heading — is the SERVER's to fill in:
+// the client destroys its own local object the instant it has sent this
+// (0x4cb9e7 = destructor, then free) and re-renders purely from the
+// OP_GroundSpawn echo we broadcast back.
+//
+// Reading that item id as a uint32 (which this handler used to do) picks up the
+// uninitialised bytes 10-11.  When they are non-zero the id is nonsense,
+// SharedDatabase::CreateItem returns nullptr without logging anything, and no
+// Object is ever created — while the DELETE had already run.  Net effect: the
+// item is destroyed and nothing appears on the ground, which is the reported
+// "dropping items does nothing" symptom.
+//
+// So: read 16 bits, and resolve the item from the inventory DB rather than
+// trusting the packet (the pattern the rest of this file uses, since m_inv is
+// stale after direct-DB moves).  The wire id is kept as a cross-check.  Nothing
+// is deleted until the ItemInstance has been built, so a failure now leaves the
+// player's item intact instead of eating it.
+// ============================================================
+void TrilogyZoneServer::HandleDropItem(const std::string& addr, int port, Session& s,
+                                       const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+
+	static constexpr uint32_t kClassicObjSize = 240;
+	if (plen < kClassicObjSize) {
+		LogError("[TrilogyZone] DropItem char={} short packet plen={} (expected {}) — ignoring",
+		         s.char_id, plen, kClassicObjSize);
+		s.cursor_from_db = -1;
+		return;
+	}
+
+	const uint16_t wire_item_id = *reinterpret_cast<const uint16_t*>(payload + 8);
+
+	// Diagnostic: item_data[0] is a verbatim 10-byte copy of the client's own
+	// item struct, so dumping it is the cheapest way to pin which byte in it
+	// carries the stack count if that is ever needed (EQClassic's struct says
+	// absolute 118, the client's constructor field writes say 117 — we depend
+	// on neither, because charges come from the DB row below).
+	{
+		std::string idata;
+		for (int i = 116; i < 126; ++i) idata += fmt::format(" {:02x}", payload[i]);
+		LogInfo("[TrilogyZone] DropItem rx char={} wire_item_id={} cursor_from_db={} "
+		        "item_data[0]=[{}] cost={} weight={}",
+		        s.char_id, wire_item_id, s.cursor_from_db, idata,
+		        *reinterpret_cast<const int32_t*>(payload + 112),
+		        *reinterpret_cast<const int32_t*>(payload + 228));
+	}
+
+	// Drop-to-ground empties the client cursor no matter how this turns out —
+	// dispatch any deferred OP_SummonedItem waiting on that event.  Done via
+	// this guard so every early return below still honours it.
+	struct CursorClearedGuard {
+		TrilogyClient* tc;
+		~CursorClearedGuard() { if (tc) tc->OnClientCursorCleared(); }
+	} cursor_guard{s.trilogy_client};
+
+	// ── Resolve the source inventory row ────────────────────────────────
+	// cursor_from_db is set when the player lifted the item out of a bag or
+	// worn slot (two-step move) and has not put it down again, so its row is
+	// still at the origin.  Otherwise the cursor row is DB slot 33, with the
+	// invisible cursor queue at 8000-8010 behind it.
+	int src_db = s.cursor_from_db;
+	if (src_db < 0) {
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid` FROM `inventory` WHERE `charid`={} AND "
+		    "(`slotid`=33 OR (`slotid` BETWEEN 8000 AND 8010)) "
+		    "ORDER BY `slotid` ASC LIMIT 1", s.char_id));
+		if (r.Success() && r.RowCount() > 0)
+			src_db = static_cast<int>(Strings::ToInt(r.begin()[0]));
+	}
+	s.cursor_from_db           = -1;
+	s.cursor_partial_origin_db = -1;
+	if (src_db < 0) {
+		LogError("[TrilogyZone] DropItem char={} wire_item_id={}: cursor has no DB row "
+		         "(nothing at cursor_from_db / 33 / 8000-8010) — nothing dropped",
+		         s.char_id, wire_item_id);
+		return;
+	}
+
+	// ── Read the row (item + charges + dye + augs) ──────────────────────
+	uint32 item_id = 0;
+	int16  charges = 0;
+	uint32 color   = 0;
+	uint32 augs[6] = {};
+	{
+		auto r = database.QueryDatabase(fmt::format(
+		    "SELECT `itemid`, `charges`, `color`, `augslot1`, `augslot2`, `augslot3`, "
+		    "`augslot4`, `augslot5`, `augslot6` "
+		    "FROM `inventory` WHERE `charid`={} AND `slotid`={}", s.char_id, src_db));
+		if (!r.Success() || r.RowCount() == 0) {
+			LogError("[TrilogyZone] DropItem char={} src_db={} has no inventory row "
+			         "(wire_item_id={}) — nothing dropped", s.char_id, src_db, wire_item_id);
+			return;
+		}
+		auto row = r.begin();
+		item_id = static_cast<uint32>(Strings::ToInt(row[0]));
+		charges = static_cast<int16>(Strings::ToInt(row[1]));
+		color   = static_cast<uint32>(Strings::ToInt(row[2]));
+		for (int i = 0; i < 6; ++i)
+			augs[i] = static_cast<uint32>(Strings::ToInt(row[3 + i]));
+	}
+
+	// The client only ever knows a 16-bit id (ClassicItem_Struct.id), so this is
+	// the honest comparison.  A mismatch means the cursor row we found is not
+	// the item the player thinks they dropped — worth shouting about, but the DB
+	// row is still the authoritative thing to remove.
+	if (wire_item_id != 0 && static_cast<uint16_t>(item_id) != wire_item_id) {
+		LogError("[TrilogyZone] DropItem char={} MISMATCH: client says item_id={} but "
+		         "src_db={} holds item_id={} — dropping the DB row",
+		         s.char_id, wire_item_id, src_db, item_id);
+	}
+
+	EQ::ItemInstance* inst = database.CreateItem(item_id, charges,
+	                                             augs[0], augs[1], augs[2],
+	                                             augs[3], augs[4], augs[5]);
+	if (!inst) {
+		LogError("[TrilogyZone] DropItem char={} CreateItem({}) failed — nothing dropped, "
+		         "inventory row at src_db={} left intact", s.char_id, item_id, src_db);
+		return;
+	}
+	inst->SetColor(color);
+	// `inventory.charges` stores 0x7FFF for "not a charged/stacked item" and 0
+	// for a stackable that should still be one unit — the same normalisation
+	// SharedDatabase::GetInventory applies on the normal load path.
+	auto normalise_charges = [](EQ::ItemInstance* i, int16 db_charges) {
+		if (db_charges == 0x7FFF)                    i->SetCharges(-1);
+		else if (db_charges == 0 && i->IsStackable()) i->SetCharges(1);
+	};
+	normalise_charges(inst, charges);
+
+	// ── Container contents ride along ───────────────────────────────────
+	// Without this a dropped bag lands on the ground empty and its content rows
+	// are orphaned in `inventory` under a parent slot that no longer holds
+	// anything — invisible to the player, but still holding that item's lore
+	// flag (see CheckLoreConflict, which queries the DB directly).
+	std::vector<int> content_slots;
+	const int cont_base = TrilogyBagContentBase(src_db);
+	if (inst->IsClassBag() && cont_base >= 0) {
+		auto rc = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid`, `itemid`, `charges`, `color`, `augslot1`, `augslot2`, "
+		    "`augslot3`, `augslot4`, `augslot5`, `augslot6` FROM `inventory` "
+		    "WHERE `charid`={} AND `slotid` BETWEEN {} AND {}",
+		    s.char_id, cont_base, cont_base + 9));
+		for (auto row = rc.begin(); row != rc.end(); ++row) {
+			const int    cslot   = static_cast<int>(Strings::ToInt(row[0]));
+			const uint32 citem   = static_cast<uint32>(Strings::ToInt(row[1]));
+			const int16  ccharge = static_cast<int16>(Strings::ToInt(row[2]));
+			const uint32 ccolor  = static_cast<uint32>(Strings::ToInt(row[3]));
+			uint32 caugs[6] = {};
+			for (int i = 0; i < 6; ++i)
+				caugs[i] = static_cast<uint32>(Strings::ToInt(row[4 + i]));
+
+			EQ::ItemInstance* cinst = database.CreateItem(citem, ccharge,
+			                                              caugs[0], caugs[1], caugs[2],
+			                                              caugs[3], caugs[4], caugs[5]);
+			if (!cinst) {
+				LogError("[TrilogyZone] DropItem char={} bag content slot={} item_id={} "
+				         "CreateItem failed — leaving that row in place",
+				         s.char_id, cslot, citem);
+				continue;
+			}
+			cinst->SetColor(ccolor);
+			normalise_charges(cinst, ccharge);
+			inst->PutItem(static_cast<uint8>(cslot - cont_base), *cinst);
+			safe_delete(cinst);
+			content_slots.push_back(cslot);
+		}
+	}
+
+	// ── Remove the rows, then spawn ─────────────────────────────────────
+	{
+		std::string in_list = std::to_string(src_db);
+		for (int cs : content_slots) in_list += "," + std::to_string(cs);
+		database.QueryDatabase(fmt::format(
+		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid` IN ({})",
+		    s.char_id, in_list));
+	}
+
+	// Keep m_inv in step with the direct-DB delete.  Exactly ONE pop:
+	//
+	//   * src_db 33 / 8000-8010 — the item really is in m_inv's cursor deque
+	//     (loot / #si / summon push it there), so pop the cursor front.  Note
+	//     invslot::slotCursor IS 33, so popping "src_db" and then popping the
+	//     cursor would be the same deque twice and would eat the item queued
+	//     behind it.
+	//   * any other non-worn slot — the two-step pickup left the row at its
+	//     origin and never touched m_inv.cursor (see the comment on
+	//     MaterializeCursorForBotTrade), so pop the origin and leave the
+	//     cursor alone.
+	//   * a worn slot — left to RefreshWornSlotsAfterMove below, which re-reads
+	//     worn slots from the DB and fires the unequip side-effects.
+	{
+		auto& inv = s.trilogy_client->GetInv();
+		const bool cursor_row = (src_db == EQ::invslot::slotCursor) ||
+		                        (src_db >= 8000 && src_db <= 8010);
+		const bool worn_row   = (src_db >= 1 && src_db <= 20) ||
+		                        (src_db == EQ::invslot::slotAmmo);
+		if (cursor_row) {
+			auto* cur = inv.PopItem(EQ::invslot::slotCursor);
+			safe_delete(cur);
+		} else if (!worn_row) {
+			auto* old = inv.PopItem(static_cast<int16>(src_db));
+			safe_delete(old);
+		}
+	}
+	// Worn-slot side-effects (CalcBonuses / attack timer / EVENT_UNEQUIP_ITEM)
+	// for the case where the item was still in a worn DB row when it was dropped.
+	RefreshWornSlotsAfterMove(s, src_db, -1, /*destroy_path=*/true);
+
+	auto* obj = new Object(s.trilogy_client, inst);
+	entity_list.AddObject(obj, true);   // broadcasts OP_GroundSpawn to every
+	                                    // client in the zone, Trilogy or not
+	obj->StartDecay();
+
+	LogInfo("[TrilogyZone] DropItem char={} item_id={} charges={} src_db={} "
+	        "bag_contents={} drop_id={} pos=({:.1f},{:.1f},{:.1f}) model='{}'",
+	        s.char_id, item_id, charges, src_db, content_slots.size(),
+	        obj->GetID(), obj->GetX(), obj->GetY(), obj->GetZ(),
+	        inst->GetItem() ? inst->GetItem()->IDFile : "?");
+
+	safe_delete(inst);
+}
+
+// ============================================================
+// Dropped coin piles — 0x0720 OP_DropCoin / 0x0820 OP_PickupCoin
+//
+// DropCoins_Struct, 112 bytes, same layout in both directions.  Offsets pinned
+// from the v29c handlers themselves (inbound spawn 0x49cc65, outbound drop
+// 0x4cc4d3, pickup click 0x4cc837) rather than from EQClassic, whose struct
+// mislabels several of them:
+//
+//   [  0] uint32 link0 } the client's own list pointers.  The inbound handler
+//   [  4] uint32 link1 } saves both, memcpy's the packet over the node, then
+//                        restores them (0x49cc86-0x49ccbd) — so whatever we put
+//                        in the first 8 bytes is discarded.
+//   [  8] uint32 platinum   \  the client copies exactly ONE of these from its
+//   [ 12] uint32 gold        > cursor coin, picked by the cursor's coin-type
+//   [ 16] uint32 silver      / byte (0x4cc56a-0x4cc5c2), and zeroes the rest.
+//   [ 20] uint32 copper     /
+//   [ 24] uint32 object_id  — SERVER-assigned.  The client leaves it
+//                             uninitialised on the way out, and echoes it back
+//                             verbatim in 0x0820 ([esi+0x18] at 0x4cc89c).
+//   [ 48] uint32 amount     — total of the four; informational
+//   [ 52] uint32 handle     — client-local render handle, never read off the wire
+//   [ 56] float  y   [60] float x   [64] float z
+//   [ 68] float  heading
+//   [ 80] char   coin_name[16] — PLAT_/GOLD_/SILVER_/COPPER_ACTORDEF
+//
+// The client renders a pile from coin_name + y/x/z + heading and nothing else
+// (0x49ccc0-0x49cd27); it snaps z to the terrain itself (best-Z of z + 1.0,
+// then + 0.5), so the z we send only has to be roughly right.
+// ============================================================
+static constexpr int kCoinOffPlatinum = 8;
+static constexpr int kCoinOffGold     = 12;
+static constexpr int kCoinOffSilver   = 16;
+static constexpr int kCoinOffCopper   = 20;
+static constexpr int kCoinOffObjectId = 24;
+static constexpr int kCoinOffAmount   = 48;
+static constexpr int kCoinOffY        = 56;
+static constexpr int kCoinOffX        = 60;
+static constexpr int kCoinOffZ        = 64;
+static constexpr int kCoinOffHeading  = 68;
+static constexpr int kCoinOffName     = 80;
+static constexpr uint32_t kCoinStructSize = 112;
+
+void TrilogyZoneServer::BuildCoinSpawnPacket(const DroppedCoin& c, uint8_t out[112]) const
+{
+	std::memset(out, 0, kCoinStructSize);
+	*reinterpret_cast<uint32_t*>(out + kCoinOffPlatinum) = c.platinum;
+	*reinterpret_cast<uint32_t*>(out + kCoinOffGold)     = c.gold;
+	*reinterpret_cast<uint32_t*>(out + kCoinOffSilver)   = c.silver;
+	*reinterpret_cast<uint32_t*>(out + kCoinOffCopper)   = c.copper;
+	*reinterpret_cast<uint32_t*>(out + kCoinOffObjectId) = c.id;
+	*reinterpret_cast<uint32_t*>(out + kCoinOffAmount)   =
+	    c.platinum + c.gold + c.silver + c.copper;
+	*reinterpret_cast<float*>(out + kCoinOffY) = c.y;
+	*reinterpret_cast<float*>(out + kCoinOffX) = c.x;
+	*reinterpret_cast<float*>(out + kCoinOffZ) = c.z;
+	// EQClassic keeps dropped-object heading at 0 "so all weapons face the same
+	// direction at all times" (Zone/Source/object.cpp:118).  Coin models are
+	// radially symmetric, so this is cosmetic here, but 0 is what the era did.
+	*reinterpret_cast<float*>(out + kCoinOffHeading) = 0.0f;
+	std::strncpy(reinterpret_cast<char*>(out + kCoinOffName), c.model, 15);
+	out[kCoinOffName + 15] = '\0';
+}
+
+void TrilogyZoneServer::BroadcastCoinSpawn(const DroppedCoin& c)
+{
+	uint8_t buf[kCoinStructSize];
+	BuildCoinSpawnPacket(c, buf);
+	int sent = 0;
+	for (auto& kv : m_sessions) {
+		if (!kv.second.trilogy_client) continue;
+		if (kv.second.trilogy_client->IsZoning()) {
+			// The 3D world is not up yet, so the spawn has to wait in the same
+			// deferred queue the ground objects and doors use.
+			kv.second.trilogy_client->QueueRawOrDefer(ZN_OP_DropCoin, buf, kCoinStructSize);
+			++sent;
+			continue;
+		}
+		SendToSession(kv.first, ZN_OP_DropCoin, buf, kCoinStructSize);
+		++sent;
+	}
+	LogInfo("[TrilogyZone] CoinSpawn id={} p={} g={} s={} c={} model='{}' "
+	        "pos=({:.1f},{:.1f},{:.1f}) -> {} session(s)",
+	        c.id, c.platinum, c.gold, c.silver, c.copper, c.model,
+	        c.x, c.y, c.z, sent);
+}
+
+void TrilogyZoneServer::BroadcastCoinDespawn(uint32_t coin_id, uint16_t picker_entity_id)
+{
+	// ClickObject_Struct shape: { uint32 coin_id, uint32 player_id }.
+	// v29c (0x49ce14): player_id equal to my own spawn id -> move the pile onto
+	// my cursor and fire its local pickup feedback (a ring-buffer event at
+	// ds:0x6b6560 that reads like a sound/UI cue); player_id 0 or someone
+	// else's -> just delete the pile.  So each recipient needs its OWN wire
+	// spawn id when it is the picker, and 0 otherwise.
+	for (auto& kv : m_sessions) {
+		Session& other = kv.second;
+		if (!other.trilogy_client) continue;
+		// A pile that vanished while this client was still zoning was never
+		// sent to it — SendGroundCoins runs after this — so nothing to remove.
+		if (other.trilogy_client->IsZoning()) continue;
+
+		uint8_t buf[8];
+		std::memset(buf, 0, sizeof(buf));
+		*reinterpret_cast<uint32_t*>(buf + 0) = coin_id;
+		const bool is_picker =
+		    (picker_entity_id != 0) &&
+		    (static_cast<uint16_t>(other.trilogy_client->GetID()) == picker_entity_id);
+		*reinterpret_cast<uint32_t*>(buf + 4) =
+		    is_picker ? static_cast<uint32_t>(other.trilogy_client->GetPlayerSpawnId()) : 0u;
+
+		SendToSession(kv.first, ZN_OP_PickupCoin, buf, sizeof(buf));
+	}
+}
+
+void TrilogyZoneServer::SendGroundCoins(Session& s)
+{
+	if (!s.trilogy_client || m_dropped_coins.empty()) return;
+	uint8_t buf[kCoinStructSize];
+	for (const auto& c : m_dropped_coins) {
+		BuildCoinSpawnPacket(c, buf);
+		s.trilogy_client->QueueRawOrDefer(ZN_OP_DropCoin, buf, kCoinStructSize);
+	}
+	LogInfo("[TrilogyZone] Sending {} ground coin pile(s) to '{}'",
+	        m_dropped_coins.size(), s.char_name);
+}
+
+void TrilogyZoneServer::ExpireGroundCoins()
+{
+	if (m_dropped_coins.empty()) return;
+
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	for (auto it = m_dropped_coins.begin(); it != m_dropped_coins.end(); ) {
+		if (now_ms < it->expire_ms) { ++it; continue; }
+		LogInfo("[TrilogyZone] CoinDecay id={} p={} g={} s={} c={} expired",
+		        it->id, it->platinum, it->gold, it->silver, it->copper);
+		const uint32_t id = it->id;
+		it = m_dropped_coins.erase(it);
+		BroadcastCoinDespawn(id, /*picker_entity_id=*/0);
+	}
+}
+
+// ------------------------------------------------------------
+// HandleDropCoin — client dropped its cursor coin on the ground (0x0720).
+//
+// By the time this arrives the client has already zeroed its own cursor coin
+// (0x4cc656) and destroyed its local pile object (0x4cc6ba), so the echo below
+// is what actually puts coin on the ground — for the dropper every bit as much
+// as for everyone else.  That is why "coin cannot be dropped" looked like a
+// client limitation: nothing was echoing it back.
+//
+// The amount is validated against m_pp.*_cursor rather than taken on trust: the
+// carried money was already debited when the player lifted the coin onto the
+// cursor (HandleMoveCoin, carried -> slot 0), and 0x0820 hands the pile straight
+// back to a cursor, so an unvalidated amount here is a money printer.
+// ------------------------------------------------------------
+void TrilogyZoneServer::HandleDropCoin(const std::string& addr, int port, Session& s,
+                                       const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < kCoinStructSize) {
+		LogError("[TrilogyZone] DropCoin char={} short packet plen={} (expected {})",
+		         s.char_id, plen, kCoinStructSize);
+		return;
+	}
+
+	auto& pp = s.trilogy_client->GetPP();
+
+	const uint32_t want_p = *reinterpret_cast<const uint32_t*>(payload + kCoinOffPlatinum);
+	const uint32_t want_g = *reinterpret_cast<const uint32_t*>(payload + kCoinOffGold);
+	const uint32_t want_s = *reinterpret_cast<const uint32_t*>(payload + kCoinOffSilver);
+	const uint32_t want_c = *reinterpret_cast<const uint32_t*>(payload + kCoinOffCopper);
+
+	LogInfo("[TrilogyZone] DropCoin rx char={} asked p={} g={} s={} c={} "
+	        "(tracked cursor p={} g={} s={} c={}) client_pos=({:.1f},{:.1f},{:.1f})",
+	        s.char_id, want_p, want_g, want_s, want_c,
+	        pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor,
+	        *reinterpret_cast<const float*>(payload + kCoinOffX),
+	        *reinterpret_cast<const float*>(payload + kCoinOffY),
+	        *reinterpret_cast<const float*>(payload + kCoinOffZ));
+
+	if ((want_p + want_g + want_s + want_c) == 0) {
+		LogInfo("[TrilogyZone] DropCoin char={} asked for zero coin — nothing to drop",
+		        s.char_id);
+		return;
+	}
+
+	// Clamp each denomination to what the tracked cursor actually holds.
+	auto clamp_to_cursor = [](uint32_t want, int32 held) -> uint32_t {
+		if (held <= 0) return 0;
+		return std::min<uint32_t>(want, static_cast<uint32_t>(held));
+	};
+	DroppedCoin c;
+	c.platinum = clamp_to_cursor(want_p, pp.platinum_cursor);
+	c.gold     = clamp_to_cursor(want_g, pp.gold_cursor);
+	c.silver   = clamp_to_cursor(want_s, pp.silver_cursor);
+	c.copper   = clamp_to_cursor(want_c, pp.copper_cursor);
+
+	if ((c.platinum + c.gold + c.silver + c.copper) == 0) {
+		// The mirror disagrees with the client entirely — either it holds
+		// nothing, or it holds a different denomination.  The player's coin is
+		// already off their cursor client-side, so refusing here would simply
+		// destroy it; trust the claim and shout instead.  A vanilla v29c can
+		// only load its cursor via OP_MoveCoin, which the mirror tracks, so
+		// this line appearing in the log means there is a coin path into the
+		// cursor that HandleMoveCoin does not yet see — add it there.
+		LogError("[TrilogyZone] DropCoin char={} UNVALIDATED: tracked cursor is "
+		         "p={} g={} s={} c={} but client claims p={} g={} s={} c={} — "
+		         "honouring the claim so the coin is not lost, but the cursor "
+		         "mirror in HandleMoveCoin missed a path",
+		         s.char_id,
+		         pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor,
+		         want_p, want_g, want_s, want_c);
+		c.platinum = want_p;
+		c.gold     = want_g;
+		c.silver   = want_s;
+		c.copper   = want_c;
+	}
+
+	// Cursor coin is gone — EQClassic's ProcessOP_DropCoin does exactly this
+	// (clear all four pp.*_cursor, then Save).
+	pp.platinum_cursor = pp.gold_cursor = pp.silver_cursor = pp.copper_cursor = 0;
+	s.trilogy_client->Save();
+
+	// Server-authoritative position.  The client does send its own coordinates,
+	// but s.pos_* is the position we accepted from its last 0xF320 ClientUpdate
+	// and is the same figure every other range check in this file uses.
+	c.x = s.pos_x;
+	c.y = s.pos_y;
+	c.z = s.pos_z;
+
+	// Model choice matches the client's own (0x4cc5dd-0x4cc608): the highest
+	// non-zero denomination wins.
+	const char* model = (c.platinum > 0) ? "PLAT_ACTORDEF"   :
+	                    (c.gold     > 0) ? "GOLD_ACTORDEF"   :
+	                    (c.silver   > 0) ? "SILVER_ACTORDEF" :
+	                                       "COPPER_ACTORDEF";
+	std::strncpy(c.model, model, sizeof(c.model) - 1);
+
+	c.id = m_next_coin_id++;
+	if (m_next_coin_id == 0) m_next_coin_id = 1;  // never hand out id 0 — the
+	                                              // client reads 0 as "no pile"
+	c.expire_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count()) + kCoinDecayMs;
+
+	m_dropped_coins.push_back(c);
+	BroadcastCoinSpawn(c);
+}
+
+// ------------------------------------------------------------
+// HandlePickupCoin — client clicked a coin pile (0x0820).
+//
+// Payload is { uint32 coin_id, uint32 player_id }; the client has already
+// range-checked the click against 20.0 units (ds:0x534498 at 0x4cc88d).
+//
+// The client credits its OWN cursor when the reply names it as the picker, but
+// only when all four of its cursor coin fields are zero (0x49cf08-0x49cf37) —
+// and it destroys the pile either way.  So the "cursor already busy" case has
+// to be refused HERE, or the coin is silently deleted.
+// ------------------------------------------------------------
+void TrilogyZoneServer::HandlePickupCoin(const std::string& addr, int port, Session& s,
+                                         const uint8_t* payload, uint32_t plen)
+{
+	if (!s.trilogy_client) return;
+	if (plen < 8) {
+		LogError("[TrilogyZone] PickupCoin char={} short packet plen={}", s.char_id, plen);
+		return;
+	}
+
+	const uint32_t coin_id   = *reinterpret_cast<const uint32_t*>(payload + 0);
+	const uint32_t claimed_p = *reinterpret_cast<const uint32_t*>(payload + 4);
+
+	auto it = std::find_if(m_dropped_coins.begin(), m_dropped_coins.end(),
+	                       [coin_id](const DroppedCoin& dc) { return dc.id == coin_id; });
+	if (it == m_dropped_coins.end()) {
+		// Two players clicked the same pile in the same tick; the loser lands
+		// here.  Their client already removed it on the winner's despawn.
+		LogInfo("[TrilogyZone] PickupCoin char={} coin_id={} not found (already taken?)",
+		        s.char_id, coin_id);
+		return;
+	}
+
+	const float dx = it->x - s.pos_x;
+	const float dy = it->y - s.pos_y;
+	if ((dx * dx + dy * dy) > kCoinPickupRangeSq) {
+		LogError("[TrilogyZone] PickupCoin char={} coin_id={} out of range "
+		         "(pile at {:.1f},{:.1f}, player at {:.1f},{:.1f}) — refused",
+		         s.char_id, coin_id, it->x, it->y, s.pos_x, s.pos_y);
+		return;
+	}
+
+	auto& pp = s.trilogy_client->GetPP();
+	if (pp.platinum_cursor > 0 || pp.gold_cursor > 0 ||
+	    pp.silver_cursor   > 0 || pp.copper_cursor > 0) {
+		// v29c would delete the pile and credit nothing.  Leave it on the
+		// ground and say why.
+		s.trilogy_client->Message(Chat::White,
+		    "You must put down the coin you are already holding first.");
+		LogInfo("[TrilogyZone] PickupCoin char={} coin_id={} refused: cursor already holds "
+		        "p={} g={} s={} c={}", s.char_id, coin_id,
+		        pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor);
+		return;
+	}
+
+	// Mirror what the client is about to do to its own cursor.  The coin reaches
+	// carried money on the MoveCoin(0 -> 1) the player sends next.
+	pp.platinum_cursor = static_cast<int32>(it->platinum);
+	pp.gold_cursor     = static_cast<int32>(it->gold);
+	pp.silver_cursor   = static_cast<int32>(it->silver);
+	pp.copper_cursor   = static_cast<int32>(it->copper);
+	s.trilogy_client->Save();
+
+	LogInfo("[TrilogyZone] PickupCoin char={} coin_id={} claimed_player_id={} "
+	        "-> cursor p={} g={} s={} c={}",
+	        s.char_id, coin_id, claimed_p,
+	        it->platinum, it->gold, it->silver, it->copper);
+
+	m_dropped_coins.erase(it);
+	BroadcastCoinDespawn(coin_id, static_cast<uint16_t>(s.trilogy_client->GetID()));
 }
 
 // ============================================================
@@ -12157,6 +12775,11 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 void TrilogyZoneServer::Tick()
 {
 	std::time_t now = std::time(nullptr);
+
+	// Dropped coin piles decay on the same 300 s clock EQEmu gives a dropped
+	// Object, and are despawned for everyone when they do.  Cheap no-op while
+	// the list is empty, which it almost always is.
+	ExpireGroundCoins();
 
 	// Collect stale sessions before iterating for heartbeats.
 	// CONNECTING* sessions: 120 s (they should complete quickly or be abandoned).
@@ -14858,26 +15481,55 @@ void TrilogyZoneServer::HandleMoveItem(const std::string& addr, int port, Sessio
 	        s.char_id, from_wire, to_wire, from_db);
 
 	if (to_wire == 0xFFFFFFFFu) {
-		// Destroy
-		database.QueryDatabase(fmt::format(
-		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
-		    s.char_id, from_db));
+		// ── Destroy ──────────────────────────────────────────────────────
+		// A container's 10 content rows go with it.  Leaving them behind
+		// strands the items in `inventory` under a parent slot that no longer
+		// holds anything: invisible to the player, impossible for them to
+		// remove, and still counted by CheckLoreConflict (which queries the DB
+		// directly), which is how the "#si says duplicate lore but I don't
+		// have one" deadlock starts.  The range is deleted unconditionally —
+		// if the destroyed item was not a bag its content range is empty
+		// anyway, and anything found there was already an orphan.
+		const int cont_base = TrilogyBagContentBase(from_db);
+		database.QueryDatabase(
+		    (cont_base >= 0)
+		        ? fmt::format("DELETE FROM `inventory` WHERE `charid`={} AND "
+		                      "(`slotid`={} OR `slotid` BETWEEN {} AND {})",
+		                      s.char_id, from_db, cont_base, cont_base + 9)
+		        : fmt::format("DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
+		                      s.char_id, from_db));
+
 		if (s.trilogy_client) {
 			auto& inv = s.trilogy_client->GetInv();
-			auto is_worn_slot = [](int slot) -> bool {
-				return (slot >= 1 && slot <= 20) || slot == EQ::invslot::slotAmmo;
-			};
-			// Clear from_db in m_inv (the DB row is gone).
-			if (!is_worn_slot(from_db)) {
+			// Exactly ONE pop.  invslot::slotCursor IS 33, so the old
+			// "pop from_db, then also pop the cursor" pair popped the same
+			// deque twice whenever the destroyed item was on the cursor,
+			// silently eating whatever was queued invisibly behind it.  And
+			// when from_db was a real inventory slot (two-step pickup, row
+			// still at its origin) m_inv.cursor was empty of THIS item, so the
+			// extra pop could only ever destroy an unrelated queued one.
+			//   * cursor row (33 / 8000-8010) → pop the cursor deque front
+			//   * any other non-worn slot     → pop that slot
+			//   * worn slot                   → left to RefreshWornSlotsAfterMove
+			const bool cursor_row = (from_db == EQ::invslot::slotCursor) ||
+			                        (from_db >= 8000 && from_db <= 8010);
+			const bool worn_row   = (from_db >= 1 && from_db <= 20) ||
+			                        (from_db == EQ::invslot::slotAmmo);
+			if (cursor_row) {
+				auto* cur = inv.PopItem(EQ::invslot::slotCursor);
+				safe_delete(cur);
+			} else if (!worn_row) {
 				auto* old = inv.PopItem(static_cast<int16>(from_db));
 				safe_delete(old);
 			}
-			// Also clear cursor — item may have been placed from cursor.
-			if (from_wire == 0) {
-				auto* cur = inv.PopItem(EQ::invslot::slotCursor);
-				safe_delete(cur);
-			}
 		}
+
+		LogInfo("[TrilogyZone] MoveItem DESTROY char={} from_db={} from_wire={} "
+		        "content_range={}",
+		        s.char_id, from_db, from_wire,
+		        (cont_base >= 0) ? fmt::format("{}-{}", cont_base, cont_base + 9)
+		                         : std::string("none"));
+
 		RefreshWornSlotsAfterMove(s, from_db, -1, /*destroy_path=*/true);
 		return;
 	}

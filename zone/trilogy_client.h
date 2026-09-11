@@ -225,6 +225,14 @@ public:
 	// m_deferred_spawns and released by OnClientReady() once the 3D world is up.
 	void SendDoorSpawns();
 
+	// Send a fully-built wire packet, or buffer it in m_deferred_spawns when
+	// the client is still zoning (the 3D world is not instantiated yet, so
+	// anything positional sent now is dropped on the floor).  Same contract
+	// SendDoorSpawns and HandleGroundSpawn use internally; exposed because the
+	// dropped-coin piles (0x0720) are tracked in TrilogyZoneServer rather than
+	// in entity_list, so they cannot ride the OP_GroundSpawn path.
+	void QueueRawOrDefer(uint16_t opcode, const uint8_t* data, uint32_t size);
+
 	// Translate an EQEmu entity ID to the Trilogy wire ID for this client.
 	// EQEmu assigns GetID() via entity_list; Trilogy knows this client as
 	// m_player_spawn_id.  All other IDs pass through unchanged.
