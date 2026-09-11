@@ -996,12 +996,26 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		HandleOutgoingGroupUpdate(app);
 		break;
 	case OP_ClickObject:
-		// Remove a ground item from the client's view (pickup despawn broadcast).
-		// EQClassic uses the same ClickObject_Struct layout; opcode 0x3620 = OP_PickupItem.
-		if (app->size >= sizeof(::ClickObject_Struct))
+		// Remove a ground item from the client's view (pickup despawn broadcast,
+		// also emitted by Object::Process when a dropped item decays).
+		// EQClassic uses the same ClickObject_Struct layout; 0x3620 = OP_PickupItem.
+		//
+		// player_id has to be translated per recipient: v29c compares it against
+		// its OWN spawn id (0x49d06f) and, only on a match, decrements its
+		// pending-cursor counters and queues its local pickup feedback event
+		// (ds:0x6b6560, reads like a sound/UI cue) — everyone else just
+		// deletes the object.  Object::HandleClick fills in the picker's
+		// EQEmu entity id, which no client recognises as itself, so without
+		// this the picker got a silent pickup.  drop_id == 0 (decay) leaves the
+		// player_id at 0, which is the "nobody, silent" case.
+		if (app->size >= sizeof(::ClickObject_Struct)) {
+			::ClickObject_Struct co{};
+			memcpy(&co, app->pBuffer, sizeof(co));
+			co.player_id = TranslateId(co.player_id);
 			m_tzs->SendToSession(m_session_key, 0x3620,
-			                     app->pBuffer,
-			                     static_cast<uint32_t>(sizeof(::ClickObject_Struct)));
+			                     reinterpret_cast<const uint8_t*>(&co),
+			                     static_cast<uint32_t>(sizeof(co)));
+		}
 		break;
 	case OP_ClickObjectAction:
 		// Object::HandleClick → SetTradeskillObject() emits this when a player
@@ -5560,32 +5574,44 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::Object_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::Object_Struct*>(app->pBuffer);
 
-	// EQClassic Object_Struct layout (240 bytes):
-	//   [0]   int8[4]  unknown_4b
-	//   [4]   int8[4]  client_address
-	//   [8]   int32    itemid          (0 = let client derive from model)
-	//   [12]  int32    dropid          (entity ID used for pickup)
-	//   [16]  int8[24] unknown_24
-	//   [40]  float    ypos
-	//   [44]  float    xpos
-	//   [48]  float    zpos
-	//   [52]  float    heading
-	//   [0]   int8[4]  unknown_4b       (0x01 x4 for world containers)
-	//   [8]   int32    itemid          (0 for dropped item; 17005 for world container)
-	//   [12]  int32    dropid          (entity ID used for pickup/interaction)
-	//   [40]  float    ypos
-	//   [44]  float    xpos
-	//   [48]  float    zpos
-	//   [52]  float    heading
-	//   [56]  char[16] objectname      (e.g. "IT63_ACTORDEF\0")
+	// EQClassic Object_Struct layout (240 bytes), corrected against the v29c
+	// handlers themselves — inbound spawn 0x49cd2f, outbound drop 0x4cb7f0,
+	// pickup click 0x4cc6e5, despawn 0x49d05f:
+	//   [0]   int8[4]  unknown_4b  } the client's own list-node pointers: the
+	//   [4]   int8[4]  client_addr } inbound handler saves both, memcpy's the
+	//                               packet over the node and restores them
+	//                               (0x49cd55-0x49cda5), so bytes 0-7 on the
+	//                               wire are DISCARDED.  EQClassic writes 0x01
+	//                               into them for world containers, which is
+	//                               therefore cosmetic — kept for parity only.
+	//   [8]   int16    itemid          (16-bit: the client writes/reads a WORD here)
+	//   [12]  int32    dropid          — entity ID; the ONLY field the client
+	//                                    echoes back on pickup (0x3620) and the
+	//                                    key it despawns by (0x49d122)
+	//   [40]  float    ypos  \  the five fields the client actually renders
+	//   [44]  float    xpos   \ from: SpawnActor(objectname, y, x, bestZ(z+1)+0.5,
+	//   [48]  float    zpos   / heading, 0, 0, 1, 1) at 0x49cdd4.  Nothing else
+	//   [52]  float    heading/ in this struct affects whether a model appears.
+	//   [56]  char[16] objectname      (e.g. "IT63_ACTORDEF\0"; the client falls
+	//                                   back to IT63_ACTORDEF and then to
+	//                                   RED_BLOB_ACTORDEF at 0x411380/0x41139b,
+	//                                   so a bad name is always still visible)
 	//   [106] int8[6]  unknown_6        (0x01 x6 for world containers)
+	//   [112] int32    cost
+	//   [116] Object_Data_Struct[11]   — [0] is the object itself, [1..10] the
+	//                                    bag contents; 10 bytes each
 	//   [122] int8[5]  unknown_5        (0x01 x5 for world containers)
+	//   [228] int32    weight           — must NOT be negative: the despawn
+	//                                     handler refuses to remove an object
+	//                                     whose weight is < 0 (0x49d137)
 	//   [232] int8[4]  unknown_12       (0x01; EQClassic overruns into icon_nr/type)
 	//   [236] int16    icon_nr
-	//   [238] int16    type             (1 = OT_DROPPEDITEM)
+	//   [238] int16    type             — EQClassic leaves this 0 for a dropped
+	//                                     item (`//co->type = 0x0001;` is
+	//                                     commented out in its CreateSpawnPacket)
+	//                                     and the client never reads it.
 	//   total = 240 bytes
 	static constexpr uint32_t CLASSIC_OBJ_SIZE = 240;
-	static constexpr int16_t  OT_DROPPEDITEM   = 1;
 	uint8_t buf[CLASSIC_OBJ_SIZE];
 	memset(buf, 0, sizeof(buf));
 
@@ -5625,23 +5651,65 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 			LogInfo("{}", line);
 		}
 	} else {
-		// Player-dropped ground item (unchanged, working path).
-		*reinterpret_cast<int16_t*>(buf + 238) = OT_DROPPEDITEM;
+		// Player-dropped ground item, or a Temporary/StaticLocked scenery object.
+		//
+		// EQClassic's CreateSpawnPacket writes only dropid / position / name /
+		// heading / itemsinbag for this case and leaves everything else zero —
+		// `type` included (its `//co->type = 0x0001;` line is commented out).
+		// Matched here: an earlier version set type=1, which the client never
+		// reads, so nothing depended on it.
+		//
+		// Heading is forced to 0.  EQClassic does the same, with the comment
+		// "Keep this at 0 so all weapons face the same direction at all times"
+		// (Zone/Source/object.cpp:118) — that is the era-accurate look, a
+		// dropped weapon lying north.  EQEmu's Object ctor copies the dropper's
+		// heading (0-512 scale, not the client's), so forwarding it gave each
+		// drop an arbitrary rotation.
+		*reinterpret_cast<float*>(buf + 52) = 0.0f;
+
+		// itemid (8), weight (228), type (238) and icon (236) stay at the zeros
+		// from the memset.  Zero weight matters: the despawn handler bails on a
+		// negative one.  EQEmu's internal Object_Struct carries no item id, and
+		// the client only uses that field in its own debug print, so there is
+		// nothing to gain by plumbing one through.
+
+		LogInfo("[TrilogyClient] HandleGroundSpawn drop_id={} type={} object_name='{}' "
+		        "pos=({:.1f},{:.1f},{:.1f}) zoning={}",
+		        emu->drop_id, emu->object_type, emu->object_name,
+		        emu->x, emu->y, emu->z, m_is_zoning ? 1 : 0);
 	}
+
+	QueueRawOrDefer(0x3520, buf, static_cast<uint32_t>(sizeof(buf)));
+}
+
+// ============================================================
+// QueueRawOrDefer — send a finished wire packet now, or hold it until the
+// client's 3D world exists.
+//
+// Anything positional sent while m_is_zoning is true is discarded by the
+// client (it has no world to place it in yet), which is why the door and
+// ground-object senders both buffer into m_deferred_spawns and let
+// OnClientReady() flush them on the first ClientUpdate after zone-in.  Coin
+// piles need the same treatment but are not entity_list objects, so they
+// cannot go through HandleGroundSpawn to get it.
+// ============================================================
+
+void TrilogyClient::QueueRawOrDefer(uint16_t opcode, const uint8_t* data, uint32_t size)
+{
+	if (!data || size == 0) return;
 
 	if (m_is_zoning) {
 		if (m_deferred_spawns.size() < kMaxDeferredSpawns) {
-			m_deferred_spawns.emplace_back(uint16_t{0x3520},
-				std::vector<uint8_t>(buf, buf + sizeof(buf)));
+			m_deferred_spawns.emplace_back(opcode,
+				std::vector<uint8_t>(data, data + size));
 		} else {
-			LogError("[TrilogyClient] HandleGroundSpawn: deferred queue FULL ({}), DROPPING object '{}'",
-			         kMaxDeferredSpawns, emu->object_name);
+			LogError("[TrilogyClient] QueueRawOrDefer: deferred queue FULL ({}), "
+			         "DROPPING opcode 0x{:04x}", kMaxDeferredSpawns, opcode);
 		}
 		return;
 	}
 
-	m_tzs->SendToSession(m_session_key, 0x3520,
-	                     buf, static_cast<uint32_t>(sizeof(buf)));
+	m_tzs->SendToSession(m_session_key, opcode, data, size);
 }
 
 // ============================================================
