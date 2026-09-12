@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <set>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -648,6 +649,26 @@ private:
 	Trilogy::structs::CastOn_Struct m_pending_caston_data{};
 	bool m_last_caston_was_self_resist = false;
 	void FlushPendingCastOn(bool spell_landed);
+
+	// ---- Unrenderable-spell reporting ----
+	// Every CLIENT_SPELL_COUNT gate suppresses a packet the v29c client could
+	// not have rendered anyway (its spdat.eff holds ids 1..2010 only).  That is
+	// the correct thing to send, but it fails SILENTLY -- the symptom is a
+	// spell that lands with no name, no message, no icon and no visual, which
+	// is indistinguishable from a bug in our translation layer.  It cost a
+	// round of debugging on spell 2130 "Horrific Force" before anyone thought
+	// to check whether the client had the spell at all.
+	//
+	// A static DB audit can't answer this on its own: scoping npc_types by the
+	// `zoneidnumber * 1000 + nnn` id convention to Velious-or-earlier zones
+	// turns up ~307 distinct unknown spells across ~80 shared spell lists, but
+	// it cannot tell which are actually reachable in play.  This reports what
+	// genuinely gets hit, with no false positives.
+	//
+	// Deduped per spell id per session so a mob re-casting on every tick logs
+	// once.  Grep `[TrilogyUnknownSpell]`.
+	std::set<uint16_t> m_reported_unknown_spells;
+	void NoteUnrenderableSpell(uint32 spell_id, const char* where);
 
 	// ---- Merchant / vendor window state (see public accessors above) ----
 	float                            m_merchant_rate   = 1.0f; // EQEmu `rate` = pricemultiplier

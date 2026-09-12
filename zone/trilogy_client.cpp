@@ -4506,6 +4506,47 @@ static uint16 FindParentSpellForRecourse(uint16 recourse_spell_id)
 }
 
 // ============================================================
+// NoteUnrenderableSpell — report a spell the v29c client has no data for.
+//
+// The client's spdat.eff is 3000 records of 608 bytes but only ids 1..2010
+// are populated (2010 = "Gathering of the Mind"); the rest are all zeroes.
+// Every CLIENT_SPELL_COUNT gate therefore suppresses a packet that could not
+// have rendered — correct, but silent, and the in-game symptom (spell lands,
+// no name, no message, no icon, no visual, no client-side knockback) looks
+// exactly like a translation-layer bug.
+//
+// Logs the SERVER's name for the spell, which is the whole point: the fix is
+// almost always to point the NPC or item at the era-correct spell that the
+// client does know.  Spell 2130 "Horrific Force" (pushback 16 / pushup 2) is
+// a later-era duplicate of 904 "Knockback", which has identical push values
+// and the message "A massive force knocks you backwards" in the client's own
+// table — repointing the proc fixes it completely and costs nothing.
+// ============================================================
+void TrilogyClient::NoteUnrenderableSpell(uint32 spell_id, const char* where)
+{
+	if (spell_id == 0 || spell_id == 0xFFFF) return;
+	// SPELL_UNKNOWN and other sentinels are not interesting.
+	if (spell_id >= SPDAT_RECORDS) return;
+	// The ceiling test lives here, not at the call sites, so callers can hand
+	// us any spell id unconditionally without having to repeat the condition
+	// (HandleDamage does exactly that — its gate is a ternary, not a return).
+	if (spell_id < Trilogy::structs::CLIENT_SPELL_COUNT) return;
+
+	const uint16_t key = static_cast<uint16_t>(spell_id);
+	if (!m_reported_unknown_spells.insert(key).second) return;
+
+	LogInfo("[TrilogyUnknownSpell] id={} name='{}' at={} char=[{}] — not in the "
+	        "client's spdat.eff (populated ids are 1..{}), so it renders with no "
+	        "name, message, icon, visual or client-side push.  Repoint to an "
+	        "era-correct spell id, or add a record for it.",
+	        spell_id,
+	        IsValidSpell(spell_id) ? spells[spell_id].name : "?",
+	        where,
+	        GetCleanName(),
+	        Trilogy::structs::CLIENT_SPELL_COUNT - 1);
+}
+
+// ============================================================
 // FlushPendingCastOn — send a deferred OP_CastOn (0x4620).
 //
 // EQEmu fires OP_Action BEFORE the resist check; EQClassic fires
@@ -4597,7 +4638,10 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		// and nearby players get the discipline message instead — see
 		// TrilogyZoneServer::HandleUseDiscipline.
 		if (static_cast<uint32>(wire_spell_id) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+		{
+			NoteUnrenderableSpell(wire_spell_id, "CastOn");
 			return;
+		}
 
 		Trilogy::structs::CastOn_Struct caston{};
 		memset(&caston, 0, sizeof(caston));
@@ -4714,6 +4758,7 @@ void TrilogyClient::HandleDamage(const EQApplicationPacket* app)
 	// goes out as the melee "no spell" sentinel instead of an index off the end
 	// of its spell table.  The damage number itself is unaffected, which is what
 	// matters here: this is the packet a Trilogy observer reads for the hit.
+	NoteUnrenderableSpell(emu->spellid, "Damage");
 	out.spell  = (static_cast<uint32>(emu->spellid) >= Trilogy::structs::CLIENT_SPELL_COUNT)
 	           ? static_cast<int16_t>(0xFFFF)
 	           : static_cast<int16_t>(emu->spellid);
@@ -5014,7 +5059,10 @@ void TrilogyClient::HandleBuff(const EQApplicationPacket* app)
 	// has no record for has no bar entry to refresh, so there is nothing this
 	// packet could usefully do even if the index were safe.
 	if (static_cast<uint32>(wire_spell_id) >= Trilogy::structs::CLIENT_SPELL_COUNT)
+	{
+		NoteUnrenderableSpell(wire_spell_id, "Buff");
 		return;
+	}
 
 	Trilogy::structs::Buff_Struct out{};
 	memset(&out, 0, sizeof(out));
