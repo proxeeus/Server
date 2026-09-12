@@ -212,7 +212,11 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 //
 //   0x0022 /assist        4 B  {uint32 entity_id}          == EntityId_Struct
 //   0xfe21 /target <name> 4 B  {uint32 entity_id}          == ClientTarget_Struct
-//                              (client resolves the name; we get an id)
+//                              BIDIRECTIONAL.  The client resolves the name
+//                              against its own spawn list and sends the id (0 if
+//                              it found nothing), but does NOT set its target —
+//                              it waits for us to send 0xfe21 back.  See the
+//                              handler for the disassembly addresses.
 //   0xe721 /random        8 B  {uint32 low, high}          == RandomReq_Struct
 //   0x3121 /split        16 B  {uint32 pp, gp, sp, cp}     == Split_Struct
 //   0xda21 /yell          4 B  {uint32 entity_id}          — relayed to nearby
@@ -231,7 +235,7 @@ static constexpr uint16_t ZN_OP_ConsumeFoodDrink = 0x5621; // 16 B {int32 slot; 
 // for the map, the disassembly addresses behind it, and the /serverfilter gate.
 static constexpr uint16_t ZN_OP_SetServerFilter = 0xff21;
 static constexpr uint16_t ZN_OP_Assist         = 0x0022;
-static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21;
+static constexpr uint16_t ZN_OP_TargetByName   = 0xfe21; // bidirectional: also zone -> client to SET the target
 static constexpr uint16_t ZN_OP_Random         = 0xe721;
 static constexpr uint16_t ZN_OP_SplitMoney     = 0x3121;
 static constexpr uint16_t ZN_OP_Yell           = 0xda21;
@@ -2893,7 +2897,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// resulting entity id, so the payload is the same ClientTarget_Struct
 			// that a mouse click sends on 0x6221.  Share the path — it already
 			// carries the drift-refresh and the TargetMouse-not-TargetCommand rule
-			// documented below, both of which /target needs just as much.
+			// documented below, both of which /target needs just as much.  The two
+			// opcodes diverge at the tail: 0xfe21 must be echoed back and must not
+			// treat id 0 as a deselect — see the comment there.
 			// Trilogy ClientTarget_Struct: { int16 new_target; int16 pad } = 4 bytes.
 			// EQEmu ClientTarget_Struct: { uint32 new_target } = 4 bytes.
 			// Sign-extend int16 → uint32 so negative entity IDs are preserved.
@@ -2905,6 +2911,20 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				int16_t tgt16;
 				memcpy(&tgt16, payload, 2);
 				uint32_t tgt32 = static_cast<uint32_t>(static_cast<int32_t>(tgt16));
+
+				// A v29c client knows ITSELF as the synthetic player_spawn_id and
+				// entity_list has no mob under that id — the same trap
+				// Handle_OP_Bind_Wound documents above.  Untranslated, targeting
+				// yourself (F1, a self-click, or /target <your own name>) resolved
+				// to nullptr and CLEARED the server's target while the client
+				// happily showed itself targeted.  Reverse-translate for the
+				// lookup; keep the wire id for the echo and for the position
+				// bookkeeping below, both of which are keyed on wire ids.
+				const uint32_t wire_tgt32 = tgt32;
+				if (tgt32 != 0 &&
+				    static_cast<uint16_t>(tgt32) == s.trilogy_client->GetPlayerSpawnId()) {
+					tgt32 = static_cast<uint32_t>(s.trilogy_client->GetID());
+				}
 
 				const uint64_t now_ms_tgt = static_cast<uint64_t>(
 					std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3014,10 +3034,61 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					}
 				}
 
-				EQApplicationPacket tgtpkt(OP_TargetMouse, sizeof(::ClientTarget_Struct));
-				memset(tgtpkt.pBuffer, 0, sizeof(::ClientTarget_Struct));
-				memcpy(tgtpkt.pBuffer, &tgt32, 4);
-				s.trilogy_client->Handle_OP_TargetMouse(&tgtpkt);
+				// ── /target (0xfe21) is server-AUTHORITATIVE ──
+				// A mouse click sets the client's target locally and 0x6221 merely
+				// reports it.  /target is the opposite: eqgame.exe 0x4ab3b7 looks the
+				// name up in the client's OWN spawn list, sends the id, and never
+				// touches ds:0x6e4dac (the current-target pointer).  The ring moves
+				// only when the server sends 0xfe21 BACK — inbound handler 0x49c6dd
+				// is find_spawn_by_id([payload]) then `mov ds:0x6e4dac,eax`.  Until
+				// this echo existed the server's target moved and the client's did
+				// not, which is exactly what made /target read as a client-side
+				// no-op ("sends no packet") for three sessions.
+				//
+				// id 0 means the client's own lookup failed — it tries exact
+				// (0x4b1435) then case-insensitive PREFIX (0x5316c0, len =
+				// strlen(arg)) over its spawn list.  Its target is unchanged, so
+				// clearing ours would desync the two.  A 0 on 0x6221 is a genuine
+				// deselect and must still clear.
+				if (opcode == ZN_OP_TargetByName && tgt32 == 0) {
+					LogInfo("[Trilogy attack-diag] TARGET /target unresolved (client "
+					        "sent id=0; name not a prefix of any spawn it holds) — "
+					        "server target left unchanged");
+				} else {
+					EQApplicationPacket tgtpkt(OP_TargetMouse, sizeof(::ClientTarget_Struct));
+					memset(tgtpkt.pBuffer, 0, sizeof(::ClientTarget_Struct));
+					memcpy(tgtpkt.pBuffer, &tgt32, 4);
+					s.trilogy_client->Handle_OP_TargetMouse(&tgtpkt);
+
+					// Echo on 0xfe21 only.  Payload is the same 4-byte id space the
+					// client's state-sync loop pushes on 0x6221 (0x425dee: it sends
+					// the dword at spawn+0x80 whenever ds:0x6e4dac changes), and the
+					// high word is zero — sibling handlers feed
+					// `movzx eax, WORD PTR [wire]` into the same find-by-id
+					// (0x491094), so zero-extend the entity id.
+					//
+					// No feedback loop: the echo moves ds:0x6e4dac, that sync loop
+					// then reports the new target back on 0x6221, and a 0x6221
+					// arriving here needs no echo because the client already holds
+					// that target.  Cost is one 4-byte reliable packet per /target.
+					// A GONE id (nothing in entity_list) is skipped — the client's
+					// find_spawn_by_id would no-op on it anyway.
+					if (opcode == ZN_OP_TargetByName && tgt_mob != nullptr) {
+						// Echo the id the CLIENT sent, not tgt_mob->GetID(): for a
+						// self-target those differ (player_spawn_id vs the EQEmu
+						// entity id) and only the wire id resolves in the client's
+						// own spawn list.  Same reason HandleOutgoingAssist runs
+						// its reply through TranslateId.
+						const uint32_t echo_id = wire_tgt32;
+						SendApp(addr, port, s, ZN_OP_TargetByName,
+						        reinterpret_cast<const uint8_t*>(&echo_id), 4,
+						        /*ack_req=*/true);
+						LogInfo("[Trilogy attack-diag] TARGET /target echo wire={} sid={} name='{}'",
+						        static_cast<int>(echo_id),
+						        static_cast<int>(tgt_mob->GetID()),
+						        tgt_mob->GetCleanName() ? tgt_mob->GetCleanName() : "?");
+					}
+				}
 			}
 		}
 		else if (opcode == ZN_OP_Consider && s.trilogy_client) {
