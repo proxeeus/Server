@@ -12983,17 +12983,18 @@ void TrilogyZoneServer::Tick()
 			s.trilogy_client->FlushPendingMobUpdates();
 		}
 
-		// SE_Fear tick hook — currently only resets self-push transition
-		// state when IsFeared() flips off (so the next fear cast re-logs
-		// its first push).  Actual fear position pushes are event-driven
-		// via HandleClientUpdate's self-branch — MoveToCommand fires
-		// SendCommandToClients on each new fear leg / speed-change /
-		// 5s heartbeat and the self-echo now routes to A120.  EQClassic
-		// parity: one A120 per leg + client-side heading × anim_type
-		// extrapolation between packets.  Previous 100ms tick heartbeat
-		// caused visible jitter by over-correcting the extrapolation.
+		// Server-authoritative movement tick hook — currently only resets
+		// self-push transition state when IsAIControlled() flips off (so
+		// the next fear or charm re-logs its first push).  The actual
+		// position pushes are event-driven via HandleClientUpdate's
+		// self-branch — MoveToCommand fires SendCommandToClients on each
+		// new movement leg / speed-change / 5s heartbeat and the self-echo
+		// routes to A120.  EQClassic parity: one A120 per leg + client-side
+		// heading × anim_type extrapolation between packets.  Previous
+		// 100ms tick heartbeat caused visible jitter by over-correcting
+		// the extrapolation.
 		if (s.trilogy_client) {
-			s.trilogy_client->MaybeSendFearHeartbeat();
+			s.trilogy_client->MaybeResetForcedSelfPushState();
 		}
 
 		// Money-display reconciliation: the on-screen coin counter only refreshes from
