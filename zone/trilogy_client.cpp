@@ -822,6 +822,31 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		break;
 	case OP_Stun:
 		if (app->size >= sizeof(::Stun_Struct)) {
+			const auto* stun = reinterpret_cast<const ::Stun_Struct*>(app->pBuffer);
+			// v29c owns the whole stun lifecycle once it has the duration: the
+			// 0x5b21 handler (eqgame.exe 0x49ad23 → 0x4246dd) stores now+duration
+			// in the profile at +0xc0 and prints "You are stunned!", and its own
+			// per-frame timer at 0x4264ff clears the flag and prints "You are
+			// unstunned." when that time passes.
+			//
+			// There is NO unstun opcode.  EQClassic's OP_MessageUnstuned 0x5bd1
+			// is not in the client's opcode dispatch chain at all — it tops out
+			// at 0x2204 (stage 2) and 0x8005 (stage 1) — and the sole reference
+			// to the "You are unstunned." string in the binary is that timer.
+			//
+			// So Client::UnStun's OP_Stun(duration=0) must not be forwarded.
+			// 0x4246dd clamps any duration under 1000 ms up to 1000 ms (0x42471e),
+			// so a zero-duration "unstun" either does nothing — the client's own
+			// timer is still running, early return at 0x424759 — or, when the
+			// client never took the stun in the first place (a PC at level 53+ or
+			// under Divine Aura, both refused at 0x4246b5), stuns the player for
+			// a fresh full second at the exact moment the server thinks the stun
+			// ended.  Mob::Stun with duration <= 0 reaches here the same way.
+			if (stun->duration == 0) {
+				LogInfo("[TrilogyDiag] 5B21 drop unstun (v29c has no unstun opcode) char=[{}]",
+				        GetCleanName());
+				break;
+			}
 			m_tzs->SendToSession(m_session_key, 0x5b21,
 			                     app->pBuffer,
 			                     static_cast<uint32_t>(sizeof(::Stun_Struct)));
@@ -3021,6 +3046,53 @@ void TrilogyClient::HandleOutgoingSpawnAppearance(const EQApplicationPacket* app
 	// update, so it would otherwise reach v29c as an undefined type on every
 	// join, promotion and zone-in.
 	if (src->type == AppearanceType::GuildShow) return;
+
+	// ==== Control lock / release — v29c 0xb020 ====
+	//
+	// v29c gates every player command on the local player's appearance byte.
+	// 100 (Standing) is free; 102 (Freeze) makes the client answer "You do not
+	// have control of yourself right now." (eqgame.exe 0x41d7dd, 0x41f418,
+	// 0x4b33bc and 0x4d8473 all branch on `cmp BYTE PTR [mob+0xa1],0x66`).
+	//
+	// The LOCK half already works: Client::AI_Start (charm/fear, mob_ai.cpp:478)
+	// and Mob::Mesmerize (spells.cpp:5843) both send Animation=Freeze to self
+	// and it is forwarded verbatim below.  v29c also prints "You lose control of
+	// yourself!" for itself off its own spell-effect processor (0x42217f, effect
+	// 22 Charm / 23 Fear), so that line needs nothing from us.
+	//
+	// The RELEASE half does not work.  Client::AI_Stop (mob_ai.cpp:548) restores
+	// Animation=Standing and announces it with MessageString(PLAYER_REGAIN), a
+	// string-id with no v29c template — so the announcement is dropped, and more
+	// importantly the two input-block counters the client keeps at
+	// [0x6e4e44+0x94] and [+0xe5c] are never cleared.  Those are read as
+	// "refuse this command" at 0x41eb6a/0x41eb76, independently of the
+	// appearance byte.
+	//
+	// 0xb020 is the client's own release packet and does all three at once —
+	// SetAppearance(Standing), print "You have control of yourself again.",
+	// zero both counters.  Handler confirmed at 0x4974b8, reached from the
+	// 0x200f-based dispatch table (index byte 0x49fcb8+0xa1 = 36, jump table
+	// 0x49fb94).  It reads no payload at all, so we send it empty.
+	//
+	// Fires on ANY self Animation value other than Freeze, not just Standing.
+	// AI_Stop re-sends whatever _appearance held when the charm landed, so a
+	// player charmed while medding is released with Sitting (110), and a player
+	// killed while charmed with Lying (115) — gating on Standing alone would
+	// leave both input-blocked with no way back.  0xb020 forces Standing itself,
+	// which is why it goes out AHEAD of the 0xf520 below: the real appearance
+	// lands second and wins.  Sending it first also means the release survives
+	// the m_last_appearance dedup swallowing that 0xf520.
+	if (static_cast<uint32>(src->spawn_id) == static_cast<uint32>(GetID()) &&
+	    src->type == AppearanceType::Animation) {
+		if (src->parameter == Animation::Freeze) {
+			m_control_lost = true;
+		} else if (m_control_lost) {
+			m_control_lost = false;
+			LogInfo("[TrilogyDiag] B020 release control param={} char=[{}]",
+			        src->parameter, GetCleanName());
+			m_tzs->SendToSession(m_session_key, 0xb020, nullptr, 0);
+		}
+	}
 
 	Trilogy::structs::SpawnAppearance_Struct out{};
 	// Trilogy entities use the spawn_id space we hand out via TranslateId.
