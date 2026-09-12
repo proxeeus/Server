@@ -703,6 +703,14 @@ private:
 	static constexpr size_t kMaxAppearanceCache = 1024;
 	std::map<uint16_t, std::pair<int16_t, int32_t>> m_last_appearance;
 
+	// True while this client is under a server-imposed control lock — i.e. the
+	// last self-targeted Animation appearance we forwarded was Freeze (102),
+	// sent by Client::AI_Start (charm/fear), Mob::Mesmerize, #set frozen and
+	// the Lua/Perl Freeze() bindings.  v29c refuses every player command while
+	// its local appearance byte is 102 and needs the 0xb020 release packet to
+	// be told the lock is over; see HandleOutgoingSpawnAppearance.
+	bool m_control_lost = false;
+
 	// Last guild MOTD text delivered to this client.  Client::SendGuildMOTD is
 	// called on zone-in and on every guild refresh world pushes, most of which
 	// have nothing to do with the MOTD; without this the same line repeats in
