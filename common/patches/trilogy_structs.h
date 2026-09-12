@@ -64,7 +64,27 @@ static const uint32 NPC_MAX_NAME_LENGTH  = 30;
 // spell_id, OP_Buff spell_id, the PlayerProfile buff bar) must be filtered
 // against this ceiling.  Disciplines (4498-4677) are the systematic case: the
 // server knows them, this client does not.
-static const uint32 CLIENT_SPELL_COUNT   = 3000;
+//
+// 3000 is the ARRAY bound, not the DATA bound, and the two are far apart.
+// `spdat.eff` shipped with the client is 1,824,000 bytes = 3000 records of 608
+// (EQClassic Zone/Include/spdat.h SPDat_Spell_Struct is that layout: name[32]
+// at 0, pushback at 424, pushup at 428), but only ids 1..2010 are populated --
+// 2010 is "Gathering of the Mind", and every record from 2011 to 2999 is all
+// zeroes.  Verified by reading the file directly, not inferred.
+//
+// Indexing a blank record is safe (no crash, it is inside the array) but it is
+// not harmless: the client renders a spell with no name, no message and no
+// effect data, which is the "Cloth Choker on the buff bar" fallback documented
+// in FlushPendingCastOn's neighbourhood, and it silently zeroes anything the
+// client would otherwise read from its own table -- including the pushback /
+// pushup that drive spell knockback (see the heading comment in HandleAction).
+// Spell 2130 "Horrific Force" is exactly this case: the server has it with
+// pushback 16, the client's record is blank, so no push can happen for it no
+// matter what we put on the wire.
+//
+// So the useful ceiling is the data one.  Filtering at 2011 turns these into
+// the melee/no-spell sentinel instead of a blank-record lookup.
+static const uint32 CLIENT_SPELL_COUNT   = 2011;
 
 // Translate an EQEmu class id (Server/common/classes.h) to the Trilogy/EQClassic
 // class id (EQClassic Common/Include/classes.h).  Player classes 1-15 are

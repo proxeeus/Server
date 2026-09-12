@@ -4605,7 +4605,45 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		caston.source_id        = static_cast<int32_t>(TranslateId(emu->source));
 		caston.source_level     = static_cast<int8_t>(emu->level);
 		caston.unknown1[1]      = static_cast<int8_t>(0x41);
-		caston.heading          = emu->hit_heading * 2.0f;
+		// Spell knockback direction.  This field (CastOn offset 20) is the
+		// ONLY thing v29c needs from us to apply spell push — pushback/pushup
+		// come from the client's OWN spell table, not from the wire.  There is
+		// no force field in any v29c packet; EQEmu's action->force/hit_pitch
+		// have no counterpart here and none is needed.
+		//
+		// eqgame.exe 0x4207ed, reached via OP_CastOn (0x4620) -> 0x49dc5a
+		// (memcpy of the full 36-byte struct) -> 0x4b3c9d (type==231 and
+		// unknown2[1] & 0x04) -> 0x420505 (spell-effect applier, indexes the
+		// client's spell table at [spellid*4 + 0x5fe9a0]):
+		//
+		//   fld [ebx+0x1a8]          ; spell table PUSHBACK -- skip if this
+		//   fld [ebx+0x1ac]          ; and PUSHUP are both 0
+		//   fld [eax+0x14]           ; <- THIS field
+		//   call sin ; fmul pushback ; fadd/fstp [edi+0x4c]   ; delta +=
+		//   fld [eax+0x14]
+		//   call cos ; fmul pushback ; fadd/fstp [edi+0x50]   ; delta +=
+		//   fld [ebx+0x1ac]          ; fadd/fstp [eax+0x54]   ; delta += pushup
+		//
+		// The deltas land on the target's own motion struct (entity+0x34,
+		// fields +0x18/+0x1c/+0x20 -- the same three the position-update
+		// decoder at 0x4a3717 writes, see [[project-trilogy-delta-bitfield]]),
+		// so the client integrates the impulse with its local physics.  That
+		// is why knockback needs no server-side movement and no self-echo:
+		// it is entirely client-applied, exactly as on Titanium.
+		//
+		// Scale: NOT doubled.  The client's sin/cos helpers (ds:0x6e524c /
+		// ds:0x6e5250) take its native heading unit raw with no radian
+		// conversion (see 0x40646c for an unscaled call), and that unit is
+		// 0-512 -- the position decoder at 0x4a3739 builds it as wire_byte*2.
+		// EQEmu's GetHeading() is the same 0-512 scale (mob.cpp:4640 converts
+		// with *360/512), so hit_heading passes through as-is.  The old *2.0f
+		// mirrored the position wire's byte convention (which halves on send
+		// precisely because the client doubles on receive) onto a field that
+		// is already a full float, producing a doubled angle -- a caster
+		// facing 90 degrees pushed as if facing 180.  Safe to correct: this
+		// field is read by nothing in the client except the two fld's above;
+		// the spell visual at 0x4b3b47 never touches it.
+		caston.heading          = emu->hit_heading;
 		caston.unknown_zero2[0] = static_cast<int8_t>(0x0A);
 		caston.action           = 231;
 		caston.spell_id         = static_cast<int16_t>(wire_spell_id);
