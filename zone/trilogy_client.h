@@ -414,8 +414,12 @@ private:
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
 	void HandleClientUpdate(const EQApplicationPacket* app);
 	// Server-authoritative self-position push via 0xa120 (OP_MobUpdate).
-	// Called from HandleClientUpdate's self-branch when IsFeared() — restores
-	// fear movement that would otherwise be dropped as a rubber-band self-echo.
+	// Called from HandleClientUpdate's self-branch when IsAIControlled() —
+	// restores fear/charm movement that would otherwise be dropped as a
+	// rubber-band self-echo.  The gate is IsAIControlled() rather than
+	// IsFeared() because what matters is who computes the position, and
+	// Client::AI_Start is what transfers that; see the call site for the
+	// full list of states it covers and the two it deliberately does not.
 	// Uses A120 (not F320) because F320 to self is a hard XY position correction
 	// that teleports past client-side collision (walls). A120 tells the client
 	// "here's this mob + its animation" and the v29c client renders the run
@@ -550,14 +554,15 @@ public:
 
 	// Per-Tick hook called from TrilogyZoneServer::Tick.  In the current
 	// EQClassic-parity design this only resets the transition state
-	// (m_last_fear_self_push_ms + m_last_fear_self_anim) when IsFeared()
-	// flips false, so the next fear cast re-logs its first push.  No
-	// per-tick wire traffic — fear position updates are driven entirely
-	// by MoveToCommand's start / speed-change / 5s cadence through
-	// HandleClientUpdate's self-branch.  EQClassic sends one A120 per
-	// fear leg and the client extrapolates heading × anim_type between
-	// packets; a tick heartbeat over-corrects and causes visible jitter.
-	void MaybeSendFearHeartbeat();
+	// (m_last_forced_self_push_ms + m_last_forced_self_anim) when
+	// IsAIControlled() flips false, so the next fear/charm re-logs its
+	// first push.  No per-tick wire traffic — server-driven position
+	// updates come entirely from MoveToCommand's start / speed-change /
+	// 5s cadence through HandleClientUpdate's self-branch.  EQClassic
+	// sends one A120 per fear leg and the client extrapolates
+	// heading × anim_type between packets; a tick heartbeat over-corrects
+	// and causes visible jitter.
+	void MaybeResetForcedSelfPushState();
 
 private:
 
@@ -943,18 +948,19 @@ private:
 	// instead of staleness.
 	std::vector<Trilogy::structs::SpawnPositionUpdate_Struct> m_pending_mob_updates;
 
-	// Fear self-position heartbeat throttle.  MaybeSendFearHeartbeat runs
-	// from every TrilogyZoneServer::Tick while IsFeared() is true, throttled
-	// here to 100ms wire cadence for EQClassic parity (matches FearMovement's
-	// per-server-tick push rate; 250ms was visibly choppy from the client's
-	// perspective at fear-run speed).  Also serves as double-fire guard when
-	// HandleClientUpdate's self-branch pushes on the same tick as a
-	// MoveToCommand start / speed-change / 5s heartbeat.  Reset to 0 in
-	// MaybeSendFearHeartbeat when IsFeared() flips false so the next fear
-	// cast logs its first push (see anti-spam log gate in
-	// SendForcedSelfPositionUpdate).
-	uint64_t m_last_fear_self_push_ms = 0;
-	int8_t   m_last_fear_self_anim    = 0;
+	// Log-transition state for the server-authoritative self-position push.
+	// NOT a wire throttle despite the _ms name: PR#23 landed on EQClassic's
+	// event-driven cadence (one A120 per movement leg, client extrapolates
+	// between them) and deleted the 100ms tick heartbeat that used to read
+	// this, because over-correcting the client's extrapolation caused
+	// visible jitter.  What is left reads the timestamp only as a
+	// "have we pushed since authority was taken" flag, so that
+	// SendForcedSelfPositionUpdate's anti-spam gate logs the first push of
+	// each fear/charm plus every animation change, and nothing in between.
+	// Cleared by MaybeResetForcedSelfPushState when IsAIControlled() flips
+	// false — that gate must stay in step with HandleClientUpdate's.
+	uint64_t m_last_forced_self_push_ms = 0;
+	int8_t   m_last_forced_self_anim    = 0;
 
 	// Per-door last-sent action cache with TTL.  Doors::HandleClick in EQEmu
 	// has a bug where city-edge doors (HasDestinationZone() == true) never get

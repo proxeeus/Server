@@ -1894,21 +1894,53 @@ void TrilogyClient::HandleClientUpdate(const EQApplicationPacket* app)
 
 	// Self-echo: normally the v29c client tracks its own position locally
 	// from F320 input; a server echo would rubber-band.  BUT when the server
-	// takes movement authority — SE_Fear locks controls via AI_Start's
-	// SpawnAppearance(Animation=14, Freeze=102), then MovementManager drives
-	// position via SetPosition every AI_movement_timer tick — the client has
-	// no local input to advance its position, so dropping the echo leaves it
-	// frozen in place (user-visible "feared but standing still, like stunned").
+	// takes movement authority the client has no local input to advance its
+	// position, so dropping the echo leaves it frozen in place while the
+	// server-side position walks away (user-visible "controls locked and
+	// standing still, like stunned").
+	//
+	// The predicate is IsAIControlled(), NOT IsFeared().  What matters here is
+	// not the gameplay effect but WHO COMPUTES THE POSITION, and that is
+	// exactly what Client::AI_Start() flips: it sets pAIControlled, sends
+	// SpawnAppearance(Animation=14, Freeze=102) to lock local input, and hands
+	// the character to Client::AI_Process, which drives it through
+	// MobMovementManager (mob_ai.cpp:698).  Every caller of Client::AI_Start
+	// lands in this same trap:
+	//
+	//   SE_Fear   (spell_effects.cpp:940) — AI_Process runs the player to
+	//             m_FearWalkTarget via RunTo (mob_ai.cpp:756).  Fixed in PR#23.
+	//   SE_Charm  (spell_effects.cpp:852) — AI_Process runs the player at the
+	//             charmer's target via RunTo when out of melee range
+	//             (mob_ai.cpp:830), and WalkTo/RunTo/Teleport after the owner
+	//             on the pet-follow branch (mob_ai.cpp:866-878).  Identical
+	//             mechanism, identical symptom; this is what widening covers.
+	//   LD hold   (client.cpp:3951, trilogy_zone.cpp:1451) — harmless either
+	//             way, nobody is rendering, but it costs nothing to be correct
+	//             if the session comes back.
+	//
+	// Deliberately NOT covered, because neither is AI-controlled:
+	//   SE_Mez    — Mob::Mesmerize (spells.cpp:5838) sets mezzed, sends the
+	//               Freeze appearance and calls StopNavigation().  It never
+	//               calls AI_Start and never moves the player, so there is no
+	//               position for this echo to carry.  The Freeze that locks
+	//               input already forwards unconditionally through
+	//               HandleOutgoingSpawnAppearance — mez works on v29c today.
+	//   Knockback — Mob::DoKnockback (mob.cpp:6694) hand-builds a single
+	//               OP_ClientUpdate carrying DELTAS at an unchanged position
+	//               and FastQueuePackets it to self, with pAIControlled false.
+	//               It would need the deltas relayed (11/11/10 bitfield, see
+	//               [[project-trilogy-delta-bitfield]]), which this A120 push
+	//               hardcodes to zero — routing it here would send a no-op.
+	//               Moot in practice: DoKnockback has no callers anywhere in
+	//               the server or the quests tree, only the Lua/Perl bindings.
 	//
 	// EQClassic parity: SpellEffects.cpp SE_Fear branch flips SetFeared(true)
 	// + SendAppearance(SAT_Position_Update=14, SAPP_Lose_Control=102) — same
 	// wire values as AppearanceType::Animation + Animation::Freeze — then
-	// FearMovement() ticks server-side and sends OP_ClientUpdate (0xf320) with
-	// the new position, which the v29c client accepts as an authoritative XY
-	// correction while feared (see [[project-trilogy-skyshrine-pads]] for the
-	// "0xf320 is XY-only" gotcha — perfect fit for fear which runs on terrain).
+	// FearMovement() ticks server-side and pushes the new position, which the
+	// v29c client accepts as authoritative while its controls are frozen.
 	if (m == static_cast<Mob*>(this)) {
-		if (IsFeared()) {
+		if (IsAIControlled()) {
 			SendForcedSelfPositionUpdate(p);
 		}
 		return;
@@ -2102,12 +2134,13 @@ void TrilogyClient::FlushPendingMobUpdates()
 // SendForcedSelfPositionUpdate — server → self OP_MobUpdate (0xa120).
 //
 // The v29c client normally owns its own position and rejects self-echoes
-// (see HandleClientUpdate self-branch).  During SE_Fear the server is the
-// movement authority: AI_Start freezes local controls and MovementManager
-// steps the player toward m_FearWalkTarget each AI_movement_timer tick.
-// Without a wire push, the frozen client stays visually stationary while
-// the server-side position drifts — the "feared but stunned in place"
-// symptom.
+// (see HandleClientUpdate self-branch).  While IsAIControlled() the server
+// is the movement authority instead: AI_Start freezes local controls and
+// Client::AI_Process steps the character through MobMovementManager each
+// AI_movement_timer tick — toward m_FearWalkTarget under SE_Fear, toward
+// the charmer's target or the charmer itself under SE_Charm.  Without a
+// wire push the frozen client stays visually stationary while the
+// server-side position drifts — the "stunned in place" symptom.
 //
 // Wire opcode is A120 (OP_MobUpdate), NOT F320 (OP_ClientUpdate) — that
 // distinction matters and is why the earlier F320 attempt caused wall
@@ -2164,22 +2197,31 @@ void TrilogyClient::SendForcedSelfPositionUpdate(
 	                     /*ack_req=*/false);
 
 	// Log only on transition to avoid flooding the zone log across a long
-	// fear cast.  first_push == fear just started or previously reset.
-	const bool first_push      = (m_last_fear_self_push_ms == 0);
-	const bool anim_transition = (upd.anim_type != m_last_fear_self_anim);
+	// fear or charm.  first_push == authority just taken, or previously
+	// reset by MaybeResetForcedSelfPushState.  state= names which effect
+	// is driving, so one grep covers both: GetOwner() is set for the whole
+	// of a charm (SE_Charm calls SetOwnerID + SetPetType(petCharmed)
+	// before AI_Start) and clear under fear.
+	const bool first_push      = (m_last_forced_self_push_ms == 0);
+	const bool anim_transition = (upd.anim_type != m_last_forced_self_anim);
 	if (first_push || anim_transition) {
-		LogInfo("[TrilogyFear] A120 self-push sid={} pos=({:.1f},{:.1f},{:.1f}) "
+		const char* state = IsFeared()  ? "fear"
+		                  : GetOwner()  ? "charm"
+		                  : IsLD()      ? "ld"
+		                                : "ai";
+		LogInfo("[TrilogyAIMove] A120 self-push state={} sid={} pos=({:.1f},{:.1f},{:.1f}) "
 		        "heading={:.1f} anim={} char=[{}] first={} trans={}",
+		        state,
 		        upd.spawn_id, GetX(), GetY(), GetZ(), GetHeading(),
 		        static_cast<int>(upd.anim_type),
 		        GetCleanName(),
 		        first_push ? 1 : 0, anim_transition ? 1 : 0);
 	}
 
-	m_last_fear_self_push_ms  = static_cast<uint64_t>(
+	m_last_forced_self_push_ms  = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
-	m_last_fear_self_anim = upd.anim_type;
+	m_last_forced_self_anim = upd.anim_type;
 }
 
 // A120 wire is [int32 num_updates][SpawnPositionUpdate_Struct × N].
@@ -2196,20 +2238,26 @@ TrilogyClient::BuildSingleA120Payload(
 }
 
 // ============================================================
-// MaybeSendFearHeartbeat — kept as a no-op stub; hooks in
+// MaybeResetForcedSelfPushState — sends nothing; hooks in
 // TrilogyZoneServer::Tick still call this but EQClassic parity means
-// there's nothing to do per-tick.  Fear position pushes are driven
-// entirely by MoveToCommand's start / speed-change / 5s cadence via
-// HandleClientUpdate's self-branch.  The v29c client extrapolates
-// heading × anim_type between packets.  The earlier tick heartbeat
-// was actively causing jitter by over-correcting.
+// there's nothing to do per-tick.  Server-authoritative position pushes
+// are driven entirely by MoveToCommand's start / speed-change / 5s
+// cadence via HandleClientUpdate's self-branch.  The v29c client
+// extrapolates heading × anim_type between packets.  The earlier tick
+// heartbeat was actively causing jitter by over-correcting.
+//
+// All this does is clear the log-transition state when the server hands
+// movement authority back, so the next fear/charm re-logs its first push.
+// The gate MUST match HandleClientUpdate's — while it read !IsFeared() it
+// was true for the whole of a charm, resetting the state on every Tick, so
+// every single push logged as first=1 and anim transitions never resolved.
 // ============================================================
-void TrilogyClient::MaybeSendFearHeartbeat()
+void TrilogyClient::MaybeResetForcedSelfPushState()
 {
-	if (!IsFeared()) {
-		if (m_last_fear_self_push_ms != 0) {
-			m_last_fear_self_push_ms = 0;
-			m_last_fear_self_anim    = 0;
+	if (!IsAIControlled()) {
+		if (m_last_forced_self_push_ms != 0) {
+			m_last_forced_self_push_ms = 0;
+			m_last_forced_self_anim    = 0;
 		}
 	}
 }
