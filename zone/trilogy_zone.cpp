@@ -3827,13 +3827,19 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					s.driving_boat_id = mine ? boat_id : 0;
 				}
 
-				// Throttled: an un-echoed request is re-sent several times a
-				// second for as long as the player keeps clicking.
+				// Every take and every release is logged, unthrottled: they
+				// arrive as a pair inside the same second (the client hands the
+				// helm back on its own the moment it decides the player is no
+				// longer standing on the hull — eqgame.exe 0x4d6f88), and a
+				// throttle that hides the second half of that pair hides the
+				// whole diagnosis.  Only a request we cannot honour is
+				// throttled, because an un-echoed one is re-sent several times
+				// a second.
 				const uint64_t now_ctl = static_cast<uint64_t>(
 					std::chrono::duration_cast<std::chrono::milliseconds>(
 						std::chrono::steady_clock::now().time_since_epoch()).count());
-				if (now_ctl - s.last_boat_log_ms >= 1000) {
-					s.last_boat_log_ms = now_ctl;
+				if (steerable || now_ctl - s.last_boat_ctl_log_ms >= 1000) {
+					s.last_boat_ctl_log_ms = now_ctl;
 					LogInfo("[TrilogyBoat] control char=[{}] boat_wire={} name='{}' "
 					        "race={} take={} steerable={} granted={}",
 					        s.char_name, static_cast<int>(boat_id),
@@ -14015,7 +14021,21 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			};
 
 			int eqemu_speed_for_delta = 0;
-			if (cached != 0) {
+			if (npc->IsControllableBoat()) {
+				// A race-141 rowboat has no self-propulsion.  It moves only
+				// while a player is at the tiller, and that client is
+				// authoritative for it — so it must never be broadcast with a
+				// walk animation or a walk speed, which is what pick_speed +
+				// EncodeTrilogyAnim would give it the moment we reposition the
+				// hull (observed: anim=5, 11.6 eq/s for a boat nobody was
+				// pushing).  Both make every observer dead-reckon the hull
+				// forward between snaps, and the client that just let go of
+				// the helm is an observer: once its copy of the hull slides
+				// out from under its feet, eqgame.exe 0x4d6f88 decides the
+				// player is no longer standing on the boat and hands the helm
+				// straight back.  Position snaps carry the real motion.
+				upd->anim_type = 0;
+			} else if (cached != 0) {
 				upd->anim_type = cached;
 				// Cached anim byte is wire-encoded and not directly reversible;
 				// re-derive server-side speed for the delta so wire velocity

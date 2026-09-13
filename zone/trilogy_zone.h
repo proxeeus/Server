@@ -360,6 +360,13 @@ private:
 		// arrive at the same ~4 Hz the player's own do.
 		uint64_t last_boat_log_ms = 0;
 
+		// Separate throttle for the 0x2621 control log.  These two events fire
+		// in the same second by nature — the take is immediately followed by
+		// steering updates — so sharing one timestamp with the steer log let
+		// the control line swallow every steer line and made a working relay
+		// read as a dead one.
+		uint64_t last_boat_ctl_log_ms = 0;
+
 		// Timestamp of the last position update the client sent for ITSELF.
 		// While steering a boat, v29c may report only the hull; if it does,
 		// the pilot's server-side body would stay at the jetty and nothing —
