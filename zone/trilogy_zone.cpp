@@ -1853,36 +1853,95 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 		if (zone) zone->SetHasActiveTrilogySessions(true);
 	} else if (seqstart) {
 		Session& existing = m_sessions[key];
-		if (existing.trilogy_client) {
-			uint16 id = existing.trilogy_client->GetID();
-			existing.trilogy_client  = nullptr;
-			existing.eqemu_entity_id = 0;
-			entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
-		} else if (existing.counted_in_zone && numclients > 0) {
-			--numclients;
+
+		// ──────────────────────────────────────────────────────────────
+		// Is this a NEW session, or the client resending the opener?
+		//
+		// v29c resends its SEQSTART on a timer until it has processed our
+		// answer, and on a slow-loading zone it can send ten of them before it
+		// ever looks at the socket — gfaydark is the reliable reproducer.  Every
+		// one of those used to land here and wipe the session: state back to
+		// CONNECTING1, `sack_init` false, `gsq` 0, `arq` 0, and — the part that
+		// actually broke the handshake — `have_last_rx_arq` false.
+		//
+		// The consequences compound.  With the ARQ dedup state gone, each
+		// retransmit re-ran the SetDataRate handler; with `sack_init` gone,
+		// each of those calls re-initialised the session inside SendAck, so
+		// every single ACK went out as **SEQ=1** with a fresh random server ARQ.
+		// The client's EQNetwork accepts a sequence number once, so only the
+		// FIRST of those ACKs could ever be usable and all the rest read as
+		// stale duplicates.  If the client had not drained its socket by then,
+		// the handshake could not converge and it gave up at char select.
+		// Measured on one session: freportw needed 1 resend and got in,
+		// gfaydark needed 9 and got in, gfaydark needed 10 and did not.
+		//
+		// The tell for a retransmit is the one PR#54 established for every other
+		// opcode: the SAME client ARQ arriving twice.  It is randomised per
+		// session, so a genuine reconnect on this 4-tuple carries a different
+		// one and still gets the full reset — which is the case this branch
+		// exists for.  The second condition is `no player yet`: once the client
+		// is actually in the world a SEQSTART really is a reconnect and the
+		// reset has to run, but for everything before that a repeated opener is
+		// never anything but a resend.  That also covers the nastier version of
+		// this race — an opener retransmit already in flight arriving after the
+		// handshake has moved on to CONNECTING3/4/5, which would otherwise blow
+		// away a session that was seconds from being in the zone.
+		const bool opener_retransmit =
+			has_arq &&
+			existing.have_last_rx_arq &&
+			existing.last_rx_arq == cli_arq &&
+			!existing.trilogy_client;
+
+		if (opener_retransmit) {
+			// Leave everything alone.  The dedup further down sees the repeated
+			// ARQ, skips the handler and sends the ACK — off an ever-advancing
+			// `gsq`, so each answer carries a sequence number the client can
+			// still accept rather than the eleventh copy of SEQ=1.
+			LogInfo("[TrilogyZone] SEQSTART retransmit arq={:04X} state={} — same opener, "
+			        "keeping session (no reset)",
+			        cli_arq, static_cast<int>(existing.state));
+			if (zone) zone->SetHasActiveTrilogySessions(true);
+		} else {
+			if (existing.trilogy_client) {
+				uint16 id = existing.trilogy_client->GetID();
+				existing.trilogy_client  = nullptr;
+				existing.eqemu_entity_id = 0;
+				entity_list.RemoveMob(id); // removes from client_list + mob_list, calls safe_delete (~Client decrements numclients)
+			} else if (existing.counted_in_zone && numclients > 0) {
+				--numclients;
+			}
+			// has_arq / cli_arq are logged because they are what the retransmit
+			// test above runs on: if this line keeps repeating with has_arq=0
+			// then v29c is not marking its opener reliable and the test needs a
+			// different discriminator, which is not something the Info log could
+			// tell us before.
+			LogInfo("[TrilogyZone] Session restarted, numclients={} has_arq={} cli_arq={:04X} "
+			        "prev_arq={:04X} had_prev={} state={}",
+			        numclients, has_arq ? 1 : 0, cli_arq,
+			        existing.last_rx_arq, existing.have_last_rx_arq ? 1 : 0,
+			        static_cast<int>(existing.state));
+			if (zone) zone->SetHasActiveTrilogySessions(true);
+			existing.state      = CONNECTING1;
+			existing.sack_init  = false;
+			existing.seq_sent   = false;
+			existing.gsq        = 0;
+			existing.arq        = 0;
+			existing.acked_arq  = 0;
+			existing.last_rx_arq      = 0;
+			existing.have_last_rx_arq = false;
+			existing.asq_hi     = 1;
+			existing.asq_lo     = 0;
+			existing.ack_due    = false;
+			existing.frag_groups.clear();
+			existing.resend_queue.clear();
+			existing.char_name[0] = '\0';
+			existing.zone_short[0] = '\0';
+			existing.char_id         = 0;
+			existing.account_id      = 0;
+			existing.zone_id         = 0;
+			existing.player_spawn_id = 0;
+			existing.counted_in_zone = false;
 		}
-		LogInfo("[TrilogyZone] Session restarted, numclients={}", numclients);
-		if (zone) zone->SetHasActiveTrilogySessions(true);
-		existing.state      = CONNECTING1;
-		existing.sack_init  = false;
-		existing.seq_sent   = false;
-		existing.gsq        = 0;
-		existing.arq        = 0;
-		existing.acked_arq  = 0;
-		existing.last_rx_arq      = 0;
-		existing.have_last_rx_arq = false;
-		existing.asq_hi     = 1;
-		existing.asq_lo     = 0;
-		existing.ack_due    = false;
-		existing.frag_groups.clear();
-		existing.resend_queue.clear();
-		existing.char_name[0] = '\0';
-		existing.zone_short[0] = '\0';
-		existing.char_id         = 0;
-		existing.account_id      = 0;
-		existing.zone_id         = 0;
-		existing.player_spawn_id = 0;
-		existing.counted_in_zone = false;
 	}
 
 	Session& session = m_sessions[key];
