@@ -1005,6 +1005,36 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_Translocate:
 		HandleOutgoingTranslocate(app);
 		break;
+	case OP_Sacrifice: {
+		// "%s wants to SACRIFICE you.  You get NO experience back with
+		// Resurrection, even GM.  Die & lose exp?" — the third of v29c's yes/no
+		// popups, alongside resurrection and translocate.
+		//
+		// Client::SacrificeConfirm (client.cpp:4218) fires this on SE_Sacrifice,
+		// which a v29c client can actually reach: spell 1768 "Sacrifice" is
+		// Necromancer 51, single-target, and sits inside the 1..2010 window the
+		// client has spell data for.  Before this it hit the default and the
+		// victim was never asked, so PendingSacrifice stayed true and every
+		// later cast on that character was refused too.
+		//
+		// The wire struct IS the modern Sacrifice_Struct, 12 bytes, same field
+		// order: the handler at eqgame.exe 0x4958b9 reads [payload+4] and
+		// compares it against its own spawn id, returning without raising the
+		// box on a mismatch, then formats [payload+0] through an entity lookup
+		// for the caster's name (falling back to the literal "Someone").  So
+		// both ids have to be translated, TargetID above all — an untranslated
+		// GetID() there is silently discarded by the client.
+		if (app->size < sizeof(::Sacrifice_Struct)) break;
+		const auto* in = reinterpret_cast<const ::Sacrifice_Struct*>(app->pBuffer);
+		::Sacrifice_Struct out{};
+		out.CasterID = TranslateId(in->CasterID);
+		out.TargetID = TranslateId(in->TargetID);
+		out.Confirm  = in->Confirm;
+		m_tzs->SendToSession(m_session_key, 0xea21,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+		break;
+	}
 	case OP_GroupInvite:
 		// Popup invite emitted by Handle_OP_GroupInvite2 → GroupInvite_Struct.
 		HandleOutgoingGroupInvite(app);
@@ -4100,7 +4130,27 @@ void TrilogyClient::HandleOutgoingSimpleMessage(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(SimpleMessage_Struct)) return;
 
-	const auto* sm   = reinterpret_cast<const SimpleMessage_Struct*>(app->pBuffer);
+	const auto* sm = reinterpret_cast<const SimpleMessage_Struct*>(app->pBuffer);
+
+	// REZZ_ALREADY_PENDING (1379) has a dedicated v29c opcode, so it does not
+	// need a template entry — it needs the packet.  The client's handler
+	// (eqgame.exe 0x4967b3) reads nothing at all from the payload: it pushes
+	// its own copy of the sentence and the colour 0x108 and tail-jumps into
+	// the chat printer, so a zero-byte 0x2220 is the whole message.  Its
+	// string is byte-for-byte the text in string_ids.h:295, which is how the
+	// opcode was identified in the first place.
+	//
+	// Three live senders reach this: Corpse::CastRezz twice (corpse.cpp:2319
+	// and :2332, the rezzer casting on a corpse whose owner already has a box
+	// open) and WorldServer ServerOP_RezzPlayer (worldserver.cpp:963, the
+	// cross-zone form of the same refusal).  All three arrive as a bare
+	// OP_SimpleMessage, so before this they fell out of the template lookup
+	// below and the rezzer saw nothing happen at all.
+	if (sm->string_id == REZZ_ALREADY_PENDING) {
+		m_tzs->SendToSession(m_session_key, 0x2220, nullptr, 0);
+		return;
+	}
+
 	const char* tmpl = TrilogySystemStringTemplate(sm->string_id);
 	if (!tmpl) return; // not a string-id we relay
 
