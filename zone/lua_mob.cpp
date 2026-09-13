@@ -3499,6 +3499,17 @@ bool Lua_Mob::PlayerBotChatSayNamed(const char *category_name, int channel)
 	);
 }
 
+bool Lua_Mob::PlayerBotChatSayNamed(const char *category_name, int channel, const char *target_name)
+{
+	Lua_Safe_Call_Bool();
+	return playerbot_chat.ScriptSayNamed(
+		self,
+		category_name ? category_name : "",
+		static_cast<uint8>(channel),
+		target_name ? target_name : ""
+	);
+}
+
 void Lua_Mob::PlayerBotChatMute(bool muted)
 {
 	Lua_Safe_Call_Void();
@@ -3531,6 +3542,7 @@ luabind::scope lua_register_mob() {
 	.def("PlayerBotChatSay", (bool(Lua_Mob::*)(uint32,int))&Lua_Mob::PlayerBotChatSay)
 	.def("PlayerBotChatSayNamed", (bool(Lua_Mob::*)(const char*))&Lua_Mob::PlayerBotChatSayNamed)
 	.def("PlayerBotChatSayNamed", (bool(Lua_Mob::*)(const char*,int))&Lua_Mob::PlayerBotChatSayNamed)
+	.def("PlayerBotChatSayNamed", (bool(Lua_Mob::*)(const char*,int,const char*))&Lua_Mob::PlayerBotChatSayNamed)
 	.def("PlayerBotChatMute", &Lua_Mob::PlayerBotChatMute)
 	.def("PlayerBotChatIsMuted", &Lua_Mob::PlayerBotChatIsMuted)
 	.def("PlayerBotChatBias", &Lua_Mob::PlayerBotChatBias)

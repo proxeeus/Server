@@ -741,6 +741,13 @@ const Response *PlayerBotChatEngine::PickResponse(
 	std::vector<uint32>           weights;
 	uint64                        total_weight = 0;
 
+	// This runs once per listener per message, and a category can hold a
+	// thousand rows or more once a bulk content pack is loaded. Reserving up
+	// front turns ~10 reallocations per call into zero; it costs one allocation
+	// of a few KB that is reused for the life of the call.
+	survivors.reserve(cat.response_idx.size());
+	weights.reserve(cat.response_idx.size());
+
 	for (uint32 ri : cat.response_idx) {
 		const Response &r = m_responses[ri];
 		if (!r.enabled) {
@@ -1589,7 +1596,12 @@ int32 PlayerBotChatEngine::FindCategoryId(const std::string &category_name) cons
 	return -1;
 }
 
-bool PlayerBotChatEngine::ScriptSayNamed(Mob *talker, const std::string &category_name, uint8 chan_num)
+bool PlayerBotChatEngine::ScriptSayNamed(
+	Mob               *talker,
+	const std::string &category_name,
+	uint8              chan_num,
+	const std::string &target_name
+)
 {
 	if (!RuleB(PlayerBotChat, ChatEnabled) || !talker) {
 		return false;
@@ -1606,10 +1618,15 @@ bool PlayerBotChatEngine::ScriptSayNamed(Mob *talker, const std::string &categor
 		return false;
 	}
 
-	return ScriptSay(talker, static_cast<uint32>(id), chan_num);
+	return ScriptSay(talker, static_cast<uint32>(id), chan_num, target_name);
 }
 
-bool PlayerBotChatEngine::ScriptSay(Mob *talker, uint32 category_id, uint8 chan_num)
+bool PlayerBotChatEngine::ScriptSay(
+	Mob               *talker,
+	uint32             category_id,
+	uint8              chan_num,
+	const std::string &target_name
+)
 {
 	if (!RuleB(PlayerBotChat, ChatEnabled) || !talker) {
 		return false;
@@ -1642,7 +1659,14 @@ bool PlayerBotChatEngine::ScriptSay(Mob *talker, uint32 category_id, uint8 chan_
 	st.last_msg_time_ms            = now;
 	st.category_last_fire[category_id] = now;
 
-	Emit(talker, out_channel, Substitute(resp->text, talker, nullptr, {}), 0);
+	// {target} is delivered as a capture so it shares the substitutor's
+	// escaping and missing-variable handling with every other placeholder.
+	std::map<std::string, std::string> captures;
+	if (!target_name.empty()) {
+		captures["target"] = target_name;
+	}
+
+	Emit(talker, out_channel, Substitute(resp->text, talker, nullptr, captures), 0);
 	return true;
 }
 

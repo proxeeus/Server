@@ -191,10 +191,22 @@ public:
 	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth);
 
 	// ---- scripting surface (lua_mob.cpp bindings) ---------------------
-	bool ScriptSay(Mob *talker, uint32 category_id, uint8 chan_num);
+	bool ScriptSay(
+		Mob               *talker,
+		uint32             category_id,
+		uint8              chan_num,
+		const std::string &target_name = ""
+	);
 	// By name, because category ids are AUTO_INCREMENT and a script must not
 	// hardcode them. Returns false (and logs) if the name is unknown.
-	bool ScriptSayNamed(Mob *talker, const std::string &category_name, uint8 chan_num);
+	// target_name, when given, resolves {target} in the chosen response -- for
+	// lines like "Incoming {target}! Be ready!" driven from event_combat.
+	bool ScriptSayNamed(
+		Mob               *talker,
+		const std::string &category_name,
+		uint8              chan_num,
+		const std::string &target_name = ""
+	);
 	// -1 when the name is not a loaded category.
 	int32 FindCategoryId(const std::string &category_name) const;
 	void SetMuted(Mob *listener, bool muted);

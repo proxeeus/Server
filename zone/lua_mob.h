@@ -619,6 +619,7 @@ public:
 	// AUTO_INCREMENT and differ between databases.
 	bool PlayerBotChatSayNamed(const char *category_name);
 	bool PlayerBotChatSayNamed(const char *category_name, int channel);
+	bool PlayerBotChatSayNamed(const char *category_name, int channel, const char *target_name);
 	void PlayerBotChatMute(bool muted);
 	bool PlayerBotChatIsMuted();
 	void PlayerBotChatBias(uint32 category_id, int percent);
