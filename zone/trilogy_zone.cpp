@@ -648,6 +648,16 @@ static constexpr uint16_t ZN_OP_RezzComplete  = 0xec21; // zone -> client: rez f
 // MovePC/GoToBind, which already has Trilogy translators.
 static constexpr uint16_t ZN_OP_Translocate   = 0x0622; // bidirectional: ask / answer
 
+// Sacrifice (12B Sacrifice_Struct, one bidirectional opcode) — the same
+// ask/answer shape as translocate above.  Outbound handler pinned at eqgame.exe
+// 0x4958b9, which raises confirmation-dialog kind 0x14; the reply comes back out
+// of the generic dialog handler at 0x4818cb, whose three kind-0x14 branches
+// (0x48159b decline, 0x481d9b accept, 0x481fb9 decline-on-timeout) all build the
+// same 12 bytes: { CasterID, TargetID = own spawn id, Confirm }, with Confirm 1
+// for accept and 0 for either refusal.  Byte-for-byte the modern
+// Sacrifice_Struct, so only the ids need translating.
+static constexpr uint16_t ZN_OP_Sacrifice     = 0xea21; // bidirectional: ask / answer
+
 // Trade opcodes (NPC trade window)
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
@@ -2745,6 +2755,37 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_Translocate && s.trilogy_client)
 			HandleTranslocateResponse(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Sacrifice && s.trilogy_client)
+		{
+			// The victim's answer to the sacrifice popup.  This half is not
+			// optional: Client::SacrificeConfirm sets PendingSacrifice before it
+			// sends the box, and only Handle_OP_Sacrifice clears it again, so
+			// dropping the reply would wedge that character out of ever being
+			// sacrificed again — and leave the caster's spell hanging.
+			//
+			// Handle_OP_Sacrifice size-checks against sizeof(Sacrifice_Struct)
+			// and then reads Confirm, so the packet has to be exactly 12 bytes.
+			// TargetID arrives as the client's own wire spawn id; map it back to
+			// the entity id the rest of the server uses.  The handler does not
+			// read CasterID (it trusts its own sacrifice_caster_id), but pass it
+			// through translated anyway rather than forwarding a wire id.
+			if (plen >= sizeof(::Sacrifice_Struct)) {
+				EQApplicationPacket pkt(OP_Sacrifice, sizeof(::Sacrifice_Struct));
+				auto* ss = reinterpret_cast<::Sacrifice_Struct*>(pkt.pBuffer);
+				memcpy(ss, payload, sizeof(::Sacrifice_Struct));
+
+				const uint32_t wire_self =
+				    static_cast<uint32_t>(s.trilogy_client->GetPlayerSpawnId());
+				const uint32_t emu_self =
+				    static_cast<uint32_t>(s.trilogy_client->GetID());
+				if (ss->TargetID == wire_self) ss->TargetID = emu_self;
+				if (ss->CasterID == wire_self) ss->CasterID = emu_self;
+
+				LogInfo("[TrilogyDiag] EA21 sacrifice reply char=[{}] caster={} confirm={}",
+				        s.trilogy_client->GetCleanName(), ss->CasterID, ss->Confirm);
+				s.trilogy_client->Handle_OP_Sacrifice(&pkt);
+			}
+		}
 		else if (opcode == ZN_OP_ZoneChange && s.trilogy_client)
 			HandleZoneChange(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_Buff && s.trilogy_client)
