@@ -25,6 +25,7 @@
 #include "zone.h"
 #include "map.h"
 #include "npc.h"
+#include "mob_movement_manager.h"
 #include "bot.h"
 #include "groups.h"
 #include "corpse.h"
@@ -165,6 +166,21 @@ static constexpr uint16_t ZN_OP_LootRequest    = 0x4e20; // client -> zone: int3
 static constexpr uint16_t ZN_OP_LootItem       = 0xa020; // bidirectional: LootingItem_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_EndLootRequest = 0x4F20; // client -> zone: int32 corpse entity ID
 static constexpr uint16_t ZN_OP_CombatAbility  = 0x5f21; // client -> zone: CombatAbility_Struct (12 bytes: m_id,m_atk,m_type)
+
+// ── Controllable boats (race 141 rowboats; the ferries need none of this) ──
+// Source: EQClassic/Common/Include/eq_opcodes.h 104-106, confirmed on the wire
+// 2026-09-13 from an oot session.  The client sends 0xbb21 on stepping aboard
+// and 0xbc21 on stepping off; right-clicking the hull sends 0x2621 and then
+// KEEPS RESENDING IT (13 times in 5 s was measured) until the server echoes it
+// back.  The echo is the handshake, not a courtesy — see the dispatch below.
+//
+// 0x2621's payload is the modern ::ControlBoat_Struct byte for byte:
+//   85 00 00 00 01 00 00 00  ->  uint32 boatId = 133, bool TakeControl = 1, pad[3].
+// EQMacEmu's trilogy_structs.h documents a 4-byte { uint16, bool, uint8 } here;
+// that layout is wrong and would have read the id fine and the flag as garbage.
+static constexpr uint16_t ZN_OP_BoardBoat   = 0xbb21; // client -> zone: boat wire name, NUL-padded
+static constexpr uint16_t ZN_OP_LeaveBoat   = 0xbc21; // client -> zone: empty payload
+static constexpr uint16_t ZN_OP_ControlBoat = 0x2621; // bidirectional: ControlBoat_Struct (8 bytes), MUST be echoed
 
 // Empty-payload skill opcodes (client -> zone, no body)
 // Source: EQClassic/Common/Include/eq_opcodes.h "General / Class Skills" block.
@@ -2964,8 +2980,16 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				// by user click rate.  Naturally throttled: back-to-back
 				// clicks on the same target only fire once (last_broadcast is
 				// then current, so the next click sees gap=0 and skips).
+				// A hull this session is steering is excluded, same rule as
+				// SendMobHeartbeat and the steering broadcast: the driving
+				// client owns that position, so "correcting" it would yank the
+				// deck out from under the pilot — and its last_broadcast entry
+				// is stale ON PURPOSE for the whole voyage, so client_gap here
+				// is guaranteed to look enormous and would fire every time the
+				// pilot clicked their own boat.
 				static constexpr int kJitRefreshThresholdUnits = 20;
 				if (tgt_mob && lb_it_tgt != s.last_broadcast.end() &&
+				    static_cast<uint16_t>(tgt32) != s.driving_boat_id &&
 				    client_gap >= kJitRefreshThresholdUnits) {
 					Trilogy::structs::SpawnPositionUpdate_Struct upd{};
 					upd.spawn_id = static_cast<int16_t>(tgt32);
@@ -3769,6 +3793,128 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				LogInfo("[TrilogyZone] CLIENTBANK char={} upload too small plen={} (need {})",
 				        s.char_id, plen,
 				        (unsigned)sizeof(Trilogy::structs::PlayerProfile_Struct));
+			}
+		}
+		else if (opcode == ZN_OP_ControlBoat && s.trilogy_client) {
+			// Right-click on a rowboat hull.  The payload IS ::ControlBoat_Struct
+			// byte for byte, so there is nothing to translate — hand it to the
+			// stock handler, which owns the whole policy: the "someone else is
+			// at the tiller" IN_USE refusal (ownership lives on the boat's
+			// target, including the hate check that stops a boat which is
+			// somehow attacking you from being commandeered), and the
+			// SignalNPC(0) that lets quests hook boat use.  It ends with
+			// QueuePacket(app) — the echo the client is waiting for, which
+			// TranslateAndSend routes back out on 0x2621.
+			//
+			// The controllable-boat gate is repeated here rather than left to
+			// the stock handler because that handler answers a non-boat with a
+			// PossibleHack player-event.  A v29c player can right-click a FERRY
+			// (IsBoat but not IsControllableBoat) in the ordinary course of
+			// riding one, and that must not read as cheating in the log.
+			if (plen >= sizeof(::ControlBoat_Struct)) {
+				::ControlBoat_Struct cbs{};
+				memcpy(&cbs, payload, sizeof(cbs));
+				const uint16_t boat_id = static_cast<uint16_t>(cbs.boatId);
+				const bool     want    = cbs.TakeControl;
+
+				Mob* boat = entity_list.GetMob(boat_id);
+				const bool steerable = (boat != nullptr && boat->IsNPC() &&
+				                        boat->IsControllableBoat());
+				bool mine = false;
+
+				if (steerable) {
+					EQApplicationPacket cbpkt(OP_ControlBoat, sizeof(::ControlBoat_Struct));
+					memcpy(cbpkt.pBuffer, &cbs, sizeof(cbs));
+					s.trilogy_client->Handle_OP_ControlBoat(&cbpkt);
+
+					// Read the outcome back off the boat rather than assuming
+					// the request was granted: a take refused with IN_USE must
+					// not arm the position relay in HandleClientUpdate, or a
+					// second player could steer a hull the first one holds.
+					mine = (boat->GetTarget() == s.trilogy_client);
+					s.driving_boat_id = mine ? boat_id : 0;
+
+					// Take the hull away from its own AI for the duration.
+					// A race-141 rowboat has pathgrid 0, so Spawn2 hands it a
+					// guard point at its spawn spot — and AI_Process's
+					// IsGuarding() branch then NavigateTo()s it straight back
+					// there the moment we move it, rotating to face home on
+					// the way and rotating again to the guard heading on
+					// arrival.  That is the whole "the boat spins on its own
+					// and then stops" symptom, and it also drags the hull out
+					// from under the pilot, which makes the client hand the
+					// helm back (eqgame.exe 0x4d6f88).  StopMoving() kills the
+					// in-flight navigation AND clears Mob::moved, which is
+					// what gates the RotateTo/FaceTarget pair — FaceTarget
+					// being especially bad here, because the target IS the
+					// pilot standing on the deck, so the hull would pivot to
+					// follow them around it.
+					if (mine && boat->IsNPC()) {
+						boat->StopMoving();
+						boat->CastToNPC()->SaveGuardSpot(boat->GetPosition());
+					}
+				}
+
+				// Every take and every release is logged, unthrottled: they
+				// arrive as a pair inside the same second (the client hands the
+				// helm back on its own the moment it decides the player is no
+				// longer standing on the hull — eqgame.exe 0x4d6f88), and a
+				// throttle that hides the second half of that pair hides the
+				// whole diagnosis.  Only a request we cannot honour is
+				// throttled, because an un-echoed one is re-sent several times
+				// a second.
+				const uint64_t now_ctl = static_cast<uint64_t>(
+					std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now().time_since_epoch()).count());
+				if (steerable || now_ctl - s.last_boat_ctl_log_ms >= 1000) {
+					s.last_boat_ctl_log_ms = now_ctl;
+					LogInfo("[TrilogyBoat] control char=[{}] boat_wire={} name='{}' "
+					        "race={} take={} steerable={} granted={}",
+					        s.char_name, static_cast<int>(boat_id),
+					        boat ? (boat->GetCleanName() ? boat->GetCleanName() : "?") : "(gone)",
+					        boat ? static_cast<int>(boat->GetRace()) : -1,
+					        want ? 1 : 0, steerable ? 1 : 0, mine ? 1 : 0);
+				}
+			}
+		}
+		else if (opcode == ZN_OP_BoardBoat && s.trilogy_client) {
+			// Sent when the player steps onto the hull, before any right-click.
+			// Purely informational for us: ownership of a controllable boat is
+			// recorded on the boat's target by 0x2621 above, and nothing in the
+			// tree reads Client::controlling_boat_id except the stock
+			// OP_LeaveBoat handler, which we do not need — see 0xbc21 below.
+			// Consumed rather than handed to Handle_OP_BoardBoat because the
+			// name on the wire is the one WE put in the spawn packet
+			// (TrilogyWireName -> GetCleanName for a non-player race), so it
+			// arrives as "a boat" while the entity is "a_boat000" and that
+			// handler's GetName() lookup would silently miss.
+			char wire_name[64];
+			const uint32_t ncopy = (plen < sizeof(wire_name) - 1)
+			                           ? plen : static_cast<uint32_t>(sizeof(wire_name) - 1);
+			memcpy(wire_name, payload, ncopy);
+			wire_name[ncopy] = '\0';
+			LogInfo("[TrilogyBoat] board char=[{}] name='{}'", s.char_name, wire_name);
+		}
+		else if (opcode == ZN_OP_LeaveBoat && s.trilogy_client) {
+			// Stepping off.  Empty payload — the client does not say which hull,
+			// which is why the session carries the id.  Release the tiller so
+			// the next player can take it: walking away without right-clicking
+			// again would otherwise leave the boat targeting a player who is no
+			// longer on it, and every later taker gets IN_USE forever.  Skip the
+			// release if the boat is actually attacking us (SetTarget is doing
+			// double duty as a hate target there), matching the stock
+			// OP_LeaveBoat guard.
+			if (s.driving_boat_id != 0) {
+				Mob* boat = entity_list.GetMob(s.driving_boat_id);
+				if (boat != nullptr && boat->GetTarget() == s.trilogy_client &&
+				    boat->GetHateAmount(s.trilogy_client) == 0) {
+					boat->SetTarget(nullptr);
+				}
+				LogInfo("[TrilogyBoat] leave char=[{}] released boat_wire={}",
+				        s.char_name, static_cast<int>(s.driving_boat_id));
+				s.driving_boat_id = 0;
+			} else {
+				LogInfo("[TrilogyBoat] leave char=[{}] (was not steering)", s.char_name);
 			}
 		}
 		else {
@@ -6432,6 +6578,116 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 	float y       = static_cast<float>(upd.y_pos);
 	float z       = static_cast<float>(upd.z_pos) / 10.0f;
 	float heading = static_cast<float>(static_cast<uint8_t>(upd.heading)) * 2.0f;
+
+	// ── Boat-owned update: the client is steering, not walking ──
+	// A v29c client that has taken control of a rowboat reports the HULL's
+	// position on this same opcode, putting the boat's entity id in spawn_id
+	// where its own synthetic player id normally sits.  EQEmu has had this
+	// branch since EQMac (Handle_OP_ClientUpdate, client_packet.cpp:4854); the
+	// Trilogy path never read spawn_id at all, so wiring 0x2621 on its own
+	// would have applied every steering update to the PLAYER — hull stationary,
+	// pilot warping across the water.  Mirroring it here is the same rule the
+	// proximity events had to learn: what Handle_OP_ClientUpdate does, this
+	// function has to do too.
+	//
+	// v29c has no eye-of-zomm equivalent, so a controlled boat is the only
+	// thing that can legitimately send a foreign spawn_id.  Anything else is
+	// dropped rather than guessed at, and a hull this session never took
+	// control of is not moved — otherwise a modified client could steer any
+	// boat in the zone from across the water.
+	const uint64_t now_upd_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Zoning is excluded deliberately: the first update after zone-in is what
+	// releases the buffered spawn burst (OnClientReady, below), and a branch
+	// that returns early must never be able to swallow it.
+	if (s.trilogy_client && !s.trilogy_client->IsZoning()) {
+		const uint16_t wire_id = static_cast<uint16_t>(upd.spawn_id);
+		if (wire_id != 0 && wire_id != s.trilogy_client->GetPlayerSpawnId()) {
+			Mob* boat = (wire_id == s.driving_boat_id)
+			                ? entity_list.GetMob(wire_id)
+			                : nullptr;
+
+			if (boat != nullptr && boat->IsControllableBoat()) {
+				// SetPosition + an explicit broadcast rather than GMMove:
+				// GMMove sends to ClientRangeAny with no exclusion, and the
+				// driving client is dead-reckoning the hull locally, so feeding
+				// our copy back to it fights its own simulation.  ignore_client
+				// is the same guard EQMac uses on this path
+				// (QueueCloseClients(..., this, ...)); SendMobHeartbeat skips
+				// s.driving_boat_id for the same reason.  The guard-spot half of
+				// GMMove is wanted and is done explicitly just below.
+				boat->SetPosition(x, y, z);
+				boat->SetHeading(heading);
+				// Move the guard point with the hull.  This is the half of
+				// EQMac's GMMove(..., save_guard_spot = true) that matters:
+				// without it the NPC is "displaced from home" and AI_Process
+				// navigates it back on the next tick, which is what produced a
+				// boat that rowed itself back to the dock while the pilot was
+				// steering it away.  Keeping the guard point under the hull
+				// makes IsPositionEqualWithinCertainZ true every tick, so the
+				// NavigateTo branch is never reached and the reface timer's
+				// RotateTo(m_GuardPoint.w) is a rotation to the heading the
+				// pilot just set.  A rowboat left mid-ocean then stays there,
+				// which is the classic behaviour.
+				if (boat->IsNPC()) {
+					boat->CastToNPC()->SaveGuardSpot(
+						glm::vec4(x, y, z, heading));
+				}
+				MobMovementManager::Get().SendCommandToClients(
+					boat, 0.0f, 0.0f, 0.0f, 0.0f, 0, ClientRangeAny,
+					nullptr, s.trilogy_client);
+
+				// Carry the pilot's body with the hull, but only if the client
+				// has stopped reporting its own position — a v29c that keeps
+				// sending both knows where on the deck it is standing, and
+				// snapping it to the hull origin would fight that.  Routed
+				// through TrilogyPositionUpdate rather than moved directly so
+				// aggro, proximity events and zone lines all see the journey,
+				// exactly as they would if the player had swum the same path.
+				constexpr uint64_t kSelfQuietMs = 1000;
+				bool carried_body = false;
+				if (now_upd_ms - s.last_self_update_ms >= kSelfQuietMs) {
+					s.pos_x = x; s.pos_y = y; s.pos_z = z; s.pos_heading = heading;
+					s.trilogy_client->TrilogyPositionUpdate(x, y, z, heading);
+					carried_body = true;
+				}
+
+				if (now_upd_ms - s.last_boat_log_ms >= 1000) {
+					s.last_boat_log_ms = now_upd_ms;
+					LogInfo("[TrilogyBoat] steer char=[{}] boat_wire={} carried_body={} "
+					        "pos=({:.1f},{:.1f},{:.1f}) hdg={:.1f}",
+					        s.char_name, static_cast<int>(wire_id),
+					        carried_body ? 1 : 0, x, y, z, heading);
+				}
+
+				// This packet carried the boat's position, never the player's —
+				// everything below would teleport the pilot onto it.
+				return;
+			}
+
+			// A foreign spawn_id we are NOT steering.  Nothing has ever been
+			// seen sending one (164 updates in the reference oot session all
+			// carried the player's own id, and v29c has no eye-of-zomm), so
+			// rather than invent a drop rule this falls through to the
+			// pre-boat behaviour of treating every update as the player's.
+			// Dropping it instead would turn any surprise into "the player
+			// stopped moving", which is a far worse failure than the warp it
+			// would be replacing.
+			if (now_upd_ms - s.last_boat_log_ms >= 1000) {
+				s.last_boat_log_ms = now_upd_ms;
+				LogInfo("[TrilogyBoat] foreign spawn_id char=[{}] wire_id={} "
+				        "driving={} — applied to the player as before",
+				        s.char_name, static_cast<int>(wire_id),
+				        static_cast<int>(s.driving_boat_id));
+			}
+		}
+
+		// Self-owned update: remember when, so the boat branch above can tell
+		// a client that reports both from one that reports only the hull.
+		s.last_self_update_ms = now_upd_ms;
+	}
 
 	// Diagnostic: decode the v29c CLIENT's outgoing delta_x/y/z bitfield —
 	// this is our calibration anchor for kVelocityWireScale.  The v29c
@@ -13737,6 +13993,14 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		float dist_sq = dx * dx + dy * dy;
 		if (dist_sq > CULL_RADIUS_SQ) continue;
 
+		// A hull this session is steering is dead-reckoned by the client that
+		// owns it, exactly like the player's own body.  Broadcasting our copy
+		// of its position back to the driver fights that local simulation, so
+		// skip it here the way the self-echo is skipped — other sessions still
+		// get the boat through their own heartbeat.  Set/cleared by 0x2621.
+		if (s.driving_boat_id != 0 &&
+		    npc->GetID() == s.driving_boat_id) continue;
+
 		auto* upd = reinterpret_cast<Trilogy::structs::SpawnPositionUpdate_Struct*>(
 		                pkt + 4 + n * sizeof(Trilogy::structs::SpawnPositionUpdate_Struct));
 		memset(upd, 0, sizeof(*upd));
@@ -13800,7 +14064,21 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			};
 
 			int eqemu_speed_for_delta = 0;
-			if (cached != 0) {
+			if (npc->IsControllableBoat()) {
+				// A race-141 rowboat has no self-propulsion.  It moves only
+				// while a player is at the tiller, and that client is
+				// authoritative for it — so it must never be broadcast with a
+				// walk animation or a walk speed, which is what pick_speed +
+				// EncodeTrilogyAnim would give it the moment we reposition the
+				// hull (observed: anim=5, 11.6 eq/s for a boat nobody was
+				// pushing).  Both make every observer dead-reckon the hull
+				// forward between snaps, and the client that just let go of
+				// the helm is an observer: once its copy of the hull slides
+				// out from under its feet, eqgame.exe 0x4d6f88 decides the
+				// player is no longer standing on the boat and hands the helm
+				// straight back.  Position snaps carry the real motion.
+				upd->anim_type = 0;
+			} else if (cached != 0) {
 				upd->anim_type = cached;
 				// Cached anim byte is wire-encoded and not directly reversible;
 				// re-derive server-side speed for the delta so wire velocity
@@ -14199,6 +14477,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			// remove the player from their own client view.  Also skip 0,
 			// which would not be in here normally but is harmless to guard.
 			if (spawn_id == s.player_spawn_id || spawn_id == 0) continue;
+			// Likewise the hull this session is steering.  Its last_broadcast
+			// entry is deliberately frozen for the whole voyage — we never echo
+			// a driven boat back to its driver — so the gap here grows with
+			// every metre sailed and means the opposite of a desync.  Skipping
+			// it keeps the drift-refresh below from ever sending the pilot a
+			// correction for the deck they are standing on (today that is also
+			// blocked by the in-cull test, but only because the pilot is by
+			// definition next to it), and keeps the diagnostic from reporting
+			// a 100-unit desync on a boat that is working perfectly.
+			if (s.driving_boat_id != 0 && spawn_id == s.driving_boat_id) continue;
 
 			Mob* m = entity_list.GetMob(spawn_id);
 			if (m == nullptr) {
