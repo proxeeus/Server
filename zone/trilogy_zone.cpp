@@ -3825,6 +3825,26 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 					// second player could steer a hull the first one holds.
 					mine = (boat->GetTarget() == s.trilogy_client);
 					s.driving_boat_id = mine ? boat_id : 0;
+
+					// Take the hull away from its own AI for the duration.
+					// A race-141 rowboat has pathgrid 0, so Spawn2 hands it a
+					// guard point at its spawn spot — and AI_Process's
+					// IsGuarding() branch then NavigateTo()s it straight back
+					// there the moment we move it, rotating to face home on
+					// the way and rotating again to the guard heading on
+					// arrival.  That is the whole "the boat spins on its own
+					// and then stops" symptom, and it also drags the hull out
+					// from under the pilot, which makes the client hand the
+					// helm back (eqgame.exe 0x4d6f88).  StopMoving() kills the
+					// in-flight navigation AND clears Mob::moved, which is
+					// what gates the RotateTo/FaceTarget pair — FaceTarget
+					// being especially bad here, because the target IS the
+					// pilot standing on the deck, so the hull would pivot to
+					// follow them around it.
+					if (mine && boat->IsNPC()) {
+						boat->StopMoving();
+						boat->CastToNPC()->SaveGuardSpot(boat->GetPosition());
+					}
 				}
 
 				// Every take and every release is logged, unthrottled: they
@@ -6588,10 +6608,25 @@ void TrilogyZoneServer::HandleClientUpdate(const std::string& addr, int port, Se
 				// our copy back to it fights its own simulation.  ignore_client
 				// is the same guard EQMac uses on this path
 				// (QueueCloseClients(..., this, ...)); SendMobHeartbeat skips
-				// s.driving_boat_id for the same reason.  GMMove would also
-				// rewrite the boat's guard spot on every tick of the journey.
+				// s.driving_boat_id for the same reason.  The guard-spot half of
+				// GMMove is wanted and is done explicitly just below.
 				boat->SetPosition(x, y, z);
 				boat->SetHeading(heading);
+				// Move the guard point with the hull.  This is the half of
+				// EQMac's GMMove(..., save_guard_spot = true) that matters:
+				// without it the NPC is "displaced from home" and AI_Process
+				// navigates it back on the next tick, which is what produced a
+				// boat that rowed itself back to the dock while the pilot was
+				// steering it away.  Keeping the guard point under the hull
+				// makes IsPositionEqualWithinCertainZ true every tick, so the
+				// NavigateTo branch is never reached and the reface timer's
+				// RotateTo(m_GuardPoint.w) is a rotation to the heading the
+				// pilot just set.  A rowboat left mid-ocean then stays there,
+				// which is the classic behaviour.
+				if (boat->IsNPC()) {
+					boat->CastToNPC()->SaveGuardSpot(
+						glm::vec4(x, y, z, heading));
+				}
 				MobMovementManager::Get().SendCommandToClients(
 					boat, 0.0f, 0.0f, 0.0f, 0.0f, 0, ClientRangeAny,
 					nullptr, s.trilogy_client);
