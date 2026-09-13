@@ -809,6 +809,6 @@ UNION ALL SELECT 'froglok', COUNT(*) FROM playerbot_chat_responses
 --  3. Bots are opt-in:  ^chat on          -- targeted bot
 --                       ^chatall on       -- all of your spawned bots
 --                       ^chatstatus
---  4. PlayerBots are on by default.  Master switch: the PlayerBotChat:Enabled
+--  4. PlayerBots are on by default.  Master switch: the PlayerBotChat:ChatEnabled
 --     rule.  Spontaneous openers: PlayerBotChat:SpontaneousEnabled.
 -- ---------------------------------------------------------------------------

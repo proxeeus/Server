@@ -805,7 +805,7 @@ RULE_INT(PlayerBots, PlayerBotsGuildChance, 50, "Chance % of a PlayerBot being g
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBotChat)
-RULE_BOOL(PlayerBotChat, Enabled, true, "Master killswitch for the PlayerBot/Bot reactive chat engine")
+RULE_BOOL(PlayerBotChat, ChatEnabled, true, "Master killswitch for the PlayerBot/Bot reactive chat engine. NOTE: rule NAMES are globally unique across categories (the enum is Bool__<name>, category dropped), so this cannot be called Enabled -- Bots:Enabled already owns that.")
 RULE_INT(PlayerBotChat, ResponseCapPerMessage, 2, "Maximum responders per heard message")
 RULE_INT(PlayerBotChat, PerListenerCooldownMs, 10000, "One listener's global mouth cooldown, in ms")
 RULE_INT(PlayerBotChat, ConversationLockMs, 30000, "First-refusal window after answering a given speaker, in ms")

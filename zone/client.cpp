@@ -1215,7 +1215,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 
 		// PlayerBot chat ingress.  `this`, not `sender`: sender becomes the pet
 		// under SE_VoiceGraft and the engine wants the player who typed.
-		if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+		if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
 			playerbot_chat.Overhear(this, chan_num, message, 0);
 		}
@@ -1259,7 +1259,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
 
 			// PlayerBot chat ingress (zone-local auction only).
-			if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
 				playerbot_chat.Overhear(this, chan_num, message, 0);
 			}
@@ -1312,7 +1312,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
 
 			// PlayerBot chat ingress (zone-local OOC only).
-			if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
 				playerbot_chat.Overhear(this, chan_num, message, 0);
 			}
@@ -1453,7 +1453,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// -- '#' and '^' commands, the censor pass, is_silent -- has already
 			// returned or broken out above this point; "discard" is the
 			// rate-limit recursion sentinel, which would otherwise double-fire.
-			if (RuleB(PlayerBotChat, Enabled) && strcmp(targetname, "discard") != 0) {
+			if (RuleB(PlayerBotChat, ChatEnabled) && strcmp(targetname, "discard") != 0) {
 				playerbot_chat.Overhear(this, chan_num, message, 0);
 			}
 		}

@@ -476,7 +476,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 
 	ResetStats();
 
-	if (!RuleB(PlayerBotChat, Enabled)) {
+	if (!RuleB(PlayerBotChat, ChatEnabled)) {
 		return;
 	}
 
@@ -498,7 +498,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 
 void PlayerBotChatEngine::Process()
 {
-	if (!RuleB(PlayerBotChat, Enabled) || !zone) {
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !zone) {
 		return;
 	}
 
@@ -1021,7 +1021,7 @@ void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector
 
 void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth)
 {
-	if (!RuleB(PlayerBotChat, Enabled)) {
+	if (!RuleB(PlayerBotChat, ChatEnabled)) {
 		++m_stat_drops[DR_Disabled];
 		return;
 	}
@@ -1498,7 +1498,7 @@ bool PlayerBotChatEngine::ZoneTextPressureHigh() const
 
 bool PlayerBotChatEngine::ScriptSay(Mob *talker, uint32 category_id, uint8 chan_num)
 {
-	if (!RuleB(PlayerBotChat, Enabled) || !talker) {
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !talker) {
 		return false;
 	}
 
