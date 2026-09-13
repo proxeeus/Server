@@ -3403,6 +3403,21 @@ static uint32_t ChatTypeToTrilogyMsgType(uint32_t chat_type)
 	return 256u; // out of range — v29c clamps to user colour 0 (MESSAGETYPE_Say)
 }
 
+// Pluralise a race or class name for the %Bn(12) / %Bn(13) tokens.  Those tokens
+// are plural in every string that uses them ("%B3(13) like you", "Don't you
+// %B3(12) have your own merchants?"), and the live client pluralises them out of
+// its own string tables — which v29c does not have.  The rule only has to cover
+// the player race and class name sets, where the sole irregularity is the -f
+// ending: "Dwarf" -> "Dwarves", "Wood Elf" -> "Wood Elves".  Everything else in
+// both sets takes a plain -s.
+static std::string TrilogyPluralizeName(const std::string& name)
+{
+	if (name.size() > 1 && (name.back() == 'f' || name.back() == 'F'))
+		return name.substr(0, name.size() - 1) + "ves";
+
+	return name + "s";
+}
+
 // Resolve a handful of common system string-ids (faction / experience / level) to
 // their English templates so they can be relayed to the Trilogy client, which has
 // no usable formatted-string path from us.  Arg-bearing ones (GAIN_LEVEL, FACTION_*)
@@ -3616,14 +3631,51 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		case 12328: return "You are not in a group! Keep it all.";                    // SPLIT_NO_GROUP
 		case 13112: return "There is not enough to split, keep it.";                  // SPLIT_FAIL
 		// Remaining Mob::SayString users in the zone code: quest item return and
-		// merchant refusals.  Included so they do not become the next bare number.
+		// the merchant families.  Every one of these arrives as a NESTED id under
+		// GENERIC_STRINGID_SAY (554), so a gap does not go quiet — it renders as a
+		// bare number in the player's chat ("a merchant says '1148'").  The three
+		// merchant families are each picked with zone->random.Int() over a RANGE
+		// (client_process.cpp:1015, client_packet.cpp:2175/14740, client.cpp:8116/
+		// 8158/8163), so a partially-filled range shows the number on a dice roll
+		// and hides the bug the rest of the time.  Keep each range COMPLETE.
 		case 1105:  return "I have no need for this %3, you can have it back.";      // TRADE_BACK
-		case 1155:  return "It's %3 like you that are ruining the continent...get OUT!"; // WONT_SELL_CLASS1
-		case 1159:  return "I don't have anything to do with %3..move along.";       // WONT_SELL_CLASS5
+		// Merchant refusal — race (WONT_SELL_RACE1-4, client.cpp:8136 non-sequential).
+		case 1154:  return "I don't like to speak to %B3(12) much less sell to them!"; // WONT_SELL_RACE1
+		case 1161:  return "It's not enough that you %B3(12) have ruined your own land. Now get lost!"; // WONT_SELL_RACE2
+		case 1162:  return "I have something here that %B3(12) use..let me see...it's the EXIT, now get LOST!"; // WONT_SELL_RACE3
+		case 1163:  return "Don't you %B3(12) have your own merchants?  Whatever, I'm not selling anything to you!"; // WONT_SELL_RACE4
+		// Merchant refusal — class (WONT_SELL_CLASS1-5, client.cpp:8158).
+		case 1155:  return "It's %B3(13) like you that are ruining the continent...get OUT!"; // WONT_SELL_CLASS1
+		case 1156:  return "Isn't there some kind of ordinance against %B3(13) crawling out from under their rocks?"; // WONT_SELL_CLASS2
+		case 1157:  return "%B3(13) like you don't have any place in my shop..now make way for welcome customers."; // WONT_SELL_CLASS3
+		case 1158:  return "I thought scumbag %B3(13) like you just stole whatever they need.  Now GET OUT!"; // WONT_SELL_CLASS4
+		case 1159:  return "I don't have anything to do with %B3(13)..move along.";   // WONT_SELL_CLASS5
+		// Merchant refusal — illusioned into a non-player race (WONT_SELL_NONSTDRACE1-3,
+		// client.cpp:8121).  No %B token: the client is not a player race here.
+		case 1160:  return "I don't have anything to do with your little gang..move along."; // WONT_SELL_NONSTDRACE1
+		case 1164:  return "Members of your little \"club\" have ruined things around here..get lost!"; // WONT_SELL_NONSTDRACE2
+		case 1165:  return "I don't have anything to do with your damned club..move along."; // WONT_SELL_NONSTDRACE3
+		// Merchant refusal — deity / deeds (WONT_SELL_DEEDS1-6, client.cpp:8116+8163).
 		case 1166:  return "Creatures like you make me sick..the things you do..get out of here Pagan!"; // WONT_SELL_DEEDS1
 		case 1167:  return "After all the things you've done..the things you believe in..leave my shop!"; // WONT_SELL_DEEDS2
+		case 1168:  return "Actions speak louder than beliefs, and I despise both your actions and all you believe in."; // WONT_SELL_DEEDS3
+		case 1169:  return "Get out of here now!";                                   // WONT_SELL_DEEDS4
+		case 1170:  return "I am tolerant by nature..but infidels like you push me past my limit..get out!"; // WONT_SELL_DEEDS5
 		case 1171:  return "I cannot abide you or your actions against all that is right..BE GONE!"; // WONT_SELL_DEEDS6
+		// Merchant greeting — fires from BulkSendMerchantInventory (client_process.cpp
+		// :1015) every time the shop window opens on a merchant that rolled a "handy
+		// item".  Note this call site hands GENERIC_STRINGID_SAY to MessageString
+		// DIRECTLY rather than going through Mob::SayString, which is why the PR#36
+		// sweep (a grep for "SayString(") never saw it and the greeting has never
+		// once rendered on v29c.  %3 = player name, %4 = the handy item.
+		case 1144:  return "Welcome to my shop, %3.";                                // MERCHANT_GREETING
+		case 1145:  return "Hello there %3, how about a nice %4?";                   // MERCHANT_HANDY_ITEM1
+		case 1146:  return "Greetings %3. You look like you could use a %4.";        // MERCHANT_HANDY_ITEM2
+		case 1147:  return "Hi there %3, just browsing?  Have you seen the %4 I just got in?"; // MERCHANT_HANDY_ITEM3
+		case 1148:  return "Welcome to my shop %3, you would probably find a %4 handy."; // MERCHANT_HANDY_ITEM4
+		// Merchant already has a customer (MERCHANT_CLOSED_ONE-THREE, random range).
 		case 1199:  return "I don't have time for that now.";                        // MERCHANT_CLOSED_ONE
+		case 1200:  return "Can't you see I'm doing something here?";                // MERCHANT_CLOSED_TWO
 		case 1201:  return "I am not open for business right now.";                  // MERCHANT_CLOSED_THREE
 		// These two are the only pet lines whose live template frames the pet as
 		// telling you something rather than saying it ("%1 tells you, '...'").
@@ -3861,6 +3913,44 @@ void TrilogyClient::HandleOutgoingFormattedMessage(const EQApplicationPacket* ap
 			}
 			for (; (pos = out_text.find(token)) != std::string::npos; )
 				out_text.replace(pos, token.size(), replacement);
+		}
+
+		// %Bn(table) — "argument n is a numeric id; render it as the PLURAL NAME
+		// from client string table `table`" (12 = race, 13 = class).  The live
+		// client owns those tables; v29c has no string table of any kind — the
+		// binary contains neither a "%1..%9" template nor any of these strings —
+		// so the lookup has to happen here.  Without it the merchant's refusal
+		// reads "It's 7 like you that are ruining the continent...get OUT!",
+		// substituting the raw class id for "Monks", which is the same bare-number
+		// symptom a missing template gives.  Only the WONT_SELL_RACE /
+		// WONT_SELL_CLASS families use these tokens (client.cpp:8136/8158, which
+		// pass the id as itoa(GetRace()) / itoa(GetClass())).
+		//
+		// Runs AFTER the %Tn pass — the token lives inside the nested template,
+		// not the outer one — and BEFORE the plain %n pass.  Order is not merely
+		// cosmetic: "%B3(13)" does not contain the substring "%3" (the '%' is
+		// followed by 'B'), so the %n pass cannot corrupt it, but it would happily
+		// leave the token unresolved if it ran last.
+		for (size_t i = 0; i < args.size(); ++i) {
+			for (const int table : {12, 13}) {
+				const std::string token = fmt::format("%B{}({})", i + 1, table);
+				if (out_text.find(token) == std::string::npos)
+					continue;
+
+				const int   id   = Strings::ToInt(args[i]);
+				const char* name = (table == 12)
+				                 ? GetRaceIDName(static_cast<uint16>(id))
+				                 : GetClassIDName(static_cast<uint8>(id));
+
+				// Both helpers return a sentinel ("Unknown" / "UNKNOWN RACE") rather
+				// than nullptr for an id they do not know, so this guard is belt-and-
+				// braces; either way the line still renders rather than vanishing.
+				const std::string replacement =
+					name ? TrilogyPluralizeName(name) : args[i];
+
+				for (size_t pos; (pos = out_text.find(token)) != std::string::npos; )
+					out_text.replace(pos, token.size(), replacement);
+			}
 		}
 
 		for (size_t i = 0; i < args.size(); ++i) {
