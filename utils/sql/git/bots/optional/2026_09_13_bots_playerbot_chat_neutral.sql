@@ -71,11 +71,81 @@ ALTER TABLE playerbot_chat_responses AUTO_INCREMENT = 1;
 
 
 -- ---------------------------------------------------------------------------
--- 'aggro' category, if it is not already present.
+-- SCHEMA + CATEGORIES + TRIGGERS -- self-contained.
+--
+-- This file previously created only 'aggro' and assumed the other eighteen
+-- categories already existed, because an earlier migration made them. That
+-- migration has since been deleted, so on a FRESH database every @c_* below
+-- would have been NULL and the whole pack would have failed to insert. The
+-- categories, the pattern_type ENUM and the full trigger set now live here.
+--
+-- Every statement is guarded, so this is a no-op on a database that already
+-- has them and correct on one that does not.
 -- ---------------------------------------------------------------------------
+
+-- 'always' pattern type: the fallback category's catch-all trigger needs it.
+-- Appending an ENUM value does not renumber the existing ones.
+ALTER TABLE playerbot_chat_triggers
+  MODIFY COLUMN pattern_type ENUM('keyword','phrase','regex','always') NOT NULL DEFAULT 'keyword';
+
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'greeting', 120, 45000, 10, 0, 'Someone said hello'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'greeting');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'farewell', 115, 45000, 10, 0, 'Someone is leaving / logging off'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'farewell');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'generic_ack', 60, 25000, 10, 0, 'Low-priority filler agreement'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'generic_ack');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'zone_intent', 110, 60000, 10, 0, 'Someone announced where they are going'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'zone_intent');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'lfg', 130, 60000, 10, 0, 'Looking for group / looking for members'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'lfg');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'insult', 140, 60000, 15, 0, 'Someone was rude'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'insult');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'compliment', 125, 60000, 12, 0, 'Someone was kind'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'compliment');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'brag', 105, 60000, 12, 0, 'Someone is showing off'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'brag');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'complaint', 100, 60000, 12, 0, 'Someone is grumbling about the grind'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'complaint');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'smalltalk_opener', 70, 90000, 10, 1, 'Ambient conversation starter'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'smalltalk_opener');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'zone_intent_opener', 75, 90000, 10, 1, 'Bot announces its own travel plans'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'zone_intent_opener');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'fallback', 1, 90000, 1, 0, 'Nothing matched -- confusion and filler; also what makes bots answer each other'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'fallback');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'victory', 100, 15000, 10, 0, 'SCRIPT ONLY (no triggers): bot killed something. Player_Bot.lua event_slay'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'victory');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'death', 100, 15000, 10, 0, 'SCRIPT ONLY (no triggers): bot died. Player_Bot.lua event_death_complete'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'death');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'market', 128, 60000, 12, 0, 'WTB / WTS / PST / price checks'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'market');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'buff_request', 135, 45000, 12, 0, 'SoW, KEI, ports, rezzes, invis'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'buff_request');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'status', 80, 40000, 10, 0, 'afk / brb / oom / re / omw'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'status');
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'combat_call', 145, 30000, 12, 0, 'inc / train / adds / pull / CR -- highest priority'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'combat_call');
 INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
 SELECT 'aggro', 100, 20000, 10, 0, 'SCRIPT ONLY (no triggers): bot engaged something. Player_Bot.lua event_combat'
 WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'aggro');
+
 
 SET @c_aggro              := (SELECT id FROM playerbot_chat_categories WHERE name = 'aggro');
 SET @c_victory            := (SELECT id FROM playerbot_chat_categories WHERE name = 'victory');
@@ -96,6 +166,210 @@ SET @c_compliment         := (SELECT id FROM playerbot_chat_categories WHERE nam
 SET @c_insult             := (SELECT id FROM playerbot_chat_categories WHERE name = 'insult');
 SET @c_brag               := (SELECT id FROM playerbot_chat_categories WHERE name = 'brag');
 SET @c_complaint          := (SELECT id FROM playerbot_chat_categories WHERE name = 'complaint');
+
+
+-- ---------------------------------------------------------------------------
+-- TRIGGERS -- the classifier. Keywords and scores; nothing here can be wrong
+-- about the world. Rebuilt only when absent, so an existing set is untouched.
+-- ---------------------------------------------------------------------------
+SET @pbchat_trigger_count := (SELECT COUNT(*) FROM playerbot_chat_triggers);
+SELECT @pbchat_trigger_count AS triggers_before_expect_0_or_191;
+
+DELETE FROM playerbot_chat_triggers;
+
+INSERT INTO playerbot_chat_triggers (category_id, pattern, pattern_type, is_negation, score, capture_name) VALUES
+  (@c_greeting, 'hello', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'hi', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'hey', 'keyword', 0, 10, NULL),
+  (@c_greeting, 'greetings', 'keyword', 0, 14, NULL),
+  (@c_greeting, 'yo', 'keyword', 0, 10, NULL),
+  (@c_greeting, 'howdy', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'well met', 'phrase', 0, 14, NULL),
+  (@c_greeting, 'good day', 'phrase', 0, 12, NULL),
+  (@c_greeting, 'salutations', 'keyword', 0, 14, NULL),
+  (@c_greeting, 'hail', 'keyword', 1, 0, NULL),
+  (@c_farewell, 'bye', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'goodbye', 'keyword', 0, 14, NULL),
+  (@c_farewell, 'farewell', 'keyword', 0, 14, NULL),
+  (@c_farewell, 'cya', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'later', 'keyword', 0, 8, NULL),
+  (@c_farewell, 'logging off', 'phrase', 0, 16, NULL),
+  (@c_farewell, 'heading out', 'phrase', 0, 12, NULL),
+  (@c_farewell, 'gtg', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'good night', 'phrase', 0, 14, NULL),
+  (@c_generic_ack, 'agreed', 'keyword', 0, 12, NULL),
+  (@c_generic_ack, 'indeed', 'keyword', 0, 12, NULL),
+  (@c_generic_ack, 'yep', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'yeah', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'true', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'nice', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'sounds good', 'phrase', 0, 12, NULL),
+  (@c_generic_ack, 'for sure', 'phrase', 0, 12, NULL),
+  (@c_zone_intent, 'heading to ([a-z'' ]{3,24})', 'regex', 0, 18, 'dest'),
+  (@c_zone_intent, 'going to ([a-z'' ]{3,24})', 'regex', 0, 18, 'dest'),
+  (@c_zone_intent, 'off to ([a-z'' ]{3,24})', 'regex', 0, 16, 'dest'),
+  (@c_zone_intent, 'zoning', 'keyword', 0, 10, NULL),
+  (@c_zone_intent, 'porting', 'keyword', 0, 10, NULL),
+  (@c_zone_intent, 'travelling', 'keyword', 0, 10, NULL),
+  (@c_zone_intent, 'traveling', 'keyword', 0, 10, NULL),
+  (@c_lfg, 'lfg', 'keyword', 0, 20, NULL),
+  (@c_lfg, 'lfm', 'keyword', 0, 20, NULL),
+  (@c_lfg, 'looking for group', 'phrase', 0, 22, NULL),
+  (@c_lfg, 'need a healer', 'phrase', 0, 20, NULL),
+  (@c_lfg, 'need a tank', 'phrase', 0, 20, NULL),
+  (@c_lfg, 'need dps', 'phrase', 0, 18, NULL),
+  (@c_lfg, 'anyone need', 'phrase', 0, 16, NULL),
+  (@c_lfg, 'room for one', 'phrase', 0, 18, NULL),
+  (@c_lfg, 'invite', 'keyword', 0, 10, NULL),
+  (@c_insult, 'idiot', 'keyword', 0, 20, NULL),
+  (@c_insult, 'moron', 'keyword', 0, 20, NULL),
+  (@c_insult, 'noob', 'keyword', 0, 16, NULL),
+  (@c_insult, 'newb', 'keyword', 0, 14, NULL),
+  (@c_insult, 'loser', 'keyword', 0, 18, NULL),
+  (@c_insult, 'coward', 'keyword', 0, 18, NULL),
+  (@c_insult, 'stupid', 'keyword', 0, 18, NULL),
+  (@c_insult, 'shut up', 'phrase', 0, 20, NULL),
+  (@c_insult, 'ninja looter', 'phrase', 0, 20, NULL),
+  (@c_insult, 'train', 'keyword', 0, 12, NULL),
+  (@c_compliment, 'thanks', 'keyword', 0, 16, NULL),
+  (@c_compliment, 'thank', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'ty', 'keyword', 0, 12, NULL),
+  (@c_compliment, 'well played', 'phrase', 0, 18, NULL),
+  (@c_compliment, 'good job', 'phrase', 0, 16, NULL),
+  (@c_compliment, 'nice work', 'phrase', 0, 16, NULL),
+  (@c_compliment, 'appreciate', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'grats', 'keyword', 0, 16, NULL),
+  (@c_brag, 'soloed', 'keyword', 0, 18, NULL),
+  (@c_brag, 'solod', 'keyword', 0, 18, NULL),
+  (@c_brag, 'dinged', 'keyword', 0, 16, NULL),
+  (@c_brag, 'ding', 'keyword', 0, 14, NULL),
+  (@c_brag, 'one shot', 'phrase', 0, 16, NULL),
+  (@c_brag, 'easy kill', 'phrase', 0, 16, NULL),
+  (@c_brag, 'my epic', 'phrase', 0, 18, NULL),
+  (@c_brag, 'best in slot', 'phrase', 0, 16, NULL),
+  (@c_complaint, 'grind', 'keyword', 0, 14, NULL),
+  (@c_complaint, 'camped', 'keyword', 0, 14, NULL),
+  (@c_complaint, 'wipe', 'keyword', 0, 16, NULL),
+  (@c_complaint, 'wiped', 'keyword', 0, 16, NULL),
+  (@c_complaint, 'corpse run', 'phrase', 0, 18, NULL),
+  (@c_complaint, 'lost my corpse', 'phrase', 0, 20, NULL),
+  (@c_complaint, 'no drops', 'phrase', 0, 16, NULL),
+  (@c_complaint, 'bad luck', 'phrase', 0, 14, NULL),
+  (@c_complaint, 'this sucks', 'phrase', 0, 16, NULL),
+  (@c_fallback, '*', 'always', 0, 1, NULL),
+  (@c_fallback, 'hail', 'keyword', 1, 0, NULL),
+  (@c_market, 'wtb', 'keyword', 0, 20, NULL),
+  (@c_market, 'wts', 'keyword', 0, 20, NULL),
+  (@c_market, 'wtt', 'keyword', 0, 18, NULL),
+  (@c_market, 'pst', 'keyword', 0, 16, NULL),
+  (@c_market, 'pc', 'keyword', 0, 14, NULL),
+  (@c_market, 'price check', 'phrase', 0, 20, NULL),
+  (@c_market, 'selling', 'keyword', 0, 14, NULL),
+  (@c_market, 'buying', 'keyword', 0, 14, NULL),
+  (@c_market, 'plat', 'keyword', 0, 12, NULL),
+  (@c_market, 'pp', 'keyword', 0, 10, NULL),
+  (@c_market, 'how much', 'phrase', 0, 14, NULL),
+  (@c_market, 'offer', 'keyword', 0, 12, NULL),
+  (@c_buff_request, 'sow', 'keyword', 0, 20, NULL),
+  (@c_buff_request, 'kei', 'keyword', 0, 20, NULL),
+  (@c_buff_request, 'rez', 'keyword', 0, 20, NULL),
+  (@c_buff_request, 'res', 'keyword', 0, 14, NULL),
+  (@c_buff_request, 'ress', 'keyword', 0, 18, NULL),
+  (@c_buff_request, 'port', 'keyword', 0, 18, NULL),
+  (@c_buff_request, 'ports', 'keyword', 0, 18, NULL),
+  (@c_buff_request, 'invis', 'keyword', 0, 16, NULL),
+  (@c_buff_request, 'levi', 'keyword', 0, 16, NULL),
+  (@c_buff_request, 'bind me', 'phrase', 0, 20, NULL),
+  (@c_buff_request, 'buffs', 'keyword', 0, 14, NULL),
+  (@c_buff_request, 'buff', 'keyword', 0, 12, NULL),
+  (@c_buff_request, 'need a port', 'phrase', 0, 22, NULL),
+  (@c_buff_request, 'can i get', 'phrase', 0, 14, NULL),
+  (@c_status, 'afk', 'keyword', 0, 18, NULL),
+  (@c_status, 'brb', 'keyword', 0, 18, NULL),
+  (@c_status, 'bio', 'keyword', 0, 14, NULL),
+  (@c_status, 'oom', 'keyword', 0, 18, NULL),
+  (@c_status, 'omw', 'keyword', 0, 16, NULL),
+  (@c_status, 'med', 'keyword', 0, 14, NULL),
+  (@c_status, 'medding', 'keyword', 0, 16, NULL),
+  (@c_status, 'lom', 'keyword', 0, 16, NULL),
+  (@c_status, 'sec', 'keyword', 0, 10, NULL),
+  (@c_status, 'one sec', 'phrase', 0, 16, NULL),
+  (@c_status, 'back', 'keyword', 0, 10, NULL),
+  (@c_status, 'gimme a min', 'phrase', 0, 18, NULL),
+  (@c_combat_call, 'inc', 'keyword', 0, 20, NULL),
+  (@c_combat_call, 'train', 'keyword', 0, 22, NULL),
+  (@c_combat_call, 'adds', 'keyword', 0, 20, NULL),
+  (@c_combat_call, 'add', 'keyword', 0, 14, NULL),
+  (@c_combat_call, 'pulling', 'keyword', 0, 18, NULL),
+  (@c_combat_call, 'pull', 'keyword', 0, 14, NULL),
+  (@c_combat_call, 'fd', 'keyword', 0, 16, NULL),
+  (@c_combat_call, 'cr', 'keyword', 0, 16, NULL),
+  (@c_combat_call, 'runnin', 'keyword', 0, 14, NULL),
+  (@c_combat_call, 'run', 'keyword', 0, 12, NULL),
+  (@c_combat_call, 'mez', 'keyword', 0, 16, NULL),
+  (@c_combat_call, 'snare', 'keyword', 0, 16, NULL),
+  (@c_combat_call, 'root', 'keyword', 0, 14, NULL),
+  (@c_combat_call, 'assist', 'keyword', 0, 16, NULL),
+  (@c_combat_call, 'incoming', 'keyword', 0, 20, NULL),
+  (@c_greeting, 'sup', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'hiya', 'keyword', 0, 14, NULL),
+  (@c_greeting, 'heya', 'keyword', 0, 14, NULL),
+  (@c_greeting, 'ello', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'helo', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'hai', 'keyword', 0, 10, NULL),
+  (@c_greeting, 'wb', 'keyword', 0, 12, NULL),
+  (@c_greeting, 'well met', 'phrase', 0, 12, NULL),
+  (@c_greeting, 'greets', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'gn', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'nite', 'keyword', 0, 12, NULL),
+  (@c_farewell, 'ttyl', 'keyword', 0, 14, NULL),
+  (@c_farewell, 'l8r', 'keyword', 0, 14, NULL),
+  (@c_farewell, 'gg', 'keyword', 0, 10, NULL),
+  (@c_farewell, 'safe travels', 'phrase', 0, 12, NULL),
+  (@c_farewell, 'logging', 'keyword', 0, 14, NULL),
+  (@c_farewell, 'camping', 'keyword', 0, 12, NULL),
+  (@c_generic_ack, 'aye', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'k', 'keyword', 0, 8, NULL),
+  (@c_generic_ack, 'kk', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'np', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'yup', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'ya', 'keyword', 0, 8, NULL),
+  (@c_generic_ack, 'rgr', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'oic', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'lol', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'rofl', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'haha', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'hehe', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'heh', 'keyword', 0, 8, NULL),
+  (@c_generic_ack, 'wut', 'keyword', 0, 10, NULL),
+  (@c_generic_ack, 'huh', 'keyword', 0, 10, NULL),
+  (@c_compliment, 'ty', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'tyvm', 'keyword', 0, 16, NULL),
+  (@c_compliment, 'thx', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'thnx', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'gj', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'wp', 'keyword', 0, 12, NULL),
+  (@c_compliment, 'gratz', 'keyword', 0, 16, NULL),
+  (@c_compliment, 'gz', 'keyword', 0, 14, NULL),
+  (@c_compliment, 'congrats', 'keyword', 0, 16, NULL),
+  (@c_lfg, 'lf1m', 'keyword', 0, 20, NULL),
+  (@c_lfg, 'lf2m', 'keyword', 0, 20, NULL),
+  (@c_lfg, 'lf3m', 'keyword', 0, 20, NULL),
+  (@c_lfg, 'lfw', 'keyword', 0, 16, NULL),
+  (@c_lfg, 'got room', 'phrase', 0, 18, NULL),
+  (@c_lfg, 'spot open', 'phrase', 0, 18, NULL),
+  (@c_lfg, 'need one more', 'phrase', 0, 20, NULL),
+  (@c_complaint, 'ugh', 'keyword', 0, 12, NULL),
+  (@c_complaint, 'sigh', 'keyword', 0, 12, NULL),
+  (@c_complaint, 'meh', 'keyword', 0, 10, NULL),
+  (@c_complaint, 'rip', 'keyword', 0, 12, NULL),
+  (@c_complaint, 'oof', 'keyword', 0, 12, NULL),
+  (@c_complaint, 'dammit', 'keyword', 0, 14, NULL),
+  (@c_complaint, 'brutal', 'keyword', 0, 12, NULL),
+  (@c_brag, 'grats', 'keyword', 0, 10, NULL),
+  (@c_brag, 'finally got', 'phrase', 0, 16, NULL),
+  (@c_brag, 'went blue', 'phrase', 0, 14, NULL);
+
 
 
 -- ---------------------------------------------------------------------------

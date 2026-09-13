@@ -2113,6 +2113,29 @@ private:
 	// narrow line is found (preserves today's 40u guard for those cases).
 	float m_trilogy_zonein_guard_r     = 20.0f; // matches kDetectRadiusMax literal in client.cpp
 
+	// Previous position sampled by CheckTrilogyZoneLines, for the SWEPT box test.
+	//
+	// Old-mode box rows are small — Zrange 15 is a 30u-deep box, and dungeon
+	// doors go down to 3 — while one position update can move the player
+	// further than that in a single step. A point-in-box test then samples
+	// outside on one side and outside on the other, and the player walks
+	// through the zone line with nothing happening. Measured in freportw: a GM
+	// stepped 32.1u across the 30u-deep freportn gate (Y -405 -> -437, X inside
+	// the box on both samples) and it did not fire; he had to turn round and
+	// walk back into it. Normal run speed tops out near 26u/step, which is why
+	// this reads as "only GMs are broken" — they are just the ones fast enough
+	// to jump the box. Snare/SoW/JBoots, a lag spike, or a dropped update do
+	// the same thing to anyone.
+	//
+	// So the box test sweeps the SEGMENT from the previous sample to the
+	// current one, not the current point alone. These hold that previous
+	// sample; invalidated on zone-in (ArmTrilogyZoneInGuard) so the first
+	// post-guard tick degenerates to the old point test rather than sweeping
+	// from a stale coordinate.
+	float m_trilogy_zp_prev_x          = 0.f;
+	float m_trilogy_zp_prev_y          = 0.f;
+	bool  m_trilogy_zp_prev_valid      = false;
+
 	// Diagnostic state for Rules::Zone::TrilogyZonePointDebug — see
 	// CheckTraditionalZonePoints. m_zp_debug_last_x/y hold the last position we
 	// ran a proximity check against, so we can compute per-tick planar delta

@@ -1518,11 +1518,23 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	Mob            *opener = candidates[zone->random.Int(0, static_cast<int>(candidates.size()) - 1)];
 	const Category *cat    = opener_cats[zone->random.Int(0, static_cast<int>(opener_cats.size()) - 1)];
 
-	// say 0.75 / ooc 0.20 / shout 0.05
-	const int roll     = zone->random.Int(0, 99);
-	const uint8 channel = (roll < 75) ? ChatChannel_Say
-	                    : (roll < 95) ? ChatChannel_OOC
-	                                  : ChatChannel_Shout;
+	// Spontaneous openers are ALWAYS /say. Never a random channel roll.
+	//
+	// This used to be say 0.75 / ooc 0.20 / shout 0.05, which meant a quarter
+	// of all unprompted bot chatter was broadcast to the entire zone. Real
+	// players do not do that: they mutter locally, and they only reach for a
+	// zone-wide channel when they have something to broadcast at somebody.
+	// A bot opening a conversation with nobody, zone-wide, reads as a bot
+	// instantly.
+	//
+	// Reactive replies are unaffected -- answering an /ooc line in /ooc is
+	// normal, and that path takes its channel from the speaker.
+	//
+	// Content can still override per row: playerbot_chat_responses.reply_channel
+	// is applied just below, so a market or lfg opener that genuinely should
+	// broadcast can set 4 (auction) or 5 (ooc) on that row. That is a decision
+	// for the line, not for a dice roll.
+	const uint8 channel = ChatChannel_Say;
 
 	const Response *resp = PickResponse(cat->id, opener, nullptr, channel, now_ms);
 	if (!resp) {
