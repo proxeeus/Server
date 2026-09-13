@@ -993,6 +993,15 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_MoveDoor:
 		HandleMoveDoor(app);
 		break;
+	case OP_SpawnDoor:
+		// Mid-session door respawn (#reload static, $entity_list->CreateDoor,
+		// #object stage).  Zone-in doors do NOT come through here — see
+		// HandleOutgoingSpawnDoor.
+		HandleOutgoingSpawnDoor(app);
+		break;
+	case OP_RemoveAllDoors:
+		HandleRemoveAllDoors();
+		break;
 	case OP_ShopRequest:
 		HandleOutgoingShopRequest(app);
 		break;
@@ -5962,12 +5971,16 @@ void TrilogyClient::HandleGroundSpawn(const EQApplicationPacket* app)
 
 void TrilogyClient::QueueRawOrDefer(uint16_t opcode, const uint8_t* data, uint32_t size)
 {
-	if (!data || size == 0) return;
+	// size == 0 with a null buffer is legal — some Trilogy opcodes are bodiless
+	// signals (0x9b20 OP_DespawnDoor) and still have to keep their place in the
+	// deferred queue so they replay in order relative to the spawns around them.
+	if (size > 0 && !data) return;
 
 	if (m_is_zoning) {
 		if (m_deferred_spawns.size() < kMaxDeferredSpawns) {
 			m_deferred_spawns.emplace_back(opcode,
-				std::vector<uint8_t>(data, data + size));
+				size ? std::vector<uint8_t>(data, data + size)
+				     : std::vector<uint8_t>());
 		} else {
 			LogError("[TrilogyClient] QueueRawOrDefer: deferred queue FULL ({}), "
 			         "DROPPING opcode 0x{:04x}", kMaxDeferredSpawns, opcode);
@@ -6027,6 +6040,156 @@ void TrilogyClient::HandleMoveDoor(const EQApplicationPacket* app)
 	out[0] = doorid;
 	out[1] = action;
 	m_tzs->SendToSession(m_session_key, 0x8e20, out, sizeof(out));
+}
+
+// ============================================================
+// BuildTrilogyDoorWire — serialise one door into the 46-byte EQClassic
+// Door_Struct that OP_SpawnDoor (0x9520) carries.  Shared by SendDoorSpawns
+// (zone-in, straight off entity_list) and HandleOutgoingSpawnDoor (mid-session
+// respawn, off a modern 80-byte Door_Struct) so the layout and the elevator
+// rule below can never drift between the two paths.
+//
+// Layout (see the SendDoorSpawns comment for the field-by-field derivation):
+//   [0] char[16] name  [16] yPos  [20] xPos  [24] zPos  [28] heading
+//   [32] incline  [36] padding  [40] doorid  [41] opentype
+//   [42] doorIsOpen  [43] inverted  [44] int16 parameter
+//
+// Kelethin elevator parts must spawn at rest regardless of any stale
+// server-side m_is_open from prior clicks — a previous test (memory:
+// "Elevator triggered itself on zone-in") showed a non-zero doorIsOpen/inverted
+// combined with a non-zero parameter caused the platform to start moving the
+// moment the player loaded in.  Only elevators get this override; regular doors
+// keep their normal open-at-spawn behavior so traps and pre-opened doors still
+// render correctly.
+// ============================================================
+
+static void BuildTrilogyDoorWire(const char* name,
+                                 float x, float y, float z, float heading,
+                                 float incline,
+                                 uint8_t doorid, uint8_t opentype,
+                                 bool open_at_spawn, bool invert,
+                                 int16_t door_param,
+                                 uint8_t out[46])
+{
+	memset(out, 0, 46);
+
+	strncpy(reinterpret_cast<char*>(out), name, 15);
+	out[15] = '\0';
+	*reinterpret_cast<float*>(out + 16) = y;
+	*reinterpret_cast<float*>(out + 20) = x;
+	*reinterpret_cast<float*>(out + 24) = z;
+	*reinterpret_cast<float*>(out + 28) = heading;
+	*reinterpret_cast<float*>(out + 32) = incline;
+	// out+36 padding stays 0
+	out[40] = doorid;
+	out[41] = opentype;
+
+	const bool is_elevator =
+		strncasecmp(name, "FELE",       4)  == 0 ||
+		strncasecmp(name, "FAYLEVATOR", 10) == 0;
+
+	if (is_elevator) {
+		out[42] = 0;
+		out[43] = 0;
+	} else {
+		out[42] = open_at_spawn ? 1 : 0;
+		out[43] = invert ? 1 : 0;
+	}
+
+	// int16 parameter at offset 44 — drives v29c's elevator-button detection
+	// (FELE2 has door_param=1) and the FAYLEVATOR platform travel distance
+	// (door_param=68/98/69 in gfaydark).  For non-elevator doors door_param
+	// is typically 0 (no behavior change).
+	*reinterpret_cast<int16_t*>(out + 44) = door_param;
+}
+
+// ============================================================
+// HandleOutgoingSpawnDoor — translate EQEmu OP_SpawnDoor (an array of 80-byte
+// modern Door_Struct) into one 46-byte EQClassic OP_SpawnDoor (0x9520) per
+// door, the same format SendDoorSpawns uses.
+//
+// Trilogy clients do NOT take the modern zone-in door path — client_packet.cpp
+// Handle_Connect_OP_ReqClientSpawn never runs for them; their doors come from
+// SendDoorSpawns at trilogy_zone.cpp HandleZoneInComplete.  So this translator
+// exists purely for the MID-SESSION emitters, which were silently dropped on
+// the `default: break;` arm before:
+//
+//   - EntityList::RespawnAllDoors() — the second half of every door reload:
+//     Zone::ReloadStaticData() (#reload static) and EntityList::CreateDoor()
+//     (the perl/lua $entity_list->CreateDoor quest API).  Both are always
+//     preceded by RemoveAllDoors() → DespawnAllDoors() → OP_RemoveAllDoors,
+//     which TranslateAndSend now turns into 0x9b20, so the client's door list
+//     is empty when these arrive.  Ordering matters: v29c's 0x9520 handler
+//     (eqgame.exe 0x497685) allocates a NEW door object per packet and does no
+//     de-duplication, so respawning without the despawn first would leave two
+//     overlapping copies of every door in the zone.
+//   - #object stage's object→door conversion, which queues a single
+//     Door_Struct to every client in the zone.
+// ============================================================
+
+void TrilogyClient::HandleOutgoingSpawnDoor(const EQApplicationPacket* app)
+{
+	if (!app || app->size < sizeof(::Door_Struct)) return;
+
+	const uint32_t count =
+		app->size / static_cast<uint32_t>(sizeof(::Door_Struct));
+
+	int sent = 0;
+	for (uint32_t i = 0; i < count; ++i) {
+		const auto* d = reinterpret_cast<const ::Door_Struct*>(
+			app->pBuffer + i * sizeof(::Door_Struct));
+
+		// Same filter MakeDoorSpawnPacket and SendDoorSpawns apply: names of
+		// 3 characters or fewer are placeholder rows, not renderable models.
+		char name[33];
+		memcpy(name, d->name, 32);
+		name[32] = '\0';
+		if (strlen(name) <= 3) continue;
+
+		// state_at_spawn already carries the inverted-door negation (the
+		// sender applied `invert ? !open : open`), so pass it through as-is.
+		uint8_t buf[46];
+		BuildTrilogyDoorWire(name, d->xPos, d->yPos, d->zPos, d->heading,
+		                     static_cast<float>(d->incline),
+		                     d->doorId, d->opentype,
+		                     d->state_at_spawn != 0,
+		                     d->invert_state != 0,
+		                     static_cast<int16_t>(d->door_param),
+		                     buf);
+
+		QueueRawOrDefer(0x9520, buf, sizeof(buf));
+		++sent;
+	}
+
+	LogInfo("[TrilogyDiag] 9520 SpawnDoor respawn: {} of {} door(s) sent",
+	        sent, count);
+}
+
+// ============================================================
+// HandleRemoveAllDoors — translate EQEmu OP_RemoveAllDoors (0 bytes) to
+// v29c's OP_DespawnDoor (0x9b20, also 0 bytes).
+//
+// The v29c handler is at eqgame.exe 0x497658: it takes the client's door list
+// head at ds:0x6e4d78 and loops destroy-and-free until the list is empty.  It
+// reads no payload at all, which makes it an exact match for EQEmu's
+// EntityList::DespawnAllDoors() semantics — despawn ALL doors, not one.
+//
+// (There is no per-door despawn on this client, and none on EQEmu either:
+// EntityList::RemoveDoor() deletes the server-side entity and sends nothing,
+// on every client version.)
+// ============================================================
+
+void TrilogyClient::HandleRemoveAllDoors()
+{
+	LogInfo("[TrilogyDiag] 9B20 DespawnDoor (all doors)");
+
+	QueueRawOrDefer(0x9b20, nullptr, 0);
+
+	// The client's door objects are gone with the list, so the open/close dedup
+	// cache has to go with them — otherwise a stale (doorid, action) entry
+	// suppresses the first legitimate click on a freshly respawned door that
+	// happens to reuse the same zone-local id.  See kDoorDedupWindowMs.
+	m_last_door_action.clear();
 }
 
 // ============================================================
@@ -6661,6 +6824,10 @@ void TrilogyClient::HandleIncomingGroupDisband(const uint8_t* data, uint32_t len
 // OP_OpenDoor for the platform or animate it indefinitely.  The extra two
 // bytes are read from EQClassic Common Door_Struct (`int16 parameter` at
 // /*0040*/) which is the layout v29c expects (eq_packet_structs.h:1778).
+//
+// The per-door serialisation lives in BuildTrilogyDoorWire, shared with
+// HandleOutgoingSpawnDoor (the mid-session respawn path) so the layout and the
+// elevator-at-rest rule cannot drift between zone-in and reload.
 // ============================================================
 
 void TrilogyClient::SendDoorSpawns()
@@ -6675,51 +6842,21 @@ void TrilogyClient::SendDoorSpawns()
 		if (!door || strlen(door->GetDoorName()) <= 3)
 			continue;
 
-		const glm::vec4& pos = door->GetPosition();
-		const int invert = door->GetInvertState();
-		const char* name = door->GetDoorName();
+		const glm::vec4& pos    = door->GetPosition();
+		const bool       invert = door->GetInvertState() != 0;
+		const char*      name   = door->GetDoorName();
 
-		// Kelethin elevator parts must spawn at rest regardless of any stale
-		// server-side m_is_open from prior clicks — a previous test (memory:
-		// "Elevator triggered itself on zone-in") showed a non-zero
-		// doorIsOpen/inverted combined with a non-zero parameter caused the
-		// platform to start moving the moment the player loaded in.  Only
-		// elevators get this override; regular doors keep their normal
-		// open-at-spawn behavior so traps and pre-opened doors still render
-		// correctly.
-		const bool is_elevator =
-			strncasecmp(name, "FELE",       4)  == 0 ||
-			strncasecmp(name, "FAYLEVATOR", 10) == 0;
-
+		// Mirror the Titanium state_at_spawn formula: an inverted door reports
+		// the negated open state at spawn so its rest position renders correctly.
 		uint8_t buf[46];
-		memset(buf, 0, sizeof(buf));
-
-		strncpy(reinterpret_cast<char*>(buf), name, 15);
-		buf[15] = '\0';
-		*reinterpret_cast<float*>(buf + 16) = pos.y;
-		*reinterpret_cast<float*>(buf + 20) = pos.x;
-		*reinterpret_cast<float*>(buf + 24) = pos.z;
-		*reinterpret_cast<float*>(buf + 28) = pos.w; // heading
-		*reinterpret_cast<float*>(buf + 32) = static_cast<float>(door->GetIncline());
-		// buf+36 padding stays 0
-		buf[40] = static_cast<uint8_t>(door->GetDoorID());
-		buf[41] = static_cast<uint8_t>(door->GetOpenType());
-		if (is_elevator) {
-			buf[42] = 0;
-			buf[43] = 0;
-		} else {
-			// Mirror the Titanium state_at_spawn formula: an inverted door reports
-			// the negated open state at spawn so its rest position renders correctly.
-			bool open_at_spawn = invert ? !door->IsDoorOpen() : door->IsDoorOpen();
-			buf[42] = open_at_spawn ? 1 : 0;
-			buf[43] = invert ? 1 : 0;
-		}
-		// int16 parameter at offset 44 — drives v29c's elevator-button detection
-		// (FELE2 has door_param=1) and the FAYLEVATOR platform travel distance
-		// (door_param=68/98/69 in gfaydark).  For non-elevator doors door_param
-		// is typically 0 (no behavior change).
-		*reinterpret_cast<int16_t*>(buf + 44) =
-			static_cast<int16_t>(door->GetDoorParam());
+		BuildTrilogyDoorWire(name, pos.x, pos.y, pos.z, pos.w,
+		                     static_cast<float>(door->GetIncline()),
+		                     static_cast<uint8_t>(door->GetDoorID()),
+		                     static_cast<uint8_t>(door->GetOpenType()),
+		                     invert ? !door->IsDoorOpen() : door->IsDoorOpen(),
+		                     invert,
+		                     static_cast<int16_t>(door->GetDoorParam()),
+		                     buf);
 
 		if (m_is_zoning) {
 			if (m_deferred_spawns.size() < kMaxDeferredSpawns)

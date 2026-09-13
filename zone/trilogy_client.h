@@ -502,6 +502,11 @@ private:
 	void HandleGroundSpawn(const EQApplicationPacket* app);
 	// Doors
 	void HandleMoveDoor(const EQApplicationPacket* app);
+	// Mid-session door respawn: modern 80-byte Door_Struct array (from
+	// EntityList::RespawnAllDoors or #object stage) → one 46-byte 0x9520 each.
+	void HandleOutgoingSpawnDoor(const EQApplicationPacket* app);
+	// Mid-session despawn-all: OP_RemoveAllDoors → v29c OP_DespawnDoor (0x9b20).
+	void HandleRemoveAllDoors();
 	// Merchant window (server → Trilogy client): open/close + price multiplier.
 	void HandleOutgoingShopRequest(const EQApplicationPacket* app);
 	// Book / note text (server → Trilogy client): strips EQEmu's 10-byte
