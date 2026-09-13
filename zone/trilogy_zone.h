@@ -346,6 +346,29 @@ private:
 		// on nearby NPCs would otherwise flood on every mouseover.
 		uint64_t last_target_log_ms = 0;
 
+		// Entity id of the controllable boat this session is currently
+		// steering, 0 when not steering one.  Set from the 0x2621 handler.
+		// Two jobs: it suppresses our own A120 for that hull (the driving
+		// client dead-reckons it locally, so echoing our copy back fights
+		// the local simulation — the same self-echo rule fear/charm
+		// movement had to learn), and it is the authority check on inbound
+		// boat-owned position updates, so a modified client cannot drive a
+		// hull it never took control of.
+		uint16_t driving_boat_id = 0;
+
+		// Rate limiter for [TrilogyBoat] steer — boat-owned position updates
+		// arrive at the same ~4 Hz the player's own do.
+		uint64_t last_boat_log_ms = 0;
+
+		// Timestamp of the last position update the client sent for ITSELF.
+		// While steering a boat, v29c may report only the hull; if it does,
+		// the pilot's server-side body would stay at the jetty and nothing —
+		// aggro, proximity, zone lines — would follow the boat.  The boat
+		// branch in HandleClientUpdate carries the body along only after this
+		// has gone quiet, so a client that keeps reporting both is never
+		// second-guessed.
+		uint64_t last_self_update_ms = 0;
+
 		// Backstop for the 30 KB guilds table (0x9221).  Answering the client's
 		// 0x2821 request is what stops it asking, so this never throttles the
 		// normal case — it exists so a request we cannot satisfy (a guild id the

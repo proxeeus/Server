@@ -900,6 +900,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_BecomeCorpse:
 		HandleBecomeCorpse(app);
 		break;
+	case OP_ControlBoat:
+		// The echo the client blocks on.  Handle_OP_ControlBoat ends with
+		// QueuePacket(app) and lands here; the Trilogy wire form is the same
+		// 8-byte ::ControlBoat_Struct that arrived, so forward it unchanged.
+		// Without this the client re-sends 0x2621 several times a second for
+		// as long as the player keeps clicking and never enters control mode.
+		if (app->size >= sizeof(::ControlBoat_Struct))
+			m_tzs->SendToSession(m_session_key, 0x2621, app->pBuffer,
+			                     static_cast<uint32_t>(sizeof(::ControlBoat_Struct)));
+		break;
 	case OP_Consider:
 		HandleOutgoingConsider(app);
 		break;
