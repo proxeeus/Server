@@ -2980,8 +2980,16 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				// by user click rate.  Naturally throttled: back-to-back
 				// clicks on the same target only fire once (last_broadcast is
 				// then current, so the next click sees gap=0 and skips).
+				// A hull this session is steering is excluded, same rule as
+				// SendMobHeartbeat and the steering broadcast: the driving
+				// client owns that position, so "correcting" it would yank the
+				// deck out from under the pilot — and its last_broadcast entry
+				// is stale ON PURPOSE for the whole voyage, so client_gap here
+				// is guaranteed to look enormous and would fire every time the
+				// pilot clicked their own boat.
 				static constexpr int kJitRefreshThresholdUnits = 20;
 				if (tgt_mob && lb_it_tgt != s.last_broadcast.end() &&
+				    static_cast<uint16_t>(tgt32) != s.driving_boat_id &&
 				    client_gap >= kJitRefreshThresholdUnits) {
 					Trilogy::structs::SpawnPositionUpdate_Struct upd{};
 					upd.spawn_id = static_cast<int16_t>(tgt32);
@@ -14469,6 +14477,16 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 			// remove the player from their own client view.  Also skip 0,
 			// which would not be in here normally but is harmless to guard.
 			if (spawn_id == s.player_spawn_id || spawn_id == 0) continue;
+			// Likewise the hull this session is steering.  Its last_broadcast
+			// entry is deliberately frozen for the whole voyage — we never echo
+			// a driven boat back to its driver — so the gap here grows with
+			// every metre sailed and means the opposite of a desync.  Skipping
+			// it keeps the drift-refresh below from ever sending the pilot a
+			// correction for the deck they are standing on (today that is also
+			// blocked by the in-cull test, but only because the pilot is by
+			// definition next to it), and keeps the diagnostic from reporting
+			// a 100-unit desync on a boat that is working perfectly.
+			if (s.driving_boat_id != 0 && spawn_id == s.driving_boat_id) continue;
 
 			Mob* m = entity_list.GetMob(spawn_id);
 			if (m == nullptr) {
