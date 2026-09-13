@@ -2035,6 +2035,43 @@ bool PlayerBotChatEngine::ScriptSay(
 		: static_cast<uint8>(resp->reply_channel);
 
 	ListenerState &st = StateFor(talker->GetID());
+
+	// THE SCRIPT PATH WAS THE ONLY ONE THAT COULD SKIP THE MOUTH COOLDOWN.
+	//
+	// Dispatch (reactive) and SpontaneousTick both test last_msg_time_ms before
+	// speaking; this function only ever WROTE it.  So a bot killing three mobs in
+	// ten seconds said three lines, while the same bot answering a player went
+	// quiet for ten seconds after its first reply -- the uncapped path was
+	// setting a budget it did not itself spend, and Player_Bot.lua calls it once
+	// per kill, per death and per combat join with nothing in front of it.
+	//
+	// The gate is deliberately limited to the zone-wide channels.  A /say line
+	// reaches 200 units and its cost does not grow with zone population; a
+	// /shout, /ooc or /auction reaches everyone, so it costs more with every bot
+	// that zones in.  Rationing only the channel that scales leaves a grinding
+	// bot talkative to whoever is standing next to it without turning a busy
+	// zone into a broadcast feed.
+	//
+	// Tested against out_channel, not chan_num: a response row may override the
+	// caller's request through reply_channel, so a 'victory' row carrying 5 would
+	// otherwise walk straight past a gate that read the Lua argument.
+	//
+	// No new rule: PerListenerCooldownMs is the same knob the other two paths
+	// use, and 0 disables this exactly as it disables them.
+	const bool broadcast = (out_channel == ChatChannel_Shout ||
+	                        out_channel == ChatChannel_OOC ||
+	                        out_channel == ChatChannel_Auction);
+
+	if (broadcast) {
+		const uint32 cooldown =
+			static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, PerListenerCooldownMs)));
+
+		if (st.last_msg_time_ms != 0 && now - st.last_msg_time_ms < cooldown) {
+			++m_stat_drops[DR_Cooldown];
+			return false;
+		}
+	}
+
 	st.last_msg_time_ms            = now;
 	st.category_last_fire[category_id] = now;
 
