@@ -612,6 +612,48 @@ static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[3
 static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
 static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+unknown[1]
 
+// Corpse recovery: /corpse, /searchcorpse and the drag-permission line.
+//
+// v29c has NO continuous corpse drag.  There is no /drag or /corpsedrag in the
+// client's 212-row command table, and `%s has permission to drag corpse %s.`
+// (0x1421) is parsed but never emitted — a search of the whole binary for
+// `push 0x2114` and `push 0x20d5` returns nothing, so 0x1421 and 0xd520 are
+// both server -> client only.  The 2001 mechanic is discrete: target the
+// corpse, type /corpse, the corpse teleports to you, walk, repeat.  Modern
+// EQEmu's DraggedCorpses / Handle_OP_CorpseDrag machinery models the LATER
+// (2003+) click-drag and is deliberately not wired up here.
+//
+//   /corpse       -> reuses OP_GMSummon 0xc520 with the CORPSE's name in
+//                    charname[30].  Handler at eqgame.exe 0x4a6658; it requires
+//                    a target whose actor-type byte (+0x98) is >= 2 (2 = NPC
+//                    corpse, 3 = player corpse), runs a line-of-sight probe
+//                    (0x4a3491, "I can't summon the corpse from here.") and a
+//                    70-unit range gate (0x412aa0 vs the 70.0f at ds:0x5350f4,
+//                    "The corpse is too far away to summon it."), prints
+//                    "Summoning %s..." locally and sends the packet.  Both
+//                    refusals are client-side and never reach us.
+//   0x1421        -> zone -> client, yellow (colour 0xf).  Handler 0x498699 is
+//                    three instructions: printf("%s has permission to drag
+//                    corpse %s.", payload+0x40, payload+0x20).
+//   0xa721        -> /searchcorpse <name>, bidirectional, 96 bytes.  Request
+//                    built at 0x4a8819: gated on the client's own GM byte
+//                    (player entity +0xf1), name strcpy'd to +0x20 and
+//                    terminated at +0x40; +0x00..+0x1f and +0x41.. are
+//                    uninitialised stack.  Reply handler 0x49b1fd is the same
+//                    three-instruction shape: printf("Corpse: %s in zone: %s",
+//                    payload+0x20, payload+0x40).
+//
+// 0x1421 and 0xa721 therefore share one 96-byte layout — a name at +0x20 and a
+// second name at +0x40 — which is also EQMacEmu's CorpseDrag_Struct field
+// order (CorpseName then DraggerName), just at 32-byte stride and one slot in.
+static constexpr uint16_t ZN_OP_CorpseDragPermission = 0x1421; // zone -> client: "%s has permission to drag corpse %s."
+static constexpr uint16_t ZN_OP_GMSearchCorpse       = 0xa721; // client <-> zone: /searchcorpse request + one reply per corpse
+
+// Shared layout for 0x1421 and 0xa721.  Field names follow the reply role.
+static constexpr uint32_t kTrilogyCorpseInfoSize = 96;
+static constexpr uint32_t kTrilogyCorpseInfoName = 0x20; // corpse name
+static constexpr uint32_t kTrilogyCorpseInfoZone = 0x40; // zone name (0xa721) / dragger name (0x1421)
+
 // /surname command
 // Source: EQClassic/Common/Include/eq_opcodes.h + client_process.cpp:2196
 static constexpr uint16_t ZN_OP_Surname       = 0xc421; // client -> zone: Surname_Struct (56B, /surname submit)
@@ -1087,6 +1129,29 @@ static void BuildTrilogyCorpseName(const char* raw_name, char* out, size_t out_s
 		// Fallback — shouldn't happen for player corpses.
 		snprintf(out, out_sz, "%s%s", tmp, suffix);
 	}
+}
+
+// ============================================================
+// TrilogyWireNameToEntityName — inverse of BuildTrilogyCorpseName.
+//
+// When the client names an entity back to us (/corpse puts the target's name
+// in the 0xc520 payload, verbatim from its own spawn table at entity+1) it
+// echoes exactly what we published in the 0x6121 spawn — the backtick form,
+// "Bleargh`s_corpse0".  The EQEmu entity is named with a real apostrophe, and
+// EntityList::GetEntityCorpse strcasecmps against that, so the name has to be
+// converted back before any lookup.  Harmless for non-corpse names: no other
+// entity name contains a backtick.
+// ============================================================
+static void TrilogyWireNameToEntityName(const char* wire, char* out, size_t out_sz)
+{
+	if (!out || out_sz == 0) return;
+	out[0] = '\0';
+	if (!wire) return;
+
+	size_t i = 0;
+	for (; wire[i] != '\0' && i + 1 < out_sz; ++i)
+		out[i] = (wire[i] == '`') ? '\'' : wire[i];
+	out[i] = '\0';
 }
 
 
@@ -2697,17 +2762,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
-		else if (opcode == ZN_OP_GMSummon && s.trilogy_client) {
-			// charname[30] + gmname[30] + unknown1[1] + zonename[15] + unknown2[16] + y,x,z,unknown = 104 bytes
-			if (plen >= 30) {
-				char charname[31] = {};
-				strncpy(charname, reinterpret_cast<const char*>(payload), 30);
-				if (charname[0]) {
-					LogInfo("[TrilogyZone] GM Summon: {} summons '{}'", s.char_name, charname);
-					command_dispatch(s.trilogy_client, std::string("#summon ") + charname, false);
-				}
-			}
-		}
+		else if (opcode == ZN_OP_GMSummon && s.trilogy_client)
+			HandleGMSummon(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_GMSearchCorpse && s.trilogy_client)
+			HandleGMSearchCorpse(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMKill && s.trilogy_client) {
 			// name[30] + gmname[30] + unknown[1] = 61 bytes
 			if (plen >= 30) {
@@ -8049,6 +8107,258 @@ void TrilogyZoneServer::HandleSocialCommand(const std::string& addr, int port, S
 	default:
 		break;
 	}
+}
+
+
+// ============================================================
+// HandleGMSummon — inbound 0xc520 (OP_GMSummon).
+//
+// TWO different user actions land on this one opcode in v29c:
+//
+//   /summon <name>   the GM command.
+//   /corpse          the corpse pull, with the TARGETED CORPSE's name sitting
+//                    in charname[30].  Client handler at eqgame.exe 0x4a6658.
+//
+// Until this split both went to `#summon <name>`, which is why corpse recovery
+// has never worked on this branch: the packet was arriving the whole time and
+// being handed to the wrong feature.  A dead player typing /corpse got the
+// access-level refusal from command_dispatch; a GM got a #summon that looks up
+// characters and cannot see a corpse entity.
+//
+// The two cases cannot collide.  A player corpse entity is named
+// "<Owner>'s_corpse<n>" and no character can be named that, so resolving the
+// name is a complete discriminator.
+//
+// GMSummon_Struct (EQClassic eq_packet_structs.h:1175, confirmed field for
+// field against the client's own send at 0x4a669f-0x4a6706):
+//
+//   /*  0*/ char  charname[30];  // strcpy of the target entity's name
+//   /* 30*/ char  gmname[30];    // the sender
+//   /* 60*/ int8  unknown1;
+//   /* 61*/ char  zonename[15];  // sender's zone, read from profile+0x974
+//   /* 76*/ int8  unknown2[16];  // uninitialised stack
+//   /* 92*/ int32 y, x, z;       // sender's position, ftol'd from the entity
+//   /*104*/ int8  unknown3[4];
+//   /*108*/
+//
+// Only charname is read.  The position in the packet is the CLIENT's idea of
+// where the player is; Corpse::Summon moves the corpse to the server's, which
+// is the one every other system (loot range, aggro, the next A120) agrees with.
+// ============================================================
+void TrilogyZoneServer::HandleGMSummon(const std::string& addr, int port, Session& s,
+                                       const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (plen < 30) {
+		LogInfo("[TrilogyZone] GMSummon: char={} short packet plen={}", s.char_name, plen);
+		return;
+	}
+
+	char wire_name[31] = {};
+	memcpy(wire_name, payload, 30);
+	if (!wire_name[0]) return;
+
+	char entity_name[64] = {};
+	TrilogyWireNameToEntityName(wire_name, entity_name, sizeof(entity_name));
+
+	Mob*    m      = entity_list.GetMob(entity_name);
+	Corpse* corpse = (m && m->IsCorpse()) ? m->CastToCorpse() : nullptr;
+
+	if (!corpse) {
+		// Not a corpse — the GM command, unchanged.  command_dispatch applies
+		// its own access-level gate, and #summon can reach a character who is
+		// not in this zone, so a failed lookup here is not a reason to stop.
+		LogInfo("[TrilogyZone] GM Summon: {} summons '{}'", s.char_name, entity_name);
+		command_dispatch(tc, std::string("#summon ") + entity_name, false);
+		return;
+	}
+
+	if (!corpse->IsPlayerCorpse()) {
+		// The client lets /corpse fire at any corpse it can target — its gate
+		// is actor-type >= 2, which admits NPC corpses (2) as well as player
+		// corpses (3) — but only a player corpse can be summoned.  Modern
+		// Handle_OP_CorpseDrag has the same rule and also returns silently.
+		// Falling through to #summon here would answer a normal player's
+		// keypress with an access-level refusal.
+		LogInfo("[TrilogyCorpse] /corpse char={} corpse='{}' ignored (NPC corpse)",
+		        s.char_name, entity_name);
+		return;
+	}
+
+	// Refuse while somebody has the corpse open.  Corpse::Summon does not check
+	// this — modern EQEmu checks it in Handle_OP_CorpseDrag before calling
+	// Summon — and moving a corpse out from under an open loot window desyncs
+	// both the looter's window and the mover's render.
+	if (corpse->IsBeingLooted()) {
+		LogInfo("[TrilogyCorpse] /corpse char={} corpse='{}' REFUSED (being looted)",
+		        s.char_name, entity_name);
+		return;
+	}
+
+	const bool own_corpse = (corpse->GetCharID() == tc->CharacterID());
+
+	// Everything else is Corpse::Summon's job and already works: the GM lock,
+	// the consent list plus the group / raid / guild grants, the 100-unit
+	// server-side range gate, and the refusal message for each.  CORPSE_TOO_FAR
+	// (389) and CONSENT_DENIED (390) both render through the Trilogy
+	// string-template table in trilogy_client.cpp.
+	//
+	// The client ran its own gates before sending: a line-of-sight probe and a
+	// 70-unit range check, both of which print locally and never reach us.  So
+	// the server's 100-unit test normally passes by construction and only bites
+	// when the client's rendered corpse position has drifted from ours.
+	if (!corpse->Summon(tc, false, true)) {
+		LogInfo("[TrilogyCorpse] /corpse char={} corpse='{}' own={} REFUSED by Corpse::Summon",
+		        s.char_name, entity_name, own_corpse ? 1 : 0);
+		return;
+	}
+
+	LogInfo("[TrilogyCorpse] /corpse char={} corpse='{}' own={} -> ({:.1f},{:.1f},{:.1f})",
+	        s.char_name, entity_name, own_corpse ? 1 : 0,
+	        corpse->GetX(), corpse->GetY(), corpse->GetZ());
+
+	// The new position reaches every v29c session on its own: Corpse::Summon
+	// calls GMMove, which calls MobMovementManager::SendCommandToClients with
+	// ClientRangeAny, which QueuePackets OP_ClientUpdate to every Client —
+	// TrilogyClient included, where TranslateAndSend -> HandleClientUpdate
+	// turns it into an A120.  Corpses are NOT in SendMobHeartbeat's iteration
+	// (that walks NPCs, clients and bots), so this event-driven update is the
+	// only carrier there is; that is safe precisely because a corpse only moves
+	// when something deliberately moves it, and HandleClientUpdate's throttle
+	// has a state-changed bypass that a first-time spawn id always takes.
+	//
+	// One line of drag confirmation, and only when consent is what allowed it.
+	// For your own corpse the message would read "Bob has permission to drag
+	// corpse Bob`s corpse", which is noise — the corpse visibly moving is the
+	// confirmation.  Once per corpse per session, so hauling a body across a
+	// dungeon 70 units at a time does not narrate every pull.
+	if (!own_corpse && s.corpse_drag_notified.insert(corpse->GetID()).second) {
+		// Display form, not wire form.  0x498699 is a bare
+		// printf("%s has permission to drag corpse %s.") — no name cleaning of
+		// any kind — whereas the nameplate the player is looking at went
+		// through the client's own display pass, which turns '_' into a space
+		// and drops the uniquifying digit suffix.  Send the name the player
+		// can actually see, or the line reads "Bleargh`s_corpse0".
+		char display[32] = {};
+		{
+			size_t w = 0;
+			for (size_t i = 0; wire_name[i] != '\0' && w + 1 < sizeof(display); ++i)
+				display[w++] = (wire_name[i] == '_') ? ' ' : wire_name[i];
+			while (w > 0 && display[w - 1] >= '0' && display[w - 1] <= '9')
+				--w;
+			display[w] = '\0';
+		}
+
+		uint8_t out[kTrilogyCorpseInfoSize] = {};
+		strncpy(reinterpret_cast<char*>(out) + kTrilogyCorpseInfoName, display, 31);
+		strncpy(reinterpret_cast<char*>(out) + kTrilogyCorpseInfoZone, tc->GetName(), 31);
+		SendApp(addr, port, s, ZN_OP_CorpseDragPermission, out,
+		        static_cast<uint32_t>(sizeof(out)));
+		LogInfo("[TrilogyCorpse] drag-permission notice char={} corpse='{}'",
+		        s.char_name, entity_name);
+	}
+}
+
+
+// ============================================================
+// HandleGMSearchCorpse — inbound 0xa721 (/searchcorpse <charactername>).
+//
+// The one corpse question that cannot be answered from inside a zone: where in
+// the world is this character's body.  In-zone location already works and never
+// needed us — the client's own Sense/Locate Corpse routine at 0x420184 walks
+// its local entity table for actor-type 2 or 3, targets the nearest match and
+// turns the player toward it, with no packet in either direction.
+//
+// Request (built at 0x4a8819, 96 bytes): name strcpy'd to +0x20 and terminated
+// at +0x40.  Everything else is uninitialised stack, so read nothing else.  The
+// client gates the command on its own GM byte (player entity +0xf1) before
+// sending, but that is the client's policy and this path is raw UDP, so the
+// gate that counts is here.  AccountStatus::Guide matches what `#corpse` asks
+// for in command.cpp — same capability, same bar.
+//
+// Reply: one packet per corpse, same 96-byte layout, corpse name at +0x20 and
+// zone name at +0x40, rendered by 0x49b1fd as the yellow line
+// "Corpse: %s in zone: %s".  There is no list or window form — the client has
+// no corpse-search UI, just that one printf — so N results are N packets.
+// ============================================================
+void TrilogyZoneServer::HandleGMSearchCorpse(const std::string& addr, int port, Session& s,
+                                             const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	if (tc->Admin() < AccountStatus::Guide) {
+		LogInfo("[TrilogyCorpse] /searchcorpse char={} REFUSED admin={}",
+		        s.char_name, static_cast<int>(tc->Admin()));
+		return;
+	}
+
+	if (plen < kTrilogyCorpseInfoZone + 1) {
+		LogInfo("[TrilogyCorpse] /searchcorpse char={} short packet plen={}", s.char_name, plen);
+		return;
+	}
+
+	char needle[33] = {};
+	memcpy(needle, payload + kTrilogyCorpseInfoName, 32);
+	if (!needle[0]) return;
+
+	// Cap the reply.  Each row is its own packet on a link whose ARQ round-trip
+	// count is the scarce resource, and a one-character search would otherwise
+	// match every corpse on the server.  Ask for one more than we will send so
+	// truncation can be reported rather than silently hidden.
+	static constexpr int kMaxResults = 20;
+
+	const std::string q = fmt::format(
+		"SELECT `charname`, `zone_id`, `is_buried` "
+		"FROM `character_corpses` "
+		"WHERE `charname` LIKE '%{}%' "
+		"ORDER BY `charname` LIMIT {}",
+		Strings::Escape(needle), kMaxResults + 1
+	);
+
+	auto r = database.QueryDatabase(q);
+	if (!r.Success()) {
+		LogInfo("[TrilogyCorpse] /searchcorpse char={} query failed for '{}'", s.char_name, needle);
+		return;
+	}
+
+	if (r.RowCount() == 0) {
+		tc->Message(Chat::Yellow, "No corpses found matching '%s'.", needle);
+		LogInfo("[TrilogyCorpse] /searchcorpse char={} needle='{}' 0 results", s.char_name, needle);
+		return;
+	}
+
+	int sent = 0;
+	for (auto row = r.begin(); row != r.end(); ++row) {
+		if (sent >= kMaxResults) {
+			tc->Message(Chat::Yellow,
+			            "More than %i corpses match '%s'; only the first %i are listed.",
+			            kMaxResults, needle, kMaxResults);
+			break;
+		}
+
+		const char*  charname = row[0] ? row[0] : "";
+		const uint32 zone_id  = row[1] ? Strings::ToUnsignedInt(row[1]) : 0;
+		const bool   buried   = row[2] && Strings::ToInt(row[2]) != 0;
+
+		uint8_t out[kTrilogyCorpseInfoSize] = {};
+		strncpy(reinterpret_cast<char*>(out) + kTrilogyCorpseInfoName, charname, 31);
+		strncpy(reinterpret_cast<char*>(out) + kTrilogyCorpseInfoZone,
+		        ZoneName(zone_id, true), 31);
+		SendApp(addr, port, s, ZN_OP_GMSearchCorpse, out,
+		        static_cast<uint32_t>(sizeof(out)));
+		++sent;
+
+		// The yellow line has no room for it, and a buried corpse is exactly
+		// the case a GM is searching for, so say it separately.
+		if (buried)
+			tc->Message(Chat::Yellow, "  (%s's corpse is buried.)", charname);
+	}
+
+	LogInfo("[TrilogyCorpse] /searchcorpse char={} needle='{}' rows={} sent={}",
+	        s.char_name, needle, r.RowCount(), sent);
 }
 
 

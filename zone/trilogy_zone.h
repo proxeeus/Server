@@ -346,6 +346,13 @@ private:
 		// on nearby NPCs would otherwise flood on every mouseover.
 		uint64_t last_target_log_ms = 0;
 
+		// Corpse ids this session has already been told it may drag (0x1421).
+		// A /corpse haul is one packet per 70 units, so without this the
+		// "X has permission to drag corpse Y" line would repeat the whole way
+		// out of the dungeon.  Session-scoped on purpose: zoning clears it, and
+		// re-hearing it once after a zone is reasonable.
+		std::unordered_set<uint16_t> corpse_drag_notified;
+
 		// Entity id of the controllable boat this session is currently
 		// steering, 0 when not steering one.  Set from the 0x2621 handler.
 		// Two jobs: it suppresses our own A120 for that hull (the driving
@@ -772,6 +779,18 @@ private:
 	// grouped into one function because they share that shape entirely.
 	void HandleSocialCommand(const std::string& addr, int port, Session& s,
 	                         uint16_t opcode, const uint8_t* payload, uint32_t plen);
+
+	// Corpse recovery.  HandleGMSummon owns inbound 0xc520, which v29c uses for
+	// BOTH the GM /summon command and the /corpse pull (the corpse's name
+	// arrives in charname[30]); it splits on whether the name resolves to a
+	// player corpse.  HandleGMSearchCorpse owns 0xa721, the GM's cross-zone
+	// corpse locator, and gates on Admin() itself.  See the opcode block near
+	// ZN_OP_GMSummon in trilogy_zone.cpp for the client-side disassembly both
+	// layouts came from.
+	void HandleGMSummon(const std::string& addr, int port, Session& s,
+	                    const uint8_t* payload, uint32_t plen);
+	void HandleGMSearchCorpse(const std::string& addr, int port, Session& s,
+	                          const uint8_t* payload, uint32_t plen);
 
 	// Duels: /duel (challenge and accept), /decline, the client's automatic
 	// "I'm busy" responses, and its end-of-duel notification.  v29c drives most

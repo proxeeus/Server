@@ -3453,6 +3453,7 @@ static const char* TrilogySystemStringTemplate(uint32_t string_id)
 		// added — the coin moved and the consent was recorded — but every
 		// success AND failure message resolved to nothing, so in-game both read
 		// as "the command did nothing at all".
+		case 389:   return "The corpse is too far away to summon.";                   // CORPSE_TOO_FAR
 		case 390:   return "You do not have consent to summon that corpse.";          // CONSENT_DENIED
 		case 397:   return "Not a valid consent name.";                               // CONSENT_INVALID_NAME
 		case 398:   return "You cannot consent NPC's.";                               // CONSENT_NPC
@@ -3907,7 +3908,7 @@ void TrilogyClient::HandleOutgoingRandomReply(const EQApplicationPacket* app)
 }
 
 // ============================================================
-// HandleOutgoingConsentResponse — OP_ConsentResponse (0xb721).
+// HandleOutgoingConsentResponse — /consent feedback, OP_ConsentPlayer 0xd520.
 //
 // /consent for another player round-trips through worldserver
 // (Client::ConsentCorpses -> ServerOP_Consent -> ServerOP_Consent_Response),
@@ -3917,29 +3918,65 @@ void TrilogyClient::HandleOutgoingRandomReply(const EQApplicationPacket* app)
 // fine — the self-consent case looked like it worked only because it fails
 // early with a local CONSENT_YOURSELF message and never reaches world.
 //
-// EQEmu ConsentResponse_Struct uses char[64] name fields; the Trilogy struct
-// (EQClassic eq_packet_structs.h:739) uses char[32].  Field ORDER also differs
-// in naming: their "consentee" is the granted player (EQEmu grantname) and
-// "consenter" is the corpse owner (EQEmu ownername).
+// OPCODE CORRECTION (2026-09-13).  This shipped on 0xb721 from the day it was
+// written, taken from EQClassic's `#define OP_ConsentResponse 0xb721`.  v29c
+// has no inbound handler for 0xb721 at all, so every consent reply we have
+// ever sent was discarded on arrival and the feature has been silent since it
+// merged.  Two independent proofs:
+//
+//   - Dispatch chain.  Client constant 0x21b7 walks 0x49675f -> 0x49a581 ->
+//     0x49abbb -> 0x49bd28 -> 0x4985a0 -> 0x49dd9c -> 0x49f04a -> 0x49f8d3
+//     and falls out of the last node's `sub eax,0x21be` ladder into the
+//     unhandled epilogue at 0x49fb81.
+//   - The ONLY 0x21b7 anywhere in eqgame.exe is a `push 0x21b7` at 0x49bf33 —
+//     an opcode the client SENDS, never one it parses.
+//
+// The handler that actually prints the four consent lines is 0x4966b6, reached
+// from the 0xd520 arm (client 0x20d5 -> node 1 idx 50 -> 0x4982de -> 0x4966b6).
+// EQMacEmu's patch_Trilogy.conf independently says OP_ConsentResponse=0xd520;
+// EQClassic is simply wrong on this one.
+//
+// Layout read straight off 0x4966b6, which is the whole struct — it touches
+// three offsets and nothing else:
+//
+//   /*0x00*/ char grantee[32];   // the player being granted / denied
+//   /*0x20*/ char owner[32];     // the corpse owner doing the consenting
+//   /*0x40*/ uint8 permission;   // 0 = denied, non-zero = granted
+//
+// It stricmps the local player name against +0x20 to pick a voice, then
+// branches on the byte at +0x40:
+//
+//   +0x20 == me, granted    "You have given %s permission to drag your corpse."    (%s = +0x00)
+//   +0x20 == me, denied     "You have denied %s permission to drag your corpse."   (%s = +0x00)
+//   +0x20 != me, granted    "You have been given permission to drag %s's corpse."  (%s = +0x20)
+//   +0x20 != me, denied     "You have been denied permission to drag %s's corpse." (%s = +0x20)
+//
+// which is EQEmu's (grantname, ownername, permission) field order exactly, just
+// truncated from char[64] to char[32].  The grantee branch first runs the name
+// at +0x20 through 0x4cff2d (the client's own ignore/filter check) and stays
+// silent if it matches, so a player who has the corpse owner ignored sees
+// nothing — client-side policy, nothing for us to mirror.
+//
+// zonename is deliberately not carried: 0x4966b6 never reads past +0x40, and
+// the message templates have no room for it.
 // ============================================================
 void TrilogyClient::HandleOutgoingConsentResponse(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::ConsentResponse_Struct)) return;
 	const auto* emu = reinterpret_cast<const ::ConsentResponse_Struct*>(app->pBuffer);
 
-	// 32 + 32 + 1 + 32.  Built by hand rather than via a struct because the
-	// offsets commented in the EQClassic header do not match its own field
-	// widths, so the field list is the only trustworthy part of it.
-	uint8_t out[97] = {};
-	strncpy(reinterpret_cast<char*>(out) + 0,  emu->grantname, 31);
-	strncpy(reinterpret_cast<char*>(out) + 32, emu->ownername, 31);
-	out[64] = emu->permission;
-	strncpy(reinterpret_cast<char*>(out) + 65, emu->zonename, 31);
+	// 32 + 32 + 1, rounded up to a 4-byte boundary.  The client does not
+	// size-check this opcode (the dispatcher hands the payload straight to the
+	// handler), so the only requirement is that byte 0x40 exists.
+	uint8_t out[68] = {};
+	strncpy(reinterpret_cast<char*>(out) + 0x00, emu->grantname, 31);
+	strncpy(reinterpret_cast<char*>(out) + 0x20, emu->ownername, 31);
+	out[0x40] = emu->permission;
 
 	LogInfo("[TrilogyClient] OUT /consent response grant=[{}] owner=[{}] allow={}",
 	        emu->grantname, emu->ownername, static_cast<int>(emu->permission));
 
-	m_tzs->SendToSession(m_session_key, 0xb721, out, sizeof(out));
+	m_tzs->SendToSession(m_session_key, 0xd520, out, sizeof(out));
 }
 
 // ============================================================
