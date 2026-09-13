@@ -24,6 +24,8 @@
 #include "bot.h"
 #include "client.h"
 #include "entity.h"
+#include "groups.h"
+#include "raids.h"
 #include "mob.h"
 #include "npc.h"
 #include "string_ids.h"
@@ -129,7 +131,8 @@ uint64 PlayerBotChatEngine::EchoHash(const char *name, const std::string &text)
 bool PlayerBotChatEngine::IsValidChannel(int ch)
 {
 	return ch == ChatChannel_Say || ch == ChatChannel_Shout ||
-	       ch == ChatChannel_OOC || ch == ChatChannel_Auction;
+	       ch == ChatChannel_OOC || ch == ChatChannel_Auction ||
+	       ch == ChatChannel_Group;
 }
 
 const char *PlayerBotChatEngine::DropReasonName(uint8 r)
@@ -303,8 +306,17 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			else if (pt == "phrase") {
 				t.pattern_type = PT_Phrase;
 			}
+			else if (pt == "always") {
+				t.pattern_type = PT_Always;
+			}
 			else {
 				t.pattern_type = PT_Keyword;
+			}
+
+			// An "always" row has no pattern to speak of; the column is NOT NULL
+			// so content stores a placeholder there. Do not reject it below.
+			if (t.pattern_type == PT_Always && t.pattern.empty()) {
+				t.pattern = "*";
 			}
 
 			if (t.pattern.empty()) {
@@ -618,6 +630,9 @@ int32 PlayerBotChatEngine::ClassifyMessage(
 			bool matched = false;
 
 			switch (t.pattern_type) {
+				case PT_Always:
+					matched = true;
+					break;
 				case PT_Keyword:
 					matched = tokens.count(t.pattern) > 0;
 					break;
@@ -961,6 +976,51 @@ void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector
 {
 	out.clear();
 	if (!speaker) {
+		return;
+	}
+
+	// Group chat is scoped by MEMBERSHIP, not by distance or by zone: an
+	// out-of-earshot bot in your group should still answer, and a bot standing
+	// next to you that is not in your group should not.
+	if (chan_num == ChatChannel_Group) {
+		// Raid first.  A raided client's group chat is routed through
+		// Raid::RaidGroupSay and its Group object is gone, so GetGroup() would
+		// come back null and the whole channel would look broken in a raid.
+		Raid *r = entity_list.GetRaidByName(speaker->GetName());
+		if (!r) {
+			r = entity_list.GetRaidByBotName(speaker->GetName());
+		}
+
+		if (r) {
+			const uint32 gid = r->GetGroup(speaker->GetName());
+			if (gid < MAX_RAID_GROUPS) {
+				for (const auto &m : r->GetRaidGroupMembers(gid)) {
+					// RaidMember::member is only a usable pointer for real
+					// clients -- every raid call site guards on is_bot before
+					// dereferencing it -- so bot members resolve by name.
+					Mob *mm = m.is_bot
+						? entity_list.GetMob(m.member_name)
+						: static_cast<Mob *>(m.member);
+
+					if (mm && mm != speaker && IsChatBot(mm)) {
+						out.push_back(mm);
+					}
+				}
+				return;
+			}
+		}
+
+		// Plain group.  Group::members is Mob*, so it holds PlayerBots and
+		// Bots directly -- no second list to walk.
+		Group *g = speaker->GetGroup();
+		if (!g) {
+			return;
+		}
+		for (auto *m : g->members) {
+			if (m && m != speaker && IsChatBot(m)) {
+				out.push_back(m);
+			}
+		}
 		return;
 	}
 
@@ -1324,6 +1384,26 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 			entity_list.EmitChannelLocal(name, chan_num, Language::CommonTongue, text.c_str());
 			break;
 
+		case ChatChannel_Group: {
+			// RaidGroupSay resolves the group from the sender NAME and bails if
+			// that name is groupless, so it is safe to try first.
+			Raid *r = entity_list.GetRaidByName(talker->GetName());
+			if (!r) {
+				r = entity_list.GetRaidByBotName(talker->GetName());
+			}
+
+			if (r && r->GetGroup(talker->GetName()) < MAX_RAID_GROUPS) {
+				r->RaidGroupSay(text.c_str(), name, Language::CommonTongue, Language::MaxValue);
+				break;
+			}
+
+			Group *g = talker->GetGroup();
+			if (g) {
+				g->GroupMessageFromName(name, Language::CommonTongue, Language::MaxValue, text.c_str());
+			}
+			break;
+		}
+
 		default:
 			break;
 	}
@@ -1495,6 +1575,39 @@ bool PlayerBotChatEngine::ZoneTextPressureHigh() const
 // ============================================================
 // scripting surface
 // ============================================================
+
+int32 PlayerBotChatEngine::FindCategoryId(const std::string &category_name) const
+{
+	const std::string want = Strings::ToLower(category_name);
+
+	for (const auto &c : m_categories) {
+		if (Strings::ToLower(c.name) == want) {
+			return static_cast<int32>(c.id);
+		}
+	}
+
+	return -1;
+}
+
+bool PlayerBotChatEngine::ScriptSayNamed(Mob *talker, const std::string &category_name, uint8 chan_num)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !talker) {
+		return false;
+	}
+
+	EnsureLoaded();
+
+	const int32 id = FindCategoryId(category_name);
+	if (id < 0) {
+		LogError(
+			"[pbchat] ScriptSay: no category named [{}] (check playerbot_chat_categories, then #pbchat reload)",
+			category_name
+		);
+		return false;
+	}
+
+	return ScriptSay(talker, static_cast<uint32>(id), chan_num);
+}
 
 bool PlayerBotChatEngine::ScriptSay(Mob *talker, uint32 category_id, uint8 chan_num)
 {

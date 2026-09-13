@@ -615,6 +615,10 @@ public:
 	// every Perl event name.
 	bool PlayerBotChatSay(uint32 category_id);
 	bool PlayerBotChatSay(uint32 category_id, int channel);
+	// By category NAME -- the form scripts should use. Category ids are
+	// AUTO_INCREMENT and differ between databases.
+	bool PlayerBotChatSayNamed(const char *category_name);
+	bool PlayerBotChatSayNamed(const char *category_name, int channel);
 	void PlayerBotChatMute(bool muted);
 	bool PlayerBotChatIsMuted();
 	void PlayerBotChatBias(uint32 category_id, int percent);

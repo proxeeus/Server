@@ -38,7 +38,13 @@ namespace PlayerBotChat {
 	enum PatternType : uint8 {
 		PT_Keyword = 0,
 		PT_Phrase  = 1,
-		PT_Regex   = 2
+		PT_Regex   = 2,
+		// Matches any non-empty message. Exists so a catch-all "I have no idea
+		// what you just said" category can be authored without a cryptic
+		// `pattern='.'  type='regex'` row. Give such a category score 1 and
+		// min_score 1 so it is always a candidate but always loses to a real
+		// match, which scores 8 or more.
+		PT_Always  = 3
 	};
 
 	enum CategoryScope : uint8 {
@@ -186,6 +192,11 @@ public:
 
 	// ---- scripting surface (lua_mob.cpp bindings) ---------------------
 	bool ScriptSay(Mob *talker, uint32 category_id, uint8 chan_num);
+	// By name, because category ids are AUTO_INCREMENT and a script must not
+	// hardcode them. Returns false (and logs) if the name is unknown.
+	bool ScriptSayNamed(Mob *talker, const std::string &category_name, uint8 chan_num);
+	// -1 when the name is not a loaded category.
+	int32 FindCategoryId(const std::string &category_name) const;
 	void SetMuted(Mob *listener, bool muted);
 	bool IsMuted(Mob *listener);
 	void SetBias(Mob *listener, uint32 category_id, int percent);

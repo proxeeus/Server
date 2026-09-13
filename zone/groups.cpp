@@ -895,6 +895,44 @@ void Group::GroupMessage(Mob* sender, uint8 language, uint8 lang_skill, const ch
 	safe_delete(pack);
 }
 
+// Mirror of Group::GroupMessage that takes a name instead of a Mob*.
+//
+// Two reasons the Mob* version will not do for bot chat: it reads
+// sender->GetName(), which for a PlayerBot carries the digits MakeNameUnique
+// appended, and the out-of-zone relay stamps gcm->from from the same object.
+// Everything else -- the FilterGroupChat check and the OOZ relay -- is
+// identical, so a bot's group chat reaches absent members exactly like a
+// player's does.
+void Group::GroupMessageFromName(const char* from_name, uint8 language, uint8 lang_skill, const char* message) {
+	if (!from_name || !message) {
+		return;
+	}
+
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; i++) {
+		if (!members[i])
+			continue;
+
+		if (members[i]->IsClient() && members[i]->CastToClient()->GetFilter(FilterGroupChat) != 0) {
+			// "%s" is load-bearing: ChannelMessageSend is a varargs printf sink
+			// and bot response text is arbitrary content that may contain '%'.
+			members[i]->CastToClient()->ChannelMessageSend(
+				from_name, members[i]->GetName(), ChatChannel_Group, language, lang_skill, "%s", message
+			);
+		}
+	}
+
+	auto pack =
+	    new ServerPacket(ServerOP_OOZGroupMessage, sizeof(ServerGroupChannelMessage_Struct) + strlen(message) + 1);
+	ServerGroupChannelMessage_Struct* gcm = (ServerGroupChannelMessage_Struct*)pack->pBuffer;
+	gcm->zoneid = zone->GetZoneID();
+	gcm->groupid = GetID();
+	gcm->instanceid = zone->GetInstanceID();
+	strn0cpy(gcm->from, from_name, sizeof(gcm->from));
+	strcpy(gcm->message, message);
+	worldserver.SendPacket(pack);
+	safe_delete(pack);
+}
+
 uint32 Group::GetTotalGroupDamage(Mob* other) {
 	uint32 total = 0;
 

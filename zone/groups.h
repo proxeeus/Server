@@ -78,6 +78,10 @@ public:
 	void	CastGroupSpell(Mob* caster,uint16 spellid);
 	void	SplitExp(ExpSource exp_source, const uint64 exp, Mob* other);
 	void	GroupMessage(Mob* sender,uint8 language,uint8 lang_skill,const char* message);
+	// Same delivery, but sourced from a NAME instead of a Mob*. Used by the
+	// PlayerBot chat engine so a bot's display name (playerbot_temp_name)
+	// survives, and so a Mob that is not a Client can speak on group chat.
+	void	GroupMessageFromName(const char* from_name,uint8 language,uint8 lang_skill,const char* message);
 	void	GroupMessageString(Mob* sender, uint32 type, uint32 string_id, const char* message,const char* message2=0,const char* message3=0,const char* message4=0,const char* message5=0,const char* message6=0,const char* message7=0,const char* message8=0,const char* message9=0, uint32 distance = 0);
 	uint32	GetTotalGroupDamage(Mob* other);
 	void	SplitMoney(uint32 copper, uint32 silver, uint32 gold, uint32 platinum, Client *splitter = nullptr, bool share = false);
