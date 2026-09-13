@@ -1206,7 +1206,28 @@ void PlayerBotChatEngine::DispatchToScope(
 		const bool locked_to_speaker =
 			(st.paired_speaker_id == speaker->GetID() && now < st.pair_expiry_ms);
 
-		const uint32 eff_cooldown = locked_to_speaker ? (base_cooldown / 2) : base_cooldown;
+		uint32 eff_cooldown     = locked_to_speaker ? (base_cooldown / 2) : base_cooldown;
+		uint32 eff_cat_cooldown = cat.cooldown_ms;
+
+		// A HUMAN OUTRANKS AMBIENT BOT CHATTER.
+		//
+		// Cooldowns are per listener and shared across every source, so bots
+		// nattering at each other spend exactly the budget a reply to a player
+		// needs. The observed symptom is a player having to repeat themselves
+		// several times to get any answer: the zone had just talked itself onto
+		// cooldown, and the player was waiting out a timer earned by bots.
+		//
+		// chain_depth 0 means a real client typed this. Such a line gets a
+		// short floor instead of the full mouth cooldown, and a quartered
+		// category cooldown. Output is still bounded by ResponseCapPerMessage,
+		// so this makes bots RESPONSIVE, not louder -- the same two of them
+		// answer, they just are not muted by their own small talk.
+		if (chain_depth == 0) {
+			const uint32 floor_ms =
+				static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, PlayerReplyCooldownMs)));
+			eff_cooldown     = std::min(eff_cooldown, floor_ms);
+			eff_cat_cooldown = cat.cooldown_ms / 4;
+		}
 
 		if (st.last_msg_time_ms != 0 && now - st.last_msg_time_ms < eff_cooldown) {
 			++m_stat_drops[DR_Cooldown];
@@ -1214,7 +1235,7 @@ void PlayerBotChatEngine::DispatchToScope(
 		}
 
 		auto cat_fire = st.category_last_fire.find(cat.id);
-		if (cat_fire != st.category_last_fire.end() && now - cat_fire->second < cat.cooldown_ms) {
+		if (cat_fire != st.category_last_fire.end() && now - cat_fire->second < eff_cat_cooldown) {
 			++m_stat_drops[DR_CategoryCooldown];
 			continue;
 		}

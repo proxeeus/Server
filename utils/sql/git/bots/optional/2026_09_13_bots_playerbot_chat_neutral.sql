@@ -920,3 +920,28 @@ GROUP BY c.name ORDER BY rows_per_category DESC;
 
 -- Then, in game:  #pbchat reload
 --                 #pbchat dumpcats
+
+
+-- ---------------------------------------------------------------------------
+-- RESPONSIVENESS TUNING
+--
+-- fallback's 90s per-listener cooldown was set when that category held 1,121
+-- generated rows and the risk was a wall of text. The pool is now 40 neutral
+-- rows and the risk is the opposite: most ordinary chatter classifies to
+-- fallback, so a 90s gate meant a player could talk into a zone of bots that
+-- had all just spent their budget on each other, and had to repeat themselves
+-- to get an answer.
+--
+-- Player-spoken lines additionally get a quartered category cooldown in the
+-- engine (see PlayerBotChat:PlayerReplyCooldownMs), so these values now govern
+-- bot-to-bot pacing more than they govern replies to a human.
+-- ---------------------------------------------------------------------------
+SELECT name, cooldown_ms AS before_ms FROM playerbot_chat_categories
+WHERE name IN ('fallback','smalltalk_opener','zone_intent_opener','market','lfg');
+
+UPDATE playerbot_chat_categories SET cooldown_ms = 30000 WHERE name = 'fallback';
+UPDATE playerbot_chat_categories SET cooldown_ms = 30000 WHERE name = 'generic_ack';
+UPDATE playerbot_chat_categories SET cooldown_ms = 40000 WHERE name IN ('market','lfg','greeting');
+
+SELECT name, cooldown_ms AS after_ms FROM playerbot_chat_categories
+WHERE name IN ('fallback','generic_ack','market','lfg','greeting');
