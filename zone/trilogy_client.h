@@ -132,6 +132,20 @@ public:
 
 	bool IsTrilogyClient() const override { return true; }
 
+	// Kick (override) — put the kick on the wire before flipping client_state.
+	//
+	// Client::Kick only sets CLIENT_KICKED.  That works for a Daybreak client
+	// because the stream dies with it; TrilogyStream::Close() is a no-op and
+	// CheckState always answers ESTABLISHED, so the v29c client was never told
+	// anything and kept playing against a zone that had already deleted its
+	// Client — the "nothing can end a Trilogy session" half of the gap.
+	//
+	// Every kick path in the server funnels through here: #kick, WorldKick (GM
+	// /kick and ServerOP_KickPlayer from world), the auth/ban check at zone-in,
+	// the inventory-desync and chat-flood guards, quest Kick(), and the
+	// name/class/race change commands.
+	void Kick(const std::string& reason) override;
+
 	// Lore conflict check (override).
 	//
 	// The base Client::CheckLoreConflict queries m_inv only.  Trilogy direct-DB
@@ -413,6 +427,10 @@ private:
 	// TrilogyZoneServer::SendToSession.
 	void HandleNewSpawn(const EQApplicationPacket* app);
 	void HandleDeleteSpawn(const EQApplicationPacket* app);
+	// Refusal arm of the 0xa320 request/reply pair.  The client blocks for 180 s
+	// inside eqgame.exe 0x4dbf94 waiting for a reply to every zone-change request
+	// it sends, so a denied OP_ZoneChange has to be answered, not dropped.
+	void SendZoneChangeDenied(const ::ZoneChange_Struct* emu);
 	void HandleClientUpdate(const EQApplicationPacket* app);
 	// Server-authoritative self-position push via 0xa120 (OP_MobUpdate).
 	// Called from HandleClientUpdate's self-branch when IsAIControlled() —

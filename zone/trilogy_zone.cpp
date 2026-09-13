@@ -144,6 +144,22 @@ static constexpr uint16_t ZN_OP_PlayerSave2 = 0x5521;
 // UNHANDLED logger); 0x5421 is wired up so the air probe sees that sample too.
 static constexpr uint16_t ZN_OP_PlayerSave  = 0x5421;
 static constexpr uint16_t ZN_OP_ZoneChange  = 0xa320; // bidirectional: ZoneChange_Struct (68 bytes)
+// Bidirectional, zero-length payload.  MSG_LOGOUT_PLAYER in v29c's own naming
+// (the debug string the handler prints is "****MSG_LOGOUT_PLAYER RECVD:
+// DISCONNECTING (RECV_PKT)").
+//
+// Server -> client (eqgame.exe 0x496946): closes the network session with a
+// 10 s linger, then MessageBoxA(hWnd, "Logout", "Window", MB_OK) followed by
+// DestroyWindow(hWnd).  It is the one packet that ends a v29c session from the
+// server side, and it ends it at the desktop — there is no "back to char
+// select" variant of it.  That makes it right for a kick or a ban and wrong for
+// anything recoverable; a graceful exit to character select is what CompleteCamp
+// does (SpawnAppearance SAT_Camp + CLOSE).  The handler reads nothing out of the
+// payload.
+//
+// Client -> server (eqgame.exe 0x4da92b): emitted once the client has torn its
+// own player object down after a ZoneUnavailable, i.e. "I have given up".
+static constexpr uint16_t ZN_OP_ForceLogOut = 0xd920;
 
 // Combat / looting opcodes
 // Source: EQClassic/Common/Include/eq_opcodes.h
@@ -2931,6 +2947,21 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			s.camping    = true;
 			s.camp_start = std::time(nullptr);
 			LogInfo("[TrilogyZone] Camp initiated for {}", s.char_name);
+		}
+		else if (opcode == ZN_OP_ForceLogOut) {
+			// Client -> zone MSG_LOGOUT_PLAYER.  v29c sends this once it has torn
+			// its own player object down and given up on the session — the tail of
+			// the ZoneUnavailable path at eqgame.exe 0x4da92b.  Nothing more is
+			// coming from this client, so save and drop the session rather than
+			// waiting out the silence sweep with a body still standing in the zone.
+			uint64_t key = SessionKey(addr, port);
+			LogInfo("[TrilogyZone] OP_ForceLogOut (0xd920) from {} — client-side logout, dropping session",
+			        s.char_name);
+			if (s.trilogy_client) {
+				CompleteCamp(key, s);
+			}
+			RemoveSession(key);
+			return;
 		}
 		else if (opcode == ZN_OP_DeleteSpawn && s.trilogy_client) {
 			// Client's own 30 s /camp countdown expired without interruption.
@@ -13915,6 +13946,45 @@ void TrilogyZoneServer::Tick()
 			s.draining_outbound = false;
 		}
 	}
+
+	// ──────────────────────────────────────────────────────────────────────
+	// Force-logout reaper.
+	//
+	// ForceLogout cannot remove the session inline — it is called from inside
+	// TrilogyClient::Kick, and RemoveSession deletes that very Client.  It flags
+	// the session instead and we collect it here, after a grace period long
+	// enough for EQEmu's own kicked-client path to run (Client::Process sees
+	// CLIENT_KICKED -> Save -> OnDisconnect, then MobProcess deletes the entity).
+	//
+	// Revalidate the Client pointer first for the same reason Tick's main loop
+	// does: by now EQEmu has almost certainly freed it, and RemoveSession
+	// dereferences the pointer to get the entity id.
+	// ──────────────────────────────────────────────────────────────────────
+	{
+		constexpr uint64_t kForceLogoutGraceMs = 2000;
+		std::vector<uint64_t> to_reap;
+
+		for (auto& kv : m_sessions) {
+			Session& s = kv.second;
+			if (s.force_logout_ms == 0) continue;
+			if (now_ms < s.force_logout_ms) continue; // clock skew guard
+			if (now_ms - s.force_logout_ms < kForceLogoutGraceMs) continue;
+
+			if (s.trilogy_client && s.eqemu_entity_id != 0) {
+				Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
+				if (live != static_cast<Client*>(s.trilogy_client)) {
+					s.trilogy_client  = nullptr;
+					s.eqemu_entity_id = 0;
+				}
+			}
+			to_reap.push_back(kv.first);
+		}
+
+		for (uint64_t key : to_reap) {
+			LogInfo("[TrilogyZone] ForceLogout: reaping session after grace period");
+			RemoveSession(key);
+		}
+	}
 }
 
 bool TrilogyZoneServer::HasConnectedSession() const
@@ -15456,6 +15526,49 @@ void TrilogyZoneServer::CompleteCamp(uint64_t /*session_key*/, Session& s)
 	}
 
 	SendClose(s.source_addr, s.source_port, s);
+}
+
+// ============================================================
+// ForceLogout — end a session from the server side (kick / world kick / ban)
+//
+// Before this there was no way at all to do that to a Trilogy client.
+// Client::Kick() only flips client_state to CLIENT_KICKED, which is enough for
+// a Daybreak client because its stream gets closed underneath it — but
+// TrilogyStream::Close() is a no-op and TrilogyStream always reports
+// ESTABLISHED, so the far end never learned anything.  The player kept playing
+// against a zone that had deleted their Client, until the next packet fell
+// through a null check.
+//
+// 0xd920 is what v29c gives us for this.  Its handler (eqgame.exe 0x496946)
+// closes the socket with a 10 s linger, pops MessageBoxA("Logout") and calls
+// DestroyWindow — the player lands on the desktop.  That is the right shape for
+// a kick or a ban and the wrong one for anything the player should be able to
+// recover from, which is why the camp-out path (CompleteCamp) stays the route
+// back to character select.
+//
+// The reason text is the caller's job (TrilogyClient::Kick sends it as a red
+// line just before calling this), and it is best-effort either way — the client
+// only renders it if it drains its socket before the message box goes up.  The
+// log line below is the reliable record.
+// ============================================================
+void TrilogyZoneServer::ForceLogout(uint64_t session_key, const std::string& reason)
+{
+	auto it = m_sessions.find(session_key);
+	if (it == m_sessions.end()) return;
+	Session& s = it->second;
+
+	if (s.force_logout_ms != 0) return; // already on its way out
+
+	LogInfo("[TrilogyZone] ForceLogout: char [{}] reason [{}] — sending 0xd920",
+	        s.char_name, reason);
+
+	SendApp(s.source_addr, s.source_port, s, ZN_OP_ForceLogOut, nullptr, 0);
+	SendClose(s.source_addr, s.source_port, s);
+
+	s.force_logout_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (s.force_logout_ms == 0) s.force_logout_ms = 1; // 0 is the "not kicked" sentinel
 }
 
 // ============================================================

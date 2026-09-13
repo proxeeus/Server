@@ -351,6 +351,27 @@ struct ZoneServerInfo_Struct
 };
 
 /*
+** ZoneUnavail_Struct
+** Opcode:  OP_ZoneUnavail = 0x0580
+** Direction: world server -> client
+** Source:  EQClassic Common/Include/eq_packet_structs.h :: ZoneUnavail_Struct
+**          (byte-identical to EQEmu's own ZoneUnavail_Struct in eq_packet_structs.h)
+** Size:    24 bytes
+**
+** Decorative.  The v29c handler at eqgame.exe 0x49c732 reads nothing out of the
+** payload — it sets ds:0x6b61b4=1 ("That zone is unavailable." on the char-select
+** screen) and clears ds:0x6b6490 (re-enables char-select clicks), then returns.
+** EQClassic's Client::SendZoneUnavail memsets the zone name to 0 before sending,
+** which is consistent.  We fill the name in anyway so packet logs are readable.
+*/
+struct ZoneUnavail_Struct
+{
+/*000*/	char	zonename[16];
+/*016*/	int16	unknown[4];
+/*024*/
+};
+
+/*
 ** ServerZoneEntry_Struct
 ** Opcode:  OP_ZoneEntry = 0x2a20
 ** Direction: zone server -> client (and client -> zone server during zone-in)

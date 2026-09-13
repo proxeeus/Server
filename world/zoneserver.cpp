@@ -838,6 +838,13 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 						ztz->current_zone_id
 					);
 
+					// Same reason as the denial arm below: a Trilogy client has already
+					// been told to leave by the time this comes back, so the zone-side
+					// ZoneNotReady reply has no entity to reach.
+					if (g_trilogy_world) {
+						g_trilogy_world->TellClientZoneUnavailable(ztz->name, "zone is locked");
+					}
+
 					SendPacket(pack);
 					break;
 				}
@@ -889,6 +896,18 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 				if (g_trilogy_world && ztz->response > 0) {
 					g_trilogy_world->SendZoneServerInfoForChar(
 						ztz->name, ztz->requested_zone_id, ingress_server);
+				}
+
+				// Denial arm.  The zone's own ZoneNotReady reply (worldserver.cpp
+				// ServerOP_ZoneToZoneRequest -> OP_ZoneChange success<0) cannot reach a
+				// Trilogy client: TrilogyZoneServer::HandleZoneChange hands out the
+				// 0xa320 approval synchronously and removes the entity before this
+				// round-trip finishes, so entity_list.GetClientByName finds nothing to
+				// send it to.  The world session is the only link still open, so say it
+				// from here — otherwise the client waits on a 0x0480 that never comes.
+				if (g_trilogy_world && ztz->response <= 0) {
+					g_trilogy_world->TellClientZoneUnavailable(
+						ztz->name, "zone-to-zone request denied");
 				}
 
 				SendPacket(pack);	// send back to egress server

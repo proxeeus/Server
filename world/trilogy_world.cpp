@@ -65,6 +65,27 @@ static constexpr uint16_t OP_NAME_APPROVAL       = 0x8B20; // bidirectional: nam
 static constexpr uint16_t OP_CHAR_CREATE         = 0x4920; // client -> world: PlayerProfile (EQClassic)
 static constexpr uint16_t OP_DELETE_CHARACTER    = 0x5a20; // client -> world: 30-byte char name (null-terminated)
 static constexpr uint16_t OP_WORLD_LOGOUT        = 0x2320; // client -> world: user clicked "Quit" at char select (no payload)
+// world -> client: "the zone you asked for is not available".  The v29c handler
+// (eqgame.exe 0x49c732, reached from the 0x8004/0x8005 pair at 0x49c723) reads
+// NOTHING out of the payload — it sets two globals and returns:
+//   ds:0x6b61b4 = 1  → the char-select renderer at 0x430f8f draws
+//                      "That zone is unavailable." (string at 0x545900), and
+//                      the connect state machine at 0x4da6ea aborts its wait,
+//                      logs "received ZoneUnavailable from world server",
+//                      closes the session and drops back to char select.
+//   ds:0x6b6490 = 0  → re-enables char-select slot clicks (the click handler at
+//                      0x431135 refuses to run while this is non-zero, and
+//                      0x431163 clears ds:0x6b61b4 again on the next click).
+// EQClassic's world sends it with the zone name ZEROED
+// (World/Source/client.cpp Client::SendZoneUnavail), which matches: the payload
+// is decorative.  We still send the 24-byte ZoneUnavail_Struct EQEmu and
+// EQClassic agree on so a packet log reads sensibly.
+static constexpr uint16_t TRI_OP_ZoneUnavail     = 0x0580;
+// client -> world / client -> zone: MSG_LOGOUT_PLAYER.  v29c emits this from
+// 0x4da92b once it has torn its player object down after a ZoneUnavailable, and
+// the inbound handler at 0x496946 is the force-logout side (see
+// TrilogyZoneServer::ForceLogout).  Arrives with a zero-length payload.
+static constexpr uint16_t OP_FORCE_LOGOUT        = 0xd920;
 static constexpr uint16_t WS_OP_TimeOfDay        = 0xf220; // world -> client: TimeOfDay_Struct (6 bytes, Trilogy wire)
 static constexpr uint16_t WS_SEND_SERVER_MOTD    = 0xdd21; // world -> client: server MOTD, raw null-terminated text
 
@@ -388,6 +409,18 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		HandleWearChange(addr, port, s, payload, plen, hdr1);
 		break;
 	case OP_WORLD_LOGOUT: // 0x2320 — client clicked "Quit" at char select
+		HandleWorldLogout(addr, port, s);
+		break;
+	case OP_FORCE_LOGOUT:
+		// 0xd920 MSG_LOGOUT_PLAYER, client -> world.  v29c emits this from
+		// 0x4da92b at the tail of its ZoneUnavailable teardown, right after it
+		// destroys the player object — i.e. it is the client telling us it has
+		// given up on the zone it was promised.  Treat it exactly like a Quit at
+		// char select: mark the CLE offline, close the transport, and clear the
+		// session's auth so the retry burst v29c fires afterwards is treated as a
+		// fresh connection rather than a returning_from_zone shortcut.
+		LogInfo("[TrilogyWorld] OP_ForceLogOut (0xd920) from {}:{} char [{}] — client abandoned its zone entry",
+		        addr, port, s.char_name);
 		HandleWorldLogout(addr, port, s);
 		break;
 	case 0xa980: // unknown size-0 opcodes seen in EQClassic world — echo back
@@ -854,7 +887,8 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	auto results = database.QueryDatabase(query);
 	if (results.RowCount() == 0) {
 		LogInfo("[TrilogyWorld] EnterWorld: character [{}] not found", char_name);
-		SendAck(addr, port, s);
+		if (s.ack_due) SendAck(addr, port, s);
+		SendZoneUnavailable(addr, port, s, "character not found");
 		return;
 	}
 
@@ -878,7 +912,11 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 		uint32_t boot_id = zoneserver_list.TriggerBootup(zone_id, 0);
 		if (boot_id == 0) {
 			LogInfo("[TrilogyWorld] No zone server available for zone [{}]", zone_id);
-			SendAck(addr, port, s);
+			// EQClassic does exactly this (World/Source/client.cpp: TriggerBootup
+			// returned nothing -> SendZoneUnavail).  Without it the client sits on
+			// the connecting screen until the user kills the process.
+			if (s.ack_due) SendAck(addr, port, s);
+			SendZoneUnavailable(addr, port, s, "no zone server available");
 			return;
 		}
 		// Zone boot was triggered — defer until it finishes registering.
@@ -1087,6 +1125,86 @@ void TrilogyWorldServer::SendZoneServerInfo(const std::string& addr, int port, S
 }
 
 // ============================================================
+// SendZoneUnavailable — TRI_OP_ZoneUnavail (0x0580)
+//
+// The counterpart to SendZoneServerInfo: every path that promises the client a
+// zone and then cannot deliver one has to send this instead, or the client sits
+// on its "connecting" screen forever with no message and no way back.  That was
+// the state of every failure arm in HandleEnterWorld / CheckPendingZoneEntry
+// before this — they only sent a transport ACK, which unblocks v29c's ARQ layer
+// but tells the game layer nothing.
+//
+// This mirrors EQEmu's own Client::TellClientZoneUnavailable (world/client.cpp)
+// for modern clients and EQClassic's Client::SendZoneUnavail: zero the pending
+// zone state on our side, then hand the client the opcode that sends it back to
+// character select.  EQClassic blanks the zone name before sending and v29c
+// reads no payload at all, so the name here is purely for packet logs.
+// ============================================================
+
+void TrilogyWorldServer::SendZoneUnavailable(const std::string& addr, int port,
+                                              Session& s, const char* reason)
+{
+	Trilogy::structs::ZoneUnavail_Struct ua{};
+	memset(&ua, 0, sizeof(ua));
+
+	if (s.pending_zone_id != 0 || s.zone_id != 0) {
+		const uint32_t zid = s.pending_zone_id ? s.pending_zone_id : s.zone_id;
+		auto zq = fmt::format(
+			"SELECT `short_name` FROM `zone` WHERE `zoneidnumber` = {} LIMIT 1", zid);
+		auto zr = database.QueryDatabase(zq);
+		if (zr.RowCount() > 0) {
+			auto zrow = zr.begin();
+			strncpy(ua.zonename, zrow[0], sizeof(ua.zonename) - 1);
+		}
+	}
+
+	LogInfo("[TrilogyWorld] ZoneUnavailable | char [{}] zone [{}] ([{}]) reason [{}] — "
+	        "returning {}:{} to character select",
+	        s.char_name, ua.zonename,
+	        s.pending_zone_id ? s.pending_zone_id : s.zone_id,
+	        reason ? reason : "unspecified", addr, port);
+
+	// Drop the zone promise before the packet goes out: the client is about to
+	// abandon its connect attempt, and a pending entry left armed here would
+	// have CheckPendingZoneEntry fire a ZoneServerInfo at a client that is no
+	// longer waiting for one.
+	s.pending_zone_entry = false;
+	s.pending_zone_id    = 0;
+	s.pending_zone_time  = 0;
+
+	if (s.cle) {
+		s.cle->SetOnline(CLE_Status::CharSelect);
+	}
+
+	SendApp(addr, port, s, TRI_OP_ZoneUnavail,
+	        reinterpret_cast<const uint8_t*>(&ua), sizeof(ua));
+}
+
+// ============================================================
+// TellClientZoneUnavailable — by character name, for callers outside this class
+//
+// world/zoneserver.cpp uses this on a denied ZoneToZone: by the time the denial
+// comes back the Trilogy client has already been handed its 0xa320 approval and
+// torn down its zone session (see TrilogyZoneServer::HandleZoneChange), so the
+// zone's own ZoneNotReady reply has no entity left to reach — entity_list.
+// GetClientByName returns null there and the packet is never built.  The world
+// session, though, survives zoning and is the only link still open to the
+// client, which makes it the one place that can still say anything at all.
+// ============================================================
+
+bool TrilogyWorldServer::TellClientZoneUnavailable(const char* char_name, const char* reason)
+{
+	if (!char_name || !char_name[0]) return false;
+
+	for (auto& [key, s] : m_sessions) {
+		if (s.account_id == 0 || strcmp(s.char_name, char_name) != 0) continue;
+		SendZoneUnavailable(s.source_addr, s.source_port, s, reason);
+		return true;
+	}
+	return false; // not a Trilogy client
+}
+
+// ============================================================
 // Tick — called from the world main loop (~32ms).
 // Polls pending zone entries so the client receives ZoneServerInfo
 // even when it sends no further world packets while waiting.
@@ -1120,13 +1238,22 @@ void TrilogyWorldServer::CheckPendingZoneEntry(const std::string& addr, int port
 {
 	if (!s.pending_zone_entry) return;
 
+	// Same knob the modern path uses (Client::autobootup_timeout), so a server
+	// that tunes zone boot patience gets it on both client families instead of
+	// this arm sitting on a hardcoded 60 that merely happened to match.
+	const long timeout_s = std::max(1L, static_cast<long>(RuleI(World, ZoneAutobootTimeoutMS) / 1000));
+
 	auto age = static_cast<long>(std::time(nullptr) - s.pending_zone_time);
-	if (age > 60) {
-		LogInfo("[TrilogyWorld] CheckPending: zone [{}] TIMED OUT age={}s for {}:{} — sending ACK so client can retry",
+	if (age > timeout_s) {
+		LogInfo("[TrilogyWorld] CheckPending: zone [{}] TIMED OUT age={}s for {}:{} — returning to character select",
 		        s.pending_zone_id, age, addr, port);
-		s.pending_zone_entry = false;
-		// ACK whatever the client last sent so its transport layer doesn't hang.
+		// ACK whatever the client last sent so its transport layer doesn't hang,
+		// then tell the game layer the zone never came up.  The ACK alone (all
+		// this arm used to do) leaves the client waiting on a zone redirect that
+		// is never coming — this is EQClassic's autobootup_timeout arm, which
+		// calls SendZoneUnavail for the same reason.
 		if (s.ack_due) SendAck(addr, port, s);
+		SendZoneUnavailable(addr, port, s, "zone bootup timed out");
 		return;
 	}
 
