@@ -503,6 +503,36 @@ void TrilogyClient::FastQueuePacket(EQApplicationPacket** app,
 static const char* TrilogySystemStringTemplate(uint32_t string_id);
 
 // ============================================================
+// Trilogy ZoneChange_Struct tail (zc_unknown1[20], struct offsets 48..67)
+//
+// The 68-byte 0xa320 is a REQUEST/REPLY pair, not a one-way notification.  The
+// client's sender is eqgame.exe 0x4dbf94: it copies its own character name to
+// +0 and the destination zone short name to +32, ships the 68 bytes, and then
+// SPINS for 180 seconds (deadline = GetTickCount() + 0x2bf20 at 0x4dc03a)
+// waiting for a 0xa320 to come back.  When one does it reads exactly one byte —
+// `mov bl, BYTE PTR [eax+0x42]` at 0x4dc065, i.e. struct offset 0x40 = 64 —
+// and returns it as the verdict:
+//
+//   byte 64 != 0  → caller 0x4dc1b5 prints "LOADING, PLEASE WAIT..." and loads
+//                   the zone.
+//   byte 64 == 0  → the failure arm: "That zone is currently down, moving you
+//                   to safe point within your current zone." (or the home-zone
+//                   fallback, which drops to character select).
+//   no reply      → 180 s frozen client, then state 0xcb and a silent bail.
+//
+// So zc_unknown1[16] is the success flag.  EQClassic's Common header calls the
+// whole tail "unknown" and its LS/zone half uses the legacy 76-byte EQEmu struct
+// whose `success` sits at offset 72 — wrong for v29c; the byte that happens to
+// land on 64 there is the low byte of zoneID, which is non-zero for most zone
+// ids and is why that code appears to work.  The remaining 19 bytes are not read
+// by any client path; they are reproduced verbatim from a live capture.
+static const uint8_t kTrilogyZoneChangeTail[20] = {
+	0x10, 0x00, 0x00, 0x00, 0x04, 0xb5, 0x01, 0x02, 0x43, 0x58,
+	0x4f, 0x00, 0xb0, 0xa5, 0xc7, 0x0d, 0x01, 0x00, 0x00, 0x00
+};
+static constexpr int kTrilogyZoneChangeSuccessIdx = 16; // struct offset 64
+
+// ============================================================
 // Combat-event token bucket (see m_pending_combat_q in trilogy_client.h)
 //
 // Rate: 60 tokens/sec sustained, 120 burst.  Applies to OP_SpecialMesg
@@ -1485,19 +1515,20 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// EQNetwork's cleanup and cause it to set the sentinel instead of NULL.
 		if (app->size < sizeof(::ZoneChange_Struct)) break;
 		const auto* emu = reinterpret_cast<const ::ZoneChange_Struct*>(app->pBuffer);
-		if (emu->success < 0) break; // denied — Trilogy has no error display for this
+		if (emu->success < 0) {
+			SendZoneChangeDenied(emu);
+			break;
+		}
 		const char* dest_zone = ZoneName(static_cast<uint32>(emu->zoneID));
 		if (!dest_zone) break;
 		Trilogy::structs::ZoneChange_Struct trio_zc{};
 		memset(&trio_zc, 0, sizeof(trio_zc));
 		strncpy(trio_zc.char_name, emu->char_name, sizeof(trio_zc.char_name) - 1);
 		strncpy(trio_zc.zone_name,  dest_zone,      sizeof(trio_zc.zone_name)  - 1);
-		// Magic bytes observed in EQClassic ProcessOP_ZoneChange success responses.
-		static const uint8_t kMagic[20] = {
-			0x10, 0x00, 0x00, 0x00, 0x04, 0xb5, 0x01, 0x02, 0x43, 0x58,
-			0x4f, 0x00, 0xb0, 0xa5, 0xc7, 0x0d, 0x01, 0x00, 0x00, 0x00
-		};
-		memcpy(trio_zc.zc_unknown1, kMagic, sizeof(kMagic));
+		// Tail carrying the success byte at zc_unknown1[16] (struct offset 64) —
+		// the one byte 0x4dbf94 reads out of our reply.  See
+		// kTrilogyZoneChangeTail for the decode.
+		memcpy(trio_zc.zc_unknown1, kTrilogyZoneChangeTail, sizeof(kTrilogyZoneChangeTail));
 		// EQClassic sends an empty 0x1020 packet immediately before the A320 approval.
 		m_tzs->SendToSession(m_session_key, 0x1020, nullptr, 0);
 		m_tzs->SendToSession(m_session_key, 0xa320,
@@ -1514,10 +1545,131 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		m_deferred_player_spawns.clear();
 		break;
 	}
+	case OP_GMKick: {
+		// Client::Handle_OP_GMKick answers a GM's /kick against an in-zone target
+		// by broadcasting the packet to EVERY client in the zone
+		// (entity_list.QueueClients) and relying on each client to notice its own
+		// name and disconnect itself.  A Trilogy client does no such thing — the
+		// opcode has no v29c equivalent at all — so the kick silently did nothing
+		// unless it happened to route through world (ServerOP_KickPlayer ->
+		// WorldKick), which is only the case when the target is in another zone.
+		//
+		// Do the name match here and turn it into a real kick.  Kick() is the
+		// single chokepoint that now reaches the wire, so this is all it takes.
+		if (app->size < sizeof(::GMKick_Struct)) break;
+		const auto* gmk = reinterpret_cast<const ::GMKick_Struct*>(app->pBuffer);
+		char target[sizeof(gmk->name) + 1]   = {};
+		char gm_name[sizeof(gmk->gmname) + 1] = {};
+		strn0cpy(target,  gmk->name,   sizeof(target));
+		strn0cpy(gm_name, gmk->gmname, sizeof(gm_name));
+		if (strcmp(target, GetName()) != 0) break; // broadcast to the whole zone; not us
+		Kick(fmt::format("Kicked by {}", gm_name[0] ? gm_name : "a GM"));
+		break;
+	}
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
 	}
+}
+
+// ============================================================
+// Kick — end the session on the wire, then hand off to Client::Kick
+//
+// Order matters.  Message() and ForceLogout both need a live session, and
+// Client::Kick sets CLIENT_KICKED which makes Client::Process tear this object
+// down on the next pass — so everything that has to reach the client goes out
+// first.  ForceLogout only flags the session; Tick reaps it a couple of seconds
+// later, by which time EQEmu's own kicked-client path has saved the character.
+// ============================================================
+
+void TrilogyClient::Kick(const std::string& reason)
+{
+	LogInfo("[TrilogyZone] Kick: char [{}] reason [{}]", GetName(), reason);
+
+	if (m_tzs) {
+		if (!reason.empty()) {
+			Message(Chat::Red, "You have been disconnected: %s", reason.c_str());
+		}
+		m_tzs->ForceLogout(m_session_key, reason);
+	}
+
+	Client::Kick(reason);
+}
+
+// ============================================================
+// SendZoneChangeDenied — answer a zone-change request the server refused
+//
+// Every 0xa320 the client sends puts it inside eqgame.exe 0x4dbf94's blocking
+// wait: 180 seconds, no rendering, no input, until a 0xa320 comes back.  Before
+// this, `if (emu->success < 0) break;` dropped the refusal on the floor on the
+// grounds that "Trilogy has no error display for this".  It has one — it is the
+// same opcode as the approval, with the success byte cleared — and dropping the
+// packet bought a three-minute frozen client instead.
+//
+// Reachable from Client::SendZoneError, i.e. the CanEnterZone gate (min/max
+// level, min status, zone flag → ZoneNoExperience) and the expansion gate
+// (ZoneNoExpansion) in Client::Handle_OP_ZoneChange.  Both fire before
+// DoZoneSuccess, so the player is still standing in our zone with an entity and
+// a live session; nothing here tears anything down.
+//
+// On receiving success=0 the client prints its own generic line ("That zone is
+// currently down, moving you to safe point within your current zone.") and
+// relocates itself locally.  That line says nothing about WHY, and v29c renders
+// no text of its own from the error code the way later clients do, so the real
+// reason follows as a red line — after the refusal, for the reason noted below.
+// ============================================================
+
+void TrilogyClient::SendZoneChangeDenied(const ::ZoneChange_Struct* emu)
+{
+	const char* dest_zone = ZoneName(static_cast<uint32>(emu->zoneID));
+
+	LogInfo("[TrilogyZone] ZoneChange DENIED for [{}] -> zone [{}] ([{}]) success=[{}] — "
+	        "replying 0xa320 success=0",
+	        GetName(), dest_zone ? dest_zone : "unknown", emu->zoneID,
+	        static_cast<int>(emu->success));
+
+	Trilogy::structs::ZoneChange_Struct trio_zc{};
+	memset(&trio_zc, 0, sizeof(trio_zc));
+	strncpy(trio_zc.char_name, GetName(), sizeof(trio_zc.char_name) - 1);
+	if (dest_zone) {
+		strncpy(trio_zc.zone_name, dest_zone, sizeof(trio_zc.zone_name) - 1);
+	}
+	memcpy(trio_zc.zc_unknown1, kTrilogyZoneChangeTail, sizeof(kTrilogyZoneChangeTail));
+	trio_zc.zc_unknown1[kTrilogyZoneChangeSuccessIdx] = 0; // the refusal
+
+	m_tzs->SendToSession(m_session_key, 0xa320,
+	                     reinterpret_cast<const uint8_t*>(&trio_zc),
+	                     static_cast<uint32_t>(sizeof(trio_zc)));
+
+	// Reason text goes out AFTER the refusal, not before.  While the client is
+	// inside 0x4dbf94's wait it pulls one packet per iteration and frees anything
+	// whose opcode is not 0xa320 without processing it (`cmp WORD PTR [eax],di /
+	// jne 0x4dc090`), so a chat line sent first would be eaten.  Queued behind the
+	// refusal it survives: the loop consumes the 0xa320, exits, and the normal
+	// dispatcher picks the rest of the socket up.
+	switch (emu->success) {
+	case ZoningMessage::ZoneNoExpansion:
+		Message(Chat::Red, "You do not have the expansion required to enter that zone.");
+		break;
+	case ZoningMessage::ZoneNoExperience:
+		Message(Chat::Red, "You do not meet the requirements to enter that zone.");
+		break;
+	case ZoningMessage::ZoneNotReady:
+		Message(Chat::Red, "That zone is not ready. Please try again shortly.");
+		break;
+	default:
+		Message(Chat::Red, "You cannot zone there right now.");
+		break;
+	}
+
+	// Re-arm the zone-line detector.  Client::SendZoneError, unlike
+	// SendZoneCancel, leaves zone_mode at ZoneSolicited and bZoning untouched,
+	// and CheckTrilogyZoneLines refuses to run unless zone_mode ==
+	// ZoneUnsolicited — so without this the player can never use another zone
+	// line for the rest of the session.
+	zone_mode = ZoneUnsolicited;
+	bZoning   = false;
+	SetLockSavePosition(false);
 }
 
 // ============================================================

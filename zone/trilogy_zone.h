@@ -79,6 +79,14 @@ public:
 	// Public because TrilogyClient drives it from the OP_GuildsList translation.
 	void SendGuildsList(uint64_t session_key);
 
+	// End a session from the server side: OP_ForceLogOut (0xd920) followed by the
+	// EQNetwork CLOSE.  v29c's handler closes its socket and destroys its main
+	// window, so this drops the player to the desktop — it is the kick/ban
+	// primitive, not a way back to character select (CompleteCamp is that).
+	// Safe to call from inside the Client being kicked: the session is only
+	// flagged here and reaped by Tick a grace period later.
+	void ForceLogout(uint64_t session_key, const std::string& reason);
+
 	// Send a server-initiated EQNetwork CLOSE to the session.  Called immediately
 	// after the 0xa320 zone-change approval so EQNetwork cleanly nulls out this
 	// zone's connection-table entry (entry.connection = NULL) before the player
@@ -498,6 +506,16 @@ private:
 		// Camp-out tracking: set when client sends OP_Camp (0x0722); session removed after 29s.
 		bool        camping    = false;
 		std::time_t camp_start = 0;
+
+		// Non-zero once ForceLogout has put 0xd920 on the wire.  Tick's teardown
+		// sweep reaps the session a short grace period later.  The delay is not
+		// cosmetic: ForceLogout is called from inside TrilogyClient::Kick, i.e.
+		// from inside the Client object itself, and RemoveSession deletes that
+		// Client via entity_list.RemoveMob — calling it inline would be delete-this.
+		// The grace also lets EQEmu's own kicked-client path (Client::Process
+		// CLIENT_KICKED -> Save -> OnDisconnect -> MobProcess -> RemoveMob) run
+		// first, which is what actually persists the character.
+		uint64_t    force_logout_ms = 0;
 
 		// Cursor slot tracking for two-step move (unequip/equip via wire slot 0).
 		// Set to the DB slot of the item picked up; cleared after it lands.

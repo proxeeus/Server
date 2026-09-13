@@ -457,7 +457,12 @@ public:
 	inline bool InZone() const { return (client_state == CLIENT_CONNECTED || client_state == CLIENT_LINKDEAD); }
 	inline void Disconnect() { eqs->Close(); client_state = DISCONNECTED; }
 	inline bool IsLD() const { return (bool) (client_state == CLIENT_LINKDEAD); }
-	void Kick(const std::string &reason);
+	// Virtual so TrilogyClient can put the kick on the wire.  For a Daybreak
+	// client, flipping client_state is enough — the stream is closed out from
+	// under it and the client notices.  TrilogyStream::Close() is a no-op and the
+	// stream always reports ESTABLISHED, so a Trilogy client has to be told
+	// explicitly (see TrilogyClient::Kick -> TrilogyZoneServer::ForceLogout).
+	virtual void Kick(const std::string &reason);
 	void WorldKick();
 	inline uint8 GetAnon() const { return m_pp.anon; }
 	inline uint8 GetAFK() const { return AFK; }

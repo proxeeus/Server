@@ -45,6 +45,13 @@ public:
 	// If zs is null or still booting the send is deferred via pending_zone_entry.
 	void SendZoneServerInfoForChar(const char* char_name, uint32_t zone_id, ZoneServer* zs);
 
+	// Counterpart to the above for the denial arm.  Sends OP_ZoneUnavail (0x0580)
+	// to the named character's world session, which returns the v29c client to
+	// character select with "That zone is unavailable." instead of leaving it
+	// parked on the connecting screen forever.  Returns false when no Trilogy
+	// session owns that name (i.e. it is not a Trilogy client).
+	bool TellClientZoneUnavailable(const char* char_name, const char* reason);
+
 private:
 	struct Session {
 		uint16_t    gsq       = 0;
@@ -124,6 +131,7 @@ private:
 	void SendTimeOfDay(const std::string& addr, int port, Session& s);
 	void SendServerMOTD(const std::string& addr, int port, Session& s);
 	void SendZoneServerInfo(const std::string& addr, int port, Session& s, ZoneServer* zs);
+	void SendZoneUnavailable(const std::string& addr, int port, Session& s, const char* reason);
 	void CheckPendingZoneEntry(const std::string& addr, int port, Session& s);
 
 	void HandleNameApproval(const std::string& addr, int port, Session& s,
