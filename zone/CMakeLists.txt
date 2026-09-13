@@ -129,6 +129,7 @@ SET(zone_sources
     perlpacket.cpp
     petitions.cpp
     pets.cpp
+    playerbot_chat.cpp
     position.cpp
     qglobals.cpp
     queryserv.cpp
@@ -253,6 +254,7 @@ SET(zone_headers
     perlpacket.h
     petitions.h
     pets.h
+    playerbot_chat.h
     position.h
     qglobals.h
     quest_interface.h

@@ -50,6 +50,7 @@ extern volatile bool RunLoops;
 #include "command.h"
 #include "water_map.h"
 #include "bot_command.h"
+#include "playerbot_chat.h"
 #include "string_ids.h"
 
 #include "guild_mgr.h"
@@ -1211,6 +1212,13 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			sender = GetPet();
 
 		entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+		// PlayerBot chat ingress.  `this`, not `sender`: sender becomes the pet
+		// under SE_VoiceGraft and the engine wants the player who typed.
+		if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+			playerbot_chat.Overhear(this, chan_num, message, 0);
+		}
 		break;
 	}
 	case ChatChannel_Auction: { /* Auction */
@@ -1249,6 +1257,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			sender = GetPet();
 
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress (zone-local auction only).
+			if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 		break;
 	}
@@ -1296,6 +1310,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				sender = GetPet();
 
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress (zone-local OOC only).
+			if (RuleB(PlayerBotChat, Enabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 		break;
 	}
@@ -1428,6 +1448,14 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 
 		if (!is_silent) {
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress.  Everything that must never be classified
+			// -- '#' and '^' commands, the censor pass, is_silent -- has already
+			// returned or broken out above this point; "discard" is the
+			// rate-limit recursion sentinel, which would otherwise double-fire.
+			if (RuleB(PlayerBotChat, Enabled) && strcmp(targetname, "discard") != 0) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 
 		if (parse->PlayerHasQuestSub(EVENT_SAY)) {

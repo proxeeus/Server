@@ -1335,6 +1335,51 @@ void EntityList::ChannelMessage(Mob *from, uint8 chan_num, uint8 language,
 	}
 }
 
+// Bot-sourced chat on a channel that has no Mob emitter (/ooc, /auction).
+//
+// Faithful mirror of what EntityList::ChannelMessage does for a player's
+// zone-local OOC, differing in two ways:
+//
+//  1. It takes a NAME instead of a Mob*, so a PlayerBot's display name
+//     (playerbot_temp_name) survives -- GetName() carries the digits
+//     MakeNameUnique appends.
+//  2. It honors FilterOOC.  ChannelMessage has no FilterOOC case at all; only
+//     the world-relay path checks it, so on a per-zone-OOC server stock EQEmu
+//     quietly ignores a player's "/filter ooc" setting.  Mirroring that would
+//     mean a player who explicitly hid OOC still gets bot OOC, which reads as
+//     our bug regardless of where it originated.  The player path is untouched.
+void EntityList::EmitChannelLocal(const char* from_name, uint8 chan_num, uint8 language, const char* message)
+{
+	if (!from_name || !message) {
+		return;
+	}
+
+	eqFilterType filter = FilterNone;
+	if (chan_num == ChatChannel_Shout) {
+		filter = FilterShouts;
+	}
+	else if (chan_num == ChatChannel_Auction) {
+		filter = FilterAuctions;
+	}
+	else if (chan_num == ChatChannel_OOC) {
+		filter = FilterOOC;
+	}
+
+	for (auto &it : client_list) {
+		Client *client = it.second;
+		if (!client) {
+			continue;
+		}
+		if (filter != FilterNone && client->GetFilter(filter) == FilterHide) {
+			continue;
+		}
+
+		// "%s" is load-bearing: ChannelMessageSend is a varargs printf sink and
+		// bot response text is arbitrary content that may contain a '%'.
+		client->ChannelMessageSend(from_name, 0, chan_num, language, Language::MaxValue, "%s", message);
+	}
+}
+
 void EntityList::SendZoneSpawns(Client *client)
 {
 	EQApplicationPacket *app;

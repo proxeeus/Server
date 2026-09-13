@@ -424,6 +424,8 @@ bool BotDatabase::LoadBot(const uint32 bot_id, Bot*& loaded_bot)
 		loaded_bot->SetBotCasterRange(e.caster_range);
 
 		loaded_bot->SetTaunting(e.taunting == 1);
+
+		loaded_bot->SetChatEnabled(e.chat_enabled == 1);
 	}
 
 	return true;

@@ -403,6 +403,7 @@ public:
 	void	ChannelMessageFromWorld(const char* from, const char* to, uint8 chan_num, uint32 guilddbid, uint8 language, uint8 lang_skill, const char* message);
 	void	ChannelMessage(Mob* from, uint8 chan_num, uint8 language, const char* message, ...);
 	void	ChannelMessage(Mob* from, uint8 chan_num, uint8 language, uint8 lang_skill, const char* message, ...);
+	void	EmitChannelLocal(const char* from_name, uint8 chan_num, uint8 language, const char* message);
 	void	SendZoneSpawns(Client*);
 	void	SendZonePVPUpdates(Client *);
 	void	SendZoneSpawnsBulk(Client* client);

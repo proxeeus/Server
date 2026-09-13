@@ -1051,6 +1051,9 @@ int bot_command_init(void)
 		bot_command_add("botwoad", "Changes the Barbarian woad of a bot", AccountStatus::Player, bot_command_woad) ||
 		bot_command_add("casterrange", "Controls the range casters will try to stay away from a mob (if too far, they will skip spells that are out-of-range)", AccountStatus::Player, bot_command_caster_range) ||
 		bot_command_add("charm", "Attempts to have a bot charm your target", AccountStatus::Player, bot_command_charm) ||
+		bot_command_add("chat", "Toggles whether a bot answers nearby say/shout/ooc/auction chatter", AccountStatus::Player, bot_command_chat) ||
+		bot_command_add("chatall", "Sets the chat setting on every one of your spawned bots", AccountStatus::Player, bot_command_chat_all) ||
+		bot_command_add("chatstatus", "Shows the chat setting of every one of your spawned bots", AccountStatus::Player, bot_command_chat_status) ||
 		bot_command_add("circle", "Orders a Druid bot to open a magical doorway to a specified destination", AccountStatus::Player, bot_command_circle) ||
 		bot_command_add("clickitem", "Orders your targeted bot to click the item in the provided inventory slot.", AccountStatus::Player, bot_command_click_item) ||
 		bot_command_add("cure", "Orders a bot to remove any ailments", AccountStatus::Player, bot_command_cure) ||
@@ -1924,6 +1927,7 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/bot.cpp"
 #include "bot_commands/caster_range.cpp"
 #include "bot_commands/charm.cpp"
+#include "bot_commands/chat.cpp"
 #include "bot_commands/click_item.cpp"
 #include "bot_commands/cure.cpp"
 #include "bot_commands/defensive.cpp"

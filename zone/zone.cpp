@@ -43,6 +43,7 @@
 #include "object.h"
 #include "pathfinder_null.h"
 #include "petitions.h"
+#include "playerbot_chat.h"
 #include "quest_parser_collection.h"
 #include "spawn2.h"
 #include "spawngroup.h"
@@ -1219,6 +1220,10 @@ bool Zone::Init(bool is_static) {
 
 	guild_mgr.LoadGuilds();
 
+	// Zone objects are reused inside one process, so the chat engine has to
+	// drop the previous zone's cooldowns/threads and reload content here.
+	playerbot_chat.OnZoneBoot();
+
 	LogInfo("Zone booted successfully zone_id [{}] time_offset [{}]", zoneid, zone_time.getEQTimeZone());
 
 	// logging origination information
@@ -1687,6 +1692,10 @@ bool Zone::Process() {
 	}
 
 	mMovementManager->Process();
+
+	// Drains staggered bot chat emissions and runs the spontaneous scheduler.
+	// Both are internally timer-gated, so this is cheap per tick.
+	playerbot_chat.Process();
 
 	return true;
 }

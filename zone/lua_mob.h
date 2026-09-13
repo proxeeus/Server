@@ -608,6 +608,16 @@ public:
 	void AreaSpell(Lua_Mob center, uint16 spell_id, bool affect_caster, int16 resist_adjust, int max_targets);
 	void MassGroupBuff(Lua_Mob center, uint16 spell_id);
 	void MassGroupBuff(Lua_Mob center, uint16 spell_id, bool affect_caster);
+
+	// PlayerBot chat engine (see docs/PLAYERBOT_CHAT_SYSTEM.md section 10.1).
+	// Bindings, deliberately not a quest event: no event_codes.h insert and no
+	// embparser.cpp positional-array edit, so there is no risk of shifting
+	// every Perl event name.
+	bool PlayerBotChatSay(uint32 category_id);
+	bool PlayerBotChatSay(uint32 category_id, int channel);
+	void PlayerBotChatMute(bool muted);
+	bool PlayerBotChatIsMuted();
+	void PlayerBotChatBias(uint32 category_id, int percent);
 };
 
 #endif

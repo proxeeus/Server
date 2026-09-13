@@ -16,6 +16,7 @@
 #include "lua_npc.h"
 #include "lua_stat_bonuses.h"
 #include "npc.h"
+#include "playerbot_chat.h"
 
 struct SpecialAbilities { };
 
@@ -3468,6 +3469,40 @@ void Lua_Mob::MassGroupBuff(Lua_Mob center, uint16 spell_id, bool affect_caster)
 	entity_list.MassGroupBuff(self, center, spell_id, affect_caster);
 }
 
+// PlayerBot chat engine bindings.  These are plain luabind method
+// registrations -- they never touch event_codes.h, embparser.cpp, or the
+// QuestEventSubroutines positional array, so there is zero event-registration
+// risk.  Player_Bot.lua calls them from the events it already handles.
+bool Lua_Mob::PlayerBotChatSay(uint32 category_id)
+{
+	Lua_Safe_Call_Bool();
+	return playerbot_chat.ScriptSay(self, category_id, ChatChannel_Say);
+}
+
+bool Lua_Mob::PlayerBotChatSay(uint32 category_id, int channel)
+{
+	Lua_Safe_Call_Bool();
+	return playerbot_chat.ScriptSay(self, category_id, static_cast<uint8>(channel));
+}
+
+void Lua_Mob::PlayerBotChatMute(bool muted)
+{
+	Lua_Safe_Call_Void();
+	playerbot_chat.SetMuted(self, muted);
+}
+
+bool Lua_Mob::PlayerBotChatIsMuted()
+{
+	Lua_Safe_Call_Bool();
+	return playerbot_chat.IsMuted(self);
+}
+
+void Lua_Mob::PlayerBotChatBias(uint32 category_id, int percent)
+{
+	Lua_Safe_Call_Void();
+	playerbot_chat.SetBias(self, category_id, percent);
+}
+
 luabind::scope lua_register_mob() {
 	return luabind::class_<Lua_Mob, Lua_Entity>("Mob")
 	.def(luabind::constructor<>())
@@ -3478,6 +3513,11 @@ luabind::scope lua_register_mob() {
 	.def("AddToHateList", (void(Lua_Mob::*)(Lua_Mob,int64,int64,bool))&Lua_Mob::AddToHateList)
 	.def("AddToHateList", (void(Lua_Mob::*)(Lua_Mob,int64,int64,bool,bool))&Lua_Mob::AddToHateList)
 	.def("AddToHateList", (void(Lua_Mob::*)(Lua_Mob,int64,int64,bool,bool,bool))&Lua_Mob::AddToHateList)
+	.def("PlayerBotChatSay", (bool(Lua_Mob::*)(uint32))&Lua_Mob::PlayerBotChatSay)
+	.def("PlayerBotChatSay", (bool(Lua_Mob::*)(uint32,int))&Lua_Mob::PlayerBotChatSay)
+	.def("PlayerBotChatMute", &Lua_Mob::PlayerBotChatMute)
+	.def("PlayerBotChatIsMuted", &Lua_Mob::PlayerBotChatIsMuted)
+	.def("PlayerBotChatBias", &Lua_Mob::PlayerBotChatBias)
 	.def("ApplySpellBuff", (void(Lua_Mob::*)(int))&Lua_Mob::ApplySpellBuff)
 	.def("ApplySpellBuff", (void(Lua_Mob::*)(int,int))&Lua_Mob::ApplySpellBuff)
 	.def("ApplySpellBuff", (void(Lua_Mob::*)(int,int,int))&Lua_Mob::ApplySpellBuff)
