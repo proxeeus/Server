@@ -1388,6 +1388,66 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				target_name[x] = '\0';
 			}
 
+			// PlayerBot chat ingress -- BEFORE the world relay, and returning
+			// instead of falling through to it.
+			//
+			// worldserver routes a tell by character name against the online
+			// character list. A PlayerBot is an NPC and a Bot is a companion
+			// object; neither has a row there, so relaying a tell addressed to
+			// one comes back "that player is not online" and the engine never
+			// sees it. Handling it here is not an optimisation, it is the only
+			// place the target exists.
+			//
+			// FindChatBotByName matches on ChatDisplayName(), not GetName():
+			// MakeNameUnique() appends digits to a PlayerBot's entity name, so
+			// the name the player read off the mob and typed into /tell is
+			// playerbot_temp_name and is not in mob_list under that spelling.
+			if (RuleB(PlayerBotChat, ChatEnabled) && RuleB(PlayerBotChat, TellsEnabled) && !is_silent &&
+				strcmp(targetname, "discard") != 0 &&
+				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				Mob *chat_bot = playerbot_chat.FindChatBotByName(target_name);
+				if (chat_bot) {
+					// Echo the outgoing tell back to ourselves FIRST, so the
+					// player sees "You told Soandso, 'blabla'" before the reply
+					// lands 1-4s later.
+					//
+					// Normally this echo is produced by the RECEIVING zone,
+					// which bounces the packet back through world with
+					// chan_num rewritten to ChatChannel_TellEcho -- see the
+					// ServerOP_ChannelMessage handler in worldserver.cpp.
+					// Returning early to handle a bot tell locally skips that
+					// round trip, so the echo has to be issued here or the
+					// sender sees the bot's reply with no record of what they
+					// said.
+					//
+					// The v29c client gates this on the SENDER NAME matching
+					// its own, not on the channel: eqgame.exe 0x499312 compares
+					// sender (wire +0x20) against the player object, and only
+					// then tests chan_num (wire +0x42) against 7 or 0xe before
+					// printing "You told %s, '%s'". So the sender field must be
+					// our own name -- passing the bot's would render this as an
+					// incoming tell instead.
+					//
+					// 14 rather than 7 because that is what the world relay
+					// uses for an echo, and the client accepts both.
+					//
+					// "%s" is load-bearing: ChannelMessageSend is a varargs
+					// printf sink and the message is arbitrary player input.
+					ChannelMessageSend(
+						GetName(),
+						PlayerBotChatEngine::ChatDisplayName(chat_bot),
+						ChatChannel_TellEcho,
+						Language::CommonTongue,
+						Language::MaxValue,
+						"%s",
+						message
+					);
+
+					playerbot_chat.OverhearTell(this, chat_bot, message);
+					return;
+				}
+			}
+
 			if(!worldserver.SendChannelMessage(this, target_name, chan_num, 0, language, lang_skill, message))
 				Message(0, "Error: World server disconnected");
 		break;

@@ -820,6 +820,12 @@ RULE_INT(PlayerBotChat, StaggerMaxMs, 4000, "Maximum delay before a bot emits it
 RULE_INT(PlayerBotChat, ChainMaxDepth, 4, "Bot->bot->bot hops before a chat thread is force-ended")
 RULE_INT(PlayerBotChat, EarshotDistance, 200, "/say scope radius; MUST match the hardcoded 200 in EntityList::ChannelMessage")
 RULE_INT(PlayerBotChat, TrilogyQueueGuardDepth, 24, "Skip generating chat when a Trilogy session's paced text queue is this deep")
+RULE_BOOL(PlayerBotChat, TellsEnabled, true, "Let /tell to a bot be answered by the chat engine. Off relays the tell to world as before, which bounces because a bot has no character row.")
+RULE_BOOL(PlayerBotChat, SpontaneousTellsEnabled, true, "Allow bots to send UNPROMPTED tells to players. Requires TellsEnabled. Independent of SpontaneousEnabled: a cold tell is addressed to one person by name and is judged separately from ambient channel chatter.")
+RULE_INT(PlayerBotChat, SpontaneousTellTickSec, 300, "Unprompted-tell scheduler tick, per zone, in seconds. Clamped to a 15s floor.")
+RULE_INT(PlayerBotChat, SpontaneousTellChance, 25, "Percent chance an unprompted-tell tick actually sends one")
+RULE_INT(PlayerBotChat, SpontaneousTellMaxPerZonePerHr, 4, "Unprompted tells allowed per zone per hour")
+RULE_INT(PlayerBotChat, PerPlayerTellCooldownMs, 1800000, "Minimum gap between unprompted tells to the SAME player, in ms. This is the safety model for cold tells: a player cannot filter or walk away from a tell, so no one receives two inside this window no matter how many bots are in the zone.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Chat)

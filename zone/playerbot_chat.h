@@ -145,6 +145,10 @@ namespace PlayerBotChat {
 		uint64      due_ms      = 0;
 		uint8       chan_num    = 0;
 		uint8       chain_depth = 0;
+		// Tell recipient, entity id, resolved at fire time. A player can zone
+		// or log out inside the stagger window, so this is looked up rather
+		// than held as a pointer -- same reason as listener_id.
+		uint16      reply_to_id = 0;
 		std::string text;
 	};
 
@@ -187,8 +191,26 @@ public:
 	// Single ingress. chain_depth 0 == a real player spoke.
 	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0);
 
-	// Single egress. Delivers to real clients AND feeds Overhear(depth + 1).
-	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth);
+	// Single egress. Delivers to real clients AND feeds Overhear(depth + 1) --
+	// EXCEPT on ChatChannel_Tell, which is private and must never reach the
+	// overhear bus.  reply_to_id is the entity id of the client a tell is
+	// addressed to; it is meaningless (and ignored) on every other channel.
+	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id = 0);
+
+	// ---- tells --------------------------------------------------------
+	// A player sent /tell <bot>. Called from Client::ChannelMessageReceived
+	// INSTEAD of relaying to world: world routes tells by character name and a
+	// bot is not a character, so the relay would bounce as "not online".
+	//
+	// Scope is exactly `to_bot` -- a tell is 1:1, so it never fans out, and
+	// the reply is addressed back to `from` rather than broadcast.
+	void OverhearTell(Mob *from, Mob *to_bot, const std::string &msg);
+
+	// Resolve a /tell target name to a chat-capable bot in this zone.
+	// Compares ChatDisplayName(), NOT GetName(): MakeNameUnique() appends
+	// digits to a PlayerBot's entity name, so entity_list.GetMob(name) misses
+	// the name the player actually sees and typed.  Case-insensitive.
+	Mob *FindChatBotByName(const std::string &name);
 
 	// ---- scripting surface (lua_mob.cpp bindings) ---------------------
 	bool ScriptSay(
@@ -285,16 +307,31 @@ private:
 		const std::map<std::string, std::string> &captures
 	);
 
+	// tell_target is the single listener for ChatChannel_Tell and is null on
+	// every other channel, where scope comes from CollectScope as before.
 	void DispatchToScope(
 		Mob               *speaker,
 		uint8              chan_num,
 		const std::string &msg,
-		uint8              chain_depth
+		uint8              chain_depth,
+		Mob               *tell_target = nullptr
 	);
 
-	void CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out);
-	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text);
+	void CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out, Mob *tell_target = nullptr);
+	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id);
 	void SpontaneousTick(uint64 now_ms);
+
+	// Unprompted bot -> player tell. Separate from SpontaneousTick because the
+	// target is a CLIENT rather than a category scope, and because it carries
+	// its own per-player cooldown: the cost of being wrong here lands on one
+	// person's screen repeatedly, not on a channel nobody has to read.
+	void SpontaneousTellTick(uint64 now_ms);
+
+	// True when the category holds at least one row that asked for channel 7.
+	// Gates which categories may cold-tell at all, so a /say opener pool is
+	// never drafted into whispering strangers.
+	bool CategoryHasTellRows(const PlayerBotChat::Category &cat) const;
+
 	void ExpireTransients(uint64 now_ms);
 
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
@@ -329,10 +366,19 @@ private:
 	uint64                                                   m_next_transient_sweep_ms = 0;
 	bool                                                     m_all_muted               = false;
 
+	// Unprompted tells. Keyed by LOWERCASED CHARACTER NAME, not entity id:
+	// entity ids are recycled, and a player who zones out and back in inside
+	// the cooldown would otherwise look like a fresh target.
+	std::unordered_map<std::string, uint64>                  m_last_tell_to_player;
+	uint64                                                   m_next_spontaneous_tell_ms = 0;
+	uint32                                                   m_tells_this_hour          = 0;
+
 	// ---- stats --------------------------------------------------------
 	uint64                                  m_stat_heard   = 0;
 	uint64                                  m_stat_emitted = 0;
 	uint64                                  m_stat_openers = 0;
+	uint64                                  m_stat_tells_in  = 0;   // /tell received by a bot
+	uint64                                  m_stat_tells_out = 0;   // unprompted bot -> player
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<std::string, uint64> m_stat_talkers;
