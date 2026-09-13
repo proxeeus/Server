@@ -549,6 +549,15 @@ public:
 
 	bool GetAltOutOfCombatBehavior() const { return _altoutofcombatbehavior;}
 	bool GetShowHelm() const { return _showhelm; }
+
+	// PlayerBot chat engine opt-in (bot_data.chat_enabled).  Off by default:
+	// existing owners do not expect their tank to heckle strangers.
+	bool GetChatEnabled() const { return m_chat_enabled; }
+	void SetChatEnabled(bool v) { m_chat_enabled = v; }
+	// Thin trampoline from the chat engine.  After the opt-in gate the engine
+	// treats Bots and PlayerBots identically, so there is nothing to override.
+	void OnChatHeard(Mob* speaker, uint8 channel, const std::string& msg);
+
 	inline int32	GetSTR()	const override { return STR; }
 	inline int32	GetSTA()	const override { return STA; }
 	inline int32	GetDEX()	const override { return DEX; }
@@ -947,6 +956,7 @@ private:
 	InspectMessage_Struct _botInspectMessage;
 	bool _altoutofcombatbehavior;
 	bool _showhelm;
+	bool m_chat_enabled = false;
 	bool _pauseAI;
 	uint8 _stopMeleeLevel;
 	int m_expansion_bitmask;

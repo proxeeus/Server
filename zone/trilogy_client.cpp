@@ -3119,7 +3119,19 @@ void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
 	memcpy(buf + sizeof(Trilogy::structs::ChannelMessage_Struct),
 	       msg_str.data(), msg_str.size());
 
-	m_tzs->SendToSession(m_session_key, 0x0721, buf, out_size);
+	// Paced, not sent raw.  Chan-8 used to be only real players typing, bounded
+	// by RuleI(Chat, MaxMessagesBeforeKick) and by human hands.  The PlayerBot
+	// chat engine removes both limits -- EntityList::EmitChannelLocal puts bot
+	// /ooc and /auction on ChannelMessageSend -> 0x0721 -- and a burst of bot
+	// lines is exactly the shape that caused the silent-disconnect Trigger B.
+	// QueueTextPacket shares the same token bucket, ordering and stale-drop as
+	// every other text opcode, which is the invariant the pacing layer exists
+	// to hold.  Side effect, deliberately accepted: under overload
+	// DrainPendingText discards packets older than kMaxCombatQueueAgeMs, so a
+	// bot line can be dropped for a loaded client.  A dropped flavor line beats
+	// a frozen client; PlayerBotChatEngine::ZoneTextPressureHigh() exists so it
+	// rarely gets that far.
+	QueueTextPacket(0x0721, buf, out_size);
 	delete[] buf;
 }
 

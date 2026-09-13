@@ -1362,11 +1362,32 @@ bool Bot::Save()
 	database.botdb.SaveTimers(this);
 	database.botdb.SaveStance(this);
 	BotDataRepository::SetTaunting(database, GetBotID(), IsTaunting());
+	BotDataRepository::SetChatEnabled(database, GetBotID(), GetChatEnabled());
 
 	if (!SavePet())
 		bot_owner->Message(Chat::White, "Failed to save pet for '%s'", GetCleanName());
 
 	return true;
+}
+
+// Called by PlayerBotChatEngine for every chat-enabled Bot that is in scope for
+// a heard message, before the engine rolls a response for it.  Bots are a C++
+// subsystem -- global_bot.pl is a seven-line commented-out stub -- so this, not
+// a quest event, is their extension point.  The stock body only logs; after the
+// opt-in gate the engine treats Bots and PlayerBots identically.
+void Bot::OnChatHeard(Mob* speaker, uint8 channel, const std::string& msg)
+{
+	if (!RuleB(PlayerBotChat, LogDispatch)) {
+		return;
+	}
+
+	LogInfo(
+		"[pbchat] bot [{}] heard chan [{}] from [{}]: {}",
+		GetCleanName(),
+		channel,
+		speaker ? speaker->GetCleanName() : "?",
+		msg
+	);
 }
 
 bool Bot::DeleteBot()

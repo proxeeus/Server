@@ -95,6 +95,17 @@ public:
 		);
 		return results.Success();
 	}
+
+	static bool SetChatEnabled(Database& db, uint32 bot_id, bool chat_enabled) {
+		auto results = db.QueryDatabase(
+			fmt::format(
+				"UPDATE `bot_data` SET `chat_enabled` = {} WHERE `bot_id` = {}",
+				chat_enabled ? 1 : 0,
+				bot_id
+			)
+		);
+		return results.Success();
+	}
 };
 
 #endif //EQEMU_BOT_DATA_REPOSITORY_H

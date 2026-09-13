@@ -1,0 +1,343 @@
+#ifndef EQEMU_PLAYERBOT_CHAT_H
+#define EQEMU_PLAYERBOT_CHAT_H
+
+/*
+ * PlayerBot / Bot reactive + spontaneous chat engine.
+ *
+ * Spec: docs/PLAYERBOT_CHAT_SYSTEM.md (read it before changing anything here;
+ * several non-obvious decisions in this file are only explained there).
+ *
+ * One engine, two consumers:
+ *   - PlayerBots : NPCs whose npctype_id == RuleI(PlayerBots, PlayerBotId)
+ *   - EQEmu Bots : the C++ Bot class, opt-in via bot_data.chat_enabled
+ *
+ * The engine owns its own fan-out bus. Nothing in stock EQEmu delivers chat to
+ * a Mob -- EntityList::ChannelMessage and EntityList::MessageCloseString both
+ * iterate client_list only -- so Emit() explicitly calls Overhear() with an
+ * incremented chain depth. That, plus ChainMaxDepth, is the entire bot-to-bot
+ * mechanism.
+ */
+
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <regex>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "../common/types.h"
+
+class Client;
+class Mob;
+
+namespace PlayerBotChat {
+
+	enum PatternType : uint8 {
+		PT_Keyword = 0,
+		PT_Phrase  = 1,
+		PT_Regex   = 2,
+		// Matches any non-empty message. Exists so a catch-all "I have no idea
+		// what you just said" category can be authored without a cryptic
+		// `pattern='.'  type='regex'` row. Give such a category score 1 and
+		// min_score 1 so it is always a candidate but always loses to a real
+		// match, which scores 8 or more.
+		PT_Always  = 3
+	};
+
+	enum CategoryScope : uint8 {
+		CS_Reactive    = 0,
+		CS_Spontaneous = 1,
+		CS_Both        = 2
+	};
+
+	// Why a response was not emitted. Surfaced by "#pbchat stats"; the whole
+	// point is that "the bots went quiet" is diagnosable without a rebuild.
+	enum DropReason : uint8 {
+		DR_Disabled = 0,
+		DR_SelfEcho,
+		DR_ChainCap,
+		DR_NoCategory,
+		DR_Cooldown,
+		DR_CategoryCooldown,
+		DR_NoResponseRow,
+		DR_Muted,
+		DR_IgnoredSpeaker,
+		DR_TrilogyPressure,
+		DR_CapPerMessage,
+		DR_MAX
+	};
+
+	struct Trigger {
+		uint32      id           = 0;
+		uint32      category_id  = 0;
+		std::string pattern;                 // lowercased for keyword / phrase
+		uint8       pattern_type = PT_Keyword;
+		bool        is_negation  = false;
+		int16       score        = 10;
+		std::string capture_name;
+		std::regex  compiled;                // valid only when pattern_type == PT_Regex && usable
+		bool        usable       = true;     // false => row failed to compile, skipped + reported
+	};
+
+	struct Response {
+		uint32      id            = 0;
+		uint32      category_id   = 0;
+		std::string text;
+		uint16      weight        = 100;
+		uint32      class_mask    = 0xFFFF;  // GetPlayerClassBit() values, NOT (1 << class)
+		uint32      race_mask     = 0xFFFF;  // GetPlayerRaceBit() values, NOT (1 << race)
+		int8        alignment     = 0;       // -1 evil, 0 any, 1 good
+		uint8       level_min     = 1;
+		uint8       level_max     = 60;
+		std::string tone;
+		int8        reply_channel = -1;      // -1 == same channel as the trigger
+		bool        enabled       = true;
+
+		// playerbot_chat_response_context (optional row)
+		bool                     has_context             = false;
+		std::vector<std::string> requires_zone;          // lowercased short_names
+		std::string              requires_time_of_day;   // "" == any
+		bool                     has_faction             = false;
+		int32                    requires_faction        = 0;
+		uint32                   per_speaker_cooldown_ms = 0;
+	};
+
+	struct Category {
+		uint32      id          = 0;
+		std::string name;
+		uint8       priority    = 100;
+		uint32      cooldown_ms = 30000;
+		int16       min_score   = 10;
+		uint8       scope       = CS_Reactive;
+		bool        enabled     = true;
+
+		std::vector<uint32> trigger_idx;     // indexes into PlayerBotChatEngine::m_triggers
+		std::vector<uint32> response_idx;    // indexes into PlayerBotChatEngine::m_responses
+	};
+
+	struct ListenerState {
+		uint64                             last_msg_time_ms    = 0;
+		std::unordered_map<uint32, uint64> category_last_fire;
+		uint32                             paired_speaker_id   = 0;
+		uint64                             pair_expiry_ms      = 0;
+		uint8                              pair_exchange_count = 0;
+		// key = (uint64(speaker_entity_id) << 32) | category_id -- 32, not 16:
+		// category_id is INT UNSIGNED and goes sparse after content churn.
+		std::unordered_map<uint64, uint64> per_speaker_cat_last;
+		std::unordered_map<uint32, int>    category_bias;      // percent, from the Lua Bias binding
+		bool                               muted = false;
+	};
+
+	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
+	// -- an opener sets no conversation lock, so a decrement-on-unlock counter
+	// leaks and the zone goes permanently silent after N openers.
+	struct ChatThread {
+		uint32 id         = 0;
+		uint64 expires_ms = 0;
+		uint8  depth      = 0;
+	};
+
+	struct PendingEmission {
+		uint16      listener_id = 0;     // resolved through entity_list at fire time
+		uint64      due_ms      = 0;
+		uint8       chan_num    = 0;
+		uint8       chain_depth = 0;
+		std::string text;
+	};
+
+	// "#pbchat test" output -- classifier + picker + substitutor with no
+	// client, no bot and no dispatch attached.
+	struct TestResult {
+		bool                                       classified         = false;
+		uint32                                     category_id        = 0;
+		std::string                                category_name;
+		int32                                      score              = 0;
+		std::vector<std::pair<std::string, int32>> score_breakdown;   // category name -> score
+		std::vector<std::string>                   negated;           // categories killed by a negation
+		std::map<std::string, std::string>         captures;
+		std::string                                sample_response_raw;   // template, as stored
+		std::string                                sample_response;       // after substitution
+		uint32                                     sample_response_id = 0;
+		std::string                                note;
+	};
+
+} // namespace PlayerBotChat
+
+class PlayerBotChatEngine {
+public:
+	PlayerBotChatEngine() = default;
+
+	// ---- lifecycle ----------------------------------------------------
+	// Called at the end of Zone::Init. Clears per-zone state (zone objects are
+	// reused inside one process), loads content, and warns about config that
+	// would silently break ingress.
+	void OnZoneBoot();
+
+	// Called every Zone::Process(). Drains staggered emissions and runs the
+	// spontaneous scheduler tick.
+	void Process();
+
+	// "#pbchat reload" -- flush cache, re-read all four tables, recompile regex.
+	bool Reload(std::string &summary_out);
+
+	// ---- the bus ------------------------------------------------------
+	// Single ingress. chain_depth 0 == a real player spoke.
+	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0);
+
+	// Single egress. Delivers to real clients AND feeds Overhear(depth + 1).
+	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth);
+
+	// ---- scripting surface (lua_mob.cpp bindings) ---------------------
+	bool ScriptSay(
+		Mob               *talker,
+		uint32             category_id,
+		uint8              chan_num,
+		const std::string &target_name = ""
+	);
+	// By name, because category ids are AUTO_INCREMENT and a script must not
+	// hardcode them. Returns false (and logs) if the name is unknown.
+	// target_name, when given, resolves {target} in the chosen response -- for
+	// lines like "Incoming {target}! Be ready!" driven from event_combat.
+	bool ScriptSayNamed(
+		Mob               *talker,
+		const std::string &category_name,
+		uint8              chan_num,
+		const std::string &target_name = ""
+	);
+	// -1 when the name is not a loaded category.
+	int32 FindCategoryId(const std::string &category_name) const;
+	void SetMuted(Mob *listener, bool muted);
+	bool IsMuted(Mob *listener);
+	void SetBias(Mob *listener, uint32 category_id, int percent);
+
+	// ---- admin (#pbchat) ----------------------------------------------
+	// Dry-run classifier + picker + substitutor: no mob, no dispatch, no
+	// client on the receiving end.  `as_speaker` is only used to resolve
+	// {speaker}* variables in the preview; pass the invoking GM.
+	bool TestClassify(
+		const std::string         &msg,
+		uint8                      class_id,
+		uint16                     race_id,
+		uint8                      level,
+		Mob                       *as_speaker,
+		PlayerBotChat::TestResult &out
+	);
+	void DumpCategories(Client *to);
+	void DumpStats(Client *to);
+	void DumpThreads(Client *to);
+	void ResetStats();
+	void MuteAll(bool muted);
+	bool MuteEntity(uint16 entity_id, bool muted);
+	void IgnoreSpeaker(const std::string &name, bool ignored);
+	void ClearIgnores();
+	std::vector<std::string> GetIgnoredSpeakers() const;
+
+	bool   IsLoaded() const { return m_loaded; }
+	size_t CategoryCount() const { return m_categories.size(); }
+
+	// Cheap zone-level back-pressure read. True when any Trilogy session in
+	// this zone has a deep paced-text queue -- skip generating chat rather than
+	// let DrainPendingText stale-drop combat text.
+	bool ZoneTextPressureHigh() const;
+
+	// Display name for chat. For a PlayerBot this is playerbot_temp_name
+	// (MakeNameUnique appends digits to the entity name); never GetName().
+	static const char *ChatDisplayName(Mob *m);
+
+	static bool IsPlayerBot(Mob *m);
+	static bool IsChatBot(Mob *m);          // PB, or Bot with chat_enabled
+
+private:
+	struct Candidate {
+		Mob                           *listener = nullptr;
+		uint32                         category = 0;
+		const PlayerBotChat::Response *response = nullptr;
+		std::string                    text;
+		uint8                          channel  = 0;
+		int64                          rank     = 0;
+		bool                           locked   = false;
+	};
+
+	bool LoadContent(std::string &summary_out);
+	void EnsureLoaded();
+
+	int32 ClassifyMessage(
+		const std::string                  &msg,
+		std::map<std::string, std::string> &captures,
+		PlayerBotChat::TestResult          *debug_out = nullptr
+	);
+
+	const PlayerBotChat::Response *PickResponse(
+		uint32  category_id,
+		Mob    *listener,
+		Mob    *speaker,
+		uint8   channel,
+		uint64  now_ms
+	);
+
+	std::string Substitute(
+		const std::string                        &tmpl,
+		Mob                                      *listener,
+		Mob                                      *speaker,
+		const std::map<std::string, std::string> &captures
+	);
+
+	void DispatchToScope(
+		Mob               *speaker,
+		uint8              chan_num,
+		const std::string &msg,
+		uint8              chain_depth
+	);
+
+	void CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out);
+	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text);
+	void SpontaneousTick(uint64 now_ms);
+	void ExpireTransients(uint64 now_ms);
+
+	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
+
+	static uint64      NowMs();
+	static uint64      EchoHash(const char *name, const std::string &text);
+	static const char *TimeOfDayString();
+	static bool        IsValidChannel(int ch);
+	static const char *DropReasonName(uint8 r);
+
+	// ---- content cache ------------------------------------------------
+	bool                                 m_loaded      = false;
+	bool                                 m_load_failed = false;
+	std::vector<PlayerBotChat::Trigger>  m_triggers;
+	std::vector<PlayerBotChat::Response> m_responses;
+	std::vector<PlayerBotChat::Category> m_categories;
+	std::unordered_map<uint32, uint32>   m_category_by_id;   // category_id -> index into m_categories
+	std::vector<uint32>                  m_bad_regex_rows;   // trigger ids that failed to compile
+	std::vector<uint32>                  m_bad_channel_rows; // response ids with a bogus reply_channel
+
+	// ---- runtime state ------------------------------------------------
+	std::unordered_map<uint16, PlayerBotChat::ListenerState> m_listener_state;
+	std::unordered_map<uint64, uint64>                       m_recent_self_emissions; // hash -> expiry ms
+	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
+	std::deque<PlayerBotChat::PendingEmission>               m_pending;
+	std::vector<PlayerBotChat::ChatThread>                   m_threads;
+	uint32                                                   m_next_thread_id          = 1;
+	uint32                                                   m_opens_this_hour         = 0;
+	uint64                                                   m_hour_window_start_ms    = 0;
+	uint64                                                   m_next_spontaneous_ms     = 0;
+	uint64                                                   m_next_expire_ms          = 0;
+	uint64                                                   m_next_transient_sweep_ms = 0;
+	bool                                                     m_all_muted               = false;
+
+	// ---- stats --------------------------------------------------------
+	uint64                                  m_stat_heard   = 0;
+	uint64                                  m_stat_emitted = 0;
+	uint64                                  m_stat_openers = 0;
+	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
+	std::unordered_map<uint32, uint64>      m_stat_category_hits;
+	std::unordered_map<std::string, uint64> m_stat_talkers;
+};
+
+extern PlayerBotChatEngine playerbot_chat;
+
+#endif // EQEMU_PLAYERBOT_CHAT_H

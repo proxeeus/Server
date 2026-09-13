@@ -50,6 +50,7 @@ extern volatile bool RunLoops;
 #include "command.h"
 #include "water_map.h"
 #include "bot_command.h"
+#include "playerbot_chat.h"
 #include "string_ids.h"
 
 #include "guild_mgr.h"
@@ -1186,15 +1187,32 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 		break;
 	}
 	case ChatChannel_Group: { /* Group Chat */
+		// PlayerBot chat ingress.  Scoped by group membership rather than by
+		// distance, so a grouped bot answers from anywhere in the zone.
+		// Repeated in both branches on purpose: the raid path breaks out of the
+		// case, so a single hook after it never runs for a raided player -- and
+		// a raided player is exactly who has bots grouped up.
+		const bool pbchat_ok =
+			RuleB(PlayerBotChat, ChatEnabled) && !is_silent &&
+			strcmp(targetname, "discard") != 0 &&
+			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR;
+
 		Raid* raid = entity_list.GetRaidByClient(this);
 		if(raid) {
 			raid->RaidGroupSay((const char*) message, this, language, lang_skill);
+			if (pbchat_ok) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 			break;
 		}
 
 		Group* group = GetGroup();
 		if(group != nullptr) {
 			group->GroupMessage(this,language,lang_skill,(const char*) message);
+		}
+
+		if (pbchat_ok) {
+			playerbot_chat.Overhear(this, chan_num, message, 0);
 		}
 		break;
 	}
@@ -1211,6 +1229,13 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			sender = GetPet();
 
 		entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+		// PlayerBot chat ingress.  `this`, not `sender`: sender becomes the pet
+		// under SE_VoiceGraft and the engine wants the player who typed.
+		if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+			playerbot_chat.Overhear(this, chan_num, message, 0);
+		}
 		break;
 	}
 	case ChatChannel_Auction: { /* Auction */
@@ -1249,6 +1274,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			sender = GetPet();
 
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress (zone-local auction only).
+			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 		break;
 	}
@@ -1296,6 +1327,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				sender = GetPet();
 
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress (zone-local OOC only).
+			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
+				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 		break;
 	}
@@ -1428,6 +1465,14 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 
 		if (!is_silent) {
 			entity_list.ChannelMessage(sender, chan_num, language, lang_skill, message);
+
+			// PlayerBot chat ingress.  Everything that must never be classified
+			// -- '#' and '^' commands, the censor pass, is_silent -- has already
+			// returned or broken out above this point; "discard" is the
+			// rate-limit recursion sentinel, which would otherwise double-fire.
+			if (RuleB(PlayerBotChat, ChatEnabled) && strcmp(targetname, "discard") != 0) {
+				playerbot_chat.Overhear(this, chan_num, message, 0);
+			}
 		}
 
 		if (parse->PlayerHasQuestSub(EVENT_SAY)) {

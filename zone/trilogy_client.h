@@ -270,6 +270,14 @@ public:
 	// iteration.  See m_pending_text_q comment in the header for why.
 	void DrainPendingText();
 
+	// Depth of the paced text/combat queue.  Read by
+	// PlayerBotChatEngine::ZoneTextPressureHigh() so bot chat is not GENERATED
+	// into a session that is already backed up -- skipping generation preserves
+	// the queue for combat text, faction messages and tells, which is what a
+	// player actually needs.  Measure pressure, not Trilogy population: five
+	// idle Trilogy clients are harmless and one mid-raid client is not.
+	size_t PendingTextDepth() const { return m_pending_combat_q.size(); }
+
 	// ---- Merchant / vendor window state ----
 	// One open merchant window's contents, keyed by the window slot the client
 	// echoes back on buy.  Populated as OP_ItemPacket(ItemPacketMerchant) packets
