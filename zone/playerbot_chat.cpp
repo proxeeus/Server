@@ -132,7 +132,7 @@ bool PlayerBotChatEngine::IsValidChannel(int ch)
 {
 	return ch == ChatChannel_Say || ch == ChatChannel_Shout ||
 	       ch == ChatChannel_OOC || ch == ChatChannel_Auction ||
-	       ch == ChatChannel_Group;
+	       ch == ChatChannel_Group || ch == ChatChannel_Tell;
 }
 
 const char *PlayerBotChatEngine::DropReasonName(uint8 r)
@@ -194,6 +194,35 @@ const char *PlayerBotChatEngine::ChatDisplayName(Mob *m)
 bool PlayerBotChatEngine::IsPlayerBot(Mob *m)
 {
 	return m && m->IsNPC() && m->GetNPCTypeID() == static_cast<uint32>(RuleI(PlayerBots, PlayerBotId));
+}
+
+Mob *PlayerBotChatEngine::FindChatBotByName(const std::string &name)
+{
+	if (name.empty()) {
+		return nullptr;
+	}
+
+	// Deliberately NOT entity_list.GetMob(name).  MakeNameUnique() appends
+	// digits to a PlayerBot's entity name, so the name in the /tell -- the one
+	// the player read off the mob -- is playerbot_temp_name and does not exist
+	// in mob_list.  ChatDisplayName() is the only name the two agree on.
+	const std::string want = Strings::ToLower(name);
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		Mob *m = e.second;
+		if (m && IsPlayerBot(m) && Strings::ToLower(ChatDisplayName(m)) == want) {
+			return m;
+		}
+	}
+
+	for (auto *b : entity_list.GetBotList()) {
+		Mob *m = static_cast<Mob *>(b);
+		if (m && IsChatBot(m) && Strings::ToLower(ChatDisplayName(m)) == want) {
+			return m;
+		}
+	}
+
+	return nullptr;
 }
 
 bool PlayerBotChatEngine::IsChatBot(Mob *m)
@@ -482,6 +511,9 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_opens_this_hour         = 0;
 	m_hour_window_start_ms    = NowMs();
 	m_next_spontaneous_ms     = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTickSec)) * 1000);
+	m_last_tell_to_player.clear();
+	m_tells_this_hour         = 0;
+	m_next_spontaneous_tell_ms = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTellTickSec)) * 1000);
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -537,7 +569,7 @@ void PlayerBotChatEngine::Process()
 			if (!talker || !IsChatBot(talker)) {
 				continue;
 			}
-			Emit(talker, e.chan_num, e.text, e.chain_depth);
+			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id);
 		}
 	}
 
@@ -548,6 +580,18 @@ void PlayerBotChatEngine::Process()
 		}
 		m_next_spontaneous_ms = now + (static_cast<uint64>(tick_sec) * 1000);
 		SpontaneousTick(now);
+	}
+
+	// Deliberately its own clock, an order of magnitude slower than the
+	// opener tick.  An unwanted line in /ooc is scenery; an unwanted tell is
+	// addressed to you by name and demands a decision about whether to answer.
+	if (now >= m_next_spontaneous_tell_ms) {
+		uint32 tell_tick_sec = static_cast<uint32>(RuleI(PlayerBotChat, SpontaneousTellTickSec));
+		if (tell_tick_sec < 15) {
+			tell_tick_sec = 15;
+		}
+		m_next_spontaneous_tell_ms = now + (static_cast<uint64>(tell_tick_sec) * 1000);
+		SpontaneousTellTick(now);
 	}
 }
 
@@ -584,6 +628,17 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 	// cooldown or conversation lock.
 	for (auto it = m_listener_state.begin(); it != m_listener_state.end();) {
 		it = entity_list.GetMob(it->first) ? std::next(it) : m_listener_state.erase(it);
+	}
+
+	// Tell cooldowns are keyed by character NAME, deliberately -- they have to
+	// survive a player zoning out and back in, which an entity id does not.
+	// The cost is that nothing removes them when a player leaves for good, so
+	// a long-lived zone process would accumulate one entry per player who ever
+	// stood in it. An entry past its own cooldown can no longer gate anything,
+	// so it is simply dropped.
+	const uint64 player_cd = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, PerPlayerTellCooldownMs)));
+	for (auto it = m_last_tell_to_player.begin(); it != m_last_tell_to_player.end();) {
+		it = (now_ms - it->second >= player_cd) ? m_last_tell_to_player.erase(it) : std::next(it);
 	}
 }
 
@@ -979,10 +1034,20 @@ std::string PlayerBotChatEngine::Substitute(
 // scope resolution
 // ============================================================
 
-void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out)
+void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out, Mob *tell_target)
 {
 	out.clear();
 	if (!speaker) {
+		return;
+	}
+
+	// A tell is 1:1. The scope is the addressed bot and nothing else -- no
+	// distance test, no zone sweep, and emphatically no fan-out: a private
+	// message must not become something the rest of the zone can react to.
+	if (chan_num == ChatChannel_Tell) {
+		if (tell_target && tell_target != speaker && IsChatBot(tell_target)) {
+			out.push_back(tell_target);
+		}
 		return;
 	}
 
@@ -1105,11 +1170,37 @@ void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::stri
 	DispatchToScope(speaker, chan_num, msg, chain_depth);
 }
 
+void PlayerBotChatEngine::OverhearTell(Mob *from, Mob *to_bot, const std::string &msg)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !RuleB(PlayerBotChat, TellsEnabled)) {
+		++m_stat_drops[DR_Disabled];
+		return;
+	}
+	if (!from || !to_bot || !zone || msg.empty() || !IsChatBot(to_bot)) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	++m_stat_heard;
+	++m_stat_tells_in;
+
+	// chain_depth 0: a human typed this. That earns the PlayerReplyCooldownMs
+	// floor and the quartered category cooldown, which is exactly right for a
+	// tell -- someone who whispers a bot directly is owed an answer, and a
+	// 1:1 channel cannot spam anybody but the person who started it.
+	DispatchToScope(from, ChatChannel_Tell, msg, 0, to_bot);
+}
+
 void PlayerBotChatEngine::DispatchToScope(
 	Mob               *speaker,
 	uint8              chan_num,
 	const std::string &msg,
-	uint8              chain_depth
+	uint8              chain_depth,
+	Mob               *tell_target
 )
 {
 	const uint64 now = NowMs();
@@ -1171,10 +1262,15 @@ void PlayerBotChatEngine::DispatchToScope(
 	const Category &cat = m_categories[cat_it->second];
 
 	std::vector<Mob *> scope;
-	CollectScope(speaker, chan_num, scope);
+	CollectScope(speaker, chan_num, scope, tell_target);
 	if (scope.empty()) {
 		return;
 	}
+
+	// Only a real client can be told back. A bot tell-chain is not a thing
+	// this engine builds: bots address players, never each other, on 7.
+	const uint16 reply_to_id =
+		(chan_num == ChatChannel_Tell && speaker->IsClient()) ? speaker->GetID() : 0;
 
 	const uint32 base_cooldown = static_cast<uint32>(RuleI(PlayerBotChat, PerListenerCooldownMs));
 
@@ -1254,6 +1350,16 @@ void PlayerBotChatEngine::DispatchToScope(
 		c.channel  = (resp->reply_channel == -1)
 			? chan_num
 			: static_cast<uint8>(resp->reply_channel);
+
+		// A tell is answered as a tell, always. reply_channel is a CONTENT
+		// decision and content has no idea it was whispered to -- a row
+		// carrying reply_channel 4 would otherwise make a bot answer a private
+		// message on /auction, quoting a player who expected a whisper. The
+		// row-level override is right for every broadcast channel and wrong
+		// for this one, so 7 wins outright.
+		if (chan_num == ChatChannel_Tell) {
+			c.channel = ChatChannel_Tell;
+		}
 		c.locked   = locked_to_speaker;
 
 		// Ranking key, most significant field first:
@@ -1310,6 +1416,7 @@ void PlayerBotChatEngine::DispatchToScope(
 		pe.listener_id = c.listener->GetID();
 		pe.due_ms      = now + delay;
 		pe.chan_num    = c.channel;
+		pe.reply_to_id = reply_to_id;
 		// Carry the depth of the message being ANSWERED, not depth+1: Emit()
 		// does the increment when it feeds the bus.  Incrementing in both
 		// places halves the effective ChainMaxDepth (a cap of 4 would allow
@@ -1360,7 +1467,7 @@ void PlayerBotChatEngine::DispatchToScope(
 	}
 }
 
-void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth)
+void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id)
 {
 	if (!talker || text.empty() || !IsValidChannel(chan_num)) {
 		return;
@@ -1370,17 +1477,25 @@ void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &t
 	// or the speaker reacts to its own line.
 	m_recent_self_emissions[EchoHash(ChatDisplayName(talker), text)] = NowMs() + 10000;
 
-	EmitChannel(talker, chan_num, text);
+	EmitChannel(talker, chan_num, text, reply_to_id);
 
 	++m_stat_emitted;
 	++m_stat_talkers[ChatDisplayName(talker)];
+
+	// A tell is private and stops here.  Feeding it to the bus would let every
+	// bot in the zone classify and react to a message addressed to one of
+	// them -- the chat equivalent of reading someone's mail aloud, and a way
+	// for a whispered word to come back out of a stranger's mouth in /ooc.
+	if (chan_num == ChatChannel_Tell) {
+		return;
+	}
 
 	// Feed the bus.  This is the entire bot-to-bot mechanism: explicit,
 	// bounded by ChainMaxDepth, and testable with no client attached.
 	Overhear(talker, chan_num, text, static_cast<uint8>(chain_depth + 1));
 }
 
-void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::string &text)
+void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id)
 {
 	const char *name = ChatDisplayName(talker);
 
@@ -1411,6 +1526,35 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 		case ChatChannel_Auction:
 			entity_list.EmitChannelLocal(name, chan_num, Language::CommonTongue, text.c_str());
 			break;
+
+		case ChatChannel_Tell: {
+			// Resolved now, not held: the recipient can zone or camp inside
+			// the 1-4s stagger window between queueing and firing.
+			Client *to = entity_list.GetClientByID(reply_to_id);
+			if (!to || !to->Connected()) {
+				break;
+			}
+
+			// Built here rather than through world.  worldserver routes tells
+			// by character name and a bot has no character row, so the relay
+			// would come back "not online"; ChannelMessageSend writes
+			// OP_ChannelMessage straight to this one client.  On Trilogy that
+			// is translated to 0x0721 with chan_num carried through, on the
+			// same paced path that already carries bot /ooc.
+			//
+			// "%s" is load-bearing: ChannelMessageSend is a varargs printf
+			// sink and response text is arbitrary content that may contain '%'.
+			to->ChannelMessageSend(
+				name,
+				to->GetName(),
+				ChatChannel_Tell,
+				Language::CommonTongue,
+				Language::MaxValue,
+				"%s",
+				text.c_str()
+			);
+			break;
+		}
 
 		case ChatChannel_Group: {
 			// RaidGroupSay resolves the group from the sender NAME and bails if
@@ -1592,6 +1736,196 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 }
 
 // ============================================================
+// unprompted bot -> player tells
+// ============================================================
+
+void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !RuleB(PlayerBotChat, TellsEnabled) ||
+	    !RuleB(PlayerBotChat, SpontaneousTellsEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	if (now_ms - m_hour_window_start_ms > 3600000) {
+		m_hour_window_start_ms = now_ms;
+		m_opens_this_hour      = 0;
+		m_tells_this_hour      = 0;
+	}
+
+	// Clamp at zero first: a negative rule cast to unsigned becomes enormous
+	// and turns a cap into "unlimited", the opposite of what -1 means to an
+	// operator. Same trap as SpontaneousMaxPerZonePerHr.
+	const uint32 max_per_hour = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, SpontaneousTellMaxPerZonePerHr)));
+	if (m_tells_this_hour >= max_per_hour) {
+		return;
+	}
+
+	if (ZoneTextPressureHigh()) {
+		++m_stat_drops[DR_TrilogyPressure];
+		return;
+	}
+
+	// Candidate recipients: connected players who are off their personal tell
+	// cooldown.  The cooldown is the whole safety model here -- a bot tell is
+	// the only thing this engine produces that a player cannot walk away from
+	// or filter, so nobody gets two inside PerPlayerTellCooldownMs no matter
+	// how many bots are in the zone.
+	const uint64 player_cd = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, PerPlayerTellCooldownMs)));
+
+	std::vector<Client *> targets;
+	for (const auto &e : entity_list.GetClientList()) {
+		Client *c = e.second;
+		if (!c || !c->Connected()) {
+			continue;
+		}
+
+		auto it = m_last_tell_to_player.find(Strings::ToLower(c->GetName()));
+		if (it != m_last_tell_to_player.end() && now_ms - it->second < player_cd) {
+			continue;
+		}
+
+		targets.push_back(c);
+	}
+
+	if (targets.empty()) {
+		return;
+	}
+
+	// Candidate senders: any chat bot off its own mouth cooldown.  A tell
+	// spends the sender's budget like any other line, so a bot mid-conversation
+	// does not also start whispering strangers.
+	const uint32 base_cooldown = static_cast<uint32>(RuleI(PlayerBotChat, PerListenerCooldownMs));
+
+	std::vector<Mob *> senders;
+	auto consider = [&](Mob *m) {
+		if (!m || !IsChatBot(m)) {
+			return;
+		}
+		auto it = m_listener_state.find(m->GetID());
+		if (it != m_listener_state.end()) {
+			const ListenerState &st = it->second;
+			if (st.muted) {
+				return;
+			}
+			if (st.last_msg_time_ms != 0 && now_ms - st.last_msg_time_ms < base_cooldown) {
+				return;
+			}
+		}
+		senders.push_back(m);
+	};
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		if (IsPlayerBot(e.second)) {
+			consider(e.second);
+		}
+	}
+	for (auto *b : entity_list.GetBotList()) {
+		consider(static_cast<Mob *>(b));
+	}
+
+	if (senders.empty()) {
+		return;
+	}
+
+	// Categories allowed to cold-tell: spontaneous scope AND at least one row
+	// that asked for channel 7. A pool of /say openers must never be drafted
+	// into whispering strangers.
+	std::vector<const Category *> tell_cats;
+	for (const auto &c : m_categories) {
+		if (c.enabled && (c.scope == CS_Spontaneous || c.scope == CS_Both) && !c.response_idx.empty() &&
+		    CategoryHasTellRows(c)) {
+			tell_cats.push_back(&c);
+		}
+	}
+	if (tell_cats.empty()) {
+		return;
+	}
+
+	if (!zone->random.Roll(std::max(0, RuleI(PlayerBotChat, SpontaneousTellChance)))) {
+		return;
+	}
+
+	Client *to     = targets[zone->random.Int(0, static_cast<int>(targets.size()) - 1)];
+	Mob    *sender = nullptr;
+
+	// A bot never cold-tells its own owner: it is standing next to them under
+	// their command, and a stranger's opening line out of it reads as a bug.
+	// Checked per pair rather than filtered up front, because that same bot is
+	// a perfectly good sender for anyone else in the zone.
+	//
+	// One shuffle-free pass: try senders in random order until one qualifies.
+	// Bounded by senders.size(), so no retry loop.
+	const size_t start = static_cast<size_t>(zone->random.Int(0, static_cast<int>(senders.size()) - 1));
+	for (size_t i = 0; i < senders.size(); ++i) {
+		Mob *cand = senders[(start + i) % senders.size()];
+		if (cand->IsBot() && cand->CastToBot()->GetBotOwner() == to) {
+			continue;
+		}
+		sender = cand;
+		break;
+	}
+
+	if (!sender) {
+		return;
+	}
+
+	const Category *cat  = tell_cats[zone->random.Int(0, static_cast<int>(tell_cats.size()) - 1)];
+	const Response *resp = PickResponse(cat->id, sender, to, ChatChannel_Tell, now_ms);
+	if (!resp) {
+		++m_stat_drops[DR_NoResponseRow];
+		return;
+	}
+
+	// Only rows that explicitly asked for channel 7 may cold-tell.  Without
+	// this a say-flavoured opener could arrive as a whisper, which reads as
+	// the bot talking to itself at you.
+	if (resp->reply_channel != ChatChannel_Tell) {
+		return;
+	}
+
+	// {speaker} resolves to the RECIPIENT here: from the bot's side the player
+	// is who it is addressing. That is what makes "hail {speaker}" land as a
+	// greeting by name. It is the ONLY thing a cold tell may assume about the
+	// person -- a row claiming shared history, or to have watched them, is
+	// asserting something the engine cannot verify, on the one channel the
+	// player cannot filter or walk away from.
+	const std::string text = Substitute(resp->text, sender, to, {});
+
+	ListenerState &st = StateFor(sender->GetID());
+	st.last_msg_time_ms            = now_ms;
+	st.category_last_fire[cat->id] = now_ms;
+
+	m_last_tell_to_player[Strings::ToLower(to->GetName())] = now_ms;
+	++m_tells_this_hour;
+	++m_stat_tells_out;
+
+	Emit(sender, ChatChannel_Tell, text, 0, to->GetID());
+
+	LogInfo(
+		"[pbchat] cold tell [{}] -> [{}] cat [{}] -- {}",
+		ChatDisplayName(sender), to->GetName(), cat->name, text
+	);
+}
+
+// A category is tell-capable when at least one of its rows asked for channel
+// 7.  Checked per category rather than per row at pick time so a category made
+// entirely of /say openers is never even considered as a cold-tell source.
+bool PlayerBotChatEngine::CategoryHasTellRows(const PlayerBotChat::Category &cat) const
+{
+	for (uint32 ri : cat.response_idx) {
+		if (m_responses[ri].enabled && m_responses[ri].reply_channel == ChatChannel_Tell) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// ============================================================
 // Trilogy back-pressure
 // ============================================================
 
@@ -1671,6 +2005,18 @@ bool PlayerBotChatEngine::ScriptSay(
 	}
 
 	if (!IsValidChannel(chan_num)) {
+		chan_num = ChatChannel_Say;
+	}
+
+	// A script has no recipient to tell. IsValidChannel accepts 7 for the
+	// inbound path, so without this a Lua typo would emit into the void:
+	// EmitChannel's tell case would look up client id 0, find nothing, and
+	// silently drop the line. Fail loudly and say it out loud instead.
+	if (chan_num == ChatChannel_Tell) {
+		LogError(
+			"[pbchat] ScriptSay: channel 7 (tell) has no recipient from a script; "
+			"falling back to say. Cold tells come from the SpontaneousTell scheduler."
+		);
 		chan_num = ChatChannel_Say;
 	}
 
@@ -1914,6 +2260,19 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 		).c_str()
 	);
 
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format(
+			"[pbchat] tells: {} received | {} sent unprompted ({} this hour, cap {}) | {} players on tell cooldown",
+			m_stat_tells_in,
+			m_stat_tells_out,
+			m_tells_this_hour,
+			RuleI(PlayerBotChat, SpontaneousTellMaxPerZonePerHr),
+			m_last_tell_to_player.size()
+		).c_str()
+	);
+
 	std::string drops;
 	for (uint8 i = 0; i < DR_MAX; ++i) {
 		if (m_stat_drops[i] == 0) {
@@ -1998,6 +2357,8 @@ void PlayerBotChatEngine::ResetStats()
 	m_stat_heard   = 0;
 	m_stat_emitted = 0;
 	m_stat_openers = 0;
+	m_stat_tells_in  = 0;
+	m_stat_tells_out = 0;
 	memset(m_stat_drops, 0, sizeof(m_stat_drops));
 	m_stat_category_hits.clear();
 	m_stat_talkers.clear();
