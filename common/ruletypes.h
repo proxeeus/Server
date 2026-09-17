@@ -826,6 +826,8 @@ RULE_INT(PlayerBotChat, SpontaneousTellTickSec, 300, "Unprompted-tell scheduler 
 RULE_INT(PlayerBotChat, SpontaneousTellChance, 25, "Percent chance an unprompted-tell tick actually sends one")
 RULE_INT(PlayerBotChat, SpontaneousTellMaxPerZonePerHr, 4, "Unprompted tells allowed per zone per hour")
 RULE_INT(PlayerBotChat, PerPlayerTellCooldownMs, 1800000, "Minimum gap between unprompted tells to the SAME player, in ms. This is the safety model for cold tells: a player cannot filter or walk away from a tell, so no one receives two inside this window no matter how many bots are in the zone.")
+RULE_INT(PlayerBotChat, RepeatWindowMs, 600000, "How long a response row stays flagged as recently spoken by THIS zone, in ms. Nothing else guards repetition: the self-echo map is keyed by (listener, text) and only stops a bot re-hearing itself, so two different bots saying the identical row seconds apart was unguarded. 0 disables the guard entirely.")
+RULE_INT(PlayerBotChat, RepeatWeightPercent, 25, "Weight a recently-spoken row keeps in the next roll, as a percent of its normal weight. Quartering rather than excluding is deliberate -- excluding can empty a small category and turn a bot silent, and silence is a worse tell than a repeat. The result is clamped to a floor of 1, so even 0 means near-never rather than never. 100 disables the penalty.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Chat)

@@ -250,6 +250,13 @@ public:
 	void DumpCategories(Client *to);
 	void DumpStats(Client *to);
 	void DumpThreads(Client *to);
+	// "#pbchat top [n]" -- the rows that actually get spoken, most first.
+	// Per-ROW, not per-category: a line a player reports is a row, and
+	// m_stat_category_hits can never be traced back to one.
+	void DumpTopResponses(Client *to, size_t limit);
+	// "#pbchat find <text>" -- locate rows by substring, with their id,
+	// category and how often each has been spoken.
+	void FindResponses(Client *to, const std::string &needle);
 	void ResetStats();
 	void MuteAll(bool muted);
 	bool MuteEntity(uint16 entity_id, bool muted);
@@ -334,6 +341,19 @@ private:
 
 	void ExpireTransients(uint64 now_ms);
 
+	// The one commit point for "this row was actually spoken": bumps the
+	// per-row and per-category counters and arms the repetition guard.
+	// Deliberately NOT called from PickResponse -- three callers pick a row and
+	// then drop it (the per-message cap, the broadcast cooldown in ScriptSay,
+	// and a cold tell whose row did not ask for channel 7), and a row nobody
+	// heard must be neither counted nor penalised.
+	void NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms);
+
+	// Linear scans over the content cache. Admin paths only -- m_responses is a
+	// few hundred rows and neither of these is called per dispatch.
+	const PlayerBotChat::Response *ResponseById(uint32 id) const;
+	std::string                    CategoryNameFor(uint32 id) const;
+
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
 
 	static uint64      NowMs();
@@ -355,6 +375,13 @@ private:
 	// ---- runtime state ------------------------------------------------
 	std::unordered_map<uint16, PlayerBotChat::ListenerState> m_listener_state;
 	std::unordered_map<uint64, uint64>                       m_recent_self_emissions; // hash -> expiry ms
+	// response_id -> expiry ms. ZONE-scoped, which is the entire point:
+	// m_recent_self_emissions is keyed by (listener name, text), so it only ever
+	// stops a bot re-hearing ITSELF and leaves two different bots saying the
+	// identical row seconds apart completely unguarded. Cleared on zone boot and
+	// on every content load -- response ids are AUTO_INCREMENT and a reseed
+	// re-points them onto different text.
+	std::unordered_map<uint32, uint64>                       m_recent_response_use;
 	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
 	std::deque<PlayerBotChat::PendingEmission>               m_pending;
 	std::vector<PlayerBotChat::ChatThread>                   m_threads;
@@ -381,6 +408,7 @@ private:
 	uint64                                  m_stat_tells_out = 0;   // unprompted bot -> player
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
+	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken
 	std::unordered_map<std::string, uint64> m_stat_talkers;
 };
 
