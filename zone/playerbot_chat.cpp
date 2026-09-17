@@ -276,6 +276,12 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 	m_bad_regex_rows.clear();
 	m_bad_channel_rows.clear();
 
+	// Both of these are keyed by response_id, which is AUTO_INCREMENT: a reseed
+	// re-points the same id onto different text. Carrying either across a load
+	// would penalise -- or credit -- a row nobody has ever heard.
+	m_recent_response_use.clear();
+	m_stat_response_hits.clear();
+
 	// ---- categories ----
 	{
 		const std::string query =
@@ -505,6 +511,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	// rebooted zone inherits the previous zone's cooldowns and threads.
 	m_listener_state.clear();
 	m_recent_self_emissions.clear();
+	m_recent_response_use.clear();
 	m_pending.clear();
 	m_threads.clear();
 	m_next_thread_id          = 1;
@@ -607,6 +614,14 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 
 	for (auto it = m_recent_self_emissions.begin(); it != m_recent_self_emissions.end();) {
 		it = (now_ms >= it->second) ? m_recent_self_emissions.erase(it) : std::next(it);
+	}
+
+	// The repetition ring. Bounded by the row count either way, but letting it
+	// expire here is what makes RepeatWindowMs mean anything: a row is meant to
+	// come back to full weight once the window passes, not stay quartered for
+	// the life of the zone process.
+	for (auto it = m_recent_response_use.begin(); it != m_recent_response_use.end();) {
+		it = (now_ms >= it->second) ? m_recent_response_use.erase(it) : std::next(it);
 	}
 
 	m_threads.erase(
@@ -792,6 +807,13 @@ const Response *PlayerBotChatEngine::PickResponse(
 		}
 	}
 
+	// Read once, not once per row: a category can hold a thousand rows.
+	// RepeatWeightPercent == 100 means "no penalty", which is the migration
+	// path back to pre-guard behaviour without touching content.
+	const uint32 repeat_percent =
+		static_cast<uint32>(std::min(100, std::max(0, RuleI(PlayerBotChat, RepeatWeightPercent))));
+	const bool repeat_guard_on = (repeat_percent != 100) && !m_recent_response_use.empty();
+
 	std::vector<const Response *> survivors;
 	std::vector<uint32>           weights;
 	uint64                        total_weight = 0;
@@ -891,6 +913,30 @@ const Response *PlayerBotChatEngine::PickResponse(
 			}
 		}
 
+		// REPETITION GUARD. A row this zone spoke inside RepeatWindowMs keeps its
+		// place in the roll at reduced weight rather than being dropped from it.
+		//
+		// Reduced, not excluded, for one reason: exclusion can empty a small
+		// category and turn a bot silent, and a bot that says nothing reads as a
+		// bot faster than one that repeats itself. The floor of 1 below is that
+		// guarantee in code -- even RepeatWeightPercent 0 means near-never, not
+		// never.
+		//
+		// The degenerate case is the good one: when every eligible row is in the
+		// ring, every weight scales by the same factor and the roll is exactly
+		// what it was before the guard existed. A saturated ring is a no-op, not
+		// a misfire.
+		if (repeat_guard_on) {
+			auto rep_it = m_recent_response_use.find(r.id);
+			// ExpireTransients sweeps once a second, so an entry can outlive its
+			// own expiry by up to a tick; test the stamp rather than trusting
+			// presence.
+			if (rep_it != m_recent_response_use.end() && now_ms < rep_it->second) {
+				const uint64 reduced = (static_cast<uint64>(w) * repeat_percent) / 100;
+				w = (reduced > 0) ? static_cast<uint32>(reduced) : 1;
+			}
+		}
+
 		survivors.push_back(&r);
 		weights.push_back(w);
 		total_weight += w;
@@ -928,6 +974,47 @@ const Response *PlayerBotChatEngine::PickResponse(
 	}
 
 	return survivors.back();
+}
+
+// ============================================================
+// emission bookkeeping
+// ============================================================
+
+void PlayerBotChatEngine::NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms)
+{
+	++m_stat_category_hits[category_id];
+	++m_stat_response_hits[response_id];
+
+	// 0 disables the repetition guard outright. The counters above are not
+	// conditional on it -- telemetry is the other half of this change, and it
+	// has to keep working with the guard turned off.
+	const uint64 window = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, RepeatWindowMs)));
+	if (window == 0) {
+		return;
+	}
+
+	m_recent_response_use[response_id] = now_ms + window;
+}
+
+const Response *PlayerBotChatEngine::ResponseById(uint32 id) const
+{
+	for (const auto &r : m_responses) {
+		if (r.id == id) {
+			return &r;
+		}
+	}
+	return nullptr;
+}
+
+// Falls back to the raw id rather than an empty string: a counter for a
+// category that is no longer loaded is still worth printing.
+std::string PlayerBotChatEngine::CategoryNameFor(uint32 id) const
+{
+	auto it = m_category_by_id.find(id);
+	if (it == m_category_by_id.end()) {
+		return std::to_string(id);
+	}
+	return m_categories[it->second].name;
 }
 
 // ============================================================
@@ -1456,7 +1543,7 @@ void PlayerBotChatEngine::DispatchToScope(
 			st.per_speaker_cat_last[key] = now;
 		}
 
-		++m_stat_category_hits[c.category];
+		NoteResponseUsed(c.category, c.response->id, now);
 
 		if (RuleB(PlayerBotChat, LogDispatch)) {
 			LogInfo(
@@ -1717,11 +1804,15 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	st.last_msg_time_ms               = now_ms;
 	st.category_last_fire[cat->id]    = now_ms;
 
+	// Registered BEFORE the Emit, not after. Emit feeds Overhear synchronously,
+	// so any bot that answers this opener picks its own row inside this call --
+	// and the row most worth keeping out of that reply is the one just spoken.
+	NoteResponseUsed(cat->id, resp->id, now_ms);
+
 	Emit(opener, out_channel, text, 0);
 
 	++m_opens_this_hour;
 	++m_stat_openers;
-	++m_stat_category_hits[cat->id];
 
 	ChatThread t;
 	t.id         = m_next_thread_id++;
@@ -1903,6 +1994,9 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	m_last_tell_to_player[Strings::ToLower(to->GetName())] = now_ms;
 	++m_tells_this_hour;
 	++m_stat_tells_out;
+	// This path never counted a category hit before, so #pbchat stats simply
+	// did not see cold tells. Both counters now come from the one place.
+	NoteResponseUsed(cat->id, resp->id, now_ms);
 
 	Emit(sender, ChatChannel_Tell, text, 0, to->GetID());
 
@@ -2081,6 +2175,12 @@ bool PlayerBotChatEngine::ScriptSay(
 	if (!target_name.empty()) {
 		captures["target"] = target_name;
 	}
+
+	// Counted here rather than in PickResponse: the broadcast cooldown above can
+	// still reject an already-picked row, and Player_Bot.lua drives this path
+	// once per kill, per death and per combat join -- easily the noisiest source
+	// of rows in the system, and until now the only one invisible to stats.
+	NoteResponseUsed(category_id, resp->id, now);
 
 	Emit(talker, out_channel, Substitute(resp->text, talker, nullptr, captures), 0);
 	return true;
@@ -2322,6 +2422,22 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 	}
 	to->Message(Chat::White, "%s", fmt::format("[pbchat] drops: {}", drops.empty() ? "none" : drops).c_str());
 
+	// The repetition guard is invisible by construction -- it changes odds, not
+	// outcomes -- so this line is the only way to tell it apart from doing
+	// nothing. "cooling" saturating at the eligible row count is the signal
+	// that the window is too wide for how much the zone talks.
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format(
+			"[pbchat] repeat guard: {} rows cooling | window {}ms | penalised weight {}% | {} distinct rows spoken",
+			m_recent_response_use.size(),
+			RuleI(PlayerBotChat, RepeatWindowMs),
+			RuleI(PlayerBotChat, RepeatWeightPercent),
+			m_stat_response_hits.size()
+		).c_str()
+	);
+
 	std::vector<std::pair<uint32, uint64>> hits(m_stat_category_hits.begin(), m_stat_category_hits.end());
 	std::sort(hits.begin(), hits.end(), [](auto &a, auto &b) { return a.second > b.second; });
 
@@ -2330,12 +2446,11 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 		if (shown++ >= 10) {
 			break;
 		}
-		std::string name = std::to_string(h.first);
-		auto        it   = m_category_by_id.find(h.first);
-		if (it != m_category_by_id.end()) {
-			name = m_categories[it->second].name;
-		}
-		to->Message(Chat::White, "%s", fmt::format("[pbchat] category {} -> {} hits", name, h.second).c_str());
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format("[pbchat] category {} -> {} hits", CategoryNameFor(h.first), h.second).c_str()
+		);
 	}
 
 	std::vector<std::pair<std::string, uint64>> talkers(m_stat_talkers.begin(), m_stat_talkers.end());
@@ -2347,6 +2462,126 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 			break;
 		}
 		to->Message(Chat::White, "%s", fmt::format("[pbchat] top talker {} -> {} lines", t.first, t.second).c_str());
+	}
+}
+
+// A row, not a category. m_stat_category_hits cannot answer "which line was
+// that?", which is the question a player report actually asks, and it cannot
+// drive weight pruning either -- the whole category moves together.
+void PlayerBotChatEngine::DumpTopResponses(Client *to, size_t limit)
+{
+	if (!to) {
+		return;
+	}
+
+	EnsureLoaded();
+
+	if (m_stat_response_hits.empty()) {
+		to->Message(Chat::White, "[pbchat] no response row has been spoken since the last reset.");
+		return;
+	}
+
+	if (limit == 0 || limit > 50) {
+		limit = 10;
+	}
+
+	std::vector<std::pair<uint32, uint64>> rows(m_stat_response_hits.begin(), m_stat_response_hits.end());
+	std::sort(rows.begin(), rows.end(), [](auto &a, auto &b) { return a.second > b.second; });
+	if (rows.size() > limit) {
+		rows.resize(limit);
+	}
+
+	const uint64 now = NowMs();
+
+	for (const auto &r : rows) {
+		const Response *resp = ResponseById(r.first);
+
+		// Showing the cooldown is what makes the guard falsifiable from in game:
+		// the busiest rows should be the ones sitting on it.
+		std::string cooling;
+		auto        rep_it = m_recent_response_use.find(r.first);
+		if (rep_it != m_recent_response_use.end() && now < rep_it->second) {
+			cooling = fmt::format(" | cooling {}s", (rep_it->second - now) / 1000);
+		}
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] row {} | {} hits | {}{} | {}",
+				r.first,
+				r.second,
+				resp ? CategoryNameFor(resp->category_id) : "(row gone)",
+				cooling,
+				resp ? resp->text : std::string("(row gone)")
+			).c_str()
+		);
+	}
+}
+
+void PlayerBotChatEngine::FindResponses(Client *to, const std::string &needle)
+{
+	if (!to) {
+		return;
+	}
+
+	EnsureLoaded();
+
+	if (needle.empty()) {
+		to->Message(Chat::White, "[pbchat] find needs something to look for.");
+		return;
+	}
+
+	const std::string key = Strings::ToLower(needle);
+
+	// Hard cap the output. A loose substring can match most of the pack, and a
+	// few hundred lines dumped at once is a wall on any client -- on a Trilogy
+	// one it is also a paced-text queue this engine goes out of its way not to
+	// flood (see ZoneTextPressureHigh).
+	const size_t cap     = 20;
+	size_t       shown   = 0;
+	size_t       matched = 0;
+
+	for (const auto &r : m_responses) {
+		if (Strings::ToLower(r.text).find(key) == std::string::npos) {
+			continue;
+		}
+
+		++matched;
+		if (shown >= cap) {
+			continue;
+		}
+		++shown;
+
+		auto         hit_it = m_stat_response_hits.find(r.id);
+		const uint64 hits   = (hit_it == m_stat_response_hits.end()) ? 0 : hit_it->second;
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] row {} | {} | w {} | {} hits{} | {}",
+				r.id,
+				CategoryNameFor(r.category_id),
+				r.weight,
+				hits,
+				r.enabled ? "" : " | DISABLED",
+				r.text
+			).c_str()
+		);
+	}
+
+	if (matched == 0) {
+		to->Message(Chat::White, "%s", fmt::format("[pbchat] no response row contains \"{}\".", needle).c_str());
+		return;
+	}
+
+	if (matched > shown) {
+		to->Message(
+			Chat::Yellow,
+			"%s",
+			fmt::format("[pbchat] {} matches, {} shown -- narrow the search.", matched, shown).c_str()
+		);
 	}
 }
 
@@ -2398,7 +2633,13 @@ void PlayerBotChatEngine::ResetStats()
 	m_stat_tells_out = 0;
 	memset(m_stat_drops, 0, sizeof(m_stat_drops));
 	m_stat_category_hits.clear();
+	m_stat_response_hits.clear();
 	m_stat_talkers.clear();
+
+	// m_recent_response_use is deliberately NOT cleared. It is runtime state,
+	// not a counter: "#pbchat stats reset" zeroes the books, it does not hand
+	// every recently-spoken row its full weight back and make the bots repeat
+	// themselves. Zone boot and a content reload clear it; nothing else should.
 }
 
 void PlayerBotChatEngine::MuteAll(bool muted)

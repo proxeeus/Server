@@ -184,7 +184,7 @@ int command_init(void)
 		command_add("object", "List|Add|Edit|Move|Rotate|Copy|Save|Undo|Delete - Manipulate static and tradeskill objects within the zone", AccountStatus::GMAdmin, command_object) ||
 		command_add("opcode", "Reloads all opcodes from server patch files", AccountStatus::GMMgmt, command_reload) ||
 		command_add("parcels", "View and edit the parcel system.  Requires parcels to be enabled in rules.", AccountStatus::GMMgmt, command_parcels) ||
-		command_add("pbchat", "[reload|test|dumpcats|stats|threads|mute|unmute|ignore] - PlayerBot chat engine admin", AccountStatus::GMAdmin, command_pbchat) ||
+		command_add("pbchat", "[reload|test|dumpcats|stats|top|find|threads|mute|unmute|ignore] - PlayerBot chat engine admin", AccountStatus::GMAdmin, command_pbchat) ||
 		command_add("path", "view and edit pathing", AccountStatus::GMMgmt, command_path) ||
 		command_add("peqzone", "[Zone ID|Zone Short Name] - Teleports you to the specified zone if you meet the requirements.", AccountStatus::Player, command_peqzone) ||
 		command_add("petitems", "View your pet's items if you have one", AccountStatus::ApprenticeGuide, command_petitems) ||

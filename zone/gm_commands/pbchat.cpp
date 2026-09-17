@@ -13,6 +13,8 @@ namespace {
 		c->Message(Chat::White, "  #pbchat test \"<message>\" [class=N] [race=N] [level=N] - dry-run the classifier");
 		c->Message(Chat::White, "  #pbchat dumpcats - categories with trigger/response counts and disabled rows");
 		c->Message(Chat::White, "  #pbchat stats [reset] - dispatch counts, category hit rate, drop reasons");
+		c->Message(Chat::White, "  #pbchat top [n] - the response ROWS spoken most often (default 10)");
+		c->Message(Chat::White, "  #pbchat find <text> - response rows containing <text>, with row id and hits");
 		c->Message(Chat::White, "  #pbchat threads - live conversation threads and pending emissions");
 		c->Message(Chat::White, "  #pbchat mute <all|target|entity_id> / #pbchat unmute <...>");
 		c->Message(Chat::White, "  #pbchat ignore <player_name> / #pbchat unignore <player_name|all> / #pbchat ignorelist");
@@ -35,6 +37,28 @@ namespace {
 		}
 
 		return false;
+	}
+
+	// argplus[2] is a pointer into the ORIGINAL message, so it carries the rest
+	// of the line -- which is what makes an unquoted multi-word search work. The
+	// cost is that a quoted one keeps its closing quote, because Seperator only
+	// strips quotes from arg[], so trim both ends here.
+	std::string PbChatRestOfLine(const Seperator *sep, int from)
+	{
+		if (!sep->argplus[from] || sep->argplus[from][0] == '\0') {
+			return "";
+		}
+
+		std::string out = sep->argplus[from];
+
+		const std::string trim = " \t\"'";
+		const size_t      b    = out.find_first_not_of(trim);
+		if (b == std::string::npos) {
+			return "";
+		}
+		const size_t e = out.find_last_not_of(trim);
+
+		return out.substr(b, e - b + 1);
 	}
 
 } // namespace
@@ -76,6 +100,22 @@ void command_pbchat(Client *c, const Seperator *sep)
 
 	if (sub == "threads") {
 		playerbot_chat.DumpThreads(c);
+		return;
+	}
+
+	if (sub == "top") {
+		const size_t limit = sep->IsNumber(2) ? static_cast<size_t>(atoi(sep->arg[2])) : 10;
+		playerbot_chat.DumpTopResponses(c, limit);
+		return;
+	}
+
+	if (sub == "find") {
+		const std::string needle = PbChatRestOfLine(sep, 2);
+		if (needle.empty()) {
+			c->Message(Chat::White, "usage: #pbchat find <text>");
+			return;
+		}
+		playerbot_chat.FindResponses(c, needle);
 		return;
 	}
 
