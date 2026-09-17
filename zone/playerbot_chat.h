@@ -288,6 +288,10 @@ private:
 		uint8                          channel  = 0;
 		int64                          rank     = 0;
 		bool                           locked   = false;
+		// The message named this listener. Carries three things past the
+		// ranking sort: the cap exemption, the shortened stagger, and the
+		// stats counter. See the direct-address block in DispatchToScope.
+		bool                           addressed = false;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -406,6 +410,13 @@ private:
 	uint64                                  m_stat_openers = 0;
 	uint64                                  m_stat_tells_in  = 0;   // /tell received by a bot
 	uint64                                  m_stat_tells_out = 0;   // unprompted bot -> player
+	// Direct address (19.1). Two numbers, because they answer different
+	// questions: `addressed` is how often name matching fired at all -- zero
+	// means the match is broken, not that nobody uses names -- and `over_cap`
+	// is how often the exemption actually kept a line ResponseCapPerMessage
+	// would have dropped, which is the only proof the exemption does anything.
+	uint64                                  m_stat_addressed          = 0;
+	uint64                                  m_stat_addressed_over_cap = 0;
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken

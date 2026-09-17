@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -103,6 +104,49 @@ namespace {
 		if (!cur.empty()) {
 			out.insert(cur);
 		}
+	}
+
+	// Direct-address matching (19.1).  Both arguments must already be lowercased.
+	//
+	// A WHOLE-WORD match, never a substring: PlayerBot names are generated, so
+	// some of them are short and collide with ordinary words -- a bot called Bran
+	// must not answer every line containing "brandish".  A boundary here is any
+	// non-alphanumeric character, which also makes "Gorbash's" match Gorbash, and
+	// possessives are far more common in real chat than the collision that choice
+	// costs (a bot called Hal seeing its name inside another bot's name).
+	//
+	// Substring scan rather than a token-set lookup for one specific reason:
+	// namegen produces names containing apostrophes, hyphens and even spaces
+	// (`Chael'hal`, `Cla-cuth`, `Kodgan of Stuhn` are all in the shipped human
+	// male pool, and several race rulesets join syllables with `-`).  Tokenising
+	// the message and looking the name up as one word silently never matches any
+	// of those bots, which is the worst possible failure for this feature: it
+	// works for most of the zone and looks like content bugs on the rest.
+	bool NameMentioned(const std::string &msg_lower, const std::string &name_lower)
+	{
+		if (name_lower.empty() || name_lower.size() > msg_lower.size()) {
+			return false;
+		}
+
+		const auto is_word_char = [](char c) {
+			return std::isalnum(static_cast<unsigned char>(c)) != 0;
+		};
+
+		for (size_t pos = msg_lower.find(name_lower);
+		     pos != std::string::npos;
+		     pos = msg_lower.find(name_lower, pos + 1)) {
+
+			const size_t end = pos + name_lower.size();
+
+			const bool left_ok  = (pos == 0) || !is_word_char(msg_lower[pos - 1]);
+			const bool right_ok = (end >= msg_lower.size()) || !is_word_char(msg_lower[end]);
+
+			if (left_ok && right_ok) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 } // namespace
@@ -1361,6 +1405,47 @@ void PlayerBotChatEngine::DispatchToScope(
 
 	const uint32 base_cooldown = static_cast<uint32>(RuleI(PlayerBotChat, PerListenerCooldownMs));
 
+	// [19.1] DIRECT ADDRESS.  Say "Gorbash, you still need that?" in earshot of
+	// four bots and the pre-19.1 engine picked a responder by proximity alone, so
+	// Gorbash answered only by luck and usually somebody else did -- the most
+	// obviously-machine moment the system can produce.  Nothing anywhere compared
+	// the message text against a listener's name.
+	//
+	// DirectAddressMaxResponders doubles as the switch: 0 means nothing below
+	// looks at names at all, and responder selection is proximity-only exactly
+	// as it was before 19.1. One rule, because every rule added to ruletypes.h
+	// costs a full rebuild and this one has an honest zero.
+	//
+	// Lowercased ONCE, here, for the same reason classification happens once: a
+	// zone holding forty bots must not build forty copies of the same string.
+	const size_t addressed_cap =
+		static_cast<size_t>(std::max(0, RuleI(PlayerBotChat, DirectAddressMaxResponders)));
+	const bool   direct_address_on = (addressed_cap > 0);
+
+	std::string msg_lower;
+	if (direct_address_on) {
+		msg_lower = Strings::ToLower(msg);
+	}
+
+	// [19.2] RECENCY PENALTY.  Proximity outweighs response weight by six orders
+	// of magnitude, so in any static group -- a camp, a bank, a bind spot, which
+	// is where bots actually stand -- the physically closest bot answered every
+	// message forever and its neighbours were permanent scenery.
+	// `last_msg_time_ms` was already in ListenerState; it was only ever read as a
+	// hard cooldown gate, never as a soft preference.
+	//
+	// Expressed in the same units as proximity so the two are commensurable: a
+	// listener that spoke a moment ago ranks as though it stood
+	// RecencyPenaltyDistance further from the speaker than it really does,
+	// decaying linearly to nothing across RecencyPenaltyMs.  Clamped to earshot,
+	// which is what keeps the penalty inside the proximity band instead of
+	// leaking upward into category priority.
+	const uint64 recency_window = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, RecencyPenaltyMs)));
+	const int64  recency_max    = static_cast<int64>(std::min(
+		std::max(0, RuleI(PlayerBotChat, RecencyPenaltyDistance)),
+		std::max(0, RuleI(PlayerBotChat, EarshotDistance))
+	)) * 10LL;
+
 	std::vector<Candidate> candidates;
 	candidates.reserve(scope.size());
 
@@ -1389,6 +1474,12 @@ void PlayerBotChatEngine::DispatchToScope(
 		const bool locked_to_speaker =
 			(st.paired_speaker_id == speaker->GetID() && now < st.pair_expiry_ms);
 
+		// [19.1] Does this message name this listener?  ChatDisplayName, never
+		// GetName(): MakeNameUnique() appends digits to a PlayerBot's entity
+		// name and the player types the name they can actually see.
+		const bool addressed =
+			direct_address_on && NameMentioned(msg_lower, Strings::ToLower(ChatDisplayName(listener)));
+
 		uint32 eff_cooldown     = locked_to_speaker ? (base_cooldown / 2) : base_cooldown;
 		uint32 eff_cat_cooldown = cat.cooldown_ms;
 
@@ -1405,7 +1496,17 @@ void PlayerBotChatEngine::DispatchToScope(
 		// category cooldown. Output is still bounded by ResponseCapPerMessage,
 		// so this makes bots RESPONSIVE, not louder -- the same two of them
 		// answer, they just are not muted by their own small talk.
-		if (chain_depth == 0) {
+		//
+		// [19.1] Being named earns the same relief, and it has to: the rank
+		// bonus and the cap exemption below are both decided among candidates,
+		// and a listener the mouth cooldown drops here never becomes one. A bot
+		// that ignores its own name because it spoke four seconds ago is the
+		// exact tell 19.1 exists to remove. The relief is the PLAYER floor, not
+		// an exemption -- a griefer chanting one bot's name still gets an answer
+		// no faster than PlayerReplyCooldownMs. It applies at any chain depth,
+		// so a bot naming another bot ({speaker} rows do) gets a real answer
+		// too; ChainMaxDepth still bounds where that ends.
+		if (chain_depth == 0 || addressed) {
 			const uint32 floor_ms =
 				static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, PlayerReplyCooldownMs)));
 			eff_cooldown     = std::min(eff_cooldown, floor_ms);
@@ -1447,14 +1548,23 @@ void PlayerBotChatEngine::DispatchToScope(
 		if (chan_num == ChatChannel_Tell) {
 			c.channel = ChatChannel_Tell;
 		}
-		c.locked   = locked_to_speaker;
+		c.locked    = locked_to_speaker;
+		c.addressed = addressed;
 
 		// Ranking key, most significant field first:
-		//   conversation-lock partner -> category priority -> (say) proximity
-		//   -> response weight.
+		//   named by the speaker -> conversation-lock partner -> category
+		//   priority -> (say) proximity less recency -> response weight.
 		// Each band is wide enough that the field below it can never carry
-		// into it: priority <= 255, proximity <= 2000 (earshot 200 scaled x10),
-		// weight <= 65535.  Max key is ~1.03e15, far inside int64.
+		// into it: priority <= 255, proximity <= 2000 (earshot 200 scaled x10)
+		// and recency is clamped to the same 2000, so their difference sits
+		// inside +-2e9 -- and is hard-clamped below to +-99999 regardless of
+		// config -- while weight <= 65535.  Max key is ~1.01e16, far inside
+		// int64.  The addressed band is one order above the lock band, so a
+		// named bot outranks even a conversation partner.
+		//
+		// The recency term is a subtraction, so a rank can legitimately go
+		// negative on a non-say channel where every proximity is 0. That is
+		// fine: nothing reads the magnitude, only the ordering.
 		int64 proximity = 0;
 		if (chan_num == ChatChannel_Say) {
 			const float d = Distance(listener->GetPosition(), speaker->GetPosition());
@@ -1464,9 +1574,34 @@ void PlayerBotChatEngine::DispatchToScope(
 			}
 		}
 
-		c.rank = (c.locked ? 1000000000000000LL : 0LL)
+		// [19.2] Soft, decaying, and below the lock band on purpose: a bot in
+		// the middle of a conversation with you keeps first refusal even if it
+		// just spoke -- that IS the conversation -- while an unattached bot that
+		// answered ten seconds ago steps aside for the one that has been quiet.
+		int64 recency = 0;
+		if (recency_window > 0 && recency_max > 0 && st.last_msg_time_ms != 0) {
+			const uint64 since = now - st.last_msg_time_ms;
+			if (since < recency_window) {
+				recency = (recency_max * static_cast<int64>(recency_window - since)) /
+				          static_cast<int64>(recency_window);
+			}
+		}
+
+		// The band arithmetic above assumes EarshotDistance is the documented
+		// 200, which is what bounds proximity (and therefore recency) at 2000.
+		// An operator who raises that rule -- it is only ever meant to track the
+		// hardcoded 200 in EntityList::ChannelMessage -- would otherwise push the
+		// spatial term straight through the 1e11 priority band and silently
+		// reorder categories. Clamping here costs one comparison and makes the
+		// key's separation a property of the code instead of a property of the
+		// config.
+		int64 spatial = proximity - recency;
+		spatial = std::max<int64>(-99999LL, std::min<int64>(99999LL, spatial));
+
+		c.rank = (c.addressed ? 10000000000000000LL : 0LL)
+		         + (c.locked ? 1000000000000000LL : 0LL)
 		         + (static_cast<int64>(cat.priority) * 100000000000LL)
-		         + (proximity * 1000000LL)
+		         + (spatial * 1000000LL)
 		         + static_cast<int64>(resp->weight);
 
 		candidates.push_back(std::move(c));
@@ -1484,20 +1619,63 @@ void PlayerBotChatEngine::DispatchToScope(
 
 	size_t cap = static_cast<size_t>(std::max(0, RuleI(PlayerBotChat, ResponseCapPerMessage)));
 	if (cap == 0) {
+		// Still the killswitch, addressed or not: 0 means the bots do not
+		// answer, and being named must not reopen a door an operator shut.
 		return;
 	}
-	if (candidates.size() > cap) {
-		m_stat_drops[DR_CapPerMessage] += (candidates.size() - cap);
-		candidates.resize(cap);
+
+	// [19.1] The cap exemption. Addressed candidates carry the top rank band, so
+	// after the sort they are exactly the front run of the vector -- count them
+	// and the partition is free.
+	//
+	// Bounded by DirectAddressMaxResponders, which is the griefer answer to the
+	// obvious abuse: one line listing ten bot names must not become ten packets
+	// into a paced Trilogy queue. Over-ceiling names are ordinary cap drops.
+	size_t addressed_count = 0;
+	while (addressed_count < candidates.size() && candidates[addressed_count].addressed) {
+		++addressed_count;
+	}
+
+	if (addressed_count > addressed_cap) {
+		m_stat_drops[DR_CapPerMessage] += (addressed_count - addressed_cap);
+		candidates.erase(
+			candidates.begin() + static_cast<std::ptrdiff_t>(addressed_cap),
+			candidates.begin() + static_cast<std::ptrdiff_t>(addressed_count)
+		);
+		addressed_count = addressed_cap;
+	}
+
+	const size_t keep = std::max(cap, addressed_count);
+	if (keep > cap) {
+		m_stat_addressed_over_cap += (keep - cap);
+	}
+	if (candidates.size() > keep) {
+		m_stat_drops[DR_CapPerMessage] += (candidates.size() - keep);
+		candidates.resize(keep);
 	}
 
 	const int stagger_min = std::max(0, RuleI(PlayerBotChat, StaggerMinMs));
 	const int stagger_max = std::max(stagger_min, RuleI(PlayerBotChat, StaggerMaxMs));
 
+	// [19.1] A bot answering to its own name after the same 1-4s as ambient
+	// chatter still reads as a queue draining. Clamped to StaggerMaxMs rather
+	// than replacing it, so a value at or above StaggerMaxMs is exactly today's
+	// timing -- that is the migration path, and it means the rule can never
+	// LENGTHEN a reply by accident.
+	const int addressed_max = std::min(stagger_max, std::max(0, RuleI(PlayerBotChat, DirectAddressStaggerMaxMs)));
+	const int addressed_min = std::min(stagger_min, addressed_max);
+
 	for (auto &c : candidates) {
+		const int lo = c.addressed ? addressed_min : stagger_min;
+		const int hi = c.addressed ? addressed_max : stagger_max;
+
 		const uint32 delay = static_cast<uint32>(
-			zone ? zone->random.Int(stagger_min, stagger_max) : stagger_min
+			zone ? zone->random.Int(lo, hi) : lo
 		);
+
+		if (c.addressed) {
+			++m_stat_addressed;
+		}
 
 		PendingEmission pe;
 		pe.listener_id = c.listener->GetID();
@@ -1547,8 +1725,9 @@ void PlayerBotChatEngine::DispatchToScope(
 
 		if (RuleB(PlayerBotChat, LogDispatch)) {
 			LogInfo(
-				"[pbchat] queue listener [{}] cat [{}] chan [{}] depth [{}] delay [{}] text [{}]",
-				ChatDisplayName(c.listener), cat.name, c.channel, chain_depth, delay, c.text
+				"[pbchat] queue listener [{}] cat [{}] chan [{}] depth [{}] delay [{}] addressed [{}] text [{}]",
+				ChatDisplayName(c.listener), cat.name, c.channel, chain_depth, delay,
+				c.addressed ? 1 : 0, c.text
 			);
 		}
 	}
@@ -2438,6 +2617,34 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 		).c_str()
 	);
 
+	// Direct address and the recency penalty are both invisible by construction:
+	// they change WHO speaks, never what is said, so nothing in the chat log can
+	// tell them apart from doing nothing at all. `addressed 0` with players who
+	// demonstrably type bot names means the name match is broken -- start there,
+	// not in the content.
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format(
+			"[pbchat] direct address: {} answered by name ({} of them past the cap) | {} | stagger <= {}ms | max {} responders",
+			m_stat_addressed,
+			m_stat_addressed_over_cap,
+			RuleI(PlayerBotChat, DirectAddressMaxResponders) > 0 ? "on" : "OFF",
+			std::min(RuleI(PlayerBotChat, StaggerMaxMs), std::max(0, RuleI(PlayerBotChat, DirectAddressStaggerMaxMs))),
+			RuleI(PlayerBotChat, DirectAddressMaxResponders)
+		).c_str()
+	);
+
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format(
+			"[pbchat] recency penalty: {} distance units, decaying over {}ms (0 on either disables)",
+			RuleI(PlayerBotChat, RecencyPenaltyDistance),
+			RuleI(PlayerBotChat, RecencyPenaltyMs)
+		).c_str()
+	);
+
 	std::vector<std::pair<uint32, uint64>> hits(m_stat_category_hits.begin(), m_stat_category_hits.end());
 	std::sort(hits.begin(), hits.end(), [](auto &a, auto &b) { return a.second > b.second; });
 
@@ -2631,6 +2838,8 @@ void PlayerBotChatEngine::ResetStats()
 	m_stat_openers = 0;
 	m_stat_tells_in  = 0;
 	m_stat_tells_out = 0;
+	m_stat_addressed          = 0;
+	m_stat_addressed_over_cap = 0;
 	memset(m_stat_drops, 0, sizeof(m_stat_drops));
 	m_stat_category_hits.clear();
 	m_stat_response_hits.clear();
