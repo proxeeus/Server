@@ -35,6 +35,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "fastmath.h"
 #include "mob.h"
 #include "npc.h"
+#include "playerbot_chat.h"
 
 #include "bot.h"
 
@@ -1940,13 +1941,13 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 				parse->EventBot(EVENT_SLAY, killer_mob->CastToBot(), this, "", 0);
 			}
 
-			// [19.5] Victory callout for a PvP kill (EVENT_SLAY == "slew a
-			// PLAYER"). Disjoint from the PvE one in NPC::Death by victim type,
-			// so exactly one of the two can fire for any given kill.
-			killer_mob->CastToBot()->OnChatSlay(this);
-
 			killer_mob->TrySpellOnKill(killed_level, spell);
 		}
+
+		// [19.5] Victory callouts for a PvP kill. Same fan-out as the PvE path
+		// in NPC::Death; the two are disjoint by victim type, so exactly one of
+		// them can fire for any given kill.
+		playerbot_chat.NotifySlay(killer_mob, this);
 
 		if (
 			killer_mob->IsClient() &&
@@ -3070,21 +3071,27 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 			parse->EventBot(EVENT_NPC_SLAY, killer_mob->CastToBot(), this, "", 0);
 		}
 
-		// [19.5] Victory callout for a PvE kill -- the one that actually
-		// happens. EVENT_NPC_SLAY is the "slew an NPC" event; the EventBot line
-		// directly above it is inert only because no bot quest script exists,
-		// which is exactly why Bots were the silent half. PlayerBots need
-		// nothing here: EVENT_NPC_SLAY is ALSO delivered to Lua as `event_slay`
-		// (LuaParser::ConvertLuaEvent folds EVENT_SLAY and EVENT_NPC_SLAY into
-		// one name), so Player_Bot.lua has been announcing PvE kills all along
-		// and a C++ hook for them would double-announce.
-		//
-		// `this` is the mob that actually died, passed through as {target}: a
-		// victory line must never name a kill drawn from a content pool. Gated
-		// internally on chat_enabled, the killswitch and the chorus roll.
-		killer_mob->CastToBot()->OnChatSlay(this);
-
+		// EVENT_NPC_SLAY is the "slew an NPC" event, and the EventBot line above
+		// is inert only because no bot quest script exists -- which is exactly
+		// why Bots were the silent half while PlayerBots were not. The chat
+		// callout is NOT here: it lives in the NotifySlay call below, which is
+		// deliberately outside this bot-killer block. See the note there.
 		killer_mob->TrySpellOnKill(killed_level, spell);
+	}
+
+	// [19.5] Victory callouts for the whole group, not just whoever landed the
+	// last hit. Outside the IsBot() block above on purpose: the killing blow in
+	// a group very often belongs to the PLAYER, and gating on a bot killer meant
+	// that in the commonest case of all there was no bot in the callout path at
+	// all. NotifySlay gives every groupmate that was present for the fight its
+	// own roll.
+	//
+	// `this` is the mob that actually died, passed through as {target}: a
+	// victory line must never name a kill drawn from a content pool. Runs
+	// BEFORE WipeHateList() below only incidentally -- presence is judged by
+	// distance, not by the hate list. Gated internally throughout.
+	if (killer_mob) {
+		playerbot_chat.NotifySlay(killer_mob, this);
 	}
 
 	WipeHateList();

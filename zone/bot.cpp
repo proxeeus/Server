@@ -1421,6 +1421,12 @@ void Bot::OnChatCombatEngaged(Mob* attacker)
 	// engaging one pull are six independent timers and every one of them calls
 	// the incoming -- the cooldown cannot solve this and a roll can.
 	if (!zone || !zone->random.Roll(std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)))) {
+		// Logged, because "my bots never call incoming" and "my bots rolled a 4
+		// in 5 and stayed quiet" look identical from the game and are fixed by
+		// completely different things.
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] callout declined by roll: bot [{}] cat [aggro]", GetCleanName());
+		}
 		return;
 	}
 
@@ -1438,6 +1444,9 @@ void Bot::OnChatSlay(Mob* victim)
 	}
 
 	if (!zone || !zone->random.Roll(std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)))) {
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] callout declined by roll: bot [{}] cat [victory]", GetCleanName());
+		}
 		return;
 	}
 

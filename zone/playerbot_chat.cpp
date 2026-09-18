@@ -2249,6 +2249,56 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 }
 
 // ============================================================
+// [19.5] combat events
+// ============================================================
+
+void PlayerBotChatEngine::NotifySlay(Mob *killer, Mob *victim)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !killer || !victim || !zone) {
+		return;
+	}
+
+	// The killer, when it is a Bot. No distance test -- it just killed the
+	// thing, presence is not in question.
+	//
+	// A PlayerBot killer is deliberately NOT handled here: EVENT_NPC_SLAY is
+	// delivered to Lua as `event_slay` (ConvertLuaEvent folds the two), so
+	// Player_Bot.lua already fires for it and a second line would double up.
+	if (killer->IsBot()) {
+		killer->CastToBot()->OnChatSlay(victim);
+	}
+
+	// Everyone else in the killer's group. CollectScope on channel 2 is exactly
+	// the right query -- it already resolves a real group AND a raid group by
+	// name, excludes the speaker, and returns only chat-capable bots -- so the
+	// group/raid edge cases stay solved in one place instead of two.
+	std::vector<Mob *> group_scope;
+	CollectScope(killer, ChatChannel_Group, group_scope);
+	if (group_scope.empty()) {
+		return;
+	}
+
+	const float earshot = static_cast<float>(RuleI(PlayerBotChat, EarshotDistance));
+
+	for (Mob *m : group_scope) {
+		// Bots only. A PlayerBot sharing a player's group is rare enough not to
+		// be worth a second speak path, and Player_Bot.lua covers the case that
+		// actually happens (a PlayerBot getting its own kill).
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+
+		// Present for the fight, not merely on the roster. See the header note:
+		// the victory rows are true for a participant and false for a spectator.
+		if (Distance(m->GetPosition(), victim->GetPosition()) > earshot) {
+			continue;
+		}
+
+		m->CastToBot()->OnChatSlay(victim);
+	}
+}
+
+// ============================================================
 // [17.1 C] low-mana watch
 // ============================================================
 

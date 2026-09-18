@@ -268,6 +268,28 @@ public:
 	// addressed to; it is meaningless (and ignored) on every other channel.
 	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id = 0);
 
+	// ---- combat events -------------------------------------------------
+	// A mob died. Gives every chat-enabled Bot that was PRESENT FOR THE FIGHT a
+	// chance to react, not just whoever landed the killing blow.
+	//
+	// The killing blow is the wrong unit of reaction and that is why victory
+	// lines read as broken: in a group the last hit belongs to one member, very
+	// often the player, and when the player lands it there is no bot in the
+	// callout path at all. A group watching something die and saying nothing
+	// unless one specific member got the last swing is the tell here.
+	//
+	// "Present" is group membership PLUS EarshotDistance of the corpse. Group
+	// membership alone would let a bot parked at the zone line say "that one
+	// nearly had me", which the content rule forbids -- those rows are safe for
+	// any participant and false for a spectator. The dying mob's hate list would
+	// be more precise still, and is deliberately not used: it excludes the
+	// support roles (a buffer, a bard who never pulled aggro) that most obviously
+	// should be talking.
+	//
+	// Each bot rolls CombatCalloutChance independently, so the group produces a
+	// line or two rather than a chorus.
+	void NotifySlay(Mob *killer, Mob *victim);
+
 	// ---- tells --------------------------------------------------------
 	// A player sent /tell <bot>. Called from Client::ChannelMessageReceived
 	// INSTEAD of relaying to world: world routes tells by character name and a
