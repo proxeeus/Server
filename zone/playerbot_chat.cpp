@@ -194,6 +194,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_TrilogyPressure:  return "trilogy-pressure";
 		case DR_CapPerMessage:    return "response-cap";
 		case DR_Stale:            return "stale";
+		case DR_InCombat:         return "in-combat";
 		default:                  return "unknown";
 	}
 }
@@ -281,6 +282,56 @@ bool PlayerBotChatEngine::IsChatBot(Mob *m)
 	if (m->IsBot()) {
 		return m->CastToBot()->GetChatEnabled();
 	}
+	return false;
+}
+
+bool PlayerBotChatEngine::IsGroupedForChat(Mob *m)
+{
+	if (!m) {
+		return false;
+	}
+
+	if (m->GetGroup()) {
+		return true;
+	}
+
+	// Raid groups resolve by NAME, and a raided member's Group object is gone
+	// -- the same reason CollectScope and EmitChannel both look here. Checking
+	// only GetGroup() would make every raider read as ungrouped.
+	Raid *r = entity_list.GetRaidByName(m->GetName());
+	if (!r) {
+		r = entity_list.GetRaidByBotName(m->GetName());
+	}
+
+	return r && r->GetGroup(m->GetName()) < MAX_RAID_GROUPS;
+}
+
+bool PlayerBotChatEngine::IsInCombat(Mob *m)
+{
+	if (!m) {
+		return false;
+	}
+
+	if (m->IsEngaged()) {
+		return true;
+	}
+
+	// The expensive half, and the reason this is not just IsEngaged(): a
+	// healer or a slower standing behind the tank is on nobody's hate list and
+	// would keep chattering happily through the whole fight. Bounded by group
+	// size (6), and only reached when the cheap self-check already said no.
+	Group *g = m->GetGroup();
+	if (!g) {
+		return false;
+	}
+
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		Mob *gm = g->members[i];
+		if (gm && gm != m && gm->IsEngaged()) {
+			return true;
+		}
+	}
+
 	return false;
 }
 
@@ -1191,6 +1242,15 @@ std::string PlayerBotChatEngine::CategoryNameFor(uint32 id) const
 	return m_categories[it->second].name;
 }
 
+uint32 PlayerBotChatEngine::CategoryCooldownFor(uint32 id) const
+{
+	auto it = m_category_by_id.find(id);
+	if (it == m_category_by_id.end()) {
+		return 0;
+	}
+	return m_categories[it->second].cooldown_ms;
+}
+
 // ============================================================
 // substitution
 // ============================================================
@@ -1609,6 +1669,14 @@ void PlayerBotChatEngine::DispatchToScope(
 		std::max(0, RuleI(PlayerBotChat, EarshotDistance))
 	)) * 10LL;
 
+	// [19.5] Read once, not per listener. CombatReplyChance doubles as the
+	// master switch for the whole section: at 100 an engaged bot answers
+	// exactly as it always did, the stagger multiplier below is skipped, and
+	// SpontaneousTick stops filtering openers on combat -- one rule, one honest
+	// zero, covering "whether", "when" and "unprompted" together.
+	const int  combat_reply_chance = std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance)));
+	const bool combat_gate_on      = (combat_reply_chance < 100);
+
 	std::vector<Candidate> candidates;
 	candidates.reserve(scope.size());
 
@@ -1687,6 +1755,27 @@ void PlayerBotChatEngine::DispatchToScope(
 			continue;
 		}
 
+		// [19.5] BOTS CHAT WHILE TANKING. Nothing anywhere consulted combat
+		// state, so a bot held the same conversational rhythm through a pull, a
+		// wipe and the walk back. A bot that goes quiet when the fight starts
+		// and picks the thread back up afterwards is the most human thing in
+		// this section, and it costs one state read.
+		//
+		// Placed after the cooldowns and before PickResponse: the cooldowns are
+		// plain arithmetic, IsInCombat walks a group, and PickResponse walks the
+		// whole response pool -- so this is the cheapest point that still skips
+		// the expensive work.
+		//
+		// Being named is exempt. 19.1 exists so that your own name cuts through,
+		// and mid-fight is exactly when a player most needs it to.
+		const bool listener_in_combat = IsInCombat(listener);
+		if (listener_in_combat && !addressed && combat_gate_on) {
+			if (!zone || !zone->random.Roll(combat_reply_chance)) {
+				++m_stat_drops[DR_InCombat];
+				continue;
+			}
+		}
+
 		const Response *resp = PickResponse(cat.id, listener, speaker, chan_num, now);
 		if (!resp) {
 			++m_stat_drops[DR_NoResponseRow];
@@ -1694,7 +1783,8 @@ void PlayerBotChatEngine::DispatchToScope(
 		}
 
 		Candidate c;
-		c.listener = listener;
+		c.listener  = listener;
+		c.in_combat = listener_in_combat;
 		c.category = cat.id;
 		c.response = resp;
 		c.text     = Substitute(resp->text, listener, speaker, captures);
@@ -1835,6 +1925,11 @@ void PlayerBotChatEngine::DispatchToScope(
 	// mismatch is felt long before it is noticed.
 	const int ms_per_char = std::max(0, RuleI(PlayerBotChat, StaggerMsPerChar));
 
+	// [19.5] Clamped at 100 on the low side: this multiplier exists to make a
+	// fighting bot SLOWER, and a value below 100 would quietly make combat the
+	// fastest the engine ever answers.
+	const int combat_stagger_pct = std::max(100, RuleI(PlayerBotChat, CombatStaggerPercent));
+
 	for (auto &c : candidates) {
 		const int lo = c.addressed ? addressed_min : stagger_min;
 		int       hi = c.addressed ? addressed_max : stagger_max;
@@ -1865,6 +1960,21 @@ void PlayerBotChatEngine::DispatchToScope(
 			const int64 typing = static_cast<int64>(c.text.length()) * ms_per_char;
 			const int64 capped = std::min(static_cast<int64>(hi), static_cast<int64>(lo) + typing);
 			hi = static_cast<int>(std::max(static_cast<int64>(lo), capped));
+		}
+
+		// [19.5] Fighting means you are slower to the keyboard. Applied to the
+		// ceiling that 19.4 just computed and re-clamped to the SAME ceiling
+		// this candidate already had, so a combat reply can stretch across the
+		// budget it was allowed but never past it -- the Trilogy pacing budget
+		// is unchanged, and an addressed reply stays inside
+		// DirectAddressStaggerMaxMs however hard the fight is going.
+		if (c.in_combat && combat_gate_on && combat_stagger_pct != 100) {
+			const int   ceiling = c.addressed ? addressed_max : stagger_max;
+			const int64 scaled  = (static_cast<int64>(hi) * combat_stagger_pct) / 100;
+			hi = static_cast<int>(std::max(
+				static_cast<int64>(lo),
+				std::min(static_cast<int64>(ceiling), scaled)
+			));
 		}
 
 		const uint32 delay = static_cast<uint32>(
@@ -2102,8 +2212,20 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 
 	const uint32 base_cooldown = static_cast<uint32>(RuleI(PlayerBotChat, PerListenerCooldownMs));
 
+	// [19.5] Same master switch as the reactive gate, read once per tick.
+	const bool combat_gate_on =
+		(std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance))) < 100);
+
 	auto consider = [&](Mob *m) {
 		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// [19.5] An engaged bot does not START conversations. The reactive gate
+		// is a probability, because being spoken to mid-fight still deserves an
+		// occasional answer; this one is absolute, because there is no version
+		// of opening small talk mid-pull that reads as a person.
+		if (combat_gate_on && IsInCombat(m)) {
 			return;
 		}
 		auto it = m_listener_state.find(m->GetID());
@@ -2158,12 +2280,31 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		base_prob *= 0.5;
 	}
 
-	if (!zone->random.Roll(base_prob)) {
-		return;
-	}
-
+	// [19.20] GROUP VOICE. The opener is now picked BEFORE the probability roll,
+	// because the probability depends on who it is: channel 2 was wired for
+	// scope from day one and nothing ever made the bots you actually adventure
+	// with any livelier than zone scenery. A grouped bot rolls at
+	// GroupVoiceBoostPercent of the normal rate.
+	//
+	// Reordering is safe -- the pick was uniform over candidates and still is,
+	// and nothing between the two reads the opener.
 	Mob            *opener = candidates[zone->random.Int(0, static_cast<int>(candidates.size()) - 1)];
 	const Category *cat    = opener_cats[zone->random.Int(0, static_cast<int>(opener_cats.size()) - 1)];
+
+	const int  group_boost   = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
+	const bool opener_group  = (group_boost > 100) && IsGroupedForChat(opener);
+
+	double open_prob = base_prob;
+	if (opener_group) {
+		// Capped well short of 1.0: the boost makes a grouped bot livelier, it
+		// does not make the scheduler fire on every tick. SpontaneousMaxPerZonePerHr
+		// still bounds the hour regardless of what this multiplies out to.
+		open_prob = std::min(0.75, base_prob * (static_cast<double>(group_boost) / 100.0));
+	}
+
+	if (!zone->random.Roll(open_prob)) {
+		return;
+	}
 
 	// Spontaneous openers are ALWAYS /say. Never a random channel roll.
 	//
@@ -2181,7 +2322,14 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	// is applied just below, so a market or lfg opener that genuinely should
 	// broadcast can set 4 (auction) or 5 (ooc) on that row. That is a decision
 	// for the line, not for a dice roll.
-	const uint8 channel = ChatChannel_Say;
+	//
+	// [19.20] ...and the one exception is a group. A bot standing in your party
+	// muttering to the room instead of to the group is the give-away this
+	// removes: grouped small talk defaults to channel 2, which CollectScope
+	// already scopes by membership, so the conversation forms inside the group
+	// and stays there. Rows carrying an explicit reply_channel -- market, lfg,
+	// help -- still broadcast, because that remains a decision for the line.
+	const uint8 channel = opener_group ? ChatChannel_Group : ChatChannel_Say;
 
 	const Response *resp = PickResponse(cat->id, opener, nullptr, channel, now_ms);
 	if (!resp) {
@@ -2294,6 +2442,12 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	std::vector<Mob *> senders;
 	auto consider = [&](Mob *m) {
 		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// [19.5] A bot does not whisper a stranger mid-fight either. Same
+		// master switch, same reasoning as the opener path.
+		if (std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance))) < 100 && IsInCombat(m)) {
 			return;
 		}
 		auto it = m_listener_state.find(m->GetID());
@@ -2563,6 +2717,30 @@ bool PlayerBotChatEngine::ScriptSay(
 
 		if (st.last_msg_time_ms != 0 && now - st.last_msg_time_ms < cooldown) {
 			++m_stat_drops[DR_Cooldown];
+			return false;
+		}
+	}
+
+	// [19.5] THE CATEGORY COOLDOWN WAS WRITTEN HERE AND READ NOWHERE.
+	//
+	// The broadcast gate above rations /shout, /ooc and /auction because those
+	// scale with zone population. It deliberately leaves /say alone -- and /say
+	// was, until now, the only other channel a script line could reach. Channel
+	// 2 changes that: a grouped bot calling every engage and every kill into
+	// group chat has no population cost and every bit of the annoyance, and
+	// `CombatCalloutChance` cannot fix it because a roll bounds the CHORUS, not
+	// the RATE.
+	//
+	// The knob already exists and is already tuned: `aggro` ships at 20s,
+	// `victory` and `death` at 15s, authored by whoever wrote the rows. This
+	// line simply honours what every other speak path honours and what this one
+	// was already recording. A category with cooldown_ms 0 is unthrottled
+	// exactly as before.
+	auto script_cat_fire = st.category_last_fire.find(category_id);
+	if (script_cat_fire != st.category_last_fire.end()) {
+		const uint32 cat_cooldown = CategoryCooldownFor(category_id);
+		if (cat_cooldown > 0 && now - script_cat_fire->second < cat_cooldown) {
+			++m_stat_drops[DR_CategoryCooldown];
 			return false;
 		}
 	}
@@ -2903,6 +3081,39 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 				"[pbchat] stale drop: {} | {} lines dropped after the channel moved on",
 				RuleB(PlayerBotChat, StaleEmissionDrop) ? "on" : "OFF",
 				m_stat_drops[DR_Stale]
+			).c_str()
+		);
+	}
+
+	// [19.5 + 19.20] Both are invisible in a chat log the same way 19.1 and 19.2
+	// are: they change whether and where a bot speaks, never what it says. The
+	// counters are the only proof either is doing anything -- in particular,
+	// `in-combat 0` in a zone that demonstrably fights means IsInCombat is not
+	// firing, not that the gate is calm.
+	{
+		const int reply_chance = std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance)));
+		const int group_boost  = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] combat gate: {} | reply {}% | stagger x{}% | callouts {}% | {} replies withheld mid-fight",
+				reply_chance < 100 ? "on" : "OFF",
+				reply_chance,
+				std::max(100, RuleI(PlayerBotChat, CombatStaggerPercent)),
+				std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)),
+				m_stat_drops[DR_InCombat]
+			).c_str()
+		);
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] group voice: {} | grouped openers roll at {}% of normal and default to channel 2",
+				group_boost > 100 ? "on" : "OFF",
+				group_boost
 			).c_str()
 		);
 	}

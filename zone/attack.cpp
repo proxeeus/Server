@@ -1940,6 +1940,11 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 				parse->EventBot(EVENT_SLAY, killer_mob->CastToBot(), this, "", 0);
 			}
 
+			// [19.5] Victory callout. `this` is the mob that actually died, and
+			// it is passed through as {target} -- a victory line must never name
+			// a kill drawn from a content pool. Gated internally.
+			killer_mob->CastToBot()->OnChatSlay(this);
+
 			killer_mob->TrySpellOnKill(killed_level, spell);
 		}
 

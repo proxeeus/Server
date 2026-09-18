@@ -73,6 +73,11 @@ namespace PlayerBotChat {
 		// `emitted` means the stagger window is wider than the zone's chat
 		// rhythm and StaggerMaxMs -- not this guard -- is the thing to lower.
 		DR_Stale,
+		// [19.5] The listener was fighting and lost the combat roll. Counted
+		// separately from every other drop because going quiet mid-fight is
+		// indistinguishable from the engine being broken unless the number
+		// that proves it is deliberate is visible somewhere.
+		DR_InCombat,
 		DR_MAX
 	};
 
@@ -335,6 +340,18 @@ public:
 	static bool IsPlayerBot(Mob *m);
 	static bool IsChatBot(Mob *m);          // PB, or Bot with chat_enabled
 
+	// [19.5] "This bot is busy fighting." Deliberately wider than IsEngaged():
+	// a cleric that never takes aggro is every bit as busy as the tank, and a
+	// group where only the tank goes quiet reads worse than one that does not.
+	// Self first, because that is the cheap half and the common answer.
+	static bool IsInCombat(Mob *m);
+
+	// [19.20] True when this bot is in a real group or a raid group. Mirrors
+	// the resolution order EmitChannel uses for ChatChannel_Group, because a
+	// bot that is "grouped" for voice purposes and not for delivery would open
+	// conversations into a channel nobody receives.
+	static bool IsGroupedForChat(Mob *m);
+
 private:
 	struct Candidate {
 		Mob                           *listener = nullptr;
@@ -348,6 +365,10 @@ private:
 		// ranking sort: the cap exemption, the shortened stagger, and the
 		// stats counter. See the direct-address block in DispatchToScope.
 		bool                           addressed = false;
+		// [19.5] Carried past the ranking sort for the stagger multiplier, so
+		// IsInCombat -- which can walk a group -- is evaluated once per
+		// listener rather than again at queue time.
+		bool                           in_combat = false;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -437,6 +458,9 @@ private:
 	// few hundred rows and neither of these is called per dispatch.
 	const PlayerBotChat::Response *ResponseById(uint32 id) const;
 	std::string                    CategoryNameFor(uint32 id) const;
+	// [19.5] Authored pacing for a category, 0 when the id is unknown. Indexed,
+	// not a scan -- ScriptSay is on the combat path now, not just the Lua one.
+	uint32                         CategoryCooldownFor(uint32 id) const;
 
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
 
