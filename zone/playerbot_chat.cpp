@@ -193,6 +193,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_IgnoredSpeaker:   return "ignored-speaker";
 		case DR_TrilogyPressure:  return "trilogy-pressure";
 		case DR_CapPerMessage:    return "response-cap";
+		case DR_Stale:            return "stale";
 		default:                  return "unknown";
 	}
 }
@@ -568,6 +569,11 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
+	// [19.6] m_listener_state was already cleared above, which takes every
+	// HeardMark with it -- so restarting the counter cannot collide with a
+	// stamp left over from the previous zone.
+	m_msg_seq                 = 0;
+	m_current_wave            = 0;
 
 	ResetStats();
 
@@ -620,6 +626,33 @@ void PlayerBotChatEngine::Process()
 			if (!talker || !IsChatBot(talker)) {
 				continue;
 			}
+
+			// [19.6] The line was correct when it was picked. Whether it is
+			// still correct depends on what the channel did in the meantime,
+			// and that is only knowable here, at the last possible moment.
+			if (IsStaleEmission(e)) {
+				++m_stat_drops[DR_Stale];
+				// The bot said nothing, so it spent no mouth budget. Without
+				// this it would sit out PerListenerCooldownMs for a line it
+				// never delivered -- and in a zone with one candidate that is
+				// silence, which is a worse tell than the stale line.
+				ReleaseStaleReservation(e);
+				if (RuleB(PlayerBotChat, LogDispatch)) {
+					LogInfo(
+						"[pbchat] stale drop listener [{}] chan [{}] wave [{}] text [{}]",
+						ChatDisplayName(talker), e.chan_num, e.wave_seq, e.text
+					);
+				}
+				continue;
+			}
+
+			// [19.6] Re-enter the beat this line belongs to, so the fan-out
+			// Emit() triggers inherits it rather than the last wave to have
+			// been opened. Without this, the first responder's own emission
+			// would look like a NEW beat to the second responder still sitting
+			// in m_pending, and ResponseCapPerMessage 2 would collapse to 1.
+			m_current_wave = e.wave_seq;
+
 			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id);
 		}
 	}
@@ -643,6 +676,103 @@ void PlayerBotChatEngine::Process()
 		}
 		m_next_spontaneous_tell_ms = now + (static_cast<uint64>(tell_tick_sec) * 1000);
 		SpontaneousTellTick(now);
+	}
+}
+
+// ============================================================
+// [19.6] conversation beats
+// ============================================================
+
+uint32 PlayerBotChatEngine::BeginWave()
+{
+	// Wraps at 2^32 messages in one zone process, which is not reachable, and
+	// would be harmless anyway: a wrap can only make a pending line look FRESH,
+	// and the ~4s it could survive for is the pre-19.6 behaviour. Skipping 0
+	// keeps it distinguishable from "never heard anything here".
+	if (++m_msg_seq == 0) {
+		m_msg_seq = 1;
+	}
+	m_current_wave = m_msg_seq;
+	return m_current_wave;
+}
+
+void PlayerBotChatEngine::MarkHeard(Mob *speaker, uint8 chan_num, const std::vector<Mob *> &scope)
+{
+	if (chan_num >= kHeardChannelSlots) {
+		return;
+	}
+
+	const uint16 speaker_id = speaker ? speaker->GetID() : 0;
+
+	for (Mob *listener : scope) {
+		if (!listener) {
+			continue;
+		}
+		HeardMark &hm  = StateFor(listener->GetID()).last_heard[chan_num];
+		hm.wave        = m_current_wave;
+		hm.speaker_id  = speaker_id;
+	}
+}
+
+bool PlayerBotChatEngine::IsStaleEmission(const PendingEmission &pe) const
+{
+	if (!RuleB(PlayerBotChat, StaleEmissionDrop)) {
+		return false;
+	}
+	if (pe.wave_seq == 0 || pe.chan_num >= kHeardChannelSlots) {
+		return false;
+	}
+
+	// const, so StateFor() is off limits -- and creating a ListenerState for a
+	// listener that has no entry is exactly wrong here anyway: no entry means
+	// nothing was ever heard, which is not staleness.
+	auto it = m_listener_state.find(pe.listener_id);
+	if (it == m_listener_state.end()) {
+		return false;
+	}
+
+	const HeardMark &hm = it->second.last_heard[pe.chan_num];
+	if (hm.wave == 0 || hm.wave == pe.wave_seq) {
+		return false;
+	}
+
+	// A tell is 1:1. Two players whispering the same bot share channel 7 and
+	// nothing else, so only a newer tell from the SAME player makes the queued
+	// answer stale -- reply_to_id is that player's entity id, set when the
+	// emission was queued.
+	if (pe.chan_num == ChatChannel_Tell && hm.speaker_id != pe.reply_to_id) {
+		return false;
+	}
+
+	return true;
+}
+
+void PlayerBotChatEngine::ReleaseStaleReservation(const PendingEmission &pe)
+{
+	auto it = m_listener_state.find(pe.listener_id);
+	if (it == m_listener_state.end()) {
+		return;
+	}
+
+	ListenerState &st = it->second;
+
+	// Only undo the stamp this emission itself wrote. A listener that has
+	// spoken since owns a newer, genuine cooldown and must keep it.
+	if (st.last_msg_time_ms == pe.stamped_ms) {
+		st.last_msg_time_ms = pe.prev_msg_time_ms;
+	}
+
+	auto cf = st.category_last_fire.find(pe.category);
+	if (cf != st.category_last_fire.end() && cf->second == pe.stamped_ms) {
+		if (pe.had_cat_fire) {
+			cf->second = pe.prev_cat_fire_ms;
+		}
+		else {
+			// Absence and 0 are not the same thing on this map -- the cooldown
+			// check reads it through find() -- so a key that did not exist
+			// before has to go back to not existing.
+			st.category_last_fire.erase(cf);
+		}
 	}
 }
 
@@ -1298,6 +1428,15 @@ void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::stri
 	}
 
 	++m_stat_heard;
+
+	// [19.6] chain_depth 0 is the definition of a new conversation beat: a real
+	// client typed this. Everything deeper arrived through Emit() and belongs
+	// to the beat already in flight, so it must NOT open one -- that is the
+	// whole reason a reply never invalidates its own siblings.
+	if (chain_depth == 0) {
+		BeginWave();
+	}
+
 	DispatchToScope(speaker, chan_num, msg, chain_depth);
 }
 
@@ -1323,6 +1462,7 @@ void PlayerBotChatEngine::OverhearTell(Mob *from, Mob *to_bot, const std::string
 	// floor and the quartered category cooldown, which is exactly right for a
 	// tell -- someone who whispers a bot directly is owed an answer, and a
 	// 1:1 channel cannot spam anybody but the person who started it.
+	BeginWave();
 	DispatchToScope(from, ChatChannel_Tell, msg, 0, to_bot);
 }
 
@@ -1383,6 +1523,19 @@ void PlayerBotChatEngine::DispatchToScope(
 	const int32                        cat_id = ClassifyMessage(msg, captures);
 	if (cat_id < 0) {
 		++m_stat_drops[DR_NoCategory];
+
+		// [19.6] The channel moved on even though nothing matched -- "nvm",
+		// "brb", a typo -- and a reply queued against the PREVIOUS line is now
+		// just as stale as if this one had classified. The scope walk is the
+		// expensive half of a dispatch and no-category is the common case, so
+		// it is only paid for while something is actually waiting: m_pending is
+		// empty the overwhelming majority of the time, and then nothing CAN go
+		// stale.
+		if (!m_pending.empty() && RuleB(PlayerBotChat, StaleEmissionDrop)) {
+			std::vector<Mob *> heard_scope;
+			CollectScope(speaker, chan_num, heard_scope, tell_target);
+			MarkHeard(speaker, chan_num, heard_scope);
+		}
 		return;
 	}
 
@@ -1397,6 +1550,16 @@ void PlayerBotChatEngine::DispatchToScope(
 	if (scope.empty()) {
 		return;
 	}
+
+	// [19.6] Stamp the beat on everyone who HEARD it, before any of the reasons
+	// a given listener will not ANSWER it. A bot on cooldown, muted, or holding
+	// no matching row still witnessed the channel move on, and its own queued
+	// line has to go stale on exactly that basis.
+	//
+	// Ordering note: when this dispatch queues replies below, those replies
+	// carry m_current_wave -- the same value just written here -- so a listener
+	// is never made stale by the very message it is answering.
+	MarkHeard(speaker, chan_num, scope);
 
 	// Only a real client can be told back. A bot tell-chain is not a thing
 	// this engine builds: bots address players, never each other, on 7.
@@ -1665,9 +1828,44 @@ void PlayerBotChatEngine::DispatchToScope(
 	const int addressed_max = std::min(stagger_max, std::max(0, RuleI(PlayerBotChat, DirectAddressStaggerMaxMs)));
 	const int addressed_min = std::min(stagger_min, addressed_max);
 
+	// [19.4] TYPING TAKES TIME PROPORTIONAL TO WHAT YOU TYPE. Stagger read the
+	// clock and nothing else, so a ninety-character sentence and "aye" both
+	// landed after the same flat 1-4s. The rhythm is the tell: people do not
+	// deliver a one-word answer on the same schedule as a paragraph, and the
+	// mismatch is felt long before it is noticed.
+	const int ms_per_char = std::max(0, RuleI(PlayerBotChat, StaggerMsPerChar));
+
 	for (auto &c : candidates) {
 		const int lo = c.addressed ? addressed_min : stagger_min;
-		const int hi = c.addressed ? addressed_max : stagger_max;
+		int       hi = c.addressed ? addressed_max : stagger_max;
+
+		// [19.4] `lo` is reaction time -- how long before you start typing --
+		// and the typing itself raises the CEILING of the roll rather than
+		// replacing it. Three properties, all deliberate:
+		//
+		//   - the spread widens with length the way a real one does: "aye"
+		//     lands in a tight band just past the reaction floor, a long line
+		//     ranges up to the full budget;
+		//   - the total can never exceed StaggerMaxMs, so the Trilogy pacing
+		//     budget §12 is built around is untouched;
+		//   - ms_per_char 0 leaves `hi` exactly as it was, which is the flat
+		//     random.Int(StaggerMinMs, StaggerMaxMs) this replaces -- an honest
+		//     zero and the whole migration path.
+		//
+		// Because the roll is uniform across [lo, lo + typing], StaggerMsPerChar
+		// is the ceiling rate, not the mean; the average line takes about half
+		// of it. It is measured against the text this bot is about to SPEAK,
+		// not the message it heard -- that is what "what you type" means.
+		//
+		// [19.1] The addressed ceiling is applied first and survives untouched:
+		// a bot answering to its own name stays fast no matter how long the
+		// answer runs, which is the one thing the roadmap asked this change not
+		// to regress.
+		if (ms_per_char > 0) {
+			const int64 typing = static_cast<int64>(c.text.length()) * ms_per_char;
+			const int64 capped = std::min(static_cast<int64>(hi), static_cast<int64>(lo) + typing);
+			hi = static_cast<int>(std::max(static_cast<int64>(lo), capped));
+		}
 
 		const uint32 delay = static_cast<uint32>(
 			zone ? zone->random.Int(lo, hi) : lo
@@ -1676,6 +1874,10 @@ void PlayerBotChatEngine::DispatchToScope(
 		if (c.addressed) {
 			++m_stat_addressed;
 		}
+
+		// Resolved before the PendingEmission is built: [19.6] snapshots the
+		// cooldowns it is about to overwrite so a stale drop can hand them back.
+		ListenerState &st = StateFor(c.listener->GetID());
 
 		PendingEmission pe;
 		pe.listener_id = c.listener->GetID();
@@ -1687,10 +1889,24 @@ void PlayerBotChatEngine::DispatchToScope(
 		// places halves the effective ChainMaxDepth (a cap of 4 would allow
 		// only 2 bot hops) and breaks the spec's 2+4+8+16 termination bound.
 		pe.chain_depth = chain_depth;
+		// [19.6] The beat this answers. MarkHeard stamped the same value on
+		// every listener in scope a moment ago, so this line starts out fresh
+		// by construction and only goes stale if something NEWER arrives.
+		pe.wave_seq    = m_current_wave;
+
+		// [19.6] The reservation this line is about to make, recorded so it can
+		// be handed back if the line is never spoken.
+		pe.category         = c.category;
+		pe.stamped_ms       = now;
+		pe.prev_msg_time_ms = st.last_msg_time_ms;
+		{
+			auto prev_cf         = st.category_last_fire.find(c.category);
+			pe.had_cat_fire      = (prev_cf != st.category_last_fire.end());
+			pe.prev_cat_fire_ms  = pe.had_cat_fire ? prev_cf->second : 0;
+		}
+
 		pe.text        = c.text;
 		m_pending.push_back(std::move(pe));
-
-		ListenerState &st = StateFor(c.listener->GetID());
 
 		// [5] Stamp with `now`, not `now + delay`.  Stamping the future makes
 		// `now - last_msg_time_ms` underflow on an unsigned type for `delay`
@@ -1988,6 +2204,10 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	// and the row most worth keeping out of that reply is the one just spoken.
 	NoteResponseUsed(cat->id, resp->id, now_ms);
 
+	// [19.6] An opener starts a conversation, so it starts a beat. Emit() is
+	// synchronous into Overhear(), which inherits this and hands it to every
+	// reply queued against the opener.
+	BeginWave();
 	Emit(opener, out_channel, text, 0);
 
 	++m_opens_this_hour;
@@ -2177,6 +2397,8 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	// did not see cold tells. Both counters now come from the one place.
 	NoteResponseUsed(cat->id, resp->id, now_ms);
 
+	// [19.6] A cold tell opens its own beat, same as any other origination.
+	BeginWave();
 	Emit(sender, ChatChannel_Tell, text, 0, to->GetID());
 
 	LogInfo(
@@ -2361,6 +2583,11 @@ bool PlayerBotChatEngine::ScriptSay(
 	// of rows in the system, and until now the only one invisible to stats.
 	NoteResponseUsed(category_id, resp->id, now);
 
+	// [19.6] A script line (a kill shout, a death cry, an aggro call) is an
+	// unprompted statement, not an answer -- it opens a beat exactly as an
+	// opener does. Without this it would inherit whichever beat happened to be
+	// current and could stale-drop replies belonging to it.
+	BeginWave();
 	Emit(talker, out_channel, Substitute(resp->text, talker, nullptr, captures), 0);
 	return true;
 }
@@ -2645,6 +2872,41 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 		).c_str()
 	);
 
+	// [19.4 + 19.6] The two ship together and have to be read together: per-char
+	// typing widens the window that staleness closes. `stale` climbing towards
+	// `emitted` means the window is now wider than this zone's chat rhythm, and
+	// the lever for that is StaggerMaxMs -- not turning the guard off.
+	{
+		const int ms_per_char = std::max(0, RuleI(PlayerBotChat, StaggerMsPerChar));
+		const int lo          = std::max(0, RuleI(PlayerBotChat, StaggerMinMs));
+		const int hi          = std::max(lo, RuleI(PlayerBotChat, StaggerMaxMs));
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] stagger: {}-{}ms | {} ms/char ({}) | a {}-char line rolls {}-{}ms",
+				lo,
+				hi,
+				ms_per_char,
+				ms_per_char > 0 ? "length-proportional" : "OFF, flat roll",
+				40,
+				lo,
+				ms_per_char > 0 ? std::min(hi, lo + 40 * ms_per_char) : hi
+			).c_str()
+		);
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] stale drop: {} | {} lines dropped after the channel moved on",
+				RuleB(PlayerBotChat, StaleEmissionDrop) ? "on" : "OFF",
+				m_stat_drops[DR_Stale]
+			).c_str()
+		);
+	}
+
 	std::vector<std::pair<uint32, uint64>> hits(m_stat_category_hits.begin(), m_stat_category_hits.end());
 	std::sort(hits.begin(), hits.end(), [](auto &a, auto &b) { return a.second > b.second; });
 
@@ -2816,14 +3078,20 @@ void PlayerBotChatEngine::DumpThreads(Client *to)
 
 	for (const auto &p : m_pending) {
 		Mob *m = entity_list.GetMob(p.listener_id);
+		// [19.6] `wave` and `stale` are the only way to watch the guard work:
+		// a line shown as stale here will be dropped rather than spoken when
+		// its timer comes up, and #pbchat threads is the one place that is
+		// visible before it happens.
 		to->Message(
 			Chat::White,
 			"%s",
 			fmt::format(
-				"[pbchat] pending -> {} | chan {} | depth {} | in {}ms | {}",
+				"[pbchat] pending -> {} | chan {} | depth {} | wave {}{} | in {}ms | {}",
 				m ? ChatDisplayName(m) : "(gone)",
 				p.chan_num,
 				p.chain_depth,
+				p.wave_seq,
+				IsStaleEmission(p) ? " STALE" : "",
 				p.due_ms > now ? (p.due_ms - now) : 0,
 				p.text
 			).c_str()

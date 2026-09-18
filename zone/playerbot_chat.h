@@ -67,8 +67,19 @@ namespace PlayerBotChat {
 		DR_IgnoredSpeaker,
 		DR_TrilogyPressure,
 		DR_CapPerMessage,
+		// [19.6] The line was picked, queued, and then the channel moved on
+		// underneath it. Counted rather than silently discarded: a stale drop
+		// is a line a player would have seen, so a number that climbs towards
+		// `emitted` means the stagger window is wider than the zone's chat
+		// rhythm and StaggerMaxMs -- not this guard -- is the thing to lower.
+		DR_Stale,
 		DR_MAX
 	};
+
+	// Slots in ListenerState::last_heard. The engine's valid channels top out
+	// at ChatChannel_Say (8); 16 is the next power of two and leaves room for
+	// raid (15) if §0.0's "still open" list ever reaches it.
+	static const uint8 kHeardChannelSlots = 16;
 
 	struct Trigger {
 		uint32      id           = 0;
@@ -118,6 +129,20 @@ namespace PlayerBotChat {
 		std::vector<uint32> response_idx;    // indexes into PlayerBotChatEngine::m_responses
 	};
 
+	// [19.6] What this listener last HEARD on one channel, as opposed to what
+	// it said. `wave` is the id of the most recent conversation beat that
+	// reached it there; a queued emission stamped with an older wave is about
+	// to answer something the channel has already left behind.
+	//
+	// speaker_id is read on ChatChannel_Tell and nowhere else. A tell is 1:1,
+	// so two players whispering the same bot are two separate conversations
+	// that happen to share a channel number -- without this, Y's tell would
+	// silently eat the answer X was still waiting for.
+	struct HeardMark {
+		uint32 wave       = 0;
+		uint16 speaker_id = 0;
+	};
+
 	struct ListenerState {
 		uint64                             last_msg_time_ms    = 0;
 		std::unordered_map<uint32, uint64> category_last_fire;
@@ -129,6 +154,8 @@ namespace PlayerBotChat {
 		std::unordered_map<uint64, uint64> per_speaker_cat_last;
 		std::unordered_map<uint32, int>    category_bias;      // percent, from the Lua Bias binding
 		bool                               muted = false;
+		// [19.6] Indexed by channel number, bounds-guarded at every use.
+		HeardMark                          last_heard[kHeardChannelSlots];
 	};
 
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
@@ -149,6 +176,35 @@ namespace PlayerBotChat {
 		// or log out inside the stagger window, so this is looked up rather
 		// than held as a pointer -- same reason as listener_id.
 		uint16      reply_to_id = 0;
+		// [19.6] The conversation beat this line answers. Compared at drain
+		// against the listener's HeardMark for chan_num; a mismatch means the
+		// channel moved on inside the stagger window and the line is dropped
+		// rather than spoken into a question nobody remembers asking.
+		//
+		// A wave -- not a raw per-message counter -- because every reply to a
+		// message is itself a message: with a bare counter the FIRST responder
+		// firing would stale-drop the second one, and ResponseCapPerMessage 2
+		// would quietly collapse to 1. Replies inherit the wave of the message
+		// they answer, so one beat never invalidates itself.
+		uint32      wave_seq    = 0;
+		// [19.6] Enough to hand back the cooldowns this line reserved when it
+		// was queued but never spent, because it was dropped as stale.
+		//
+		// Cooldowns are stamped at QUEUE time, deliberately -- that is what
+		// stops one bot being queued twice inside a single stagger window.
+		// Dropping the line without undoing the stamp would leave the bot
+		// mute for PerListenerCooldownMs having said nothing, and the zone's
+		// one candidate answering neither the old message nor the new one is
+		// worse than the stale line 19.6 exists to prevent.
+		//
+		// stamped_ms guards the rollback: it is the exact value written at
+		// queue time, so if anything else has stamped this listener since,
+		// the rollback is skipped rather than clobbering a newer, real one.
+		uint32      category         = 0;
+		uint64      stamped_ms       = 0;
+		uint64      prev_msg_time_ms = 0;
+		uint64      prev_cat_fire_ms = 0;
+		bool        had_cat_fire     = false;
 		std::string text;
 	};
 
@@ -345,6 +401,30 @@ private:
 
 	void ExpireTransients(uint64 now_ms);
 
+	// [19.6] Open a new conversation beat and make it current. Called at every
+	// ORIGINATION point -- a client line at chain_depth 0, a /tell, an opener,
+	// a cold tell, a ScriptSay -- and nowhere else. Everything the bus fans out
+	// from that message inherits m_current_wave, including the Overhear that
+	// Emit() triggers, which is what stops a wave invalidating itself.
+	uint32 BeginWave();
+
+	// Stamp m_current_wave onto every listener in `scope` as heard-on-channel.
+	// Separate from the candidate loop because HEARING is not REPLYING: a bot
+	// on cooldown, muted, or with no matching row still witnessed the channel
+	// move on, and its own queued line has to go stale on that basis.
+	void MarkHeard(Mob *speaker, uint8 chan_num, const std::vector<Mob *> &scope);
+
+	// True when `pe` answers a beat this listener has already heard past.
+	bool IsStaleEmission(const PlayerBotChat::PendingEmission &pe) const;
+
+	// Hand back the mouth and category cooldowns a stale-dropped line reserved
+	// and never spent. The repetition ring and the per-row counters are NOT
+	// rolled back: they measure which rows the picker reaches for, the penalty
+	// they carry is a soft weight nudge rather than a gate, and a row the
+	// engine just tried to say is exactly the one worth de-prioritising next
+	// time. DR_Stale is the honest count of how far the two diverge.
+	void ReleaseStaleReservation(const PlayerBotChat::PendingEmission &pe);
+
 	// The one commit point for "this row was actually spoken": bumps the
 	// per-row and per-category counters and arms the repetition guard.
 	// Deliberately NOT called from PickResponse -- three callers pick a row and
@@ -396,6 +476,16 @@ private:
 	uint64                                                   m_next_expire_ms          = 0;
 	uint64                                                   m_next_transient_sweep_ms = 0;
 	bool                                                     m_all_muted               = false;
+
+	// [19.6] Per-zone monotonic beat counter, and the beat currently being fanned
+	// out. m_current_wave is safe as a member rather than a threaded parameter
+	// because the whole bus is synchronous and single-threaded: Emit() ->
+	// Overhear() -> DispatchToScope() is plain recursion on the zone main loop,
+	// so there is never a second wave in flight. The drain restores it from the
+	// PendingEmission before calling Emit(), which is what makes a reply's own
+	// fan-out belong to the beat it answers.
+	uint32                                                   m_msg_seq     = 0;
+	uint32                                                   m_current_wave = 0;
 
 	// Unprompted tells. Keyed by LOWERCASED CHARACTER NAME, not entity id:
 	// entity ids are recycled, and a player who zones out and back in inside
