@@ -1940,9 +1940,9 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 				parse->EventBot(EVENT_SLAY, killer_mob->CastToBot(), this, "", 0);
 			}
 
-			// [19.5] Victory callout. `this` is the mob that actually died, and
-			// it is passed through as {target} -- a victory line must never name
-			// a kill drawn from a content pool. Gated internally.
+			// [19.5] Victory callout for a PvP kill (EVENT_SLAY == "slew a
+			// PLAYER"). Disjoint from the PvE one in NPC::Death by victim type,
+			// so exactly one of the two can fire for any given kill.
 			killer_mob->CastToBot()->OnChatSlay(this);
 
 			killer_mob->TrySpellOnKill(killed_level, spell);
@@ -3069,6 +3069,20 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		if (parse->BotHasQuestSub(EVENT_NPC_SLAY)) {
 			parse->EventBot(EVENT_NPC_SLAY, killer_mob->CastToBot(), this, "", 0);
 		}
+
+		// [19.5] Victory callout for a PvE kill -- the one that actually
+		// happens. EVENT_NPC_SLAY is the "slew an NPC" event; the EventBot line
+		// directly above it is inert only because no bot quest script exists,
+		// which is exactly why Bots were the silent half. PlayerBots need
+		// nothing here: EVENT_NPC_SLAY is ALSO delivered to Lua as `event_slay`
+		// (LuaParser::ConvertLuaEvent folds EVENT_SLAY and EVENT_NPC_SLAY into
+		// one name), so Player_Bot.lua has been announcing PvE kills all along
+		// and a C++ hook for them would double-announce.
+		//
+		// `this` is the mob that actually died, passed through as {target}: a
+		// victory line must never name a kill drawn from a content pool. Gated
+		// internally on chat_enabled, the killswitch and the chorus roll.
+		killer_mob->CastToBot()->OnChatSlay(this);
 
 		killer_mob->TrySpellOnKill(killed_level, spell);
 	}

@@ -165,6 +165,12 @@ namespace PlayerBotChat {
 		bool                               muted = false;
 		// [19.6] Indexed by channel number, bounds-guarded at every use.
 		HeardMark                          last_heard[kHeardChannelSlots];
+		// [17.1 C] Low-mana latch. Set when the caster announces, cleared only
+		// once mana climbs back past LowManaClearPercent -- the hysteresis is
+		// the whole design: a bare threshold test re-fires every tick while the
+		// bar hovers on the line, which is how a useful callout becomes spam.
+		// The clear is SILENT; recovery is not news.
+		bool                               low_mana_latched = false;
 	};
 
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
@@ -445,6 +451,18 @@ private:
 	// person's screen repeatedly, not on a channel nobody has to read.
 	void SpontaneousTellTick(uint64 now_ms);
 
+	// [17.1 C] Proactive low-mana callout. A sweep with a latch rather than an
+	// event, because EVENT_HP fires only for NPCs and needs SetNextHPEvent()
+	// armed, which is not exposed to Lua at all -- so the PlayerBot route would
+	// need a new binding and the Bot route cannot work that way. One sweep
+	// covers both populations identically, with no Lua binding and no Bot::
+	// change, and the latch sits next to the cooldowns that already exist to
+	// stop spam.
+	//
+	// Deliberately NOT gated on §19.5's combat check: a caster running dry
+	// mid-fight is precisely when the group needs to hear it.
+	void ManaWatchTick();
+
 	// True when the category holds at least one row that asked for channel 7.
 	// Gates which categories may cold-tell at all, so a /say opener pool is
 	// never drafted into whispering strangers.
@@ -571,6 +589,9 @@ private:
 	// the cooldown would otherwise look like a fresh target.
 	std::unordered_map<std::string, uint64>                  m_last_tell_to_player;
 	uint64                                                   m_next_spontaneous_tell_ms = 0;
+	// [17.1 C] Mana sweeps are cheap but mana moves fast; 5s is often enough to
+	// catch a caster going dry without walking the bot list every main loop.
+	uint64                                                   m_next_mana_watch_ms       = 0;
 	uint32                                                   m_tells_this_hour          = 0;
 
 	// ---- stats --------------------------------------------------------

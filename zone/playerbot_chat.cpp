@@ -621,6 +621,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_last_tell_to_player.clear();
 	m_tells_this_hour         = 0;
 	m_next_spontaneous_tell_ms = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTellTickSec)) * 1000);
+	m_next_mana_watch_ms       = m_hour_window_start_ms + 5000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -731,6 +732,14 @@ void PlayerBotChatEngine::Process()
 		}
 		m_next_spontaneous_tell_ms = now + (static_cast<uint64>(tell_tick_sec) * 1000);
 		SpontaneousTellTick(now);
+	}
+
+	// [17.1 C] Its own clock, and a fast one. Mana can go from comfortable to
+	// empty inside a single fight, and a callout that arrives after the wipe is
+	// not a callout.
+	if (now >= m_next_mana_watch_ms) {
+		m_next_mana_watch_ms = now + 5000;
+		ManaWatchTick();
 	}
 }
 
@@ -1357,6 +1366,21 @@ std::string PlayerBotChatEngine::Substitute(
 		}
 		else if (var == "level" || var == "self_level") {
 			out.append(std::to_string(listener ? listener->GetLevel() : 0));
+		}
+		// [17.1 C] The two numbers the engine can actually vouch for. This is
+		// what makes a mana line honest BY CONSTRUCTION, the same way
+		// requires_zone makes a place name honest: "oom" written as a literal
+		// is a guess, "{mana} percent" is a measurement.
+		//
+		// GetManaRatio() answers 100 for a mob with no pool at all, so a row
+		// that could reach a warrior would read as full rather than as nonsense
+		// -- but the real guard is class_mask on the row, and ManaWatchTick
+		// additionally refuses anything with GetMaxMana() <= 0.
+		else if (var == "mana") {
+			out.append(std::to_string(listener ? static_cast<int>(listener->GetManaRatio()) : 0));
+		}
+		else if (var == "hp") {
+			out.append(std::to_string(listener ? static_cast<int>(listener->GetHPRatio()) : 0));
 		}
 		else if (var == "zone") {
 			out.append(zone ? zone->GetLongName() : "");
@@ -2221,6 +2245,95 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 
 		default:
 			break;
+	}
+}
+
+// ============================================================
+// [17.1 C] low-mana watch
+// ============================================================
+
+void PlayerBotChatEngine::ManaWatchTick()
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	const int low = RuleI(PlayerBotChat, LowManaPercent);
+	if (low <= 0) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	// The clear threshold must sit strictly above the trip threshold or the
+	// latch degenerates into a bare comparison and re-fires on every sweep.
+	const int clear = std::max(low + 1, RuleI(PlayerBotChat, LowManaClearPercent));
+
+	const int32 cat_id = FindCategoryId("low_mana");
+	if (cat_id < 0) {
+		// Content is optional and operator-installed. Say so once per sweep at
+		// most -- never silently, because "my casters never call oom" with no
+		// log line is the failure mode this whole file is written against.
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] low-mana watch: no 'low_mana' category loaded; run the mana SQL or set LowManaPercent 0");
+		}
+		return;
+	}
+
+	auto consider = [&](Mob *m) {
+		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// No pool, nothing to report. This, not class_mask, is the honest
+		// engine-side test -- it is true of any class, on any server, without
+		// anybody having to keep a caster list in the content up to date.
+		if (m->GetMaxMana() <= 0) {
+			return;
+		}
+
+		ListenerState &st = StateFor(m->GetID());
+		if (st.muted) {
+			return;
+		}
+
+		const int pct = static_cast<int>(m->GetManaRatio());
+
+		if (!st.low_mana_latched) {
+			if (pct <= low) {
+				st.low_mana_latched = true;
+
+				// Grouped casters report to the group, where the tank and the
+				// puller can act on it; ungrouped ones mutter it locally.
+				const uint8 chan = IsGroupedForChat(m) ? ChatChannel_Group : ChatChannel_Say;
+
+				// The latch is armed BEFORE the speak attempt, deliberately. If
+				// the category cooldown or the repeat guard swallows this line,
+				// the bot is still low and re-announcing on the next 5s sweep
+				// would be worse than staying quiet until it recovers.
+				ScriptSay(m, static_cast<uint32>(cat_id), chan);
+			}
+			return;
+		}
+
+		if (pct >= clear) {
+			// Silent re-arm. Recovery is not news, and a zone of casters each
+			// announcing that they are back up is the spam this guard exists to
+			// prevent.
+			st.low_mana_latched = false;
+		}
+	};
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		if (IsPlayerBot(e.second)) {
+			consider(e.second);
+		}
+	}
+	for (auto *b : entity_list.GetBotList()) {
+		consider(static_cast<Mob *>(b));
 	}
 }
 
@@ -3276,6 +3389,29 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 				"[pbchat] utterance dedupe: {}ms window | {} duplicate copies collapsed",
 				RuleI(PlayerBotChat, DuplicateUtteranceMs),
 				m_stat_drops[DR_DuplicateUtterance]
+			).c_str()
+		);
+
+		// [17.1 C] `latched 0` with casters demonstrably running dry means the
+		// sweep is not reaching them; "no low_mana category" means the content
+		// SQL was never run, which is by far the likelier of the two.
+		size_t latched = 0;
+		for (const auto &ls : m_listener_state) {
+			if (ls.second.low_mana_latched) {
+				++latched;
+			}
+		}
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] mana watch: {} | trips at {}%, re-arms at {}% | {} casters latched low | category {}",
+				RuleI(PlayerBotChat, LowManaPercent) > 0 ? "on" : "OFF",
+				RuleI(PlayerBotChat, LowManaPercent),
+				std::max(RuleI(PlayerBotChat, LowManaPercent) + 1, RuleI(PlayerBotChat, LowManaClearPercent)),
+				latched,
+				FindCategoryId("low_mana") >= 0 ? "loaded" : "MISSING (run the mana SQL)"
 			).c_str()
 		);
 	}
