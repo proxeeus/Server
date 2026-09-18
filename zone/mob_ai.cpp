@@ -2032,6 +2032,10 @@ void Mob::AI_Event_Engaged(Mob *attacker, bool yell_for_help)
 		if (parse->BotHasQuestSub(EVENT_COMBAT)) {
 			parse->EventBot(EVENT_COMBAT, CastToBot(), attacker, "1", 0);
 		}
+
+		// [19.5] Bots are a C++ subsystem, so the chat callout hangs here rather
+		// than on a quest sub that no shipped script defines. Gated internally.
+		CastToBot()->OnChatCombatEngaged(attacker);
 	}
 }
 

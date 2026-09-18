@@ -22,6 +22,7 @@
 #include "doors.h"
 #include "quest_parser_collection.h"
 #include "lua_parser.h"
+#include "playerbot_chat.h"
 #include "../common/repositories/bot_inventories_repository.h"
 #include "../common/repositories/bot_spell_settings_repository.h"
 #include "../common/repositories/bot_starting_items_repository.h"
@@ -1388,6 +1389,90 @@ void Bot::OnChatHeard(Mob* speaker, uint8 channel, const std::string& msg)
 		speaker ? speaker->GetCleanName() : "?",
 		msg
 	);
+}
+
+// ============================================================
+// [19.5 / 19.20] combat callouts
+//
+// One shared shape, three events.  The channel choice is the whole of 19.20's
+// combat half: a grouped bot calls the fight in GROUP chat, where the people
+// who need to hear it are, rather than muttering it at the room.  Ungrouped
+// falls back to /say exactly as Player_Bot.lua does.
+//
+// Routed through PlayerBotChatEngine::ScriptSayNamed rather than Say(): Say()
+// delivers straight to real clients and never enters Overhear, so the line
+// would be inert -- no other bot could hear "Incoming!" or answer it.  By name,
+// not id, because category ids are AUTO_INCREMENT and differ per database.
+// ============================================================
+
+// True when this bot should put a combat line in group chat rather than /say.
+static uint8 BotChatCombatChannel(Bot *b)
+{
+	return PlayerBotChatEngine::IsGroupedForChat(b) ? ChatChannel_Group : ChatChannel_Say;
+}
+
+void Bot::OnChatCombatEngaged(Mob* attacker)
+{
+	if (!GetChatEnabled() || !RuleB(PlayerBotChat, ChatEnabled)) {
+		return;
+	}
+
+	// The chorus guard.  Category cooldowns are PER LISTENER, so six bots
+	// engaging one pull are six independent timers and every one of them calls
+	// the incoming -- the cooldown cannot solve this and a roll can.
+	if (!zone || !zone->random.Roll(std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)))) {
+		// Logged, because "my bots never call incoming" and "my bots rolled a 4
+		// in 5 and stayed quiet" look identical from the game and are fixed by
+		// completely different things.
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] callout declined by roll: bot [{}] cat [aggro]", GetCleanName());
+		}
+		return;
+	}
+
+	// The mob that actually pulled aggro, as {target}.  Never a name from a
+	// content pool -- that is §0.0's first violation wearing a new hat.
+	const std::string target_name = attacker ? attacker->GetCleanName() : "";
+
+	playerbot_chat.ScriptSayNamed(this, "aggro", BotChatCombatChannel(this), target_name);
+}
+
+void Bot::OnChatSlay(Mob* victim)
+{
+	if (!GetChatEnabled() || !RuleB(PlayerBotChat, ChatEnabled)) {
+		return;
+	}
+
+	if (!zone || !zone->random.Roll(std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)))) {
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] callout declined by roll: bot [{}] cat [victory]", GetCleanName());
+		}
+		return;
+	}
+
+	const std::string victim_name = victim ? victim->GetCleanName() : "";
+
+	playerbot_chat.ScriptSayNamed(this, "victory", BotChatCombatChannel(this), victim_name);
+}
+
+void Bot::OnChatDeath(Mob* killer)
+{
+	if (!GetChatEnabled() || !RuleB(PlayerBotChat, ChatEnabled)) {
+		return;
+	}
+
+	// Deliberately NOT behind CombatCalloutChance.  A death is one bot, once,
+	// and the line is how the group finds out somebody needs a rez -- rolling
+	// it away is the one case where silence costs the player something real.
+	// The category cooldown in ScriptSay still bounds a repeated wipe.
+	//
+	// The killer is passed as {target} even though no shipped 'death' row uses
+	// it: the engine genuinely witnessed what landed the blow, so a row that
+	// names it would be honest, and handing it over now means the content pack
+	// that wants it needs no code change.
+	const std::string killer_name = killer ? killer->GetCleanName() : "";
+
+	playerbot_chat.ScriptSayNamed(this, "death", BotChatCombatChannel(this), killer_name);
 }
 
 bool Bot::DeleteBot()
@@ -5077,6 +5162,12 @@ bool Bot::Death(Mob *killer_mob, int64 damage, uint16 spell_id, EQ::skills::Skil
 
 		parse->EventBot(EVENT_DEATH_COMPLETE, this, killer_mob, export_string, 0);
 	}
+
+	// [19.5] Death callout -- BEFORE Zone()/RemoveBot below, not after. The
+	// engine emits through entity_list, and a bot already pulled out of it
+	// reaches nobody: the line would be built, counted, and delivered to an
+	// empty room.
+	OnChatDeath(killer_mob);
 
 	Zone();
 	entity_list.RemoveBot(GetID());

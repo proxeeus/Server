@@ -194,6 +194,8 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_TrilogyPressure:  return "trilogy-pressure";
 		case DR_CapPerMessage:    return "response-cap";
 		case DR_Stale:            return "stale";
+		case DR_InCombat:         return "in-combat";
+		case DR_DuplicateUtterance: return "duplicate-utterance";
 		default:                  return "unknown";
 	}
 }
@@ -284,6 +286,56 @@ bool PlayerBotChatEngine::IsChatBot(Mob *m)
 	return false;
 }
 
+bool PlayerBotChatEngine::IsGroupedForChat(Mob *m)
+{
+	if (!m) {
+		return false;
+	}
+
+	if (m->GetGroup()) {
+		return true;
+	}
+
+	// Raid groups resolve by NAME, and a raided member's Group object is gone
+	// -- the same reason CollectScope and EmitChannel both look here. Checking
+	// only GetGroup() would make every raider read as ungrouped.
+	Raid *r = entity_list.GetRaidByName(m->GetName());
+	if (!r) {
+		r = entity_list.GetRaidByBotName(m->GetName());
+	}
+
+	return r && r->GetGroup(m->GetName()) < MAX_RAID_GROUPS;
+}
+
+bool PlayerBotChatEngine::IsInCombat(Mob *m)
+{
+	if (!m) {
+		return false;
+	}
+
+	if (m->IsEngaged()) {
+		return true;
+	}
+
+	// The expensive half, and the reason this is not just IsEngaged(): a
+	// healer or a slower standing behind the tank is on nobody's hate list and
+	// would keep chattering happily through the whole fight. Bounded by group
+	// size (6), and only reached when the cheap self-check already said no.
+	Group *g = m->GetGroup();
+	if (!g) {
+		return false;
+	}
+
+	for (uint32 i = 0; i < MAX_GROUP_MEMBERS; ++i) {
+		Mob *gm = g->members[i];
+		if (gm && gm != m && gm->IsEngaged()) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
 // ============================================================
 // content cache
 // ============================================================
@@ -325,6 +377,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 	// re-points the same id onto different text. Carrying either across a load
 	// would penalise -- or credit -- a row nobody has ever heard.
 	m_recent_response_use.clear();
+	m_recent_utterances.clear();
 	m_stat_response_hits.clear();
 
 	// ---- categories ----
@@ -557,15 +610,18 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_listener_state.clear();
 	m_recent_self_emissions.clear();
 	m_recent_response_use.clear();
+	m_recent_utterances.clear();
 	m_pending.clear();
 	m_threads.clear();
 	m_next_thread_id          = 1;
 	m_opens_this_hour         = 0;
+	m_group_opens_this_hour   = 0;
 	m_hour_window_start_ms    = NowMs();
 	m_next_spontaneous_ms     = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTickSec)) * 1000);
 	m_last_tell_to_player.clear();
 	m_tells_this_hour         = 0;
 	m_next_spontaneous_tell_ms = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTellTickSec)) * 1000);
+	m_next_mana_watch_ms       = m_hour_window_start_ms + 5000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -677,6 +733,14 @@ void PlayerBotChatEngine::Process()
 		m_next_spontaneous_tell_ms = now + (static_cast<uint64>(tell_tick_sec) * 1000);
 		SpontaneousTellTick(now);
 	}
+
+	// [17.1 C] Its own clock, and a fast one. Mana can go from comfortable to
+	// empty inside a single fight, and a callout that arrives after the wipe is
+	// not a callout.
+	if (now >= m_next_mana_watch_ms) {
+		m_next_mana_watch_ms = now + 5000;
+		ManaWatchTick();
+	}
 }
 
 // ============================================================
@@ -712,6 +776,39 @@ void PlayerBotChatEngine::MarkHeard(Mob *speaker, uint8 chan_num, const std::vec
 		hm.wave        = m_current_wave;
 		hm.speaker_id  = speaker_id;
 	}
+}
+
+bool PlayerBotChatEngine::IsDuplicateUtterance(Mob *speaker, uint8 chan_num, const std::string &msg)
+{
+	const uint32 window = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, DuplicateUtteranceMs)));
+	if (window == 0 || !speaker) {
+		return false;
+	}
+
+	// Keyed on the SPEAKER'S ENTITY ID, not the display name: two bots rolling
+	// the same row is a different problem with a different guard
+	// (m_recent_response_use), and folding them together here would silence the
+	// second bot instead of the duplicate packet this exists for.
+	uint64 h = 1469598103934665603ULL;
+	auto   mix = [&h](uint64 v) {
+		h ^= v;
+		h *= 1099511628211ULL;
+	};
+
+	mix(static_cast<uint64>(speaker->GetID()));
+	mix(static_cast<uint64>(chan_num));
+	for (unsigned char c : msg) {
+		mix(static_cast<uint64>(c));
+	}
+
+	const uint64 now = NowMs();
+	auto         it  = m_recent_utterances.find(h);
+	if (it != m_recent_utterances.end() && now < it->second) {
+		return true;
+	}
+
+	m_recent_utterances[h] = now + window;
+	return false;
 }
 
 bool PlayerBotChatEngine::IsStaleEmission(const PendingEmission &pe) const
@@ -788,6 +885,12 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 
 	for (auto it = m_recent_self_emissions.begin(); it != m_recent_self_emissions.end();) {
 		it = (now_ms >= it->second) ? m_recent_self_emissions.erase(it) : std::next(it);
+	}
+
+	// [19.6 FIX] Same shape, much shorter TTL -- entries live DuplicateUtteranceMs
+	// (2s by default), so this map is empty except during an actual fan-out burst.
+	for (auto it = m_recent_utterances.begin(); it != m_recent_utterances.end();) {
+		it = (now_ms >= it->second) ? m_recent_utterances.erase(it) : std::next(it);
 	}
 
 	// The repetition ring. Bounded by the row count either way, but letting it
@@ -1191,6 +1294,15 @@ std::string PlayerBotChatEngine::CategoryNameFor(uint32 id) const
 	return m_categories[it->second].name;
 }
 
+uint32 PlayerBotChatEngine::CategoryCooldownFor(uint32 id) const
+{
+	auto it = m_category_by_id.find(id);
+	if (it == m_category_by_id.end()) {
+		return 0;
+	}
+	return m_categories[it->second].cooldown_ms;
+}
+
 // ============================================================
 // substitution
 // ============================================================
@@ -1254,6 +1366,21 @@ std::string PlayerBotChatEngine::Substitute(
 		}
 		else if (var == "level" || var == "self_level") {
 			out.append(std::to_string(listener ? listener->GetLevel() : 0));
+		}
+		// [17.1 C] The two numbers the engine can actually vouch for. This is
+		// what makes a mana line honest BY CONSTRUCTION, the same way
+		// requires_zone makes a place name honest: "oom" written as a literal
+		// is a guess, "{mana} percent" is a measurement.
+		//
+		// GetManaRatio() answers 100 for a mob with no pool at all, so a row
+		// that could reach a warrior would read as full rather than as nonsense
+		// -- but the real guard is class_mask on the row, and ManaWatchTick
+		// additionally refuses anything with GetMaxMana() <= 0.
+		else if (var == "mana") {
+			out.append(std::to_string(listener ? static_cast<int>(listener->GetManaRatio()) : 0));
+		}
+		else if (var == "hp") {
+			out.append(std::to_string(listener ? static_cast<int>(listener->GetHPRatio()) : 0));
 		}
 		else if (var == "zone") {
 			out.append(zone ? zone->GetLongName() : "");
@@ -1424,6 +1551,14 @@ void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::stri
 
 	EnsureLoaded();
 	if (!m_loaded) {
+		return;
+	}
+
+	// [19.6 FIX] Collapse a fanned-out utterance to one beat BEFORE anything
+	// else counts it. Restricted to chain_depth 0 because this is a client
+	// packet phenomenon: bot fan-out arrives through Emit, exactly once.
+	if (chain_depth == 0 && IsDuplicateUtterance(speaker, chan_num, msg)) {
+		++m_stat_drops[DR_DuplicateUtterance];
 		return;
 	}
 
@@ -1609,6 +1744,14 @@ void PlayerBotChatEngine::DispatchToScope(
 		std::max(0, RuleI(PlayerBotChat, EarshotDistance))
 	)) * 10LL;
 
+	// [19.5] Read once, not per listener. CombatReplyChance doubles as the
+	// master switch for the whole section: at 100 an engaged bot answers
+	// exactly as it always did, the stagger multiplier below is skipped, and
+	// SpontaneousTick stops filtering openers on combat -- one rule, one honest
+	// zero, covering "whether", "when" and "unprompted" together.
+	const int  combat_reply_chance = std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance)));
+	const bool combat_gate_on      = (combat_reply_chance < 100);
+
 	std::vector<Candidate> candidates;
 	candidates.reserve(scope.size());
 
@@ -1687,6 +1830,27 @@ void PlayerBotChatEngine::DispatchToScope(
 			continue;
 		}
 
+		// [19.5] BOTS CHAT WHILE TANKING. Nothing anywhere consulted combat
+		// state, so a bot held the same conversational rhythm through a pull, a
+		// wipe and the walk back. A bot that goes quiet when the fight starts
+		// and picks the thread back up afterwards is the most human thing in
+		// this section, and it costs one state read.
+		//
+		// Placed after the cooldowns and before PickResponse: the cooldowns are
+		// plain arithmetic, IsInCombat walks a group, and PickResponse walks the
+		// whole response pool -- so this is the cheapest point that still skips
+		// the expensive work.
+		//
+		// Being named is exempt. 19.1 exists so that your own name cuts through,
+		// and mid-fight is exactly when a player most needs it to.
+		const bool listener_in_combat = IsInCombat(listener);
+		if (listener_in_combat && !addressed && combat_gate_on) {
+			if (!zone || !zone->random.Roll(combat_reply_chance)) {
+				++m_stat_drops[DR_InCombat];
+				continue;
+			}
+		}
+
 		const Response *resp = PickResponse(cat.id, listener, speaker, chan_num, now);
 		if (!resp) {
 			++m_stat_drops[DR_NoResponseRow];
@@ -1694,7 +1858,8 @@ void PlayerBotChatEngine::DispatchToScope(
 		}
 
 		Candidate c;
-		c.listener = listener;
+		c.listener  = listener;
+		c.in_combat = listener_in_combat;
 		c.category = cat.id;
 		c.response = resp;
 		c.text     = Substitute(resp->text, listener, speaker, captures);
@@ -1835,6 +2000,11 @@ void PlayerBotChatEngine::DispatchToScope(
 	// mismatch is felt long before it is noticed.
 	const int ms_per_char = std::max(0, RuleI(PlayerBotChat, StaggerMsPerChar));
 
+	// [19.5] Clamped at 100 on the low side: this multiplier exists to make a
+	// fighting bot SLOWER, and a value below 100 would quietly make combat the
+	// fastest the engine ever answers.
+	const int combat_stagger_pct = std::max(100, RuleI(PlayerBotChat, CombatStaggerPercent));
+
 	for (auto &c : candidates) {
 		const int lo = c.addressed ? addressed_min : stagger_min;
 		int       hi = c.addressed ? addressed_max : stagger_max;
@@ -1865,6 +2035,21 @@ void PlayerBotChatEngine::DispatchToScope(
 			const int64 typing = static_cast<int64>(c.text.length()) * ms_per_char;
 			const int64 capped = std::min(static_cast<int64>(hi), static_cast<int64>(lo) + typing);
 			hi = static_cast<int>(std::max(static_cast<int64>(lo), capped));
+		}
+
+		// [19.5] Fighting means you are slower to the keyboard. Applied to the
+		// ceiling that 19.4 just computed and re-clamped to the SAME ceiling
+		// this candidate already had, so a combat reply can stretch across the
+		// budget it was allowed but never past it -- the Trilogy pacing budget
+		// is unchanged, and an addressed reply stays inside
+		// DirectAddressStaggerMaxMs however hard the fight is going.
+		if (c.in_combat && combat_gate_on && combat_stagger_pct != 100) {
+			const int   ceiling = c.addressed ? addressed_max : stagger_max;
+			const int64 scaled  = (static_cast<int64>(hi) * combat_stagger_pct) / 100;
+			hi = static_cast<int>(std::max(
+				static_cast<int64>(lo),
+				std::min(static_cast<int64>(ceiling), scaled)
+			));
 		}
 
 		const uint32 delay = static_cast<uint32>(
@@ -2064,6 +2249,145 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 }
 
 // ============================================================
+// [19.5] combat events
+// ============================================================
+
+void PlayerBotChatEngine::NotifySlay(Mob *killer, Mob *victim)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !killer || !victim || !zone) {
+		return;
+	}
+
+	// The killer, when it is a Bot. No distance test -- it just killed the
+	// thing, presence is not in question.
+	//
+	// A PlayerBot killer is deliberately NOT handled here: EVENT_NPC_SLAY is
+	// delivered to Lua as `event_slay` (ConvertLuaEvent folds the two), so
+	// Player_Bot.lua already fires for it and a second line would double up.
+	if (killer->IsBot()) {
+		killer->CastToBot()->OnChatSlay(victim);
+	}
+
+	// Everyone else in the killer's group. CollectScope on channel 2 is exactly
+	// the right query -- it already resolves a real group AND a raid group by
+	// name, excludes the speaker, and returns only chat-capable bots -- so the
+	// group/raid edge cases stay solved in one place instead of two.
+	std::vector<Mob *> group_scope;
+	CollectScope(killer, ChatChannel_Group, group_scope);
+	if (group_scope.empty()) {
+		return;
+	}
+
+	const float earshot = static_cast<float>(RuleI(PlayerBotChat, EarshotDistance));
+
+	for (Mob *m : group_scope) {
+		// Bots only. A PlayerBot sharing a player's group is rare enough not to
+		// be worth a second speak path, and Player_Bot.lua covers the case that
+		// actually happens (a PlayerBot getting its own kill).
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+
+		// Present for the fight, not merely on the roster. See the header note:
+		// the victory rows are true for a participant and false for a spectator.
+		if (Distance(m->GetPosition(), victim->GetPosition()) > earshot) {
+			continue;
+		}
+
+		m->CastToBot()->OnChatSlay(victim);
+	}
+}
+
+// ============================================================
+// [17.1 C] low-mana watch
+// ============================================================
+
+void PlayerBotChatEngine::ManaWatchTick()
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	const int low = RuleI(PlayerBotChat, LowManaPercent);
+	if (low <= 0) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	// The clear threshold must sit strictly above the trip threshold or the
+	// latch degenerates into a bare comparison and re-fires on every sweep.
+	const int clear = std::max(low + 1, RuleI(PlayerBotChat, LowManaClearPercent));
+
+	const int32 cat_id = FindCategoryId("low_mana");
+	if (cat_id < 0) {
+		// Content is optional and operator-installed. Say so once per sweep at
+		// most -- never silently, because "my casters never call oom" with no
+		// log line is the failure mode this whole file is written against.
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] low-mana watch: no 'low_mana' category loaded; run the mana SQL or set LowManaPercent 0");
+		}
+		return;
+	}
+
+	auto consider = [&](Mob *m) {
+		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// No pool, nothing to report. This, not class_mask, is the honest
+		// engine-side test -- it is true of any class, on any server, without
+		// anybody having to keep a caster list in the content up to date.
+		if (m->GetMaxMana() <= 0) {
+			return;
+		}
+
+		ListenerState &st = StateFor(m->GetID());
+		if (st.muted) {
+			return;
+		}
+
+		const int pct = static_cast<int>(m->GetManaRatio());
+
+		if (!st.low_mana_latched) {
+			if (pct <= low) {
+				st.low_mana_latched = true;
+
+				// Grouped casters report to the group, where the tank and the
+				// puller can act on it; ungrouped ones mutter it locally.
+				const uint8 chan = IsGroupedForChat(m) ? ChatChannel_Group : ChatChannel_Say;
+
+				// The latch is armed BEFORE the speak attempt, deliberately. If
+				// the category cooldown or the repeat guard swallows this line,
+				// the bot is still low and re-announcing on the next 5s sweep
+				// would be worse than staying quiet until it recovers.
+				ScriptSay(m, static_cast<uint32>(cat_id), chan);
+			}
+			return;
+		}
+
+		if (pct >= clear) {
+			// Silent re-arm. Recovery is not news, and a zone of casters each
+			// announcing that they are back up is the spam this guard exists to
+			// prevent.
+			st.low_mana_latched = false;
+		}
+	};
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		if (IsPlayerBot(e.second)) {
+			consider(e.second);
+		}
+	}
+	for (auto *b : entity_list.GetBotList()) {
+		consider(static_cast<Mob *>(b));
+	}
+}
+
+// ============================================================
 // spontaneous scheduler
 // ============================================================
 
@@ -2079,8 +2403,9 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	}
 
 	if (now_ms - m_hour_window_start_ms > 3600000) {
-		m_hour_window_start_ms = now_ms;
-		m_opens_this_hour      = 0;
+		m_hour_window_start_ms   = now_ms;
+		m_opens_this_hour        = 0;
+		m_group_opens_this_hour  = 0;
 	}
 
 	// Clamp at zero first: a negative rule value cast to unsigned becomes
@@ -2089,12 +2414,14 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	const uint32 max_per_hour  = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, SpontaneousMaxPerZonePerHr)));
 	const size_t max_concurrent = static_cast<size_t>(std::max(0, RuleI(PlayerBotChat, SpontaneousMaxConcurrent)));
 
-	if (m_opens_this_hour >= max_per_hour) {
-		return;
-	}
+	// [19.20] The concurrency cap is still shared, deliberately: it bounds live
+	// CONVERSATIONS and a group conversation is one. The hourly budgets are what
+	// separate, because those ration noise and group chat makes none zone-wide.
 	if (m_threads.size() >= max_concurrent) {
 		return;
 	}
+
+	const bool zone_budget_left = (m_opens_this_hour < max_per_hour);
 
 	// Candidate openers: every chat-capable bot in the zone that is not busy
 	// listening and is off its global mouth cooldown.
@@ -2102,8 +2429,20 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 
 	const uint32 base_cooldown = static_cast<uint32>(RuleI(PlayerBotChat, PerListenerCooldownMs));
 
+	// [19.5] Same master switch as the reactive gate, read once per tick.
+	const bool combat_gate_on =
+		(std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance))) < 100);
+
 	auto consider = [&](Mob *m) {
 		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// [19.5] An engaged bot does not START conversations. The reactive gate
+		// is a probability, because being spoken to mid-fight still deserves an
+		// occasional answer; this one is absolute, because there is no version
+		// of opening small talk mid-pull that reads as a person.
+		if (combat_gate_on && IsInCombat(m)) {
 			return;
 		}
 		auto it = m_listener_state.find(m->GetID());
@@ -2158,6 +2497,17 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		base_prob *= 0.5;
 	}
 
+	// [19.20] GROUP VOICE runs first and on its own budget. Boosting the
+	// probability AFTER a uniform zone-wide pick -- which is what shipped
+	// first -- could not work: the boost only applies if the grouped bot wins
+	// the draw, and in a zone of forty PlayerBots four group bots almost never
+	// do. Its own candidate pool, its own categories, its own hourly cap.
+	GroupOpenerPass(candidates, opener_cats, base_prob, now_ms);
+
+	if (!zone_budget_left) {
+		return;
+	}
+
 	if (!zone->random.Roll(base_prob)) {
 		return;
 	}
@@ -2181,12 +2531,35 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	// is applied just below, so a market or lfg opener that genuinely should
 	// broadcast can set 4 (auction) or 5 (ooc) on that row. That is a decision
 	// for the line, not for a dice roll.
-	const uint8 channel = ChatChannel_Say;
+	//
+	// [19.20] Grouped bots stay eligible HERE too, at ordinary odds and on /say:
+	// being in a group does not stop you muttering at the room. Channel 2 is
+	// GroupOpenerPass's job, above, and keeping this pass unchanged is what
+	// makes the group budget purely additive to zone ambience.
+	if (EmitOpener(opener, cat, ChatChannel_Say, now_ms)) {
+		++m_opens_this_hour;
+	}
+}
+
+// Shared tail of both opener passes. Split out when the group pass landed --
+// the two differ only in who is chosen, which budget is spent and which channel
+// is defaulted to, and duplicating forty lines of commit bookkeeping to express
+// that was how the two would drift apart.
+bool PlayerBotChatEngine::EmitOpener(
+	Mob                           *opener,
+	const PlayerBotChat::Category *cat,
+	uint8                          channel,
+	uint64                         now_ms
+)
+{
+	if (!opener || !cat) {
+		return false;
+	}
 
 	const Response *resp = PickResponse(cat->id, opener, nullptr, channel, now_ms);
 	if (!resp) {
 		++m_stat_drops[DR_NoResponseRow];
-		return;
+		return false;
 	}
 
 	const uint8 out_channel = (resp->reply_channel == -1)
@@ -2210,7 +2583,6 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	BeginWave();
 	Emit(opener, out_channel, text, 0);
 
-	++m_opens_this_hour;
 	++m_stat_openers;
 
 	ChatThread t;
@@ -2223,6 +2595,89 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		"[pbchat] opener [{}] cat [{}] chan [{}] thread [{}] -- {}",
 		ChatDisplayName(opener), cat->name, out_channel, t.id, text
 	);
+
+	return true;
+}
+
+// [19.20] A category a grouped opener can actually speak IN THE GROUP: it needs
+// at least one row that inherits the caller's channel.
+//
+// This is the second half of why group voice looked dead. Three of the five
+// spontaneous categories -- help_opener, market_opener, lfg_opener -- carry an
+// explicit reply_channel, which correctly overrides the caller and correctly
+// broadcasts. Category choice is uniform, so three times in five a grouped bot
+// picked a category that could only ever shout, and the live log showed exactly
+// that: the one grouped bot that did open went out on channel 5.
+bool PlayerBotChatEngine::CategoryHasChannelDefaultRows(const PlayerBotChat::Category &cat) const
+{
+	for (uint32 ri : cat.response_idx) {
+		if (ri < m_responses.size() && m_responses[ri].enabled && m_responses[ri].reply_channel == -1) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// [19.20] The group opener pass, run before the zone one and budgeted apart
+// from it.
+//
+// Sharing the zone budget was the first half of why group voice looked dead:
+// the opener is picked uniformly across every chat bot in the zone, so in a
+// zone holding forty PlayerBots a four-bot group won the draw roughly one time
+// in ten, and then had to win the probability roll as well. Over an hour of
+// live testing that produced a single grouped opener, which went to /ooc.
+//
+// Group chat reaches at most six people and costs nothing zone-wide, so it does
+// not belong in a budget that exists to ration zone-wide noise.
+void PlayerBotChatEngine::GroupOpenerPass(
+	const std::vector<Mob *>                    &candidates,
+	const std::vector<const PlayerBotChat::Category *> &opener_cats,
+	double                                       base_prob,
+	uint64                                       now_ms
+)
+{
+	const uint32 max_per_hour = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr)));
+	if (max_per_hour == 0 || m_group_opens_this_hour >= max_per_hour) {
+		return;
+	}
+
+	const int group_boost = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
+	if (group_boost <= 100) {
+		return;
+	}
+
+	// Grouped candidates only, and only categories that can land on channel 2.
+	std::vector<Mob *> grouped;
+	for (Mob *m : candidates) {
+		if (IsGroupedForChat(m)) {
+			grouped.push_back(m);
+		}
+	}
+	if (grouped.empty()) {
+		return;
+	}
+
+	std::vector<const Category *> group_cats;
+	for (const Category *c : opener_cats) {
+		if (CategoryHasChannelDefaultRows(*c)) {
+			group_cats.push_back(c);
+		}
+	}
+	if (group_cats.empty()) {
+		return;
+	}
+
+	const double prob = std::min(0.75, base_prob * (static_cast<double>(group_boost) / 100.0));
+	if (!zone->random.Roll(prob)) {
+		return;
+	}
+
+	Mob            *opener = grouped[zone->random.Int(0, static_cast<int>(grouped.size()) - 1)];
+	const Category *cat    = group_cats[zone->random.Int(0, static_cast<int>(group_cats.size()) - 1)];
+
+	if (EmitOpener(opener, cat, ChatChannel_Group, now_ms)) {
+		++m_group_opens_this_hour;
+	}
 }
 
 // ============================================================
@@ -2294,6 +2749,12 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	std::vector<Mob *> senders;
 	auto consider = [&](Mob *m) {
 		if (!m || !IsChatBot(m)) {
+			return;
+		}
+
+		// [19.5] A bot does not whisper a stranger mid-fight either. Same
+		// master switch, same reasoning as the opener path.
+		if (std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance))) < 100 && IsInCombat(m)) {
 			return;
 		}
 		auto it = m_listener_state.find(m->GetID());
@@ -2563,6 +3024,30 @@ bool PlayerBotChatEngine::ScriptSay(
 
 		if (st.last_msg_time_ms != 0 && now - st.last_msg_time_ms < cooldown) {
 			++m_stat_drops[DR_Cooldown];
+			return false;
+		}
+	}
+
+	// [19.5] THE CATEGORY COOLDOWN WAS WRITTEN HERE AND READ NOWHERE.
+	//
+	// The broadcast gate above rations /shout, /ooc and /auction because those
+	// scale with zone population. It deliberately leaves /say alone -- and /say
+	// was, until now, the only other channel a script line could reach. Channel
+	// 2 changes that: a grouped bot calling every engage and every kill into
+	// group chat has no population cost and every bit of the annoyance, and
+	// `CombatCalloutChance` cannot fix it because a roll bounds the CHORUS, not
+	// the RATE.
+	//
+	// The knob already exists and is already tuned: `aggro` ships at 20s,
+	// `victory` and `death` at 15s, authored by whoever wrote the rows. This
+	// line simply honours what every other speak path honours and what this one
+	// was already recording. A category with cooldown_ms 0 is unthrottled
+	// exactly as before.
+	auto script_cat_fire = st.category_last_fire.find(category_id);
+	if (script_cat_fire != st.category_last_fire.end()) {
+		const uint32 cat_cooldown = CategoryCooldownFor(category_id);
+		if (cat_cooldown > 0 && now - script_cat_fire->second < cat_cooldown) {
+			++m_stat_drops[DR_CategoryCooldown];
 			return false;
 		}
 	}
@@ -2903,6 +3388,80 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 				"[pbchat] stale drop: {} | {} lines dropped after the channel moved on",
 				RuleB(PlayerBotChat, StaleEmissionDrop) ? "on" : "OFF",
 				m_stat_drops[DR_Stale]
+			).c_str()
+		);
+	}
+
+	// [19.5 + 19.20] Both are invisible in a chat log the same way 19.1 and 19.2
+	// are: they change whether and where a bot speaks, never what it says. The
+	// counters are the only proof either is doing anything -- in particular,
+	// `in-combat 0` in a zone that demonstrably fights means IsInCombat is not
+	// firing, not that the gate is calm.
+	{
+		const int reply_chance = std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance)));
+		const int group_boost  = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] combat gate: {} | reply {}% | stagger x{}% | callouts {}% | {} replies withheld mid-fight",
+				reply_chance < 100 ? "on" : "OFF",
+				reply_chance,
+				std::max(100, RuleI(PlayerBotChat, CombatStaggerPercent)),
+				std::max(0, RuleI(PlayerBotChat, CombatCalloutChance)),
+				m_stat_drops[DR_InCombat]
+			).c_str()
+		);
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] group voice: {} | grouped openers roll at {}% of normal on channel 2 | {}/{} this hour",
+				group_boost > 100 && RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr) > 0 ? "on" : "OFF",
+				group_boost,
+				m_group_opens_this_hour,
+				RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr)
+			).c_str()
+		);
+
+		// [19.6 FIX] The line that would have caught this in one minute instead
+		// of one log dig. v29c sends group chat once PER RECIPIENT, so this
+		// number climbing in step with group traffic is CORRECT and is the
+		// engine collapsing a fan-out back into one utterance. It reading zero
+		// while a grouped player talks means the collapse is not happening and
+		// the beat model is being fed N beats for one typed line.
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] utterance dedupe: {}ms window | {} duplicate copies collapsed",
+				RuleI(PlayerBotChat, DuplicateUtteranceMs),
+				m_stat_drops[DR_DuplicateUtterance]
+			).c_str()
+		);
+
+		// [17.1 C] `latched 0` with casters demonstrably running dry means the
+		// sweep is not reaching them; "no low_mana category" means the content
+		// SQL was never run, which is by far the likelier of the two.
+		size_t latched = 0;
+		for (const auto &ls : m_listener_state) {
+			if (ls.second.low_mana_latched) {
+				++latched;
+			}
+		}
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] mana watch: {} | trips at {}%, re-arms at {}% | {} casters latched low | category {}",
+				RuleI(PlayerBotChat, LowManaPercent) > 0 ? "on" : "OFF",
+				RuleI(PlayerBotChat, LowManaPercent),
+				std::max(RuleI(PlayerBotChat, LowManaPercent) + 1, RuleI(PlayerBotChat, LowManaClearPercent)),
+				latched,
+				FindCategoryId("low_mana") >= 0 ? "loaded" : "MISSING (run the mana SQL)"
 			).c_str()
 		);
 	}

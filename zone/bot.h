@@ -558,6 +558,19 @@ public:
 	// treats Bots and PlayerBots identically, so there is nothing to override.
 	void OnChatHeard(Mob* speaker, uint8 channel, const std::string& msg);
 
+	// [19.5] Combat callouts.  The 'aggro' / 'victory' / 'death' categories have
+	// existed since v1 but fired ONLY from Player_Bot.lua, which is the
+	// PlayerBot NPC script -- so a Bot, the thing you actually group with, went
+	// through an entire fight silent.  Bots are a C++ subsystem (global_bot.pl
+	// is still the commented-out stub), so these are the extension point, in
+	// the same spirit as OnChatHeard above.
+	//
+	// Each is safe to call unconditionally: the chat_enabled gate, the engine
+	// killswitch and the chorus roll all live inside.  Call sites stay one line.
+	void OnChatCombatEngaged(Mob* attacker);   // -> "aggro"
+	void OnChatSlay(Mob* victim);              // -> "victory"
+	void OnChatDeath(Mob* killer);             // -> "death"
+
 	inline int32	GetSTR()	const override { return STR; }
 	inline int32	GetSTA()	const override { return STA; }
 	inline int32	GetDEX()	const override { return DEX; }

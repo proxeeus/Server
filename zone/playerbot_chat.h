@@ -73,6 +73,15 @@ namespace PlayerBotChat {
 		// `emitted` means the stagger window is wider than the zone's chat
 		// rhythm and StaggerMaxMs -- not this guard -- is the thing to lower.
 		DR_Stale,
+		// [19.5] The listener was fighting and lost the combat roll. Counted
+		// separately from every other drop because going quiet mid-fight is
+		// indistinguishable from the engine being broken unless the number
+		// that proves it is deliberate is visible somewhere.
+		DR_InCombat,
+		// [19.6 FIX] The same utterance arrived more than once. v29c sends
+		// GROUP chat as one 0x0721 per recipient, so a four-bot group turns one
+		// typed line into four messages -- see IsDuplicateUtterance.
+		DR_DuplicateUtterance,
 		DR_MAX
 	};
 
@@ -156,6 +165,12 @@ namespace PlayerBotChat {
 		bool                               muted = false;
 		// [19.6] Indexed by channel number, bounds-guarded at every use.
 		HeardMark                          last_heard[kHeardChannelSlots];
+		// [17.1 C] Low-mana latch. Set when the caster announces, cleared only
+		// once mana climbs back past LowManaClearPercent -- the hysteresis is
+		// the whole design: a bare threshold test re-fires every tick while the
+		// bar hovers on the line, which is how a useful callout becomes spam.
+		// The clear is SILENT; recovery is not news.
+		bool                               low_mana_latched = false;
 	};
 
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
@@ -253,6 +268,28 @@ public:
 	// addressed to; it is meaningless (and ignored) on every other channel.
 	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id = 0);
 
+	// ---- combat events -------------------------------------------------
+	// A mob died. Gives every chat-enabled Bot that was PRESENT FOR THE FIGHT a
+	// chance to react, not just whoever landed the killing blow.
+	//
+	// The killing blow is the wrong unit of reaction and that is why victory
+	// lines read as broken: in a group the last hit belongs to one member, very
+	// often the player, and when the player lands it there is no bot in the
+	// callout path at all. A group watching something die and saying nothing
+	// unless one specific member got the last swing is the tell here.
+	//
+	// "Present" is group membership PLUS EarshotDistance of the corpse. Group
+	// membership alone would let a bot parked at the zone line say "that one
+	// nearly had me", which the content rule forbids -- those rows are safe for
+	// any participant and false for a spectator. The dying mob's hate list would
+	// be more precise still, and is deliberately not used: it excludes the
+	// support roles (a buffer, a bard who never pulled aggro) that most obviously
+	// should be talking.
+	//
+	// Each bot rolls CombatCalloutChance independently, so the group produces a
+	// line or two rather than a chorus.
+	void NotifySlay(Mob *killer, Mob *victim);
+
 	// ---- tells --------------------------------------------------------
 	// A player sent /tell <bot>. Called from Client::ChannelMessageReceived
 	// INSTEAD of relaying to world: world routes tells by character name and a
@@ -335,6 +372,18 @@ public:
 	static bool IsPlayerBot(Mob *m);
 	static bool IsChatBot(Mob *m);          // PB, or Bot with chat_enabled
 
+	// [19.5] "This bot is busy fighting." Deliberately wider than IsEngaged():
+	// a cleric that never takes aggro is every bit as busy as the tank, and a
+	// group where only the tank goes quiet reads worse than one that does not.
+	// Self first, because that is the cheap half and the common answer.
+	static bool IsInCombat(Mob *m);
+
+	// [19.20] True when this bot is in a real group or a raid group. Mirrors
+	// the resolution order EmitChannel uses for ChatChannel_Group, because a
+	// bot that is "grouped" for voice purposes and not for delivery would open
+	// conversations into a channel nobody receives.
+	static bool IsGroupedForChat(Mob *m);
+
 private:
 	struct Candidate {
 		Mob                           *listener = nullptr;
@@ -348,6 +397,10 @@ private:
 		// ranking sort: the cap exemption, the shortened stagger, and the
 		// stats counter. See the direct-address block in DispatchToScope.
 		bool                           addressed = false;
+		// [19.5] Carried past the ranking sort for the stagger multiplier, so
+		// IsInCombat -- which can walk a group -- is evaluated once per
+		// listener rather than again at queue time.
+		bool                           in_combat = false;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -388,11 +441,49 @@ private:
 	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id);
 	void SpontaneousTick(uint64 now_ms);
 
+	// [19.20] Shared commit tail of both opener passes: pick a row, substitute,
+	// stamp the cooldowns, count it, open a beat, speak, and register a thread.
+	// True when the bot actually spoke, so the caller knows whether to spend a
+	// budget on it.
+	bool EmitOpener(
+		Mob                           *opener,
+		const PlayerBotChat::Category *cat,
+		uint8                          channel,
+		uint64                         now_ms
+	);
+
+	// [19.20] The grouped-bot opener pass. Runs before the zone one, draws only
+	// from grouped candidates and only from categories that can actually land on
+	// channel 2, and spends GroupVoiceMaxPerZonePerHr rather than the zone
+	// budget -- group chat reaches six people and makes no zone-wide noise.
+	void GroupOpenerPass(
+		const std::vector<Mob *>                           &candidates,
+		const std::vector<const PlayerBotChat::Category *> &opener_cats,
+		double                                              base_prob,
+		uint64                                              now_ms
+	);
+
+	// True when the category holds a row that inherits the caller's channel
+	// (reply_channel -1). Without one, a "group" opener can only ever broadcast.
+	bool CategoryHasChannelDefaultRows(const PlayerBotChat::Category &cat) const;
+
 	// Unprompted bot -> player tell. Separate from SpontaneousTick because the
 	// target is a CLIENT rather than a category scope, and because it carries
 	// its own per-player cooldown: the cost of being wrong here lands on one
 	// person's screen repeatedly, not on a channel nobody has to read.
 	void SpontaneousTellTick(uint64 now_ms);
+
+	// [17.1 C] Proactive low-mana callout. A sweep with a latch rather than an
+	// event, because EVENT_HP fires only for NPCs and needs SetNextHPEvent()
+	// armed, which is not exposed to Lua at all -- so the PlayerBot route would
+	// need a new binding and the Bot route cannot work that way. One sweep
+	// covers both populations identically, with no Lua binding and no Bot::
+	// change, and the latch sits next to the cooldowns that already exist to
+	// stop spam.
+	//
+	// Deliberately NOT gated on §19.5's combat check: a caster running dry
+	// mid-fight is precisely when the group needs to hear it.
+	void ManaWatchTick();
 
 	// True when the category holds at least one row that asked for channel 7.
 	// Gates which categories may cold-tell at all, so a /say opener pool is
@@ -417,6 +508,25 @@ private:
 	// True when `pe` answers a beat this listener has already heard past.
 	bool IsStaleEmission(const PlayerBotChat::PendingEmission &pe) const;
 
+	// [19.6 FIX] One typed line can reach the engine as SEVERAL messages.
+	//
+	// v29c has no group-broadcast opcode: the client sends one 0x0721 per group
+	// member, each carrying that member's name in targetname. Four bots in a
+	// group means "hi" arrives four times, a few milliseconds apart, and
+	// HandleChannelMessage is honestly 1:1 so all four reach Overhear at
+	// chain_depth 0.
+	//
+	// That is fatal to the beat model on its own: each copy opened a NEW beat,
+	// so copy 2 stale-dropped the replies copy 1 had just queued, copy 3 killed
+	// copy 2's, and the player got nothing at all. Worse, copy 1 had already
+	// reserved every candidate's mouth cooldown, so copies 2-4 found the whole
+	// group ineligible and queued nothing to replace what they killed.
+	//
+	// A beat is an UTTERANCE, not a packet. Same speaker, same channel, same
+	// text, inside DuplicateUtteranceMs: one utterance, dispatched once.
+	// Also absorbs genuine retransmits, which the same log showed six of.
+	bool IsDuplicateUtterance(Mob *speaker, uint8 chan_num, const std::string &msg);
+
 	// Hand back the mouth and category cooldowns a stale-dropped line reserved
 	// and never spent. The repetition ring and the per-row counters are NOT
 	// rolled back: they measure which rows the picker reaches for, the penalty
@@ -437,6 +547,9 @@ private:
 	// few hundred rows and neither of these is called per dispatch.
 	const PlayerBotChat::Response *ResponseById(uint32 id) const;
 	std::string                    CategoryNameFor(uint32 id) const;
+	// [19.5] Authored pacing for a category, 0 when the id is unknown. Indexed,
+	// not a scan -- ScriptSay is on the combat path now, not just the Lua one.
+	uint32                         CategoryCooldownFor(uint32 id) const;
 
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
 
@@ -466,11 +579,17 @@ private:
 	// on every content load -- response ids are AUTO_INCREMENT and a reseed
 	// re-points them onto different text.
 	std::unordered_map<uint32, uint64>                       m_recent_response_use;
+	// [19.6 FIX] (speaker, channel, text) hash -> expiry ms. See
+	// IsDuplicateUtterance: this is what makes one typed line one beat on a
+	// client that puts it on the wire once per recipient.
+	std::unordered_map<uint64, uint64>                       m_recent_utterances;
 	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
 	std::deque<PlayerBotChat::PendingEmission>               m_pending;
 	std::vector<PlayerBotChat::ChatThread>                   m_threads;
 	uint32                                                   m_next_thread_id          = 1;
 	uint32                                                   m_opens_this_hour         = 0;
+	// [19.20] Counted apart from m_opens_this_hour and reset on the same window.
+	uint32                                                   m_group_opens_this_hour   = 0;
 	uint64                                                   m_hour_window_start_ms    = 0;
 	uint64                                                   m_next_spontaneous_ms     = 0;
 	uint64                                                   m_next_expire_ms          = 0;
@@ -492,6 +611,9 @@ private:
 	// the cooldown would otherwise look like a fresh target.
 	std::unordered_map<std::string, uint64>                  m_last_tell_to_player;
 	uint64                                                   m_next_spontaneous_tell_ms = 0;
+	// [17.1 C] Mana sweeps are cheap but mana moves fast; 5s is often enough to
+	// catch a caster going dry without walking the bot list every main loop.
+	uint64                                                   m_next_mana_watch_ms       = 0;
 	uint32                                                   m_tells_this_hour          = 0;
 
 	// ---- stats --------------------------------------------------------
