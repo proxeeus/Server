@@ -195,6 +195,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_CapPerMessage:    return "response-cap";
 		case DR_Stale:            return "stale";
 		case DR_InCombat:         return "in-combat";
+		case DR_DuplicateUtterance: return "duplicate-utterance";
 		default:                  return "unknown";
 	}
 }
@@ -376,6 +377,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 	// re-points the same id onto different text. Carrying either across a load
 	// would penalise -- or credit -- a row nobody has ever heard.
 	m_recent_response_use.clear();
+	m_recent_utterances.clear();
 	m_stat_response_hits.clear();
 
 	// ---- categories ----
@@ -608,10 +610,12 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_listener_state.clear();
 	m_recent_self_emissions.clear();
 	m_recent_response_use.clear();
+	m_recent_utterances.clear();
 	m_pending.clear();
 	m_threads.clear();
 	m_next_thread_id          = 1;
 	m_opens_this_hour         = 0;
+	m_group_opens_this_hour   = 0;
 	m_hour_window_start_ms    = NowMs();
 	m_next_spontaneous_ms     = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTickSec)) * 1000);
 	m_last_tell_to_player.clear();
@@ -765,6 +769,39 @@ void PlayerBotChatEngine::MarkHeard(Mob *speaker, uint8 chan_num, const std::vec
 	}
 }
 
+bool PlayerBotChatEngine::IsDuplicateUtterance(Mob *speaker, uint8 chan_num, const std::string &msg)
+{
+	const uint32 window = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, DuplicateUtteranceMs)));
+	if (window == 0 || !speaker) {
+		return false;
+	}
+
+	// Keyed on the SPEAKER'S ENTITY ID, not the display name: two bots rolling
+	// the same row is a different problem with a different guard
+	// (m_recent_response_use), and folding them together here would silence the
+	// second bot instead of the duplicate packet this exists for.
+	uint64 h = 1469598103934665603ULL;
+	auto   mix = [&h](uint64 v) {
+		h ^= v;
+		h *= 1099511628211ULL;
+	};
+
+	mix(static_cast<uint64>(speaker->GetID()));
+	mix(static_cast<uint64>(chan_num));
+	for (unsigned char c : msg) {
+		mix(static_cast<uint64>(c));
+	}
+
+	const uint64 now = NowMs();
+	auto         it  = m_recent_utterances.find(h);
+	if (it != m_recent_utterances.end() && now < it->second) {
+		return true;
+	}
+
+	m_recent_utterances[h] = now + window;
+	return false;
+}
+
 bool PlayerBotChatEngine::IsStaleEmission(const PendingEmission &pe) const
 {
 	if (!RuleB(PlayerBotChat, StaleEmissionDrop)) {
@@ -839,6 +876,12 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 
 	for (auto it = m_recent_self_emissions.begin(); it != m_recent_self_emissions.end();) {
 		it = (now_ms >= it->second) ? m_recent_self_emissions.erase(it) : std::next(it);
+	}
+
+	// [19.6 FIX] Same shape, much shorter TTL -- entries live DuplicateUtteranceMs
+	// (2s by default), so this map is empty except during an actual fan-out burst.
+	for (auto it = m_recent_utterances.begin(); it != m_recent_utterances.end();) {
+		it = (now_ms >= it->second) ? m_recent_utterances.erase(it) : std::next(it);
 	}
 
 	// The repetition ring. Bounded by the row count either way, but letting it
@@ -1484,6 +1527,14 @@ void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::stri
 
 	EnsureLoaded();
 	if (!m_loaded) {
+		return;
+	}
+
+	// [19.6 FIX] Collapse a fanned-out utterance to one beat BEFORE anything
+	// else counts it. Restricted to chain_depth 0 because this is a client
+	// packet phenomenon: bot fan-out arrives through Emit, exactly once.
+	if (chain_depth == 0 && IsDuplicateUtterance(speaker, chan_num, msg)) {
+		++m_stat_drops[DR_DuplicateUtterance];
 		return;
 	}
 
@@ -2189,8 +2240,9 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	}
 
 	if (now_ms - m_hour_window_start_ms > 3600000) {
-		m_hour_window_start_ms = now_ms;
-		m_opens_this_hour      = 0;
+		m_hour_window_start_ms   = now_ms;
+		m_opens_this_hour        = 0;
+		m_group_opens_this_hour  = 0;
 	}
 
 	// Clamp at zero first: a negative rule value cast to unsigned becomes
@@ -2199,12 +2251,14 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	const uint32 max_per_hour  = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, SpontaneousMaxPerZonePerHr)));
 	const size_t max_concurrent = static_cast<size_t>(std::max(0, RuleI(PlayerBotChat, SpontaneousMaxConcurrent)));
 
-	if (m_opens_this_hour >= max_per_hour) {
-		return;
-	}
+	// [19.20] The concurrency cap is still shared, deliberately: it bounds live
+	// CONVERSATIONS and a group conversation is one. The hourly budgets are what
+	// separate, because those ration noise and group chat makes none zone-wide.
 	if (m_threads.size() >= max_concurrent) {
 		return;
 	}
+
+	const bool zone_budget_left = (m_opens_this_hour < max_per_hour);
 
 	// Candidate openers: every chat-capable bot in the zone that is not busy
 	// listening and is off its global mouth cooldown.
@@ -2280,31 +2334,23 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		base_prob *= 0.5;
 	}
 
-	// [19.20] GROUP VOICE. The opener is now picked BEFORE the probability roll,
-	// because the probability depends on who it is: channel 2 was wired for
-	// scope from day one and nothing ever made the bots you actually adventure
-	// with any livelier than zone scenery. A grouped bot rolls at
-	// GroupVoiceBoostPercent of the normal rate.
-	//
-	// Reordering is safe -- the pick was uniform over candidates and still is,
-	// and nothing between the two reads the opener.
-	Mob            *opener = candidates[zone->random.Int(0, static_cast<int>(candidates.size()) - 1)];
-	const Category *cat    = opener_cats[zone->random.Int(0, static_cast<int>(opener_cats.size()) - 1)];
+	// [19.20] GROUP VOICE runs first and on its own budget. Boosting the
+	// probability AFTER a uniform zone-wide pick -- which is what shipped
+	// first -- could not work: the boost only applies if the grouped bot wins
+	// the draw, and in a zone of forty PlayerBots four group bots almost never
+	// do. Its own candidate pool, its own categories, its own hourly cap.
+	GroupOpenerPass(candidates, opener_cats, base_prob, now_ms);
 
-	const int  group_boost   = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
-	const bool opener_group  = (group_boost > 100) && IsGroupedForChat(opener);
-
-	double open_prob = base_prob;
-	if (opener_group) {
-		// Capped well short of 1.0: the boost makes a grouped bot livelier, it
-		// does not make the scheduler fire on every tick. SpontaneousMaxPerZonePerHr
-		// still bounds the hour regardless of what this multiplies out to.
-		open_prob = std::min(0.75, base_prob * (static_cast<double>(group_boost) / 100.0));
-	}
-
-	if (!zone->random.Roll(open_prob)) {
+	if (!zone_budget_left) {
 		return;
 	}
+
+	if (!zone->random.Roll(base_prob)) {
+		return;
+	}
+
+	Mob            *opener = candidates[zone->random.Int(0, static_cast<int>(candidates.size()) - 1)];
+	const Category *cat    = opener_cats[zone->random.Int(0, static_cast<int>(opener_cats.size()) - 1)];
 
 	// Spontaneous openers are ALWAYS /say. Never a random channel roll.
 	//
@@ -2323,18 +2369,34 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	// broadcast can set 4 (auction) or 5 (ooc) on that row. That is a decision
 	// for the line, not for a dice roll.
 	//
-	// [19.20] ...and the one exception is a group. A bot standing in your party
-	// muttering to the room instead of to the group is the give-away this
-	// removes: grouped small talk defaults to channel 2, which CollectScope
-	// already scopes by membership, so the conversation forms inside the group
-	// and stays there. Rows carrying an explicit reply_channel -- market, lfg,
-	// help -- still broadcast, because that remains a decision for the line.
-	const uint8 channel = opener_group ? ChatChannel_Group : ChatChannel_Say;
+	// [19.20] Grouped bots stay eligible HERE too, at ordinary odds and on /say:
+	// being in a group does not stop you muttering at the room. Channel 2 is
+	// GroupOpenerPass's job, above, and keeping this pass unchanged is what
+	// makes the group budget purely additive to zone ambience.
+	if (EmitOpener(opener, cat, ChatChannel_Say, now_ms)) {
+		++m_opens_this_hour;
+	}
+}
+
+// Shared tail of both opener passes. Split out when the group pass landed --
+// the two differ only in who is chosen, which budget is spent and which channel
+// is defaulted to, and duplicating forty lines of commit bookkeeping to express
+// that was how the two would drift apart.
+bool PlayerBotChatEngine::EmitOpener(
+	Mob                           *opener,
+	const PlayerBotChat::Category *cat,
+	uint8                          channel,
+	uint64                         now_ms
+)
+{
+	if (!opener || !cat) {
+		return false;
+	}
 
 	const Response *resp = PickResponse(cat->id, opener, nullptr, channel, now_ms);
 	if (!resp) {
 		++m_stat_drops[DR_NoResponseRow];
-		return;
+		return false;
 	}
 
 	const uint8 out_channel = (resp->reply_channel == -1)
@@ -2358,7 +2420,6 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	BeginWave();
 	Emit(opener, out_channel, text, 0);
 
-	++m_opens_this_hour;
 	++m_stat_openers;
 
 	ChatThread t;
@@ -2371,6 +2432,89 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		"[pbchat] opener [{}] cat [{}] chan [{}] thread [{}] -- {}",
 		ChatDisplayName(opener), cat->name, out_channel, t.id, text
 	);
+
+	return true;
+}
+
+// [19.20] A category a grouped opener can actually speak IN THE GROUP: it needs
+// at least one row that inherits the caller's channel.
+//
+// This is the second half of why group voice looked dead. Three of the five
+// spontaneous categories -- help_opener, market_opener, lfg_opener -- carry an
+// explicit reply_channel, which correctly overrides the caller and correctly
+// broadcasts. Category choice is uniform, so three times in five a grouped bot
+// picked a category that could only ever shout, and the live log showed exactly
+// that: the one grouped bot that did open went out on channel 5.
+bool PlayerBotChatEngine::CategoryHasChannelDefaultRows(const PlayerBotChat::Category &cat) const
+{
+	for (uint32 ri : cat.response_idx) {
+		if (ri < m_responses.size() && m_responses[ri].enabled && m_responses[ri].reply_channel == -1) {
+			return true;
+		}
+	}
+	return false;
+}
+
+// [19.20] The group opener pass, run before the zone one and budgeted apart
+// from it.
+//
+// Sharing the zone budget was the first half of why group voice looked dead:
+// the opener is picked uniformly across every chat bot in the zone, so in a
+// zone holding forty PlayerBots a four-bot group won the draw roughly one time
+// in ten, and then had to win the probability roll as well. Over an hour of
+// live testing that produced a single grouped opener, which went to /ooc.
+//
+// Group chat reaches at most six people and costs nothing zone-wide, so it does
+// not belong in a budget that exists to ration zone-wide noise.
+void PlayerBotChatEngine::GroupOpenerPass(
+	const std::vector<Mob *>                    &candidates,
+	const std::vector<const PlayerBotChat::Category *> &opener_cats,
+	double                                       base_prob,
+	uint64                                       now_ms
+)
+{
+	const uint32 max_per_hour = static_cast<uint32>(std::max(0, RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr)));
+	if (max_per_hour == 0 || m_group_opens_this_hour >= max_per_hour) {
+		return;
+	}
+
+	const int group_boost = std::max(100, RuleI(PlayerBotChat, GroupVoiceBoostPercent));
+	if (group_boost <= 100) {
+		return;
+	}
+
+	// Grouped candidates only, and only categories that can land on channel 2.
+	std::vector<Mob *> grouped;
+	for (Mob *m : candidates) {
+		if (IsGroupedForChat(m)) {
+			grouped.push_back(m);
+		}
+	}
+	if (grouped.empty()) {
+		return;
+	}
+
+	std::vector<const Category *> group_cats;
+	for (const Category *c : opener_cats) {
+		if (CategoryHasChannelDefaultRows(*c)) {
+			group_cats.push_back(c);
+		}
+	}
+	if (group_cats.empty()) {
+		return;
+	}
+
+	const double prob = std::min(0.75, base_prob * (static_cast<double>(group_boost) / 100.0));
+	if (!zone->random.Roll(prob)) {
+		return;
+	}
+
+	Mob            *opener = grouped[zone->random.Int(0, static_cast<int>(grouped.size()) - 1)];
+	const Category *cat    = group_cats[zone->random.Int(0, static_cast<int>(group_cats.size()) - 1)];
+
+	if (EmitOpener(opener, cat, ChatChannel_Group, now_ms)) {
+		++m_group_opens_this_hour;
+	}
 }
 
 // ============================================================
@@ -3111,9 +3255,27 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 			Chat::White,
 			"%s",
 			fmt::format(
-				"[pbchat] group voice: {} | grouped openers roll at {}% of normal and default to channel 2",
-				group_boost > 100 ? "on" : "OFF",
-				group_boost
+				"[pbchat] group voice: {} | grouped openers roll at {}% of normal on channel 2 | {}/{} this hour",
+				group_boost > 100 && RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr) > 0 ? "on" : "OFF",
+				group_boost,
+				m_group_opens_this_hour,
+				RuleI(PlayerBotChat, GroupVoiceMaxPerZonePerHr)
+			).c_str()
+		);
+
+		// [19.6 FIX] The line that would have caught this in one minute instead
+		// of one log dig. v29c sends group chat once PER RECIPIENT, so this
+		// number climbing in step with group traffic is CORRECT and is the
+		// engine collapsing a fan-out back into one utterance. It reading zero
+		// while a grouped player talks means the collapse is not happening and
+		// the beat model is being fed N beats for one typed line.
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] utterance dedupe: {}ms window | {} duplicate copies collapsed",
+				RuleI(PlayerBotChat, DuplicateUtteranceMs),
+				m_stat_drops[DR_DuplicateUtterance]
 			).c_str()
 		);
 	}

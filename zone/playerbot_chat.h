@@ -78,6 +78,10 @@ namespace PlayerBotChat {
 		// indistinguishable from the engine being broken unless the number
 		// that proves it is deliberate is visible somewhere.
 		DR_InCombat,
+		// [19.6 FIX] The same utterance arrived more than once. v29c sends
+		// GROUP chat as one 0x0721 per recipient, so a four-bot group turns one
+		// typed line into four messages -- see IsDuplicateUtterance.
+		DR_DuplicateUtterance,
 		DR_MAX
 	};
 
@@ -409,6 +413,32 @@ private:
 	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id);
 	void SpontaneousTick(uint64 now_ms);
 
+	// [19.20] Shared commit tail of both opener passes: pick a row, substitute,
+	// stamp the cooldowns, count it, open a beat, speak, and register a thread.
+	// True when the bot actually spoke, so the caller knows whether to spend a
+	// budget on it.
+	bool EmitOpener(
+		Mob                           *opener,
+		const PlayerBotChat::Category *cat,
+		uint8                          channel,
+		uint64                         now_ms
+	);
+
+	// [19.20] The grouped-bot opener pass. Runs before the zone one, draws only
+	// from grouped candidates and only from categories that can actually land on
+	// channel 2, and spends GroupVoiceMaxPerZonePerHr rather than the zone
+	// budget -- group chat reaches six people and makes no zone-wide noise.
+	void GroupOpenerPass(
+		const std::vector<Mob *>                           &candidates,
+		const std::vector<const PlayerBotChat::Category *> &opener_cats,
+		double                                              base_prob,
+		uint64                                              now_ms
+	);
+
+	// True when the category holds a row that inherits the caller's channel
+	// (reply_channel -1). Without one, a "group" opener can only ever broadcast.
+	bool CategoryHasChannelDefaultRows(const PlayerBotChat::Category &cat) const;
+
 	// Unprompted bot -> player tell. Separate from SpontaneousTick because the
 	// target is a CLIENT rather than a category scope, and because it carries
 	// its own per-player cooldown: the cost of being wrong here lands on one
@@ -437,6 +467,25 @@ private:
 
 	// True when `pe` answers a beat this listener has already heard past.
 	bool IsStaleEmission(const PlayerBotChat::PendingEmission &pe) const;
+
+	// [19.6 FIX] One typed line can reach the engine as SEVERAL messages.
+	//
+	// v29c has no group-broadcast opcode: the client sends one 0x0721 per group
+	// member, each carrying that member's name in targetname. Four bots in a
+	// group means "hi" arrives four times, a few milliseconds apart, and
+	// HandleChannelMessage is honestly 1:1 so all four reach Overhear at
+	// chain_depth 0.
+	//
+	// That is fatal to the beat model on its own: each copy opened a NEW beat,
+	// so copy 2 stale-dropped the replies copy 1 had just queued, copy 3 killed
+	// copy 2's, and the player got nothing at all. Worse, copy 1 had already
+	// reserved every candidate's mouth cooldown, so copies 2-4 found the whole
+	// group ineligible and queued nothing to replace what they killed.
+	//
+	// A beat is an UTTERANCE, not a packet. Same speaker, same channel, same
+	// text, inside DuplicateUtteranceMs: one utterance, dispatched once.
+	// Also absorbs genuine retransmits, which the same log showed six of.
+	bool IsDuplicateUtterance(Mob *speaker, uint8 chan_num, const std::string &msg);
 
 	// Hand back the mouth and category cooldowns a stale-dropped line reserved
 	// and never spent. The repetition ring and the per-row counters are NOT
@@ -490,11 +539,17 @@ private:
 	// on every content load -- response ids are AUTO_INCREMENT and a reseed
 	// re-points them onto different text.
 	std::unordered_map<uint32, uint64>                       m_recent_response_use;
+	// [19.6 FIX] (speaker, channel, text) hash -> expiry ms. See
+	// IsDuplicateUtterance: this is what makes one typed line one beat on a
+	// client that puts it on the wire once per recipient.
+	std::unordered_map<uint64, uint64>                       m_recent_utterances;
 	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
 	std::deque<PlayerBotChat::PendingEmission>               m_pending;
 	std::vector<PlayerBotChat::ChatThread>                   m_threads;
 	uint32                                                   m_next_thread_id          = 1;
 	uint32                                                   m_opens_this_hour         = 0;
+	// [19.20] Counted apart from m_opens_this_hour and reset on the same window.
+	uint32                                                   m_group_opens_this_hour   = 0;
 	uint64                                                   m_hour_window_start_ms    = 0;
 	uint64                                                   m_next_spontaneous_ms     = 0;
 	uint64                                                   m_next_expire_ms          = 0;
