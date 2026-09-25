@@ -89,6 +89,34 @@ namespace PlayerBotChat {
 		DR_MAX
 	};
 
+	// [19.12] The bot's own condition, as a bitmask. A response row can require
+	// any combination through playerbot_chat_response_context.requires_state
+	// (CSV of the names in StateBitName), and the row is eligible only while
+	// EVERY named state holds. Each state is one read of something the engine
+	// can see right now, which is what makes "oom", "need a med" or "brb,
+	// sitting" true by construction -- the same guarantee requires_zone gives a
+	// place name.
+	//
+	// Every state has its complement, because "not fighting" is a condition a
+	// line can depend on ("finally some quiet") just as much as "fighting" is.
+	enum StateBit : uint16 {
+		SB_InCombat    = 1 << 0,
+		SB_OutOfCombat = 1 << 1,
+		SB_LowHp       = 1 << 2,
+		SB_LowMana     = 1 << 3,
+		SB_Sitting     = 1 << 4,
+		SB_Standing    = 1 << 5,
+		SB_Moving      = 1 << 6,
+		SB_Still       = 1 << 7,
+		SB_Grouped     = 1 << 8,
+		SB_Solo        = 1 << 9,
+		// A row naming a state this build does not know. It must never pass --
+		// silently ignoring the unknown word would turn a gated row into an
+		// ungated one, which is exactly the dishonest line the gate exists to
+		// stop. No real state carries this bit, so the subset test fails.
+		SB_Unknown     = 1 << 15
+	};
+
 	// Slots in ListenerState::last_heard. The engine's valid channels top out
 	// at ChatChannel_Say (8); 16 is the next power of two and leaves room for
 	// raid (15) if §0.0's "still open" list ever reaches it.
@@ -130,6 +158,10 @@ namespace PlayerBotChat {
 		bool                     has_faction             = false;
 		int32                    requires_faction        = 0;
 		uint32                   per_speaker_cooldown_ms = 0;
+		// [19.12] StateBit mask; 0 == no state requirement. The text is kept
+		// only for admin output.
+		uint16                   requires_state          = 0;
+		std::string              requires_state_text;
 	};
 
 	struct Category {
@@ -423,6 +455,17 @@ public:
 	// conversations into a channel nobody receives.
 	static bool IsGroupedForChat(Mob *m);
 
+	// [19.12] The bot's current StateBit mask. Computed once per PickResponse
+	// call, never per row.
+	static uint16 CurrentStateMask(Mob *m);
+
+	// [19.12] Parse a requires_state CSV. Unknown words set SB_Unknown and are
+	// reported through `bad_out`.
+	static uint16 ParseStateMask(const std::string &csv, std::string &bad_out);
+
+	// [19.12] Canonical name of one StateBit, "" for anything else.
+	static const char *StateBitName(uint16 bit);
+
 private:
 	struct Candidate {
 		Mob                           *listener = nullptr;
@@ -627,6 +670,11 @@ private:
 	std::unordered_map<uint32, uint32>   m_category_by_id;   // category_id -> index into m_categories
 	std::vector<uint32>                  m_bad_regex_rows;   // trigger ids that failed to compile
 	std::vector<uint32>                  m_bad_channel_rows; // response ids with a bogus reply_channel
+	std::vector<uint32>                  m_bad_state_rows;   // [19.12] response ids naming an unknown state
+	// [19.12] False when the requires_state column is not in the database yet.
+	// The loader selects NULL in its place rather than failing, so a binary
+	// that ships ahead of its migration still loads every other table.
+	bool                                 m_has_state_column = false;
 
 	// ---- runtime state ------------------------------------------------
 	std::unordered_map<uint16, PlayerBotChat::ListenerState> m_listener_state;

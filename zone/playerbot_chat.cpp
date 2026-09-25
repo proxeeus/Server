@@ -209,6 +209,36 @@ namespace {
 	// Bot-to-bot reply odds span 40%..100% across the chattiness dial.
 	constexpr int kReticentFloorPct = 40;
 
+	// ------------------------------------------------------------------
+	// [19.12] state gate
+	// ------------------------------------------------------------------
+
+	// HP percent at or below which a bot is "low_hp". Shared with the health
+	// watch (17.1 C) so a gated "low, watch it" row and the proactive callout
+	// can never disagree about what low means.
+	constexpr int kLowHpPercent = 30;
+
+	// "low_mana" normally tracks PlayerBotChat:LowManaPercent, so the gated rows
+	// and ManaWatchTick agree. That rule's 0 means "no proactive callout", not
+	// "nobody is ever low", so the state falls back to this instead.
+	constexpr int kLowManaFallbackPercent = 20;
+
+	// Schema probe. Lets a binary run ahead of its migration: the loader selects
+	// NULL in place of a missing column instead of failing the whole content
+	// load, which would silence every bot over one optional column.
+	bool ColumnExists(const char *table, const char *column)
+	{
+		auto results = database.QueryDatabase(
+			fmt::format(
+				"SELECT 1 FROM information_schema.columns "
+				"WHERE table_schema = DATABASE() AND table_name = '{}' AND column_name = '{}' LIMIT 1",
+				table,
+				column
+			)
+		);
+		return results.Success() && results.RowCount() > 0;
+	}
+
 } // namespace
 
 // ============================================================
@@ -398,6 +428,97 @@ bool PlayerBotChatEngine::IsInCombat(Mob *m)
 }
 
 // ============================================================
+// [19.12] state gate
+// ============================================================
+
+const char *PlayerBotChatEngine::StateBitName(uint16 bit)
+{
+	switch (bit) {
+		case SB_InCombat:    return "in_combat";
+		case SB_OutOfCombat: return "out_of_combat";
+		case SB_LowHp:       return "low_hp";
+		case SB_LowMana:     return "low_mana";
+		case SB_Sitting:     return "sitting";
+		case SB_Standing:    return "standing";
+		case SB_Moving:      return "moving";
+		case SB_Still:       return "still";
+		case SB_Grouped:     return "grouped";
+		case SB_Solo:        return "solo";
+		default:             return "";
+	}
+}
+
+uint16 PlayerBotChatEngine::ParseStateMask(const std::string &csv, std::string &bad_out)
+{
+	uint16 mask = 0;
+
+	for (auto &raw : Strings::Split(Strings::ToLower(csv), ',')) {
+		std::string word = raw;
+		Strings::Trim(word);
+		if (word.empty()) {
+			continue;
+		}
+
+		uint16 bit = 0;
+		for (uint16 b = 1; b != 0 && b < SB_Unknown; b <<= 1) {
+			if (word == StateBitName(b)) {
+				bit = b;
+				break;
+			}
+		}
+
+		if (bit == 0) {
+			bad_out += (bad_out.empty() ? "" : ",") + word;
+			bit = SB_Unknown;
+		}
+
+		mask |= bit;
+	}
+
+	return mask;
+}
+
+uint16 PlayerBotChatEngine::CurrentStateMask(Mob *m)
+{
+	if (!m) {
+		return 0;
+	}
+
+	uint16 mask = 0;
+
+	// Self-or-group, the same test 19.5's combat gate uses: a healer on nobody's
+	// hate list is still in the fight, and "busy" is true of it.
+	mask |= IsInCombat(m) ? SB_InCombat : SB_OutOfCombat;
+
+	if (m->GetMaxHP() > 0 && static_cast<int>(m->GetHPRatio()) <= kLowHpPercent) {
+		mask |= SB_LowHp;
+	}
+
+	// A mob with no pool is never low on it. GetManaRatio() answers 100 for
+	// such a mob anyway, but saying so here keeps the gate honest if that ever
+	// changes.
+	if (m->GetMaxMana() > 0) {
+		const int rule_pct = RuleI(PlayerBotChat, LowManaPercent);
+		const int low_pct  = rule_pct > 0 ? rule_pct : kLowManaFallbackPercent;
+		if (static_cast<int>(m->GetManaRatio()) <= low_pct) {
+			mask |= SB_LowMana;
+		}
+	}
+
+	// Two sources of "sitting": Client and Bot override IsSitting(), but a
+	// PlayerBot is an NPC, where IsSitting() is Mob's hardcoded false and the
+	// only record is the appearance Player_Bot.lua sets at spawn.
+	const bool sitting = m->IsSitting() || m->GetAppearance() == eaSitting;
+	mask |= sitting ? SB_Sitting : SB_Standing;
+
+	mask |= m->IsMoving() ? SB_Moving : SB_Still;
+
+	mask |= IsGroupedForChat(m) ? SB_Grouped : SB_Solo;
+
+	return mask;
+}
+
+// ============================================================
 // [19.7] persona
 // ============================================================
 
@@ -500,6 +621,7 @@ bool PlayerBotChatEngine::Reload(std::string &summary_out)
 	m_category_by_id.clear();
 	m_bad_regex_rows.clear();
 	m_bad_channel_rows.clear();
+	m_bad_state_rows.clear();
 
 	return LoadContent(summary_out);
 }
@@ -512,6 +634,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 	m_category_by_id.clear();
 	m_bad_regex_rows.clear();
 	m_bad_channel_rows.clear();
+	m_bad_state_rows.clear();
 
 	// Both of these are keyed by response_id, which is AUTO_INCREMENT: a reseed
 	// re-points the same id onto different text. Carrying either across a load
@@ -634,13 +757,25 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 
 	// ---- responses ----
 	{
-		const std::string query =
+		// [19.12] Probed per load, not once per process: the migration can be
+		// applied to a running server and picked up by "#pbchat reload".
+		m_has_state_column = ColumnExists("playerbot_chat_response_context", "requires_state");
+		if (!m_has_state_column) {
+			LogInfo(
+				"[pbchat] playerbot_chat_response_context.requires_state is missing; state-gated rows are "
+				"unavailable until 2026_09_25_bots_playerbot_chat_state_gate.sql is applied"
+			);
+		}
+
+		const std::string query = fmt::format(
 			"SELECT r.`id`, r.`category_id`, r.`response_text`, r.`weight`, r.`class_mask`, "
 			"r.`race_mask`, r.`alignment`, r.`level_min`, r.`level_max`, r.`tone`, "
 			"r.`reply_channel`, r.`enabled`, "
 			"c.`requires_zone`, c.`requires_time_of_day`, c.`requires_faction`, "
-			"c.`per_speaker_cooldown_ms` "
-			"FROM `playerbot_chat_responses` r "
+			"c.`per_speaker_cooldown_ms`, {} "
+			"FROM `playerbot_chat_responses` r ",
+			m_has_state_column ? "c.`requires_state`" : "NULL"
+		) +
 			"LEFT JOIN `playerbot_chat_response_context` c ON c.`response_id` = r.`id` "
 			"WHERE r.`enabled` = 1 ORDER BY r.`id`";
 
@@ -698,7 +833,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 				std::swap(r.level_min, r.level_max);
 			}
 
-			if (row[12] || row[13] || row[14] || row[15]) {
+			if (row[12] || row[13] || row[14] || row[15] || row[16]) {
 				r.has_context = true;
 
 				if (row[12] && row[12][0] != '\0') {
@@ -718,6 +853,20 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 					r.requires_faction = RowI32(row[14]);
 				}
 				r.per_speaker_cooldown_ms = RowU32(row[15]);
+
+				if (row[16] && row[16][0] != '\0') {
+					std::string bad;
+					r.requires_state      = ParseStateMask(row[16], bad);
+					r.requires_state_text = Strings::ToLower(row[16]);
+					if (!bad.empty()) {
+						m_bad_state_rows.push_back(r.id);
+						LogError(
+							"[pbchat] response id [{}] requires unknown state(s) [{}]; row can never be spoken "
+							"(known: in_combat out_of_combat low_hp low_mana sitting standing moving still grouped solo)",
+							r.id, bad
+						);
+					}
+				}
 			}
 
 			m_categories[cat_it->second].response_idx.push_back(static_cast<uint32>(m_responses.size()));
@@ -1223,6 +1372,11 @@ const Response *PlayerBotChatEngine::PickResponse(
 	// listener's ListenerState, and doing it first means `st` sees that entry.
 	const Persona *persona = listener ? &PersonaFor(listener) : nullptr;
 
+	// [19.12] Computed on the first state-gated row, not up front: most
+	// categories carry no gated rows, and the mask walks a group and a raid.
+	uint16 state_mask  = 0;
+	bool   state_known = false;
+
 	const ListenerState *st = nullptr;
 	if (listener) {
 		auto st_it = m_listener_state.find(listener->GetID());
@@ -1320,6 +1474,22 @@ const Response *PlayerBotChatEngine::PickResponse(
 				auto         it  = st->per_speaker_cat_last.find(key);
 				if (it != st->per_speaker_cat_last.end() &&
 				    now_ms - it->second < r.per_speaker_cooldown_ms) {
+					continue;
+				}
+			}
+
+			// [19.12] Every required state must hold right now. No listener
+			// means nothing can be verified, so a gated row is never eligible
+			// -- the gate fails closed, the same way requires_faction does.
+			if (r.requires_state != 0) {
+				if (!listener) {
+					continue;
+				}
+				if (!state_known) {
+					state_mask  = CurrentStateMask(listener);
+					state_known = true;
+				}
+				if ((r.requires_state & ~state_mask) != 0) {
 					continue;
 				}
 			}
@@ -3410,6 +3580,7 @@ bool PlayerBotChatEngine::TestClassify(
 	const int8   alignment = RaceAlignment(race_id);
 	const char  *short_name = zone ? zone->GetShortName() : "";
 	const char  *tod        = TimeOfDayString();
+	size_t       state_gated_skipped = 0;
 
 	for (uint32 ri : cat.response_idx) {
 		const Response &r = m_responses[ri];
@@ -3444,6 +3615,12 @@ bool PlayerBotChatEngine::TestClassify(
 			if (!r.requires_time_of_day.empty() && r.requires_time_of_day != tod) {
 				continue;
 			}
+			// [19.12] No listener exists in a dry run, so its state cannot be
+			// read; fail closed exactly as PickResponse does without one.
+			if (r.requires_state != 0) {
+				++state_gated_skipped;
+				continue;
+			}
 		}
 
 		out.sample_response_id  = r.id;
@@ -3462,6 +3639,14 @@ bool PlayerBotChatEngine::TestClassify(
 
 	if (out.sample_response.empty()) {
 		out.note = "category matched but no response row survives this class/race/level/context";
+	}
+
+	if (state_gated_skipped > 0) {
+		out.note += fmt::format(
+			"{}{} state-gated row(s) not shown -- requires_state needs a real bot to read",
+			out.note.empty() ? "" : "; ",
+			state_gated_skipped
+		);
 	}
 
 	return true;
@@ -3522,6 +3707,27 @@ void PlayerBotChatEngine::DumpCategories(Client *to)
 			Chat::Red,
 			"%s",
 			fmt::format("[pbchat] response ids with an invalid reply_channel (forced to -1): {}", ids).c_str()
+		);
+	}
+
+	// [19.12] A row naming an unknown state can never be spoken. Loud, because
+	// the failure mode is a gated line that simply never appears.
+	if (!m_bad_state_rows.empty()) {
+		std::string ids;
+		for (uint32 id : m_bad_state_rows) {
+			ids += (ids.empty() ? "" : ", ") + std::to_string(id);
+		}
+		to->Message(
+			Chat::Red,
+			"%s",
+			fmt::format("[pbchat] response ids requiring an unknown state (never spoken): {}", ids).c_str()
+		);
+	}
+
+	if (!m_has_state_column) {
+		to->Message(
+			Chat::Yellow,
+			"[pbchat] requires_state column missing -- apply 2026_09_25_bots_playerbot_chat_state_gate.sql"
 		);
 	}
 }
