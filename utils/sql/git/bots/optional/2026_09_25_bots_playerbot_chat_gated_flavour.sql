@@ -32,7 +32,7 @@
 -- WHAT IT ALSO FIXES
 --
 -- The shipped neutral pack still held rows that break the rule, found while
--- auditing for this pack. The spec named three; there were eighteen:
+-- auditing for this pack. The spec named three; there were nineteen:
 --
 --   mana claims any class could make
 --     combat_call  'i am out of mana'                        -> rewritten, gated
@@ -41,6 +41,8 @@
 --     status       'nearly full mana'                        -> rewritten with {mana}
 --     status       'low mana here too'                       -> gated low_mana
 --     status       'medding, do not pull yet'                -> gated sitting
+--   a health claim any bot could make
+--     aggro        '{target} is on me and i am low'          -> gated low_hp
 --   night claims made at noon -- twelve rows across smalltalk_opener,
 --     fallback, zone_intent_opener, lfg, lfg_opener, market_opener and
 --     tell_opener that say "tonight" or "the night"           -> gated night
@@ -73,8 +75,8 @@ WHERE table_schema = DATABASE()
 
 SELECT COUNT(*) AS context_rows_before FROM playerbot_chat_response_context;
 
--- The rows about to be rewritten or gated (expect 11 here, plus the seven
--- opener/lfg night rows staged in 2b -- 18 in all on the shipped pack).
+-- The rows about to be rewritten or gated (expect 12 here, plus the seven
+-- opener/lfg night rows staged in 2b -- 19 in all on the shipped pack).
 SELECT k.name, r.id, r.class_mask, r.response_text
 FROM playerbot_chat_responses r
 JOIN playerbot_chat_categories k ON k.id = r.category_id
@@ -84,6 +86,7 @@ WHERE (k.name = 'combat_call'      AND r.response_text = 'i am out of mana')
    OR (k.name = 'status'           AND r.response_text IN ('nearly full mana', 'low mana here too', 'medding, do not pull yet'))
    OR (k.name = 'smalltalk_opener' AND r.response_text IN ('quiet in {zone} tonight', 'been a slow night for drops', 'who has the best story from tonight?'))
    OR (k.name = 'fallback'         AND r.response_text IN ('quiet tonight', 'been a slow night for drops'))
+   OR (k.name = 'aggro'            AND r.response_text = '{target} is on me and i am low')
 ORDER BY k.name, r.id;
 
 
@@ -245,7 +248,8 @@ INSERT INTO pbchat_flavour (category, response_text, is_new, weight, class_mask,
   ('status',           'medding, do not pull yet',                         0, 0,   15934, 'sitting'),
   ('combat_call',      'mana is low, {mana} percent',                      0, 0,   15934, 'low_mana'),
   ('buff_request',     'sorry, low on mana',                               0, 0,   15934, 'low_mana'),
-  ('lfg',              'low on mana but i am interested',                  0, 0,   15934, 'low_mana');
+  ('lfg',              'low on mana but i am interested',                  0, 0,   15934, 'low_mana'),
+  ('aggro',            '{target} is on me and i am low',                   0, 0,   65535, 'low_hp');
 
 -- ---------------------------------------------------------------------------
 -- 2d. APPLY. Context rows go first on the way out and last on the way in --
