@@ -174,6 +174,10 @@ TrilogyClient::TrilogyClient(
 	SetPosition(x, y, z);
 	SetHeading(heading);
 
+	// Seed the /rewind point at the spawn, so a zone cancel before the first
+	// position update returns the player here rather than to (0,0,0).
+	m_RewindLocation = glm::vec3(x, y, z);
+
 	// Mirror position into m_pp so SaveCharacterData writes the correct location on
 	// disconnect (m_pp.x/y/z default to 0 otherwise, placing the character at origin).
 	GetPP().x       = x;
@@ -2557,9 +2561,53 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	// and proximity checks without triggering the movement manager broadcast.
 	const float prev_heading = GetHeading();
 
+	// /rewind location — mirrors Handle_OP_ClientUpdate (client_packet.cpp
+	// ~L4970-4994), and like it, runs against the position from BEFORE this
+	// update.  It matters well beyond /rewind: Client::SendZoneCancel moves the
+	// player to m_RewindLocation (zoning.cpp ~L715).  Never tracked here, it
+	// stayed at (0,0,0), so any zone request the server refused — no matching
+	// zone_points row, a request for the current zone, a quest veto — moved
+	// the player to (0,0,0), sent it as an approval, and saved it.
+	{
+		float rewind_x_diff = x - m_RewindLocation.x;
+		rewind_x_diff *= rewind_x_diff;
+		float rewind_y_diff = y - m_RewindLocation.y;
+		rewind_y_diff *= rewind_y_diff;
+
+		if ((rewind_x_diff > 750) || (rewind_y_diff > 750))
+			m_RewindLocation = glm::vec3(m_Position);
+
+		if ((rewind_x_diff > 5000) || (rewind_y_diff > 5000))
+			m_RewindLocation = glm::vec3(x, y, z);
+	}
+
 	SetPosition(x, y, z);
 	SetHeading(heading);
 	SetMoving(!(x == prev_x && y == prev_y));
+
+	// Client aggro scan cadence — mirrors Handle_OP_ClientUpdate
+	// (client_packet.cpp ~L5045-5067).  That timer is the ONLY way an NPC
+	// aggroes a player (Client::Process ~L614; NPC AI only scans for NPCs), and
+	// it runs at the idle interval (Aggro:ClientAggroCheckIdleInterval, 6000 ms
+	// here) until movement switches it to the moving one (1000 ms).  Without
+	// this a running Trilogy player was checked every 6 s — well over a hundred
+	// units between checks — and could run straight past KOS mobs.
+	{
+		const uint16 scan_idle   = RuleI(Aggro, ClientAggroCheckIdleInterval);
+		const uint16 scan_moving = RuleI(Aggro, ClientAggroCheckMovingInterval);
+
+		if (IsMoving()) {
+			if (client_scan_npc_aggro_timer.GetRemainingTime() > scan_moving) {
+				client_scan_npc_aggro_timer.Disable();
+				client_scan_npc_aggro_timer.Start(scan_moving);
+				client_scan_npc_aggro_timer.Trigger();
+			}
+		}
+		else if (client_scan_npc_aggro_timer.GetDuration() == scan_moving) {
+			client_scan_npc_aggro_timer.Disable();
+			client_scan_npc_aggro_timer.Start(scan_idle);
+		}
+	}
 
 	// Note a pivot so SendMobHeartbeat can raise this player's refresh rate
 	// while it lasts.  Compared against the wire quantum rather than the float:
