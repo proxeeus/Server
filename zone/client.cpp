@@ -414,10 +414,6 @@ Client::~Client() {
 		Bot::ProcessBotOwnerRefDelete(this);
 	}
 
-	if (zone) {
-		zone->ClearEXPModifier(this);
-	}
-
 	if (!IsZoning()) {
 		if(IsInAGuild()) {
 			guild_mgr.UpdateDbMemberOnline(CharacterID(), false);
@@ -483,6 +479,15 @@ Client::~Client() {
 	// we save right now, because the client might be zoning and the world
 	// will need this data right away
 	Save(2); // This fails when database destructor is called first on shutdown
+
+	// Only after the final Save.  Save() -> SaveCharacterEXPModifier reads
+	// zone->exp_modifiers[CharacterID()] with operator[], so clearing the entry
+	// first made that read default-construct an EXPModifier{0, 0} and REPLACE the
+	// character's row with it — every client, every zone-out, camp and logout.
+	// That is why nearly every character_exp_modifiers row on the server was 0/0.
+	if (zone) {
+		zone->ClearEXPModifier(this);
+	}
 
 	safe_delete(task_state);
 	safe_delete(KarmaUpdateTimer);
