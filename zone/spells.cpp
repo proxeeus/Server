@@ -105,6 +105,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 #include "client.h"
 #include "mob.h"
 #include "water_map.h"
+#include "playerbot_chat.h"
 
 extern Zone* zone;
 extern volatile bool is_zone_loaded;
@@ -4643,6 +4644,13 @@ bool Mob::SpellOnTarget(
 	//Check SE_Fc_Cast_Spell_On_Land SPA 481 on target, if hit by this spell and Conditions are Met then target will cast the specified spell.
 	if (spelltar) {
 		spelltar->CastSpellOnLand(this, spell_id);
+	}
+
+	// [19.13] A player's beneficial spell has LANDED on a chat bot: past every
+	// resist, level and stacking check above, so a "ty" is never said for a buff
+	// that did not take. The engine filters to player casters and chat bots.
+	if (spelltar && spelltar != this && IsClient() && IsBeneficialSpell(spell_id)) {
+		playerbot_chat.NotifyBeneficialSpell(this, spelltar, spell_id);
 	}
 
 	if (IsValidSpell(spells[spell_id].recourse_link) && spells[spell_id].recourse_link != spell_id) {

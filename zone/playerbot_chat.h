@@ -273,6 +273,10 @@ namespace PlayerBotChat {
 		// would quietly collapse to 1. Replies inherit the wave of the message
 		// they answer, so one beat never invalidates itself.
 		uint32      wave_seq    = 0;
+		// [19.13] A delayed event line (ScriptSayEx with a delay). It answers
+		// no beat -- wave_seq stays 0, so it can never go stale -- and opens a
+		// fresh one when it fires, as an immediate script line would.
+		bool        opens_beat  = false;
 		// [19.6] Enough to hand back the cooldowns this line reserved when it
 		// was queued but never spent, because it was dropped as stale.
 		//
@@ -360,6 +364,25 @@ public:
 	// Each bot rolls CombatCalloutChance independently, so the group produces a
 	// line or two rather than a chorus.
 	void NotifySlay(Mob *killer, Mob *victim);
+
+	// ---- [19.13] witnessed events -------------------------------------
+	// Things the engine SAW happen, each answered by one chosen bot rather
+	// than by everyone who could: a reaction from the group is one voice, and
+	// the chorus is the tell. Every line these produce is about the event
+	// itself -- who, which spell, which level -- so each one is true by the
+	// same argument {target} is.
+	//
+	// A player gained a level through experience (not #level). One chat bot in
+	// their group says grats, in group chat.
+	void NotifyLevelUp(Client *who, uint8 new_level);
+	// A Bot accepted its owner's invite (the ^invite path, not a zone-in
+	// restore). The joiner itself says so, at most once per group per window.
+	void NotifyGroupJoin(Mob *joiner, Mob *inviter);
+	// A group member died. One OTHER member who was present answers.
+	void NotifyGroupDeath(Mob *dead);
+	// A player's beneficial spell landed on a chat bot. The bot thanks them,
+	// at most once per caster per window and per (caster, bot) per ten minutes.
+	void NotifyBeneficialSpell(Mob *caster, Mob *target, uint16 spell_id);
 
 	// ---- tells --------------------------------------------------------
 	// A player sent /tell <bot>. Called from Client::ChannelMessageReceived
@@ -587,6 +610,40 @@ private:
 
 	void ExpireTransients(uint64 now_ms);
 
+	// [19.13] ScriptSay with a subject and a reaction delay. See the definition.
+	bool ScriptSayEx(
+		Mob                                      *talker,
+		uint32                                    category_id,
+		uint8                                     chan_num,
+		Mob                                      *speaker,
+		const std::map<std::string, std::string> &captures,
+		uint32                                    delay_ms
+	);
+
+	// [19.13] Resolve a category by name and speak it through ScriptSayEx with
+	// a human reaction delay. False when the category is not loaded (content is
+	// operator-installed), the zone is under Trilogy text pressure, or the
+	// speak path itself declined.
+	bool SpeakEvent(
+		Mob                                      *talker,
+		const char                               *category_name,
+		uint8                                     chan_num,
+		Mob                                      *about,
+		const std::map<std::string, std::string> &captures
+	);
+
+	// [19.13] True, and stamped, when `key` has not fired inside cooldown_ms.
+	// One map for every event guard; keys are namespaced strings.
+	bool EventCooldownReady(const std::string &key, uint64 cooldown_ms, uint64 now_ms);
+
+	// [19.13] Bots that could voice a group event: chat bots in `who`'s group
+	// (never `who`), unmuted, and -- when `near` is given -- within earshot of it.
+	void CollectGroupVoices(Mob *who, Mob *near, std::vector<Mob *> &out);
+
+	// [19.13] A player walking up to a PlayerBot. Swept every 2s: arrival is an
+	// edge (was not near, now is), and a 5s sweep misses a player running past.
+	void ProximityWatchTick(uint64 now_ms);
+
 	// [19.6] Open a new conversation beat and make it current. Called at every
 	// ORIGINATION point -- a client line at chain_depth 0, a /tell, an opener,
 	// a cold tell, a ScriptSay -- and nowhere else. Everything the bus fans out
@@ -734,6 +791,13 @@ private:
 	uint64                                                   m_next_mana_watch_ms       = 0;
 	uint32                                                   m_tells_this_hour          = 0;
 
+	// [19.13] Event guards (key -> last fire ms), and the proximity edge
+	// detector: (client entity id << 16 | bot entity id) -> last sweep the pair
+	// was within greeting range. Both swept in ExpireTransients.
+	std::unordered_map<std::string, uint64>                  m_event_last;
+	std::unordered_map<uint32, uint64>                       m_near;
+	uint64                                                   m_next_proximity_ms        = 0;
+
 	// ---- stats --------------------------------------------------------
 	uint64                                  m_stat_heard   = 0;
 	uint64                                  m_stat_emitted = 0;
@@ -747,6 +811,13 @@ private:
 	// would have dropped, which is the only proof the exemption does anything.
 	uint64                                  m_stat_addressed          = 0;
 	uint64                                  m_stat_addressed_over_cap = 0;
+	// [19.13] Event lines actually queued, by kind. "0 thanks" on a server
+	// where players demonstrably heal bots means the spell hook is not firing.
+	uint64                                  m_stat_ev_ding     = 0;
+	uint64                                  m_stat_ev_join     = 0;
+	uint64                                  m_stat_ev_death    = 0;
+	uint64                                  m_stat_ev_thanks   = 0;
+	uint64                                  m_stat_ev_passerby = 0;
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken

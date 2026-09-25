@@ -36,6 +36,7 @@
 #include "bot.h"
 #include "../common/events/player_event_logs.h"
 #include "worldserver.h"
+#include "playerbot_chat.h"
 
 extern WorldServer worldserver;
 
@@ -834,6 +835,14 @@ void Client::SetEXP(ExpSource exp_source, uint64 set_exp, uint64 set_aaxp, bool 
 		if (RuleB(Bots, Enabled) && RuleB(Bots, BotLevelsWithOwner)) {
 			// hack way of doing this..but, least invasive... (same criteria as gain level for sendlvlapp)
 			Bot::LevelBotWithClient(this, GetLevel(), (myoldlevel == check_level - 1));
+		}
+
+		// [19.13] A real ding, earned through experience -- this path, not
+		// Client::SetLevel, so a GM's #level never makes the group say grats.
+		// After LevelBotWithClient, so a bot congratulating its owner is
+		// already the new level itself.
+		if (check_level > myoldlevel) {
+			playerbot_chat.NotifyLevelUp(this, check_level);
 		}
 	}
 

@@ -20,6 +20,7 @@
 #include "../common/eqemu_logsys.h"
 #include "../common/races.h"
 #include "../common/rulesys.h"
+#include "../common/spdat.h"
 #include "../common/strings.h"
 
 #include "bot.h"
@@ -227,6 +228,38 @@ namespace {
 	// and ManaWatchTick agree. That rule's 0 means "no proactive callout", not
 	// "nobody is ever low", so the state falls back to this instead.
 	constexpr int kLowManaFallbackPercent = 20;
+
+	// ------------------------------------------------------------------
+	// [19.13] witnessed events
+	// ------------------------------------------------------------------
+
+	// Reaction time before an event line lands. A condolence in the same frame
+	// as the death reads as a trigger firing, because it is one.
+	constexpr int kEventDelayMinMs = 1200;
+	constexpr int kEventDelayMaxMs = 3500;
+
+	constexpr int    kDingGratsChance        = 80;
+	constexpr int    kJoinLineChance         = 70;
+	constexpr uint64 kJoinGroupCooldownMs    = 30000;     // ^invite x5 is one hello, not five
+	constexpr int    kDeathCondolenceChance  = 70;
+	constexpr uint64 kDeathGroupCooldownMs   = 30000;     // a wipe is one "rip", not six
+	constexpr int    kThanksChance           = 60;
+	constexpr int    kThanksCombatChance     = 20;        // mid-fight, you rarely stop to type ty
+	constexpr uint64 kThanksCasterCooldownMs = 20000;     // a group buff is one thank-you
+	constexpr uint64 kThanksPairCooldownMs   = 600000;    // and the same bot does not thank twice in ten minutes
+
+	// A player walking up to a PlayerBot. Radius is conversational distance,
+	// well inside earshot; "forget" is how long a player must be away before
+	// coming back counts as arriving again.
+	constexpr float  kPasserbyRadius           = 40.0f;
+	constexpr uint64 kPasserbyForgetMs         = 15000;
+	constexpr int    kPasserbyChance           = 35;
+	constexpr uint64 kPasserbyPlayerCooldownMs = 60000;    // walking through a camp is one hello
+	constexpr uint64 kPasserbyPairCooldownMs   = 1200000;  // and the same bot greets you once per 20 minutes
+
+	// The longest guard above; m_event_last entries older than this can no
+	// longer gate anything and are swept.
+	constexpr uint64 kEventKeyTtlMs = 1200000;
 
 	// Schema probe. Lets a binary run ahead of its migration: the loader selects
 	// NULL in place of a missing column instead of failing the whole content
@@ -919,6 +952,9 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_tells_this_hour         = 0;
 	m_next_spontaneous_tell_ms = m_hour_window_start_ms + (static_cast<uint64>(RuleI(PlayerBotChat, SpontaneousTellTickSec)) * 1000);
 	m_next_mana_watch_ms       = m_hour_window_start_ms + 5000;
+	m_event_last.clear();
+	m_near.clear();
+	m_next_proximity_ms        = m_hour_window_start_ms + 2000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -1004,7 +1040,16 @@ void PlayerBotChatEngine::Process()
 			// been opened. Without this, the first responder's own emission
 			// would look like a NEW beat to the second responder still sitting
 			// in m_pending, and ResponseCapPerMessage 2 would collapse to 1.
-			m_current_wave = e.wave_seq;
+			//
+			// [19.13] A queued EVENT line (a condolence, a thank-you) answers no
+			// beat at all -- it is its own origination, and opens one here, at
+			// the moment it is actually spoken.
+			if (e.opens_beat) {
+				BeginWave();
+			}
+			else {
+				m_current_wave = e.wave_seq;
+			}
 
 			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id);
 		}
@@ -1038,6 +1083,13 @@ void PlayerBotChatEngine::Process()
 		m_next_mana_watch_ms = now + 5000;
 		ManaWatchTick();
 		HealthWatchTick();
+	}
+
+	// [19.13] Faster than the vitals clock on purpose: arrival is an EDGE, and a
+	// player running past covers the whole greeting radius in under a second.
+	if (now >= m_next_proximity_ms) {
+		m_next_proximity_ms = now + 2000;
+		ProximityWatchTick(now);
 	}
 }
 
@@ -1229,6 +1281,16 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 	const uint64 player_cd = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, PerPlayerTellCooldownMs)));
 	for (auto it = m_last_tell_to_player.begin(); it != m_last_tell_to_player.end();) {
 		it = (now_ms - it->second >= player_cd) ? m_last_tell_to_player.erase(it) : std::next(it);
+	}
+
+	// [19.13] Same reasoning: past its longest guard, an event key gates
+	// nothing. The proximity map is keyed by entity ids, so it is swept on the
+	// forget window -- a stale pair must not suppress a genuine arrival.
+	for (auto it = m_event_last.begin(); it != m_event_last.end();) {
+		it = (now_ms - it->second >= kEventKeyTtlMs) ? m_event_last.erase(it) : std::next(it);
+	}
+	for (auto it = m_near.begin(); it != m_near.end();) {
+		it = (now_ms - it->second > kPasserbyForgetMs) ? m_near.erase(it) : std::next(it);
 	}
 }
 
@@ -2682,6 +2744,379 @@ void PlayerBotChatEngine::NotifySlay(Mob *killer, Mob *victim)
 }
 
 // ============================================================
+// [19.13] witnessed events
+// ============================================================
+
+bool PlayerBotChatEngine::EventCooldownReady(const std::string &key, uint64 cooldown_ms, uint64 now_ms)
+{
+	auto it = m_event_last.find(key);
+	if (it != m_event_last.end() && now_ms - it->second < cooldown_ms) {
+		return false;
+	}
+	m_event_last[key] = now_ms;
+	return true;
+}
+
+bool PlayerBotChatEngine::SpeakEvent(
+	Mob                                      *talker,
+	const char                               *category_name,
+	uint8                                     chan_num,
+	Mob                                      *about,
+	const std::map<std::string, std::string> &captures
+)
+{
+	if (!talker || m_all_muted || !zone) {
+		return false;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return false;
+	}
+
+	// ScriptSay never checked this -- a kill shout is worth its packet. An event
+	// reaction is not: skip it rather than feed a backed-up Trilogy queue.
+	if (ZoneTextPressureHigh()) {
+		++m_stat_drops[DR_TrilogyPressure];
+		return false;
+	}
+
+	const int32 cat_id = FindCategoryId(category_name);
+	if (cat_id < 0) {
+		// Operator-installed content. Say so when asked, never silently.
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] event: no '{}' category loaded; run the events SQL", category_name);
+		}
+		return false;
+	}
+
+	const uint32 delay = static_cast<uint32>(zone->random.Int(kEventDelayMinMs, kEventDelayMaxMs));
+	return ScriptSayEx(talker, static_cast<uint32>(cat_id), chan_num, about, captures, delay);
+}
+
+void PlayerBotChatEngine::CollectGroupVoices(Mob *who, Mob *near, std::vector<Mob *> &out)
+{
+	out.clear();
+	if (!who) {
+		return;
+	}
+
+	// Channel-2 scope is exactly "the chat bots in this group": it resolves a
+	// real group and a raid group by name, and excludes `who` itself.
+	std::vector<Mob *> scope;
+	CollectScope(who, ChatChannel_Group, scope);
+
+	const float earshot = static_cast<float>(RuleI(PlayerBotChat, EarshotDistance));
+
+	for (Mob *m : scope) {
+		if (!m || m == who || m->IsCorpse() || m->GetHP() <= 0) {
+			continue;
+		}
+
+		auto it = m_listener_state.find(m->GetID());
+		if (it != m_listener_state.end() && it->second.muted) {
+			continue;
+		}
+
+		// Present, when presence matters: a condolence from a bot parked at
+		// the zone line is a line about something it did not see.
+		if (near && Distance(m->GetPosition(), near->GetPosition()) > earshot) {
+			continue;
+		}
+
+		out.push_back(m);
+	}
+}
+
+void PlayerBotChatEngine::NotifyLevelUp(Client *who, uint8 new_level)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !who || !zone || m_all_muted) {
+		return;
+	}
+
+	// No presence test: group members can see a groupmate's level from
+	// anywhere, which is all a "grats" asserts.
+	std::vector<Mob *> voices;
+	CollectGroupVoices(who, nullptr, voices);
+	if (voices.empty() || !zone->random.Roll(kDingGratsChance)) {
+		return;
+	}
+
+	// One voice, chosen by chattiness -- the chatty member of the group is the
+	// one who always says grats first.
+	Mob *voice = PickOpener(voices);
+	if (!voice) {
+		return;
+	}
+
+	const std::map<std::string, std::string> captures = {
+		{"target", who->GetCleanName()},
+		{"ding_level", std::to_string(new_level)}
+	};
+
+	if (SpeakEvent(voice, "group_ding", ChatChannel_Group, who, captures)) {
+		++m_stat_ev_ding;
+	}
+}
+
+void PlayerBotChatEngine::NotifyGroupJoin(Mob *joiner, Mob *inviter)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !joiner || !zone || m_all_muted || !IsChatBot(joiner)) {
+		return;
+	}
+
+	auto it = m_listener_state.find(joiner->GetID());
+	if (it != m_listener_state.end() && it->second.muted) {
+		return;
+	}
+
+	// Roll first, then the window: a bot that stays quiet does not use up the
+	// group's one hello, so the next bot invited a moment later still may.
+	if (!zone->random.Roll(kJoinLineChance)) {
+		return;
+	}
+
+	const std::string key = fmt::format(
+		"join:{}",
+		Strings::ToLower(inviter ? inviter->GetName() : joiner->GetName())
+	);
+	if (!EventCooldownReady(key, kJoinGroupCooldownMs, NowMs())) {
+		return;
+	}
+
+	std::map<std::string, std::string> captures;
+	if (inviter) {
+		captures["target"] = inviter->GetCleanName();
+	}
+
+	if (SpeakEvent(joiner, "group_join", ChatChannel_Group, inviter, captures)) {
+		++m_stat_ev_join;
+	}
+}
+
+void PlayerBotChatEngine::NotifyGroupDeath(Mob *dead)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !dead || !zone || m_all_muted) {
+		return;
+	}
+
+	// Called from NPC::Death for every NPC in the zone; only a PlayerBot can be
+	// somebody's groupmate. Bail before the scope walk for the rest.
+	if (dead->IsNPC() && !IsPlayerBot(dead)) {
+		return;
+	}
+
+	std::vector<Mob *> voices;
+	CollectGroupVoices(dead, dead, voices);
+	if (voices.empty() || !zone->random.Roll(kDeathCondolenceChance)) {
+		return;
+	}
+
+	// One condolence per group per window, so a wipe reads as a wipe. Keyed on
+	// the group id where there is one; a raided member's Group object is gone,
+	// so fall back to the raid and its sub-group.
+	std::string key;
+	if (Group *g = dead->GetGroup()) {
+		key = fmt::format("gdeath:g{}", g->GetID());
+	}
+	else {
+		Raid *r = entity_list.GetRaidByName(dead->GetName());
+		if (!r) {
+			r = entity_list.GetRaidByBotName(dead->GetName());
+		}
+		key = r
+			? fmt::format("gdeath:r{}:{}", r->GetID(), r->GetGroup(dead->GetName()))
+			: fmt::format("gdeath:{}", Strings::ToLower(dead->GetName()));
+	}
+
+	if (!EventCooldownReady(key, kDeathGroupCooldownMs, NowMs())) {
+		return;
+	}
+
+	Mob *voice = PickOpener(voices);
+	if (!voice) {
+		return;
+	}
+
+	const std::map<std::string, std::string> captures = {
+		{"target", ChatDisplayName(dead)}
+	};
+
+	if (SpeakEvent(voice, "group_death", ChatChannel_Group, dead, captures)) {
+		++m_stat_ev_death;
+	}
+}
+
+void PlayerBotChatEngine::NotifyBeneficialSpell(Mob *caster, Mob *target, uint16 spell_id)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || !caster || !target || caster == target || !zone || m_all_muted) {
+		return;
+	}
+
+	// A PLAYER's spell. Bots buff and heal each other constantly, and a group
+	// of bots thanking each other for every heal is the loudest thing this
+	// could possibly produce.
+	if (!caster->IsClient() || !IsChatBot(target) || target->IsCorpse() || !IsValidSpell(spell_id)) {
+		return;
+	}
+
+	auto st_it = m_listener_state.find(target->GetID());
+	if (st_it != m_listener_state.end() && st_it->second.muted) {
+		return;
+	}
+
+	if (!zone->random.Roll(IsInCombat(target) ? kThanksCombatChance : kThanksChance)) {
+		return;
+	}
+
+	// Both guards are checked before either is stamped: a pair still on its
+	// ten-minute cooldown must not eat the caster's twenty-second window.
+	const uint64      now        = NowMs();
+	const std::string caster_key = fmt::format("thanks:{}", Strings::ToLower(caster->GetName()));
+	const std::string pair_key   = fmt::format("{}:{}", caster_key, Strings::ToLower(ChatDisplayName(target)));
+
+	auto ready = [&](const std::string &k, uint64 cd) {
+		auto it = m_event_last.find(k);
+		return it == m_event_last.end() || now - it->second >= cd;
+	};
+
+	if (!ready(caster_key, kThanksCasterCooldownMs) || !ready(pair_key, kThanksPairCooldownMs)) {
+		return;
+	}
+	m_event_last[caster_key] = now;
+	m_event_last[pair_key]   = now;
+
+	// Thanked where the caster will see it: in the group when they share one,
+	// otherwise out loud. CollectScope resolves raid groups as well.
+	std::vector<Mob *> group_scope;
+	CollectScope(caster, ChatChannel_Group, group_scope);
+	const bool same_group =
+		std::find(group_scope.begin(), group_scope.end(), target) != group_scope.end();
+
+	// {spell} is the spell that actually landed. Spell names are global, so the
+	// row stays true anywhere -- the same allowance item names get.
+	const std::map<std::string, std::string> captures = {
+		{"target", caster->GetCleanName()},
+		{"spell", spells[spell_id].name}
+	};
+
+	if (SpeakEvent(target, "thanks_buff", same_group ? ChatChannel_Group : ChatChannel_Say, caster, captures)) {
+		++m_stat_ev_thanks;
+	}
+}
+
+void PlayerBotChatEngine::ProximityWatchTick(uint64 now_ms)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded || FindCategoryId("passerby") < 0) {
+		return;
+	}
+
+	const uint64 base_cooldown = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, PerListenerCooldownMs)));
+
+	auto ready = [&](const std::string &k, uint64 cd) {
+		auto it = m_event_last.find(k);
+		return it == m_event_last.end() || now_ms - it->second >= cd;
+	};
+
+	for (const auto &ce : entity_list.GetClientList()) {
+		Client *c = ce.second;
+		if (!c || !c->Connected() || c->GetHP() <= 0) {
+			continue;
+		}
+
+		// The edge detector runs for every PlayerBot in range, eligible or
+		// not, so a bot that was busy when you walked up does not "notice"
+		// you ten seconds later as though you had just arrived.
+		std::vector<Mob *> arrivals;
+		for (const auto &me : entity_list.GetCloseMobList(c)) {
+			Mob *m = me.second;
+			if (!m || !IsPlayerBot(m)) {
+				continue;
+			}
+			if (Distance(m->GetPosition(), c->GetPosition()) > kPasserbyRadius) {
+				continue;
+			}
+
+			const uint32 key     = (static_cast<uint32>(c->GetID()) << 16) | m->GetID();
+			auto         it      = m_near.find(key);
+			const bool   arrived = (it == m_near.end()) || (now_ms - it->second > kPasserbyForgetMs);
+			m_near[key]          = now_ms;
+
+			if (arrived) {
+				arrivals.push_back(m);
+			}
+		}
+
+		if (arrivals.empty()) {
+			continue;
+		}
+
+		const std::string player_lower = Strings::ToLower(c->GetName());
+		const std::string player_key   = "passerby:" + player_lower;
+		if (!ready(player_key, kPasserbyPlayerCooldownMs)) {
+			continue;
+		}
+
+		std::vector<Mob *> eligible;
+		for (Mob *m : arrivals) {
+			// Cannot greet what it cannot see.
+			if (c->IsInvisible(m)) {
+				continue;
+			}
+			// Groupmates travel together; greeting one every time they catch up
+			// is a doorbell, not a person.
+			if (m->GetGroup() && m->GetGroup() == c->GetGroup()) {
+				continue;
+			}
+			if (IsInCombat(m)) {
+				continue;
+			}
+
+			auto st_it = m_listener_state.find(m->GetID());
+			if (st_it != m_listener_state.end()) {
+				if (st_it->second.muted) {
+					continue;
+				}
+				if (st_it->second.last_msg_time_ms != 0 && now_ms - st_it->second.last_msg_time_ms < base_cooldown) {
+					continue;
+				}
+			}
+
+			if (!ready("passerby:" + Strings::ToLower(ChatDisplayName(m)) + ":" + player_lower, kPasserbyPairCooldownMs)) {
+				continue;
+			}
+
+			eligible.push_back(m);
+		}
+
+		if (eligible.empty() || !zone->random.Roll(kPasserbyChance)) {
+			continue;
+		}
+
+		Mob *voice = PickOpener(eligible);
+		if (!voice) {
+			continue;
+		}
+
+		m_event_last[player_key] = now_ms;
+		m_event_last["passerby:" + Strings::ToLower(ChatDisplayName(voice)) + ":" + player_lower] = now_ms;
+
+		const std::map<std::string, std::string> captures = {
+			{"target", c->GetCleanName()}
+		};
+
+		if (SpeakEvent(voice, "passerby", ChatChannel_Say, c, captures)) {
+			++m_stat_ev_passerby;
+		}
+	}
+}
+
+// ============================================================
 // [17.1 C] low-mana watch
 // ============================================================
 
@@ -3455,6 +3890,37 @@ bool PlayerBotChatEngine::ScriptSay(
 	const std::string &target_name
 )
 {
+	// {target} is delivered as a capture so it shares the substitutor's
+	// escaping and missing-variable handling with every other placeholder.
+	std::map<std::string, std::string> captures;
+	if (!target_name.empty()) {
+		captures["target"] = target_name;
+	}
+
+	return ScriptSayEx(talker, category_id, chan_num, nullptr, captures, 0);
+}
+
+// [19.13] The one engine-initiated speak path. ScriptSay is this with no
+// speaker and no delay, which is exactly the pre-19.13 behaviour -- the Lua
+// hooks and the vitals watches are unchanged. Witnessed events add the two
+// things a script line never needed:
+//
+//   speaker   the person the line is ABOUT, so {speaker} resolves ("ty
+//             {speaker}" after a heal) and the persona's name_drop applies;
+//   delay_ms  a human reaction time. A script line fires at the moment of its
+//             event, which is right for "incoming!" and wrong for "rip" --
+//             nobody types a condolence in the same frame their friend dies.
+//             A delayed line is queued like a reply, but as a beat of its own
+//             (see PendingEmission::opens_beat).
+bool PlayerBotChatEngine::ScriptSayEx(
+	Mob                                      *talker,
+	uint32                                    category_id,
+	uint8                                     chan_num,
+	Mob                                      *speaker,
+	const std::map<std::string, std::string> &captures,
+	uint32                                    delay_ms
+)
+{
 	if (!RuleB(PlayerBotChat, ChatEnabled) || !talker) {
 		return false;
 	}
@@ -3481,7 +3947,7 @@ bool PlayerBotChatEngine::ScriptSay(
 	}
 
 	const uint64    now  = NowMs();
-	const Response *resp = PickResponse(category_id, talker, nullptr, chan_num, now);
+	const Response *resp = PickResponse(category_id, talker, speaker, chan_num, now);
 	if (!resp) {
 		LogInfo(
 			"[pbchat] ScriptSay: no eligible response for category_id [{}] listener [{}]",
@@ -3559,13 +4025,6 @@ bool PlayerBotChatEngine::ScriptSay(
 	st.last_msg_time_ms            = now;
 	st.category_last_fire[category_id] = now;
 
-	// {target} is delivered as a capture so it shares the substitutor's
-	// escaping and missing-variable handling with every other placeholder.
-	std::map<std::string, std::string> captures;
-	if (!target_name.empty()) {
-		captures["target"] = target_name;
-	}
-
 	// Counted here rather than in PickResponse: the broadcast cooldown above can
 	// still reject an already-picked row, and Player_Bot.lua drives this path
 	// once per kill, per death and per combat join -- easily the noisiest source
@@ -3576,8 +4035,30 @@ bool PlayerBotChatEngine::ScriptSay(
 	// unprompted statement, not an answer -- it opens a beat exactly as an
 	// opener does. Without this it would inherit whichever beat happened to be
 	// current and could stale-drop replies belonging to it.
-	BeginWave();
-	Emit(talker, out_channel, Substitute(resp->text, talker, nullptr, captures), 0);
+	const std::string text = Substitute(resp->text, talker, speaker, captures);
+
+	if (delay_ms == 0) {
+		BeginWave();
+		Emit(talker, out_channel, text, 0);
+		return true;
+	}
+
+	// [19.13] Queued. wave_seq 0 makes it immune to the stale drop -- it answers
+	// an EVENT, not the channel, so a player talking in the meantime does not
+	// make "rip" or "ty" any less true -- and opens_beat has the drain begin a
+	// fresh beat at fire time, exactly what the immediate branch does now.
+	// Cooldowns were already stamped above, at queue time, like every reply.
+	PendingEmission pe;
+	pe.listener_id = talker->GetID();
+	pe.due_ms      = now + delay_ms;
+	pe.chan_num    = out_channel;
+	pe.chain_depth = 0;
+	pe.wave_seq    = 0;
+	pe.opens_beat  = true;
+	pe.category    = category_id;
+	pe.stamped_ms  = now;
+	pe.text        = text;
+	m_pending.push_back(std::move(pe));
 	return true;
 }
 
@@ -4056,6 +4537,18 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 			).c_str()
 		);
 
+		// [19.13] Witnessed events. Each counter is a hook that either fires or
+		// does not; a zero next to something that demonstrably happened is the
+		// hook, not the content.
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] events: grats {} | group join {} | condolence {} | thanks {} | passerby {}",
+				m_stat_ev_ding, m_stat_ev_join, m_stat_ev_death, m_stat_ev_thanks, m_stat_ev_passerby
+			).c_str()
+		);
+
 		// [17.1 C] The health half. No rule: the thresholds are constants.
 		size_t hp_latched = 0;
 		for (const auto &ls : m_listener_state) {
@@ -4278,6 +4771,11 @@ void PlayerBotChatEngine::ResetStats()
 	m_stat_tells_out = 0;
 	m_stat_addressed          = 0;
 	m_stat_addressed_over_cap = 0;
+	m_stat_ev_ding     = 0;
+	m_stat_ev_join     = 0;
+	m_stat_ev_death    = 0;
+	m_stat_ev_thanks   = 0;
+	m_stat_ev_passerby = 0;
 	memset(m_stat_drops, 0, sizeof(m_stat_drops));
 	m_stat_category_hits.clear();
 	m_stat_response_hits.clear();
