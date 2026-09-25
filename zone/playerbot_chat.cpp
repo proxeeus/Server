@@ -18,6 +18,7 @@
 #include "../common/eq_constants.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/eqemu_logsys.h"
+#include "../common/guilds.h"
 #include "../common/races.h"
 #include "../common/rulesys.h"
 #include "../common/spdat.h"
@@ -518,6 +519,48 @@ namespace {
 		return it == k_anims.end() ? 0 : it->second;
 	}
 
+	// ------------------------------------------------------------------
+	// [17.1 F] raid and guild
+	// ------------------------------------------------------------------
+
+	// The raid `m` is in, by name -- the same two lookups CollectScope and
+	// EmitChannel already make for raid GROUP chat, because a raided member's
+	// Group object is gone and bots resolve by bot name.
+	Raid *ChatRaidOf(Mob *m)
+	{
+		if (!m) {
+			return nullptr;
+		}
+		Raid *r = entity_list.GetRaidByName(m->GetName());
+		if (!r) {
+			r = entity_list.GetRaidByBotName(m->GetName());
+		}
+		return r;
+	}
+
+	// Guild membership for chat. Clients and Bots carry a real guild id. A
+	// PlayerBot does NOT: the tag over its head is a cosmetic "fake guild"
+	// rolled per spawn (ZoneDatabase::GetPlayerBotGuildId), not membership, so
+	// it is deliberately not a guild-chat member of anything.
+	uint32 ChatGuildID(Mob *m)
+	{
+		if (!m) {
+			return GUILD_NONE;
+		}
+		if (m->IsClient()) {
+			return m->CastToClient()->GuildID();
+		}
+		if (m->IsBot()) {
+			return m->CastToBot()->GuildID();
+		}
+		return GUILD_NONE;
+	}
+
+	bool IsRealGuild(uint32 gid)
+	{
+		return gid != GUILD_NONE && gid != 0;
+	}
+
 	// Schema probe. Lets a binary run ahead of its migration: the loader selects
 	// NULL in place of a missing column instead of failing the whole content
 	// load, which would silence every bot over one optional column.
@@ -559,9 +602,12 @@ uint64 PlayerBotChatEngine::EchoHash(const char *name, const std::string &text)
 
 bool PlayerBotChatEngine::IsValidChannel(int ch)
 {
+	// [17.1 F] Guild (0) and raid say (15) joined in 2026-09-25. Both sit inside
+	// kHeardChannelSlots, so the stale-drop bookkeeping needs no change.
 	return ch == ChatChannel_Say || ch == ChatChannel_Shout ||
 	       ch == ChatChannel_OOC || ch == ChatChannel_Auction ||
-	       ch == ChatChannel_Group || ch == ChatChannel_Tell;
+	       ch == ChatChannel_Group || ch == ChatChannel_Tell ||
+	       ch == ChatChannel_Guild || ch == ChatChannel_Raid;
 }
 
 const char *PlayerBotChatEngine::DropReasonName(uint8 r)
@@ -2854,6 +2900,44 @@ void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector
 		return;
 	}
 
+	// [17.1 F] Raid say: every chat bot in the speaker's raid, any group, any
+	// distance. Bot members resolve by name, as they do for raid group chat.
+	if (chan_num == ChatChannel_Raid) {
+		Raid *r = ChatRaidOf(speaker);
+		if (!r) {
+			return;
+		}
+		for (const auto &m : r->GetMembers()) {
+			if (m.member_name[0] == '\0') {
+				continue;
+			}
+			Mob *mm = m.is_bot
+				? entity_list.GetMob(m.member_name)
+				: static_cast<Mob *>(m.member);
+			if (mm && mm != speaker && IsChatBot(mm)) {
+				out.push_back(mm);
+			}
+		}
+		return;
+	}
+
+	// [17.1 F] Guild chat: chat BOTS in this zone sharing the speaker's guild.
+	// Zone-local by construction -- the engine only hears the zone it runs in,
+	// the same as /ooc -- and PlayerBots never, see ChatGuildID.
+	if (chan_num == ChatChannel_Guild) {
+		const uint32 gid = ChatGuildID(speaker);
+		if (!IsRealGuild(gid)) {
+			return;
+		}
+		for (auto *b : entity_list.GetBotList()) {
+			Mob *m = static_cast<Mob *>(b);
+			if (m && m != speaker && IsChatBot(m) && b->GuildID() == gid) {
+				out.push_back(m);
+			}
+		}
+		return;
+	}
+
 	if (chan_num == ChatChannel_Say) {
 		// Earshot must match EntityList::ChannelMessage exactly: a hardcoded
 		// 200 against 3-D Distance() (Z INCLUDED), not DistanceNoZ and
@@ -3827,6 +3911,64 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 			Group *g = talker->GetGroup();
 			if (g) {
 				g->GroupMessageFromName(name, Language::CommonTongue, Language::MaxValue, text.c_str());
+			}
+			break;
+		}
+
+		case ChatChannel_Raid: {
+			// [17.1 F] Delivered here, to the raid's clients in THIS zone, rather
+			// than through Raid::RaidSay: that one takes a Client* sender and
+			// round-trips world, and a bot is neither.
+			//
+			// v29c has no raid channel at all -- to it a bot raid is the "silent
+			// raid" of PR#5 -- so a Trilogy member reads raid say as group chat,
+			// the nearest thing its client can render, rather than being handed
+			// a channel number no Trilogy code path has ever sent it.
+			Raid *r = ChatRaidOf(talker);
+			if (!r) {
+				break;
+			}
+			for (const auto &m : r->GetMembers()) {
+				if (m.is_bot || !m.member || !m.member->Connected()) {
+					continue;
+				}
+				Client     *to   = m.member;
+				const uint8 chan = to->IsTrilogyClient() ? ChatChannel_Group : ChatChannel_Raid;
+				to->ChannelMessageSend(
+					name,
+					to->GetName(),
+					chan,
+					Language::CommonTongue,
+					Language::MaxValue,
+					"%s",
+					text.c_str()
+				);
+			}
+			break;
+		}
+
+		case ChatChannel_Guild: {
+			// [17.1 F] Guildmates in this zone. A bot is not a Client, so the
+			// world relay (Client-sender only) is not available; zone-local is
+			// the honest scope and matches what the engine can hear.
+			const uint32 gid = ChatGuildID(talker);
+			if (!IsRealGuild(gid)) {
+				break;
+			}
+			for (const auto &e : entity_list.GetClientList()) {
+				Client *to = e.second;
+				if (!to || !to->Connected() || to->GuildID() != gid) {
+					continue;
+				}
+				to->ChannelMessageSend(
+					name,
+					to->GetName(),
+					ChatChannel_Guild,
+					Language::CommonTongue,
+					Language::MaxValue,
+					"%s",
+					text.c_str()
+				);
 			}
 			break;
 		}
