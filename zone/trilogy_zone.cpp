@@ -5978,6 +5978,25 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		if (!boundary_is_wide) {
 			pp.heading = -pp.heading - 1.0f;
 		}
+
+		// (-1,-1,-1) and (-2,-2,-2) are "put me at the safe point" markers, not
+		// places: Database::MoveCharacterToZone (#movechar) writes the first.
+		// The normal path substitutes the zone's safe point at
+		// client_packet.cpp:1380-1386; without the same here a moved Trilogy
+		// character arrived at (-1,-1,-1).  +3 on z as the other safe-point
+		// fallbacks in this function do.
+		if (zone &&
+		    ((pp.x == -1.0f && pp.y == -1.0f && pp.z == -1.0f) ||
+		     (pp.x == -2.0f && pp.y == -2.0f && pp.z == -2.0f))) {
+			const glm::vec4 safe = zone->GetSafePoint();
+			LogInfo("[TrilogyZP] placeholder position ({:.0f},{:.0f},{:.0f}) -> zone safe point "
+			        "({:.1f},{:.1f},{:.1f}) | char [{}] zone [{}]",
+			        pp.x, pp.y, pp.z, safe.x, safe.y, safe.z, s.char_name, s.zone_short);
+			pp.x       = safe.x;
+			pp.y       = safe.y;
+			pp.z       = safe.z + 3.0f;
+			pp.heading = safe.w;
+		}
 		// zone_id at row[22] - use zone_short from session
 		pp.hungerlevel     = static_cast<int32_t>(Strings::ToInt(row[23]));
 		pp.thirstlevel     = static_cast<int32_t>(Strings::ToInt(row[24]));

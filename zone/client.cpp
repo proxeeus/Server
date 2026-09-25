@@ -525,7 +525,7 @@ Client::~Client() {
 	UninitializeBuffSlots();
 }
 
-void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
+uint32 Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
 {
 	character_id    = char_id;
 	account_id      = acct_id;
@@ -810,8 +810,14 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// with just that delta.  Net effect: `character_data.time_played` (and
 	// therefore `/played`) is clobbered on every camp/zone/relog.  Resetting
 	// lastlogin here means the next Save() only adds THIS session's delta.
+	//
+	// The stored value is returned first: it is the only record of how long the
+	// character was offline, which Zone:EnableLoggedOffReplenishments needs and
+	// can only be applied by the caller once CalcBonuses has run.
+	const uint32 previous_lastlogin = m_pp.lastlogin;
 	TotalSecondsPlayed = m_pp.timePlayedMin * 60;
 	m_pp.lastlogin     = time(nullptr);
+	return previous_lastlogin;
 }
 
 void Client::SendZoneInPackets()
