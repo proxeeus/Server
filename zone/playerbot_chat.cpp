@@ -377,6 +377,47 @@ namespace {
 	// keeps a long-lived zone process from remembering everyone who ever passed.
 	constexpr uint64 kAcquaintanceTtlMs = 7200000;
 
+	// ------------------------------------------------------------------
+	// [19.15] coherence
+	// ------------------------------------------------------------------
+
+	// How long a stance holds against its opposite. Ten minutes: long enough
+	// that nobody sees the flip, short enough that a bot is not "buying"
+	// forever.
+	constexpr uint64 kCoherenceWindowMs = 600000;
+
+	// After a PlayerBot announces it is leaving, it goes quiet for this long --
+	// it cannot walk away, but it can stop talking, and a bot that said
+	// "heading out shortly" and then chats for an hour is the incoherence this
+	// section exists to prevent.
+	constexpr int kLeavingQuietMinMs = 300000;
+	constexpr int kLeavingQuietMaxMs = 600000;
+
+	uint8 ParseStance(const std::string &s)
+	{
+		const std::string v = Strings::ToLower(s);
+		if (v == "buy")     { return ST_Buy; }
+		if (v == "sell")    { return ST_Sell; }
+		if (v == "lfg")     { return ST_Lfg; }
+		if (v == "lfm")     { return ST_Lfm; }
+		if (v == "leaving") { return ST_Leaving; }
+		if (v == "staying") { return ST_Staying; }
+		return ST_None;
+	}
+
+	uint8 OppositeStance(uint8 s)
+	{
+		switch (s) {
+			case ST_Buy:     return ST_Sell;
+			case ST_Sell:    return ST_Buy;
+			case ST_Lfg:     return ST_Lfm;
+			case ST_Lfm:     return ST_Lfg;
+			case ST_Leaving: return ST_Staying;
+			case ST_Staying: return ST_Leaving;
+			default:         return ST_None;
+		}
+	}
+
 	const char *const kAgreeableCategories[] = {
 		"insult", "compliment", "brag", "complaint", "generic_ack", "fallback",
 	};
@@ -970,6 +1011,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 {
 	m_triggers.clear();
 	m_responses.clear();
+	m_response_index.clear();
 	m_categories.clear();
 	m_category_by_id.clear();
 	m_bad_regex_rows.clear();
@@ -1107,14 +1149,18 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			);
 		}
 
+		// [19.15] Same probe, same tolerance, for the stance column.
+		m_has_stance_column = ColumnExists("playerbot_chat_response_context", "stance");
+
 		const std::string query = fmt::format(
 			"SELECT r.`id`, r.`category_id`, r.`response_text`, r.`weight`, r.`class_mask`, "
 			"r.`race_mask`, r.`alignment`, r.`level_min`, r.`level_max`, r.`tone`, "
 			"r.`reply_channel`, r.`enabled`, "
 			"c.`requires_zone`, c.`requires_time_of_day`, c.`requires_faction`, "
-			"c.`per_speaker_cooldown_ms`, {} "
+			"c.`per_speaker_cooldown_ms`, {}, {} "
 			"FROM `playerbot_chat_responses` r ",
-			m_has_state_column ? "c.`requires_state`" : "NULL"
+			m_has_state_column ? "c.`requires_state`" : "NULL",
+			m_has_stance_column ? "c.`stance`" : "NULL"
 		) +
 			"LEFT JOIN `playerbot_chat_response_context` c ON c.`response_id` = r.`id` "
 			"WHERE r.`enabled` = 1 ORDER BY r.`id`";
@@ -1187,6 +1233,21 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 				std::swap(r.level_min, r.level_max);
 			}
 
+			// [19.15] Stance is read outside the has_context block on purpose: it
+			// gates nothing about WHETHER a row may be said to anyone, only what
+			// this bot may say next, so it must not switch on the zone/time/state
+			// checks for a row that has none.
+			if (row[17] && row[17][0] != '\0') {
+				r.stance = ParseStance(row[17]);
+				if (r.stance == ST_None) {
+					LogError(
+						"[pbchat] response id [{}] has unknown stance [{}]; ignored "
+						"(known: buy sell lfg lfm leaving staying)",
+						r.id, row[17]
+					);
+				}
+			}
+
 			if (row[12] || row[13] || row[14] || row[15] || row[16]) {
 				r.has_context = true;
 
@@ -1224,6 +1285,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			}
 
 			m_categories[cat_it->second].response_idx.push_back(static_cast<uint32>(m_responses.size()));
+			m_response_index[r.id] = static_cast<uint32>(m_responses.size());
 			m_responses.push_back(std::move(r));
 		}
 	}
@@ -1896,6 +1958,14 @@ const Response *PlayerBotChatEngine::PickResponse(
 			continue;
 		}
 
+		// [19.15] Not the opposite of what this bot committed to a moment ago.
+		// Excluded, not down-weighted: unlike a repeat, a contradiction is not
+		// a softer version of a good line, it is a wrong one.
+		if (r.stance != ST_None && st && st->last_stance == OppositeStance(r.stance) &&
+		    now_ms - st->last_stance_ms < kCoherenceWindowMs) {
+			continue;
+		}
+
 		// GetPlayerClassBit()/GetPlayerRaceBit() return 0 for anything that is
 		// not a player class / player race (an illusion, a mount race, a
 		// GM-spawned oddity).  Treat 0 as "gate not applicable" and let the
@@ -2106,10 +2176,32 @@ const Response *PlayerBotChatEngine::PickResponse(
 // emission bookkeeping
 // ============================================================
 
-void PlayerBotChatEngine::NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms)
+void PlayerBotChatEngine::NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms, Mob *talker)
 {
 	++m_stat_category_hits[category_id];
 	++m_stat_response_hits[response_id];
+
+	// [19.15] Record the stance this line commits its speaker to. Here, at the
+	// one commit point all four speak paths share, rather than in PickResponse,
+	// for the reason the counters above are here: three callers pick a row and
+	// then drop it, and a stance nobody heard must not bind the bot.
+	if (talker) {
+		const Response *r = ResponseById(response_id);
+		if (r && r->stance != ST_None) {
+			ListenerState &st = StateFor(talker->GetID());
+			st.last_stance    = r->stance;
+			st.last_stance_ms = now_ms;
+
+			// A PlayerBot that says it is leaving cannot walk away, but it can
+			// stop talking -- reusing the AFK silence, unannounced, so no
+			// "back" follows. A grouped bot is travelling with its group and
+			// keeps its voice.
+			if (r->stance == ST_Leaving && zone && IsPlayerBot(talker) && !IsGroupedForChat(talker)) {
+				st.afk_until_ms = now_ms + static_cast<uint64>(zone->random.Int(kLeavingQuietMinMs, kLeavingQuietMaxMs));
+				st.afk_said     = false;
+			}
+		}
+	}
 
 	// 0 disables the repetition guard outright. The counters above are not
 	// conditional on it -- telemetry is the other half of this change, and it
@@ -2124,12 +2216,12 @@ void PlayerBotChatEngine::NoteResponseUsed(uint32 category_id, uint32 response_i
 
 const Response *PlayerBotChatEngine::ResponseById(uint32 id) const
 {
-	for (const auto &r : m_responses) {
-		if (r.id == id) {
-			return &r;
-		}
+	// [19.15] Indexed: NoteResponseUsed calls this on every emission now.
+	auto it = m_response_index.find(id);
+	if (it == m_response_index.end() || it->second >= m_responses.size()) {
+		return nullptr;
 	}
-	return nullptr;
+	return &m_responses[it->second];
 }
 
 // Falls back to the raw id rather than an empty string: a counter for a
@@ -3551,7 +3643,7 @@ void PlayerBotChatEngine::DispatchToScope(
 			st.per_speaker_cat_last[key] = now;
 		}
 
-		NoteResponseUsed(c.category, c.response->id, now);
+		NoteResponseUsed(c.category, c.response->id, now, c.listener);
 
 		// [19.14] Counted AFTER the familiar decision above read the old
 		// record, so this meeting is what makes the NEXT one familiar.
@@ -4565,7 +4657,7 @@ bool PlayerBotChatEngine::EmitOpener(
 	// Registered BEFORE the Emit, not after. Emit feeds Overhear synchronously,
 	// so any bot that answers this opener picks its own row inside this call --
 	// and the row most worth keeping out of that reply is the one just spoken.
-	NoteResponseUsed(cat->id, resp->id, now_ms);
+	NoteResponseUsed(cat->id, resp->id, now_ms, opener);
 
 	// [17.1 E] The thread exists BEFORE the Emit, not after: Emit feeds the bus
 	// synchronously, and the replies it queues look the thread up by the
@@ -4903,7 +4995,7 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	++m_stat_tells_out;
 	// This path never counted a category hit before, so #pbchat stats simply
 	// did not see cold tells. Both counters now come from the one place.
-	NoteResponseUsed(cat->id, resp->id, now_ms);
+	NoteResponseUsed(cat->id, resp->id, now_ms, sender);
 
 	// [19.6] A cold tell opens its own beat, same as any other origination.
 	const uint32 wave = BeginWave();
@@ -5155,7 +5247,7 @@ bool PlayerBotChatEngine::ScriptSayEx(
 	// still reject an already-picked row, and Player_Bot.lua drives this path
 	// once per kill, per death and per combat join -- easily the noisiest source
 	// of rows in the system, and until now the only one invisible to stats.
-	NoteResponseUsed(category_id, resp->id, now);
+	NoteResponseUsed(category_id, resp->id, now, talker);
 
 	// [19.6] A script line (a kill shout, a death cry, an aggro call) is an
 	// unprompted statement, not an answer -- it opens a beat exactly as an

@@ -139,6 +139,21 @@ namespace PlayerBotChat {
 		uint32 interactions = 0;
 	};
 
+	// [19.15] What a row commits the speaker to. Stances come in opposed pairs,
+	// and a bot that has taken one will not say its opposite for a while: "wtb"
+	// then "wts" ninety seconds later destroys the illusion faster than any
+	// typo repairs it. Each line is true on its own; the guard stops a SEQUENCE
+	// of true lines adding up to a false person -- the content rule one level up.
+	enum Stance : uint8 {
+		ST_None    = 0,
+		ST_Buy     = 1,
+		ST_Sell    = 2,
+		ST_Lfg     = 3,   // looking for a group to join
+		ST_Lfm     = 4,   // looking for members for one's own group
+		ST_Leaving = 5,   // about to go somewhere
+		ST_Staying = 6    // staying put
+	};
+
 	// Slots in ListenerState::last_heard. The engine's valid channels top out
 	// at ChatChannel_Say (8); 16 is the next power of two and leaves room for
 	// raid (15) if §0.0's "still open" list ever reaches it.
@@ -191,6 +206,8 @@ namespace PlayerBotChat {
 		// only for admin output.
 		uint16                   requires_state          = 0;
 		std::string              requires_state_text;
+		// [19.15] Stance this row commits the speaker to, ST_None for most.
+		uint8                    stance                  = 0;
 	};
 
 	struct Category {
@@ -275,6 +292,9 @@ namespace PlayerBotChat {
 		// "brb" gets to say "back".
 		uint64                             afk_until_ms     = 0;
 		bool                               afk_said         = false;
+		// [19.15] The last stance this bot took, and when.
+		uint8                              last_stance      = 0;
+		uint64                             last_stance_ms   = 0;
 		// [19.7] Lazily seeded by PersonaFor, re-seeded if the name changes
 		// under the same entity id (a PlayerBot is renamed in event_spawn).
 		Persona                            persona;
@@ -836,7 +856,11 @@ private:
 	// then drop it (the per-message cap, the broadcast cooldown in ScriptSay,
 	// and a cold tell whose row did not ask for channel 7), and a row nobody
 	// heard must be neither counted nor penalised.
-	void NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms);
+	//
+	// [19.15] `talker`, when given, records the row's stance against the bot
+	// that said it -- and a PlayerBot that says it is leaving goes quiet for a
+	// few minutes, which is what makes "heading out shortly" stay true.
+	void NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms, Mob *talker = nullptr);
 
 	// Linear scans over the content cache. Admin paths only -- m_responses is a
 	// few hundred rows and neither of these is called per dispatch.
@@ -904,6 +928,11 @@ private:
 	// The loader selects NULL in its place rather than failing, so a binary
 	// that ships ahead of its migration still loads every other table.
 	bool                                 m_has_state_column = false;
+	// [19.15] Same tolerance for the stance column.
+	bool                                 m_has_stance_column = false;
+	// [19.15] response id -> index into m_responses. NoteResponseUsed now needs
+	// the row behind an id on every emission, which a scan should not pay for.
+	std::unordered_map<uint32, uint32>   m_response_index;
 
 	// ---- runtime state ------------------------------------------------
 	std::unordered_map<uint16, PlayerBotChat::ListenerState> m_listener_state;
