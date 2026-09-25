@@ -949,23 +949,41 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	s.char_id = char_id;
 	s.zone_id = zone_id;
 
-	// Fresh login.  EnterWorld only ever comes from char select — zone-to-zone
-	// goes through SendZoneServerInfoForChar — so this is always the
-	// `!is_player_zoning` arm of world/client.cpp ~L978:
-	//   - a group_id row that outlived a crash, timeout or kick is dropped, so
-	//     HandleZoneInComplete does not restore a group the character left;
-	//   - lfp/lfg are cleared and firstlogon is set to 1, which CompleteConnect
-	//     reads to fire EVENT_CONNECT, the WENT_ONLINE event and the guild
-	//     online flag.  The zone clears it again once CompleteConnect has run.
-	GroupIdRepository::DeleteWhere(
-		database,
-		fmt::format(
-			"`character_id` = {} AND `name` = '{}'",
-			char_id,
-			Strings::Escape(char_name)
-		)
-	);
-	database.SetLoginFlags(char_id, false, false, 1);
+	// Fresh login or zone change?  EnterWorld comes from BOTH: v29c crosses a
+	// zone line by reconnecting to world on a new port and running
+	// Login → CharSelect → EnterWorld again (see m_recent_zone_transfers).  A
+	// zone-to-zone world approved for this character in the last minute means
+	// this is the `is_player_zoning` arm of world/client.cpp ~L978; anything
+	// else is a fresh login.
+	bool is_zoning = false;
+	{
+		auto zt = m_recent_zone_transfers.find(char_name);
+		if (zt != m_recent_zone_transfers.end()) {
+			is_zoning = (std::time(nullptr) - zt->second <= kZoneTransferWindowSecs);
+			m_recent_zone_transfers.erase(zt);
+		}
+	}
+
+	if (!is_zoning) {
+		// Fresh login only:
+		//   - a group_id row that outlived a crash, timeout or kick is dropped,
+		//     so HandleZoneInComplete does not restore a group the character left.
+		//     Doing this on a zone change drops the player's group — bots
+		//     included — at every zone line;
+		//   - lfp/lfg are cleared and firstlogon is set to 1, which CompleteConnect
+		//     reads to fire EVENT_CONNECT, the WENT_ONLINE event and the guild
+		//     online flag.  The zone clears it again once CompleteConnect has run.
+		GroupIdRepository::DeleteWhere(
+			database,
+			fmt::format(
+				"`character_id` = {} AND `name` = '{}'",
+				char_id,
+				Strings::Escape(char_name)
+			)
+		);
+		database.SetLoginFlags(char_id, false, false, 1);
+	}
+	LogInfo("[TrilogyWorld] EnterWorld | char [{}] is_zoning={}", char_name, is_zoning ? 1 : 0);
 
 	// Server MOTD.  The client buffers this and only prints it once it has
 	// finished entering the zone, so it has to go out before the redirect —
@@ -2240,6 +2258,18 @@ void TrilogyWorldServer::SendAck(const std::string& addr, int port, Session& s)
 // Client waits for this before sending OP_CHAR_CREATE.
 void TrilogyWorldServer::SendZoneServerInfoForChar(const char* char_name, uint32_t zone_id, ZoneServer* zs)
 {
+	// Only reached for an approved zone-to-zone (world/zoneserver.cpp, response
+	// > 0).  Remember it so the EnterWorld the client sends after reconnecting
+	// is recognised as a zone change — see m_recent_zone_transfers.
+	if (char_name && char_name[0]) {
+		const std::time_t now = std::time(nullptr);
+		for (auto it = m_recent_zone_transfers.begin(); it != m_recent_zone_transfers.end();) {
+			if (now - it->second > kZoneTransferWindowSecs) it = m_recent_zone_transfers.erase(it);
+			else ++it;
+		}
+		m_recent_zone_transfers[char_name] = now;
+	}
+
 	for (auto& [key, s] : m_sessions) {
 		if (s.account_id != 0 && strcmp(s.char_name, char_name) == 0) {
 			if (!zs) {

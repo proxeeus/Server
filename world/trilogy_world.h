@@ -182,5 +182,15 @@ private:
 	};
 	std::map<uint32_t, LogoutRecord> m_recent_logouts;
 
+	// Character name → time world approved a zone-to-zone for it
+	// (SendZoneServerInfoForChar).  v29c crosses a zone line by reconnecting to
+	// world on a NEW port and going Login → CharSelect → EnterWorld about two
+	// seconds later, so HandleEnterWorld cannot tell a zone change from a fresh
+	// login on its own — the Titanium login packet's `zoning` byte has no v29c
+	// counterpart, and the new port means returning_from_zone is never set.
+	// Consumed by the first EnterWorld inside the window.
+	std::map<std::string, std::time_t> m_recent_zone_transfers;
+	static constexpr std::time_t kZoneTransferWindowSecs = 60;
+
 	std::function<void(const std::string&, int, const void*, size_t)> m_send_fn;
 };
