@@ -1079,6 +1079,10 @@ private:
 
 	void RemoveSession(uint64_t key);
 
+	// True if s.trilogy_client is still the Client entity_list holds; otherwise
+	// forgets the pointer (the engine destroyed it) and returns false.
+	bool ClientStillLive(Session& s);
+
 	static uint64_t SessionKey(const std::string& addr, int port);
 
 	std::map<uint64_t, Session> m_sessions;

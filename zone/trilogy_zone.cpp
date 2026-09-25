@@ -1506,12 +1506,45 @@ static void EncryptNewSpawnPacket(uint8_t* buf, uint32_t size)
 
 // ============================================================
 
+// ============================================================
+// ClientStillLive — is s.trilogy_client still the object entity_list holds?
+//
+// EQEmu can destroy a Client without telling us: Client::Process returning
+// false (a dead_timer expiring on a body that died, a kick) sends it down
+// entity.cpp's "Dropping client" path, which deletes it.  Using the pointer
+// afterwards is a use-after-free, and RemoveMob(GetID()) on a reused id deletes
+// an unrelated entity.  When the check fails the pointer is dropped, and so is
+// counted_in_zone: ~Client already decremented numclients, and RemoveSession's
+// fallback would otherwise decrement it a second time.
+// ============================================================
+bool TrilogyZoneServer::ClientStillLive(Session& s)
+{
+	if (!s.trilogy_client) return false;
+	if (s.eqemu_entity_id != 0) {
+		Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
+		if (live == static_cast<Client*>(s.trilogy_client)) return true;
+	}
+	LogInfo("[TrilogyZone] Client for session [{}] was destroyed by the engine; dropping the stale pointer",
+	        s.char_name);
+	s.trilogy_client  = nullptr;
+	s.eqemu_entity_id = 0;
+	s.counted_in_zone = false;
+	return false;
+}
+
 void TrilogyZoneServer::RemoveSession(uint64_t key)
 {
 	auto it = m_sessions.find(key);
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
-	if (s.trilogy_client) {
+	if (ClientStillLive(s)) {
+		// ~Client leaves the group and sets the guild offline, but never touches
+		// a raid: only CompleteCamp and HandleZoneChange called MemberZoned, so
+		// a raid member who timed out or ran out their linkdead hold left
+		// Raid::members[] pointing at the freed Client.
+		if (Raid* raid = entity_list.GetRaidByClient(s.trilogy_client)) {
+			raid->MemberZoned(s.trilogy_client);
+		}
 		uint16 id = s.trilogy_client->GetID();
 		s.trilogy_client  = nullptr;
 		s.eqemu_entity_id = 0;
@@ -1902,7 +1935,10 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 			        cli_arq, static_cast<int>(existing.state));
 			if (zone) zone->SetHasActiveTrilogySessions(true);
 		} else {
-			if (existing.trilogy_client) {
+			if (ClientStillLive(existing)) {
+				if (Raid* raid = entity_list.GetRaidByClient(existing.trilogy_client)) {
+					raid->MemberZoned(existing.trilogy_client);
+				}
 				uint16 id = existing.trilogy_client->GetID();
 				existing.trilogy_client  = nullptr;
 				existing.eqemu_entity_id = 0;
@@ -13662,6 +13698,17 @@ void TrilogyZoneServer::Tick()
 		Session& cs = kv.second;
 		if (cs.state != CONNECTED || !cs.trilogy_client) continue;
 
+		// The stale-pointer guard further down skips linkdead sessions, and a
+		// linkdead body is exactly the one most likely to have been destroyed
+		// under us: it stays in the world "so it can be aggroed and killed",
+		// client_state stays CONNECTED, and Client::Process deletes it once
+		// dead_timer runs out.  Check first; a held session whose body is gone
+		// has nothing left to hold, so retire it now.
+		if (!ClientStillLive(cs)) {
+			if (cs.linkdead_since_ms != 0) ld_expired.push_back(kv.first);
+			continue;
+		}
+
 		if (cs.linkdead_since_ms == 0) {
 			// Silence backstop: a link that dies without managing even a CLOSE
 			// (power cut, NAT drop).  The CLOSE handler covers the common case.
@@ -13727,12 +13774,11 @@ void TrilogyZoneServer::Tick()
 		// by it returns nullptr, which would cause this guard to wrongly null
 		// the pointer on every Tick and silently break input dispatch for
 		// Consider, CombatAbility, Hail, etc. in OnDatagram).
-		if (s.trilogy_client && s.eqemu_entity_id != 0) {
-			Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
-			if (live != static_cast<Client*>(s.trilogy_client)) {
-				s.trilogy_client  = nullptr;
-				s.eqemu_entity_id = 0;
-			}
+		// (ClientStillLive also clears counted_in_zone, so the RemoveSession that
+		// eventually reaps this session does not decrement numclients a second
+		// time after ~Client already has.)
+		if (s.trilogy_client) {
+			ClientStillLive(s);
 		}
 
 		// BWDiag: every 5 s, emit per-session outbound bandwidth roll.  Gives
@@ -14099,13 +14145,11 @@ void TrilogyZoneServer::Tick()
 			if (now_ms < s.force_logout_ms) continue; // clock skew guard
 			if (now_ms - s.force_logout_ms < kForceLogoutGraceMs) continue;
 
-			if (s.trilogy_client && s.eqemu_entity_id != 0) {
-				Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
-				if (live != static_cast<Client*>(s.trilogy_client)) {
-					s.trilogy_client  = nullptr;
-					s.eqemu_entity_id = 0;
-				}
-			}
+			// A kicked client is normally already gone by now (Client::Kick →
+			// Process → "Dropping client" → ~Client).  RemoveSession checks that
+			// through ClientStillLive; the check that used to sit here nulled the
+			// pointer but left counted_in_zone set, so RemoveSession then
+			// decremented numclients a second time on every #kick.
 			to_reap.push_back(kv.first);
 		}
 
@@ -16902,6 +16946,19 @@ void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, 
 	    static_cast<uint32>(tri->parameter) != Animation::Sitting &&
 	    s.trilogy_client->IsMedding()) {
 		s.trilogy_client->SetMedding(false);
+	}
+
+	// Standing up is how v29c cancels a camp: the countdown is client-side and
+	// the server is never told otherwise.  `camping` was only ever set, so after
+	// one interrupted /camp every later CLOSE (/q, Alt-F4, a crash) counted as a
+	// clean exit and removed the body at once instead of going linkdead —
+	// an escape from any fight, and no CompleteCamp either.
+	if (s.camping &&
+	    static_cast<uint32>(tri->type) == AppearanceType::Animation &&
+	    static_cast<uint32>(tri->parameter) == Animation::Standing) {
+		s.camping    = false;
+		s.camp_start = 0;
+		LogInfo("[TrilogyZone] Camp cancelled (stood up) for {}", s.char_name);
 	}
 
 	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
