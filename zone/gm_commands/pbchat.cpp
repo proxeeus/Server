@@ -267,7 +267,7 @@ void command_pbchat(Client *c, const Seperator *sep)
 			return;
 		}
 
-		playerbot_chat.IgnoreSpeaker(sep->arg[2], sub == "ignore");
+		playerbot_chat.IgnoreSpeaker(sep->arg[2], sub == "ignore", c->GetName());
 		c->Message(Chat::White, "%s", fmt::format(
 			"[pbchat] {} {} the ignore list.",
 			sep->arg[2],

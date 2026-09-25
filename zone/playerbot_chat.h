@@ -563,7 +563,11 @@ public:
 	void ResetStats();
 	void MuteAll(bool muted);
 	bool MuteEntity(uint16 entity_id, bool muted);
-	void IgnoreSpeaker(const std::string &name, bool ignored);
+	// [17.1 F] Ignores persist in playerbot_chat_ignores when that table
+	// exists, and every zone re-reads it once a minute -- which is what lets an
+	// ignore follow a griefer into the next zone and survive a restart. Without
+	// the table they are in-memory, exactly as before.
+	void IgnoreSpeaker(const std::string &name, bool ignored, const std::string &set_by = "");
 	void ClearIgnores();
 	std::vector<std::string> GetIgnoredSpeakers() const;
 
@@ -773,6 +777,10 @@ private:
 
 	void ExpireTransients(uint64 now_ms);
 
+	// [17.1 F] Replace the in-memory ignore set with the table's, when the
+	// table exists. On every content load and once a minute after.
+	void LoadIgnores();
+
 	// [19.13] ScriptSay with a subject and a reaction delay. See the definition.
 	bool ScriptSayEx(
 		Mob                                      *talker,
@@ -949,6 +957,7 @@ private:
 	// client that puts it on the wire once per recipient.
 	std::unordered_map<uint64, uint64>                       m_recent_utterances;
 	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
+	bool                                                     m_has_ignore_table = false;
 	std::deque<PlayerBotChat::PendingEmission>               m_pending;
 	std::vector<PlayerBotChat::ChatThread>                   m_threads;
 	uint32                                                   m_next_thread_id          = 1;

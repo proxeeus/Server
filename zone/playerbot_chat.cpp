@@ -577,6 +577,18 @@ namespace {
 		return results.Success() && results.RowCount() > 0;
 	}
 
+	bool TableExists(const char *table)
+	{
+		auto results = database.QueryDatabase(
+			fmt::format(
+				"SELECT 1 FROM information_schema.tables "
+				"WHERE table_schema = DATABASE() AND table_name = '{}' LIMIT 1",
+				table
+			)
+		);
+		return results.Success() && results.RowCount() > 0;
+	}
+
 } // namespace
 
 // ============================================================
@@ -1349,6 +1361,11 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 	);
 
 	LogInfo("[pbchat] content loaded: {}", summary_out);
+
+	// [17.1 F] Moderation rides the content load: a zone boot and a
+	// "#pbchat reload" both pick up the persisted ignore list.
+	LoadIgnores();
+
 	return true;
 }
 
@@ -1729,6 +1746,13 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 	}
 	for (auto it = m_near.begin(); it != m_near.end();) {
 		it = (now_ms - it->second > kPasserbyForgetMs) ? m_near.erase(it) : std::next(it);
+	}
+
+	// [17.1 F] Once a minute, so an ignore set in one zone reaches every other
+	// zone within a minute -- the griefer does not get a fresh audience by
+	// zoning. A cheap indexed read of a table that holds a handful of names.
+	if (m_loaded) {
+		LoadIgnores();
 	}
 
 	// [19.14] Two hours without contact and the bot has forgotten you.
@@ -6231,20 +6255,78 @@ bool PlayerBotChatEngine::MuteEntity(uint16 entity_id, bool muted)
 	return true;
 }
 
-void PlayerBotChatEngine::IgnoreSpeaker(const std::string &name, bool ignored)
+void PlayerBotChatEngine::IgnoreSpeaker(const std::string &name, bool ignored, const std::string &set_by)
 {
 	const std::string key = Strings::ToLower(name);
+	if (key.empty()) {
+		return;
+	}
+
 	if (ignored) {
 		m_ignored_speakers.insert(key);
 	}
 	else {
 		m_ignored_speakers.erase(key);
 	}
+
+	// [17.1 F] Written through, so the next zone's once-a-minute refresh picks it
+	// up and a restart does not forget it.
+	if (!m_has_ignore_table) {
+		return;
+	}
+
+	const std::string query = ignored
+		? fmt::format(
+			"REPLACE INTO `playerbot_chat_ignores` (`name`, `set_by`) VALUES ('{}', '{}')",
+			Strings::Escape(key),
+			Strings::Escape(set_by)
+		)
+		: fmt::format(
+			"DELETE FROM `playerbot_chat_ignores` WHERE `name` = '{}'",
+			Strings::Escape(key)
+		);
+
+	auto results = database.QueryDatabase(query);
+	if (!results.Success()) {
+		LogError("[pbchat] could not persist ignore change for [{}]: {}", key, results.ErrorMessage());
+	}
 }
 
 void PlayerBotChatEngine::ClearIgnores()
 {
 	m_ignored_speakers.clear();
+
+	if (m_has_ignore_table) {
+		auto results = database.QueryDatabase("DELETE FROM `playerbot_chat_ignores`");
+		if (!results.Success()) {
+			LogError("[pbchat] could not clear persisted ignores: {}", results.ErrorMessage());
+		}
+	}
+}
+
+void PlayerBotChatEngine::LoadIgnores()
+{
+	m_has_ignore_table = TableExists("playerbot_chat_ignores");
+	if (!m_has_ignore_table) {
+		// No table: the in-memory set stays authoritative, as it always was.
+		return;
+	}
+
+	auto results = database.QueryDatabase("SELECT `name` FROM `playerbot_chat_ignores`");
+	if (!results.Success()) {
+		LogError("[pbchat] could not read playerbot_chat_ignores: {}", results.ErrorMessage());
+		return;
+	}
+
+	// Replaced wholesale, not merged: an unignore issued in another zone has to
+	// be able to take effect here too.
+	std::unordered_set<std::string> loaded;
+	for (auto &row = results.begin(); row != results.end(); ++row) {
+		if (row[0] && row[0][0] != '\0') {
+			loaded.insert(Strings::ToLower(row[0]));
+		}
+	}
+	m_ignored_speakers.swap(loaded);
 }
 
 std::vector<std::string> PlayerBotChatEngine::GetIgnoredSpeakers() const
