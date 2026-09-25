@@ -755,6 +755,9 @@ private:
 	// PC-trade internals (split out of the above for readability).
 	void PcTradeAbortBoth(Session& s, Session* partner,
 	                      const char* my_msg, const char* partner_msg);
+	// Abort an open PC trade because this session is leaving (camp, zone-out,
+	// linkdead, teardown), refunding both sides.  No-op if none is open.
+	void PcTradeAbortOnExit(Session& s, const char* why);
 	// Refund a session's offered coins to its PP carried + fire OP_TradeMoneyUpdate
 	// via AddMoneyToPP; clears the offer_* counters.
 	static void PcTradeRefundOfferedCoins(Session& s);

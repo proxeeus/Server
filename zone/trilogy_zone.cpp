@@ -1538,6 +1538,10 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
 	if (ClientStillLive(s)) {
+		// Backstop for exits that did not already abort it (timeout, a CLOSE
+		// while camping, SEQSTART reset); ~Client's Save persists the refund.
+		PcTradeAbortOnExit(s, "session removed");
+
 		// ~Client leaves the group and sets the guild offline, but never touches
 		// a raid: only CompleteCamp and HandleZoneChange called MemberZoned, so
 		// a raid member who timed out or ran out their linkdead hold left
@@ -1572,6 +1576,11 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 void TrilogyZoneServer::EnterLinkdead(Session& s, uint64_t now_ms)
 {
 	if (!s.trilogy_client || s.linkdead_since_ms != 0) return;
+
+	// The client is gone, so its half of an open trade can never be finished;
+	// hand both sides their coin back now rather than leave the partner's
+	// window open for the whole hold.
+	PcTradeAbortOnExit(s, "linkdead");
 
 	s.linkdead_since_ms  = now_ms;
 	s.linkdead_entry_pkt = s.last_pkt;
@@ -1936,6 +1945,7 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 			if (zone) zone->SetHasActiveTrilogySessions(true);
 		} else {
 			if (ClientStillLive(existing)) {
+				PcTradeAbortOnExit(existing, "session restarted");
 				if (Raid* raid = entity_list.GetRaidByClient(existing.trilogy_client)) {
 					raid->MemberZoned(existing.trilogy_client);
 				}
@@ -9479,7 +9489,10 @@ TrilogyZoneServer::Session* TrilogyZoneServer::FindSessionByEntityId(uint16_t en
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
 		if (!s.trilogy_client) continue;
-		if (static_cast<uint16_t>(s.trilogy_client->GetID()) == entity_id)
+		// The cached id, not trilogy_client->GetID(): this walks every session,
+		// and reading the id through a pointer the engine may have freed is the
+		// one thing ClientStillLive exists to avoid.
+		if (s.eqemu_entity_id == entity_id)
 			return &s;
 		if (s.player_spawn_id == entity_id)
 			return &s;
@@ -10184,6 +10197,30 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 		        ZN_OP_CloseTrade, &z, 0);
 		PcTradeClearState(*partner);
 	}
+}
+
+// ============================================================
+// PcTradeAbortOnExit — the leaving side's half of Client::OnDisconnect's
+// FinishTrade.  Coin dropped into a PC trade window comes off the character's
+// PlayerProfile and is saved the moment it moves (HandleMoveCoin's slot-3
+// intercept); only PcTradeAbortBoth gives it back, and that was reached from
+// Cancel and Give alone.  So coin sitting in the window at a camp, zone line,
+// linkdead or timeout was gone for good, and the partner kept pc_trade_active
+// pointing at an entity id that could later be reused.
+//
+// PC trades only.  NPC-trade coin is deliberately left alone: coin that
+// reaches that window from the cursor is still counted in m_pp.*_cursor, so
+// refunding trade_cp..pp on exit would mint it, and nothing here can tell
+// which path a given amount took.
+// ============================================================
+void TrilogyZoneServer::PcTradeAbortOnExit(Session& s, const char* why)
+{
+	if (!s.pc_trade_active || !s.trilogy_client) return;
+	Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+	LogInfo("[TrilogyZone] PCTrade aborted on exit ({}) | char={} offer cp={} sp={} gp={} pp={}",
+	        why, s.char_name, s.pc_trade_offer_cp, s.pc_trade_offer_sp,
+	        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+	PcTradeAbortBoth(s, partner, nullptr, "Your trade partner has left.");
 }
 
 void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Session& s)
@@ -15700,6 +15737,8 @@ void TrilogyZoneServer::CompleteCamp(uint64_t /*session_key*/, Session& s)
 
 	LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
 
+	PcTradeAbortOnExit(s, "camp"); // before the Save() below
+
 	Raid* raid = entity_list.GetRaidByClient(s.trilogy_client);
 	if (raid) raid->MemberZoned(s.trilogy_client);
 	s.trilogy_client->LeaveGroup();
@@ -17798,6 +17837,10 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 			        (g && g->IsGroupMember(b)));
 		}
 	}
+
+	// Before Handle_OP_ZoneChange: DoZoneSuccess saves, and the refund has to
+	// be in that save.
+	PcTradeAbortOnExit(s, "zone change");
 
 	s.trilogy_client->Handle_OP_ZoneChange(&zc_pkt);
 
