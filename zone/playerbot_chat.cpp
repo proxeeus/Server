@@ -218,6 +218,11 @@ namespace {
 	// can never disagree about what low means.
 	constexpr int kLowHpPercent = 30;
 
+	// [17.1 C] The health latch re-arms only above this. Same reasoning as
+	// LowManaClearPercent: without a gap the latch is a bare comparison and
+	// re-fires every sweep while HP hovers on the line.
+	constexpr int kLowHpClearPercent = 60;
+
 	// "low_mana" normally tracks PlayerBotChat:LowManaPercent, so the gated rows
 	// and ManaWatchTick agree. That rule's 0 means "no proactive callout", not
 	// "nobody is ever low", so the state falls back to this instead.
@@ -1032,6 +1037,7 @@ void PlayerBotChatEngine::Process()
 	if (now >= m_next_mana_watch_ms) {
 		m_next_mana_watch_ms = now + 5000;
 		ManaWatchTick();
+		HealthWatchTick();
 	}
 }
 
@@ -2765,6 +2771,81 @@ void PlayerBotChatEngine::ManaWatchTick()
 }
 
 // ============================================================
+// [17.1 C] low-health watch
+// ============================================================
+
+void PlayerBotChatEngine::HealthWatchTick()
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	const int32 cat_id = FindCategoryId("low_hp");
+	if (cat_id < 0) {
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo("[pbchat] low-hp watch: no 'low_hp' category loaded; run the low_hp SQL");
+		}
+		return;
+	}
+
+	bool spoken_this_sweep = false;
+
+	auto consider = [&](Mob *m) {
+		if (!m || !IsChatBot(m) || m->GetMaxHP() <= 0) {
+			return;
+		}
+
+		// Dead is not "low". A corpse, or a mob mid-death whose HP has already
+		// hit zero, gets the death line from its own event, not this one.
+		if (m->IsCorpse() || m->GetHP() <= 0) {
+			return;
+		}
+
+		ListenerState &st = StateFor(m->GetID());
+		if (st.muted) {
+			return;
+		}
+
+		const int pct = static_cast<int>(m->GetHPRatio());
+
+		if (!st.low_hp_latched) {
+			if (pct <= kLowHpPercent && IsInCombat(m)) {
+				// Armed before the speak attempt and for EVERY bot that trips,
+				// not only the one that talks: the latch is what stops this bot
+				// re-announcing on the next sweep, and that holds whether or not
+				// it won the one voice this sweep allows.
+				st.low_hp_latched = true;
+
+				if (!spoken_this_sweep) {
+					const uint8 chan = IsGroupedForChat(m) ? ChatChannel_Group : ChatChannel_Say;
+					spoken_this_sweep = ScriptSay(m, static_cast<uint32>(cat_id), chan);
+				}
+			}
+			return;
+		}
+
+		if (pct >= kLowHpClearPercent) {
+			// Silent re-arm, as with mana: recovery is not news.
+			st.low_hp_latched = false;
+		}
+	};
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		if (IsPlayerBot(e.second)) {
+			consider(e.second);
+		}
+	}
+	for (auto *b : entity_list.GetBotList()) {
+		consider(static_cast<Mob *>(b));
+	}
+}
+
+// ============================================================
 // spontaneous scheduler
 // ============================================================
 
@@ -3972,6 +4053,26 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 				std::max(RuleI(PlayerBotChat, LowManaPercent) + 1, RuleI(PlayerBotChat, LowManaClearPercent)),
 				latched,
 				FindCategoryId("low_mana") >= 0 ? "loaded" : "MISSING (run the mana SQL)"
+			).c_str()
+		);
+
+		// [17.1 C] The health half. No rule: the thresholds are constants.
+		size_t hp_latched = 0;
+		for (const auto &ls : m_listener_state) {
+			if (ls.second.low_hp_latched) {
+				++hp_latched;
+			}
+		}
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] health watch: trips at {}% in combat, re-arms at {}% | {} bots latched low | category {}",
+				kLowHpPercent,
+				kLowHpClearPercent,
+				hp_latched,
+				FindCategoryId("low_hp") >= 0 ? "loaded" : "MISSING (run the low_hp SQL)"
 			).c_str()
 		);
 	}

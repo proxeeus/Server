@@ -235,6 +235,10 @@ namespace PlayerBotChat {
 		// bar hovers on the line, which is how a useful callout becomes spam.
 		// The clear is SILENT; recovery is not news.
 		bool                               low_mana_latched = false;
+		// [17.1 C] Same shape for health. Trips only IN COMBAT: a bot resting
+		// at 25% after the fight is recovering, not in danger, and a callout
+		// nobody can act on is noise.
+		bool                               low_hp_latched   = false;
 		// [19.7] Lazily seeded by PersonaFor, re-seeded if the name changes
 		// under the same entity id (a PlayerBot is renamed in event_spawn).
 		Persona                            persona;
@@ -568,6 +572,13 @@ private:
 	// Deliberately NOT gated on §19.5's combat check: a caster running dry
 	// mid-fight is precisely when the group needs to hear it.
 	void ManaWatchTick();
+
+	// [17.1 C] The health half: "low_hp" once per dip, latched with hysteresis
+	// exactly like mana. Unlike mana it trips only in combat, and at most ONE
+	// bot announces per sweep -- an AE hits a whole group at once, and six
+	// latches tripping together is a chorus, not a callout. The others still
+	// latch, silently, so the chorus cannot simply arrive five seconds later.
+	void HealthWatchTick();
 
 	// True when the category holds at least one row that asked for channel 7.
 	// Gates which categories may cold-tell at all, so a /say opener pool is
