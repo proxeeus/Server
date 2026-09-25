@@ -561,6 +561,36 @@ namespace {
 		return gid != GUILD_NONE && gid != 0;
 	}
 
+	// ------------------------------------------------------------------
+	// [17.1 G] minor
+	// ------------------------------------------------------------------
+
+	constexpr uint64 kPressureCacheMs = 250;
+
+	// A race's own tongue, as classic characters start with it. Humans have
+	// none beyond Common; Common is handled by the caller.
+	uint8 NativeLanguage(uint16 race)
+	{
+		switch (race) {
+			case BARBARIAN: return Language::Barbarian;
+			case ERUDITE:   return Language::Erudian;
+			case WOOD_ELF:
+			case HIGH_ELF:
+			case HALF_ELF:  return Language::Elvish;
+			case DARK_ELF:  return Language::DarkElvish;
+			case DWARF:     return Language::Dwarvish;
+			case TROLL:     return Language::Troll;
+			case OGRE:      return Language::Ogre;
+			case HALFLING:  return Language::Halfling;
+			case GNOME:     return Language::Gnomish;
+			case IKSAR:     return Language::Lizardman;
+			case VAHSHIR:   return Language::VahShir;
+			case FROGLOK:
+			case FROGLOK2:  return Language::Froglok;
+			default:        return Language::CommonTongue;
+		}
+	}
+
 	// Schema probe. Lets a binary run ahead of its migration: the loader selects
 	// NULL in place of a missing column instead of failing the whole content
 	// load, which would silence every bot over one optional column.
@@ -641,6 +671,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_DuplicateUtterance: return "duplicate-utterance";
 		case DR_Reticent:         return "reticent";
 		case DR_Afk:              return "afk";
+		case DR_Language:         return "unknown-language";
 		default:                  return "unknown";
 	}
 }
@@ -1500,7 +1531,7 @@ void PlayerBotChatEngine::Process()
 				m_current_wave = e.wave_seq;
 			}
 
-			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id, !e.no_overhear, e.emote, e.anim);
+			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id, !e.no_overhear, e.emote, e.anim, e.language);
 		}
 	}
 
@@ -2723,7 +2754,8 @@ void PlayerBotChatEngine::QueueFollowups(
 	uint16           reply_to_id,
 	uint32           wave,
 	uint64           first_due_ms,
-	const Rendered  &r
+	const Rendered  &r,
+	uint8            language
 )
 {
 	if (!talker || !zone) {
@@ -2747,6 +2779,7 @@ void PlayerBotChatEngine::QueueFollowups(
 		// follow-up lands, it goes stale and is dropped with the conversation.
 		pe.wave_seq    = wave;
 		pe.no_overhear = true;
+		pe.language    = language;
 		pe.text        = text;
 		m_pending.push_back(std::move(pe));
 	};
@@ -3017,7 +3050,7 @@ void PlayerBotChatEngine::CollectScope(Mob *speaker, uint8 chan_num, std::vector
 // the bus
 // ============================================================
 
-void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth)
+void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth, uint8 language)
 {
 	if (!RuleB(PlayerBotChat, ChatEnabled)) {
 		++m_stat_drops[DR_Disabled];
@@ -3050,10 +3083,10 @@ void PlayerBotChatEngine::Overhear(Mob *speaker, uint8 chan_num, const std::stri
 		BeginWave();
 	}
 
-	DispatchToScope(speaker, chan_num, msg, chain_depth);
+	DispatchToScope(speaker, chan_num, msg, chain_depth, nullptr, language);
 }
 
-void PlayerBotChatEngine::OverhearTell(Mob *from, Mob *to_bot, const std::string &msg)
+void PlayerBotChatEngine::OverhearTell(Mob *from, Mob *to_bot, const std::string &msg, uint8 language)
 {
 	if (!RuleB(PlayerBotChat, ChatEnabled) || !RuleB(PlayerBotChat, TellsEnabled)) {
 		++m_stat_drops[DR_Disabled];
@@ -3076,7 +3109,7 @@ void PlayerBotChatEngine::OverhearTell(Mob *from, Mob *to_bot, const std::string
 	// tell -- someone who whispers a bot directly is owed an answer, and a
 	// 1:1 channel cannot spam anybody but the person who started it.
 	BeginWave();
-	DispatchToScope(from, ChatChannel_Tell, msg, 0, to_bot);
+	DispatchToScope(from, ChatChannel_Tell, msg, 0, to_bot, language);
 }
 
 void PlayerBotChatEngine::DispatchToScope(
@@ -3084,7 +3117,8 @@ void PlayerBotChatEngine::DispatchToScope(
 	uint8              chan_num,
 	const std::string &msg,
 	uint8              chain_depth,
-	Mob               *tell_target
+	Mob               *tell_target,
+	uint8              language
 )
 {
 	const uint64 now = NowMs();
@@ -3271,6 +3305,14 @@ void PlayerBotChatEngine::DispatchToScope(
 			continue;
 		}
 
+		// [17.1 G] Spoken in a tongue this bot does not have: it heard noise,
+		// which is what a client without the language hears too. The engine
+		// still sees the real text -- it is the one thing the bot must not.
+		if (!KnowsLanguage(listener, language)) {
+			++m_stat_drops[DR_Language];
+			continue;
+		}
+
 		// [1] Per-listener self-echo guard -- see the note at the top of this
 		// function for why it lives here and not there.
 		if (m_recent_self_emissions.count(EchoHash(ChatDisplayName(listener), msg)) > 0) {
@@ -3428,6 +3470,9 @@ void PlayerBotChatEngine::DispatchToScope(
 		c.locked     = locked_to_speaker;
 		c.addressed  = addressed;
 		c.typing_pct = persona.typing_pct;
+		// [17.1 G] Answer in the tongue it was addressed in -- the check above
+		// guarantees this bot has it.
+		c.language   = language;
 
 		// Ranking key, most significant field first:
 		//   named by the speaker -> conversation-lock partner -> category
@@ -3715,12 +3760,13 @@ void PlayerBotChatEngine::DispatchToScope(
 		pe.text        = c.text;
 		pe.emote       = c.rendered.emote;
 		pe.anim        = c.rendered.anim;
+		pe.language    = c.language;
 		m_pending.push_back(std::move(pe));
 
 		// [19.9 / 19.10] Then whatever follows it: a "*word" fix, the second
 		// half of a split thought. Same beat, so they drop together with the
 		// conversation if the channel moves on.
-		QueueFollowups(c.listener, c.channel, reply_to_id, m_current_wave, now + delay, c.rendered);
+		QueueFollowups(c.listener, c.channel, reply_to_id, m_current_wave, now + delay, c.rendered, c.language);
 
 		// [5] Stamp with `now`, not `now + delay`.  Stamping the future makes
 		// `now - last_msg_time_ms` underflow on an unsigned type for `delay`
@@ -3803,7 +3849,8 @@ void PlayerBotChatEngine::Emit(
 	uint16             reply_to_id,
 	bool               feed_bus,
 	bool               emote,
-	int                anim
+	int                anim,
+	uint8              language
 )
 {
 	if (!talker || text.empty() || !IsValidChannel(chan_num)) {
@@ -3836,7 +3883,7 @@ void PlayerBotChatEngine::Emit(
 		++m_stat_emotes;
 	}
 	else {
-		EmitChannel(talker, chan_num, text, reply_to_id);
+		EmitChannel(talker, chan_num, text, reply_to_id, language);
 	}
 
 	++m_stat_emitted;
@@ -3855,15 +3902,20 @@ void PlayerBotChatEngine::Emit(
 
 	// Feed the bus.  This is the entire bot-to-bot mechanism: explicit,
 	// bounded by ChainMaxDepth, and testable with no client attached.
-	Overhear(talker, chan_num, text, static_cast<uint8>(chain_depth + 1));
+	Overhear(talker, chan_num, text, static_cast<uint8>(chain_depth + 1), language);
 }
 
-void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id)
+void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id, uint8 language)
 {
 	const char *name = ChatDisplayName(talker);
 
 	switch (chan_num) {
 		case ChatChannel_Say:
+			// [17.1 G] `language` is not used on /say or /shout: the
+			// MessageString paths below carry none, so those replies always
+			// render plain. DispatchToScope's language check still stops a bot
+			// answering speech it could not have understood.
+			//
 			// GENERIC_SAY -> OP_FormattedMessage -> HandleOutgoingFormattedMessage
 			// -> pre-formatted OP_SpecialMesg on Trilogy, which renders long text
 			// verbatim where chan-8 truncates it.  Emitted here rather than
@@ -3887,7 +3939,7 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 
 		case ChatChannel_OOC:
 		case ChatChannel_Auction:
-			entity_list.EmitChannelLocal(name, chan_num, Language::CommonTongue, text.c_str());
+			entity_list.EmitChannelLocal(name, chan_num, language, text.c_str());
 			break;
 
 		case ChatChannel_Tell: {
@@ -3911,7 +3963,7 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 				name,
 				to->GetName(),
 				ChatChannel_Tell,
-				Language::CommonTongue,
+				language,
 				Language::MaxValue,
 				"%s",
 				text.c_str()
@@ -3928,13 +3980,13 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 			}
 
 			if (r && r->GetGroup(talker->GetName()) < MAX_RAID_GROUPS) {
-				r->RaidGroupSay(text.c_str(), name, Language::CommonTongue, Language::MaxValue);
+				r->RaidGroupSay(text.c_str(), name, language, Language::MaxValue);
 				break;
 			}
 
 			Group *g = talker->GetGroup();
 			if (g) {
-				g->GroupMessageFromName(name, Language::CommonTongue, Language::MaxValue, text.c_str());
+				g->GroupMessageFromName(name, language, Language::MaxValue, text.c_str());
 			}
 			break;
 		}
@@ -3962,7 +4014,7 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 					name,
 					to->GetName(),
 					chan,
-					Language::CommonTongue,
+					language,
 					Language::MaxValue,
 					"%s",
 					text.c_str()
@@ -3988,7 +4040,7 @@ void PlayerBotChatEngine::EmitChannel(Mob *talker, uint8 chan_num, const std::st
 					name,
 					to->GetName(),
 					ChatChannel_Guild,
-					Language::CommonTongue,
+					language,
 					Language::MaxValue,
 					"%s",
 					text.c_str()
@@ -5193,19 +5245,40 @@ bool PlayerBotChatEngine::CategoryHasTellRows(const PlayerBotChat::Category &cat
 
 bool PlayerBotChatEngine::ZoneTextPressureHigh() const
 {
+	// [17.1 G] Cached for kPressureCacheMs. This walked every client on every
+	// dispatch -- cheap at five players, O(clients) per chat line at fifty --
+	// and the queues it reads drain on a paced timer, so a quarter-second-old
+	// answer is as good as a fresh one.
+	const uint64 now = NowMs();
+	if (m_pressure_checked_ms != 0 && now - m_pressure_checked_ms < kPressureCacheMs) {
+		return m_pressure_cached;
+	}
+
 	const size_t guard = static_cast<size_t>(std::max(1, RuleI(PlayerBotChat, TrilogyQueueGuardDepth)));
 
+	bool high = false;
 	for (const auto &e : entity_list.GetClientList()) {
 		Client *c = e.second;
 		if (!c || !c->IsTrilogyClient()) {
 			continue;
 		}
 		if (static_cast<TrilogyClient *>(c)->PendingTextDepth() >= guard) {
-			return true;
+			high = true;
+			break;
 		}
 	}
 
-	return false;
+	m_pressure_checked_ms = now;
+	m_pressure_cached     = high;
+	return high;
+}
+
+bool PlayerBotChatEngine::KnowsLanguage(Mob *m, uint8 language)
+{
+	if (language == Language::CommonTongue) {
+		return true;
+	}
+	return m && NativeLanguage(m->GetRace()) == language;
 }
 
 // ============================================================

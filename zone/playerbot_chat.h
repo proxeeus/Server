@@ -88,6 +88,9 @@ namespace PlayerBotChat {
 		DR_Reticent,
 		// [19.11] The listener is away from the keyboard.
 		DR_Afk,
+		// [17.1 G] Spoken in a language the listener does not know. It heard
+		// noise, so it has nothing to answer.
+		DR_Language,
 		DR_MAX
 	};
 
@@ -361,6 +364,9 @@ namespace PlayerBotChat {
 		// animation when non-zero. Never fed to the bus.
 		bool        emote       = false;
 		int         anim        = 0;
+		// [17.1 G] Spoken in this language -- the speaker's, when the bot knows
+		// it -- on every channel whose delivery API carries one.
+		uint8       language    = 0;
 		// [19.6] Enough to hand back the cooldowns this line reserved when it
 		// was queued but never spent, because it was dropped as stale.
 		//
@@ -432,7 +438,11 @@ public:
 
 	// ---- the bus ------------------------------------------------------
 	// Single ingress. chain_depth 0 == a real player spoke.
-	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0);
+	//
+	// [17.1 G] `language` is what it was spoken in (0 = Common). A listener
+	// that does not know it hears noise and does not answer; one that does
+	// answers in it wherever the channel's delivery can carry a language.
+	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0, uint8 language = 0);
 
 	// Single egress. Delivers to real clients AND feeds Overhear(depth + 1) --
 	// EXCEPT on ChatChannel_Tell, which is private and must never reach the
@@ -452,7 +462,8 @@ public:
 		uint16             reply_to_id = 0,
 		bool               feed_bus    = true,
 		bool               emote       = false,
-		int                anim        = 0
+		int                anim        = 0,
+		uint8              language    = 0
 	);
 
 	// ---- combat events -------------------------------------------------
@@ -503,7 +514,7 @@ public:
 	//
 	// Scope is exactly `to_bot` -- a tell is 1:1, so it never fans out, and
 	// the reply is addressed back to `from` rather than broadcast.
-	void OverhearTell(Mob *from, Mob *to_bot, const std::string &msg);
+	void OverhearTell(Mob *from, Mob *to_bot, const std::string &msg, uint8 language = 0);
 
 	// Resolve a /tell target name to a chat-capable bot in this zone.
 	// Compares ChatDisplayName(), NOT GetName(): MakeNameUnique() appends
@@ -630,6 +641,8 @@ private:
 		uint8                          typing_pct = 100;
 		// [19.9 / 19.10 / 19.18] The full render; `text` is rendered.parts[0].
 		PlayerBotChat::Rendered        rendered;
+		// [17.1 G] The language the reply goes out in.
+		uint8                          language = 0;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -698,7 +711,8 @@ private:
 		uint16                         reply_to_id,
 		uint32                         wave,
 		uint64                         first_due_ms,
-		const PlayerBotChat::Rendered &r
+		const PlayerBotChat::Rendered &r,
+		uint8                          language = 0
 	);
 
 	// [19.11] Occasional AFK spells for PlayerBots, swept once a minute.
@@ -712,11 +726,16 @@ private:
 		uint8              chan_num,
 		const std::string &msg,
 		uint8              chain_depth,
-		Mob               *tell_target = nullptr
+		Mob               *tell_target = nullptr,
+		uint8              language    = 0
 	);
 
 	void CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out, Mob *tell_target = nullptr);
-	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id);
+	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id, uint8 language = 0);
+
+	// [17.1 G] Common, or the listener's own race's tongue. Bots and PlayerBots
+	// carry no language skills, so this is the whole of what they "know".
+	static bool KnowsLanguage(Mob *m, uint8 language);
 	void SpontaneousTick(uint64 now_ms);
 
 	// [19.20] Shared commit tail of both opener passes: pick a row, substitute,
@@ -969,6 +988,12 @@ private:
 	uint64                                                   m_next_expire_ms          = 0;
 	uint64                                                   m_next_transient_sweep_ms = 0;
 	bool                                                     m_all_muted               = false;
+
+	// [17.1 G] ZoneTextPressureHigh walked the whole client list on EVERY
+	// dispatch. The queues it reads drain on a paced timer, so a quarter-second
+	// old answer is as good as a fresh one.
+	mutable uint64                                           m_pressure_checked_ms     = 0;
+	mutable bool                                             m_pressure_cached         = false;
 
 	// [19.6] Per-zone monotonic beat counter, and the beat currently being fanned
 	// out. m_current_wave is safe as a member rather than a threaded parameter

@@ -1190,7 +1190,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// PlayerBot chat ingress -- only once the line was actually allowed
 			// out, so a guildless or muted speaker never reaches the bots
 			// either. Heard by chat Bots in this zone sharing the guild.
-			playerbot_chat.Overhear(this, chan_num, message, 0);
+			playerbot_chat.Overhear(this, chan_num, message, 0, language);
 		}
 		break;
 	}
@@ -1209,7 +1209,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 		if(raid) {
 			raid->RaidGroupSay((const char*) message, this, language, lang_skill);
 			if (pbchat_ok) {
-				playerbot_chat.Overhear(this, chan_num, message, 0);
+				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
 			break;
 		}
@@ -1220,7 +1220,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 		}
 
 		if (pbchat_ok) {
-			playerbot_chat.Overhear(this, chan_num, message, 0);
+			playerbot_chat.Overhear(this, chan_num, message, 0, language);
 		}
 		break;
 	}
@@ -1232,7 +1232,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// PlayerBot chat ingress: every chat bot in the raid hears it.
 			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
-				playerbot_chat.Overhear(this, chan_num, message, 0);
+				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
 		}
 		break;
@@ -1248,7 +1248,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 		// under SE_VoiceGraft and the engine wants the player who typed.
 		if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
-			playerbot_chat.Overhear(this, chan_num, message, 0);
+			playerbot_chat.Overhear(this, chan_num, message, 0, language);
 		}
 		break;
 	}
@@ -1292,7 +1292,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// PlayerBot chat ingress (zone-local auction only).
 			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
-				playerbot_chat.Overhear(this, chan_num, message, 0);
+				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
 		}
 		break;
@@ -1345,7 +1345,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// PlayerBot chat ingress (zone-local OOC only).
 			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&
 				message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
-				playerbot_chat.Overhear(this, chan_num, message, 0);
+				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
 		}
 		break;
@@ -1457,7 +1457,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 						message
 					);
 
-					playerbot_chat.OverhearTell(this, chat_bot, message);
+					playerbot_chat.OverhearTell(this, chat_bot, message, language);
 					return;
 				}
 			}
@@ -1545,7 +1545,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			// returned or broken out above this point; "discard" is the
 			// rate-limit recursion sentinel, which would otherwise double-fire.
 			if (RuleB(PlayerBotChat, ChatEnabled) && strcmp(targetname, "discard") != 0) {
-				playerbot_chat.Overhear(this, chan_num, message, 0);
+				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
 		}
 
