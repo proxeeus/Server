@@ -272,10 +272,27 @@ namespace PlayerBotChat {
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
 	// -- an opener sets no conversation lock, so a decrement-on-unlock counter
 	// leaks and the zone goes permanently silent after N openers.
+	//
+	// [17.1 E] A thread now has a SUBJECT as well as a lifetime. Continuity used
+	// to come only from the per-listener conversation lock, which keeps a bot on
+	// its PARTNER and never on a TOPIC: two bots discussing prices drifted into
+	// greetings on the next hop because nothing remembered what the exchange was
+	// about. `category_id` is the last reactive category classified inside the
+	// thread, and it earns a score bonus in ClassifyMessage -- a bonus, never an
+	// override, so a thread can still change the subject.
+	//
+	// Membership is by `participants` (entity ids) on one channel, which is what
+	// the spec's per-listener thread_id and per-emission thread_id were for: a
+	// message from a participant, on the thread's channel, belongs to it.
 	struct ChatThread {
-		uint32 id         = 0;
-		uint64 expires_ms = 0;
-		uint8  depth      = 0;
+		uint32              id               = 0;
+		uint64              expires_ms       = 0;
+		uint8               depth            = 0;       // hops seen, saturating
+		uint32              category_id      = 0;       // current subject; 0 = not yet classified
+		uint8               channel          = 0;
+		bool                opener           = false;   // counts toward SpontaneousMaxConcurrent
+		uint64              last_activity_ms = 0;
+		std::vector<uint16> participants;
 	};
 
 	struct PendingEmission {
@@ -583,11 +600,26 @@ private:
 	bool LoadContent(std::string &summary_out);
 	void EnsureLoaded();
 
+	// [17.1 E] subject_bonus_category: the live thread's subject, which gets a
+	// score bonus when -- and only when -- one of its own triggers matched.
 	int32 ClassifyMessage(
 		const std::string                  &msg,
 		std::map<std::string, std::string> &captures,
-		PlayerBotChat::TestResult          *debug_out = nullptr
+		PlayerBotChat::TestResult          *debug_out              = nullptr,
+		uint32                              subject_bonus_category = 0
 	);
+
+	// [17.1 E] The live thread `speaker` is part of on `chan`, as an index into
+	// m_threads, or m_threads.size() for none. An index, not a pointer:
+	// m_threads is a vector and every new thread can reallocate it.
+	size_t FindThread(Mob *speaker, uint8 chan, uint64 now_ms) const;
+
+	// [17.1 E] Start a thread and return its index.
+	size_t OpenThread(uint8 chan, Mob *starter, bool opener, uint32 category_id, uint64 now_ms);
+
+	// [17.1 E] Opener threads only -- the concurrency cap bounds what the
+	// SCHEDULER starts, and players talking must not starve it.
+	size_t CountOpenerThreads() const;
 
 	const PlayerBotChat::Response *PickResponse(
 		uint32  category_id,

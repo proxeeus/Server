@@ -335,6 +335,42 @@ namespace {
 		return zone && permille > 0 && zone->random.Int(0, 999) < permille;
 	}
 
+	// ------------------------------------------------------------------
+	// [17.1 E / 19.16 / 19.17] conversation
+	// ------------------------------------------------------------------
+
+	// Added to the thread subject's score when one of its own triggers already
+	// matched. Most triggers score 8-22 against a min_score of 10-15, so 6 wins
+	// a close call for the current subject without inventing a match -- a thread
+	// can still change the subject, it just prefers not to.
+	constexpr int32 kThreadSubjectBonus = 6;
+
+	// [19.16] When a bot-to-bot reply is the last word the chain cap allows, it
+	// is a "closer" this often: the cap stops reading as a cut-off.
+	constexpr int kCloserPct = 70;
+
+	// [19.17] The second responder speaks after the first, never over it, and
+	// in these categories it sometimes REACTS to the first instead of answering
+	// the original line in parallel. Only categories where agreement with any
+	// row is harmless: "same" after a mana_check answer would be a claim.
+	constexpr int kFollowupPct   = 40;
+	constexpr int kTurnGapMinMs  = 700;
+	constexpr int kTurnGapMaxMs  = 1500;
+
+	const char *const kAgreeableCategories[] = {
+		"insult", "compliment", "brag", "complaint", "generic_ack", "fallback",
+	};
+
+	bool IsAgreeableCategory(const std::string &name)
+	{
+		for (const char *a : kAgreeableCategories) {
+			if (name == a) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	// [19.9] Two words that real chat runs together.
 	struct Contraction {
 		const char *first;
@@ -1537,13 +1573,68 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 }
 
 // ============================================================
+// [17.1 E] threads
+// ============================================================
+
+size_t PlayerBotChatEngine::FindThread(Mob *speaker, uint8 chan, uint64 now_ms) const
+{
+	if (!speaker) {
+		return m_threads.size();
+	}
+
+	const uint16 id = speaker->GetID();
+
+	// Newest first: when a speaker is in two threads on one channel (it opened
+	// one and answered another), the one it touched last is the conversation.
+	for (size_t i = m_threads.size(); i-- > 0;) {
+		const ChatThread &t = m_threads[i];
+		if (t.channel != chan || now_ms >= t.expires_ms) {
+			continue;
+		}
+		if (std::find(t.participants.begin(), t.participants.end(), id) != t.participants.end()) {
+			return i;
+		}
+	}
+
+	return m_threads.size();
+}
+
+size_t PlayerBotChatEngine::OpenThread(uint8 chan, Mob *starter, bool opener, uint32 category_id, uint64 now_ms)
+{
+	ChatThread t;
+	t.id               = m_next_thread_id++;
+	t.expires_ms       = now_ms + (static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, ConversationLockMs))) * 2);
+	t.depth            = 0;
+	t.category_id      = category_id;
+	t.channel          = chan;
+	t.opener           = opener;
+	t.last_activity_ms = now_ms;
+	if (starter) {
+		t.participants.push_back(starter->GetID());
+	}
+
+	m_threads.push_back(std::move(t));
+	return m_threads.size() - 1;
+}
+
+size_t PlayerBotChatEngine::CountOpenerThreads() const
+{
+	return static_cast<size_t>(std::count_if(
+		m_threads.begin(),
+		m_threads.end(),
+		[](const ChatThread &t) { return t.opener; }
+	));
+}
+
+// ============================================================
 // classifier
 // ============================================================
 
 int32 PlayerBotChatEngine::ClassifyMessage(
 	const std::string                  &msg,
 	std::map<std::string, std::string> &captures,
-	TestResult                         *debug_out
+	TestResult                         *debug_out,
+	uint32                              subject_bonus_category
 )
 {
 	if (m_categories.empty()) {
@@ -1621,6 +1712,13 @@ int32 PlayerBotChatEngine::ClassifyMessage(
 				debug_out->negated.push_back(cat.name);
 			}
 			continue;
+		}
+
+		// [17.1 E] The live thread's subject gets a nudge -- but only on top of a
+		// real match. A zero stays zero: the bonus cannot conjure the subject
+		// out of a line that never mentioned it.
+		if (subject_bonus_category != 0 && cat.id == subject_bonus_category && score > 0) {
+			score += kThreadSubjectBonus;
 		}
 
 		if (debug_out && score > 0) {
@@ -2765,8 +2863,14 @@ void PlayerBotChatEngine::DispatchToScope(
 	// [3] Classify ONCE, not per listener.  Classification is identical for
 	// every listener, so a zone with 40 PBs would otherwise make 40 full
 	// passes over the whole trigger table per line of chat.
+	//
+	// [17.1 E] ...but not blind to context. The speaker's live thread on this
+	// channel, if any, lends its subject a score bonus. Still one pass: a thread
+	// is a property of the conversation, not of any one listener.
 	std::map<std::string, std::string> captures;
-	const int32                        cat_id = ClassifyMessage(msg, captures);
+	const size_t                       thread_idx = FindThread(speaker, chan_num, now);
+	const uint32                       subject    = thread_idx < m_threads.size() ? m_threads[thread_idx].category_id : 0;
+	const int32                        cat_id     = ClassifyMessage(msg, captures, nullptr, subject);
 	if (cat_id < 0) {
 		++m_stat_drops[DR_NoCategory];
 
@@ -2862,6 +2966,16 @@ void PlayerBotChatEngine::DispatchToScope(
 	// zero, covering "whether", "when" and "unprompted" together.
 	const int  combat_reply_chance = std::max(0, std::min(100, RuleI(PlayerBotChat, CombatReplyChance)));
 	const bool combat_gate_on      = (combat_reply_chance < 100);
+
+	// [19.16] Is a reply to this message the last hop ChainMaxDepth allows?
+	// The reply is emitted at this depth and its own fan-out arrives at
+	// depth + 1, which the chain cap at the top of this function drops -- so
+	// whatever is said now ends the exchange, and it may as well sound like it.
+	// Bot-to-bot only (depth > 0): a player's conversation is never capped.
+	const int32 closer_id = FindCategoryId("closer");
+	const bool  last_word =
+		chain_depth > 0 && chan_num != ChatChannel_Tell &&
+		static_cast<int>(chain_depth) + 1 >= RuleI(PlayerBotChat, ChainMaxDepth);
 
 	std::vector<Candidate> candidates;
 	candidates.reserve(scope.size());
@@ -2984,7 +3098,20 @@ void PlayerBotChatEngine::DispatchToScope(
 			}
 		}
 
-		const Response *resp = PickResponse(cat.id, listener, speaker, chan_num, now);
+		// [19.16] The last word the chain cap allows is, usually, a goodbye.
+		// Falls back to the classified category when no closer row survives
+		// this listener's gates, so the cap is never MORE abrupt than before.
+		uint32          reply_cat = cat.id;
+		const Response *resp      = nullptr;
+		if (last_word && closer_id >= 0 && zone && zone->random.Roll(kCloserPct)) {
+			resp = PickResponse(static_cast<uint32>(closer_id), listener, speaker, chan_num, now);
+			if (resp) {
+				reply_cat = static_cast<uint32>(closer_id);
+			}
+		}
+		if (!resp) {
+			resp = PickResponse(cat.id, listener, speaker, chan_num, now);
+		}
 		if (!resp) {
 			++m_stat_drops[DR_NoResponseRow];
 			continue;
@@ -2993,7 +3120,7 @@ void PlayerBotChatEngine::DispatchToScope(
 		Candidate c;
 		c.listener  = listener;
 		c.in_combat = listener_in_combat;
-		c.category = cat.id;
+		c.category = reply_cat;
 		c.response = resp;
 		// [19.9 / 19.10 / 19.18] Voiced, split and substituted in one place.
 		// `text` is the first part; the rest rides along in `rendered` and is
@@ -3133,6 +3260,43 @@ void PlayerBotChatEngine::DispatchToScope(
 		candidates.resize(keep);
 	}
 
+	// [19.17] TURN-TAKING. With two responders, both used to answer the
+	// ORIGINAL line, in parallel, with unrelated rows -- and 19.1 made that
+	// more visible, because the named bot now reliably lands first and the
+	// second one's answer arrives as a non-sequitur. Two people never answer a
+	// question in parallel; the second one reacts to the first.
+	//
+	// So in categories where agreeing with any row is harmless, a later
+	// responder sometimes switches to a 'followup' row ("agreed", "what they
+	// said") with {speaker} bound to the FIRST responder. Named bots keep their
+	// own answer -- they were asked. The ordering half is in the stagger loop.
+	const int32 followup_id = FindCategoryId("followup");
+	if (candidates.size() >= 2 && followup_id >= 0 && IsAgreeableCategory(cat.name)) {
+		Mob *first = candidates[0].listener;
+
+		for (size_t i = 1; i < candidates.size(); ++i) {
+			Candidate &c = candidates[i];
+			if (c.addressed || c.channel == ChatChannel_Tell || !zone || !zone->random.Roll(kFollowupPct)) {
+				continue;
+			}
+
+			const Response *fr = PickResponse(static_cast<uint32>(followup_id), c.listener, first, chan_num, now);
+			if (!fr) {
+				continue;
+			}
+
+			Rendered rr = Render(c.listener, fr->text, first, captures);
+			if (rr.parts.empty()) {
+				continue;
+			}
+
+			c.response = fr;
+			c.category = static_cast<uint32>(followup_id);
+			c.rendered = std::move(rr);
+			c.text     = c.rendered.parts[0];
+		}
+	}
+
 	const int stagger_min = std::max(0, RuleI(PlayerBotChat, StaggerMinMs));
 	const int stagger_max = std::max(stagger_min, RuleI(PlayerBotChat, StaggerMaxMs));
 
@@ -3155,6 +3319,10 @@ void PlayerBotChatEngine::DispatchToScope(
 	// fighting bot SLOWER, and a value below 100 would quietly make combat the
 	// fastest the engine ever answers.
 	const int combat_stagger_pct = std::max(100, RuleI(PlayerBotChat, CombatStaggerPercent));
+
+	// [19.17] The previous responder's landing time, for the turn-taking floor.
+	uint32 prev_delay      = 0;
+	bool   have_prev_delay = false;
 
 	for (auto &c : candidates) {
 		const int lo = c.addressed ? addressed_min : stagger_min;
@@ -3206,9 +3374,21 @@ void PlayerBotChatEngine::DispatchToScope(
 			));
 		}
 
-		const uint32 delay = static_cast<uint32>(
+		uint32 delay = static_cast<uint32>(
 			zone ? zone->random.Int(lo, hi) : lo
 		);
+
+		// [19.17] Each responder lands after the one ranked above it, never
+		// over it. Candidates are in rank order, so this is simply "after the
+		// previous line, plus the moment it takes to read it". It can run past
+		// StaggerMaxMs by a gap or two; ResponseCapPerMessage bounds how many
+		// lines that is, so the Trilogy pacing budget still holds per message.
+		if (have_prev_delay && zone) {
+			const uint32 floor_ms = prev_delay + static_cast<uint32>(zone->random.Int(kTurnGapMinMs, kTurnGapMaxMs));
+			delay = std::max(delay, floor_ms);
+		}
+		prev_delay      = delay;
+		have_prev_delay = true;
 
 		if (c.addressed) {
 			++m_stat_addressed;
@@ -3291,6 +3471,34 @@ void PlayerBotChatEngine::DispatchToScope(
 				ChatDisplayName(c.listener), cat.name, c.channel, chain_depth, delay,
 				c.addressed ? 1 : 0, c.text
 			);
+		}
+	}
+
+	// [17.1 E] Somebody is answering, so this is a conversation. Join the
+	// speaker's live thread or start one, record what it is now ABOUT (the
+	// classified category, not a closer or a followup row, which are how a
+	// line is said rather than what it is about), and enrol everyone who is
+	// replying so their next line is found in it too.
+	//
+	// Done once the queue loop is over: that loop pushes into m_pending and
+	// never into m_threads, but indexing late keeps this safe regardless.
+	size_t idx = thread_idx;
+	if (idx >= m_threads.size() || m_threads[idx].channel != chan_num) {
+		idx = OpenThread(chan_num, speaker, false, cat.id, now);
+	}
+
+	ChatThread &t = m_threads[idx];
+	t.category_id      = cat.id;
+	t.last_activity_ms = now;
+	t.expires_ms       = now + (static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, ConversationLockMs))) * 2);
+	if (t.depth < 255) {
+		++t.depth;
+	}
+
+	for (const auto &c : candidates) {
+		const uint16 lid = c.listener->GetID();
+		if (std::find(t.participants.begin(), t.participants.end(), lid) == t.participants.end()) {
+			t.participants.push_back(lid);
 		}
 	}
 }
@@ -4086,7 +4294,11 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 	// [19.20] The concurrency cap is still shared, deliberately: it bounds live
 	// CONVERSATIONS and a group conversation is one. The hourly budgets are what
 	// separate, because those ration noise and group chat makes none zone-wide.
-	if (m_threads.size() >= max_concurrent) {
+	//
+	// [17.1 E] Opener threads only. Reactive exchanges are threads too now,
+	// and counting them would let a zone full of players talking starve the
+	// scheduler entirely -- the opposite of what the cap is for.
+	if (CountOpenerThreads() >= max_concurrent) {
 		return;
 	}
 
@@ -4255,6 +4467,13 @@ bool PlayerBotChatEngine::EmitOpener(
 	// and the row most worth keeping out of that reply is the one just spoken.
 	NoteResponseUsed(cat->id, resp->id, now_ms);
 
+	// [17.1 E] The thread exists BEFORE the Emit, not after: Emit feeds the bus
+	// synchronously, and the replies it queues look the thread up by the
+	// opener's membership. Subject 0 -- an opener category carries no triggers,
+	// so the first reply's classification is what names the subject.
+	const size_t thread_idx = OpenThread(out_channel, opener, true, 0, now_ms);
+	const uint32 thread_id  = m_threads[thread_idx].id;
+
 	// [19.6] An opener starts a conversation, so it starts a beat. Emit() is
 	// synchronous into Overhear(), which inherits this and hands it to every
 	// reply queued against the opener.
@@ -4264,15 +4483,9 @@ bool PlayerBotChatEngine::EmitOpener(
 
 	++m_stat_openers;
 
-	ChatThread t;
-	t.id         = m_next_thread_id++;
-	t.expires_ms = now_ms + (static_cast<uint64>(RuleI(PlayerBotChat, ConversationLockMs)) * 2);
-	t.depth      = 0;
-	m_threads.push_back(t);
-
 	LogInfo(
 		"[pbchat] opener [{}] cat [{}] chan [{}] thread [{}] -- {}",
-		ChatDisplayName(opener), cat->name, out_channel, t.id, text
+		ChatDisplayName(opener), cat->name, out_channel, thread_id, text
 	);
 
 	return true;
@@ -5575,8 +5788,14 @@ void PlayerBotChatEngine::DumpThreads(Client *to)
 			Chat::White,
 			"%s",
 			fmt::format(
-				"[pbchat] thread {} | depth {} | ttl {}ms",
-				t.id, t.depth, t.expires_ms > now ? (t.expires_ms - now) : 0
+				"[pbchat] thread {}{} | chan {} | about {} | depth {} | {} in it | ttl {}ms",
+				t.id,
+				t.opener ? " (opener)" : "",
+				t.channel,
+				t.category_id ? CategoryNameFor(t.category_id) : std::string("-"),
+				t.depth,
+				t.participants.size(),
+				t.expires_ms > now ? (t.expires_ms - now) : 0
 			).c_str()
 		);
 	}
