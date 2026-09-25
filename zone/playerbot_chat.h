@@ -128,6 +128,17 @@ namespace PlayerBotChat {
 		uint64 stamp_ms = 0;
 	};
 
+	// [19.14] What one bot knows about one player: nothing but how often they
+	// have spoken and when it last happened. Every interaction counted here is
+	// one the engine witnessed, which is what lets a "hey again" be honest --
+	// and why rows built on it must stay relational ("good to see you again"),
+	// never biographical ("how did that run go"): the engine knows THAT they
+	// met, never what the player did in between.
+	struct Acquaintance {
+		uint64 last_seen_ms = 0;
+		uint32 interactions = 0;
+	};
+
 	// Slots in ListenerState::last_heard. The engine's valid channels top out
 	// at ChatChannel_Say (8); 16 is the next power of two and leaves room for
 	// raid (15) if §0.0's "still open" list ever reaches it.
@@ -853,6 +864,17 @@ private:
 	int  MoodOf(Mob *m, uint64 now_ms);
 	void NudgeMood(Mob *m, int delta);
 
+	// [19.14] Record that `bot` just dealt with `player` (a client), and read it
+	// back. Keyed like mood, by the bot's persona name hash, so a Bot that dies
+	// and is re-summoned still knows who you are. Players by lowercased name,
+	// the same reason m_last_tell_to_player is: entity ids are recycled.
+	void                               NoteAcquaintance(Mob *bot, Mob *player, uint64 now_ms);
+	const PlayerBotChat::Acquaintance *AcquaintanceOf(Mob *bot, Mob *player);
+
+	// [19.14] True when `bot` knows `player` well enough, and has not seen them
+	// for long enough, that a greeting should be a "hey again".
+	bool IsFamiliarReturn(Mob *bot, Mob *player, uint64 now_ms);
+
 	// [19.7] Weighted index pick. Returns weights.size() only when every weight
 	// is zero, which callers treat as "nothing eligible".
 	static size_t WeightedPick(const std::vector<uint32> &weights);
@@ -936,6 +958,9 @@ private:
 	std::unordered_map<std::string, uint64>                  m_event_last;
 	// [19.8] persona name hash -> mood. Swept once a mood has decayed to 0.
 	std::unordered_map<uint64, PlayerBotChat::MoodState>     m_mood;
+	// [19.14] persona name hash -> lowercased player name -> acquaintance.
+	// In memory, per zone process, as the spec allows for v1.
+	std::unordered_map<uint64, std::unordered_map<std::string, PlayerBotChat::Acquaintance>> m_acquaintances;
 	std::unordered_map<uint32, uint64>                       m_near;
 	uint64                                                   m_next_proximity_ms        = 0;
 	uint64                                                   m_next_afk_ms              = 0;

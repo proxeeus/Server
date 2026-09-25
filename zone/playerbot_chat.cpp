@@ -357,6 +357,26 @@ namespace {
 	constexpr int kTurnGapMinMs  = 700;
 	constexpr int kTurnGapMaxMs  = 1500;
 
+	// ------------------------------------------------------------------
+	// [19.14] acquaintance
+	// ------------------------------------------------------------------
+
+	// "Hey again" needs two things to be true: they have met (twice, so one
+	// passing hello is not a friendship) and they have been apart (two minutes,
+	// so a player who says hi twice in a row is not "welcomed back").
+	constexpr uint32 kFamiliarMinInteractions = 2;
+	constexpr uint64 kFamiliarGapMs           = 120000;
+
+	// Rank bonus per interaction, capped at ten: the bot that knows you edges
+	// ahead of strangers at similar range -- up to 10 distance units -- but a
+	// conversation lock or a bot you NAMED still wins outright.
+	constexpr int64  kAcquaintanceRankPer = 10;
+	constexpr uint32 kAcquaintanceRankCap = 10;
+
+	// Forgotten after two hours without contact. In memory anyway; this only
+	// keeps a long-lived zone process from remembering everyone who ever passed.
+	constexpr uint64 kAcquaintanceTtlMs = 7200000;
+
 	const char *const kAgreeableCategories[] = {
 		"insult", "compliment", "brag", "complaint", "generic_ack", "fallback",
 	};
@@ -857,6 +877,45 @@ void PlayerBotChatEngine::NudgeMood(Mob *m, int delta)
 	}
 }
 
+// ============================================================
+// [19.14] acquaintance
+// ============================================================
+
+void PlayerBotChatEngine::NoteAcquaintance(Mob *bot, Mob *player, uint64 now_ms)
+{
+	if (!bot || !player || !player->IsClient() || !IsChatBot(bot)) {
+		return;
+	}
+
+	Acquaintance &a = m_acquaintances[PersonaFor(bot).name_hash][Strings::ToLower(player->GetName())];
+	++a.interactions;
+	a.last_seen_ms = now_ms;
+}
+
+const Acquaintance *PlayerBotChatEngine::AcquaintanceOf(Mob *bot, Mob *player)
+{
+	if (!bot || !player || !player->IsClient()) {
+		return nullptr;
+	}
+
+	auto by_bot = m_acquaintances.find(PersonaFor(bot).name_hash);
+	if (by_bot == m_acquaintances.end()) {
+		return nullptr;
+	}
+
+	auto it = by_bot->second.find(Strings::ToLower(player->GetName()));
+	return it == by_bot->second.end() ? nullptr : &it->second;
+}
+
+bool PlayerBotChatEngine::IsFamiliarReturn(Mob *bot, Mob *player, uint64 now_ms)
+{
+	const Acquaintance *a = AcquaintanceOf(bot, player);
+	return a &&
+	       a->interactions >= kFamiliarMinInteractions &&
+	       now_ms > a->last_seen_ms &&
+	       now_ms - a->last_seen_ms >= kFamiliarGapMs;
+}
+
 size_t PlayerBotChatEngine::WeightedPick(const std::vector<uint32> &weights)
 {
 	uint64 total = 0;
@@ -1212,6 +1271,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_event_last.clear();
 	m_near.clear();
 	m_mood.clear();
+	m_acquaintances.clear();
 	m_next_proximity_ms        = m_hour_window_start_ms + 2000;
 	m_next_afk_ms              = m_hour_window_start_ms + 60000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
@@ -1561,6 +1621,15 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 	}
 	for (auto it = m_near.begin(); it != m_near.end();) {
 		it = (now_ms - it->second > kPasserbyForgetMs) ? m_near.erase(it) : std::next(it);
+	}
+
+	// [19.14] Two hours without contact and the bot has forgotten you.
+	for (auto bot_it = m_acquaintances.begin(); bot_it != m_acquaintances.end();) {
+		auto &people = bot_it->second;
+		for (auto it = people.begin(); it != people.end();) {
+			it = (now_ms - it->second.last_seen_ms >= kAcquaintanceTtlMs) ? people.erase(it) : std::next(it);
+		}
+		bot_it = people.empty() ? m_acquaintances.erase(bot_it) : std::next(bot_it);
 	}
 
 	// [19.8] A mood that has fully decayed is indistinguishable from no entry.
@@ -2977,6 +3046,12 @@ void PlayerBotChatEngine::DispatchToScope(
 		chain_depth > 0 && chan_num != ChatChannel_Tell &&
 		static_cast<int>(chain_depth) + 1 >= RuleI(PlayerBotChat, ChainMaxDepth);
 
+	// [19.14] A player greeting a bot that knows them, after some time apart,
+	// gets "hey again" rather than "hail" -- knowledge the engine genuinely
+	// has, because it counted every one of those meetings itself.
+	const int32 familiar_id   = FindCategoryId("familiar");
+	const bool  greeting_line = speaker->IsClient() && Strings::ToLower(cat.name) == "greeting";
+
 	std::vector<Candidate> candidates;
 	candidates.reserve(scope.size());
 
@@ -3109,6 +3184,12 @@ void PlayerBotChatEngine::DispatchToScope(
 				reply_cat = static_cast<uint32>(closer_id);
 			}
 		}
+		if (!resp && greeting_line && familiar_id >= 0 && IsFamiliarReturn(listener, speaker, now)) {
+			resp = PickResponse(static_cast<uint32>(familiar_id), listener, speaker, chan_num, now);
+			if (resp) {
+				reply_cat = static_cast<uint32>(familiar_id);
+			}
+		}
 		if (!resp) {
 			resp = PickResponse(cat.id, listener, speaker, chan_num, now);
 		}
@@ -3201,7 +3282,14 @@ void PlayerBotChatEngine::DispatchToScope(
 			(static_cast<int64>(PersonaAffinity(persona, cat)) - 100) * kPersonaAffinityRank;
 		const int64 jitter = zone ? static_cast<int64>(zone->random.Int(0, kRankJitter)) : 0;
 
-		int64 spatial = proximity - recency + persona_rank + jitter;
+		// [19.14] The bot that knows you answers you -- a soft edge in the same
+		// band, never above a lock or a name.
+		int64 acquaintance_rank = 0;
+		if (const Acquaintance *a = AcquaintanceOf(listener, speaker)) {
+			acquaintance_rank = static_cast<int64>(std::min(a->interactions, kAcquaintanceRankCap)) * kAcquaintanceRankPer;
+		}
+
+		int64 spatial = proximity - recency + persona_rank + acquaintance_rank + jitter;
 		spatial = std::max<int64>(-99999LL, std::min<int64>(99999LL, spatial));
 
 		c.rank = (c.addressed ? 10000000000000000LL : 0LL)
@@ -3464,6 +3552,10 @@ void PlayerBotChatEngine::DispatchToScope(
 		}
 
 		NoteResponseUsed(c.category, c.response->id, now);
+
+		// [19.14] Counted AFTER the familiar decision above read the old
+		// record, so this meeting is what makes the NEXT one familiar.
+		NoteAcquaintance(c.listener, speaker, now);
 
 		if (RuleB(PlayerBotChat, LogDispatch)) {
 			LogInfo(
@@ -3826,6 +3918,7 @@ void PlayerBotChatEngine::NotifyLevelUp(Client *who, uint8 new_level)
 
 	if (SpeakEvent(voice, "group_ding", ChatChannel_Group, who, captures)) {
 		++m_stat_ev_ding;
+		NoteAcquaintance(voice, who, NowMs());
 	}
 }
 
@@ -3985,6 +4078,7 @@ void PlayerBotChatEngine::NotifyBeneficialSpell(Mob *caster, Mob *target, uint16
 
 	if (SpeakEvent(target, "thanks_buff", same_group ? ChatChannel_Group : ChatChannel_Say, caster, captures)) {
 		++m_stat_ev_thanks;
+		NoteAcquaintance(target, caster, now);
 	}
 }
 
@@ -4093,8 +4187,14 @@ void PlayerBotChatEngine::ProximityWatchTick(uint64 now_ms)
 			{"target", c->GetCleanName()}
 		};
 
-		if (SpeakEvent(voice, "passerby", ChatChannel_Say, c, captures)) {
+		// [19.14] Someone this bot has met before, back after a while, gets a
+		// "hey again" -- falling back to the ordinary hello when no familiar
+		// row survives the gates (or the category is not installed).
+		const bool familiar = IsFamiliarReturn(voice, c, now_ms) && FindCategoryId("familiar") >= 0;
+		if (SpeakEvent(voice, familiar ? "familiar" : "passerby", ChatChannel_Say, c, captures) ||
+		    (familiar && SpeakEvent(voice, "passerby", ChatChannel_Say, c, captures))) {
 			++m_stat_ev_passerby;
+			NoteAcquaintance(voice, c, now_ms);
 		}
 	}
 }
@@ -5376,6 +5476,32 @@ void PlayerBotChatEngine::DumpPersona(Client *to, Mob *m)
 		"%s",
 		fmt::format("[pbchat] likes: {} | least: {}", likes.empty() ? "-" : likes, dislikes.empty() ? "-" : dislikes).c_str()
 	);
+
+	// [19.14] Who it knows, most-met first.
+	auto by_bot = m_acquaintances.find(p.name_hash);
+	if (by_bot == m_acquaintances.end() || by_bot->second.empty()) {
+		to->Message(Chat::White, "[pbchat] knows: nobody yet");
+		return;
+	}
+
+	std::vector<std::pair<std::string, Acquaintance>> known(by_bot->second.begin(), by_bot->second.end());
+	std::sort(known.begin(), known.end(), [](const auto &a, const auto &b) {
+		return a.second.interactions > b.second.interactions;
+	});
+
+	const uint64 now = NowMs();
+	std::string  list;
+	for (size_t i = 0; i < known.size() && i < 5; ++i) {
+		list += fmt::format(
+			"{}{} x{} ({}s ago)",
+			list.empty() ? "" : ", ",
+			known[i].first,
+			known[i].second.interactions,
+			now > known[i].second.last_seen_ms ? (now - known[i].second.last_seen_ms) / 1000 : 0
+		);
+	}
+
+	to->Message(Chat::White, "%s", fmt::format("[pbchat] knows {}: {}", known.size(), list).c_str());
 }
 
 void PlayerBotChatEngine::DumpStats(Client *to)

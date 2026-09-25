@@ -94,3 +94,54 @@ GROUP BY c.name;
 -- ^ expect closer 9, followup 8.
 
 -- Then, in game:  #pbchat reload
+
+
+-- ============================================================================
+-- 19.14 -- familiar: "hey again", for someone this bot has actually met
+--
+-- Engine-only (no triggers). Swapped in for 'greeting' when a PLAYER greets a
+-- bot that has dealt with them at least twice and not for the last two
+-- minutes, and for 'passerby' under the same condition. Every interaction it
+-- counts is one the engine witnessed: a reply to that player, a thank-you for
+-- their heal, grats on their ding, a hello as they walked past.
+--
+-- Rows stay RELATIONAL, never biographical. The engine knows that they met
+-- before; it knows nothing of what the player did since. "good to see you
+-- again" is true; "how did that run go" is 0.0's mistake wearing a new hat.
+-- ============================================================================
+
+INSERT INTO playerbot_chat_categories (name, priority, cooldown_ms, min_score, scope, description)
+SELECT 'familiar', 100, 30000, 10, 0, 'ENGINE ONLY (no triggers): greeting someone this bot has met before. 19.14'
+WHERE NOT EXISTS (SELECT 1 FROM playerbot_chat_categories WHERE name = 'familiar');
+
+SET @c_familiar := (SELECT id FROM playerbot_chat_categories WHERE name = 'familiar');
+
+DELETE c FROM playerbot_chat_response_context c
+JOIN playerbot_chat_responses r ON r.id = c.response_id
+WHERE r.category_id = @c_familiar;
+
+DELETE FROM playerbot_chat_responses WHERE category_id = @c_familiar;
+
+INSERT INTO playerbot_chat_responses
+  (category_id, response_text, weight, class_mask, race_mask, alignment, level_min, level_max, tone) VALUES
+  (@c_familiar, 'hey again',                            130, 65535, 65535, 0, 1, 60, 'upbeat'),
+  (@c_familiar, 'wb',                                   120, 65535, 65535, 0, 1, 60, NULL),
+  (@c_familiar, 'welcome back {speaker}',               120, 65535, 65535, 0, 1, 60, 'upbeat'),
+  (@c_familiar, 'back again?',                          110, 65535, 65535, 0, 1, 60, NULL),
+  (@c_familiar, 'hey {speaker}, good to see you again', 110, 65535, 65535, 0, 1, 60, 'upbeat'),
+  (@c_familiar, 'you again, hello',                     100, 65535, 65535, 0, 1, 60, NULL),
+  (@c_familiar, 'hail again {speaker}',                 100, 65535, 65535, 0, 1, 60, NULL),
+  (@c_familiar, '/em waves.',                            90, 65535, 65535, 0, 1, 60, NULL);
+
+-- Verification -- zero rows.
+SELECT 'FAIL: familiar has a trigger' AS problem, id, pattern
+FROM playerbot_chat_triggers WHERE category_id = @c_familiar;
+
+-- A familiar row may name the person and nothing else they did.
+SELECT 'FAIL: biographical familiar row' AS problem, id, response_text
+FROM playerbot_chat_responses
+WHERE category_id = @c_familiar
+  AND response_text REGEXP '(^|[^a-z])(run|trip|camp|raid|went|did|last time|yesterday|earlier)([^a-z]|$)';
+
+SELECT COUNT(*) AS familiar_rows FROM playerbot_chat_responses WHERE category_id = @c_familiar;
+-- ^ expect 8.
