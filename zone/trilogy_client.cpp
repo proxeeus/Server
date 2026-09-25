@@ -159,6 +159,17 @@ TrilogyClient::TrilogyClient(
 	GetPP().level  = level;
 	SetDeity(GetPP().deity); // use DB-loaded value; SetDeity sets both m_pp.deity and Mob::deity
 
+	// Racial innates (Troll/Iksar regen, Slam, Infravision, ...) are seeded into
+	// m_pp.InnateSkills[] by InitInnates(), whose only caller is
+	// client_packet.cpp:1431 in Handle_Connect_OP_ZoneEntry.  The Client ctor
+	// sets every slot to InnateDisabled (client.cpp:362), so without this a
+	// Troll or Iksar regenerated HP at the non-racial rate (client_mods.cpp
+	// CalcHPRegen doubles base on InnateRegen) and the Iksar Forage seed that
+	// lives inside InitInnates never ran.  It reads GetRace()/GetClass(), so it
+	// must come after ChangeRace()/SetClass() above — not in InitTrilogyFields,
+	// which runs before race is known.
+	InitInnates();
+
 	// Set initial world position without broadcasting (entity not yet in entity_list).
 	SetPosition(x, y, z);
 	SetHeading(heading);

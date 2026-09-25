@@ -546,6 +546,30 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// zone-line it trips into (e.g. qeynos → qcat 0,0,0).
 	database.LoadCharacterBindPoint(char_id, &m_pp);
 
+	// Personal faction lives in faction_values and the ONLY loader call in the
+	// tree is client_packet.cpp:1264 in Handle_Connect_OP_ZoneEntry.  Without it
+	// factionvalues is empty for the whole session, which does two things:
+	//
+	//   - GetCharacterFactionLevel() returns 0 for every faction, so con, aggro,
+	//     merchant refusals and quest faction checks see only the racial/class/
+	//     deity base — everything the character earned is invisible.
+	//   - The first faction hit per faction per session computes 0 + delta and
+	//     writes it with ON DUPLICATE KEY UPDATE (SetCharacterFactionLevel), so
+	//     the stored value is overwritten, not adjusted.  Same shape as the
+	//     TotalSecondsPlayed clobber below.
+	//
+	// RemoveTempFactions first, exactly as the normal path does: temp rows are
+	// meant to die on zone.
+	database.RemoveTempFactions(this);
+	database.LoadCharacterFactionValues(char_id, factionvalues);
+
+	// Keyring: same gap.  KeyRingLoad() is only called from the normal zone-entry
+	// path (client_packet.cpp:1525), so `keyring` stayed empty and KeyRingCheck()
+	// never matched a key learned in an earlier session.  Worse, the keyring
+	// table has no unique key, so every successful door open with the key on the
+	// cursor went through KeyRingAdd() and inserted the same row again.
+	KeyRingLoad();
+
 	// LoadCharacterData reads the character_data table only — currency lives in the
 	// separate character_currency table and must be loaded explicitly.  Without this,
 	// m_pp.platinum/gold/silver/copper stay 0 for the whole session, so every Save()

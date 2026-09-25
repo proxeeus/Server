@@ -5020,6 +5020,34 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 			Bot::LoadAndSpawnAllZonedBots(tc);
 		}
 
+		// Pet zones with owner.
+		//
+		// LoadPetInfo above fills m_petinfo from character_pet_info, but the block
+		// that turns it back into a pet (client_packet.cpp ~L1674, in
+		// Handle_Connect_OP_ZoneEntry) never ran on this path.  So the pet was
+		// left behind at every zone line — and the next Client::Save() found no
+		// GetPet(), memset m_petinfo and wrote the empty row back, so the stored
+		// pet (buffs, items, HP) was gone for good.  Mirrored here rather than
+		// earlier because the owner must already be in entity_list and CONNECTED
+		// for the pet's NewSpawn to reach this client; same spot as the bots.
+		if (RuleB(NPC, PetZoneWithOwner)) {
+			PetInfo* pi = tc->GetPetInfo(PetInfoType::Current);
+			if (pi->SpellID > 1 && !tc->GetPet() && pi->SpellID <= SPDAT_RECORDS) {
+				tc->MakePoweredPet(pi->SpellID, spells[pi->SpellID].teleport_zone,
+				                   pi->petpower, pi->Name, pi->size);
+				if (tc->GetPet() && tc->GetPet()->IsNPC()) {
+					NPC* pet = tc->GetPet()->CastToNPC();
+					pet->SetPetState(pi->Buffs, pi->Items);
+					pet->CalcBonuses();
+					pet->SetHP(pi->HP);
+					pet->SetMana(pi->Mana);
+				}
+				LogInfo("[TrilogyZone] zone-in pet restore | char='{}' spell_id={} "
+				        "restored={}", tc->GetName(), pi->SpellID, tc->GetPet() != nullptr);
+				pi->SpellID = 0;
+			}
+		}
+
 		// Group roster sync to the joining v29c client.
 		//
 		// EQEmu's Group::SendUpdate (groups.cpp) iterates members[] and queues
