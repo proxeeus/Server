@@ -62,6 +62,7 @@ extern volatile bool RunLoops;
 
 #include "../common/repositories/character_alternate_abilities_repository.h"
 #include "../common/repositories/account_flags_repository.h"
+#include "../common/repositories/account_repository.h"
 #include "../common/repositories/bug_reports_repository.h"
 #include "../common/repositories/char_recipe_list_repository.h"
 #include "../common/repositories/character_spells_repository.h"
@@ -236,6 +237,13 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	LFP = false;
 	gmspeed = 0;
 	gminvul = false;
+	// Never initialised before: the normal zone-entry path overwrites all three
+	// from the DB before anything reads them, but a Trilogy client never runs it,
+	// so GetRevoked(), the firstlogon gates in CompleteConnect and GetAccountAge()
+	// read heap garbage.
+	revoked = false;
+	firstlogon = 0;
+	account_creation = 0;
 	// medding tracks OP_Medding (spell book open / closed).  Only the Trilogy
 	// client sends that opcode, but the flag is read unconditionally by
 	// IsMedding() (api_service, Lua, Perl), so it has to start defined.
@@ -678,8 +686,45 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 			char_name, char_id);
 	}
 
-	// Load account status so Admin() returns the correct level for GM command authorization.
+	// Account row.  This used to read `status` alone; the normal path
+	// (client_packet.cpp:1266-1280) takes eight more columns from the same row,
+	// and none of them had any other writer for a Trilogy client:
+	//
+	//   revoked       — the OOC/auction/tell gates (GetRevoked()) read an
+	//                   uninitialised member, so a real #revoke was never
+	//                   enforced and a garbage value could block chat at random.
+	//   invulnerable  — account-level god mode, re-applied on every Titanium
+	//                   zone-in and never on Trilogy.
+	//   hideme        — #hideme did not survive a zone; also drives tellsoff and
+	//                   trackable, exactly as below.
+	//   gmspeed       — only takes effect on zone-in (#set gmspeed says so),
+	//                   so on Trilogy it never took effect at all.
+	//   flymode       — the Mob default is Water (mob.cpp:487), not the
+	//                   account's value, which the fear fallback path treats as
+	//                   levitating.  The FlyMode appearance packet the normal path
+	//                   sends is deliberately not sent here: v29c has no fly mode.
+	//   lsaccount_id / ls_id / time_creation — LSAccountID(), the zone-side
+	//                   antighost lookups, and GetAccountAge().
 	admin = database.GetAccountStatus(acct_id);
+	{
+		auto a = AccountRepository::FindOne(database, acct_id);
+		if (a.id > 0) {
+			strn0cpy(loginserver, a.ls_id.c_str(), sizeof(loginserver));
+
+			admin            = a.status;
+			lsaccountid      = a.lsaccount_id;
+			gmspeed          = a.gmspeed;
+			revoked          = a.revoked;
+			gm_hide_me       = a.hideme;
+			account_creation = a.time_creation;
+			gminvul          = a.invulnerable;
+			flymode          = static_cast<GravityBehavior>(a.flymode);
+			tellsoff         = gm_hide_me;
+
+			if (gm_hide_me) { trackable = false; }
+			if (gminvul)    { invulnerable = true; }
+		}
+	}
 
 	// Load the character's GM flag so GetGM() works for things like immunity to hunger,
 	// and so the server correctly treats this character as a GM in all internal checks.
