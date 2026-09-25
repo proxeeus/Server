@@ -3101,7 +3101,15 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 	// [19.13] A PlayerBot that was somebody's groupmate. The engine bails at
 	// once for every other NPC, before any scope walk.
-	playerbot_chat.NotifyGroupDeath(this);
+	//
+	// Not for a Bot: Bot::Death runs NPC::Death first and then makes its own
+	// NotifyGroupDeath call after OnChatDeath, and Bot::IsNPC() is false, so
+	// the engine's NPC filter would not catch the second one -- the dying bot
+	// would take the death mood nudge twice and the condolence would get two
+	// rolls.
+	if (!IsBot()) {
+		playerbot_chat.NotifyGroupDeath(this);
+	}
 
 	WipeHateList();
 

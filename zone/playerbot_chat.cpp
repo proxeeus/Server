@@ -4180,7 +4180,7 @@ bool PlayerBotChatEngine::SpeakEvent(
 	return ScriptSayEx(talker, static_cast<uint32>(cat_id), chan_num, about, captures, delay);
 }
 
-void PlayerBotChatEngine::CollectGroupVoices(Mob *who, Mob *near, std::vector<Mob *> &out)
+void PlayerBotChatEngine::CollectGroupVoices(Mob *who, Mob *witness, std::vector<Mob *> &out)
 {
 	out.clear();
 	if (!who) {
@@ -4206,7 +4206,7 @@ void PlayerBotChatEngine::CollectGroupVoices(Mob *who, Mob *near, std::vector<Mo
 
 		// Present, when presence matters: a condolence from a bot parked at
 		// the zone line is a line about something it did not see.
-		if (near && Distance(m->GetPosition(), near->GetPosition()) > earshot) {
+		if (witness && Distance(m->GetPosition(), witness->GetPosition()) > earshot) {
 			continue;
 		}
 
@@ -4363,8 +4363,13 @@ void PlayerBotChatEngine::NotifyBeneficialSpell(Mob *caster, Mob *target, uint16
 	}
 
 	// [19.8] Before the mute test and the roll: being healed lifts the mood
-	// whether or not the bot says anything about it.
-	NudgeMood(target, kMoodBuffed);
+	// whether or not the bot says anything about it. At most once a minute per
+	// bot, though -- a bard's song lands every few seconds, and without this a
+	// bard in the group pins every bot's mood at +100 and mood stops meaning
+	// anything.
+	if (EventCooldownReady(fmt::format("moodbuff:{}", Strings::ToLower(ChatDisplayName(target))), 60000, NowMs())) {
+		NudgeMood(target, kMoodBuffed);
+	}
 
 	auto st_it = m_listener_state.find(target->GetID());
 	if (st_it != m_listener_state.end() && st_it->second.muted) {

@@ -836,8 +836,10 @@ private:
 	bool EventCooldownReady(const std::string &key, uint64 cooldown_ms, uint64 now_ms);
 
 	// [19.13] Bots that could voice a group event: chat bots in `who`'s group
-	// (never `who`), unmuted, and -- when `near` is given -- within earshot of it.
-	void CollectGroupVoices(Mob *who, Mob *near, std::vector<Mob *> &out);
+	// (never `who`), unmuted, and -- when `witness` is given -- within earshot of
+	// it. Not called `near`: <windows.h> defines `near` as an empty macro, which
+	// turns every use of such a parameter into a syntax error under MSVC.
+	void CollectGroupVoices(Mob *who, Mob *witness, std::vector<Mob *> &out);
 
 	// [19.13] A player walking up to a PlayerBot. Swept every 2s: arrival is an
 	// edge (was not near, now is), and a 5s sweep misses a player running past.
