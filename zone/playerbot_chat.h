@@ -117,6 +117,15 @@ namespace PlayerBotChat {
 		SB_Unknown     = 1 << 15
 	};
 
+	// [19.8] State of mind, -100 (miserable) .. +100 (on top of the world),
+	// decaying linearly toward 0. Nudged only by events the engine WITNESSED --
+	// a kill, a death, a ding, a heal landing, dropping low -- so mood colours
+	// which true line a bot reaches for and never licenses a line saying WHY.
+	struct MoodState {
+		int16  mood     = 0;
+		uint64 stamp_ms = 0;
+	};
+
 	// Slots in ListenerState::last_heard. The engine's valid channels top out
 	// at ChatChannel_Say (8); 16 is the next power of two and leaves room for
 	// raid (15) if §0.0's "still open" list ever reaches it.
@@ -150,6 +159,9 @@ namespace PlayerBotChat {
 		// [19.7] Precomputed at load for the persona weighting in PickResponse,
 		// which runs once per listener per message and must not re-scan text.
 		bool        names_speaker = false;   // template contains {speaker}
+		// [19.8] `tone` parsed once at load: +1 upbeat, -1 downbeat, 0 neutral
+		// (empty or any word the engine does not know).
+		int8        tone_sign     = 0;
 
 		// playerbot_chat_response_context (optional row)
 		bool                     has_context             = false;
@@ -714,6 +726,13 @@ private:
 	// stable across reseeds and needs no storage.
 	static uint32 PersonaAffinity(const PlayerBotChat::Persona &p, const PlayerBotChat::Category &cat);
 
+	// [19.8] Current mood of `m` after decay, and the one way to change it.
+	// Keyed by the persona's NAME hash, not the entity id: a Bot that dies is
+	// re-summoned as a new entity, and the whole point of the death nudge is
+	// that it outlives that.
+	int  MoodOf(Mob *m, uint64 now_ms);
+	void NudgeMood(Mob *m, int delta);
+
 	// [19.7] Weighted index pick. Returns weights.size() only when every weight
 	// is zero, which callers treat as "nothing eligible".
 	static size_t WeightedPick(const std::vector<uint32> &weights);
@@ -795,6 +814,8 @@ private:
 	// detector: (client entity id << 16 | bot entity id) -> last sweep the pair
 	// was within greeting range. Both swept in ExpireTransients.
 	std::unordered_map<std::string, uint64>                  m_event_last;
+	// [19.8] persona name hash -> mood. Swept once a mood has decayed to 0.
+	std::unordered_map<uint64, PlayerBotChat::MoodState>     m_mood;
 	std::unordered_map<uint32, uint64>                       m_near;
 	uint64                                                   m_next_proximity_ms        = 0;
 

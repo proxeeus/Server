@@ -261,6 +261,32 @@ namespace {
 	// longer gate anything and are swept.
 	constexpr uint64 kEventKeyTtlMs = 1200000;
 
+	// ------------------------------------------------------------------
+	// [19.8] mood
+	// ------------------------------------------------------------------
+
+	// Linear decay toward neutral. At 10/min a death (-60) is felt for six
+	// minutes -- long enough that the bot does not open cheerfully thirty
+	// seconds after dying, short enough that it is not sulking all evening.
+	constexpr int kMoodDecayPerMin = 10;
+
+	constexpr int kMoodKill        = 15;    // it killed something
+	constexpr int kMoodGroupKill   = 8;     // its group killed something, it was there
+	constexpr int kMoodOwnDeath    = -60;   // it died
+	constexpr int kMoodGroupDeath  = -20;   // it watched a groupmate die
+	constexpr int kMoodDing        = 25;    // its group dinged (bots level with their owner)
+	constexpr int kMoodBuffed      = 10;    // a player's heal or buff landed on it
+	constexpr int kMoodLowHp       = -15;   // it dropped low in a fight
+
+	// A row's tone moves its weight by the mood, within 20%..200%. At mood -60
+	// an upbeat row keeps 40% of its weight and a downbeat one gets 160%.
+	constexpr int kMoodWeightFloorPct = 20;
+	constexpr int kMoodWeightCeilPct  = 200;
+
+	// Below this, a bot is half as likely to be the one who opens a
+	// conversation -- a bad mood reads first as quiet, then as tone.
+	constexpr int kMoodSulk = -40;
+
 	// Schema probe. Lets a binary run ahead of its migration: the loader selects
 	// NULL in place of a missing column instead of failing the whole content
 	// load, which would silence every bot over one optional column.
@@ -614,6 +640,52 @@ uint32 PlayerBotChatEngine::PersonaAffinity(const Persona &p, const Category &ca
 	return 60 + static_cast<uint32>((PersonaDial(state) * 90) / 100);
 }
 
+// ============================================================
+// [19.8] mood
+// ============================================================
+
+int PlayerBotChatEngine::MoodOf(Mob *m, uint64 now_ms)
+{
+	if (!m) {
+		return 0;
+	}
+
+	auto it = m_mood.find(PersonaFor(m).name_hash);
+	if (it == m_mood.end() || it->second.mood == 0) {
+		return 0;
+	}
+
+	const int    cur     = it->second.mood;
+	const uint64 elapsed = now_ms > it->second.stamp_ms ? now_ms - it->second.stamp_ms : 0;
+	const int64  decay   = static_cast<int64>((elapsed * static_cast<uint64>(kMoodDecayPerMin)) / 60000);
+
+	if (decay >= std::abs(cur)) {
+		return 0;
+	}
+	return cur > 0 ? cur - static_cast<int>(decay) : cur + static_cast<int>(decay);
+}
+
+void PlayerBotChatEngine::NudgeMood(Mob *m, int delta)
+{
+	if (!m || delta == 0 || !IsChatBot(m)) {
+		return;
+	}
+
+	// Re-based on the DECAYED value, then stamped now: decay is applied lazily,
+	// so storing the raw sum would undo every minute of recovery since the last
+	// nudge.
+	const uint64 now  = NowMs();
+	const int    next = std::max(-100, std::min(100, MoodOf(m, now) + delta));
+
+	MoodState &ms = m_mood[PersonaFor(m).name_hash];
+	ms.mood     = static_cast<int16>(next);
+	ms.stamp_ms = now;
+
+	if (RuleB(PlayerBotChat, LogDispatch)) {
+		LogInfo("[pbchat] mood [{}] {:+} -> {}", ChatDisplayName(m), delta, next);
+	}
+}
+
 size_t PlayerBotChatEngine::WeightedPick(const std::vector<uint32> &weights)
 {
 	uint64 total = 0;
@@ -846,6 +918,19 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 
 			r.names_speaker = Strings::ToLower(r.text).find("{speaker}") != std::string::npos;
 
+			// [19.8] Two words each way, so an author reaching for a synonym is
+			// not silently ignored. Anything else is neutral -- the retired
+			// generated pack left tones like 'joke' that mean nothing to mood.
+			{
+				const std::string tone = Strings::ToLower(r.tone);
+				if (tone == "upbeat" || tone == "cheerful") {
+					r.tone_sign = 1;
+				}
+				else if (tone == "downbeat" || tone == "grim") {
+					r.tone_sign = -1;
+				}
+			}
+
 			auto cat_it = m_category_by_id.find(r.category_id);
 			if (cat_it == m_category_by_id.end()) {
 				LogError(
@@ -954,6 +1039,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_next_mana_watch_ms       = m_hour_window_start_ms + 5000;
 	m_event_last.clear();
 	m_near.clear();
+	m_mood.clear();
 	m_next_proximity_ms        = m_hour_window_start_ms + 2000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
@@ -1292,6 +1378,14 @@ void PlayerBotChatEngine::ExpireTransients(uint64 now_ms)
 	for (auto it = m_near.begin(); it != m_near.end();) {
 		it = (now_ms - it->second > kPasserbyForgetMs) ? m_near.erase(it) : std::next(it);
 	}
+
+	// [19.8] A mood that has fully decayed is indistinguishable from no entry.
+	for (auto it = m_mood.begin(); it != m_mood.end();) {
+		const uint64 elapsed = now_ms > it->second.stamp_ms ? now_ms - it->second.stamp_ms : 0;
+		const bool   neutral = (elapsed * static_cast<uint64>(kMoodDecayPerMin)) / 60000 >=
+		                       static_cast<uint64>(std::abs(static_cast<int>(it->second.mood)));
+		it = neutral ? m_mood.erase(it) : std::next(it);
+	}
 }
 
 // ============================================================
@@ -1444,6 +1538,9 @@ const Response *PlayerBotChatEngine::PickResponse(
 	// categories carry no gated rows, and the mask walks a group and a raid.
 	uint16 state_mask  = 0;
 	bool   state_known = false;
+
+	// [19.8] Once per call, like the persona.
+	const int mood = listener ? MoodOf(listener, now_ms) : 0;
 
 	const ListenerState *st = nullptr;
 	if (listener) {
@@ -1606,6 +1703,18 @@ const Response *PlayerBotChatEngine::PickResponse(
 			}
 
 			w = static_cast<uint32>(std::max<uint64>(1, std::min<uint64>(pw, 100000)));
+		}
+
+		// [19.8] MOOD. A bot that died two minutes ago reaches for the downbeat
+		// line and away from the upbeat one; a bot on a run of kills does the
+		// opposite. Untagged rows are untouched, so an untagged pack behaves
+		// exactly as before. Never zero: mood colours, it does not silence.
+		if (mood != 0 && r.tone_sign != 0) {
+			const int pct = std::max(
+				kMoodWeightFloorPct,
+				std::min(kMoodWeightCeilPct, 100 + static_cast<int>(r.tone_sign) * mood)
+			);
+			w = static_cast<uint32>(std::max<uint64>(1, (static_cast<uint64>(w) * static_cast<uint64>(pct)) / 100));
 		}
 
 		// REPETITION GUARD. A row this zone spoke inside RepeatWindowMs keeps its
@@ -2713,6 +2822,10 @@ void PlayerBotChatEngine::NotifySlay(Mob *killer, Mob *victim)
 		killer->CastToBot()->OnChatSlay(victim);
 	}
 
+	// [19.8] Any chat-capable killer, PlayerBot included -- mood is not a
+	// callout, so the Player_Bot.lua double-up above does not apply to it.
+	NudgeMood(killer, kMoodKill);
+
 	// Everyone else in the killer's group. CollectScope on channel 2 is exactly
 	// the right query -- it already resolves a real group AND a raid group by
 	// name, excludes the speaker, and returns only chat-capable bots -- so the
@@ -2739,6 +2852,7 @@ void PlayerBotChatEngine::NotifySlay(Mob *killer, Mob *victim)
 			continue;
 		}
 
+		NudgeMood(m, kMoodGroupKill);
 		m->CastToBot()->OnChatSlay(victim);
 	}
 }
@@ -2838,6 +2952,12 @@ void PlayerBotChatEngine::NotifyLevelUp(Client *who, uint8 new_level)
 	// anywhere, which is all a "grats" asserts.
 	std::vector<Mob *> voices;
 	CollectGroupVoices(who, nullptr, voices);
+
+	// [19.8] Bots level with their owner, so the whole group just dinged.
+	for (Mob *v : voices) {
+		NudgeMood(v, kMoodDing);
+	}
+
 	if (voices.empty() || !zone->random.Roll(kDingGratsChance)) {
 		return;
 	}
@@ -2906,8 +3026,17 @@ void PlayerBotChatEngine::NotifyGroupDeath(Mob *dead)
 		return;
 	}
 
+	// [19.8] The one who died, and everyone who watched, whether or not any of
+	// them goes on to say anything. NudgeMood ignores anything that is not a
+	// chat bot, so a player's death moves only their bots.
+	NudgeMood(dead, kMoodOwnDeath);
+
 	std::vector<Mob *> voices;
 	CollectGroupVoices(dead, dead, voices);
+	for (Mob *v : voices) {
+		NudgeMood(v, kMoodGroupDeath);
+	}
+
 	if (voices.empty() || !zone->random.Roll(kDeathCondolenceChance)) {
 		return;
 	}
@@ -2959,6 +3088,10 @@ void PlayerBotChatEngine::NotifyBeneficialSpell(Mob *caster, Mob *target, uint16
 	if (!caster->IsClient() || !IsChatBot(target) || target->IsCorpse() || !IsValidSpell(spell_id)) {
 		return;
 	}
+
+	// [19.8] Before the mute test and the roll: being healed lifts the mood
+	// whether or not the bot says anything about it.
+	NudgeMood(target, kMoodBuffed);
 
 	auto st_it = m_listener_state.find(target->GetID());
 	if (st_it != m_listener_state.end() && st_it->second.muted) {
@@ -3255,6 +3388,7 @@ void PlayerBotChatEngine::HealthWatchTick()
 				// re-announcing on the next sweep, and that holds whether or not
 				// it won the one voice this sweep allows.
 				st.low_hp_latched = true;
+				NudgeMood(m, kMoodLowHp);
 
 				if (!spoken_this_sweep) {
 					const uint8 chan = IsGroupedForChat(m) ? ChatChannel_Group : ChatChannel_Say;
@@ -3504,10 +3638,17 @@ Mob *PlayerBotChatEngine::PickOpener(const std::vector<Mob *> &pool)
 		return nullptr;
 	}
 
+	const uint64 now = NowMs();
+
 	std::vector<uint32> weights;
 	weights.reserve(pool.size());
 	for (Mob *m : pool) {
-		weights.push_back(25u + PersonaFor(m).chattiness);
+		uint32 w = 25u + PersonaFor(m).chattiness;
+		// [19.8] A bot in a bad mood is the last to start a conversation.
+		if (MoodOf(m, now) <= kMoodSulk) {
+			w /= 2;
+		}
+		weights.push_back(w);
 	}
 
 	const size_t i = WeightedPick(weights);
@@ -4312,8 +4453,9 @@ void PlayerBotChatEngine::DumpPersona(Client *to, Mob *m)
 		Chat::White,
 		"%s",
 		fmt::format(
-			"[pbchat] persona {} | chatty {} | typing {}% | terse {} | sloppy {} | names {} | broadcast {}",
-			ChatDisplayName(m), p.chattiness, p.typing_pct, p.terseness, p.sloppiness, p.name_drop, p.broadcast
+			"[pbchat] persona {} | chatty {} | typing {}% | terse {} | sloppy {} | names {} | broadcast {} | mood {}",
+			ChatDisplayName(m), p.chattiness, p.typing_pct, p.terseness, p.sloppiness, p.name_drop, p.broadcast,
+			MoodOf(m, NowMs())
 		).c_str()
 	);
 
