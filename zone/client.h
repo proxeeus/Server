@@ -1848,7 +1848,8 @@ protected:
 	void MakeBuffFadePacket(uint16 spell_id, int slot_id, bool send_message = true);
 	bool client_data_loaded;
 
-	void InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name);
+	// Returns the lastlogin stored in the DB before this call reset it to now.
+	uint32 InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name);
 
 
 	void FinishAlternateAdvancementPurchase(AA::Rank *rank, bool ignore_cost, bool send_message_and_save);

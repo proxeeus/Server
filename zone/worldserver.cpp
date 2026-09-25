@@ -60,6 +60,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/repositories/guild_tributes_repository.h"
 #include "../common/patches/patches.h"
 #include "../common/skill_caps.h"
+#include "trilogy_zone.h"
 
 extern EntityList entity_list;
 extern Zone* zone;
@@ -648,6 +649,20 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 				client->Kick("Dropped by world CLE subsystem");
 				client->Save();
 			}
+		}
+		break;
+	}
+	case ServerOP_TrilogyZoneAuth: {
+		if (pack->size != sizeof(ServerTrilogyZoneAuth_Struct)) {
+			LogError("Wrong size on ServerOP_TrilogyZoneAuth. Got: [{}], Expected: [{}]",
+			         pack->size, sizeof(ServerTrilogyZoneAuth_Struct));
+			break;
+		}
+		auto* za = reinterpret_cast<ServerTrilogyZoneAuth_Struct*>(pack->pBuffer);
+		za->char_name[sizeof(za->char_name) - 1] = '\0';
+		za->ip[sizeof(za->ip) - 1]               = '\0';
+		if (g_trilogy_zone) {
+			g_trilogy_zone->AddZoneAuth(za->char_id, za->account_id, za->char_name, za->ip);
 		}
 		break;
 	}

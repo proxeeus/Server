@@ -380,7 +380,14 @@ int main(int argc, char **argv)
 	g_trilogy_world = &trilogy_world;
 	eqsm.OnUnknownPacket(
 		[&trilogy_world](const std::string& a, int p, const char* d, size_t s) {
-			trilogy_world.OnRawPacket(a, p, d, s);
+			// Same reason as zone/main.cpp: the caller's catch(std::exception&)
+			// reports to an error callback nothing is wired to.
+			try {
+				trilogy_world.OnRawPacket(a, p, d, s);
+			} catch (const std::exception& ex) {
+				LogError("[TrilogyWorld] Exception handling packet from {}:{} ({} bytes): {}",
+				         a, p, s, ex.what());
+			}
 		}
 	);
 	trilogy_world.SetSendFn(

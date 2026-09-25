@@ -823,6 +823,14 @@ public:
 	void SetSelfReportedAnim(int8_t anim_type, uint64_t now_ms) {
 		m_self_anim_type   = anim_type;
 		m_self_anim_set_ms = now_ms;
+		// Mob::animation is what Handle_OP_ClientUpdate stores from
+		// ppu->animation, and two server-side readers treat it as "non-zero
+		// means this player is moving": the NPC stun-from-behind roll
+		// (attack.cpp ~L1518, `> 0`) and a blinded mob's chase odds
+		// (fearpath.cpp ~L267).  It was never written for a Trilogy client, so
+		// both always saw a standing player.  Magnitude only: anim_type is a
+		// signed velocity and walking backwards is still moving.
+		animation = (anim_type < 0) ? -static_cast<int>(anim_type) : static_cast<int>(anim_type);
 	}
 
 	// True when this client sent a position update within max_age_ms, with

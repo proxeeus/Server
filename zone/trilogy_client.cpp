@@ -138,7 +138,7 @@ TrilogyClient::TrilogyClient(
 , m_player_spawn_id(player_spawn_id)
 {
 	// Set private Client fields that bypass the normal zone-entry handshake.
-	InitTrilogyFields(char_id, acct_id, acct_name, char_name);
+	const uint32 previous_lastlogin = InitTrilogyFields(char_id, acct_id, acct_name, char_name);
 
 	// Start of the environmental-damage grace window — see HandleEnvDamage.  A
 	// TrilogyClient is constructed fresh on every zone-in, so "now" is zone-in.
@@ -159,9 +159,42 @@ TrilogyClient::TrilogyClient(
 	GetPP().level  = level;
 	SetDeity(GetPP().deity); // use DB-loaded value; SetDeity sets both m_pp.deity and Mob::deity
 
+	// Racial innates (Troll/Iksar regen, Slam, Infravision, ...) are seeded into
+	// m_pp.InnateSkills[] by InitInnates(), whose only caller is
+	// client_packet.cpp:1431 in Handle_Connect_OP_ZoneEntry.  The Client ctor
+	// sets every slot to InnateDisabled (client.cpp:362), so without this a
+	// Troll or Iksar regenerated HP at the non-racial rate (client_mods.cpp
+	// CalcHPRegen doubles base on InnateRegen) and the Iksar Forage seed that
+	// lives inside InitInnates never ran.  It reads GetRace()/GetClass(), so it
+	// must come after ChangeRace()/SetClass() above — not in InitTrilogyFields,
+	// which runs before race is known.
+	InitInnates();
+
+	// Per-race size.  The Client ctor passes 0 and only Handle_Connect_OP_ZoneEntry
+	// (client_packet.cpp:1452-1474) sets it, so a Trilogy PC stayed at size 0:
+	// every spawn builder substituted 6.0, sending gnomes and ogres alike at
+	// human size, and Shrink/Grow computed 0 * modifier and let ChangeSize
+	// clamp the result to 3 — an ogre who cast Grow became gnome-sized.  Taken
+	// from EQClassic's Mob::GetDefaultSize (Zone/Source/mob.cpp ~L4416), which
+	// is what it assigns at zone-in (client_process.cpp:5803); it differs from
+	// EQEmu's table only for halflings (3 vs 3.5) and half-elves (5 vs 5.5).
+	switch (race) {
+		case Race::Gnome:    case Race::Halfling:                     size = 3.0f; break;
+		case Race::Dwarf:                                             size = 4.0f; break;
+		case Race::WoodElf:  case Race::DarkElf:  case Race::HalfElf: size = 5.0f; break;
+		case Race::Barbarian:                                         size = 7.0f; break;
+		case Race::Troll:                                             size = 8.0f; break;
+		case Race::Ogre:                                              size = 9.0f; break;
+		default: /* Human, Erudite, High Elf, Iksar */                size = 6.0f; break;
+	}
+
 	// Set initial world position without broadcasting (entity not yet in entity_list).
 	SetPosition(x, y, z);
 	SetHeading(heading);
+
+	// Seed the /rewind point at the spawn, so a zone cancel before the first
+	// position update returns the player here rather than to (0,0,0).
+	m_RewindLocation = glm::vec3(x, y, z);
 
 	// Mirror position into m_pp so SaveCharacterData writes the correct location on
 	// disconnect (m_pp.x/y/z default to 0 otherwise, placing the character at origin).
@@ -175,6 +208,21 @@ TrilogyClient::TrilogyClient(
 	// that path entirely. CalcBonuses() must come after Mob::SetLevel() so GetLevel()/GetSTA()
 	// return correct values for CalcBaseHP().
 	CalcBonuses();
+
+	// Zone:EnableLoggedOffReplenishments — full HP and mana after a long enough
+	// time offline, as Handle_Connect_OP_ZoneEntry does (client_packet.cpp
+	// ~L1602).  It needs the lastlogin InitTrilogyFields just replaced, and max
+	// HP/mana, which only exist after CalcBonuses.  A zone change counts too,
+	// exactly as on the normal path: lastlogin is refreshed by every save.
+	if (RuleB(Zone, EnableLoggedOffReplenishments) && previous_lastlogin > 0 &&
+	    time(nullptr) - static_cast<time_t>(previous_lastlogin) >=
+	        RuleI(Zone, MinOfflineTimeToReplenishments)) {
+		GetPP().cur_hp = GetMaxHP();
+		GetPP().mana   = GetMaxMana();
+		LogInfo("[TrilogyClient] Logged-off replenish: char='{}' offline {}s",
+		        char_name, static_cast<long long>(time(nullptr) - static_cast<time_t>(previous_lastlogin)));
+	}
+
 	if (GetPP().cur_hp <= 0)
 		GetPP().cur_hp = GetMaxHP();
 	SetHP(GetPP().cur_hp);
@@ -2546,9 +2594,53 @@ void TrilogyClient::TrilogyPositionUpdate(float x, float y, float z, float headi
 	// and proximity checks without triggering the movement manager broadcast.
 	const float prev_heading = GetHeading();
 
+	// /rewind location — mirrors Handle_OP_ClientUpdate (client_packet.cpp
+	// ~L4970-4994), and like it, runs against the position from BEFORE this
+	// update.  It matters well beyond /rewind: Client::SendZoneCancel moves the
+	// player to m_RewindLocation (zoning.cpp ~L715).  Never tracked here, it
+	// stayed at (0,0,0), so any zone request the server refused — no matching
+	// zone_points row, a request for the current zone, a quest veto — moved
+	// the player to (0,0,0), sent it as an approval, and saved it.
+	{
+		float rewind_x_diff = x - m_RewindLocation.x;
+		rewind_x_diff *= rewind_x_diff;
+		float rewind_y_diff = y - m_RewindLocation.y;
+		rewind_y_diff *= rewind_y_diff;
+
+		if ((rewind_x_diff > 750) || (rewind_y_diff > 750))
+			m_RewindLocation = glm::vec3(m_Position);
+
+		if ((rewind_x_diff > 5000) || (rewind_y_diff > 5000))
+			m_RewindLocation = glm::vec3(x, y, z);
+	}
+
 	SetPosition(x, y, z);
 	SetHeading(heading);
 	SetMoving(!(x == prev_x && y == prev_y));
+
+	// Client aggro scan cadence — mirrors Handle_OP_ClientUpdate
+	// (client_packet.cpp ~L5045-5067).  That timer is the ONLY way an NPC
+	// aggroes a player (Client::Process ~L614; NPC AI only scans for NPCs), and
+	// it runs at the idle interval (Aggro:ClientAggroCheckIdleInterval, 6000 ms
+	// here) until movement switches it to the moving one (1000 ms).  Without
+	// this a running Trilogy player was checked every 6 s — well over a hundred
+	// units between checks — and could run straight past KOS mobs.
+	{
+		const uint16 scan_idle   = RuleI(Aggro, ClientAggroCheckIdleInterval);
+		const uint16 scan_moving = RuleI(Aggro, ClientAggroCheckMovingInterval);
+
+		if (IsMoving()) {
+			if (client_scan_npc_aggro_timer.GetRemainingTime() > scan_moving) {
+				client_scan_npc_aggro_timer.Disable();
+				client_scan_npc_aggro_timer.Start(scan_moving);
+				client_scan_npc_aggro_timer.Trigger();
+			}
+		}
+		else if (client_scan_npc_aggro_timer.GetDuration() == scan_moving) {
+			client_scan_npc_aggro_timer.Disable();
+			client_scan_npc_aggro_timer.Start(scan_idle);
+		}
+	}
 
 	// Note a pivot so SendMobHeartbeat can raise this player's refresh rate
 	// while it lasts.  Compared against the wire quantum rather than the float:

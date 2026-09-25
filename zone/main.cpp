@@ -508,6 +508,7 @@ int main(int argc, char **argv)
 	bool websocker_server_opened = false;
 
 	TrilogyZoneServer trilogy_zone;
+	g_trilogy_zone = &trilogy_zone; // for WorldServer's ServerOP_TrilogyZoneAuth handler
 
 	Timer quest_timers(100);
 	UpdateWindowTitle(nullptr);
@@ -557,7 +558,16 @@ int main(int argc, char **argv)
 			// Any UDP datagram not recognised by Daybreak is forwarded here.
 			eqsm->OnUnknownPacket([&trilogy_zone](const std::string& addr, int port,
 			                                       const char* data, size_t sz) {
-				trilogy_zone.OnRawPacket(addr, port, data, sz);
+				// DaybreakConnectionManager calls this inside a catch(std::exception&)
+				// whose message goes to an error callback nothing is wired to, so an
+				// exception anywhere in the Trilogy path — including the TrilogyClient
+				// ctor at zone-in — used to vanish without a line in the log.
+				try {
+					trilogy_zone.OnRawPacket(addr, port, data, sz);
+				} catch (const std::exception& ex) {
+					LogError("[TrilogyZone] Exception handling packet from {}:{} ({} bytes): {}",
+					         addr, port, sz, ex.what());
+				}
 			});
 			trilogy_zone.SetSendFn([&eqsm](const std::string& addr, int port,
 			                                const void* data, size_t sz) {

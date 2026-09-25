@@ -62,6 +62,7 @@ extern volatile bool RunLoops;
 
 #include "../common/repositories/character_alternate_abilities_repository.h"
 #include "../common/repositories/account_flags_repository.h"
+#include "../common/repositories/account_repository.h"
 #include "../common/repositories/bug_reports_repository.h"
 #include "../common/repositories/char_recipe_list_repository.h"
 #include "../common/repositories/character_spells_repository.h"
@@ -236,6 +237,13 @@ Client::Client(EQStreamInterface *ieqs) : Mob(
 	LFP = false;
 	gmspeed = 0;
 	gminvul = false;
+	// Never initialised before: the normal zone-entry path overwrites all three
+	// from the DB before anything reads them, but a Trilogy client never runs it,
+	// so GetRevoked(), the firstlogon gates in CompleteConnect and GetAccountAge()
+	// read heap garbage.
+	revoked = false;
+	firstlogon = 0;
+	account_creation = 0;
 	// medding tracks OP_Medding (spell book open / closed).  Only the Trilogy
 	// client sends that opcode, but the flag is read unconditionally by
 	// IsMedding() (api_service, Lua, Perl), so it has to start defined.
@@ -414,10 +422,6 @@ Client::~Client() {
 		Bot::ProcessBotOwnerRefDelete(this);
 	}
 
-	if (zone) {
-		zone->ClearEXPModifier(this);
-	}
-
 	if (!IsZoning()) {
 		if(IsInAGuild()) {
 			guild_mgr.UpdateDbMemberOnline(CharacterID(), false);
@@ -484,6 +488,15 @@ Client::~Client() {
 	// will need this data right away
 	Save(2); // This fails when database destructor is called first on shutdown
 
+	// Only after the final Save.  Save() -> SaveCharacterEXPModifier reads
+	// zone->exp_modifiers[CharacterID()] with operator[], so clearing the entry
+	// first made that read default-construct an EXPModifier{0, 0} and REPLACE the
+	// character's row with it — every client, every zone-out, camp and logout.
+	// That is why nearly every character_exp_modifiers row on the server was 0/0.
+	if (zone) {
+		zone->ClearEXPModifier(this);
+	}
+
 	safe_delete(task_state);
 	safe_delete(KarmaUpdateTimer);
 	safe_delete(GlobalChatLimiterTimer);
@@ -512,7 +525,7 @@ Client::~Client() {
 	UninitializeBuffSlots();
 }
 
-void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
+uint32 Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_name, const char* char_name)
 {
 	character_id    = char_id;
 	account_id      = acct_id;
@@ -545,6 +558,30 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// the world, and re-syncs by sending OP_ZoneChange for whatever fall-through
 	// zone-line it trips into (e.g. qeynos → qcat 0,0,0).
 	database.LoadCharacterBindPoint(char_id, &m_pp);
+
+	// Personal faction lives in faction_values and the ONLY loader call in the
+	// tree is client_packet.cpp:1264 in Handle_Connect_OP_ZoneEntry.  Without it
+	// factionvalues is empty for the whole session, which does two things:
+	//
+	//   - GetCharacterFactionLevel() returns 0 for every faction, so con, aggro,
+	//     merchant refusals and quest faction checks see only the racial/class/
+	//     deity base — everything the character earned is invisible.
+	//   - The first faction hit per faction per session computes 0 + delta and
+	//     writes it with ON DUPLICATE KEY UPDATE (SetCharacterFactionLevel), so
+	//     the stored value is overwritten, not adjusted.  Same shape as the
+	//     TotalSecondsPlayed clobber below.
+	//
+	// RemoveTempFactions first, exactly as the normal path does: temp rows are
+	// meant to die on zone.
+	database.RemoveTempFactions(this);
+	database.LoadCharacterFactionValues(char_id, factionvalues);
+
+	// Keyring: same gap.  KeyRingLoad() is only called from the normal zone-entry
+	// path (client_packet.cpp:1525), so `keyring` stayed empty and KeyRingCheck()
+	// never matched a key learned in an earlier session.  Worse, the keyring
+	// table has no unique key, so every successful door open with the key on the
+	// cursor went through KeyRingAdd() and inserted the same row again.
+	KeyRingLoad();
 
 	// LoadCharacterData reads the character_data table only — currency lives in the
 	// separate character_currency table and must be loaded explicitly.  Without this,
@@ -649,16 +686,92 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 			char_name, char_id);
 	}
 
-	// Load account status so Admin() returns the correct level for GM command authorization.
+	// Account row.  This used to read `status` alone; the normal path
+	// (client_packet.cpp:1266-1280) takes eight more columns from the same row,
+	// and none of them had any other writer for a Trilogy client:
+	//
+	//   revoked       — the OOC/auction/tell gates (GetRevoked()) read an
+	//                   uninitialised member, so a real #revoke was never
+	//                   enforced and a garbage value could block chat at random.
+	//   invulnerable  — account-level god mode, re-applied on every Titanium
+	//                   zone-in and never on Trilogy.
+	//   hideme        — #hideme did not survive a zone; also drives tellsoff and
+	//                   trackable, exactly as below.
+	//   gmspeed       — only takes effect on zone-in (#set gmspeed says so),
+	//                   so on Trilogy it never took effect at all.
+	//   flymode       — the Mob default is Water (mob.cpp:487), not the
+	//                   account's value, which the fear fallback path treats as
+	//                   levitating.  The FlyMode appearance packet the normal path
+	//                   sends is deliberately not sent here: v29c has no fly mode.
+	//   lsaccount_id / ls_id / time_creation — LSAccountID(), the zone-side
+	//                   antighost lookups, and GetAccountAge().
 	admin = database.GetAccountStatus(acct_id);
+	{
+		auto a = AccountRepository::FindOne(database, acct_id);
+		if (a.id > 0) {
+			strn0cpy(loginserver, a.ls_id.c_str(), sizeof(loginserver));
+
+			admin            = a.status;
+			lsaccountid      = a.lsaccount_id;
+			gmspeed          = a.gmspeed;
+			revoked          = a.revoked;
+			gm_hide_me       = a.hideme;
+			account_creation = a.time_creation;
+			gminvul          = a.invulnerable;
+			flymode          = static_cast<GravityBehavior>(a.flymode);
+			tellsoff         = gm_hide_me;
+
+			if (gm_hide_me) { trackable = false; }
+			if (gminvul)    { invulnerable = true; }
+		}
+	}
 
 	// Load the character's GM flag so GetGM() works for things like immunity to hunger,
 	// and so the server correctly treats this character as a GM in all internal checks.
+	//
+	// exp_enabled rides the same row.  SaveCharacterData writes it back from
+	// IsEXPEnabled() (zonedb.cpp ~L1095), so the forced `true` this function used
+	// to set turned a stored "#exp off" back on at the first save.  The normal
+	// path reads it at client_packet.cpp:1295; the column defaults to 1, so a
+	// missing row still leaves XP on.
+	//
+	// firstlogon too: world's Trilogy EnterWorld sets it to 1 on a fresh login,
+	// CompleteConnect reads it (EVENT_CONNECT, WENT_ONLINE, guild online) and
+	// HandleZoneInComplete clears it once that has run.
+	m_exp_enabled = true;
 	{
-		auto q = fmt::format("SELECT `gm` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
+		auto q = fmt::format(
+			"SELECT `gm`, `exp_enabled`, `firstlogon` FROM `character_data` WHERE `id` = {} LIMIT 1",
+			char_id);
 		auto r = database.QueryDatabase(q);
-		if (r.RowCount() > 0)
-			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
+		if (r.RowCount() > 0) {
+			auto row = r.begin();
+			m_pp.gm       = static_cast<uint8>(Strings::ToInt(row[0]));
+			m_exp_enabled = row[1] ? Strings::ToInt(row[1]) != 0 : true;
+			firstlogon    = row[2] ? static_cast<uint8>(Strings::ToInt(row[2])) : 0;
+		}
+	}
+
+	// Three more loads whose only caller is Handle_Connect_OP_ZoneEntry
+	// (client_packet.cpp:1324-1331), each with a Save() that writes the
+	// never-loaded value straight back:
+	//
+	//   - EXP modifiers.  SaveCharacterEXPModifier reads
+	//     zone->exp_modifiers[char] with operator[], so with nothing loaded the
+	//     first save wrote the row as 0/0 and GetEXPModifier returned 0 for the
+	//     rest of the session.
+	//   - Tributes.  m_pp.tributes stayed memset to 0, which is not TRIBUTE_NONE
+	//     (0xFFFFFFFF) — tribute id 0 is a real one, Aura of Clarity — so every
+	//     save replaced the character's tribute rows with five copies of it.
+	//   - Mail key.  SaveCharacterData writes GetMailKeyFull(), so it was
+	//     blanked on every save.  Harmless for v29c (no UCS) but it breaks the
+	//     same character's next Titanium session until world re-keys it.
+	database.LoadCharacterEXPModifier(this);
+	database.LoadCharacterTribute(this);
+	{
+		auto mail_keys   = database.GetMailKey(char_id);
+		m_mail_key_full  = mail_keys.mail_key_full;
+		m_mail_key       = mail_keys.mail_key;
 	}
 
 	// Load equipment inventory so weapon/armor type lookups (GetWeaponDamage,
@@ -683,11 +796,6 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	for (int i = 0; i < _FilterCount; ++i)
 		ClientFilters[i] = FilterShow;
 
-	// Trilogy clients bypass the normal zone-entry handshake where CompleteConnect()
-	// calls SetEXPEnabled(true).  Without this, AddEXP() returns immediately on the
-	// !IsEXPEnabled() guard → no XP ever awarded from kills.
-	m_exp_enabled = true;
-
 	// Suppress zone-point detection for 3 s after zone-in to prevent an
 	// immediate re-trigger when the player spawns right on a zone boundary.
 	m_zone_entry_time = Timer::GetCurrentTime();
@@ -702,8 +810,14 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// with just that delta.  Net effect: `character_data.time_played` (and
 	// therefore `/played`) is clobbered on every camp/zone/relog.  Resetting
 	// lastlogin here means the next Save() only adds THIS session's delta.
+	//
+	// The stored value is returned first: it is the only record of how long the
+	// character was offline, which Zone:EnableLoggedOffReplenishments needs and
+	// can only be applied by the caller once CalcBonuses has run.
+	const uint32 previous_lastlogin = m_pp.lastlogin;
 	TotalSecondsPlayed = m_pp.timePlayedMin * 60;
 	m_pp.lastlogin     = time(nullptr);
+	return previous_lastlogin;
 }
 
 void Client::SendZoneInPackets()

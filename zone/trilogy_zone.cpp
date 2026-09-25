@@ -1506,12 +1506,49 @@ static void EncryptNewSpawnPacket(uint8_t* buf, uint32_t size)
 
 // ============================================================
 
+// ============================================================
+// ClientStillLive — is s.trilogy_client still the object entity_list holds?
+//
+// EQEmu can destroy a Client without telling us: Client::Process returning
+// false (a dead_timer expiring on a body that died, a kick) sends it down
+// entity.cpp's "Dropping client" path, which deletes it.  Using the pointer
+// afterwards is a use-after-free, and RemoveMob(GetID()) on a reused id deletes
+// an unrelated entity.  When the check fails the pointer is dropped, and so is
+// counted_in_zone: ~Client already decremented numclients, and RemoveSession's
+// fallback would otherwise decrement it a second time.
+// ============================================================
+bool TrilogyZoneServer::ClientStillLive(Session& s)
+{
+	if (!s.trilogy_client) return false;
+	if (s.eqemu_entity_id != 0) {
+		Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
+		if (live == static_cast<Client*>(s.trilogy_client)) return true;
+	}
+	LogInfo("[TrilogyZone] Client for session [{}] was destroyed by the engine; dropping the stale pointer",
+	        s.char_name);
+	s.trilogy_client  = nullptr;
+	s.eqemu_entity_id = 0;
+	s.counted_in_zone = false;
+	return false;
+}
+
 void TrilogyZoneServer::RemoveSession(uint64_t key)
 {
 	auto it = m_sessions.find(key);
 	if (it == m_sessions.end()) return;
 	Session& s = it->second;
-	if (s.trilogy_client) {
+	if (ClientStillLive(s)) {
+		// Backstop for exits that did not already abort it (timeout, a CLOSE
+		// while camping, SEQSTART reset); ~Client's Save persists the refund.
+		PcTradeAbortOnExit(s, "session removed");
+
+		// ~Client leaves the group and sets the guild offline, but never touches
+		// a raid: only CompleteCamp and HandleZoneChange called MemberZoned, so
+		// a raid member who timed out or ran out their linkdead hold left
+		// Raid::members[] pointing at the freed Client.
+		if (Raid* raid = entity_list.GetRaidByClient(s.trilogy_client)) {
+			raid->MemberZoned(s.trilogy_client);
+		}
 		uint16 id = s.trilogy_client->GetID();
 		s.trilogy_client  = nullptr;
 		s.eqemu_entity_id = 0;
@@ -1539,6 +1576,11 @@ void TrilogyZoneServer::RemoveSession(uint64_t key)
 void TrilogyZoneServer::EnterLinkdead(Session& s, uint64_t now_ms)
 {
 	if (!s.trilogy_client || s.linkdead_since_ms != 0) return;
+
+	// The client is gone, so its half of an open trade can never be finished;
+	// hand both sides their coin back now rather than leave the partner's
+	// window open for the whole hold.
+	PcTradeAbortOnExit(s, "linkdead");
 
 	s.linkdead_since_ms  = now_ms;
 	s.linkdead_entry_pkt = s.last_pkt;
@@ -1902,7 +1944,11 @@ void TrilogyZoneServer::OnDatagram(const std::string& addr, int port, Session& s
 			        cli_arq, static_cast<int>(existing.state));
 			if (zone) zone->SetHasActiveTrilogySessions(true);
 		} else {
-			if (existing.trilogy_client) {
+			if (ClientStillLive(existing)) {
+				PcTradeAbortOnExit(existing, "session restarted");
+				if (Raid* raid = entity_list.GetRaidByClient(existing.trilogy_client)) {
+					raid->MemberZoned(existing.trilogy_client);
+				}
 				uint16 id = existing.trilogy_client->GetID();
 				existing.trilogy_client  = nullptr;
 				existing.eqemu_entity_id = 0;
@@ -4179,6 +4225,38 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	}
 
 	auto row = r.begin();
+
+	// World must have sent this zone a ServerOP_TrilogyZoneAuth for this
+	// character, from this IP, before handing the client our address.  The
+	// name above came out of the client's own packet, so without this check any
+	// peer that can reach the port could log in as any character — with that
+	// account's status — and the eviction below would kick the real owner.
+	// Checked before anything is written into the session.
+	{
+		const uint32_t db_char_id    = static_cast<uint32_t>(Strings::ToInt(row[0]));
+		const uint32_t db_account_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
+		const uint64_t now_ms        = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(
+		        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+		auto        it     = m_zone_auth.find(db_char_id);
+		const char* reason = nullptr;
+		if (it == m_zone_auth.end())                          reason = "no authorisation from world";
+		else if (it->second.expires_ms <= now_ms)             reason = "authorisation expired";
+		else if (it->second.account_id != db_account_id)      reason = "account mismatch";
+		else if (it->second.ip != addr)                       reason = "IP mismatch";
+
+		if (reason) {
+			LogInfo("[TrilogyZone] ZoneEntry REFUSED | char=[{}] char_id={} account_id={} from {}:{} "
+			        "reason=[{}] auth_ip=[{}] auth_account_id={}",
+			        char_name, db_char_id, db_account_id, addr, port, reason,
+			        it != m_zone_auth.end() ? it->second.ip : std::string(),
+			        it != m_zone_auth.end() ? it->second.account_id : 0u);
+			SendClose(addr, port, s);
+			return;
+		}
+	}
+
 	s.char_id    = static_cast<uint32_t>(Strings::ToInt(row[0]));
 	s.account_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
 	s.zone_id    = static_cast<uint16_t>(Strings::ToInt(row[2]));
@@ -4884,6 +4962,10 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 
 	s.state = CONNECTED;
 
+	// The world authorisation that let this character in is spent now; the
+	// next entry into this zone needs a fresh one.
+	m_zone_auth.erase(s.char_id);
+
 	// Create a TrilogyClient entity and add it to the entity_list so:
 	//   - Titanium clients see this player via OP_NewSpawn broadcasts
 	//   - NPC aggro / hate lists include this player
@@ -4928,6 +5010,12 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
+
+		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
+		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
+		// runs, so clear it here — otherwise every later zone-in would fire the
+		// first-login events again.
+		database.SetFirstLogon(tc->CharacterID(), 0);
 
 		// Guild appearance on zone-in.
 		//
@@ -5018,6 +5106,34 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		if (RuleB(Bots, Enabled)) {
 			database.botdb.LoadOwnerOptions(tc);
 			Bot::LoadAndSpawnAllZonedBots(tc);
+		}
+
+		// Pet zones with owner.
+		//
+		// LoadPetInfo above fills m_petinfo from character_pet_info, but the block
+		// that turns it back into a pet (client_packet.cpp ~L1674, in
+		// Handle_Connect_OP_ZoneEntry) never ran on this path.  So the pet was
+		// left behind at every zone line — and the next Client::Save() found no
+		// GetPet(), memset m_petinfo and wrote the empty row back, so the stored
+		// pet (buffs, items, HP) was gone for good.  Mirrored here rather than
+		// earlier because the owner must already be in entity_list and CONNECTED
+		// for the pet's NewSpawn to reach this client; same spot as the bots.
+		if (RuleB(NPC, PetZoneWithOwner)) {
+			PetInfo* pi = tc->GetPetInfo(PetInfoType::Current);
+			if (pi->SpellID > 1 && !tc->GetPet() && pi->SpellID <= SPDAT_RECORDS) {
+				tc->MakePoweredPet(pi->SpellID, spells[pi->SpellID].teleport_zone,
+				                   pi->petpower, pi->Name, pi->size);
+				if (tc->GetPet() && tc->GetPet()->IsNPC()) {
+					NPC* pet = tc->GetPet()->CastToNPC();
+					pet->SetPetState(pi->Buffs, pi->Items);
+					pet->CalcBonuses();
+					pet->SetHP(pi->HP);
+					pet->SetMana(pi->Mana);
+				}
+				LogInfo("[TrilogyZone] zone-in pet restore | char='{}' spell_id={} "
+				        "restored={}", tc->GetName(), pi->SpellID, tc->GetPet() != nullptr);
+				pi->SpellID = 0;
+			}
 		}
 
 		// Group roster sync to the joining v29c client.
@@ -5861,6 +5977,25 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		bool boundary_is_wide = (pp.heading >= 0.0f);
 		if (!boundary_is_wide) {
 			pp.heading = -pp.heading - 1.0f;
+		}
+
+		// (-1,-1,-1) and (-2,-2,-2) are "put me at the safe point" markers, not
+		// places: Database::MoveCharacterToZone (#movechar) writes the first.
+		// The normal path substitutes the zone's safe point at
+		// client_packet.cpp:1380-1386; without the same here a moved Trilogy
+		// character arrived at (-1,-1,-1).  +3 on z as the other safe-point
+		// fallbacks in this function do.
+		if (zone &&
+		    ((pp.x == -1.0f && pp.y == -1.0f && pp.z == -1.0f) ||
+		     (pp.x == -2.0f && pp.y == -2.0f && pp.z == -2.0f))) {
+			const glm::vec4 safe = zone->GetSafePoint();
+			LogInfo("[TrilogyZP] placeholder position ({:.0f},{:.0f},{:.0f}) -> zone safe point "
+			        "({:.1f},{:.1f},{:.1f}) | char [{}] zone [{}]",
+			        pp.x, pp.y, pp.z, safe.x, safe.y, safe.z, s.char_name, s.zone_short);
+			pp.x       = safe.x;
+			pp.y       = safe.y;
+			pp.z       = safe.z + 3.0f;
+			pp.heading = safe.w;
 		}
 		// zone_id at row[22] - use zone_short from session
 		pp.hungerlevel     = static_cast<int32_t>(Strings::ToInt(row[23]));
@@ -9373,7 +9508,10 @@ TrilogyZoneServer::Session* TrilogyZoneServer::FindSessionByEntityId(uint16_t en
 	for (auto& kv : m_sessions) {
 		Session& s = kv.second;
 		if (!s.trilogy_client) continue;
-		if (static_cast<uint16_t>(s.trilogy_client->GetID()) == entity_id)
+		// The cached id, not trilogy_client->GetID(): this walks every session,
+		// and reading the id through a pointer the engine may have freed is the
+		// one thing ClientStillLive exists to avoid.
+		if (s.eqemu_entity_id == entity_id)
 			return &s;
 		if (s.player_spawn_id == entity_id)
 			return &s;
@@ -10078,6 +10216,30 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 		        ZN_OP_CloseTrade, &z, 0);
 		PcTradeClearState(*partner);
 	}
+}
+
+// ============================================================
+// PcTradeAbortOnExit — the leaving side's half of Client::OnDisconnect's
+// FinishTrade.  Coin dropped into a PC trade window comes off the character's
+// PlayerProfile and is saved the moment it moves (HandleMoveCoin's slot-3
+// intercept); only PcTradeAbortBoth gives it back, and that was reached from
+// Cancel and Give alone.  So coin sitting in the window at a camp, zone line,
+// linkdead or timeout was gone for good, and the partner kept pc_trade_active
+// pointing at an entity id that could later be reused.
+//
+// PC trades only.  NPC-trade coin is deliberately left alone: coin that
+// reaches that window from the cursor is still counted in m_pp.*_cursor, so
+// refunding trade_cp..pp on exit would mint it, and nothing here can tell
+// which path a given amount took.
+// ============================================================
+void TrilogyZoneServer::PcTradeAbortOnExit(Session& s, const char* why)
+{
+	if (!s.pc_trade_active || !s.trilogy_client) return;
+	Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+	LogInfo("[TrilogyZone] PCTrade aborted on exit ({}) | char={} offer cp={} sp={} gp={} pp={}",
+	        why, s.char_name, s.pc_trade_offer_cp, s.pc_trade_offer_sp,
+	        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+	PcTradeAbortBoth(s, partner, nullptr, "Your trade partner has left.");
 }
 
 void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Session& s)
@@ -13592,6 +13754,17 @@ void TrilogyZoneServer::Tick()
 		Session& cs = kv.second;
 		if (cs.state != CONNECTED || !cs.trilogy_client) continue;
 
+		// The stale-pointer guard further down skips linkdead sessions, and a
+		// linkdead body is exactly the one most likely to have been destroyed
+		// under us: it stays in the world "so it can be aggroed and killed",
+		// client_state stays CONNECTED, and Client::Process deletes it once
+		// dead_timer runs out.  Check first; a held session whose body is gone
+		// has nothing left to hold, so retire it now.
+		if (!ClientStillLive(cs)) {
+			if (cs.linkdead_since_ms != 0) ld_expired.push_back(kv.first);
+			continue;
+		}
+
 		if (cs.linkdead_since_ms == 0) {
 			// Silence backstop: a link that dies without managing even a CLOSE
 			// (power cut, NAT drop).  The CLOSE handler covers the common case.
@@ -13657,12 +13830,11 @@ void TrilogyZoneServer::Tick()
 		// by it returns nullptr, which would cause this guard to wrongly null
 		// the pointer on every Tick and silently break input dispatch for
 		// Consider, CombatAbility, Hail, etc. in OnDatagram).
-		if (s.trilogy_client && s.eqemu_entity_id != 0) {
-			Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
-			if (live != static_cast<Client*>(s.trilogy_client)) {
-				s.trilogy_client  = nullptr;
-				s.eqemu_entity_id = 0;
-			}
+		// (ClientStillLive also clears counted_in_zone, so the RemoveSession that
+		// eventually reaps this session does not decrement numclients a second
+		// time after ~Client already has.)
+		if (s.trilogy_client) {
+			ClientStillLive(s);
 		}
 
 		// BWDiag: every 5 s, emit per-session outbound bandwidth roll.  Gives
@@ -14029,13 +14201,11 @@ void TrilogyZoneServer::Tick()
 			if (now_ms < s.force_logout_ms) continue; // clock skew guard
 			if (now_ms - s.force_logout_ms < kForceLogoutGraceMs) continue;
 
-			if (s.trilogy_client && s.eqemu_entity_id != 0) {
-				Client* live = entity_list.GetClientByID(s.eqemu_entity_id);
-				if (live != static_cast<Client*>(s.trilogy_client)) {
-					s.trilogy_client  = nullptr;
-					s.eqemu_entity_id = 0;
-				}
-			}
+			// A kicked client is normally already gone by now (Client::Kick →
+			// Process → "Dropping client" → ~Client).  RemoveSession checks that
+			// through ClientStillLive; the check that used to sit here nulled the
+			// pointer but left counted_in_zone set, so RemoveSession then
+			// decremented numclients a second time on every #kick.
 			to_reap.push_back(kv.first);
 		}
 
@@ -14049,6 +14219,36 @@ void TrilogyZoneServer::Tick()
 bool TrilogyZoneServer::HasConnectedSession() const
 {
 	return !m_sessions.empty();
+}
+
+TrilogyZoneServer* g_trilogy_zone = nullptr;
+
+// ============================================================
+// AddZoneAuth — ServerOP_TrilogyZoneAuth from world (see servertalk.h).
+// One record per character; a newer one from world simply replaces it.
+// ============================================================
+void TrilogyZoneServer::AddZoneAuth(uint32_t char_id, uint32_t account_id,
+                                    const char* char_name, const char* ip)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Drop anything stale while we are here, so the map cannot grow with
+	// characters world sent here and who never arrived.
+	for (auto it = m_zone_auth.begin(); it != m_zone_auth.end();) {
+		if (it->second.expires_ms <= now_ms) it = m_zone_auth.erase(it);
+		else ++it;
+	}
+
+	ZoneAuth& za  = m_zone_auth[char_id];
+	za.account_id = account_id;
+	za.char_name  = char_name ? char_name : "";
+	za.ip         = ip ? ip : "";
+	za.expires_ms = now_ms + kZoneAuthTtlMs;
+
+	LogInfo("[TrilogyZone] ZoneAuth added | char=[{}] char_id={} account_id={} ip=[{}]",
+	        za.char_name, char_id, account_id, za.ip);
 }
 
 // SendMobHeartbeat — send OP_MobUpdate (0xa120) containing current
@@ -15556,6 +15756,8 @@ void TrilogyZoneServer::CompleteCamp(uint64_t /*session_key*/, Session& s)
 
 	LogInfo("[TrilogyZone] Camp complete for {} — saving and disconnecting", s.char_name);
 
+	PcTradeAbortOnExit(s, "camp"); // before the Save() below
+
 	Raid* raid = entity_list.GetRaidByClient(s.trilogy_client);
 	if (raid) raid->MemberZoned(s.trilogy_client);
 	s.trilogy_client->LeaveGroup();
@@ -16804,6 +17006,19 @@ void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, 
 		s.trilogy_client->SetMedding(false);
 	}
 
+	// Standing up is how v29c cancels a camp: the countdown is client-side and
+	// the server is never told otherwise.  `camping` was only ever set, so after
+	// one interrupted /camp every later CLOSE (/q, Alt-F4, a crash) counted as a
+	// clean exit and removed the body at once instead of going linkdead —
+	// an escape from any fight, and no CompleteCamp either.
+	if (s.camping &&
+	    static_cast<uint32>(tri->type) == AppearanceType::Animation &&
+	    static_cast<uint32>(tri->parameter) == Animation::Standing) {
+		s.camping    = false;
+		s.camp_start = 0;
+		LogInfo("[TrilogyZone] Camp cancelled (stood up) for {}", s.char_name);
+	}
+
 	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
 }
 
@@ -17641,6 +17856,10 @@ void TrilogyZoneServer::HandleZoneChange(const std::string& addr, int port, Sess
 			        (g && g->IsGroupMember(b)));
 		}
 	}
+
+	// Before Handle_OP_ZoneChange: DoZoneSuccess saves, and the refund has to
+	// be in that save.
+	PcTradeAbortOnExit(s, "zone change");
 
 	s.trilogy_client->Handle_OP_ZoneChange(&zc_pkt);
 
