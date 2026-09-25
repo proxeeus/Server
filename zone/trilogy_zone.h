@@ -68,6 +68,12 @@ public:
 	void Tick();
 	bool HasConnectedSession() const;
 
+	// ServerOP_TrilogyZoneAuth from world: this character may enter this zone
+	// from this IP for the next kZoneAuthTtlMs.  HandleZoneEntry refuses any
+	// ZoneEntry without a matching record.
+	void AddZoneAuth(uint32_t char_id, uint32_t account_id,
+	                 const char* char_name, const char* ip);
+
 	void SendToSession(uint64_t session_key, uint16_t opcode,
 	                   const uint8_t* data, uint32_t size,
 	                   bool ack_req = true);
@@ -1077,4 +1083,20 @@ private:
 
 	std::map<uint64_t, Session> m_sessions;
 	std::function<void(const std::string&, int, const void*, size_t)> m_send_fn;
+
+	// Pending world authorisations, keyed by char_id.  A record is not consumed
+	// by HandleZoneEntry — a resent SEQSTART can replay the handshake (see #73) —
+	// only by a completed zone-in, or by expiry.
+	struct ZoneAuth {
+		uint32_t    account_id = 0;
+		std::string char_name;
+		std::string ip;
+		uint64_t    expires_ms = 0;
+	};
+	std::unordered_map<uint32_t, ZoneAuth> m_zone_auth;
+	static constexpr uint64_t kZoneAuthTtlMs = 5 * 60 * 1000;
 };
+
+// Set by zone/main.cpp so the world-server packet handler can reach the
+// zone's Trilogy server (world has g_trilogy_world for the same reason).
+extern TrilogyZoneServer* g_trilogy_zone;

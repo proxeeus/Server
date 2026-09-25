@@ -4179,6 +4179,38 @@ void TrilogyZoneServer::HandleZoneEntry(const std::string& addr, int port, Sessi
 	}
 
 	auto row = r.begin();
+
+	// World must have sent this zone a ServerOP_TrilogyZoneAuth for this
+	// character, from this IP, before handing the client our address.  The
+	// name above came out of the client's own packet, so without this check any
+	// peer that can reach the port could log in as any character — with that
+	// account's status — and the eviction below would kick the real owner.
+	// Checked before anything is written into the session.
+	{
+		const uint32_t db_char_id    = static_cast<uint32_t>(Strings::ToInt(row[0]));
+		const uint32_t db_account_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
+		const uint64_t now_ms        = static_cast<uint64_t>(
+		    std::chrono::duration_cast<std::chrono::milliseconds>(
+		        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+		auto        it     = m_zone_auth.find(db_char_id);
+		const char* reason = nullptr;
+		if (it == m_zone_auth.end())                          reason = "no authorisation from world";
+		else if (it->second.expires_ms <= now_ms)             reason = "authorisation expired";
+		else if (it->second.account_id != db_account_id)      reason = "account mismatch";
+		else if (it->second.ip != addr)                       reason = "IP mismatch";
+
+		if (reason) {
+			LogInfo("[TrilogyZone] ZoneEntry REFUSED | char=[{}] char_id={} account_id={} from {}:{} "
+			        "reason=[{}] auth_ip=[{}] auth_account_id={}",
+			        char_name, db_char_id, db_account_id, addr, port, reason,
+			        it != m_zone_auth.end() ? it->second.ip : std::string(),
+			        it != m_zone_auth.end() ? it->second.account_id : 0u);
+			SendClose(addr, port, s);
+			return;
+		}
+	}
+
 	s.char_id    = static_cast<uint32_t>(Strings::ToInt(row[0]));
 	s.account_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
 	s.zone_id    = static_cast<uint16_t>(Strings::ToInt(row[2]));
@@ -4883,6 +4915,10 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 	}
 
 	s.state = CONNECTED;
+
+	// The world authorisation that let this character in is spent now; the
+	// next entry into this zone needs a fresh one.
+	m_zone_auth.erase(s.char_id);
 
 	// Create a TrilogyClient entity and add it to the entity_list so:
 	//   - Titanium clients see this player via OP_NewSpawn broadcasts
@@ -14077,6 +14113,36 @@ void TrilogyZoneServer::Tick()
 bool TrilogyZoneServer::HasConnectedSession() const
 {
 	return !m_sessions.empty();
+}
+
+TrilogyZoneServer* g_trilogy_zone = nullptr;
+
+// ============================================================
+// AddZoneAuth — ServerOP_TrilogyZoneAuth from world (see servertalk.h).
+// One record per character; a newer one from world simply replaces it.
+// ============================================================
+void TrilogyZoneServer::AddZoneAuth(uint32_t char_id, uint32_t account_id,
+                                    const char* char_name, const char* ip)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+	    std::chrono::duration_cast<std::chrono::milliseconds>(
+	        std::chrono::steady_clock::now().time_since_epoch()).count());
+
+	// Drop anything stale while we are here, so the map cannot grow with
+	// characters world sent here and who never arrived.
+	for (auto it = m_zone_auth.begin(); it != m_zone_auth.end();) {
+		if (it->second.expires_ms <= now_ms) it = m_zone_auth.erase(it);
+		else ++it;
+	}
+
+	ZoneAuth& za  = m_zone_auth[char_id];
+	za.account_id = account_id;
+	za.char_name  = char_name ? char_name : "";
+	za.ip         = ip ? ip : "";
+	za.expires_ms = now_ms + kZoneAuthTtlMs;
+
+	LogInfo("[TrilogyZone] ZoneAuth added | char=[{}] char_id={} account_id={} ip=[{}]",
+	        za.char_name, char_id, account_id, za.ip);
 }
 
 // SendMobHeartbeat — send OP_MobUpdate (0xa120) containing current

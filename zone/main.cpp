@@ -508,6 +508,7 @@ int main(int argc, char **argv)
 	bool websocker_server_opened = false;
 
 	TrilogyZoneServer trilogy_zone;
+	g_trilogy_zone = &trilogy_zone; // for WorldServer's ServerOP_TrilogyZoneAuth handler
 
 	Timer quest_timers(100);
 	UpdateWindowTitle(nullptr);

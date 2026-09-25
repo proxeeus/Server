@@ -1116,6 +1116,26 @@ void TrilogyWorldServer::SendZoneServerInfo(const std::string& addr, int port, S
 		s.cle->SetOnline(CLE_Status::Zoning);
 	}
 
+	// Authorise this character, from this IP, on the destination zone — before
+	// the client learns the zone's address, so the TCP packet is always ahead of
+	// the client's UDP handshake.  Every Trilogy zone entry comes through here:
+	// char select (CheckPendingZoneEntry / EnterWorld) and zone-to-zone
+	// (SendZoneServerInfoForChar).  Without it the zone took the character name
+	// out of the ZoneEntry packet and logged in as that character, with that
+	// account's status, for any peer that could reach the port.
+	{
+		auto pack = new ServerPacket(ServerOP_TrilogyZoneAuth, sizeof(ServerTrilogyZoneAuth_Struct));
+		auto* za  = reinterpret_cast<ServerTrilogyZoneAuth_Struct*>(pack->pBuffer);
+		za->char_id    = s.char_id;
+		za->account_id = s.account_id;
+		strn0cpy(za->char_name, s.char_name, sizeof(za->char_name));
+		strn0cpy(za->ip, s.source_addr.c_str(), sizeof(za->ip));
+		zs->SendPacket(pack);
+		safe_delete(pack);
+		LogInfo("[TrilogyWorld] ZoneAuth sent | char=[{}] char_id={} account_id={} ip=[{}] zone_id={}",
+		        s.char_name, s.char_id, s.account_id, s.source_addr, s.zone_id);
+	}
+
 	// Send EQ time before redirecting to the zone so the client's sky/lighting
 	// is initialised before it connects to the zone server.
 	SendTimeOfDay(addr, port, s);
