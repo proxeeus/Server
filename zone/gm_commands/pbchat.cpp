@@ -16,6 +16,7 @@ namespace {
 		c->Message(Chat::White, "  #pbchat top [n] - the response ROWS spoken most often (default 10)");
 		c->Message(Chat::White, "  #pbchat find <text> - response rows containing <text>, with row id and hits");
 		c->Message(Chat::White, "  #pbchat threads - live conversation threads and pending emissions");
+		c->Message(Chat::White, "  #pbchat persona [target|entity_id] - a bot's persona dials and favourite categories");
 		c->Message(Chat::White, "  #pbchat mute <all|target|entity_id> / #pbchat unmute <...>");
 		c->Message(Chat::White, "  #pbchat ignore <player_name> / #pbchat unignore <player_name|all> / #pbchat ignorelist");
 	}
@@ -100,6 +101,14 @@ void command_pbchat(Client *c, const Seperator *sep)
 
 	if (sub == "threads") {
 		playerbot_chat.DumpThreads(c);
+		return;
+	}
+
+	if (sub == "persona") {
+		Mob *t = sep->IsNumber(2)
+			? entity_list.GetMob(static_cast<uint16>(atoi(sep->arg[2])))
+			: c->GetTarget();
+		playerbot_chat.DumpPersona(c, t);
 		return;
 	}
 

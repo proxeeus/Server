@@ -82,6 +82,10 @@ namespace PlayerBotChat {
 		// GROUP chat as one 0x0721 per recipient, so a four-bot group turns one
 		// typed line into four messages -- see IsDuplicateUtterance.
 		DR_DuplicateUtterance,
+		// [19.7] A bot-to-bot line this listener's persona declined to answer.
+		// Only ever counted at chain_depth > 0 and never for a bot addressed by
+		// name: a quiet persona is quiet with other bots, not rude to a player.
+		DR_Reticent,
 		DR_MAX
 	};
 
@@ -115,6 +119,9 @@ namespace PlayerBotChat {
 		std::string tone;
 		int8        reply_channel = -1;      // -1 == same channel as the trigger
 		bool        enabled       = true;
+		// [19.7] Precomputed at load for the persona weighting in PickResponse,
+		// which runs once per listener per message and must not re-scan text.
+		bool        names_speaker = false;   // template contains {speaker}
 
 		// playerbot_chat_response_context (optional row)
 		bool                     has_context             = false;
@@ -133,6 +140,11 @@ namespace PlayerBotChat {
 		int16       min_score   = 10;
 		uint8       scope       = CS_Reactive;
 		bool        enabled     = true;
+		// [19.7] FNV-1a of the lowercased NAME, precomputed at load. Persona
+		// affinity is keyed on this rather than on `id`: ids are AUTO_INCREMENT,
+		// so an id-keyed affinity would give every bot a new personality after
+		// a reseed.
+		uint64      name_hash   = 0;
 
 		std::vector<uint32> trigger_idx;     // indexes into PlayerBotChatEngine::m_triggers
 		std::vector<uint32> response_idx;    // indexes into PlayerBotChatEngine::m_responses
@@ -150,6 +162,26 @@ namespace PlayerBotChat {
 	struct HeardMark {
 		uint32 wave       = 0;
 		uint16 speaker_id = 0;
+	};
+
+	// [19.7] PERSONA. Forty bots drawing from the same weighted pool with the
+	// same odds are one person forty times over; this is what makes the same
+	// rows sound like different people. Every trait is a 0..100 dial derived
+	// from a hash of the bot's DISPLAY NAME -- never its entity id, which is
+	// recycled, so an id-keyed persona would change on every respawn and zone
+	// boot. Name-keyed, it is stable for the life of the character and needs no
+	// table. See PlayerBotChatEngine::PersonaFor for what each dial moves.
+	//
+	// Content rule: unaffected. A persona asserts nothing; it only re-weights
+	// rows that were already true for this bot.
+	struct Persona {
+		uint64 name_hash   = 0;    // 0 == never seeded
+		uint8  chattiness  = 50;   // bot-to-bot reply odds, responder rank, opener odds
+		uint8  typing_pct  = 100;  // 70..140: scales StaggerMsPerChar
+		uint8  terseness   = 50;   // prefers short rows over long ones
+		uint8  sloppiness  = 50;   // casing / typo rates (19.9)
+		uint8  name_drop   = 50;   // how often a {speaker} row wins
+		uint8  broadcast   = 50;   // taste for shout / ooc / auction rows
 	};
 
 	struct ListenerState {
@@ -171,6 +203,9 @@ namespace PlayerBotChat {
 		// bar hovers on the line, which is how a useful callout becomes spam.
 		// The clear is SILENT; recovery is not news.
 		bool                               low_mana_latched = false;
+		// [19.7] Lazily seeded by PersonaFor, re-seeded if the name changes
+		// under the same entity id (a PlayerBot is renamed in event_spawn).
+		Persona                            persona;
 	};
 
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
@@ -341,6 +376,10 @@ public:
 		PlayerBotChat::TestResult &out
 	);
 	void DumpCategories(Client *to);
+	// "#pbchat persona [target]" -- the dials and strongest category affinities
+	// for one bot. The persona is invisible in any single line by design; this
+	// is the only way to see why two bots answer the same message differently.
+	void DumpPersona(Client *to, Mob *m);
 	void DumpStats(Client *to);
 	void DumpThreads(Client *to);
 	// "#pbchat top [n]" -- the rows that actually get spoken, most first.
@@ -401,6 +440,8 @@ private:
 		// IsInCombat -- which can walk a group -- is evaluated once per
 		// listener rather than again at queue time.
 		bool                           in_combat = false;
+		// [19.7] The listener's typing speed, carried to the stagger loop.
+		uint8                          typing_pct = 100;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -552,6 +593,24 @@ private:
 	uint32                         CategoryCooldownFor(uint32 id) const;
 
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
+
+	// [19.7] The listener's persona, seeded on first use from its display name
+	// and re-seeded if that name has changed since.
+	const PlayerBotChat::Persona &PersonaFor(Mob *m);
+
+	// [19.7] How much this persona likes one category, as a percent (60..150).
+	// Derived from the persona hash and the category's NAME hash, so it is
+	// stable across reseeds and needs no storage.
+	static uint32 PersonaAffinity(const PlayerBotChat::Persona &p, const PlayerBotChat::Category &cat);
+
+	// [19.7] Weighted index pick. Returns weights.size() only when every weight
+	// is zero, which callers treat as "nothing eligible".
+	static size_t WeightedPick(const std::vector<uint32> &weights);
+
+	// [19.7] Opener selection: the bot by chattiness, then its category by that
+	// bot's affinity. Both return null only for an empty pool.
+	Mob                           *PickOpener(const std::vector<Mob *> &pool);
+	const PlayerBotChat::Category *PickOpenerCategory(Mob *opener, const std::vector<const PlayerBotChat::Category *> &cats);
 
 	static uint64      NowMs();
 	static uint64      EchoHash(const char *name, const std::string &text);

@@ -149,6 +149,66 @@ namespace {
 		return false;
 	}
 
+	// ------------------------------------------------------------------
+	// [19.7] persona
+	//
+	// Tunables are constants here, not rules: CLAUDE.md asks that ruletypes.h
+	// is only touched when a knob genuinely needs to move at runtime, because
+	// every edit there recompiles the whole tree. These change one file.
+	// ------------------------------------------------------------------
+
+	// Explicit FNV-1a rather than std::hash: the persona must not change because
+	// the server was rebuilt with a different standard library. std::hash is
+	// only promised to be stable within one execution.
+	uint64 Fnv1a(const std::string &s)
+	{
+		uint64 h = 1469598103934665603ULL;
+		for (unsigned char c : s) {
+			h ^= static_cast<uint64>(c);
+			h *= 1099511628211ULL;
+		}
+		return h;
+	}
+
+	// splitmix64: one well-mixed 64-bit draw per call from a stateful seed.
+	uint64 SplitMix64(uint64 &state)
+	{
+		uint64 z = (state += 0x9E3779B97F4A7C15ULL);
+		z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+		z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+		return z ^ (z >> 31);
+	}
+
+	// A 0..100 dial. The mean of two draws, not one: personalities cluster
+	// around the middle and extremes are rarer, which is what makes the rare
+	// chatterbox or the rare mute one read as a character rather than noise.
+	uint8 PersonaDial(uint64 &state)
+	{
+		const uint32 a = static_cast<uint32>(SplitMix64(state) % 101);
+		const uint32 b = static_cast<uint32>(SplitMix64(state) % 101);
+		return static_cast<uint8>((a + b) / 2);
+	}
+
+	// Rows at or under this many template characters count as short, at or over
+	// the long mark as long; terseness moves weight between the two ends.
+	constexpr size_t kPersonaShortRow = 20;
+	constexpr size_t kPersonaLongRow  = 50;
+
+	// Rank contribution, in the same units as proximity (distance x10). At the
+	// extremes chattiness is worth 20 distance units and affinity 10: enough to
+	// decide between bots standing at similar range, never enough to beat a
+	// conversation lock or a bot addressed by name, which sit whole bands above.
+	constexpr int64 kPersonaChattinessRank = 4;    // per chattiness point from 50
+	constexpr int64 kPersonaAffinityRank   = 2;    // per affinity percent from 100
+
+	// Uniform 0..N added to every candidate's spatial term. On shout / ooc /
+	// auction every proximity is 0, so without this the same chattiest bots
+	// would win every zone-wide reply -- 19.2's problem again, in a new place.
+	constexpr int kRankJitter = 150;
+
+	// Bot-to-bot reply odds span 40%..100% across the chattiness dial.
+	constexpr int kReticentFloorPct = 40;
+
 } // namespace
 
 // ============================================================
@@ -196,6 +256,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_Stale:            return "stale";
 		case DR_InCombat:         return "in-combat";
 		case DR_DuplicateUtterance: return "duplicate-utterance";
+		case DR_Reticent:         return "reticent";
 		default:                  return "unknown";
 	}
 }
@@ -337,6 +398,85 @@ bool PlayerBotChatEngine::IsInCombat(Mob *m)
 }
 
 // ============================================================
+// [19.7] persona
+// ============================================================
+
+const Persona &PlayerBotChatEngine::PersonaFor(Mob *m)
+{
+	static const Persona neutral{};
+	if (!m) {
+		return neutral;
+	}
+
+	Persona &p = StateFor(m->GetID()).persona;
+
+	// Re-checked on every call, not seeded once: a PlayerBot is spawned under a
+	// placeholder name and renamed in event_spawn, and an entity id can be
+	// recycled onto a different bot inside the 60s listener sweep. Hashing a
+	// ten-character name is cheaper than being wrong about who this is.
+	uint64 h = Fnv1a(Strings::ToLower(ChatDisplayName(m)));
+	if (h == 0) {
+		h = 1;   // 0 is the "never seeded" sentinel
+	}
+	if (p.name_hash == h) {
+		return p;
+	}
+
+	uint64 state = h;
+
+	p.name_hash  = h;
+	p.chattiness = PersonaDial(state);
+	p.typing_pct = static_cast<uint8>(70 + (PersonaDial(state) * 70) / 100);
+	p.terseness  = PersonaDial(state);
+	p.sloppiness = PersonaDial(state);
+	p.name_drop  = PersonaDial(state);
+	p.broadcast  = PersonaDial(state);
+
+	if (RuleB(PlayerBotChat, LogDispatch)) {
+		LogInfo(
+			"[pbchat] persona seeded [{}]: chatty {} typing {}% terse {} sloppy {} names {} broadcast {}",
+			ChatDisplayName(m), p.chattiness, p.typing_pct, p.terseness, p.sloppiness, p.name_drop, p.broadcast
+		);
+	}
+
+	return p;
+}
+
+uint32 PlayerBotChatEngine::PersonaAffinity(const Persona &p, const Category &cat)
+{
+	if (p.name_hash == 0) {
+		return 100;
+	}
+
+	uint64 state = p.name_hash ^ cat.name_hash;
+	// 60..150: a favourite subject is half again as likely, a disliked one a
+	// little over half as likely. Asymmetric on purpose -- nobody has a subject
+	// they refuse outright, and a zero here could silence a whole category.
+	return 60 + static_cast<uint32>((PersonaDial(state) * 90) / 100);
+}
+
+size_t PlayerBotChatEngine::WeightedPick(const std::vector<uint32> &weights)
+{
+	uint64 total = 0;
+	for (uint32 w : weights) {
+		total += w;
+	}
+	if (total == 0 || !zone) {
+		return weights.size();
+	}
+
+	uint64 roll = static_cast<uint64>(zone->random.Int(0, static_cast<int>(std::min<uint64>(total - 1, 0x7FFFFFFF))));
+	for (size_t i = 0; i < weights.size(); ++i) {
+		if (roll < weights[i]) {
+			return i;
+		}
+		roll -= weights[i];
+	}
+
+	return weights.size() - 1;
+}
+
+// ============================================================
 // content cache
 // ============================================================
 
@@ -403,6 +543,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			c.min_score   = static_cast<int16>(RowI32(row[4], 10));
 			c.scope       = static_cast<uint8>(RowU32(row[5]));
 			c.enabled     = RowU32(row[6], 1) != 0;
+			c.name_hash   = Fnv1a(Strings::ToLower(c.name));
 
 			m_category_by_id[c.id] = static_cast<uint32>(m_categories.size());
 			m_categories.push_back(std::move(c));
@@ -529,6 +670,8 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			if (r.text.empty()) {
 				continue;
 			}
+
+			r.names_speaker = Strings::ToLower(r.text).find("{speaker}") != std::string::npos;
 
 			auto cat_it = m_category_by_id.find(r.category_id);
 			if (cat_it == m_category_by_id.end()) {
@@ -1076,6 +1219,10 @@ const Response *PlayerBotChatEngine::PickResponse(
 	const char  *short_name     = zone ? zone->GetShortName() : "";
 	const char  *tod            = TimeOfDayString();
 
+	// [19.7] Resolved BEFORE the state lookup below: PersonaFor may create this
+	// listener's ListenerState, and doing it first means `st` sees that entry.
+	const Persona *persona = listener ? &PersonaFor(listener) : nullptr;
+
 	const ListenerState *st = nullptr;
 	if (listener) {
 		auto st_it = m_listener_state.find(listener->GetID());
@@ -1188,6 +1335,39 @@ const Response *PlayerBotChatEngine::PickResponse(
 				}
 				w = static_cast<uint32>(std::min<int64>(adjusted, 100000));
 			}
+		}
+
+		// [19.7] PERSONA WEIGHTING. Three dials, each a factor of 25..175% at
+		// most, applied only to rows this bot could already say -- so a persona
+		// changes which true line a bot reaches for, never whether it is true.
+		//
+		//   terseness  moves weight from long rows to short ones (and back);
+		//   name_drop  decides how often a {speaker} row wins -- some people
+		//              use your name in every sentence, most never do;
+		//   broadcast  is channel taste: a row that shouts or goes to /ooc is
+		//              near-never for one bot and a habit for another.
+		if (persona) {
+			uint64 pw = w;
+
+			const size_t len = r.text.size();
+			if (len <= kPersonaShortRow) {
+				pw = (pw * (50 + persona->terseness)) / 100;
+			}
+			else if (len >= kPersonaLongRow) {
+				pw = (pw * (150 - persona->terseness)) / 100;
+			}
+
+			if (r.names_speaker) {
+				pw = (pw * (50 + persona->name_drop)) / 100;
+			}
+
+			if (r.reply_channel == ChatChannel_Shout ||
+			    r.reply_channel == ChatChannel_OOC ||
+			    r.reply_channel == ChatChannel_Auction) {
+				pw = (pw * (25 + (persona->broadcast * 3) / 2)) / 100;
+			}
+
+			w = static_cast<uint32>(std::max<uint64>(1, std::min<uint64>(pw, 100000)));
 		}
 
 		// REPETITION GUARD. A row this zone spoke inside RepeatWindowMs keeps its
@@ -1851,6 +2031,20 @@ void PlayerBotChatEngine::DispatchToScope(
 			}
 		}
 
+		// [19.7] A quiet persona sits out some of the bots' own chatter. Only
+		// bot-to-bot (chain_depth > 0) and never when named: a reserved person
+		// still answers a player who speaks to them, they just do not jump into
+		// every exchange the room is having. This is the "chattiness" dial's
+		// only veto -- everywhere else it is a soft preference in the rank.
+		const Persona &persona = PersonaFor(listener);
+		if (chain_depth > 0 && !addressed) {
+			const int reply_pct = kReticentFloorPct + (persona.chattiness * (100 - kReticentFloorPct)) / 100;
+			if (!zone || !zone->random.Roll(reply_pct)) {
+				++m_stat_drops[DR_Reticent];
+				continue;
+			}
+		}
+
 		const Response *resp = PickResponse(cat.id, listener, speaker, chan_num, now);
 		if (!resp) {
 			++m_stat_drops[DR_NoResponseRow];
@@ -1876,8 +2070,9 @@ void PlayerBotChatEngine::DispatchToScope(
 		if (chan_num == ChatChannel_Tell) {
 			c.channel = ChatChannel_Tell;
 		}
-		c.locked    = locked_to_speaker;
-		c.addressed = addressed;
+		c.locked     = locked_to_speaker;
+		c.addressed  = addressed;
+		c.typing_pct = persona.typing_pct;
 
 		// Ranking key, most significant field first:
 		//   named by the speaker -> conversation-lock partner -> category
@@ -1923,7 +2118,16 @@ void PlayerBotChatEngine::DispatchToScope(
 		// reorder categories. Clamping here costs one comparison and makes the
 		// key's separation a property of the code instead of a property of the
 		// config.
-		int64 spatial = proximity - recency;
+		// [19.7] Persona, in the same band and the same units. A chatty bot and
+		// a bot that likes this subject each edge ahead of an otherwise equal
+		// neighbour; the jitter keeps zone-wide channels, where proximity is
+		// always 0, from handing every reply to the same few chatterboxes.
+		const int64 persona_rank =
+			(static_cast<int64>(persona.chattiness) - 50) * kPersonaChattinessRank +
+			(static_cast<int64>(PersonaAffinity(persona, cat)) - 100) * kPersonaAffinityRank;
+		const int64 jitter = zone ? static_cast<int64>(zone->random.Int(0, kRankJitter)) : 0;
+
+		int64 spatial = proximity - recency + persona_rank + jitter;
 		spatial = std::max<int64>(-99999LL, std::min<int64>(99999LL, spatial));
 
 		c.rank = (c.addressed ? 10000000000000000LL : 0LL)
@@ -2032,7 +2236,10 @@ void PlayerBotChatEngine::DispatchToScope(
 		// answer runs, which is the one thing the roadmap asked this change not
 		// to regress.
 		if (ms_per_char > 0) {
-			const int64 typing = static_cast<int64>(c.text.length()) * ms_per_char;
+			// [19.7] Scaled by the persona's typing speed: the same line takes
+			// a fast typist 70% of the budget and a slow one 140%, still under
+			// the same ceiling.
+			const int64 typing = (static_cast<int64>(c.text.length()) * ms_per_char * c.typing_pct) / 100;
 			const int64 capped = std::min(static_cast<int64>(hi), static_cast<int64>(lo) + typing);
 			hi = static_cast<int>(std::max(static_cast<int64>(lo), capped));
 		}
@@ -2512,8 +2719,11 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		return;
 	}
 
-	Mob            *opener = candidates[zone->random.Int(0, static_cast<int>(candidates.size()) - 1)];
-	const Category *cat    = opener_cats[zone->random.Int(0, static_cast<int>(opener_cats.size()) - 1)];
+	Mob            *opener = PickOpener(candidates);
+	const Category *cat    = PickOpenerCategory(opener, opener_cats);
+	if (!opener || !cat) {
+		return;
+	}
 
 	// Spontaneous openers are ALWAYS /say. Never a random channel roll.
 	//
@@ -2599,6 +2809,46 @@ bool PlayerBotChatEngine::EmitOpener(
 	return true;
 }
 
+// [19.7] Who starts a conversation. Weighted by chattiness rather than uniform:
+// 25 + chattiness spans 25..125, so the chattiest bot in a camp opens about five
+// times as often as the quietest -- and the quietest still sometimes does.
+Mob *PlayerBotChatEngine::PickOpener(const std::vector<Mob *> &pool)
+{
+	if (pool.empty()) {
+		return nullptr;
+	}
+
+	std::vector<uint32> weights;
+	weights.reserve(pool.size());
+	for (Mob *m : pool) {
+		weights.push_back(25u + PersonaFor(m).chattiness);
+	}
+
+	const size_t i = WeightedPick(weights);
+	return i < pool.size() ? pool[i] : nullptr;
+}
+
+// [19.7] What it opens WITH. Weighted by the opener's own category affinity, so
+// one bot keeps drifting towards trade talk and another towards small talk. The
+// affinity floor is 60%, so no category becomes unreachable for anybody.
+const Category *PlayerBotChatEngine::PickOpenerCategory(Mob *opener, const std::vector<const Category *> &cats)
+{
+	if (!opener || cats.empty()) {
+		return nullptr;
+	}
+
+	const Persona &p = PersonaFor(opener);
+
+	std::vector<uint32> weights;
+	weights.reserve(cats.size());
+	for (const Category *c : cats) {
+		weights.push_back(PersonaAffinity(p, *c));
+	}
+
+	const size_t i = WeightedPick(weights);
+	return i < cats.size() ? cats[i] : nullptr;
+}
+
 // [19.20] A category a grouped opener can actually speak IN THE GROUP: it needs
 // at least one row that inherits the caller's channel.
 //
@@ -2672,8 +2922,11 @@ void PlayerBotChatEngine::GroupOpenerPass(
 		return;
 	}
 
-	Mob            *opener = grouped[zone->random.Int(0, static_cast<int>(grouped.size()) - 1)];
-	const Category *cat    = group_cats[zone->random.Int(0, static_cast<int>(group_cats.size()) - 1)];
+	Mob            *opener = PickOpener(grouped);
+	const Category *cat    = PickOpenerCategory(opener, group_cats);
+	if (!opener || !cat) {
+		return;
+	}
 
 	if (EmitOpener(opener, cat, ChatChannel_Group, now_ms)) {
 		++m_group_opens_this_hour;
@@ -3271,6 +3524,57 @@ void PlayerBotChatEngine::DumpCategories(Client *to)
 			fmt::format("[pbchat] response ids with an invalid reply_channel (forced to -1): {}", ids).c_str()
 		);
 	}
+}
+
+void PlayerBotChatEngine::DumpPersona(Client *to, Mob *m)
+{
+	if (!to) {
+		return;
+	}
+	if (!m || !IsChatBot(m)) {
+		to->Message(Chat::White, "[pbchat] persona needs a chat-enabled bot as the target.");
+		return;
+	}
+
+	EnsureLoaded();
+
+	const Persona &p = PersonaFor(m);
+
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format(
+			"[pbchat] persona {} | chatty {} | typing {}% | terse {} | sloppy {} | names {} | broadcast {}",
+			ChatDisplayName(m), p.chattiness, p.typing_pct, p.terseness, p.sloppiness, p.name_drop, p.broadcast
+		).c_str()
+	);
+
+	// Strongest likes and dislikes only. The full list is every category and
+	// reads as noise; the ends are what make this bot sound like itself.
+	std::vector<std::pair<uint32, std::string>> aff;
+	aff.reserve(m_categories.size());
+	for (const auto &c : m_categories) {
+		if (c.enabled) {
+			aff.emplace_back(PersonaAffinity(p, c), c.name);
+		}
+	}
+	std::sort(aff.begin(), aff.end(), [](const auto &a, const auto &b) { return a.first > b.first; });
+
+	std::string likes;
+	std::string dislikes;
+	for (size_t i = 0; i < aff.size() && i < 3; ++i) {
+		likes += fmt::format("{}{} {}%", likes.empty() ? "" : ", ", aff[i].second, aff[i].first);
+	}
+	for (size_t i = 0; i < aff.size() && i < 3; ++i) {
+		const auto &a = aff[aff.size() - 1 - i];
+		dislikes += fmt::format("{}{} {}%", dislikes.empty() ? "" : ", ", a.second, a.first);
+	}
+
+	to->Message(
+		Chat::White,
+		"%s",
+		fmt::format("[pbchat] likes: {} | least: {}", likes.empty() ? "-" : likes, dislikes.empty() ? "-" : dislikes).c_str()
+	);
 }
 
 void PlayerBotChatEngine::DumpStats(Client *to)
