@@ -178,7 +178,15 @@ SharedDatabase::MailKeys SharedDatabase::GetMailKey(int character_id)
 
 	auto &row = results.begin();
 	if (row != results.end()) {
-		std::string mail_key = row[0];
+		std::string mail_key = row[0] ? row[0] : "";
+
+		// A key is only ever written by world at a Titanium-style EnterWorld, so
+		// a character that has never been through one has an empty mailkey, and
+		// substr(8) on it throws std::out_of_range.  Treat anything too short to
+		// carry the 8-character prefix as "no key".
+		if (mail_key.size() < 8) {
+			return MailKeys{};
+		}
 
 		return MailKeys{
 			.mail_key = mail_key.substr(8),
