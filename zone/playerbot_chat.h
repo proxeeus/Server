@@ -82,7 +82,79 @@ namespace PlayerBotChat {
 		// GROUP chat as one 0x0721 per recipient, so a four-bot group turns one
 		// typed line into four messages -- see IsDuplicateUtterance.
 		DR_DuplicateUtterance,
+		// [19.7] A bot-to-bot line this listener's persona declined to answer.
+		// Only ever counted at chain_depth > 0 and never for a bot addressed by
+		// name: a quiet persona is quiet with other bots, not rude to a player.
+		DR_Reticent,
+		// [19.11] The listener is away from the keyboard.
+		DR_Afk,
+		// [17.1 G] Spoken in a language the listener does not know. It heard
+		// noise, so it has nothing to answer.
+		DR_Language,
 		DR_MAX
+	};
+
+	// [19.12] The bot's own condition, as a bitmask. A response row can require
+	// any combination through playerbot_chat_response_context.requires_state
+	// (CSV of the names in StateBitName), and the row is eligible only while
+	// EVERY named state holds. Each state is one read of something the engine
+	// can see right now, which is what makes "oom", "need a med" or "brb,
+	// sitting" true by construction -- the same guarantee requires_zone gives a
+	// place name.
+	//
+	// Every state has its complement, because "not fighting" is a condition a
+	// line can depend on ("finally some quiet") just as much as "fighting" is.
+	enum StateBit : uint16 {
+		SB_InCombat    = 1 << 0,
+		SB_OutOfCombat = 1 << 1,
+		SB_LowHp       = 1 << 2,
+		SB_LowMana     = 1 << 3,
+		SB_Sitting     = 1 << 4,
+		SB_Standing    = 1 << 5,
+		SB_Moving      = 1 << 6,
+		SB_Still       = 1 << 7,
+		SB_Grouped     = 1 << 8,
+		SB_Solo        = 1 << 9,
+		// A row naming a state this build does not know. It must never pass --
+		// silently ignoring the unknown word would turn a gated row into an
+		// ungated one, which is exactly the dishonest line the gate exists to
+		// stop. No real state carries this bit, so the subset test fails.
+		SB_Unknown     = 1 << 15
+	};
+
+	// [19.8] State of mind, -100 (miserable) .. +100 (on top of the world),
+	// decaying linearly toward 0. Nudged only by events the engine WITNESSED --
+	// a kill, a death, a ding, a heal landing, dropping low -- so mood colours
+	// which true line a bot reaches for and never licenses a line saying WHY.
+	struct MoodState {
+		int16  mood     = 0;
+		uint64 stamp_ms = 0;
+	};
+
+	// [19.14] What one bot knows about one player: nothing but how often they
+	// have spoken and when it last happened. Every interaction counted here is
+	// one the engine witnessed, which is what lets a "hey again" be honest --
+	// and why rows built on it must stay relational ("good to see you again"),
+	// never biographical ("how did that run go"): the engine knows THAT they
+	// met, never what the player did in between.
+	struct Acquaintance {
+		uint64 last_seen_ms = 0;
+		uint32 interactions = 0;
+	};
+
+	// [19.15] What a row commits the speaker to. Stances come in opposed pairs,
+	// and a bot that has taken one will not say its opposite for a while: "wtb"
+	// then "wts" ninety seconds later destroys the illusion faster than any
+	// typo repairs it. Each line is true on its own; the guard stops a SEQUENCE
+	// of true lines adding up to a false person -- the content rule one level up.
+	enum Stance : uint8 {
+		ST_None    = 0,
+		ST_Buy     = 1,
+		ST_Sell    = 2,
+		ST_Lfg     = 3,   // looking for a group to join
+		ST_Lfm     = 4,   // looking for members for one's own group
+		ST_Leaving = 5,   // about to go somewhere
+		ST_Staying = 6    // staying put
 	};
 
 	// Slots in ListenerState::last_heard. The engine's valid channels top out
@@ -115,6 +187,16 @@ namespace PlayerBotChat {
 		std::string tone;
 		int8        reply_channel = -1;      // -1 == same channel as the trigger
 		bool        enabled       = true;
+		// [19.7] Precomputed at load for the persona weighting in PickResponse,
+		// which runs once per listener per message and must not re-scan text.
+		bool        names_speaker = false;   // template contains {speaker}
+		// [19.8] `tone` parsed once at load: +1 upbeat, -1 downbeat, 0 neutral
+		// (empty or any word the engine does not know).
+		int8        tone_sign     = 0;
+		// [19.18] The row begins "/em ": it is performed, not said. Only ever
+		// eligible on /say and group chat -- a wave in answer to a tell or an
+		// /ooc line is a gesture the asker cannot see.
+		bool        is_emote      = false;
 
 		// playerbot_chat_response_context (optional row)
 		bool                     has_context             = false;
@@ -123,6 +205,12 @@ namespace PlayerBotChat {
 		bool                     has_faction             = false;
 		int32                    requires_faction        = 0;
 		uint32                   per_speaker_cooldown_ms = 0;
+		// [19.12] StateBit mask; 0 == no state requirement. The text is kept
+		// only for admin output.
+		uint16                   requires_state          = 0;
+		std::string              requires_state_text;
+		// [19.15] Stance this row commits the speaker to, ST_None for most.
+		uint8                    stance                  = 0;
 	};
 
 	struct Category {
@@ -133,6 +221,11 @@ namespace PlayerBotChat {
 		int16       min_score   = 10;
 		uint8       scope       = CS_Reactive;
 		bool        enabled     = true;
+		// [19.7] FNV-1a of the lowercased NAME, precomputed at load. Persona
+		// affinity is keyed on this rather than on `id`: ids are AUTO_INCREMENT,
+		// so an id-keyed affinity would give every bot a new personality after
+		// a reseed.
+		uint64      name_hash   = 0;
 
 		std::vector<uint32> trigger_idx;     // indexes into PlayerBotChatEngine::m_triggers
 		std::vector<uint32> response_idx;    // indexes into PlayerBotChatEngine::m_responses
@@ -150,6 +243,26 @@ namespace PlayerBotChat {
 	struct HeardMark {
 		uint32 wave       = 0;
 		uint16 speaker_id = 0;
+	};
+
+	// [19.7] PERSONA. Forty bots drawing from the same weighted pool with the
+	// same odds are one person forty times over; this is what makes the same
+	// rows sound like different people. Every trait is a 0..100 dial derived
+	// from a hash of the bot's DISPLAY NAME -- never its entity id, which is
+	// recycled, so an id-keyed persona would change on every respawn and zone
+	// boot. Name-keyed, it is stable for the life of the character and needs no
+	// table. See PlayerBotChatEngine::PersonaFor for what each dial moves.
+	//
+	// Content rule: unaffected. A persona asserts nothing; it only re-weights
+	// rows that were already true for this bot.
+	struct Persona {
+		uint64 name_hash   = 0;    // 0 == never seeded
+		uint8  chattiness  = 50;   // bot-to-bot reply odds, responder rank, opener odds
+		uint8  typing_pct  = 100;  // 70..140: scales StaggerMsPerChar
+		uint8  terseness   = 50;   // prefers short rows over long ones
+		uint8  sloppiness  = 50;   // casing / typo rates (19.9)
+		uint8  name_drop   = 50;   // how often a {speaker} row wins
+		uint8  broadcast   = 50;   // taste for shout / ooc / auction rows
 	};
 
 	struct ListenerState {
@@ -171,15 +284,49 @@ namespace PlayerBotChat {
 		// bar hovers on the line, which is how a useful callout becomes spam.
 		// The clear is SILENT; recovery is not news.
 		bool                               low_mana_latched = false;
+		// [17.1 C] Same shape for health. Trips only IN COMBAT: a bot resting
+		// at 25% after the fight is recovering, not in danger, and a callout
+		// nobody can act on is noise.
+		bool                               low_hp_latched   = false;
+		// [19.11] Away from the keyboard until this time. While it holds the
+		// bot says nothing at all -- not even to its own name -- which is the
+		// point: silence that is TRUE cannot read as a broken bot. `afk_said`
+		// records whether it announced leaving, because only a bot that said
+		// "brb" gets to say "back".
+		uint64                             afk_until_ms     = 0;
+		bool                               afk_said         = false;
+		// [19.15] The last stance this bot took, and when.
+		uint8                              last_stance      = 0;
+		uint64                             last_stance_ms   = 0;
+		// [19.7] Lazily seeded by PersonaFor, re-seeded if the name changes
+		// under the same entity id (a PlayerBot is renamed in event_spawn).
+		Persona                            persona;
 	};
 
 	// A live conversation. TTL is the ONLY thing that frees a concurrency slot
 	// -- an opener sets no conversation lock, so a decrement-on-unlock counter
 	// leaks and the zone goes permanently silent after N openers.
+	//
+	// [17.1 E] A thread now has a SUBJECT as well as a lifetime. Continuity used
+	// to come only from the per-listener conversation lock, which keeps a bot on
+	// its PARTNER and never on a TOPIC: two bots discussing prices drifted into
+	// greetings on the next hop because nothing remembered what the exchange was
+	// about. `category_id` is the last reactive category classified inside the
+	// thread, and it earns a score bonus in ClassifyMessage -- a bonus, never an
+	// override, so a thread can still change the subject.
+	//
+	// Membership is by `participants` (entity ids) on one channel, which is what
+	// the spec's per-listener thread_id and per-emission thread_id were for: a
+	// message from a participant, on the thread's channel, belongs to it.
 	struct ChatThread {
-		uint32 id         = 0;
-		uint64 expires_ms = 0;
-		uint8  depth      = 0;
+		uint32              id               = 0;
+		uint64              expires_ms       = 0;
+		uint8               depth            = 0;       // hops seen, saturating
+		uint32              category_id      = 0;       // current subject; 0 = not yet classified
+		uint8               channel          = 0;
+		bool                opener           = false;   // counts toward SpontaneousMaxConcurrent
+		uint64              last_activity_ms = 0;
+		std::vector<uint16> participants;
 	};
 
 	struct PendingEmission {
@@ -202,6 +349,24 @@ namespace PlayerBotChat {
 		// would quietly collapse to 1. Replies inherit the wave of the message
 		// they answer, so one beat never invalidates itself.
 		uint32      wave_seq    = 0;
+		// [19.13] A delayed event line (ScriptSayEx with a delay). It answers
+		// no beat -- wave_seq stays 0, so it can never go stale -- and opens a
+		// fresh one when it fires, as an immediate script line would.
+		bool        opens_beat  = false;
+		// [19.9 / 19.10] A follow-up to a line already spoken: a "*word"
+		// correction or the second half of a split thought. It goes out, but it
+		// never feeds the overhear bus -- the bus already heard the utterance
+		// once, and a lone "*tunic" classified as a new message is a bot
+		// answering a typo fix. It reserved no cooldown, so a stale drop has
+		// nothing to hand back.
+		bool        no_overhear = false;
+		// [19.18] Performed rather than said: rendered as an emote, with this
+		// animation when non-zero. Never fed to the bus.
+		bool        emote       = false;
+		int         anim        = 0;
+		// [17.1 G] Spoken in this language -- the speaker's, when the bot knows
+		// it -- on every channel whose delivery API carries one.
+		uint8       language    = 0;
 		// [19.6] Enough to hand back the cooldowns this line reserved when it
 		// was queued but never spent, because it was dropped as stale.
 		//
@@ -221,6 +386,19 @@ namespace PlayerBotChat {
 		uint64      prev_cat_fire_ms = 0;
 		bool        had_cat_fire     = false;
 		std::string text;
+	};
+
+	// [19.9 / 19.10 / 19.18] A picked row, made ready to speak. The template is
+	// split on "||" into parts, each part voiced (19.9) then substituted, and a
+	// leading "/em " turns the whole row into an emote. Voicing happens BEFORE
+	// substitution, on the template's own prose, so a typo can never land in a
+	// name, a spell or anything else a placeholder supplied.
+	struct Rendered {
+		std::vector<std::string> parts;        // parts[0] is spoken first; the rest follow
+		std::string              correction;   // "*word" when parts[0] got a typo, else empty
+		bool                     typo  = false;  // parts[0] got a typo (corrected or not)
+		bool                     emote = false;
+		int                      anim  = 0;
 	};
 
 	// "#pbchat test" output -- classifier + picker + substitutor with no
@@ -260,13 +438,33 @@ public:
 
 	// ---- the bus ------------------------------------------------------
 	// Single ingress. chain_depth 0 == a real player spoke.
-	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0);
+	//
+	// [17.1 G] `language` is what it was spoken in (0 = Common). A listener
+	// that does not know it hears noise and does not answer; one that does
+	// answers in it wherever the channel's delivery can carry a language.
+	void Overhear(Mob *speaker, uint8 chan_num, const std::string &msg, uint8 chain_depth = 0, uint8 language = 0);
 
 	// Single egress. Delivers to real clients AND feeds Overhear(depth + 1) --
 	// EXCEPT on ChatChannel_Tell, which is private and must never reach the
 	// overhear bus.  reply_to_id is the entity id of the client a tell is
 	// addressed to; it is meaningless (and ignored) on every other channel.
-	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id = 0);
+	//
+	// [19.9 / 19.10] feed_bus false: a follow-up to a line the bus already
+	// heard (a typo correction, the second half of a split thought).
+	// [19.18] emote true: performed locally as "<name> <text>", with `anim`
+	// played when non-zero, and never fed to the bus -- a gesture is not a
+	// message, and bots classifying "waves." would answer a wave with words.
+	void Emit(
+		Mob               *talker,
+		uint8              chan_num,
+		const std::string &text,
+		uint8              chain_depth,
+		uint16             reply_to_id = 0,
+		bool               feed_bus    = true,
+		bool               emote       = false,
+		int                anim        = 0,
+		uint8              language    = 0
+	);
 
 	// ---- combat events -------------------------------------------------
 	// A mob died. Gives every chat-enabled Bot that was PRESENT FOR THE FIGHT a
@@ -290,6 +488,25 @@ public:
 	// line or two rather than a chorus.
 	void NotifySlay(Mob *killer, Mob *victim);
 
+	// ---- [19.13] witnessed events -------------------------------------
+	// Things the engine SAW happen, each answered by one chosen bot rather
+	// than by everyone who could: a reaction from the group is one voice, and
+	// the chorus is the tell. Every line these produce is about the event
+	// itself -- who, which spell, which level -- so each one is true by the
+	// same argument {target} is.
+	//
+	// A player gained a level through experience (not #level). One chat bot in
+	// their group says grats, in group chat.
+	void NotifyLevelUp(Client *who, uint8 new_level);
+	// A Bot accepted its owner's invite (the ^invite path, not a zone-in
+	// restore). The joiner itself says so, at most once per group per window.
+	void NotifyGroupJoin(Mob *joiner, Mob *inviter);
+	// A group member died. One OTHER member who was present answers.
+	void NotifyGroupDeath(Mob *dead);
+	// A player's beneficial spell landed on a chat bot. The bot thanks them,
+	// at most once per caster per window and per (caster, bot) per ten minutes.
+	void NotifyBeneficialSpell(Mob *caster, Mob *target, uint16 spell_id);
+
 	// ---- tells --------------------------------------------------------
 	// A player sent /tell <bot>. Called from Client::ChannelMessageReceived
 	// INSTEAD of relaying to world: world routes tells by character name and a
@@ -297,7 +514,7 @@ public:
 	//
 	// Scope is exactly `to_bot` -- a tell is 1:1, so it never fans out, and
 	// the reply is addressed back to `from` rather than broadcast.
-	void OverhearTell(Mob *from, Mob *to_bot, const std::string &msg);
+	void OverhearTell(Mob *from, Mob *to_bot, const std::string &msg, uint8 language = 0);
 
 	// Resolve a /tell target name to a chat-capable bot in this zone.
 	// Compares ChatDisplayName(), NOT GetName(): MakeNameUnique() appends
@@ -341,6 +558,10 @@ public:
 		PlayerBotChat::TestResult &out
 	);
 	void DumpCategories(Client *to);
+	// "#pbchat persona [target]" -- the dials and strongest category affinities
+	// for one bot. The persona is invisible in any single line by design; this
+	// is the only way to see why two bots answer the same message differently.
+	void DumpPersona(Client *to, Mob *m);
 	void DumpStats(Client *to);
 	void DumpThreads(Client *to);
 	// "#pbchat top [n]" -- the rows that actually get spoken, most first.
@@ -350,10 +571,17 @@ public:
 	// "#pbchat find <text>" -- locate rows by substring, with their id,
 	// category and how often each has been spoken.
 	void FindResponses(Client *to, const std::string &needle);
+	// "#pbchat alltime [n]" -- like top, but from playerbot_chat_response_stats:
+	// every zone process, every session since the table was created.
+	void DumpAllTimeResponses(Client *to, size_t limit);
 	void ResetStats();
 	void MuteAll(bool muted);
 	bool MuteEntity(uint16 entity_id, bool muted);
-	void IgnoreSpeaker(const std::string &name, bool ignored);
+	// [17.1 F] Ignores persist in playerbot_chat_ignores when that table
+	// exists, and every zone re-reads it once a minute -- which is what lets an
+	// ignore follow a griefer into the next zone and survive a restart. Without
+	// the table they are in-memory, exactly as before.
+	void IgnoreSpeaker(const std::string &name, bool ignored, const std::string &set_by = "");
 	void ClearIgnores();
 	std::vector<std::string> GetIgnoredSpeakers() const;
 
@@ -384,6 +612,17 @@ public:
 	// conversations into a channel nobody receives.
 	static bool IsGroupedForChat(Mob *m);
 
+	// [19.12] The bot's current StateBit mask. Computed once per PickResponse
+	// call, never per row.
+	static uint16 CurrentStateMask(Mob *m);
+
+	// [19.12] Parse a requires_state CSV. Unknown words set SB_Unknown and are
+	// reported through `bad_out`.
+	static uint16 ParseStateMask(const std::string &csv, std::string &bad_out);
+
+	// [19.12] Canonical name of one StateBit, "" for anything else.
+	static const char *StateBitName(uint16 bit);
+
 private:
 	struct Candidate {
 		Mob                           *listener = nullptr;
@@ -401,16 +640,37 @@ private:
 		// IsInCombat -- which can walk a group -- is evaluated once per
 		// listener rather than again at queue time.
 		bool                           in_combat = false;
+		// [19.7] The listener's typing speed, carried to the stagger loop.
+		uint8                          typing_pct = 100;
+		// [19.9 / 19.10 / 19.18] The full render; `text` is rendered.parts[0].
+		PlayerBotChat::Rendered        rendered;
+		// [17.1 G] The language the reply goes out in.
+		uint8                          language = 0;
 	};
 
 	bool LoadContent(std::string &summary_out);
 	void EnsureLoaded();
 
+	// [17.1 E] subject_bonus_category: the live thread's subject, which gets a
+	// score bonus when -- and only when -- one of its own triggers matched.
 	int32 ClassifyMessage(
 		const std::string                  &msg,
 		std::map<std::string, std::string> &captures,
-		PlayerBotChat::TestResult          *debug_out = nullptr
+		PlayerBotChat::TestResult          *debug_out              = nullptr,
+		uint32                              subject_bonus_category = 0
 	);
+
+	// [17.1 E] The live thread `speaker` is part of on `chan`, as an index into
+	// m_threads, or m_threads.size() for none. An index, not a pointer:
+	// m_threads is a vector and every new thread can reallocate it.
+	size_t FindThread(Mob *speaker, uint8 chan, uint64 now_ms) const;
+
+	// [17.1 E] Start a thread and return its index.
+	size_t OpenThread(uint8 chan, Mob *starter, bool opener, uint32 category_id, uint64 now_ms);
+
+	// [17.1 E] Opener threads only -- the concurrency cap bounds what the
+	// SCHEDULER starts, and players talking must not starve it.
+	size_t CountOpenerThreads() const;
 
 	const PlayerBotChat::Response *PickResponse(
 		uint32  category_id,
@@ -427,6 +687,41 @@ private:
 		const std::map<std::string, std::string> &captures
 	);
 
+	// [19.9 / 19.10 / 19.18] Template -> ready-to-speak parts. Every speak path
+	// goes through this instead of calling Substitute directly.
+	PlayerBotChat::Rendered Render(
+		Mob                                      *talker,
+		const std::string                        &tmpl,
+		Mob                                      *speaker,
+		const std::map<std::string, std::string> &captures
+	);
+
+	// [19.9] Apply the talker's persona voice to one template part: casing,
+	// contractions, shorthand, the odd typo. Placeholders, and any token with a
+	// capital or a digit (item and spell names, levels), are never touched.
+	// When a typo is made and the persona would fix it, *correction_out gets
+	// "*word". Pass null to forbid typos (only the first part of a split gets
+	// one, so a correction never has to pick which half it fixes). *typo_out
+	// is set whenever a typo is made, corrected or not.
+	std::string Voice(Mob *talker, const std::string &tmpl, std::string *correction_out, bool *typo_out = nullptr);
+
+	// [19.9 / 19.10] Queue what follows the first part of a render: the typo
+	// correction, then any split-thought parts, each a little after the last
+	// with typing time for its length. All no_overhear.
+	void QueueFollowups(
+		Mob                           *talker,
+		uint8                          chan_num,
+		uint16                         reply_to_id,
+		uint32                         wave,
+		uint64                         first_due_ms,
+		const PlayerBotChat::Rendered &r,
+		uint8                          language = 0
+	);
+
+	// [19.11] Occasional AFK spells for PlayerBots, swept once a minute.
+	void AfkTick(uint64 now_ms);
+	bool IsAfk(Mob *m, uint64 now_ms) const;
+
 	// tell_target is the single listener for ChatChannel_Tell and is null on
 	// every other channel, where scope comes from CollectScope as before.
 	void DispatchToScope(
@@ -434,11 +729,16 @@ private:
 		uint8              chan_num,
 		const std::string &msg,
 		uint8              chain_depth,
-		Mob               *tell_target = nullptr
+		Mob               *tell_target = nullptr,
+		uint8              language    = 0
 	);
 
 	void CollectScope(Mob *speaker, uint8 chan_num, std::vector<Mob *> &out, Mob *tell_target = nullptr);
-	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id);
+	void EmitChannel(Mob *talker, uint8 chan_num, const std::string &text, uint16 reply_to_id, uint8 language = 0);
+
+	// [17.1 G] Common, or the listener's own race's tongue. Bots and PlayerBots
+	// carry no language skills, so this is the whole of what they "know".
+	static bool KnowsLanguage(Mob *m, uint8 language);
 	void SpontaneousTick(uint64 now_ms);
 
 	// [19.20] Shared commit tail of both opener passes: pick a row, substitute,
@@ -485,12 +785,65 @@ private:
 	// mid-fight is precisely when the group needs to hear it.
 	void ManaWatchTick();
 
+	// [17.1 C] The health half: "low_hp" once per dip, latched with hysteresis
+	// exactly like mana. Unlike mana it trips only in combat, and at most ONE
+	// bot announces per sweep -- an AE hits a whole group at once, and six
+	// latches tripping together is a chorus, not a callout. The others still
+	// latch, silently, so the chorus cannot simply arrive five seconds later.
+	void HealthWatchTick();
+
 	// True when the category holds at least one row that asked for channel 7.
 	// Gates which categories may cold-tell at all, so a /say opener pool is
 	// never drafted into whispering strangers.
 	bool CategoryHasTellRows(const PlayerBotChat::Category &cat) const;
 
 	void ExpireTransients(uint64 now_ms);
+
+	// [17.1 F] Replace the in-memory ignore set with the table's, when the
+	// table exists. On every content load and once a minute after.
+	void LoadIgnores();
+
+	// [17.1 B persistence] Push per-row hit counts accumulated since the last
+	// flush into playerbot_chat_response_stats. Must run while m_responses
+	// still holds the rows the ids refer to -- i.e. BEFORE any content load
+	// clears it -- because each count is stored with a hash of its row's text.
+	void FlushResponseStats();
+
+	// [19.13] ScriptSay with a subject and a reaction delay. See the definition.
+	bool ScriptSayEx(
+		Mob                                      *talker,
+		uint32                                    category_id,
+		uint8                                     chan_num,
+		Mob                                      *speaker,
+		const std::map<std::string, std::string> &captures,
+		uint32                                    delay_ms
+	);
+
+	// [19.13] Resolve a category by name and speak it through ScriptSayEx with
+	// a human reaction delay. False when the category is not loaded (content is
+	// operator-installed), the zone is under Trilogy text pressure, or the
+	// speak path itself declined.
+	bool SpeakEvent(
+		Mob                                      *talker,
+		const char                               *category_name,
+		uint8                                     chan_num,
+		Mob                                      *about,
+		const std::map<std::string, std::string> &captures
+	);
+
+	// [19.13] True, and stamped, when `key` has not fired inside cooldown_ms.
+	// One map for every event guard; keys are namespaced strings.
+	bool EventCooldownReady(const std::string &key, uint64 cooldown_ms, uint64 now_ms);
+
+	// [19.13] Bots that could voice a group event: chat bots in `who`'s group
+	// (never `who`), unmuted, and -- when `witness` is given -- within earshot of
+	// it. Not called `near`: <windows.h> defines `near` as an empty macro, which
+	// turns every use of such a parameter into a syntax error under MSVC.
+	void CollectGroupVoices(Mob *who, Mob *witness, std::vector<Mob *> &out);
+
+	// [19.13] A player walking up to a PlayerBot. Swept every 2s: arrival is an
+	// edge (was not near, now is), and a 5s sweep misses a player running past.
+	void ProximityWatchTick(uint64 now_ms);
 
 	// [19.6] Open a new conversation beat and make it current. Called at every
 	// ORIGINATION point -- a client line at chain_depth 0, a /tell, an opener,
@@ -541,7 +894,11 @@ private:
 	// then drop it (the per-message cap, the broadcast cooldown in ScriptSay,
 	// and a cold tell whose row did not ask for channel 7), and a row nobody
 	// heard must be neither counted nor penalised.
-	void NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms);
+	//
+	// [19.15] `talker`, when given, records the row's stance against the bot
+	// that said it -- and a PlayerBot that says it is leaving goes quiet for a
+	// few minutes, which is what makes "heading out shortly" stay true.
+	void NoteResponseUsed(uint32 category_id, uint32 response_id, uint64 now_ms, Mob *talker = nullptr);
 
 	// Linear scans over the content cache. Admin paths only -- m_responses is a
 	// few hundred rows and neither of these is called per dispatch.
@@ -552,6 +909,42 @@ private:
 	uint32                         CategoryCooldownFor(uint32 id) const;
 
 	PlayerBotChat::ListenerState &StateFor(uint16 entity_id) { return m_listener_state[entity_id]; }
+
+	// [19.7] The listener's persona, seeded on first use from its display name
+	// and re-seeded if that name has changed since.
+	const PlayerBotChat::Persona &PersonaFor(Mob *m);
+
+	// [19.7] How much this persona likes one category, as a percent (60..150).
+	// Derived from the persona hash and the category's NAME hash, so it is
+	// stable across reseeds and needs no storage.
+	static uint32 PersonaAffinity(const PlayerBotChat::Persona &p, const PlayerBotChat::Category &cat);
+
+	// [19.8] Current mood of `m` after decay, and the one way to change it.
+	// Keyed by the persona's NAME hash, not the entity id: a Bot that dies is
+	// re-summoned as a new entity, and the whole point of the death nudge is
+	// that it outlives that.
+	int  MoodOf(Mob *m, uint64 now_ms);
+	void NudgeMood(Mob *m, int delta);
+
+	// [19.14] Record that `bot` just dealt with `player` (a client), and read it
+	// back. Keyed like mood, by the bot's persona name hash, so a Bot that dies
+	// and is re-summoned still knows who you are. Players by lowercased name,
+	// the same reason m_last_tell_to_player is: entity ids are recycled.
+	void                               NoteAcquaintance(Mob *bot, Mob *player, uint64 now_ms);
+	const PlayerBotChat::Acquaintance *AcquaintanceOf(Mob *bot, Mob *player);
+
+	// [19.14] True when `bot` knows `player` well enough, and has not seen them
+	// for long enough, that a greeting should be a "hey again".
+	bool IsFamiliarReturn(Mob *bot, Mob *player, uint64 now_ms);
+
+	// [19.7] Weighted index pick. Returns weights.size() only when every weight
+	// is zero, which callers treat as "nothing eligible".
+	static size_t WeightedPick(const std::vector<uint32> &weights);
+
+	// [19.7] Opener selection: the bot by chattiness, then its category by that
+	// bot's affinity. Both return null only for an empty pool.
+	Mob                           *PickOpener(const std::vector<Mob *> &pool);
+	const PlayerBotChat::Category *PickOpenerCategory(Mob *opener, const std::vector<const PlayerBotChat::Category *> &cats);
 
 	static uint64      NowMs();
 	static uint64      EchoHash(const char *name, const std::string &text);
@@ -568,6 +961,16 @@ private:
 	std::unordered_map<uint32, uint32>   m_category_by_id;   // category_id -> index into m_categories
 	std::vector<uint32>                  m_bad_regex_rows;   // trigger ids that failed to compile
 	std::vector<uint32>                  m_bad_channel_rows; // response ids with a bogus reply_channel
+	std::vector<uint32>                  m_bad_state_rows;   // [19.12] response ids naming an unknown state
+	// [19.12] False when the requires_state column is not in the database yet.
+	// The loader selects NULL in its place rather than failing, so a binary
+	// that ships ahead of its migration still loads every other table.
+	bool                                 m_has_state_column = false;
+	// [19.15] Same tolerance for the stance column.
+	bool                                 m_has_stance_column = false;
+	// [19.15] response id -> index into m_responses. NoteResponseUsed now needs
+	// the row behind an id on every emission, which a scan should not pay for.
+	std::unordered_map<uint32, uint32>   m_response_index;
 
 	// ---- runtime state ------------------------------------------------
 	std::unordered_map<uint16, PlayerBotChat::ListenerState> m_listener_state;
@@ -584,6 +987,7 @@ private:
 	// client that puts it on the wire once per recipient.
 	std::unordered_map<uint64, uint64>                       m_recent_utterances;
 	std::unordered_set<std::string>                          m_ignored_speakers;      // lowercased
+	bool                                                     m_has_ignore_table = false;
 	std::deque<PlayerBotChat::PendingEmission>               m_pending;
 	std::vector<PlayerBotChat::ChatThread>                   m_threads;
 	uint32                                                   m_next_thread_id          = 1;
@@ -595,6 +999,12 @@ private:
 	uint64                                                   m_next_expire_ms          = 0;
 	uint64                                                   m_next_transient_sweep_ms = 0;
 	bool                                                     m_all_muted               = false;
+
+	// [17.1 G] ZoneTextPressureHigh walked the whole client list on EVERY
+	// dispatch. The queues it reads drain on a paced timer, so a quarter-second
+	// old answer is as good as a fresh one.
+	mutable uint64                                           m_pressure_checked_ms     = 0;
+	mutable bool                                             m_pressure_cached         = false;
 
 	// [19.6] Per-zone monotonic beat counter, and the beat currently being fanned
 	// out. m_current_wave is safe as a member rather than a threaded parameter
@@ -616,6 +1026,19 @@ private:
 	uint64                                                   m_next_mana_watch_ms       = 0;
 	uint32                                                   m_tells_this_hour          = 0;
 
+	// [19.13] Event guards (key -> last fire ms), and the proximity edge
+	// detector: (client entity id << 16 | bot entity id) -> last sweep the pair
+	// was within greeting range. Both swept in ExpireTransients.
+	std::unordered_map<std::string, uint64>                  m_event_last;
+	// [19.8] persona name hash -> mood. Swept once a mood has decayed to 0.
+	std::unordered_map<uint64, PlayerBotChat::MoodState>     m_mood;
+	// [19.14] persona name hash -> lowercased player name -> acquaintance.
+	// In memory, per zone process, as the spec allows for v1.
+	std::unordered_map<uint64, std::unordered_map<std::string, PlayerBotChat::Acquaintance>> m_acquaintances;
+	std::unordered_map<uint32, uint64>                       m_near;
+	uint64                                                   m_next_proximity_ms        = 0;
+	uint64                                                   m_next_afk_ms              = 0;
+
 	// ---- stats --------------------------------------------------------
 	uint64                                  m_stat_heard   = 0;
 	uint64                                  m_stat_emitted = 0;
@@ -629,9 +1052,30 @@ private:
 	// would have dropped, which is the only proof the exemption does anything.
 	uint64                                  m_stat_addressed          = 0;
 	uint64                                  m_stat_addressed_over_cap = 0;
+	// [19.13] Event lines actually queued, by kind. "0 thanks" on a server
+	// where players demonstrably heal bots means the spell hook is not firing.
+	uint64                                  m_stat_ev_ding     = 0;
+	uint64                                  m_stat_ev_join     = 0;
+	uint64                                  m_stat_ev_death    = 0;
+	uint64                                  m_stat_ev_thanks   = 0;
+	uint64                                  m_stat_ev_passerby = 0;
+	// [19.9 / 19.10 / 19.11 / 19.18] The voice layer. All invisible as a SOURCE
+	// in a chat log -- a typo looks like a typo -- so these are the only proof
+	// the persona is being applied at all.
+	uint64                                  m_stat_typos       = 0;
+	uint64                                  m_stat_corrections = 0;
+	uint64                                  m_stat_splits      = 0;
+	uint64                                  m_stat_emotes      = 0;
+	uint64                                  m_stat_afk_spells  = 0;
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken
+	// [17.1 B persistence] Hits not yet written to the stats table. Separate
+	// from m_stat_response_hits because "#pbchat stats reset" clears the
+	// session view and must not throw away counts the table has not seen.
+	std::unordered_map<uint32, uint64>      m_stat_response_unflushed;
+	bool                                    m_has_stats_table     = false;
+	uint64                                  m_next_stats_flush_ms = 0;
 	std::unordered_map<std::string, uint64> m_stat_talkers;
 };
 

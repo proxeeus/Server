@@ -1864,6 +1864,11 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 	int exploss = 0;
 	LogCombat("Fatal blow dealt by [{}] with [{}] damage, spell [{}], skill [{}]", killer_mob ? killer_mob->GetName() : "Unknown", damage, spell, attack_skill);
 
+	// [19.13] One groupmate bot that was present says something. Here, past the
+	// EVENT_DEATH veto above, so a scripted "you did not really die" never gets
+	// a condolence -- and before the group is touched by anything below.
+	playerbot_chat.NotifyGroupDeath(this);
+
 	// #1: Send death packet to everyone
 	uint8 killed_level = GetLevel();
 
@@ -3092,6 +3097,18 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 	// distance, not by the hate list. Gated internally throughout.
 	if (killer_mob) {
 		playerbot_chat.NotifySlay(killer_mob, this);
+	}
+
+	// [19.13] A PlayerBot that was somebody's groupmate. The engine bails at
+	// once for every other NPC, before any scope walk.
+	//
+	// Not for a Bot: Bot::Death runs NPC::Death first and then makes its own
+	// NotifyGroupDeath call after OnChatDeath, and Bot::IsNPC() is false, so
+	// the engine's NPC filter would not catch the second one -- the dying bot
+	// would take the death mood nudge twice and the condolence would get two
+	// rolls.
+	if (!IsBot()) {
+		playerbot_chat.NotifyGroupDeath(this);
 	}
 
 	WipeHateList();

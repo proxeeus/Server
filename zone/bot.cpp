@@ -5169,6 +5169,10 @@ bool Bot::Death(Mob *killer_mob, int64 damage, uint16 spell_id, EQ::skills::Skil
 	// empty room.
 	OnChatDeath(killer_mob);
 
+	// [19.13] And one groupmate who saw it answers. Same placement constraint as
+	// OnChatDeath: the group has to still hold this bot for the scope to form.
+	playerbot_chat.NotifyGroupDeath(this);
+
 	Zone();
 	entity_list.RemoveBot(GetID());
 
@@ -7422,12 +7426,17 @@ void Bot::ProcessBotGroupInvite(Client* c, std::string const& botName) {
 					g->SaveGroupLeaderAA();
 					g->AddToGroup(c);
 					g->AddToGroup(invitedBot);
+					// [19.13] Here, not in AddBotToGroup: this is the explicit
+					// invite. AddBotToGroup is also how bot_raid reshuffles a
+					// group, which is not somebody joining.
+					playerbot_chat.NotifyGroupJoin(invitedBot, c);
 				} else {
 					delete g;
 				}
 			} else {
 				if (AddBotToGroup(invitedBot, c->GetGroup())) {
 					c->GetGroup()->AddToGroup(invitedBot);
+					playerbot_chat.NotifyGroupJoin(invitedBot, c);
 				}
 			}
 		} else if (invitedBot->HasGroup()) {
