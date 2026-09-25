@@ -287,6 +287,140 @@ namespace {
 	// conversation -- a bad mood reads first as quiet, then as tone.
 	constexpr int kMoodSulk = -40;
 
+	// ------------------------------------------------------------------
+	// [19.9] voice
+	//
+	// Every rate is scaled by the persona's sloppiness (0..100), so the same
+	// row comes out tidy from one bot and scruffy from the next. Rates are in
+	// PERMILLE at sloppiness 100; a bot at 50 gets half of each.
+	// ------------------------------------------------------------------
+	constexpr int kContractionPermille = 800;   // "i am" -> "im": the commonest real-chat habit
+	constexpr int kShorthandPermille   = 300;   // "you" -> "u", "thanks" -> "thx"
+	constexpr int kApostrophePermille  = 500;   // "don't" -> "dont"
+	constexpr int kTypoPermille        = 60;    // per LINE, not per word: 6% at the scruffiest
+	constexpr int kCorrectPct          = 70;    // of typos, how many get a "*word" fix
+	constexpr int kEllipsisPct         = 8;     // trailing "..." for sloppy personas only
+	constexpr int kNeatCapitalise      = 20;    // at or below: capitalise the first letter
+	constexpr int kNeatPunctuate       = 10;    // at or below: and end with a full stop
+	constexpr int kSloppyEllipsis      = 75;    // at or above: may trail off...
+
+	// A correction lands this long after the line it fixes -- about as long as
+	// it takes to notice and retype one word.
+	constexpr int kCorrectionDelayMinMs = 1300;
+	constexpr int kCorrectionDelayMaxMs = 2300;
+
+	// [19.10] Gap before each later part of a split thought, plus typing time.
+	constexpr int    kSplitGapMinMs  = 900;
+	constexpr int    kSplitGapMaxMs  = 1800;
+	constexpr uint64 kSplitTypingCap = 2500;
+
+	// ------------------------------------------------------------------
+	// [19.11] afk
+	// ------------------------------------------------------------------
+
+	// Per minute, per eligible PlayerBot. At 1.5% a zone of forty has a bot
+	// step away every couple of minutes and two or three away at any moment.
+	// Four times that while the zone's Trilogy text queues are backed up: the
+	// back-pressure path used to just halve opener odds, and bots visibly going
+	// quiet is a better way to spend the same silence.
+	constexpr int    kAfkPermillePerMin  = 15;
+	constexpr int    kAfkPressureFactor  = 4;
+	constexpr uint64 kAfkMinMs           = 120000;
+	constexpr uint64 kAfkMaxMs           = 480000;
+	constexpr int    kAfkAnnouncePct     = 40;    // most people just go quiet
+	constexpr int    kAfkReturnPct       = 60;    // of those who said "brb"
+
+	bool RollPermille(int permille)
+	{
+		return zone && permille > 0 && zone->random.Int(0, 999) < permille;
+	}
+
+	// [19.9] Two words that real chat runs together.
+	struct Contraction {
+		const char *first;
+		const char *second;
+		const char *merged;
+	};
+
+	const Contraction kContractions[] = {
+		{"i",     "am",   "im"},
+		{"do",    "not",  "dont"},
+		{"does",  "not",  "doesnt"},
+		{"did",   "not",  "didnt"},
+		{"is",    "not",  "isnt"},
+		{"was",   "not",  "wasnt"},
+		{"are",   "not",  "arent"},
+		{"will",  "not",  "wont"},
+		{"it",    "is",   "its"},
+		{"that",  "is",   "thats"},
+		{"what",  "is",   "whats"},
+		{"there", "is",   "theres"},
+		{"you",   "are",  "youre"},
+		{"i",     "have", "ive"},
+		{"going", "to",   "gonna"},
+		{"want",  "to",   "wanna"},
+	};
+
+	// [19.9] One word, shorter. Never applied to a token with a capital: item
+	// and spell names are authored capitalised and must survive intact.
+	const std::pair<const char *, const char *> kShorthand[] = {
+		{"you",     "u"},
+		{"your",    "ur"},
+		{"thanks",  "thx"},
+		{"please",  "pls"},
+		{"though",  "tho"},
+		{"because", "cuz"},
+		{"okay",    "ok"},
+		{"people",  "ppl"},
+		{"cannot",  "cant"},
+	};
+
+	// [19.9] Contractions whose apostrophe a sloppy typist drops. A list, not
+	// "any apostrophe": ak'anon and nagafen's are names, and names keep theirs.
+	const char *const kApostropheWords[] = {
+		"don't", "i'm", "it's", "can't", "won't", "that's", "you're", "i've",
+		"i'll", "didn't", "isn't", "wasn't", "doesn't", "what's", "there's",
+		"let's", "i'd", "aren't", "couldn't", "wouldn't", "shouldn't",
+	};
+
+	// [19.18] Emote verb -> animation id, from EQEmu's own table in
+	// dialogue_window.h. Not yet confirmed on v29c: Trilogy relays DoAnim as a
+	// 0x9f20 action type (TrilogyClient::HandleAnimation), and whether each of
+	// these ids plays the matching social animation there is for a live test.
+	// The emote TEXT lands either way, so an id that turns out wrong costs a
+	// wrong gesture, never a missing line.
+	int EmoteAnim(const std::string &emote_text)
+	{
+		std::string verb;
+		for (char c : emote_text) {
+			const unsigned char uc = static_cast<unsigned char>(c);
+			if (!std::isalpha(uc)) {
+				break;
+			}
+			verb.push_back(static_cast<char>(std::tolower(uc)));
+		}
+
+		static const std::unordered_map<std::string, int> k_anims = {
+			{"cheers",   27},
+			{"waves",    29},
+			{"yawns",    31},
+			{"nods",     48},
+			{"claps",    51},
+			{"chuckles", 54},
+			{"dances",   58},
+			{"glares",   60},
+			{"laughs",   63},
+			{"points",   64},
+			{"shrugs",   65},
+			{"salutes",  67},
+			{"shivers",  68},
+			{"bows",     70},
+		};
+
+		auto it = k_anims.find(verb);
+		return it == k_anims.end() ? 0 : it->second;
+	}
+
 	// Schema probe. Lets a binary run ahead of its migration: the loader selects
 	// NULL in place of a missing column instead of failing the whole content
 	// load, which would silence every bot over one optional column.
@@ -351,6 +485,7 @@ const char *PlayerBotChatEngine::DropReasonName(uint8 r)
 		case DR_InCombat:         return "in-combat";
 		case DR_DuplicateUtterance: return "duplicate-utterance";
 		case DR_Reticent:         return "reticent";
+		case DR_Afk:              return "afk";
 		default:                  return "unknown";
 	}
 }
@@ -917,6 +1052,7 @@ bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 			}
 
 			r.names_speaker = Strings::ToLower(r.text).find("{speaker}") != std::string::npos;
+			r.is_emote      = r.text.size() > 4 && Strings::ToLower(r.text.substr(0, 4)) == "/em ";
 
 			// [19.8] Two words each way, so an author reaching for a synonym is
 			// not silently ignored. Anything else is neutral -- the retired
@@ -1041,6 +1177,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_near.clear();
 	m_mood.clear();
 	m_next_proximity_ms        = m_hour_window_start_ms + 2000;
+	m_next_afk_ms              = m_hour_window_start_ms + 60000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -1106,12 +1243,17 @@ void PlayerBotChatEngine::Process()
 			// still correct depends on what the channel did in the meantime,
 			// and that is only knowable here, at the last possible moment.
 			if (IsStaleEmission(e)) {
-				++m_stat_drops[DR_Stale];
-				// The bot said nothing, so it spent no mouth budget. Without
-				// this it would sit out PerListenerCooldownMs for a line it
-				// never delivered -- and in a zone with one candidate that is
-				// silence, which is a worse tell than the stale line.
-				ReleaseStaleReservation(e);
+				// [19.9 / 19.10] A follow-up reserved nothing and is not a line
+				// a player was waiting for, so it is neither counted nor
+				// rolled back -- it just goes with the conversation it trailed.
+				if (!e.no_overhear) {
+					++m_stat_drops[DR_Stale];
+					// The bot said nothing, so it spent no mouth budget. Without
+					// this it would sit out PerListenerCooldownMs for a line it
+					// never delivered -- and in a zone with one candidate that is
+					// silence, which is a worse tell than the stale line.
+					ReleaseStaleReservation(e);
+				}
 				if (RuleB(PlayerBotChat, LogDispatch)) {
 					LogInfo(
 						"[pbchat] stale drop listener [{}] chan [{}] wave [{}] text [{}]",
@@ -1137,7 +1279,7 @@ void PlayerBotChatEngine::Process()
 				m_current_wave = e.wave_seq;
 			}
 
-			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id);
+			Emit(talker, e.chan_num, e.text, e.chain_depth, e.reply_to_id, !e.no_overhear, e.emote, e.anim);
 		}
 	}
 
@@ -1176,6 +1318,12 @@ void PlayerBotChatEngine::Process()
 	if (now >= m_next_proximity_ms) {
 		m_next_proximity_ms = now + 2000;
 		ProximityWatchTick(now);
+	}
+
+	// [19.11] Minute resolution is plenty for spells that last minutes.
+	if (now >= m_next_afk_ms) {
+		m_next_afk_ms = now + 60000;
+		AfkTick(now);
 	}
 }
 
@@ -1574,6 +1722,13 @@ const Response *PlayerBotChatEngine::PickResponse(
 			continue;
 		}
 
+		// [19.18] A gesture only answers people who can see it. On a tell, an
+		// /ooc or a /shout the asker may be anywhere in the zone, and a wave
+		// they cannot see is a question left unanswered.
+		if (r.is_emote && channel != ChatChannel_Say && channel != ChatChannel_Group) {
+			continue;
+		}
+
 		// GetPlayerClassBit()/GetPlayerRaceBit() return 0 for anything that is
 		// not a player class / player race (an illusion, a mount race, a
 		// GM-spawned oddity).  Treat 0 as "gate not applicable" and let the
@@ -1946,6 +2101,435 @@ std::string PlayerBotChatEngine::Substitute(
 }
 
 // ============================================================
+// [19.9 / 19.10 / 19.18] rendering
+// ============================================================
+
+Rendered PlayerBotChatEngine::Render(
+	Mob                                      *talker,
+	const std::string                        &tmpl,
+	Mob                                      *speaker,
+	const std::map<std::string, std::string> &captures
+)
+{
+	Rendered out;
+
+	std::string body = tmpl;
+
+	// [19.18] "/em " up front: performed, not said.
+	if (body.size() > 4 && Strings::ToLower(body.substr(0, 4)) == "/em ") {
+		out.emote = true;
+		body      = body.substr(4);
+	}
+
+	// [19.10] Split on "||". Empty halves (a stray trailing marker) are dropped
+	// rather than sent as blank lines.
+	std::vector<std::string> raw;
+	size_t                   start = 0;
+	while (true) {
+		const size_t bar  = body.find("||", start);
+		std::string  part = body.substr(start, bar == std::string::npos ? std::string::npos : bar - start);
+		Strings::Trim(part);
+		if (!part.empty()) {
+			raw.push_back(std::move(part));
+		}
+		if (bar == std::string::npos) {
+			break;
+		}
+		start = bar + 2;
+	}
+
+	// A gesture is one gesture.
+	if (out.emote && raw.size() > 1) {
+		raw.resize(1);
+	}
+
+	for (size_t i = 0; i < raw.size(); ++i) {
+		// Only the first part can carry a typo, so a correction never has to
+		// say which half it is fixing. Emotes are never voiced: "waves." with a
+		// typo in it is a stage direction with a typo in it.
+		const std::string voiced = out.emote
+			? raw[i]
+			: Voice(talker, raw[i], i == 0 ? &out.correction : nullptr, i == 0 ? &out.typo : nullptr);
+
+		std::string text = Substitute(voiced, talker, speaker, captures);
+		Strings::Trim(text);
+		if (!text.empty()) {
+			out.parts.push_back(std::move(text));
+		}
+	}
+
+	if (out.emote && !out.parts.empty()) {
+		out.anim = EmoteAnim(out.parts[0]);
+	}
+
+	return out;
+}
+
+std::string PlayerBotChatEngine::Voice(Mob *talker, const std::string &tmpl, std::string *correction_out, bool *typo_out)
+{
+	if (!talker || !zone || tmpl.empty()) {
+		return tmpl;
+	}
+
+	const int sloppy = PersonaFor(talker).sloppiness;
+
+	// ---- segment ------------------------------------------------------
+	// Placeholders ({target}) and escapes ({{ / }}) are opaque: nothing below
+	// may touch them, which is what keeps every substituted name, spell and
+	// number exactly as the engine measured it.
+	enum SegKind : uint8 { SK_Protected = 0, SK_Space = 1, SK_Word = 2 };
+	struct Seg {
+		std::string text;
+		uint8       kind;
+	};
+
+	std::vector<Seg> segs;
+	const size_t     n = tmpl.size();
+	size_t           i = 0;
+
+	while (i < n) {
+		const char ch = tmpl[i];
+
+		if ((ch == '{' || ch == '}') && i + 1 < n && tmpl[i + 1] == ch) {
+			segs.push_back({tmpl.substr(i, 2), SK_Protected});
+			i += 2;
+			continue;
+		}
+		if (ch == '{') {
+			const size_t close = tmpl.find('}', i + 1);
+			if (close != std::string::npos) {
+				segs.push_back({tmpl.substr(i, close - i + 1), SK_Protected});
+				i = close + 1;
+				continue;
+			}
+		}
+		if (std::isspace(static_cast<unsigned char>(ch))) {
+			size_t j = i + 1;
+			while (j < n && std::isspace(static_cast<unsigned char>(tmpl[j]))) {
+				++j;
+			}
+			segs.push_back({tmpl.substr(i, j - i), SK_Space});
+			i = j;
+			continue;
+		}
+
+		// A word runs to the next space or placeholder. Starting at i + 1 is
+		// what guarantees progress on a lone '{' with no closing brace.
+		size_t j = i + 1;
+		while (j < n && !std::isspace(static_cast<unsigned char>(tmpl[j])) && tmpl[j] != '{') {
+			++j;
+		}
+		segs.push_back({tmpl.substr(i, j - i), SK_Word});
+		i = j;
+	}
+
+	// A word's "core" is its leading run of lowercase letters and apostrophes;
+	// anything after (",", "?", "...") is its tail and survives every rewrite.
+	// A word containing a capital or a digit anywhere is not rewritten at all.
+	auto split_word = [](const std::string &w, std::string &core, std::string &tail) {
+		size_t k = 0;
+		while (k < w.size() && (std::islower(static_cast<unsigned char>(w[k])) || w[k] == '\'')) {
+			++k;
+		}
+		core = w.substr(0, k);
+		tail = w.substr(k);
+	};
+
+	auto is_editable = [](const std::string &w) {
+		for (char c : w) {
+			const unsigned char uc = static_cast<unsigned char>(c);
+			if (std::isupper(uc) || std::isdigit(uc)) {
+				return false;
+			}
+		}
+		return true;
+	};
+
+	// ---- contractions: "i am" -> "im" ----------------------------------
+	const int contraction_pm = (kContractionPermille * sloppy) / 100;
+	for (size_t s = 0; s + 2 < segs.size(); ++s) {
+		if (segs[s].kind != SK_Word || segs[s + 1].kind != SK_Space || segs[s + 2].kind != SK_Word) {
+			continue;
+		}
+		if (!is_editable(segs[s].text) || !is_editable(segs[s + 2].text)) {
+			continue;
+		}
+
+		std::string a_core, a_tail, b_core, b_tail;
+		split_word(segs[s].text, a_core, a_tail);
+		split_word(segs[s + 2].text, b_core, b_tail);
+		if (!a_tail.empty()) {
+			continue;   // "no, not" is two thoughts, not a contraction
+		}
+
+		for (const auto &c : kContractions) {
+			if (a_core == c.first && b_core == c.second) {
+				if (RollPermille(contraction_pm)) {
+					segs[s].text = std::string(c.merged) + b_tail;
+					segs.erase(segs.begin() + static_cast<std::ptrdiff_t>(s + 1), segs.begin() + static_cast<std::ptrdiff_t>(s + 3));
+				}
+				break;
+			}
+		}
+	}
+
+	// ---- shorthand and dropped apostrophes --------------------------------
+	const int shorthand_pm  = (kShorthandPermille * sloppy) / 100;
+	const int apostrophe_pm = (kApostrophePermille * sloppy) / 100;
+	for (auto &seg : segs) {
+		if (seg.kind != SK_Word || !is_editable(seg.text)) {
+			continue;
+		}
+
+		std::string core, tail;
+		split_word(seg.text, core, tail);
+		if (core.empty()) {
+			continue;
+		}
+
+		bool changed = false;
+		for (const auto &sh : kShorthand) {
+			if (core == sh.first) {
+				if (RollPermille(shorthand_pm)) {
+					core    = sh.second;
+					changed = true;
+				}
+				break;
+			}
+		}
+
+		if (!changed && core.find('\'') != std::string::npos) {
+			for (const char *aw : kApostropheWords) {
+				if (core == aw) {
+					if (RollPermille(apostrophe_pm)) {
+						core.erase(std::remove(core.begin(), core.end(), '\''), core.end());
+						changed = true;
+					}
+					break;
+				}
+			}
+		}
+
+		if (changed) {
+			seg.text = core + tail;
+		}
+	}
+
+	// ---- the typo, and its correction -------------------------------------
+	// Per LINE, one word at most: a line with two typos reads as a different
+	// person having a bad night, not as a habit.
+	if (correction_out && RollPermille((kTypoPermille * sloppy) / 100)) {
+		std::vector<size_t> candidates;
+		for (size_t s = 0; s < segs.size(); ++s) {
+			if (segs[s].kind != SK_Word || !is_editable(segs[s].text)) {
+				continue;
+			}
+			std::string core, tail;
+			split_word(segs[s].text, core, tail);
+			// Five letters and no apostrophe: a short word transposed reads as a
+			// different word, and "ca'nt" is not a typo anyone makes.
+			if (core.size() >= 5 && core.find('\'') == std::string::npos) {
+				candidates.push_back(s);
+			}
+		}
+
+		if (!candidates.empty()) {
+			const size_t s = candidates[static_cast<size_t>(zone->random.Int(0, static_cast<int>(candidates.size()) - 1))];
+
+			std::string core, tail;
+			split_word(segs[s].text, core, tail);
+
+			// Never the first letter: people rarely fumble the start of a word.
+			const size_t pos = static_cast<size_t>(zone->random.Int(1, static_cast<int>(core.size()) - 2));
+			if (core[pos] != core[pos + 1]) {
+				const std::string original = core;
+				std::swap(core[pos], core[pos + 1]);
+				segs[s].text = core + tail;
+
+				if (typo_out) {
+					*typo_out = true;
+				}
+				// Some typos stand. Everyone lets one go now and then.
+				if (zone->random.Roll(kCorrectPct)) {
+					*correction_out = "*" + original;
+				}
+			}
+		}
+	}
+
+	std::string out;
+	out.reserve(tmpl.size() + 4);
+	for (const auto &seg : segs) {
+		out += seg.text;
+	}
+
+	// ---- casing and punctuation -------------------------------------------
+	// Content is authored lowercase and unpunctuated, which is how most people
+	// type. The tidy few capitalise, the tidiest also end with a full stop, and
+	// the scruffiest sometimes trail off.
+	if (!out.empty()) {
+		const unsigned char first = static_cast<unsigned char>(out[0]);
+		const unsigned char last  = static_cast<unsigned char>(out.back());
+
+		if (sloppy <= kNeatCapitalise && std::islower(first) && segs.front().kind == SK_Word) {
+			out[0] = static_cast<char>(std::toupper(first));
+		}
+
+		if (std::isalpha(last)) {
+			if (sloppy <= kNeatPunctuate) {
+				out.push_back('.');
+			}
+			else if (sloppy >= kSloppyEllipsis && zone->random.Roll(kEllipsisPct)) {
+				out += "...";
+			}
+		}
+	}
+
+	return out;
+}
+
+void PlayerBotChatEngine::QueueFollowups(
+	Mob             *talker,
+	uint8            chan_num,
+	uint16           reply_to_id,
+	uint32           wave,
+	uint64           first_due_ms,
+	const Rendered  &r
+)
+{
+	if (!talker || !zone) {
+		return;
+	}
+
+	if (r.typo) {
+		++m_stat_typos;
+	}
+
+	uint64 due = first_due_ms;
+
+	auto push = [&](const std::string &text) {
+		PendingEmission pe;
+		pe.listener_id = talker->GetID();
+		pe.due_ms      = due;
+		pe.chan_num    = chan_num;
+		pe.chain_depth = 0;
+		pe.reply_to_id = reply_to_id;
+		// Same beat as the line it follows: if the channel moves on before the
+		// follow-up lands, it goes stale and is dropped with the conversation.
+		pe.wave_seq    = wave;
+		pe.no_overhear = true;
+		pe.text        = text;
+		m_pending.push_back(std::move(pe));
+	};
+
+	if (!r.correction.empty()) {
+		due += static_cast<uint64>(zone->random.Int(kCorrectionDelayMinMs, kCorrectionDelayMaxMs));
+		push(r.correction);
+		++m_stat_corrections;
+	}
+
+	if (r.parts.size() > 1) {
+		const uint64 ms_per_char = static_cast<uint64>(std::max(0, RuleI(PlayerBotChat, StaggerMsPerChar)));
+		const uint64 typing_pct  = PersonaFor(talker).typing_pct;
+
+		for (size_t i = 1; i < r.parts.size(); ++i) {
+			const uint64 typing = std::min<uint64>(
+				kSplitTypingCap,
+				(static_cast<uint64>(r.parts[i].size()) * ms_per_char * typing_pct) / 100
+			);
+			due += static_cast<uint64>(zone->random.Int(kSplitGapMinMs, kSplitGapMaxMs)) + typing;
+			push(r.parts[i]);
+		}
+
+		++m_stat_splits;
+	}
+}
+
+// ============================================================
+// [19.11] afk
+// ============================================================
+
+bool PlayerBotChatEngine::IsAfk(Mob *m, uint64 now_ms) const
+{
+	if (!m) {
+		return false;
+	}
+	auto it = m_listener_state.find(m->GetID());
+	return it != m_listener_state.end() && it->second.afk_until_ms > now_ms;
+}
+
+void PlayerBotChatEngine::AfkTick(uint64 now_ms)
+{
+	if (!RuleB(PlayerBotChat, ChatEnabled) || m_all_muted || !zone) {
+		return;
+	}
+
+	EnsureLoaded();
+	if (!m_loaded) {
+		return;
+	}
+
+	const int   permille  = kAfkPermillePerMin * (ZoneTextPressureHigh() ? kAfkPressureFactor : 1);
+	const int32 leave_cat = FindCategoryId("afk_leave");
+	const int32 back_cat  = FindCategoryId("afk_return");
+
+	for (const auto &e : entity_list.GetNPCList()) {
+		Mob *m = e.second;
+		// PlayerBots only. A Bot is somebody's companion, standing in their
+		// group under their command; one that wandered off to make tea would
+		// read as broken, not as human.
+		if (!m || !IsPlayerBot(m)) {
+			continue;
+		}
+
+		ListenerState &st = StateFor(m->GetID());
+
+		if (st.afk_until_ms != 0) {
+			// Back at the keyboard -- on time, or early because something
+			// started hitting it. Only a bot that said it was leaving says it
+			// is back; the one that just went quiet comes back quietly.
+			const bool fighting = IsInCombat(m);
+			if (now_ms >= st.afk_until_ms || fighting) {
+				st.afk_until_ms  = 0;
+				const bool said  = st.afk_said;
+				st.afk_said      = false;
+				if (!fighting && said && back_cat >= 0 && zone->random.Roll(kAfkReturnPct)) {
+					ScriptSay(m, static_cast<uint32>(back_cat), ChatChannel_Say);
+				}
+			}
+			continue;
+		}
+
+		if (st.muted || IsInCombat(m) || IsGroupedForChat(m)) {
+			continue;
+		}
+		if (!RollPermille(permille)) {
+			continue;
+		}
+
+		// Announced BEFORE afk_until_ms is set: ScriptSayEx refuses an AFK
+		// talker, and the one line an AFK bot must be able to say is "brb".
+		st.afk_said =
+			leave_cat >= 0 &&
+			zone->random.Roll(kAfkAnnouncePct) &&
+			ScriptSay(m, static_cast<uint32>(leave_cat), ChatChannel_Say);
+
+		st.afk_until_ms = now_ms + static_cast<uint64>(zone->random.Int(
+			static_cast<int>(kAfkMinMs),
+			static_cast<int>(kAfkMaxMs)
+		));
+		++m_stat_afk_spells;
+
+		if (RuleB(PlayerBotChat, LogDispatch)) {
+			LogInfo(
+				"[pbchat] afk [{}] for {}s (announced {})",
+				ChatDisplayName(m), (st.afk_until_ms - now_ms) / 1000, st.afk_said ? 1 : 0
+			);
+		}
+	}
+}
+
+// ============================================================
 // scope resolution
 // ============================================================
 
@@ -2290,6 +2874,14 @@ void PlayerBotChatEngine::DispatchToScope(
 			continue;
 		}
 
+		// [19.11] Away from the keyboard -- including when named. That is the
+		// whole feature: a player who gets no answer from a bot that is
+		// visibly afk has met a person, not a bug.
+		if (st.afk_until_ms > now) {
+			++m_stat_drops[DR_Afk];
+			continue;
+		}
+
 		// [1] Per-listener self-echo guard -- see the note at the top of this
 		// function for why it lives here and not there.
 		if (m_recent_self_emissions.count(EchoHash(ChatDisplayName(listener), msg)) > 0) {
@@ -2403,7 +2995,15 @@ void PlayerBotChatEngine::DispatchToScope(
 		c.in_combat = listener_in_combat;
 		c.category = cat.id;
 		c.response = resp;
-		c.text     = Substitute(resp->text, listener, speaker, captures);
+		// [19.9 / 19.10 / 19.18] Voiced, split and substituted in one place.
+		// `text` is the first part; the rest rides along in `rendered` and is
+		// queued behind it once this candidate survives the cap.
+		c.rendered = Render(listener, resp->text, speaker, captures);
+		if (c.rendered.parts.empty()) {
+			++m_stat_drops[DR_NoResponseRow];
+			continue;
+		}
+		c.text     = c.rendered.parts[0];
 		c.channel  = (resp->reply_channel == -1)
 			? chan_num
 			: static_cast<uint8>(resp->reply_channel);
@@ -2645,7 +3245,14 @@ void PlayerBotChatEngine::DispatchToScope(
 		}
 
 		pe.text        = c.text;
+		pe.emote       = c.rendered.emote;
+		pe.anim        = c.rendered.anim;
 		m_pending.push_back(std::move(pe));
+
+		// [19.9 / 19.10] Then whatever follows it: a "*word" fix, the second
+		// half of a split thought. Same beat, so they drop together with the
+		// conversation if the channel moves on.
+		QueueFollowups(c.listener, c.channel, reply_to_id, m_current_wave, now + delay, c.rendered);
 
 		// [5] Stamp with `now`, not `now + delay`.  Stamping the future makes
 		// `now - last_msg_time_ms` underflow on an unsigned type for `delay`
@@ -2688,7 +3295,16 @@ void PlayerBotChatEngine::DispatchToScope(
 	}
 }
 
-void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id)
+void PlayerBotChatEngine::Emit(
+	Mob               *talker,
+	uint8              chan_num,
+	const std::string &text,
+	uint8              chain_depth,
+	uint16             reply_to_id,
+	bool               feed_bus,
+	bool               emote,
+	int                anim
+)
 {
 	if (!talker || text.empty() || !IsValidChannel(chan_num)) {
 		return;
@@ -2698,7 +3314,30 @@ void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &t
 	// or the speaker reacts to its own line.
 	m_recent_self_emissions[EchoHash(ChatDisplayName(talker), text)] = NowMs() + 10000;
 
-	EmitChannel(talker, chan_num, text, reply_to_id);
+	if (emote) {
+		// [19.18] Local, whatever channel the line was answering: a gesture is
+		// seen, not sent. GENERIC_EMOTE is the string Mob::Emote uses and
+		// Trilogy already renders it (HandleOutgoingFormattedMessage), but
+		// Mob::Emote itself would print GetCleanName() -- a PlayerBot's
+		// entity name, digits and all -- so this builds the same message with
+		// the display name instead.
+		entity_list.MessageCloseString(
+			talker,
+			false,
+			static_cast<float>(RuleI(PlayerBotChat, EarshotDistance)),
+			Chat::NPCQuestSay,
+			GENERIC_EMOTE,
+			ChatDisplayName(talker),
+			text.c_str()
+		);
+		if (anim > 0) {
+			talker->DoAnim(anim);
+		}
+		++m_stat_emotes;
+	}
+	else {
+		EmitChannel(talker, chan_num, text, reply_to_id);
+	}
 
 	++m_stat_emitted;
 	++m_stat_talkers[ChatDisplayName(talker)];
@@ -2707,7 +3346,10 @@ void PlayerBotChatEngine::Emit(Mob *talker, uint8 chan_num, const std::string &t
 	// bot in the zone classify and react to a message addressed to one of
 	// them -- the chat equivalent of reading someone's mail aloud, and a way
 	// for a whispered word to come back out of a stranger's mouth in /ooc.
-	if (chan_num == ChatChannel_Tell) {
+	//
+	// [19.9 / 19.10 / 19.18] So does a follow-up (the bus already heard the
+	// utterance) and a gesture (it is not a message at all).
+	if (chan_num == ChatChannel_Tell || !feed_bus || emote) {
 		return;
 	}
 
@@ -3212,7 +3854,7 @@ void PlayerBotChatEngine::ProximityWatchTick(uint64 now_ms)
 
 			auto st_it = m_listener_state.find(m->GetID());
 			if (st_it != m_listener_state.end()) {
-				if (st_it->second.muted) {
+				if (st_it->second.muted || st_it->second.afk_until_ms > now_ms) {
 					continue;
 				}
 				if (st_it->second.last_msg_time_ms != 0 && now_ms - st_it->second.last_msg_time_ms < base_cooldown) {
@@ -3475,7 +4117,8 @@ void PlayerBotChatEngine::SpontaneousTick(uint64 now_ms)
 		auto it = m_listener_state.find(m->GetID());
 		if (it != m_listener_state.end()) {
 			const ListenerState &st = it->second;
-			if (st.muted) {
+			// [19.11] Nobody starts a conversation from the kitchen.
+			if (st.muted || st.afk_until_ms > now_ms) {
 				return;
 			}
 			if (st.paired_speaker_id != 0 && now_ms < st.pair_expiry_ms) {
@@ -3596,7 +4239,12 @@ bool PlayerBotChatEngine::EmitOpener(
 		? channel
 		: static_cast<uint8>(resp->reply_channel);
 
-	const std::string text = Substitute(resp->text, opener, nullptr, {});
+	const Rendered rendered = Render(opener, resp->text, nullptr, {});
+	if (rendered.parts.empty()) {
+		++m_stat_drops[DR_NoResponseRow];
+		return false;
+	}
+	const std::string &text = rendered.parts[0];
 
 	ListenerState &st = StateFor(opener->GetID());
 	st.last_msg_time_ms               = now_ms;
@@ -3610,8 +4258,9 @@ bool PlayerBotChatEngine::EmitOpener(
 	// [19.6] An opener starts a conversation, so it starts a beat. Emit() is
 	// synchronous into Overhear(), which inherits this and hands it to every
 	// reply queued against the opener.
-	BeginWave();
-	Emit(opener, out_channel, text, 0);
+	const uint32 wave = BeginWave();
+	Emit(opener, out_channel, text, 0, 0, true, rendered.emote, rendered.anim);
+	QueueFollowups(opener, out_channel, 0, wave, now_ms, rendered);
 
 	++m_stat_openers;
 
@@ -3840,7 +4489,7 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 		auto it = m_listener_state.find(m->GetID());
 		if (it != m_listener_state.end()) {
 			const ListenerState &st = it->second;
-			if (st.muted) {
+			if (st.muted || st.afk_until_ms > now_ms) {
 				return;
 			}
 			if (st.last_msg_time_ms != 0 && now_ms - st.last_msg_time_ms < base_cooldown) {
@@ -3925,7 +4574,12 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	// person -- a row claiming shared history, or to have watched them, is
 	// asserting something the engine cannot verify, on the one channel the
 	// player cannot filter or walk away from.
-	const std::string text = Substitute(resp->text, sender, to, {});
+	const Rendered rendered = Render(sender, resp->text, to, {});
+	if (rendered.parts.empty()) {
+		++m_stat_drops[DR_NoResponseRow];
+		return;
+	}
+	const std::string &text = rendered.parts[0];
 
 	ListenerState &st = StateFor(sender->GetID());
 	st.last_msg_time_ms            = now_ms;
@@ -3939,8 +4593,9 @@ void PlayerBotChatEngine::SpontaneousTellTick(uint64 now_ms)
 	NoteResponseUsed(cat->id, resp->id, now_ms);
 
 	// [19.6] A cold tell opens its own beat, same as any other origination.
-	BeginWave();
+	const uint32 wave = BeginWave();
 	Emit(sender, ChatChannel_Tell, text, 0, to->GetID());
+	QueueFollowups(sender, ChatChannel_Tell, to->GetID(), wave, now_ms, rendered);
 
 	LogInfo(
 		"[pbchat] cold tell [{}] -> [{}] cat [{}] -- {}",
@@ -4087,13 +4742,30 @@ bool PlayerBotChatEngine::ScriptSayEx(
 		chan_num = ChatChannel_Say;
 	}
 
-	const uint64    now  = NowMs();
+	const uint64 now = NowMs();
+
+	// [19.11] An AFK bot says nothing, from any path -- the vitals watches, the
+	// Lua hooks, witnessed events. AfkTick speaks its own "brb" before the
+	// flag is set and its "back" after it is cleared, so it never trips this.
+	if (IsAfk(talker, now)) {
+		++m_stat_drops[DR_Afk];
+		return false;
+	}
+
 	const Response *resp = PickResponse(category_id, talker, speaker, chan_num, now);
 	if (!resp) {
 		LogInfo(
 			"[pbchat] ScriptSay: no eligible response for category_id [{}] listener [{}]",
 			category_id, ChatDisplayName(talker)
 		);
+		return false;
+	}
+
+	// [19.9 / 19.10 / 19.18] Rendered before any cooldown is stamped, so a row
+	// that renders to nothing costs the bot nothing.
+	const Rendered rendered = Render(talker, resp->text, speaker, captures);
+	if (rendered.parts.empty()) {
+		++m_stat_drops[DR_NoResponseRow];
 		return false;
 	}
 
@@ -4176,11 +4848,12 @@ bool PlayerBotChatEngine::ScriptSayEx(
 	// unprompted statement, not an answer -- it opens a beat exactly as an
 	// opener does. Without this it would inherit whichever beat happened to be
 	// current and could stale-drop replies belonging to it.
-	const std::string text = Substitute(resp->text, talker, speaker, captures);
+	const std::string &text = rendered.parts[0];
 
 	if (delay_ms == 0) {
-		BeginWave();
-		Emit(talker, out_channel, text, 0);
+		const uint32 wave = BeginWave();
+		Emit(talker, out_channel, text, 0, 0, true, rendered.emote, rendered.anim);
+		QueueFollowups(talker, out_channel, 0, wave, now, rendered);
 		return true;
 	}
 
@@ -4199,7 +4872,12 @@ bool PlayerBotChatEngine::ScriptSayEx(
 	pe.category    = category_id;
 	pe.stamped_ms  = now;
 	pe.text        = text;
+	pe.emote       = rendered.emote;
+	pe.anim        = rendered.anim;
 	m_pending.push_back(std::move(pe));
+
+	// wave 0, like the line itself: an event's follow-up cannot go stale.
+	QueueFollowups(talker, out_channel, 0, 0, now + delay_ms, rendered);
 	return true;
 }
 
@@ -4691,6 +5369,28 @@ void PlayerBotChatEngine::DumpStats(Client *to)
 			).c_str()
 		);
 
+		// [19.9 / 19.10 / 19.11 / 19.18] The voice layer. `typos 0` over a long
+		// session means the persona's sloppiness never reaches the roll, not
+		// that the bots can spell.
+		{
+			const uint64 now_ms = NowMs();
+			size_t       afk_now = 0;
+			for (const auto &ls : m_listener_state) {
+				if (ls.second.afk_until_ms > now_ms) {
+					++afk_now;
+				}
+			}
+
+			to->Message(
+				Chat::White,
+				"%s",
+				fmt::format(
+					"[pbchat] voice: typos {} ({} corrected) | split thoughts {} | emotes {} | afk spells {} ({} away now)",
+					m_stat_typos, m_stat_corrections, m_stat_splits, m_stat_emotes, m_stat_afk_spells, afk_now
+				).c_str()
+			);
+		}
+
 		// [17.1 C] The health half. No rule: the thresholds are constants.
 		size_t hp_latched = 0;
 		for (const auto &ls : m_listener_state) {
@@ -4918,6 +5618,11 @@ void PlayerBotChatEngine::ResetStats()
 	m_stat_ev_death    = 0;
 	m_stat_ev_thanks   = 0;
 	m_stat_ev_passerby = 0;
+	m_stat_typos       = 0;
+	m_stat_corrections = 0;
+	m_stat_splits      = 0;
+	m_stat_emotes      = 0;
+	m_stat_afk_spells  = 0;
 	memset(m_stat_drops, 0, sizeof(m_stat_drops));
 	m_stat_category_hits.clear();
 	m_stat_response_hits.clear();

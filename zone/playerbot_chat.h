@@ -86,6 +86,8 @@ namespace PlayerBotChat {
 		// Only ever counted at chain_depth > 0 and never for a bot addressed by
 		// name: a quiet persona is quiet with other bots, not rude to a player.
 		DR_Reticent,
+		// [19.11] The listener is away from the keyboard.
+		DR_Afk,
 		DR_MAX
 	};
 
@@ -162,6 +164,10 @@ namespace PlayerBotChat {
 		// [19.8] `tone` parsed once at load: +1 upbeat, -1 downbeat, 0 neutral
 		// (empty or any word the engine does not know).
 		int8        tone_sign     = 0;
+		// [19.18] The row begins "/em ": it is performed, not said. Only ever
+		// eligible on /say and group chat -- a wave in answer to a tell or an
+		// /ooc line is a gesture the asker cannot see.
+		bool        is_emote      = false;
 
 		// playerbot_chat_response_context (optional row)
 		bool                     has_context             = false;
@@ -251,6 +257,13 @@ namespace PlayerBotChat {
 		// at 25% after the fight is recovering, not in danger, and a callout
 		// nobody can act on is noise.
 		bool                               low_hp_latched   = false;
+		// [19.11] Away from the keyboard until this time. While it holds the
+		// bot says nothing at all -- not even to its own name -- which is the
+		// point: silence that is TRUE cannot read as a broken bot. `afk_said`
+		// records whether it announced leaving, because only a bot that said
+		// "brb" gets to say "back".
+		uint64                             afk_until_ms     = 0;
+		bool                               afk_said         = false;
 		// [19.7] Lazily seeded by PersonaFor, re-seeded if the name changes
 		// under the same entity id (a PlayerBot is renamed in event_spawn).
 		Persona                            persona;
@@ -289,6 +302,17 @@ namespace PlayerBotChat {
 		// no beat -- wave_seq stays 0, so it can never go stale -- and opens a
 		// fresh one when it fires, as an immediate script line would.
 		bool        opens_beat  = false;
+		// [19.9 / 19.10] A follow-up to a line already spoken: a "*word"
+		// correction or the second half of a split thought. It goes out, but it
+		// never feeds the overhear bus -- the bus already heard the utterance
+		// once, and a lone "*tunic" classified as a new message is a bot
+		// answering a typo fix. It reserved no cooldown, so a stale drop has
+		// nothing to hand back.
+		bool        no_overhear = false;
+		// [19.18] Performed rather than said: rendered as an emote, with this
+		// animation when non-zero. Never fed to the bus.
+		bool        emote       = false;
+		int         anim        = 0;
 		// [19.6] Enough to hand back the cooldowns this line reserved when it
 		// was queued but never spent, because it was dropped as stale.
 		//
@@ -308,6 +332,19 @@ namespace PlayerBotChat {
 		uint64      prev_cat_fire_ms = 0;
 		bool        had_cat_fire     = false;
 		std::string text;
+	};
+
+	// [19.9 / 19.10 / 19.18] A picked row, made ready to speak. The template is
+	// split on "||" into parts, each part voiced (19.9) then substituted, and a
+	// leading "/em " turns the whole row into an emote. Voicing happens BEFORE
+	// substitution, on the template's own prose, so a typo can never land in a
+	// name, a spell or anything else a placeholder supplied.
+	struct Rendered {
+		std::vector<std::string> parts;        // parts[0] is spoken first; the rest follow
+		std::string              correction;   // "*word" when parts[0] got a typo, else empty
+		bool                     typo  = false;  // parts[0] got a typo (corrected or not)
+		bool                     emote = false;
+		int                      anim  = 0;
 	};
 
 	// "#pbchat test" output -- classifier + picker + substitutor with no
@@ -353,7 +390,22 @@ public:
 	// EXCEPT on ChatChannel_Tell, which is private and must never reach the
 	// overhear bus.  reply_to_id is the entity id of the client a tell is
 	// addressed to; it is meaningless (and ignored) on every other channel.
-	void Emit(Mob *talker, uint8 chan_num, const std::string &text, uint8 chain_depth, uint16 reply_to_id = 0);
+	//
+	// [19.9 / 19.10] feed_bus false: a follow-up to a line the bus already
+	// heard (a typo correction, the second half of a split thought).
+	// [19.18] emote true: performed locally as "<name> <text>", with `anim`
+	// played when non-zero, and never fed to the bus -- a gesture is not a
+	// message, and bots classifying "waves." would answer a wave with words.
+	void Emit(
+		Mob               *talker,
+		uint8              chan_num,
+		const std::string &text,
+		uint8              chain_depth,
+		uint16             reply_to_id = 0,
+		bool               feed_bus    = true,
+		bool               emote       = false,
+		int                anim        = 0
+	);
 
 	// ---- combat events -------------------------------------------------
 	// A mob died. Gives every chat-enabled Bot that was PRESENT FOR THE FIGHT a
@@ -524,6 +576,8 @@ private:
 		bool                           in_combat = false;
 		// [19.7] The listener's typing speed, carried to the stagger loop.
 		uint8                          typing_pct = 100;
+		// [19.9 / 19.10 / 19.18] The full render; `text` is rendered.parts[0].
+		PlayerBotChat::Rendered        rendered;
 	};
 
 	bool LoadContent(std::string &summary_out);
@@ -549,6 +603,40 @@ private:
 		Mob                                      *speaker,
 		const std::map<std::string, std::string> &captures
 	);
+
+	// [19.9 / 19.10 / 19.18] Template -> ready-to-speak parts. Every speak path
+	// goes through this instead of calling Substitute directly.
+	PlayerBotChat::Rendered Render(
+		Mob                                      *talker,
+		const std::string                        &tmpl,
+		Mob                                      *speaker,
+		const std::map<std::string, std::string> &captures
+	);
+
+	// [19.9] Apply the talker's persona voice to one template part: casing,
+	// contractions, shorthand, the odd typo. Placeholders, and any token with a
+	// capital or a digit (item and spell names, levels), are never touched.
+	// When a typo is made and the persona would fix it, *correction_out gets
+	// "*word". Pass null to forbid typos (only the first part of a split gets
+	// one, so a correction never has to pick which half it fixes). *typo_out
+	// is set whenever a typo is made, corrected or not.
+	std::string Voice(Mob *talker, const std::string &tmpl, std::string *correction_out, bool *typo_out = nullptr);
+
+	// [19.9 / 19.10] Queue what follows the first part of a render: the typo
+	// correction, then any split-thought parts, each a little after the last
+	// with typing time for its length. All no_overhear.
+	void QueueFollowups(
+		Mob                           *talker,
+		uint8                          chan_num,
+		uint16                         reply_to_id,
+		uint32                         wave,
+		uint64                         first_due_ms,
+		const PlayerBotChat::Rendered &r
+	);
+
+	// [19.11] Occasional AFK spells for PlayerBots, swept once a minute.
+	void AfkTick(uint64 now_ms);
+	bool IsAfk(Mob *m, uint64 now_ms) const;
 
 	// tell_target is the single listener for ChatChannel_Tell and is null on
 	// every other channel, where scope comes from CollectScope as before.
@@ -818,6 +906,7 @@ private:
 	std::unordered_map<uint64, PlayerBotChat::MoodState>     m_mood;
 	std::unordered_map<uint32, uint64>                       m_near;
 	uint64                                                   m_next_proximity_ms        = 0;
+	uint64                                                   m_next_afk_ms              = 0;
 
 	// ---- stats --------------------------------------------------------
 	uint64                                  m_stat_heard   = 0;
@@ -839,6 +928,14 @@ private:
 	uint64                                  m_stat_ev_death    = 0;
 	uint64                                  m_stat_ev_thanks   = 0;
 	uint64                                  m_stat_ev_passerby = 0;
+	// [19.9 / 19.10 / 19.11 / 19.18] The voice layer. All invisible as a SOURCE
+	// in a chat log -- a typo looks like a typo -- so these are the only proof
+	// the persona is being applied at all.
+	uint64                                  m_stat_typos       = 0;
+	uint64                                  m_stat_corrections = 0;
+	uint64                                  m_stat_splits      = 0;
+	uint64                                  m_stat_emotes      = 0;
+	uint64                                  m_stat_afk_spells  = 0;
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken
