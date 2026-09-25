@@ -41,6 +41,7 @@
 #include "../common/skills.h"
 #include "../common/zone_store.h"
 #include "../common/repositories/inventory_repository.h"
+#include "../common/repositories/group_id_repository.h"
 #include "client.h"
 #include "wguild_mgr.h"
 
@@ -524,6 +525,35 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 		return;
 	}
 
+	// Account gates the normal path applies and this one did not.  The Trilogy
+	// login server hands world a key without ever running UsertoWorld
+	// (login_server.cpp ProcessUsertoWorldReq: locked server, banned -2,
+	// suspended -1), and world's own BannedIPs check lives in main.cpp's
+	// stream-identify loop, which a raw Trilogy datagram never reaches.  So a
+	// banned or suspended account, or a banned IP, could play through v29c.
+	// GetAccountStatus also lifts an expired suspension, as it does elsewhere.
+	{
+		const uint32_t gate_account_id = (cle->AccountID() > 0) ? cle->AccountID() : account_id;
+		const int16    status          = database.GetAccountStatus(gate_account_id);
+		const char*    refused         = nullptr;
+
+		if (RuleB(World, UseBannedIPsTable) && database.CheckBannedIPs(addr)) {
+			refused = "banned IP";
+		} else if (status < 0) {
+			refused = "account banned or suspended";
+		} else if (WorldConfig::get()->Locked &&
+		           status < RuleI(GM, MinStatusToBypassLockedServer)) {
+			refused = "server locked";
+		}
+
+		if (refused) {
+			LogInfo("[TrilogyWorld] Login REFUSED | account_id [{}] status [{}] from {}:{} reason [{}]",
+			        gate_account_id, status, addr, port, refused);
+			SendClose(addr, port, s);
+			return;
+		}
+	}
+
 	uint32_t eqemu_account_id = cle->AccountID();
 	s.account_id = (eqemu_account_id > 0) ? eqemu_account_id : account_id;
 	strncpy(s.account_name, cle->AccountName(), sizeof(s.account_name) - 1);
@@ -896,9 +926,46 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	uint32_t char_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
 	uint32_t zone_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
 
+	// Same two gates world/client.cpp applies at EnterWorld (L829 and L1494):
+	// an account banned or suspended since it logged in, and a GM-locked zone.
+	{
+		const int16 status = database.GetAccountStatus(s.account_id);
+		if (status < 0) {
+			LogInfo("[TrilogyWorld] EnterWorld REFUSED | account [{}] status [{}] — banned or suspended",
+			        s.account_name, status);
+			if (s.ack_due) SendAck(addr, port, s);
+			SendZoneUnavailable(addr, port, s, "account banned or suspended");
+			return;
+		}
+		if (status < 80 && zoneserver_list.IsZoneLocked(zone_id)) {
+			LogInfo("[TrilogyWorld] EnterWorld REFUSED | char [{}] zone [{}] is locked", char_name, zone_id);
+			if (s.ack_due) SendAck(addr, port, s);
+			SendZoneUnavailable(addr, port, s, "zone locked");
+			return;
+		}
+	}
+
 	strncpy(s.char_name, char_name, sizeof(s.char_name) - 1);
 	s.char_id = char_id;
 	s.zone_id = zone_id;
+
+	// Fresh login.  EnterWorld only ever comes from char select — zone-to-zone
+	// goes through SendZoneServerInfoForChar — so this is always the
+	// `!is_player_zoning` arm of world/client.cpp ~L978:
+	//   - a group_id row that outlived a crash, timeout or kick is dropped, so
+	//     HandleZoneInComplete does not restore a group the character left;
+	//   - lfp/lfg are cleared and firstlogon is set to 1, which CompleteConnect
+	//     reads to fire EVENT_CONNECT, the WENT_ONLINE event and the guild
+	//     online flag.  The zone clears it again once CompleteConnect has run.
+	GroupIdRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`character_id` = {} AND `name` = '{}'",
+			char_id,
+			Strings::Escape(char_name)
+		)
+	);
+	database.SetLoginFlags(char_id, false, false, 1);
 
 	// Server MOTD.  The client buffers this and only prints it once it has
 	// finished entering the zone, so it has to go out before the redirect —

@@ -734,14 +734,21 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// to set turned a stored "#exp off" back on at the first save.  The normal
 	// path reads it at client_packet.cpp:1295; the column defaults to 1, so a
 	// missing row still leaves XP on.
+	//
+	// firstlogon too: world's Trilogy EnterWorld sets it to 1 on a fresh login,
+	// CompleteConnect reads it (EVENT_CONNECT, WENT_ONLINE, guild online) and
+	// HandleZoneInComplete clears it once that has run.
 	m_exp_enabled = true;
 	{
-		auto q = fmt::format("SELECT `gm`, `exp_enabled` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
+		auto q = fmt::format(
+			"SELECT `gm`, `exp_enabled`, `firstlogon` FROM `character_data` WHERE `id` = {} LIMIT 1",
+			char_id);
 		auto r = database.QueryDatabase(q);
 		if (r.RowCount() > 0) {
 			auto row = r.begin();
 			m_pp.gm       = static_cast<uint8>(Strings::ToInt(row[0]));
 			m_exp_enabled = row[1] ? Strings::ToInt(row[1]) != 0 : true;
+			firstlogon    = row[2] ? static_cast<uint8>(Strings::ToInt(row[2])) : 0;
 		}
 	}
 

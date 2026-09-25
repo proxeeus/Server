@@ -4965,6 +4965,12 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// which translates what it can and silently drops the rest.
 		tc->CompleteConnect();
 
+		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
+		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
+		// runs, so clear it here — otherwise every later zone-in would fire the
+		// first-login events again.
+		database.SetFirstLogon(tc->CharacterID(), 0);
+
 		// Guild appearance on zone-in.
 		//
 		// v29c keeps TWO copies of a player's guild id and reads a different one
