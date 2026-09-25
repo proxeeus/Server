@@ -683,11 +683,43 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 
 	// Load the character's GM flag so GetGM() works for things like immunity to hunger,
 	// and so the server correctly treats this character as a GM in all internal checks.
+	//
+	// exp_enabled rides the same row.  SaveCharacterData writes it back from
+	// IsEXPEnabled() (zonedb.cpp ~L1095), so the forced `true` this function used
+	// to set turned a stored "#exp off" back on at the first save.  The normal
+	// path reads it at client_packet.cpp:1295; the column defaults to 1, so a
+	// missing row still leaves XP on.
+	m_exp_enabled = true;
 	{
-		auto q = fmt::format("SELECT `gm` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
+		auto q = fmt::format("SELECT `gm`, `exp_enabled` FROM `character_data` WHERE `id` = {} LIMIT 1", char_id);
 		auto r = database.QueryDatabase(q);
-		if (r.RowCount() > 0)
-			m_pp.gm = static_cast<uint8>(Strings::ToInt(r.begin()[0]));
+		if (r.RowCount() > 0) {
+			auto row = r.begin();
+			m_pp.gm       = static_cast<uint8>(Strings::ToInt(row[0]));
+			m_exp_enabled = row[1] ? Strings::ToInt(row[1]) != 0 : true;
+		}
+	}
+
+	// Three more loads whose only caller is Handle_Connect_OP_ZoneEntry
+	// (client_packet.cpp:1324-1331), each with a Save() that writes the
+	// never-loaded value straight back:
+	//
+	//   - EXP modifiers.  SaveCharacterEXPModifier reads
+	//     zone->exp_modifiers[char] with operator[], so with nothing loaded the
+	//     first save wrote the row as 0/0 and GetEXPModifier returned 0 for the
+	//     rest of the session.
+	//   - Tributes.  m_pp.tributes stayed memset to 0, which is not TRIBUTE_NONE
+	//     (0xFFFFFFFF) — tribute id 0 is a real one, Aura of Clarity — so every
+	//     save replaced the character's tribute rows with five copies of it.
+	//   - Mail key.  SaveCharacterData writes GetMailKeyFull(), so it was
+	//     blanked on every save.  Harmless for v29c (no UCS) but it breaks the
+	//     same character's next Titanium session until world re-keys it.
+	database.LoadCharacterEXPModifier(this);
+	database.LoadCharacterTribute(this);
+	{
+		auto mail_keys   = database.GetMailKey(char_id);
+		m_mail_key_full  = mail_keys.mail_key_full;
+		m_mail_key       = mail_keys.mail_key;
 	}
 
 	// Load equipment inventory so weapon/armor type lookups (GetWeaponDamage,
@@ -711,11 +743,6 @@ void Client::InitTrilogyFields(uint32 char_id, uint32 acct_id, const char* acct_
 	// client sees combat and spell activity exactly like a fresh Titanium client.
 	for (int i = 0; i < _FilterCount; ++i)
 		ClientFilters[i] = FilterShow;
-
-	// Trilogy clients bypass the normal zone-entry handshake where CompleteConnect()
-	// calls SetEXPEnabled(true).  Without this, AddEXP() returns immediately on the
-	// !IsEXPEnabled() guard → no XP ever awarded from kills.
-	m_exp_enabled = true;
 
 	// Suppress zone-point detection for 3 s after zone-in to prevent an
 	// immediate re-trigger when the player spawns right on a zone boundary.
