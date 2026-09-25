@@ -283,9 +283,11 @@ FROM pbchat_flavour f
 JOIN playerbot_chat_categories k ON k.name = f.category
 JOIN playerbot_chat_responses  r ON r.category_id = k.id AND r.response_text = f.response_text
 ON DUPLICATE KEY UPDATE
-  requires_zone        = VALUES(requires_zone),
-  requires_time_of_day = VALUES(requires_time_of_day),
-  requires_state       = VALUES(requires_state);
+  -- Qualified: the staging table has columns of the same names, and a bare
+  -- name here can resolve to the SELECT side (MariaDB: "ambiguous").
+  playerbot_chat_response_context.requires_zone        = VALUES(requires_zone),
+  playerbot_chat_response_context.requires_time_of_day = VALUES(requires_time_of_day),
+  playerbot_chat_response_context.requires_state       = VALUES(requires_state);
 
 
 -- ============================================================================

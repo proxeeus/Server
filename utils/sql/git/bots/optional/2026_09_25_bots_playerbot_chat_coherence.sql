@@ -205,8 +205,12 @@ FROM pbchat_stance s
 JOIN playerbot_chat_categories k ON k.name = s.category
 JOIN playerbot_chat_responses  r ON r.category_id = k.id AND r.response_text = s.response_text
 ON DUPLICATE KEY UPDATE
-  stance         = VALUES(stance),
-  requires_state = COALESCE(VALUES(requires_state), requires_state);
+  -- Qualified on purpose: in INSERT ... SELECT ... ON DUPLICATE KEY UPDATE a
+  -- bare column name can also resolve to the SELECT's tables, and the staging
+  -- table has a requires_state and a stance of its own -- MariaDB rejects the
+  -- bare name as ambiguous.
+  playerbot_chat_response_context.stance         = VALUES(stance),
+  playerbot_chat_response_context.requires_state = COALESCE(VALUES(requires_state), playerbot_chat_response_context.requires_state);
 
 -- ============================================================================
 -- VERIFICATION -- every query below MUST return zero rows.
