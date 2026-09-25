@@ -571,6 +571,9 @@ public:
 	// "#pbchat find <text>" -- locate rows by substring, with their id,
 	// category and how often each has been spoken.
 	void FindResponses(Client *to, const std::string &needle);
+	// "#pbchat alltime [n]" -- like top, but from playerbot_chat_response_stats:
+	// every zone process, every session since the table was created.
+	void DumpAllTimeResponses(Client *to, size_t limit);
 	void ResetStats();
 	void MuteAll(bool muted);
 	bool MuteEntity(uint16 entity_id, bool muted);
@@ -799,6 +802,12 @@ private:
 	// [17.1 F] Replace the in-memory ignore set with the table's, when the
 	// table exists. On every content load and once a minute after.
 	void LoadIgnores();
+
+	// [17.1 B persistence] Push per-row hit counts accumulated since the last
+	// flush into playerbot_chat_response_stats. Must run while m_responses
+	// still holds the rows the ids refer to -- i.e. BEFORE any content load
+	// clears it -- because each count is stored with a hash of its row's text.
+	void FlushResponseStats();
 
 	// [19.13] ScriptSay with a subject and a reaction delay. See the definition.
 	bool ScriptSayEx(
@@ -1059,6 +1068,12 @@ private:
 	uint64                                  m_stat_drops[PlayerBotChat::DR_MAX] = {0};
 	std::unordered_map<uint32, uint64>      m_stat_category_hits;
 	std::unordered_map<uint32, uint64>      m_stat_response_hits;   // response_id -> times spoken
+	// [17.1 B persistence] Hits not yet written to the stats table. Separate
+	// from m_stat_response_hits because "#pbchat stats reset" clears the
+	// session view and must not throw away counts the table has not seen.
+	std::unordered_map<uint32, uint64>      m_stat_response_unflushed;
+	bool                                    m_has_stats_table     = false;
+	uint64                                  m_next_stats_flush_ms = 0;
 	std::unordered_map<std::string, uint64> m_stat_talkers;
 };
 

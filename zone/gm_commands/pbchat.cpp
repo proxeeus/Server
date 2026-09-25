@@ -14,6 +14,7 @@ namespace {
 		c->Message(Chat::White, "  #pbchat dumpcats - categories with trigger/response counts and disabled rows");
 		c->Message(Chat::White, "  #pbchat stats [reset] - dispatch counts, category hit rate, drop reasons");
 		c->Message(Chat::White, "  #pbchat top [n] - the response ROWS spoken most often (default 10)");
+		c->Message(Chat::White, "  #pbchat alltime [n] - the same, across every zone and session (needs the stats table)");
 		c->Message(Chat::White, "  #pbchat find <text> - response rows containing <text>, with row id and hits");
 		c->Message(Chat::White, "  #pbchat threads - live conversation threads and pending emissions");
 		c->Message(Chat::White, "  #pbchat persona [target|entity_id] - a bot's persona dials and favourite categories");
@@ -115,6 +116,12 @@ void command_pbchat(Client *c, const Seperator *sep)
 	if (sub == "top") {
 		const size_t limit = sep->IsNumber(2) ? static_cast<size_t>(atoi(sep->arg[2])) : 10;
 		playerbot_chat.DumpTopResponses(c, limit);
+		return;
+	}
+
+	if (sub == "alltime") {
+		const size_t limit = sep->IsNumber(2) ? static_cast<size_t>(atoi(sep->arg[2])) : 10;
+		playerbot_chat.DumpAllTimeResponses(c, limit);
 		return;
 	}
 

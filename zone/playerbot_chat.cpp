@@ -1083,6 +1083,10 @@ void PlayerBotChatEngine::EnsureLoaded()
 
 bool PlayerBotChatEngine::Reload(std::string &summary_out)
 {
+	// [17.1 B persistence] Before anything is cleared: each count is stored with
+	// a hash of its row's text, and the rows are about to be thrown away.
+	FlushResponseStats();
+
 	m_loaded      = false;
 	m_load_failed = false;
 	m_triggers.clear();
@@ -1098,6 +1102,13 @@ bool PlayerBotChatEngine::Reload(std::string &summary_out)
 
 bool PlayerBotChatEngine::LoadContent(std::string &summary_out)
 {
+	// [17.1 B persistence] Same reason as in Reload -- this is the path a zone
+	// boot takes, with the previous zone's rows still loaded. Whatever could
+	// not be written (no table) is dropped with the ids it was keyed on.
+	FlushResponseStats();
+	m_stat_response_unflushed.clear();
+	m_has_stats_table = TableExists("playerbot_chat_response_stats");
+
 	m_triggers.clear();
 	m_responses.clear();
 	m_response_index.clear();
@@ -1430,6 +1441,7 @@ void PlayerBotChatEngine::OnZoneBoot()
 	m_acquaintances.clear();
 	m_next_proximity_ms        = m_hour_window_start_ms + 2000;
 	m_next_afk_ms              = m_hour_window_start_ms + 60000;
+	m_next_stats_flush_ms      = m_hour_window_start_ms + 300000;
 	m_next_expire_ms          = m_hour_window_start_ms + 1000;
 	m_next_transient_sweep_ms = m_hour_window_start_ms + 60000;
 	m_all_muted               = false;
@@ -1576,6 +1588,13 @@ void PlayerBotChatEngine::Process()
 	if (now >= m_next_afk_ms) {
 		m_next_afk_ms = now + 60000;
 		AfkTick(now);
+	}
+
+	// [17.1 B persistence] Five minutes: at most that much telemetry is lost to
+	// a crash, and one batched upsert of a few hundred rows is nothing.
+	if (now >= m_next_stats_flush_ms) {
+		m_next_stats_flush_ms = now + 300000;
+		FlushResponseStats();
 	}
 }
 
@@ -2281,6 +2300,7 @@ void PlayerBotChatEngine::NoteResponseUsed(uint32 category_id, uint32 response_i
 {
 	++m_stat_category_hits[category_id];
 	++m_stat_response_hits[response_id];
+	++m_stat_response_unflushed[response_id];
 
 	// [19.15] Record the stance this line commits its speaker to. Here, at the
 	// one commit point all four speak paths share, rather than in PickResponse,
@@ -6225,6 +6245,128 @@ void PlayerBotChatEngine::FindResponses(Client *to, const std::string &needle)
 			Chat::Yellow,
 			"%s",
 			fmt::format("[pbchat] {} matches, {} shown -- narrow the search.", matched, shown).c_str()
+		);
+	}
+}
+
+// ============================================================
+// [17.1 B persistence] response telemetry, across sessions
+// ============================================================
+
+void PlayerBotChatEngine::FlushResponseStats()
+{
+	if (m_stat_response_unflushed.empty() || !m_has_stats_table) {
+		return;
+	}
+
+	// One batched upsert. Each count travels with a hash of its row's text:
+	// response_id is AUTO_INCREMENT, so after a reseed the same id means a
+	// different line, and adding to the old count would credit the new text
+	// with hits it never had. When the hash differs the count RESTARTS.
+	//
+	// Column order in the UPDATE list matters -- MySQL evaluates it left to
+	// right against already-updated values -- so both IF()s read the OLD
+	// text_hash before it is overwritten.
+	std::string values;
+	for (const auto &kv : m_stat_response_unflushed) {
+		const Response *r = ResponseById(kv.first);
+		if (!r) {
+			continue;   // row gone; its count has nothing left to describe
+		}
+		values += fmt::format(
+			"{}({}, {}, {})",
+			values.empty() ? "" : ",",
+			kv.first,
+			Fnv1a(r->text),
+			kv.second
+		);
+	}
+	m_stat_response_unflushed.clear();
+
+	if (values.empty()) {
+		return;
+	}
+
+	const std::string query = fmt::format(
+		"INSERT INTO `playerbot_chat_response_stats` (`response_id`, `text_hash`, `hits`) VALUES {} "
+		"ON DUPLICATE KEY UPDATE "
+		"`hits` = IF(`text_hash` = VALUES(`text_hash`), `hits` + VALUES(`hits`), VALUES(`hits`)), "
+		"`first_used` = IF(`text_hash` = VALUES(`text_hash`), `first_used`, NOW()), "
+		"`text_hash` = VALUES(`text_hash`), "
+		"`last_used` = NOW()",
+		values
+	);
+
+	auto results = database.QueryDatabase(query);
+	if (!results.Success()) {
+		LogError("[pbchat] could not flush response telemetry: {}", results.ErrorMessage());
+	}
+}
+
+void PlayerBotChatEngine::DumpAllTimeResponses(Client *to, size_t limit)
+{
+	if (!to) {
+		return;
+	}
+
+	EnsureLoaded();
+
+	if (!m_has_stats_table) {
+		to->Message(
+			Chat::Yellow,
+			"[pbchat] no playerbot_chat_response_stats table -- apply 2026_09_25_bots_playerbot_chat_stats.sql, "
+			"then #pbchat reload"
+		);
+		return;
+	}
+
+	// Include this session's unwritten counts, so "all time" really is.
+	FlushResponseStats();
+
+	if (limit == 0 || limit > 50) {
+		limit = 10;
+	}
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"SELECT `response_id`, `text_hash`, `hits` FROM `playerbot_chat_response_stats` "
+			"ORDER BY `hits` DESC LIMIT {}",
+			limit
+		)
+	);
+	if (!results.Success()) {
+		to->Message(Chat::Red, "%s", fmt::format("[pbchat] stats read failed: {}", results.ErrorMessage()).c_str());
+		return;
+	}
+	if (results.RowCount() == 0) {
+		to->Message(Chat::White, "[pbchat] no all-time telemetry yet.");
+		return;
+	}
+
+	for (auto &row = results.begin(); row != results.end(); ++row) {
+		const uint32 id   = RowU32(row[0]);
+		const uint64 hash = row[1] ? std::strtoull(row[1], nullptr, 10) : 0;
+		const uint64 hits = row[2] ? std::strtoull(row[2], nullptr, 10) : 0;
+
+		// The stored hash is the text the count belongs to. A mismatch means
+		// the id was reseeded onto a different line since -- say so rather
+		// than print the new line next to the old line's count.
+		const Response *r    = ResponseById(id);
+		std::string     text = "(row gone)";
+		if (r) {
+			text = (Fnv1a(r->text) == hash) ? r->text : std::string("(row reseeded since)");
+		}
+
+		to->Message(
+			Chat::White,
+			"%s",
+			fmt::format(
+				"[pbchat] all-time row {} | {} hits | {} | {}",
+				id,
+				hits,
+				r ? CategoryNameFor(r->category_id) : std::string("-"),
+				text
+			).c_str()
 		);
 	}
 }
