@@ -859,6 +859,11 @@ private:
 	// by TrilogyClient::HandleOutgoingWhoAllResponse.
 	void HandleWhoAll(const std::string& addr, int port, Session& s,
 	                  const uint8_t* payload, uint32_t plen);
+	// The GM toolset: /find /servers /hideme /becomenpc /name /emotezone
+	// /delcorpse /toggletell /lastname, plus swallowed /approval, /movelog and
+	// the console's name-approval answer.
+	void HandleGMToolPacket(const std::string& addr, int port, Session& s, uint16_t opcode,
+	                        const uint8_t* payload, uint32_t plen);
 	// 0xbd21 /report → Client::Handle_OP_Report (reports table).
 	void HandleReport(Session& s, const uint8_t* payload, uint32_t plen);
 	// 0xc521 /who all friends → Client::FriendsWho (world answers).

@@ -1633,6 +1633,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		m_deferred_player_spawns.clear();
 		break;
 	}
+	case OP_GMBecomeNPC: {
+		// Handle_OP_GMBecomeNPC queues this to the target.  v29c's 0x8c21 handler
+		// (eqgame.exe 0x49b0f8) reads no payload: it prints "You are now able to
+		// kill anyone (or be killed) as if you were an NPC." and sets its PvP-as-NPC
+		// flag.  Same 8 bytes as BecomeNPC_Struct, sent through as-is.
+		if (app->size < sizeof(::BecomeNPC_Struct)) break;
+		m_tzs->SendToSession(m_session_key, 0x8c21, app->pBuffer,
+		                     static_cast<uint32_t>(sizeof(::BecomeNPC_Struct)));
+		break;
+	}
 	case OP_GMKick: {
 		// Client::Handle_OP_GMKick answers a GM's /kick against an in-zone target
 		// by broadcasting the packet to EVERY client in the zone

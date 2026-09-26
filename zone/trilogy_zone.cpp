@@ -645,6 +645,19 @@ static constexpr uint16_t ZN_OP_GMGoto        = 0x6e20; // gotoname[30]+myname[3
 static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[30]+...
 static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
 static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+unknown[1]
+// GM toolset — layouts read from eqgame.exe; see HandleGMToolPacket.
+static constexpr uint16_t ZN_OP_GMFind         = 0x6920; // /find, 108 B both ways
+static constexpr uint16_t ZN_OP_GMServers      = 0xa820; // /servers, 4 B (ignored)
+static constexpr uint16_t ZN_OP_GMHideMe       = 0xd421; // /hideme, 12 B uninitialised — state rides f520 type 3
+static constexpr uint16_t ZN_OP_GMBecomeNPC    = 0x8c21; // /becomenpc, 8 B {u32 id; u32 maxlevel} both ways
+static constexpr uint16_t ZN_OP_GMIllusion     = 0x9120; // /becomenpc look, 72 B client -> zone
+static constexpr uint16_t ZN_OP_GMNameChange   = 0xcb20; // /name, 94 B both ways
+static constexpr uint16_t ZN_OP_GMEmoteZone    = 0xe321; // /emotezone, 512 B text
+static constexpr uint16_t ZN_OP_GMDelCorpse    = 0xe921; // /delcorpse, 61 B {corpse[30]; gm[30]; ?}
+static constexpr uint16_t ZN_OP_GMToggle       = 0xde21; // /toggletell, 36 B, u32 on/off @0x20
+static constexpr uint16_t ZN_OP_GMApproval     = 0xef21; // /approval, 36 B; resent every zone-in — swallowed
+static constexpr uint16_t ZN_OP_GMNameApproval = 0x8c20; // GM-console name approval answer — no EQEmu queue, swallowed
+static constexpr uint16_t ZN_OP_MoveLog        = 0xe421; // /movelog yes, 0 B (server transfer) — swallowed
 
 // Corpse recovery: /corpse, /searchcorpse and the drag-permission line.
 //
@@ -2969,6 +2982,15 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_GMFind      || opcode == ZN_OP_GMServers     ||
+		          opcode == ZN_OP_GMHideMe    || opcode == ZN_OP_GMBecomeNPC   ||
+		          opcode == ZN_OP_GMIllusion  || opcode == ZN_OP_GMNameChange  ||
+		          opcode == ZN_OP_GMEmoteZone || opcode == ZN_OP_GMDelCorpse   ||
+		          opcode == ZN_OP_GMToggle    || opcode == ZN_OP_GMSurname     ||
+		          opcode == ZN_OP_GMApproval  || opcode == ZN_OP_GMNameApproval ||
+		          opcode == ZN_OP_MoveLog))
+			HandleGMToolPacket(addr, port, s, opcode, payload, plen);
 		else if (opcode == ZN_OP_Surname && s.trilogy_client)
 			HandleSurname(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SocialText && s.trilogy_client)
@@ -7629,6 +7651,233 @@ void TrilogyZoneServer::HandleFriendsWho(Session& s, const uint8_t* payload, uin
 	std::vector<char> buf(names.begin(), names.end());
 	buf.push_back('\0');
 	tc->FriendsWho(buf.data());
+}
+
+// ============================================================
+// HandleGMToolPacket — the v29c GM command surface.
+//
+// Every layout below was read out of eqgame.exe (command rows and send sites
+// named per case).  Where a stock Client::Handle_OP_* does the job it is fed a
+// rebuilt packet; where the stock handler has the wrong shape or a bug, the
+// work is done here.  The client gates all of these on its GM byte (player
+// +0xf1 = PlayerProfile 4174 = GetGM()), and so do we.
+// ============================================================
+void TrilogyZoneServer::HandleGMToolPacket(const std::string& addr, int port, Session& s,
+                                           uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	auto str_at = [&](uint32_t off, uint32_t len) -> std::string {
+		if (off >= plen) return {};
+		const uint32_t n = std::min(len, plen - off);
+		const char* p = reinterpret_cast<const char*>(payload + off);
+		return std::string(p, strnlen(p, n));
+	};
+	auto u16_at = [&](uint32_t off) -> uint16_t {
+		uint16_t v = 0;
+		if (off + 2 <= plen) memcpy(&v, payload + off, 2);
+		return v;
+	};
+	auto u32_at = [&](uint32_t off) -> uint32_t {
+		uint32_t v = 0;
+		if (off + 4 <= plen) memcpy(&v, payload + off, 4);
+		return v;
+	};
+	// A name as typed or targeted is in the client's spawn-table form; entity
+	// names differ for NPCs and corpses (see TrilogyWireNameToEntityName).
+	auto find_mob = [&](const std::string& wire) -> Mob* {
+		if (wire.empty()) return nullptr;
+		char ent[64] = {};
+		TrilogyWireNameToEntityName(wire.c_str(), ent, sizeof(ent));
+		Mob* m = entity_list.GetMob(ent);
+		return m ? m : entity_list.GetMob(wire.c_str());
+	};
+
+	switch (opcode) {
+	case ZN_OP_GMHideMe:
+		// Sent before its buffer is filled (0x4a506b); the state arrives as the
+		// f520 type 3 that follows — see HandleConnectedSpawnAppearance.
+	case ZN_OP_GMApproval:
+		// /approval (0x4a8b39): a GM's opt-in to name-approval requests, resent on
+		// every zone-in when off.  EQEmu approves names at creation; nothing to do.
+	case ZN_OP_GMNameApproval:
+		// The console's answer to a 0x8c20 name-approval request we never send.
+	case ZN_OP_MoveLog:
+		// /movelog yes (server transfer) — nothing on this server.
+		return;
+	default:
+		break;
+	}
+
+	if (!tc->GetGM()) {
+		LogInfo("[TrilogyGM] char={} sent GM opcode {:04X} without the GM flag — ignored",
+		        s.char_name, opcode);
+		return;
+	}
+
+	switch (opcode) {
+	case ZN_OP_GMServers: {
+		// /servers (0x4a50aa): 4 B own id; world answers as chat.
+		EQApplicationPacket app(OP_GMServers, 0);
+		tc->Handle_OP_GMServers(&app);
+		break;
+	}
+	case ZN_OP_GMEmoteZone: {
+		// /emotezone (0x4a9ff5): 512 B of text, same as GMEmoteZone_Struct.
+		EQApplicationPacket app(OP_GMEmoteZone, sizeof(::GMEmoteZone_Struct));
+		auto* e = reinterpret_cast<::GMEmoteZone_Struct*>(app.pBuffer);
+		memset(e, 0, sizeof(*e));
+		strn0cpy(e->text, str_at(0, sizeof(e->text)).c_str(), sizeof(e->text));
+		tc->Handle_OP_GMEmoteZone(&app);
+		break;
+	}
+	case ZN_OP_GMToggle: {
+		// /toggletell (0x4a911a): u32 on/off at +0x20.
+		EQApplicationPacket app(OP_GMToggle, sizeof(::GMToggle_Struct));
+		auto* t = reinterpret_cast<::GMToggle_Struct*>(app.pBuffer);
+		memset(t, 0, sizeof(*t));
+		t->toggle = u32_at(0x20);
+		tc->Handle_OP_GMToggle(&app);
+		break;
+	}
+	case ZN_OP_GMSurname: {
+		// /lastname (0x4a4c6d): name[30] @0, gm[30] @0x1e, last name @0x3c.
+		// Handle_OP_GMLastName renames and re-broadcasts OP_GMLastName, which
+		// goes back out to v29c as 0x6e21.  PlayerProfile Surname is 20 bytes.
+		EQApplicationPacket app(OP_GMLastName, sizeof(::GMLastName_Struct));
+		auto* g = reinterpret_cast<::GMLastName_Struct*>(app.pBuffer);
+		memset(g, 0, sizeof(*g));
+		std::string last = str_at(0x3c, 0x20);
+		if (last.size() > 19) last.resize(19);
+		strn0cpy(g->name,     str_at(0, 30).c_str(), sizeof(g->name));
+		strn0cpy(g->gmname,   tc->GetName(),         sizeof(g->gmname));
+		strn0cpy(g->lastname, last.c_str(),          sizeof(g->lastname));
+		tc->Handle_OP_GMLastName(&app);
+		break;
+	}
+	case ZN_OP_GMBecomeNPC: {
+		// /becomenpc (0x4aaa71): {u32 target spawn id; u32 max level}, the same 8
+		// bytes as BecomeNPC_Struct.  The id is the client's; our own player
+		// spawn id maps back to the entity.  The target's copy goes back out as
+		// 0x8c21 (TrilogyClient, OP_GMBecomeNPC).
+		EQApplicationPacket app(OP_GMBecomeNPC, sizeof(::BecomeNPC_Struct));
+		auto* b = reinterpret_cast<::BecomeNPC_Struct*>(app.pBuffer);
+		const uint32_t id = u32_at(0);
+		b->id       = (id == s.player_spawn_id) ? tc->GetID() : id;
+		b->maxlevel = static_cast<int32>(u32_at(4));
+		tc->Handle_OP_GMBecomeNPC(&app);
+		break;
+	}
+	case ZN_OP_GMIllusion: {
+		// /becomenpc's look, sent just before 0x8c21 (0x4aac89): target name[30]
+		// @0, race u16 @0x3e, gender u8 @0x40, texture u16 @0x42, helm u16 @0x44,
+		// face u16 @0x46.  Handle_OP_Illusion would re-skin the SENDER, so the
+		// named target is changed directly.
+		if (plen < 0x48) break;
+		Mob* m = find_mob(str_at(0, 30));
+		if (!m) {
+			tc->Message(Chat::Red, "Illusion target not found in this zone.");
+			break;
+		}
+		AppearanceStruct a;
+		a.race_id        = u16_at(0x3e);
+		a.gender_id      = payload[0x40];
+		a.texture        = static_cast<uint8>(u16_at(0x42));
+		a.helmet_texture = static_cast<uint8>(u16_at(0x44));
+		a.face           = static_cast<uint8>(u16_at(0x46));
+		m->SendIllusionPacket(a);
+		break;
+	}
+	case ZN_OP_GMFind: {
+		// /find (0x4a8721): target name[30] @0, gm[30] @0x1e.  Reply handler
+		// 0x496ee9: found u8 @0x3c, zone short name @0x3d, int32 @0x5c/@0x60/
+		// @0x64 printed as "x = %d y = %d z = %d" — which is Y, X, Z, the order
+		// EQClassic's GMSummon_Struct (y @92, x @96, z @100) uses.  In-zone only,
+		// as in EQClassic.
+		const std::string who = str_at(0, 30);
+		Mob* m = find_mob(who);
+		uint8_t out[108] = {};
+		strncpy(reinterpret_cast<char*>(out),        who.c_str(),   29);
+		strncpy(reinterpret_cast<char*>(out + 0x1e), tc->GetName(), 29);
+		if (m) {
+			out[0x3c] = 1;
+			strncpy(reinterpret_cast<char*>(out + 0x3d), zone ? zone->GetShortName() : "", 14);
+			const int32_t y = static_cast<int32_t>(m->GetY());
+			const int32_t x = static_cast<int32_t>(m->GetX());
+			const int32_t z = static_cast<int32_t>(m->GetZ());
+			memcpy(out + 0x5c, &y, 4);
+			memcpy(out + 0x60, &x, 4);
+			memcpy(out + 0x64, &z, 4);
+		}
+		LogInfo("[TrilogyGM] /find char={} who='{}' found={}", s.char_name, who, m != nullptr);
+		SendApp(addr, port, s, ZN_OP_GMFind, out, sizeof(out));
+		break;
+	}
+	case ZN_OP_GMDelCorpse: {
+		// /delcorpse (0x4a52e1): corpse name[30] @0 in the client's spawn-table
+		// form.  Stock Handle_OP_GMDelCorpse would dereference a name it cannot
+		// find (it tests the struct pointer, not the lookup).
+		const std::string wire = str_at(0, 30);
+		Mob* m = find_mob(wire);
+		if (!m || !m->IsCorpse()) {
+			tc->Message(Chat::Red, fmt::format("No corpse named {} in this zone.", wire).c_str());
+			break;
+		}
+		const std::string name = m->GetName();
+		m->CastToCorpse()->Delete();
+		tc->Message(Chat::Red, fmt::format("Corpse {} deleted.", name).c_str());
+		break;
+	}
+	case ZN_OP_GMNameChange: {
+		// /name <old> <new> [b] (0x4a4d37): old[30] @0, gm[30] @0x1e, new[30]
+		// @0x3c, u16 badname @0x5a.  The v29c handler (0x49742d) finds the spawn
+		// by OLD name and needs u16 @0x5c != 0.  Client::ChangeFirstName does the
+		// rename, but fills its OP_GMNameChange's oldname after renaming — so the
+		// broadcast is built here with the real old name.
+		const std::string oldname = str_at(0, 30);
+		std::string       newname = str_at(0x3c, 30);
+		const bool        badname = u16_at(0x5a) != 0;
+		Client* target = entity_list.GetClientByName(oldname.c_str());
+		if (!target) {
+			tc->Message(Chat::Red, fmt::format("/name: {} is not a player in this zone.", oldname).c_str());
+			break;
+		}
+		if (newname.size() < 4 || newname.size() > 29 ||
+		    !std::all_of(newname.begin(), newname.end(), [](char c) { return std::isalpha(static_cast<unsigned char>(c)); })) {
+			tc->Message(Chat::Red, "/name: the new name must be 4-29 letters.");
+			break;
+		}
+		newname[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(newname[0])));
+		if (!target->ChangeFirstName(newname.c_str(), tc->GetName())) {
+			tc->Message(Chat::Red, fmt::format("/name: {} is already in use.", newname).c_str());
+			break;
+		}
+		if (badname) database.AddToNameFilter(oldname);
+
+		uint8_t out[94] = {};
+		strncpy(reinterpret_cast<char*>(out),        oldname.c_str(), 29);
+		strncpy(reinterpret_cast<char*>(out + 0x1e), tc->GetName(),   29);
+		strncpy(reinterpret_cast<char*>(out + 0x3c), newname.c_str(), 29);
+		const uint16_t apply = 1;
+		memcpy(out + 0x5c, &apply, 2);
+		for (auto& kv : m_sessions) {
+			Session& o = kv.second;
+			if (!o.trilogy_client) continue;
+			SendApp(o.source_addr, o.source_port, o, ZN_OP_GMNameChange, out, sizeof(out));
+		}
+		// The session keeps the character's name for its own replies (/zone
+		// matches it against the client's profile name).
+		if (Session* ts = FindSessionByEntityId(static_cast<uint16_t>(target->GetID()))) {
+			strn0cpy(ts->char_name, newname.c_str(), sizeof(ts->char_name));
+		}
+		tc->Message(Chat::White, fmt::format("{} is now {}.", oldname, newname).c_str());
+		LogInfo("[TrilogyGM] /name char={} {} -> {} badname={}", s.char_name, oldname, newname, badname);
+		break;
+	}
+	default:
+		break;
+	}
 }
 
 // ============================================================
@@ -17224,6 +17473,30 @@ void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, 
 		s.camping    = false;
 		s.camp_start = 0;
 		LogInfo("[TrilogyZone] Camp cancelled (stood up) for {}", s.char_name);
+	}
+
+	// Two GM commands arrive as a client-sent SpawnAppearance, which the stock
+	// handler treats as a possible hack and drops:
+	//  - /height (eqgame.exe 0x4a5375): type 29 Size {target, size}.
+	//  - /hideme (0x4a4f81): the client toggles its own invisibility and sends
+	//    type 3 {self, 1 = hidden / 0 = shown}; its 0xd421 carries nothing.
+	if (s.trilogy_client->GetGM()) {
+		const uint32 type = static_cast<uint32>(tri->type);
+		if (type == AppearanceType::Size) {
+			if (Mob* m = entity_list.GetMob(emu->spawn_id)) {
+				LogInfo("[TrilogyGM] /height char={} target={} size={}",
+				        s.char_name, m->GetName(), emu->parameter);
+				m->ChangeSize(static_cast<float>(emu->parameter), true);
+			}
+			return;
+		}
+		if (type == AppearanceType::Invisibility &&
+		    emu->spawn_id == s.trilogy_client->GetID() &&
+		    (emu->parameter != 0 || s.trilogy_client->GetHideMe())) {
+			LogInfo("[TrilogyGM] /hideme char={} hidden={}", s.char_name, emu->parameter != 0);
+			s.trilogy_client->SetHideMe(emu->parameter != 0);
+			return;
+		}
 	}
 
 	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
