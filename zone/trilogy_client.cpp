@@ -4799,20 +4799,30 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 	const uint8_t* p    = app->pBuffer;
 	const uint32_t size = app->size;
 
+	uint32_t playerineqstring    = 0;
 	uint32_t playersinzonestring = 0;
 	uint32_t playercount         = 0;
+	memcpy(&playerineqstring,    p + 4,  sizeof(uint32_t));
 	memcpy(&playersinzonestring, p + 40, sizeof(uint32_t));
 	memcpy(&playercount,         p + 60, sizeof(uint32_t));
 
-	// The separator rule is already on the wire; use it verbatim.  It is written
-	// without a terminator (memcpy of exactly strlen), so bound the read at 27
-	// and cut at the first null in case a future writer shortens it.
-	std::string rule(reinterpret_cast<const char*>(p + 8),
-	                 strnlen(reinterpret_cast<const char*>(p + 8), 27));
-	if (rule.empty()) rule.assign(27, '-');
+	// /who all friends: world's SendFriendsWho marks its reply 0xFFFFFFFF here
+	// (a /who all reply carries 5001), and the v29c client has already printed
+	// its own "Friends currently on EverQuest:" header and rule before sending
+	// the request (eqgame.exe 0x4ca9f3) — so no second header.
+	const bool friends_reply = (playerineqstring == 0xFFFFFFFF);
 
-	SendSystemLine(kWhite, "Players on EverQuest:");
-	SendSystemLine(kWhite, rule);
+	if (!friends_reply) {
+		// The separator rule is already on the wire; use it verbatim.  It is written
+		// without a terminator (memcpy of exactly strlen), so bound the read at 27
+		// and cut at the first null in case a future writer shortens it.
+		std::string rule(reinterpret_cast<const char*>(p + 8),
+		                 strnlen(reinterpret_cast<const char*>(p + 8), 27));
+		if (rule.empty()) rule.assign(27, '-');
+
+		SendSystemLine(kWhite, "Players on EverQuest:");
+		SendSystemLine(kWhite, rule);
+	}
 
 	uint32_t o = kHeaderSize;
 	auto room  = [&](uint32_t n) { return o + n <= size; };

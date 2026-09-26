@@ -380,6 +380,17 @@ static constexpr uint16_t ZN_OP_GetGuildsList     = 0x2821;
 // zero-extend unchanged.  guildid is the exception -- EQEmu's "none" for that
 // one is 0xFFFFFFFF -- so it is mapped explicitly in HandleWhoAll.
 static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
+// 0xbd21 /report <name>.  5184 B fixed (eqgame.exe 0x4a4b76, send 0x4a4c23):
+// char reported[32]; char lines[10][512] (the last 10 chat-display lines);
+// 32 B never written.  No reply — the client prints its own confirmation and
+// allows one report per zone itself (ds:0x6b63e8).
+static constexpr uint16_t ZN_OP_Report         = 0xbd21;
+static constexpr uint32_t kTrilogyReportSize   = 5184;
+// 0xc521 /who all friends.  NUL-terminated comma-separated list of the names in
+// the client's own friends list (0x4ca5c7, send 0x4ca9e8).  The client prints
+// its "Friends currently on EverQuest:" header itself; the rows come back as a
+// who-all reply rendered to chat (HandleOutgoingWhoAllResponse).
+static constexpr uint16_t ZN_OP_FriendsWho     = 0xc521;
 
 // 0x4121 OP_ZoneEntryResend.  2 B: { int16 spawn_id }.  Client -> zone.
 //
@@ -2995,6 +3006,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleServerFilter(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_WhoAll && s.trilogy_client)
 			HandleWhoAll(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Report && s.trilogy_client)
+			HandleReport(s, payload, plen);
+		else if (opcode == ZN_OP_FriendsWho && s.trilogy_client)
+			HandleFriendsWho(s, payload, plen);
 		else if (opcode == ZN_OP_ZoneEntryResend && s.trilogy_client)
 			HandleZoneEntryResend(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SetRunMode && s.trilogy_client)
@@ -7530,6 +7545,71 @@ void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session&
 	memcpy(app->pBuffer, &out, sizeof(out));
 	tc->Handle_OP_WhoAllRequest(app);
 	delete app;
+}
+
+// ============================================================
+// HandleReport — inbound 0xbd21, /report <name>
+//
+// Rebuilt into the text form Client::Handle_OP_Report parses —
+// "reported|reporter|line\nline...\0" — which writes the `reports` table.  The
+// reporter is not in the v29c payload; it is this session.  A '|' in the typed
+// name would shift that parse, so it is replaced.  Empty chat lines are skipped.
+// ============================================================
+void TrilogyZoneServer::HandleReport(Session& s, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+	if (plen < 32 + 10 * 512) {
+		LogInfo("[TrilogyZone] Report: char={} short packet plen={} (need {})",
+		        s.char_name, plen, kTrilogyReportSize);
+		return;
+	}
+
+	std::string reported(reinterpret_cast<const char*>(payload),
+	                     strnlen(reinterpret_cast<const char*>(payload), 32));
+	std::replace(reported.begin(), reported.end(), '|', ' ');
+
+	std::string text;
+	for (int i = 0; i < 10; ++i) {
+		const char* line = reinterpret_cast<const char*>(payload + 32 + i * 512);
+		const size_t len = strnlen(line, 512);
+		if (len == 0) continue;
+		if (!text.empty()) text += '\n';
+		text.append(line, len);
+	}
+
+	const std::string body = reported + "|" + tc->GetName() + "|" + text;
+	auto* app = new EQApplicationPacket(OP_Report, static_cast<uint32>(body.size() + 1));
+	memcpy(app->pBuffer, body.c_str(), body.size() + 1);
+	LogInfo("[TrilogyZone] Report: char={} reported='{}' lines_bytes={}",
+	        s.char_name, reported, text.size());
+	tc->Handle_OP_Report(app);
+	delete app;
+}
+
+// ============================================================
+// HandleFriendsWho — inbound 0xc521, /who all friends
+//
+// The payload is already the comma-separated name list Client::FriendsWho
+// takes.  That goes to world (ClientList::SendFriendsWho), which answers with a
+// who-all reply marked playerineqstring 0xFFFFFFFF; HandleOutgoingWhoAllResponse
+// renders it without the "Players on EverQuest:" header the client has already
+// printed.  The list lives only in the client's INI, so nothing is stored here.
+// ============================================================
+void TrilogyZoneServer::HandleFriendsWho(Session& s, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc || plen == 0) return;
+
+	// Client::FriendsWho reads a C string; never trust the client to terminate it.
+	std::string names(reinterpret_cast<const char*>(payload),
+	                  strnlen(reinterpret_cast<const char*>(payload), plen));
+	if (names.empty()) return;
+
+	LogInfo("[TrilogyZone] FriendsWho: char={} names='{}'", s.char_name, names);
+	std::vector<char> buf(names.begin(), names.end());
+	buf.push_back('\0');
+	tc->FriendsWho(buf.data());
 }
 
 // ============================================================

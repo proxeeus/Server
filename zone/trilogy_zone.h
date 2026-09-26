@@ -859,6 +859,10 @@ private:
 	// by TrilogyClient::HandleOutgoingWhoAllResponse.
 	void HandleWhoAll(const std::string& addr, int port, Session& s,
 	                  const uint8_t* payload, uint32_t plen);
+	// 0xbd21 /report → Client::Handle_OP_Report (reports table).
+	void HandleReport(Session& s, const uint8_t* payload, uint32_t plen);
+	// 0xc521 /who all friends → Client::FriendsWho (world answers).
+	void HandleFriendsWho(Session& s, const uint8_t* payload, uint32_t plen);
 
 	// Inbound 0x4121 OP_ZoneEntryResend — the client asking for a spawn again.
 	// Resends it if the mob is still there, or answers with a DeleteSpawn if it
