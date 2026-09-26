@@ -1154,6 +1154,10 @@ public:
 	void BreakSneakWhenCastOn(Mob* caster, bool IsResisted);
 	void BreakFeignDeathWhenCastOn(bool IsResisted);
 	void LeaveGroup();
+	// Restart the post-death removal timer that Client::Death starts at 5 s.
+	// The Trilogy client needs longer to answer its bind teleport — see
+	// TrilogyClient's OP_ZonePlayerToBind translation.
+	void RestartDeadTimer(uint32 ms) { dead_timer.Start(ms, true); }
 
 	bool Hungry() const {if (GetGM() || !RuleB(Character, EnableFoodRequirement)) return false; return m_pp.hunger_level <= 3000;}
 	bool Thirsty() const {if (GetGM() || !RuleB(Character, EnableFoodRequirement)) return false; return m_pp.thirst_level <= 3000;}

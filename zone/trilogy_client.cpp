@@ -1492,6 +1492,18 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// the fixed header (bind_zone_id, coords, heading).
 		if (app->size < sizeof(::ZonePlayerToBind_Struct)) break;
 		const auto* zpb = reinterpret_cast<const ::ZonePlayerToBind_Struct*>(app->pBuffer);
+
+		// Client::Death started dead_timer at 5 s just before sending this.  When
+		// it fires, Client::Process returns false and the Client is deleted — and
+		// v29c's answer to the 0x4d21 below, the 0xa320 that drives the zone-out,
+		// can only be handled while the Client exists.  Missed, the client spins
+		// 180 s waiting for a reply that never comes (eqgame.exe 0x4dbf94).
+		// Measured over 21 logged player deaths: the answer took 0-4 s, so the
+		// 5 s window held with one second to spare.  Give it 30.  If the answer
+		// never comes the timer still fires and does exactly what it did before.
+		if (IsDead()) {
+			RestartDeadTimer(30000);
+		}
 		const bool same_zone = (zpb->bind_zone_id == 0 ||
 		                        static_cast<uint32>(zpb->bind_zone_id) == GetZoneID());
 		if (same_zone) {
