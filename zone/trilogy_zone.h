@@ -602,6 +602,12 @@ private:
 		PcTradeBagSlot   pc_trade_bag[8][10] = {};         // bag contents per main slot
 		uint32_t         pc_trade_offer_cp = 0, pc_trade_offer_sp = 0;
 		uint32_t         pc_trade_offer_gp = 0, pc_trade_offer_pp = 0;
+		// A PC-trade request this session made that has been relayed to the
+		// recipient's client and not answered yet (see HandleTradeRequest): the
+		// entity id asked, and when (steady-clock ms).  The answer is the
+		// recipient's own 0xe620 (window opened) or 0xd620 (refused).
+		uint16_t         pc_trade_pending_to = 0;
+		uint64_t         pc_trade_pending_ms = 0;
 
 		// Inspect state — see HandleInspectRequest / HandleInspectAnswer.
 		//
@@ -726,6 +732,10 @@ private:
 	                        const uint8_t* payload, uint32_t plen);
 	void HandleTradeAccepted(const std::string& addr, int port, Session& s,
 	                         const uint8_t* payload, uint32_t plen);
+	// Inbound 0xd620: the recipient's client refused a relayed PC-trade request
+	// (trading off, group only, or busy).  Relayed to the requester.
+	void HandleTradeBusy(const std::string& addr, int port, Session& s,
+	                     const uint8_t* payload, uint32_t plen);
 	void HandleTradeCoins(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleTradeGive(const std::string& addr, int port, Session& s);
@@ -763,6 +773,11 @@ private:
 	static void PcTradeRefundOfferedCoins(Session& s);
 	// Reset every PC-trade field on the session (does NOT refund coins).
 	static void PcTradeClearState(Session& s);
+	// Put a session into an open PC trade with the given partner (fresh staging).
+	static void PcTradeInit(Session& s, uint16_t partner_entity, uint32_t partner_char);
+	// The session whose unanswered PC-trade request targets this entity, or
+	// nullptr.  The most recent one wins if there are several.
+	Session* FindPendingTradeRequester(uint16_t recipient_entity);
 	// Wire → DB slot (inventory positions only; mirrors HandleMoveItem's lambda).
 	static int  TradeWireToDb(const Session& s, uint32_t w);
 	// DB content-slot base for a bag at the given top slot (general + bank), -1 if

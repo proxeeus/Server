@@ -720,6 +720,9 @@ static constexpr uint16_t ZN_OP_Sacrifice     = 0xea21; // bidirectional: ask / 
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
 static constexpr uint16_t ZN_OP_TradeAccept  = 0xe620; // zone -> client: open trade window (Trade_Window_Struct, ids swapped)
+static constexpr uint16_t ZN_OP_TradeBusy    = 0xd620; // both: PC-trade request refused, 12 B {to, from, type}; type 0x62 not trading, 0x63 group only, else busy
+// How long a relayed PC-trade request waits for the recipient's client to answer.
+static constexpr uint64_t kTradeRequestPendingMs = 5000;
 static constexpr uint16_t ZN_OP_TradeCoins   = 0xe420; // client -> zone: coin placed in window (TradeCoin_Struct)
 static constexpr uint16_t ZN_OP_ClickGive    = 0xda20; // client -> zone: commit trade ("Give")
 static constexpr uint16_t ZN_OP_CloseTrade   = 0xdc20; // zone -> client: close trade window (no payload)
@@ -2661,6 +2664,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		// recipient agreeing to open their window — relayed to the requester).
 		else if (opcode == ZN_OP_TradeAccept && s.trilogy_client)
 			HandleTradeAccepted(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_TradeBusy && s.trilogy_client)
+			HandleTradeBusy(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeCoins && s.trilogy_client)
 			HandleTradeCoins(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClickGive && s.trilogy_client)
@@ -9814,42 +9819,100 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 		return;
 	}
 
-	// Initialise PC-trade state on BOTH sessions.  We set up the recipient too so
-	// their incoming stage/coin packets find pc_trade_active=true on the relay.
-	auto init_pc_trade = [](Session& sess, uint16_t partner_entity, uint32_t partner_char) {
-		sess.pc_trade_active     = true;
-		sess.pc_trade_partner_id = partner_entity;
-		sess.pc_trade_partner_ch = partner_char;
-		sess.pc_trade_gave       = false;
-		for (auto& it : sess.pc_trade_main) it = Session::PcTradeStageItem{};
-		for (auto& row : sess.pc_trade_bag) for (auto& it : row) it = Session::PcTradeBagSlot{};
-		sess.pc_trade_offer_cp = sess.pc_trade_offer_sp = 0;
-		sess.pc_trade_offer_gp = sess.pc_trade_offer_pp = 0;
-	};
-	init_pc_trade(s,        other_id, partner->char_id);
-	init_pc_trade(*partner, self_id,  s.char_id);
+	// Relay the request to the recipient's client and let IT decide, as EQClassic
+	// does.  v29c's 0xd120 handler (eqgame.exe 0x49dfeb) applies the player's own
+	// trade preference (options panel: anyone / group only / nobody — "anyone" by
+	// default) and its busy checks, then either opens its trade window and sends
+	// 0xe620 {requester, self} back (0x49e187), or refuses with 0xd620
+	// {requester, self, type} and prints "%s is interested in making a trade."
+	// (0x49e0c7).  HandleTradeAccepted and HandleTradeBusy take it from there.
+	//
+	// This used to open both windows server-side, on the belief that a relayed
+	// 0xd120 is discarded and v29c never sends the ack.  The handler does send it.
+	// What the 2026-06-21 test relayed was the requester's own bytes, and those
+	// name the requester by the SELF id its own client uses (player_spawn_id,
+	// 0x4000|char_id).  No other client knows that id, the handler's first spawn
+	// lookup failed, and it returned without a word.  So the request is rebuilt
+	// here in the recipient's terms: +0 its own id, +4 the requester's entity id.
+	// Bypassing the client meant the preference and the busy refusals never ran.
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (s.pc_trade_pending_to == other_id &&
+	    now_ms - s.pc_trade_pending_ms < kTradeRequestPendingMs) {
+		// A repeat click while the first request is still in flight.  Relaying it
+		// again would reach a client whose trade window is already opening, and
+		// that client would refuse the second copy as busy.
+		return;
+	}
+	s.pc_trade_pending_to = other_id;
+	s.pc_trade_pending_ms = now_ms;
 
-	// Open the trade window on BOTH sides by sending OP_TradeAccepted (0xe620).
-	// v29c only renders the trade window in response to 0xe620 — forwarding the
-	// raw 0xd120 packet is silently discarded by the receiving client (proven by
-	// the 2026-06-21 log where the relayed 0xd120 produced no window).  EQClassic
-	// goes through a 0xd120 echo + recipient-generated 0xe620 ack, but v29c does
-	// not auto-generate the ack, so we open both windows server-side immediately.
-	// Convention from the NPC path: each side receives {fromid=self, toid=other}.
-	auto send_open = [&](Session& sess, uint16_t self_e, uint16_t other_e) {
-		uint8_t resp[8] = {};
-		const uint32_t f = self_e;
-		const uint32_t t = other_e;
-		std::memcpy(resp + 0, &f, 4);
-		std::memcpy(resp + 4, &t, 4);
-		SendApp(sess.source_addr, sess.source_port, sess,
-		        ZN_OP_TradeAccept, resp, 8);
-	};
-	send_open(s,        self_id,  other_id);
-	send_open(*partner, other_id, self_id);
+	uint8_t req[8] = {};
+	const uint32_t to   = partner->trilogy_client->TranslateId(partner->trilogy_client->GetID());
+	const uint32_t from = self_id;
+	std::memcpy(req + 0, &to,   4);
+	std::memcpy(req + 4, &from, 4);
+	SendApp(partner->source_addr, partner->source_port, *partner,
+	        ZN_OP_TradeRequest, req, 8);
 
-	LogInfo("[TrilogyZone] PCTrade opened: {} (entity {}) <-> {} (entity {})",
-	        s.char_name, self_id, partner->char_name, other_id);
+	LogInfo("[TrilogyZone] PCTrade request relayed: {} (entity {}) -> {} (entity {}, self id {})",
+	        s.char_name, self_id, partner->char_name, other_id, to);
+}
+
+void TrilogyZoneServer::PcTradeInit(Session& s, uint16_t partner_entity, uint32_t partner_char)
+{
+	PcTradeClearState(s);
+	s.pc_trade_active     = true;
+	s.pc_trade_partner_id = partner_entity;
+	s.pc_trade_partner_ch = partner_char;
+}
+
+TrilogyZoneServer::Session* TrilogyZoneServer::FindPendingTradeRequester(uint16_t recipient_entity)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	Session* best = nullptr;
+	for (auto& kv : m_sessions) {
+		Session& cand = kv.second;
+		if (!cand.trilogy_client || cand.pc_trade_pending_to != recipient_entity) continue;
+		if (now_ms - cand.pc_trade_pending_ms > kTradeRequestPendingMs) continue;
+		if (!best || cand.pc_trade_pending_ms > best->pc_trade_pending_ms) best = &cand;
+	}
+	return best;
+}
+
+void TrilogyZoneServer::HandleTradeBusy(const std::string& /*addr*/, int /*port*/, Session& s,
+                                        const uint8_t* payload, uint32_t plen)
+{
+	// The recipient's client refused a relayed request (0x49e0c7):
+	// {+0 requester, +4 its own self id, +8 type}.  The requester's client prints
+	// the refusal itself (0x49df8f) — 0x62 "not interested in trading with anyone
+	// at all", 0x63 "only ... members of my group", anything else "I'm busy right
+	// now" — resolving +4 as the refuser, so the ids are rebuilt in the
+	// requester's terms: +0 its own self id, +4 the recipient's entity id.
+	if (!s.trilogy_client || plen < 12) return;
+
+	const uint16_t self_e = static_cast<uint16_t>(s.trilogy_client->GetID());
+	Session* req = FindPendingTradeRequester(self_e);
+	if (!req) {
+		LogInfo("[TrilogyZone] PCTrade refusal from {} matches no pending request — dropped",
+		        s.char_name);
+		return;
+	}
+	req->pc_trade_pending_to = 0;
+
+	uint8_t out[12] = {};
+	const uint32_t to   = req->trilogy_client->TranslateId(req->trilogy_client->GetID());
+	const uint32_t from = self_e;
+	std::memcpy(out + 0, &to,   4);
+	std::memcpy(out + 4, &from, 4);
+	std::memcpy(out + 8, payload + 8, 4);
+	SendApp(req->source_addr, req->source_port, *req, ZN_OP_TradeBusy, out, 12);
+
+	LogInfo("[TrilogyZone] PCTrade request refused by {} (type=0x{:02X}) — relayed to {}",
+	        s.char_name, payload[8], req->char_name);
 }
 
 void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*port*/, Session& s,
@@ -9874,6 +9937,41 @@ void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*p
 	// appeared to work, because by then the observer had already seen the
 	// window-opening 0xe620 for that trade and had a green name to show.
 	if (!s.trilogy_client) return;
+
+	// The recipient's client answering a relayed request (HandleTradeRequest): it
+	// has already opened its own window and sent this 0xe620 {requester, self}
+	// (eqgame.exe 0x49e187).  Open the trade on both sessions and send the
+	// requester its window.  Every later 0xe620 in this trade is an Accept click
+	// and takes the relay below.
+	if (!s.pc_trade_active && !s.trade_npc_id) {
+		const uint16_t self_e = static_cast<uint16_t>(s.trilogy_client->GetID());
+		Session* req = FindPendingTradeRequester(self_e);
+		if (req) {
+			req->pc_trade_pending_to = 0;
+			if (req->pc_trade_active || req->trade_npc_id) {
+				// The requester started something else in the meantime.
+				LogInfo("[TrilogyZone] PCTrade window-open from {} but {} is already trading — ignored",
+				        s.char_name, req->char_name);
+				return;
+			}
+			const uint16_t req_e = static_cast<uint16_t>(req->trilogy_client->GetID());
+			PcTradeInit(*req, self_e, s.char_id);
+			PcTradeInit(s,    req_e,  req->char_id);
+
+			// {+0 the requester itself, +4 its partner}: the handler (0x49ea74)
+			// looks the partner up at +4 and opens the window on it.
+			uint8_t resp[8] = {};
+			const uint32_t f = req_e;
+			const uint32_t t = self_e;
+			std::memcpy(resp + 0, &f, 4);
+			std::memcpy(resp + 4, &t, 4);
+			SendApp(req->source_addr, req->source_port, *req, ZN_OP_TradeAccept, resp, 8);
+
+			LogInfo("[TrilogyZone] PCTrade opened: {} (entity {}) <-> {} (entity {})",
+			        req->char_name, req_e, s.char_name, self_e);
+			return;
+		}
+	}
 
 	if (!s.pc_trade_active || s.pc_trade_partner_id == 0) {
 		// Accept outside an active PC trade — an NPC trade or a stale click.
