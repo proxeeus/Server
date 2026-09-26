@@ -742,25 +742,7 @@ private:
 	void HandleTradeCancel(const std::string& addr, int port, Session& s);
 	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
 	                         uint32_t number_in_stack);
-	// Refund any partial-pickup cursor rows that ended up in trade_items back to
-	// their original source slot (merge if same item, else move/queue).  Used by
-	// HandleTradeCancel + the non-quest branch of HandleTradeGive so the server's
-	// DB stays in sync with the client's local-return behaviour.
-	void RefundPartialCursorTradeItems(Session& s);
-	// Clean up full-item cursor stages that were never given (trade closed with
-	// items still staged from cursor).  The v29c client visually clears its
-	// cursor when the player drags cursor → trade slot; if the trade ends
-	// without a Give, the client cursor stays empty but the DB row at slot 33 /
-	// 8000-8010 was never touched (staging is metadata-only).  DELETE the
-	// orphan row so subsequent CheckLoreConflict / #si / cursor pickups match
-	// what the client actually shows.  Partial-pickup materialized cursors
-	// (original_source_db_slot >= 0) are handled by RefundPartialCursorTradeItems
-	// and skipped here to avoid double-deletion.
-	void CleanupOrphanedCursorTradeItems(Session& s);
-	// PC-trade equivalent — same per-row merge logic against pc_trade_main.
-	// Called from PcTradeAbortBoth.
-	void RefundPartialCursorPcTradeItems(Session& s);
-	// m_inv resync helper used by both refund paths above.
+	// Reload the given DB slots into m_inv after the trade-return path moved rows.
 	void ResyncMInvForRefund(Session& s, const std::vector<int>& slots_to_sync);
 	// PC-trade internals (split out of the above for readability).
 	void PcTradeAbortBoth(Session& s, Session* partner,
@@ -773,6 +755,16 @@ private:
 	static void PcTradeRefundOfferedCoins(Session& s);
 	// Reset every PC-trade field on the session (does NOT refund coins).
 	static void PcTradeClearState(Session& s);
+	// Give a trade-window item back to its owner when the trade ends without it
+	// changing hands — v29c destroys its own copy.  free_slots is consumed as
+	// items are placed; every DB slot touched is appended to resync.
+	void ReturnStagedTradeItem(Session& s, uint32_t item_id, int from_db_slot,
+	                           std::vector<int>& free_slots, std::vector<int>& resync,
+	                           const char* why);
+	// Return every staged NPC-trade item and refund the offered coin.
+	void ReturnNpcTradeToPlayer(Session& s, const char* why);
+	// Return every item one side staged in a PC trade (coin: PcTradeRefundOfferedCoins).
+	void ReturnPcTradeItemsToPlayer(Session& s, const char* why);
 	// Put a session into an open PC trade with the given partner (fresh staging).
 	static void PcTradeInit(Session& s, uint16_t partner_entity, uint32_t partner_char);
 	// The session whose unanswered PC-trade request targets this entity, or
