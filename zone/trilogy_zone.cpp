@@ -90,15 +90,16 @@ static constexpr uint16_t ZN_OP_TradeItemPacket = 0xdf20; // zone -> client: Tra
 static constexpr uint16_t ZN_OP_CPlayerItem  = 0x6421; // zone -> client: single normal item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerBook  = 0x6521; // zone -> client: single book item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single container at zone-in (raw ClassicItem_Struct, 292 bytes)
-static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
+// 0xf621 OP_CharInventory (bulk inventory) is deliberately NOT sent — see the end of
+// SendInventoryItems.  v29c layout, for the record: int16 count, then
+// deflate({int16 opcode; ClassicItem_Struct} × count), 294 B per entry (eqgame.exe 0x495456).
 
 // ── PP-blanking experiment knobs (test DB) — see SendInventoryItems / SendPlayerProfile ──
-// SUPERSEDED.  SendInventoryItems now does the faithful EQMacEmu zone-in unconditionally:
-// INDIVIDUAL per-item packets (0x6421/0x6521/0x6621) for every slot THEN the DEFLATED 0xf621
-// bulk over the same items (the authoritative snapshot that builds bag contents + reconciles
-// placement).  The earlier "bulk renders NOTHING" finding was a false negative: mode 1 was raw
-// (the client requires deflate) and mode 2 deflated but with the PP arrays blanked.  With the PP
-// populated AND the deflated bulk present — exactly what AK sent in 2001 — the client renders it.
+// SUPERSEDED.  SendInventoryItems sends INDIVIDUAL per-item packets (0x6421/0x6521/0x6621)
+// for every slot and nothing else.  It used to follow them with a deflated 0xf621 bulk in
+// EQMacEmu's Mac-client layout, credited here with building bag contents; the binary shows
+// v29c could never parse that layout, so the per-item packets were doing all of it (see the
+// end of SendInventoryItems).
 // These two constants now ONLY gate the dormant PP-blanking diagnostic below; leave both at their
 // defaults (kInventoryMode==0, kBlankBankPP==false) so the PP stays fully populated.
 static constexpr int  kInventoryMode = 0;     // 0 = keep PP arrays populated (no blanking)
@@ -111,8 +112,7 @@ static constexpr bool kBlankBankPP   = true;  // Blank PP bank arrays to PREVENT
                                               // 0x3120 (loose) / 0x6621 (container) is sole allocator.
                                               // Container's 0x6621 expected to also allocate the bag-
                                               // content array (otherwise bag-open will crash — diagnostic).
-static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic; bulk is
-                                              // separately gated below — bank items are excluded from 0xf621).
+static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic).
 
 // EQClassic-faithful bank zone-in: send each occupied bank slot (top 2000+i AND bag content
 // 2030+i) as a single 0x3120 (OP_ItemTradeIn = ZN_OP_MerchantItem) carrying the full
@@ -4311,12 +4311,9 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 }
 
 // ============================================================
-// SendInventoryItems — query all carried items and send as OP_CharInventory (0xf621).
-//
-// Wire format (EQClassic uncompressed):
-//   int16 count
-//   (int16 opcode + ClassicItem_Struct)[count]
-//   Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container
+// SendInventoryItems — query all carried items and send one packet per item:
+//   0x6421 normal, 0x6521 book, 0x6621 container (raw ClassicItem_Struct each);
+//   bank items as described below.  No 0xf621 bulk — see the end of the function.
 //
 // Slot mapping (v29c SLOT_PERSONAL_BEGIN=21, no charm slot):
 //   EQEmu 0      → skipped           (charm; no v29c equivalent)
@@ -4762,7 +4759,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 
 		// DIAG kSkipBankItems: drop bank-top (DB 2000-2007) and bank-bag content (DB 2031-2110)
-		// from the items vector — excludes them from both per-item passes AND the 0xf621 bulk.
+		// from the items vector — excludes them from the per-item pass.
 		if (kSkipBankItems && slot_id >= 2000) {
 			LogInfo("[TrilogyZone] DIAG kSkipBankItems: dropped slot {} (item {})",
 			        slot_id, item_id);
@@ -4773,45 +4770,31 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		++sent_count;
 	}
 
-	// ── FAITHFUL EQMacEmu (Al'Kabor) ZONE-IN INVENTORY DELIVERY ───────────────────────────
-	// Replicates the live Mac server's exact zone-in sequence.  EQMacEmuTrilogy
-	// Handle_Connect_OP_SendExpZonein does, in order (client_packet.cpp:1512-1514):
-	//   (1) BulkSendItems()          → one INDIVIDUAL per-item packet per occupied slot, inline:
-	//                                   0x6421 item / 0x6621 container / 0x6521 book.  Worn,
-	//                                   general, general-bag contents, BANK top, AND BANK-BAG
-	//                                   contents are ALL sent this way — bank is not special-cased
-	//                                   (client_process.cpp BulkSendItems, slots …→BANK_BAGS_END).
-	//   (2) BulkSendInventoryItems() → the single DEFLATED 0xf621 bulk over the SAME items.  This
-	//                                   is the AUTHORITATIVE inventory snapshot: it BUILDS each
-	//                                   bag's content structure (so bags open without crashing) and
-	//                                   reconciles per-item placement (kills the bank "bleed").
-	//                                   Wire format (ENCODE OP_CharInventory, trilogy.cpp:1779):
-	//                                     [uint8 itemcount][uint8 0][zlib-deflate(itemcount × 292B)]
-	//                                   EVERY entry is the FULL 292-byte item struct — containers
-	//                                   and books included (homogeneous, NOT the short forms).
+	// ── ZONE-IN INVENTORY DELIVERY ─────────────────────────────────────────────────────────
+	// Modelled on EQMacEmu's Handle_Connect_OP_SendExpZonein (client_packet.cpp:1512-1514),
+	// which does (1) BulkSendItems — one INDIVIDUAL per-item packet per occupied slot,
+	// 0x6421 item / 0x6621 container / 0x6521 book — then (2) BulkSendInventoryItems, a deflated
+	// 0xf621 bulk.  Only (1) is done here.  (2) was carried over for a while and credited with
+	// building bag contents and fixing the bank "bleed", but it was in the Al'Kabor Mac client's
+	// layout, which v29c cannot parse — see the end of this function.  Everything credited to it
+	// was the per-item packets.
 	// The PP bank arrays stay POPULATED (EQMacEmu populates them; kInventoryMode==0 keeps the
-	// SendPlayerProfile blanking dormant).  No 0xdf20, no deferral — both were workarounds for the
-	// MISSING bulk: without the authoritative snapshot the per-item bank packets bled a slot and
-	// bags had no content structure (→ empty bag / crash-on-open).  The bulk is the real fix.
+	// SendPlayerProfile blanking dormant).
 	// Items are iterated in DB-slot order (query is ORDER BY slotid), which already yields
 	// EQMacEmu's order — worn, general, general-bags, bank-top, bank-bags — so every parent
-	// container precedes its contents in BOTH passes.  [[project-trilogy-banker]]
+	// container precedes its contents.  [[project-trilogy-banker]]
 
 	// (1) INDIVIDUAL per-item packets — every item, inline, in slot order.
 	// ONE deviation from EQMacEmu's plain-0x6421-for-everything: a LOOSE (non-container) item in a
 	// bank TOP slot (2000-2007) sent via 0x6421 places by equipSlot and BLEEDS DOWN one slot on the
 	// v29c client — item@N also draws a phantom copy at N-1 (proven: a lone naginata at bank slot 2
-	// rendered at slots 1 AND 2).  The 0xf621 bulk is a MERGE, not a replace: it adds bag contents
-	// but does NOT clear that phantom.  So send bank-top LOOSE items via OP_TradeItemPacket (0xdf20),
+	// rendered at slots 1 AND 2).  So send bank-top LOOSE items via OP_TradeItemPacket (0xdf20),
 	// which carries an EXPLICIT slotid — the client places by slotid, no bleed.  Containers (0x6621)
 	// only bleed down to slot 1999 (invalid → harmless) and bank-bag contents (2030+) do NOT bleed
 	// (their render was pixel-perfect), so both keep the normal opcode.
 	int sent_packets = 0;
 	int bank_trade   = 0;
 	int bank_3120    = 0;
-	auto is_bank_slot = [](int16_t es) {
-		return (es >= 2000 && es <= 2007) || (es >= 2030 && es <= 2109);
-	};
 	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
 		const uint16_t opc =
 		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
@@ -4865,39 +4848,28 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 	}
 
-	// (2) DEFLATED 0xf621 bulk over the SAME items (authoritative snapshot — builds bag
-	//     contents + reconciles placement).  [uint8 count][uint8 0][deflate(count × 292B)].
-	// When kBankVia3120 is true: EXCLUDE bank items from the bulk — EQClassic doesn't send
-	// a bulk for bank, and including bank in 0xf621 alongside per-item 0x3120 may cause
-	// double-allocation in the v29c client's bank pointer arrays.
-	std::vector<uint8_t> raw;
-	uint8_t item_count = 0;
-	for (const auto& ci : items) {
-		if (kBankVia3120 && is_bank_slot(ci.equipslot)) continue;
-		const auto* ip = reinterpret_cast<const uint8_t*>(&ci);
-		raw.insert(raw.end(), ip, ip + sizeof(ci));
-		++item_count;
-	}
-	std::vector<uint8_t> out;
-	out.push_back(item_count);   // [0] uint8 itemcount
-	out.push_back(0);            // [1] pad (EQMacEmu leaves byte[1]=0; deflate stream starts at [2])
-	uint32_t payload_bytes = 0;
-	{
-		const size_t hdr = out.size();
-		out.resize(hdr + EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size())) + 16, 0);
-		uint32_t clen = raw.empty() ? 0 : EQ::DeflateData(
-			reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
-			reinterpret_cast<char*>(out.data() + hdr), static_cast<uint32_t>(out.size() - hdr));
-		out.resize(hdr + clen);
-		payload_bytes = clen;
-	}
-	SendApp(addr, port, s, ZN_OP_CharInventory, out.data(), static_cast<uint32_t>(out.size()));
+	// (2) NO 0xf621 bulk.  One used to follow here, and it never worked: it was built in the
+	//     EQMacEmu Mac-client layout, [uint8 count][uint8 0][deflate(count × 292B)].  v29c's
+	//     0xf621 parser (eqgame.exe 0x495456) inflates the payload and walks it in 294-byte
+	//     entries, {int16 opcode; ClassicItem_Struct}, dispatching each on its own embedded
+	//     opcode — 0x6421 item, 0x6621 container, 0x6521 book, anything else skipped — which
+	//     is exactly EQClassic's CPlayerItems_packet_Struct.  Handed 292-byte entries it
+	//     re-derived the count as len/294 and read every entry out of phase: nearly all were
+	//     skipped, and whichever happened to line up with an item opcode became a garbage item
+	//     that failed the client's own check (itemtype@194 == 13 or id@130 < 1000), printed
+	//     "Got a bogus item, deleting it" and sent 0x4721 {-2,-2,1} — on every zone-in.  So
+	//     everything that works at zone-in has always come from the per-item pass above.
+	//
+	//     Not rebuilt in the right layout on purpose: the per-item packets already place every
+	//     item, and v29c's item handlers reject an item for a slot that is already filled
+	//     (0x4721 codes 3–7), so a working bulk on top of them would only add a second copy of
+	//     everything.  EQClassic sends the bulk INSTEAD of per-item packets; switching to that
+	//     would mean retiring the per-item path, which is a separate change.
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} built={} individual={} "
-	        "bank_trade={} bank_3120={} bulk_items={} bulk_payload={} bulk_total={} "
-	        "(bank via 0x3120 EQClassic-faithful; PP bank_inv populated)",
-	        s.char_name, db_rows, sent_count, sent_packets, bank_trade, bank_3120,
-	        static_cast<int>(item_count), payload_bytes, out.size());
+	        "bank_trade={} bank_3120={} (per-item only; bank via 0x3120 EQClassic-faithful; "
+	        "PP bank_inv populated)",
+	        s.char_name, db_rows, sent_count, sent_packets, bank_trade, bank_3120);
 }
 
 // ============================================================
