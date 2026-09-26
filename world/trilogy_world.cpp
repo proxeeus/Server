@@ -614,6 +614,12 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 	LogInfo("[TrilogyWorld] Auth success | account [{}] ls_id [{}] eqemu_id [{}] session_account_id [{}] from {}:{}",
 	        s.account_name, account_id, eqemu_account_id, s.account_id, addr, port);
 
+	// account_ip: record the address this account logged in from, as
+	// world/client.cpp does at the same point (L513 / L599).  v29c also comes
+	// through here on every zone line, so `count` grows faster than on a modern
+	// client; `lastused` and the address list are what matter.
+	database.LoginIP(s.account_id, addr);
+
 	// EQClassic sequence (client_process.cpp ProcessOP_SendLoginInfo):
 	//   SendLoginApproved() -> SendEnterWorld() -> SendExpansionInfo() -> SendCharInfo()
 	SendLoginApproved(addr, port, s);
@@ -977,6 +983,19 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	uint32_t char_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
 	uint32_t zone_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
 
+	// A character saved in a zone that no longer exists (a removed or renumbered
+	// zone row) goes to the Arena, as in world/client.cpp ~L962.  Otherwise the
+	// boot below fails and the character can never enter the world.  Unlike the
+	// stock code, zone_id is updated too, so this login goes to the Arena rather
+	// than to the zone that could not be found.
+	if (!zone_id || !ZoneName(zone_id)) {
+		const uint32_t arena = ZoneID("arena");
+		LogInfo("[TrilogyWorld] EnterWorld | char [{}] zone [{}] not found — moving to Arena [{}]",
+		        char_name, zone_id, arena);
+		database.MoveCharacterToZone(char_id, arena);
+		zone_id = arena;
+	}
+
 	// Same two gates world/client.cpp applies at EnterWorld (L829 and L1494):
 	// an account banned or suspended since it logged in, and a GM-locked zone.
 	{
@@ -999,6 +1018,11 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	strncpy(s.char_name, char_name, sizeof(s.char_name) - 1);
 	s.char_id = char_id;
 	s.zone_id = zone_id;
+
+	// account.charname = the character this account is playing (world/client.cpp
+	// ~L1506).  Never written on this path, so it stayed on whatever a modern
+	// client last logged in with.
+	database.UpdateLiveChar(char_name, s.account_id);
 
 	// Fresh login or zone change?  EnterWorld comes from BOTH: v29c crosses a
 	// zone line by reconnecting to world on a new port and running
