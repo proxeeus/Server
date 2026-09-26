@@ -1665,6 +1665,36 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	        (int)str_v, (int)sta_v, (int)cha_v, (int)dex_v, (int)int_v, (int)agi_v, (int)wis_v,
 	        addr, port);
 
+	// Validate race/class and the stat spend before anything is written, the way
+	// stock world does for Titanium and earlier (Client::OPCharCreate).  Its
+	// tables are the classic ones — base stats per race and class, and the
+	// 20/25/30 bonus points — so they are v29c's too.  Nothing checked this, so a
+	// crafted CharCreate could make any combination with any stats.  Checked
+	// against the existing characters: every one made through a creation screen,
+	// including the Trilogy-made ones, passes.  On failure, do what stock does:
+	// drop the reserved name row and refuse the name.
+	{
+		CharCreate_Struct cc{};
+		cc.class_ = class_;
+		cc.race   = race;
+		cc.STR    = str_v;
+		cc.STA    = sta_v;
+		cc.AGI    = agi_v;
+		cc.DEX    = dex_v;
+		cc.WIS    = wis_v;
+		cc.INT    = int_v;
+		cc.CHA    = cha_v;
+		if (!CheckCharCreateInfoTitanium(&cc)) {
+			LogInfo("[TrilogyWorld] CharCreate REJECTED | account [{}] name [{}] race [{}] class [{}] "
+			        "— invalid race/class or stats (see the validation lines above)",
+			        s.account_name, name, race, (int)class_);
+			database.DeleteCharacter(name);
+			uint8_t reject[1] = { 0 };
+			SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
+			return;
+		}
+	}
+
 	// Get char_id from the row created by ReserveName
 	uint32_t char_id = database.GetCharacterID(name);
 	if (char_id == 0) {
