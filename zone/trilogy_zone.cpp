@@ -639,7 +639,8 @@ static constexpr uint16_t ZN_OP_ClassTrainSkill  = 0x4021;
 
 // GM command opcodes (client -> zone, CONNECTED state)
 // Source: EQClassic/Common/Include/eq_opcodes.h
-static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
+static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // /zone leg 1: 84 B, zone @0x20; reply see dispatch
+static constexpr uint16_t ZN_OP_GMZoneRequest2 = 0x0822; // /zone leg 2: zone short name, NUL-terminated
 static constexpr uint16_t ZN_OP_GMGoto        = 0x6e20; // gotoname[30]+myname[30]+unknown[48]
 static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[30]+...
 static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
@@ -2881,28 +2882,46 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_ClassEndTraining && s.trilogy_client)
 			HandleClassEndTraining(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
-			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
-			if (plen >= 46) {
-				char zonename[17] = {};
-				strncpy(zonename, reinterpret_cast<const char*>(payload + 30), 16);
-				if (zonename[0]) {
-					LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}'", s.char_name, zonename);
-					// Send back success=1 (EQClassic ProcessOP_GMZoneRequest behaviour) before issuing
-					// the zone command.  The Trilogy client expects this ACK to advance its state.
-					uint8_t resp[84] = {};
-					strncpy(reinterpret_cast<char*>(resp),      s.char_name, 29);
-					strncpy(reinterpret_cast<char*>(resp + 30), zonename,    15);
-					static const uint8_t kGMZoneUnk[32] = {
-						0xe8, 0xf0, 0x58, 0x00, 0x70, 0xef, 0xad, 0x0e,
-						0x74, 0xf3, 0xad, 0x0e, 0xc7, 0x01, 0x4c, 0x00,
-						0x00, 0xa0, 0x04, 0xc5, 0x00, 0x20, 0x5f, 0xc5,
-						0x00, 0x00, 0xba, 0xc2, 0x00, 0x00, 0x00, 0x00
-					};
-					memcpy(resp + 46, kGMZoneUnk, 32);
-					resp[78] = 1; // success
-					SendApp(addr, port, s, ZN_OP_GMZoneRequest, resp, 84);
-					command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
+			// /zone <short name>, first leg.  84 B (eqgame.exe 0x4a50d0): the zone
+			// name is strcpy'd to +0x20; +0x00..+0x1f are never written.  The client
+			// then spins up to 60 s (Sleep(10), deadline 0xea60 ms) for the 0x4f21
+			// reply, whose handler (0x49aa25) requires +0x00 == its own name and
+			// +0x20 == the zone it asked for, writes the floats at +0x40/+0x44/+0x48/
+			// +0x4c into its position as Y/X/Z/heading, and reads a uint32 success
+			// at +0x50.  Only on success does it send the second leg, 0x0822, which
+			// is what actually zones.  The old code read the zone at +30 and replied
+			// in EQClassic's layout (zone @30, success byte @78), which matches none
+			// of that, and zoned immediately instead.
+			if (plen >= 0x40) {
+				const char* zn = reinterpret_cast<const char*>(payload + 0x20);
+				const std::string zonename(zn, strnlen(zn, 0x20));
+				auto* z = zonename.empty() ? nullptr : zone_store.GetZone(zonename);
+
+				uint8_t resp[0x54] = {};
+				strncpy(reinterpret_cast<char*>(resp), s.char_name, 0x1f);
+				strncpy(reinterpret_cast<char*>(resp + 0x20), zonename.c_str(), 0x1f);
+				const uint32_t ok = z ? 1u : 0u;
+				if (z) {
+					const float y = z->safe_y, x = z->safe_x, zz = z->safe_z, h = z->safe_heading;
+					memcpy(resp + 0x40, &y,  4);
+					memcpy(resp + 0x44, &x,  4);
+					memcpy(resp + 0x48, &zz, 4);
+					memcpy(resp + 0x4c, &h,  4);
 				}
+				memcpy(resp + 0x50, &ok, 4);
+				LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}' ({})", s.char_name, zonename,
+				        ok ? "found" : "no such zone");
+				SendApp(addr, port, s, ZN_OP_GMZoneRequest, resp, sizeof(resp));
+			}
+		}
+		else if (opcode == ZN_OP_GMZoneRequest2 && s.trilogy_client) {
+			// /zone second leg: the zone short name, NUL-terminated (0x4a518d),
+			// sent only after the client accepted our 0x4f21 reply.
+			const std::string zonename(reinterpret_cast<const char*>(payload),
+			                           strnlen(reinterpret_cast<const char*>(payload), plen));
+			if (!zonename.empty() && s.trilogy_client->GetGM()) {
+				LogInfo("[TrilogyZone] GM ZoneRequest2: {} -> '{}'", s.char_name, zonename);
+				command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
 			}
 		}
 		else if (opcode == ZN_OP_GMGoto && s.trilogy_client) {
