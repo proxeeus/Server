@@ -433,6 +433,12 @@ static constexpr uint16_t ZN_OP_SetRunMode      = 0x1f20;
 // this era has no concept of.
 static constexpr uint16_t ZN_OP_Jump            = 0x2020; // client -> zone: 0 B
 
+// 0xab21 OP_SafeFallSuccess.  0 B.  Sent by the fall-damage routine (eqgame.exe
+// 0x42444c, send at 0x4244ed) when a fall did damage and the player has Safe Fall
+// (skill 39 — the client subtracts the skill value from the damage itself).  The
+// server's only job is the skill-up; nothing handled it, so Safe Fall never rose.
+static constexpr uint16_t ZN_OP_SafeFallSuccess = 0xab21; // client -> zone: 0 B
+
 // 0x4721 OP_ClientError.  92 B.  The client reporting its OWN faults — EQClassic
 // (Common/Include/eq_opcodes.h:222) describes it as "client sents this when an
 // error client side happend i.e. a stackable item without charges sent to the
@@ -1265,8 +1271,8 @@ static int TranslateTrilogySkillId(uint8_t classic_skill)
 	//
 	// SAFE_FALL is marked passive here because the OP_SafeFallSuccess
 	// opcode (0xab21) is a status notification, not a "use" — the
-	// client tells the server "I fell"; the server does the absorb
-	// math.  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
+	// client does the absorb itself and tells the server so it can roll
+	// the skill-up (handled on its own, see ZN_OP_SafeFallSuccess).  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
 	// "client asks for heading text" ping, not a combat ability.
 	if (classic_skill > 73) {
 		return -1;
@@ -2656,6 +2662,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// TrilogyClient::HandleAnimation re-encodes OP_Animation as the
 			// 0x9f20 Attack_Struct v29c expects.
 			s.trilogy_client->DoAnim(20);
+		}
+		else if (opcode == ZN_OP_SafeFallSuccess && s.trilogy_client) {
+			// The fall already happened client-side; this is the skill-up roll,
+			// as in EQClassic's ProcessOP_SafeFallSuccess and EQEmu's handler.
+			if (s.trilogy_client->HasSkill(EQ::skills::SkillSafeFall)) {
+				s.trilogy_client->CheckIncreaseSkill(EQ::skills::SkillSafeFall, nullptr);
+			}
 		}
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
