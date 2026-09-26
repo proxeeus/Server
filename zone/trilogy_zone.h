@@ -78,6 +78,9 @@ public:
 	                   const uint8_t* data, uint32_t size,
 	                   bool ack_req = true);
 
+	// True while the session has an NPC or PC trade window open.
+	bool IsSessionTrading(uint64_t session_key) const;
+
 	// 0x9221 — the client's guild-name table, the same 30 KB payload world
 	// sends at char-select.  Needed from the zone too: a guild created
 	// mid-session has no name on any client already in a zone, and the client

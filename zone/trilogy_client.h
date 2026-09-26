@@ -265,6 +265,16 @@ public:
 	// Called from TrilogyZoneServer::Tick() each iteration.
 	void CheckSpellGemCooldowns();
 
+	// True while the v29c client is holding its input-block counter
+	// (player object +0xe5c): casting, a loot window, or a trade window.  Any
+	// 0x7f21 that is not a bard-song pulse releases that hold (eqgame.exe
+	// 0x4279b4 → 0x41f0c0 fails → both counters decremented), so regen-only
+	// mana updates and the gem un-grey pulse wait until it is false.
+	bool InputHoldActive() const;
+	// Send the regen mana update held back by HandleManaChange, once no hold
+	// is active.  Called from TrilogyZoneServer::Tick() each iteration.
+	void FlushDeferredMana();
+
 	// Drain at most one queued OP_SpecialMesg per call, no faster than
 	// kTextDrainIntervalMs.  Called from TrilogyZoneServer::Tick() each
 	// iteration.  See m_pending_text_q comment in the header for why.
@@ -603,6 +613,19 @@ private:
 	// until after the item packet so the client processes them in the right order.
 	bool m_pending_loot_echo = false;
 	Trilogy::structs::LootingItem_Struct m_pending_echo_out{};
+
+	// Loot window open on the client: set by a successful loot response
+	// (0x5020, response 1 or 3), cleared when 0x4421 closes it.  Read by
+	// InputHoldActive.
+	bool m_loot_window_open = false;
+	// Corpse being looted, from the 0x4e20 echo (0 until it has gone out).  Lets
+	// InputHoldActive drop a loot window that closed without our 0x4421 — a
+	// corpse that despawned, or a loot the engine ended — instead of holding
+	// mana updates forever.
+	uint16_t m_loot_corpse_id = 0;
+	// A regen-only mana update was held back while an input hold was active;
+	// FlushDeferredMana sends the current value once it clears.
+	bool m_deferred_mana = false;
 
 	// v29c cursor deferred-delivery queue — see OnClientCursorCleared /
 	// EnqueueOrSendSummonedItem in the public section for the full rationale.

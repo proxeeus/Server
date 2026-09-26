@@ -1054,12 +1054,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			// Normal end-of-loot (EndLootRequest → EndLoot path, or success path where
 			// the echo was already flushed by HandleItemPacket) — close the window.
 			m_tzs->SendToSession(m_session_key, 0x4421, nullptr, 0);
+			m_loot_window_open = false;
 		}
 		break;
 	case OP_LootRequest:
 		// Server echoes the 4-byte corpse ID back to the client.
-		if (app->size >= 4)
+		if (app->size >= 4) {
+			m_loot_corpse_id = static_cast<uint16_t>(
+			    *reinterpret_cast<const uint32_t*>(app->pBuffer));
 			m_tzs->SendToSession(m_session_key, 0x4e20, app->pBuffer, 4);
+		}
 		break;
 	case OP_LootItem:
 		HandleOutgoingLootItem(app);
@@ -5348,6 +5352,19 @@ void TrilogyClient::HandleManaChange(const EQApplicationPacket* app)
 	out.spell_id = (emu->keepcasting == 0)
 	    ? static_cast<uint16_t>(emu->spell_id) : 0;
 
+	// A regen-only update (spell_id 0) arriving while the client holds its
+	// input counter would release that hold — v29c reads every 0x7f21 that is
+	// not a bard-song pulse as "your cast is over" (0x4279b4).  Mid-loot that
+	// is what produced the 0x4721 {-4,-1,6} reports: the tick dropped the loot
+	// window's hold to 0 and closing it took the counter to -1.  Hold the
+	// update; FlushDeferredMana sends the current value when the hold ends.
+	// Cast-end updates (spell_id != 0) always go, and carry the current mana.
+	if (out.spell_id == 0 && InputHoldActive()) {
+		m_deferred_mana = true;
+		return;
+	}
+	m_deferred_mana = false;
+
 	m_tzs->SendToSession(m_session_key, 0x7f21,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
@@ -5522,6 +5539,11 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 
 void TrilogyClient::CheckSpellGemCooldowns()
 {
+	// The un-grey pulse below is a 0x7f21, which also releases the client's
+	// input hold (see InputHoldActive).  Leave expired cooldowns marked active
+	// until the hold ends; this runs every Tick, so they are picked up then.
+	if (InputHoldActive()) return;
+
 	uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
@@ -5931,8 +5953,42 @@ void TrilogyClient::HandleMoneyOnCorpse(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::moneyOnCorpseStruct)) return;
 
+	// Response 1 or 3 opens the loot window (eqgame.exe 0x464ee8); 0 and 2
+	// are refusals.  Tracked for InputHoldActive.
+	const uint8_t response = app->pBuffer[0];
+	if (response == 1 || response == 3) {
+		m_loot_window_open = true;
+		m_loot_corpse_id   = 0;
+	}
+
 	m_tzs->SendToSession(m_session_key, 0x5020, app->pBuffer,
 	                     static_cast<uint32_t>(sizeof(::moneyOnCorpseStruct)));
+}
+
+bool TrilogyClient::InputHoldActive() const
+{
+	bool looting = m_loot_window_open;
+	if (looting && m_loot_corpse_id != 0) {
+		// Once the corpse is known, the window only counts while that corpse
+		// still exists and is still being looted by us.
+		Corpse* c = entity_list.GetCorpseByID(m_loot_corpse_id);
+		looting = c && c->IsBeingLootedBy(const_cast<TrilogyClient*>(this));
+	}
+	return IsCasting() || looting || m_tzs->IsSessionTrading(m_session_key);
+}
+
+void TrilogyClient::FlushDeferredMana()
+{
+	if (!m_deferred_mana || InputHoldActive()) return;
+	m_deferred_mana = false;
+
+	Trilogy::structs::ManaChange_Struct out{};
+	const uint32_t mana = static_cast<uint32_t>(GetMana());
+	out.new_mana = static_cast<uint16_t>(mana > 0xFFFFu ? 0xFFFFu : mana);
+	out.spell_id = 0;
+	m_tzs->SendToSession(m_session_key, 0x7f21,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================

@@ -10062,6 +10062,13 @@ void TrilogyZoneServer::PcTradeInit(Session& s, uint16_t partner_entity, uint32_
 	s.pc_trade_partner_ch = partner_char;
 }
 
+bool TrilogyZoneServer::IsSessionTrading(uint64_t session_key) const
+{
+	auto it = m_sessions.find(session_key);
+	return it != m_sessions.end() &&
+	       (it->second.trade_npc_id != 0 || it->second.pc_trade_active);
+}
+
 TrilogyZoneServer::Session* TrilogyZoneServer::FindPendingTradeRequester(uint16_t recipient_entity)
 {
 	const uint64_t now_ms = static_cast<uint64_t>(
@@ -14005,6 +14012,7 @@ void TrilogyZoneServer::Tick()
 		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
 		if (s.trilogy_client) {
 			s.trilogy_client->CheckSpellGemCooldowns();
+			s.trilogy_client->FlushDeferredMana();
 		}
 
 		// Paced OP_SpecialMesg drain: see QueueTextPacket in trilogy_client.
