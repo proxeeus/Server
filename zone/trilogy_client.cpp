@@ -41,6 +41,8 @@
 #include "string_ids.h"
 #include "../common/zone_store.h"
 #include "../common/spdat.h"
+#include "bot.h"
+#include "groups.h"
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -7181,6 +7183,70 @@ void TrilogyClient::HandleIncomingGroupDisband(const uint8_t* data, uint32_t len
 
 	LogInfo("[Trilogy][Group] <- OP_GroupDisband (0x4420) target=[{}]", gg->name1);
 	Handle_OP_GroupDisband(&pkt);
+}
+
+// ============================================================
+// HandleIncomingGroupDisbandAll — inbound 0x9721, the leader disbanding the
+// whole party.
+//
+// v29c's disband routine (eqgame.exe 0x4cb4fa) has three outcomes, and only
+// one of them uses 0x4420:
+//   - not the leader                     → 0x4420 with its own name (leave)
+//   - leader, a member selected          → 0x4420 with that name (kick)
+//   - leader, nothing selected           → prints "You disband your party."
+//                                           and sends 0x9721 with NO payload
+// The client clears its own group window before sending, so dropping this
+// left the leader's window empty while the server group carried on.
+//
+// Not routed through Handle_OP_GroupDisband: that decides between disband,
+// leave and kick from the server-side target, but the client's choice came
+// from its group-window selection and is already made.  A leader with any
+// target at all would only have left the group there.  This mirrors that
+// handler's leader-with-no-target branch instead, bots and mercs included.
+//
+// A raid member has no Group (GetGroup() is null for raid members), and v29c
+// has no raid window to disband from, so that case is logged and left alone.
+// ============================================================
+void TrilogyClient::HandleIncomingGroupDisbandAll(uint32_t len)
+{
+	Group* group = GetGroup();
+	if (!group) {
+		LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) len={} char=[{}] not in a group{} — nothing to disband",
+		        len, GetName(), entity_list.GetRaidByClient(this) ? " (raid member)" : "");
+		return;
+	}
+
+	if (!group->IsLeader(this)) {
+		// The client only sends this when it believes it leads the group.  If the
+		// server disagrees, the player has still dropped the group on their side,
+		// so leave rather than leave them half-in.
+		LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) char=[{}] is not the leader — leaving instead",
+		        GetName());
+		LeaveGroup();
+		return;
+	}
+
+	LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) leader=[{}] members={} — disbanding",
+	        GetName(), group->GroupCount());
+
+	if (RuleB(Bots, Enabled) && Bot::GroupHasBot(group)) {
+		Bot::ProcessBotGroupDisband(this, std::string());
+		group = GetGroup();
+		if (!group) {
+			return;
+		}
+	}
+
+	if (group->GroupCount() > 2 && GetMerc() && !GetMerc()->IsSuspended()) {
+		group->DisbandGroup();
+		GetMerc()->MercJoinClientGroup();
+	}
+	else {
+		group->DisbandGroup();
+		if (GetMerc()) {
+			GetMerc()->Suspend();
+		}
+	}
 }
 
 // ============================================================

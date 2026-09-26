@@ -784,6 +784,7 @@ static constexpr uint16_t ZN_OP_GroupFollow        = 0x4220; // client -> zone: 
                                                             // NOT 0x3d20 — EQMacEmuTrilogy patch is wrong here, EQClassic Common is right
 static constexpr uint16_t ZN_OP_GroupCancelInvite  = 0x4120; // bidirectional: decline, GroupInviteDecline_Struct (65B)
 static constexpr uint16_t ZN_OP_GroupDisband       = 0x4420; // client -> zone: leave / kick / disband, GroupDisband_Struct (60B)
+static constexpr uint16_t ZN_OP_GroupDelete        = 0x9721; // client -> zone: leader disbands the whole party, 0 B (eqgame.exe 0x4cb5e8)
 static constexpr uint16_t ZN_OP_GroupUpdate        = 0x2620; // zone -> client: GroupUpdate_Struct (228B)
 
 // Inspect opcodes (right-click another player → equipment window + about-me text)
@@ -2836,6 +2837,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_GroupDisband && s.trilogy_client) {
 			s.trilogy_client->HandleIncomingGroupDisband(payload, plen);
+		}
+		else if (opcode == ZN_OP_GroupDelete && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupDisbandAll(plen);
 		}
 		else if (opcode == ZN_OP_InspectRequest && s.trilogy_client)
 			HandleInspectRequest(addr, port, s, payload, plen);

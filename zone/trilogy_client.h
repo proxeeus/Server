@@ -576,6 +576,7 @@ public:
 	void HandleIncomingGroupFollow(const uint8_t* data, uint32_t len);
 	void HandleIncomingGroupCancelInvite(const uint8_t* data, uint32_t len);
 	void HandleIncomingGroupDisband(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupDisbandAll(uint32_t len);
 
 	// Flush the per-session A120 batch buffer; called once per Tick by
 	// TrilogyZoneServer. No-op when nothing is pending. Bulk-packs up to
