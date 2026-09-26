@@ -1020,6 +1020,28 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_GuildsList:
 		HandleOutgoingGuildsList();
 		break;
+	case OP_GuildDeleteGuild: {
+		// The guild was disbanded (ServerOP_DeleteGuild → SendGuildDeletePacket).
+		// v29c's 0x2721 handler (eqgame.exe 0x49a530) takes {int32 guild_id;
+		// int32 0}, ignores it unless guild_id matches its profile copy (PP 4158,
+		// the raw EQEmu id — see SendPlayerProfile), then clears that copy and
+		// the rank and prints "Your guild has been disbanded!  You are no longer
+		// a member of any guild." itself — the same text as GUILD_DISBANDED
+		// (1377), which has no template here and so is not doubled.  The entity
+		// copy the guild commands read (actor +0x90) and the tags are cleared by
+		// the SpawnAppearance RefreshGuildInfo sends right after this.
+		if (app->size < sizeof(::GuildDelete_Struct)) break;
+		const auto* gd = reinterpret_cast<const ::GuildDelete_Struct*>(app->pBuffer);
+		uint8_t out[8] = {};
+		const int32_t gid  = static_cast<int32_t>(gd->guild_id);
+		const int32_t zero = 0;
+		memcpy(out + 0, &gid,  4);
+		memcpy(out + 4, &zero, 4);
+		m_tzs->SendToSession(m_session_key, 0x2721, out, sizeof(out));
+		LogInfo("[TrilogyGuild] -> 0x2721 guild disbanded char=[{}] guild_id={}",
+		        GetName(), gd->guild_id);
+		break;
+	}
 	case OP_ExpUpdate:
 		HandleExpUpdate(app);
 		break;
