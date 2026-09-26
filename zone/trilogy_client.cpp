@@ -41,6 +41,8 @@
 #include "string_ids.h"
 #include "../common/zone_store.h"
 #include "../common/spdat.h"
+#include "bot.h"
+#include "groups.h"
 
 #ifndef _WINDOWS
 #  include <arpa/inet.h>
@@ -1018,6 +1020,28 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 	case OP_GuildsList:
 		HandleOutgoingGuildsList();
 		break;
+	case OP_GuildDeleteGuild: {
+		// The guild was disbanded (ServerOP_DeleteGuild → SendGuildDeletePacket).
+		// v29c's 0x2721 handler (eqgame.exe 0x49a530) takes {int32 guild_id;
+		// int32 0}, ignores it unless guild_id matches its profile copy (PP 4158,
+		// the raw EQEmu id — see SendPlayerProfile), then clears that copy and
+		// the rank and prints "Your guild has been disbanded!  You are no longer
+		// a member of any guild." itself — the same text as GUILD_DISBANDED
+		// (1377), which has no template here and so is not doubled.  The entity
+		// copy the guild commands read (actor +0x90) and the tags are cleared by
+		// the SpawnAppearance RefreshGuildInfo sends right after this.
+		if (app->size < sizeof(::GuildDelete_Struct)) break;
+		const auto* gd = reinterpret_cast<const ::GuildDelete_Struct*>(app->pBuffer);
+		uint8_t out[8] = {};
+		const int32_t gid  = static_cast<int32_t>(gd->guild_id);
+		const int32_t zero = 0;
+		memcpy(out + 0, &gid,  4);
+		memcpy(out + 4, &zero, 4);
+		m_tzs->SendToSession(m_session_key, 0x2721, out, sizeof(out));
+		LogInfo("[TrilogyGuild] -> 0x2721 guild disbanded char=[{}] guild_id={}",
+		        GetName(), gd->guild_id);
+		break;
+	}
 	case OP_ExpUpdate:
 		HandleExpUpdate(app);
 		break;
@@ -1052,12 +1076,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 			// Normal end-of-loot (EndLootRequest → EndLoot path, or success path where
 			// the echo was already flushed by HandleItemPacket) — close the window.
 			m_tzs->SendToSession(m_session_key, 0x4421, nullptr, 0);
+			m_loot_window_open = false;
 		}
 		break;
 	case OP_LootRequest:
 		// Server echoes the 4-byte corpse ID back to the client.
-		if (app->size >= 4)
+		if (app->size >= 4) {
+			m_loot_corpse_id = static_cast<uint16_t>(
+			    *reinterpret_cast<const uint32_t*>(app->pBuffer));
 			m_tzs->SendToSession(m_session_key, 0x4e20, app->pBuffer, 4);
+		}
 		break;
 	case OP_LootItem:
 		HandleOutgoingLootItem(app);
@@ -1490,6 +1518,18 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		// the fixed header (bind_zone_id, coords, heading).
 		if (app->size < sizeof(::ZonePlayerToBind_Struct)) break;
 		const auto* zpb = reinterpret_cast<const ::ZonePlayerToBind_Struct*>(app->pBuffer);
+
+		// Client::Death started dead_timer at 5 s just before sending this.  When
+		// it fires, Client::Process returns false and the Client is deleted — and
+		// v29c's answer to the 0x4d21 below, the 0xa320 that drives the zone-out,
+		// can only be handled while the Client exists.  Missed, the client spins
+		// 180 s waiting for a reply that never comes (eqgame.exe 0x4dbf94).
+		// Measured over 21 logged player deaths: the answer took 0-4 s, so the
+		// 5 s window held with one second to spare.  Give it 30.  If the answer
+		// never comes the timer still fires and does exactly what it did before.
+		if (IsDead()) {
+			RestartDeadTimer(30000);
+		}
 		const bool same_zone = (zpb->bind_zone_id == 0 ||
 		                        static_cast<uint32>(zpb->bind_zone_id) == GetZoneID());
 		if (same_zone) {
@@ -1591,6 +1631,16 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		m_is_zoning = true;
 		m_deferred_spawns.clear(); // discard; this session won't deliver them
 		m_deferred_player_spawns.clear();
+		break;
+	}
+	case OP_GMBecomeNPC: {
+		// Handle_OP_GMBecomeNPC queues this to the target.  v29c's 0x8c21 handler
+		// (eqgame.exe 0x49b0f8) reads no payload: it prints "You are now able to
+		// kill anyone (or be killed) as if you were an NPC." and sets its PvP-as-NPC
+		// flag.  Same 8 bytes as BecomeNPC_Struct, sent through as-is.
+		if (app->size < sizeof(::BecomeNPC_Struct)) break;
+		m_tzs->SendToSession(m_session_key, 0x8c21, app->pBuffer,
+		                     static_cast<uint32_t>(sizeof(::BecomeNPC_Struct)));
 		break;
 	}
 	case OP_GMKick: {
@@ -4781,20 +4831,30 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 	const uint8_t* p    = app->pBuffer;
 	const uint32_t size = app->size;
 
+	uint32_t playerineqstring    = 0;
 	uint32_t playersinzonestring = 0;
 	uint32_t playercount         = 0;
+	memcpy(&playerineqstring,    p + 4,  sizeof(uint32_t));
 	memcpy(&playersinzonestring, p + 40, sizeof(uint32_t));
 	memcpy(&playercount,         p + 60, sizeof(uint32_t));
 
-	// The separator rule is already on the wire; use it verbatim.  It is written
-	// without a terminator (memcpy of exactly strlen), so bound the read at 27
-	// and cut at the first null in case a future writer shortens it.
-	std::string rule(reinterpret_cast<const char*>(p + 8),
-	                 strnlen(reinterpret_cast<const char*>(p + 8), 27));
-	if (rule.empty()) rule.assign(27, '-');
+	// /who all friends: world's SendFriendsWho marks its reply 0xFFFFFFFF here
+	// (a /who all reply carries 5001), and the v29c client has already printed
+	// its own "Friends currently on EverQuest:" header and rule before sending
+	// the request (eqgame.exe 0x4ca9f3) — so no second header.
+	const bool friends_reply = (playerineqstring == 0xFFFFFFFF);
 
-	SendSystemLine(kWhite, "Players on EverQuest:");
-	SendSystemLine(kWhite, rule);
+	if (!friends_reply) {
+		// The separator rule is already on the wire; use it verbatim.  It is written
+		// without a terminator (memcpy of exactly strlen), so bound the read at 27
+		// and cut at the first null in case a future writer shortens it.
+		std::string rule(reinterpret_cast<const char*>(p + 8),
+		                 strnlen(reinterpret_cast<const char*>(p + 8), 27));
+		if (rule.empty()) rule.assign(27, '-');
+
+		SendSystemLine(kWhite, "Players on EverQuest:");
+		SendSystemLine(kWhite, rule);
+	}
 
 	uint32_t o = kHeaderSize;
 	auto room  = [&](uint32_t n) { return o + n <= size; };
@@ -4825,7 +4885,7 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 
 		if (!room(28)) break;
 		const uint32_t admin      = rd32();
-		rd32();                                  // unknown
+		const uint32_t tagstring  = rd32();      // eqstr id: 12314 " LFG", or 0xFFFFFFFF
 		const uint32_t zonestring = rd32();
 		const uint32_t zone_id    = rd32();
 		const uint32_t class_id   = rd32();
@@ -4867,21 +4927,23 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 
 		// LFG marker.  EQClassic appends " LFG" from ClientListEntry::LFG()
 		// while world is building the text (World/Source/ZSList.cpp:569-621).
-		// Our world sends structured rows instead and WhoAllPlayer carries no
-		// LFG field, so the flag is recovered here from the live entity.
+		// Our world sends structured rows, and the row's tag slot carries it:
+		// ClientList::SendWhoAll writes eqstr 12314 (" LFG") there from the
+		// same world-side flag, so this works for players in every zone.
 		//
-		// That limits it to players in THIS zone.  Accepted deliberately: the
-		// alternative is adding a field to what world sends every client, and
-		// a same-zone-only marker is strictly better than none — it is additive
-		// text, so a remote row simply reads as it does today rather than
-		// claiming the player is not LFG.
+		// The live-entity check stays as a fallback for a player in this zone
+		// whose LFG change has not reached world yet.
 		//
 		// Worth knowing when testing: a bare /who never reaches the server at
 		// all (v29c builds that roster from its own spawn list), so this only
 		// shows up under /who all.
-		if (Client* who_c = entity_list.GetClientByName(name.c_str())) {
-			if (who_c->IsLFG()) line += " LFG";
+		bool lfg = (tagstring == 12314);
+		if (!lfg) {
+			if (Client* who_c = entity_list.GetClientByName(name.c_str())) {
+				lfg = who_c->IsLFG();
+			}
 		}
+		if (lfg) line += " LFG";
 
 		// Account and status are only populated for privileged viewers.
 		if (!account.empty()) line += fmt::format(" AccName: {}", account);
@@ -5334,34 +5396,28 @@ void TrilogyClient::HandleManaChange(const EQApplicationPacket* app)
 	out.spell_id = (emu->keepcasting == 0)
 	    ? static_cast<uint16_t>(emu->spell_id) : 0;
 
+	// A regen-only update (spell_id 0) arriving while the client holds its
+	// input counter would release that hold — v29c reads every 0x7f21 that is
+	// not a bard-song pulse as "your cast is over" (0x4279b4).  Mid-loot that
+	// is what produced the 0x4721 {-4,-1,6} reports: the tick dropped the loot
+	// window's hold to 0 and closing it took the counter to -1.  Hold the
+	// update; FlushDeferredMana sends the current value when the hold ends.
+	// Cast-end updates (spell_id != 0) always go, and carry the current mana.
+	if (out.spell_id == 0 && InputHoldActive()) {
+		m_deferred_mana = true;
+		return;
+	}
+	m_deferred_mana = false;
+
 	m_tzs->SendToSession(m_session_key, 0x7f21,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 
-	// Re-grey gems still on cooldown.  SendSpellBarEnable (keepcasting=0,
-	// spell_id>0) may have un-greyed them; push them back to grey state.
-	if (emu->keepcasting == 0 && emu->spell_id != 0) {
-		uint64_t now_ms = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
-
-		for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-			if (!m_gem_cooldowns[i].active) continue;
-			if (now_ms >= m_gem_cooldowns[i].end_ms) {
-				m_gem_cooldowns[i].active = false;
-				continue;
-			}
-
-			Trilogy::structs::MemorizeSpell_Struct mem{};
-			mem.slot     = static_cast<int32_t>(i);
-			mem.spell_id = static_cast<int32_t>(m_gem_cooldowns[i].spell_id);
-			mem.scribing = 3;  // grey-out
-
-			m_tzs->SendToSession(m_session_key, 0x8221,
-			                     reinterpret_cast<const uint8_t*>(&mem),
-			                     static_cast<uint32_t>(sizeof(mem)));
-		}
-	}
+	// No gem re-grey here.  This handler (eqgame.exe 0x49ad3d) touches only the
+	// gem being cast (player actor +0x24a) and the global spell-bar lockout
+	// (+0x15c); every other gem keeps the recast timer its own 0x8221 started.
+	// Re-sending scribing=3 for them restarted each one's FULL recast from now
+	// and re-armed the global lockout, so the whole bar greyed out.
 }
 
 // ============================================================
@@ -5433,8 +5489,8 @@ void TrilogyClient::HandleMobHealth(const EQApplicationPacket* app)
 //
 // memSpellSpellbar (3) is sent by CastedSpellFinished to update gem
 // cooldown state after a spell completes.  For Trilogy we translate
-// this into an explicit grey-out (scribing=3) for the cast gem, and
-// track the cooldown so CheckSpellGemCooldowns can un-grey it later.
+// this into an explicit grey-out (scribing=3) for the cast gem; the client
+// runs that gem's recast timer and un-greys it itself.
 // ============================================================
 
 void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
@@ -5461,14 +5517,11 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 		// The server enforces the recast check at >1000 ms (spells.cpp:1465).
 		if (cooldown_ms <= 1500) return;
 
-		uint64_t now_ms = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
-
-		m_gem_cooldowns[emu->slot].spell_id = emu->spell_id;
-		m_gem_cooldowns[emu->slot].end_ms   = now_ms + cooldown_ms;
-		m_gem_cooldowns[emu->slot].active   = true;
-
+		// One scribing=3 per cast is the whole job.  v29c's handler (0x491e6e)
+		// starts this gem's recast timer itself — now + the spell's recast from
+		// its own spell data — and counts it down and un-greys the gem with no
+		// further packet.  It also arms the global spell-bar lockout for the
+		// spell's recovery time, so it must not be repeated for other gems.
 		Trilogy::structs::MemorizeSpell_Struct out{};
 		out.slot     = static_cast<int32_t>(emu->slot);
 		out.spell_id = static_cast<int32_t>(emu->spell_id);
@@ -5480,11 +5533,6 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 		return;
 	}
 
-	// Memorize (1) or forget (2→3): clear any active cooldown on this slot.
-	if (emu->scribing == memSpellMemorize || emu->scribing == memSpellForget) {
-		m_gem_cooldowns[emu->slot].active = false;
-	}
-
 	Trilogy::structs::MemorizeSpell_Struct out{};
 	out.slot     = static_cast<int32_t>(emu->slot);
 	out.spell_id = static_cast<int32_t>(emu->spell_id);
@@ -5493,60 +5541,6 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x8221,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
-}
-
-// ============================================================
-// CheckSpellGemCooldowns — called from TrilogyZoneServer::Tick().
-//
-// Un-greys spell gems whose recast cooldowns have expired.
-// Uses OP_ManaChange (the EQClassic EnableSpellBar mechanism)
-// to signal "spellbar ready" — this un-greys gems without
-// triggering the "Finished memorizing" message that scribing=1
-// would produce.  After the ManaChange, any gems whose cooldowns
-// are still running are immediately re-greyed.
-// ============================================================
-
-void TrilogyClient::CheckSpellGemCooldowns()
-{
-	uint64_t now_ms = static_cast<uint64_t>(
-		std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()).count());
-
-	bool any_expired = false;
-	for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-		if (!m_gem_cooldowns[i].active) continue;
-		if (now_ms >= m_gem_cooldowns[i].end_ms) {
-			m_gem_cooldowns[i].active = false;
-			any_expired = true;
-		}
-	}
-
-	if (!any_expired) return;
-
-	// OP_ManaChange with spell_id > 0 tells the client the spellbar is
-	// enabled (same as EQClassic EnableSpellBar).  This un-greys gems.
-	Trilogy::structs::ManaChange_Struct mc{};
-	uint32_t mana = static_cast<uint32_t>(GetMana());
-	mc.new_mana = static_cast<uint16_t>(mana > 0xFFFFu ? 0xFFFFu : mana);
-	mc.spell_id = 1;
-
-	m_tzs->SendToSession(m_session_key, 0x7f21,
-	                     reinterpret_cast<const uint8_t*>(&mc),
-	                     static_cast<uint32_t>(sizeof(mc)));
-
-	// Re-grey gems whose cooldowns are still running.
-	for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-		if (!m_gem_cooldowns[i].active) continue;
-
-		Trilogy::structs::MemorizeSpell_Struct mem{};
-		mem.slot     = static_cast<int32_t>(i);
-		mem.spell_id = static_cast<int32_t>(m_gem_cooldowns[i].spell_id);
-		mem.scribing = 3;
-
-		m_tzs->SendToSession(m_session_key, 0x8221,
-		                     reinterpret_cast<const uint8_t*>(&mem),
-		                     static_cast<uint32_t>(sizeof(mem)));
-	}
 }
 
 // ============================================================
@@ -5917,8 +5911,42 @@ void TrilogyClient::HandleMoneyOnCorpse(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::moneyOnCorpseStruct)) return;
 
+	// Response 1 or 3 opens the loot window (eqgame.exe 0x464ee8); 0 and 2
+	// are refusals.  Tracked for InputHoldActive.
+	const uint8_t response = app->pBuffer[0];
+	if (response == 1 || response == 3) {
+		m_loot_window_open = true;
+		m_loot_corpse_id   = 0;
+	}
+
 	m_tzs->SendToSession(m_session_key, 0x5020, app->pBuffer,
 	                     static_cast<uint32_t>(sizeof(::moneyOnCorpseStruct)));
+}
+
+bool TrilogyClient::InputHoldActive() const
+{
+	bool looting = m_loot_window_open;
+	if (looting && m_loot_corpse_id != 0) {
+		// Once the corpse is known, the window only counts while that corpse
+		// still exists and is still being looted by us.
+		Corpse* c = entity_list.GetCorpseByID(m_loot_corpse_id);
+		looting = c && c->IsBeingLootedBy(const_cast<TrilogyClient*>(this));
+	}
+	return IsCasting() || looting || m_tzs->IsSessionTrading(m_session_key);
+}
+
+void TrilogyClient::FlushDeferredMana()
+{
+	if (!m_deferred_mana || InputHoldActive()) return;
+	m_deferred_mana = false;
+
+	Trilogy::structs::ManaChange_Struct out{};
+	const uint32_t mana = static_cast<uint32_t>(GetMana());
+	out.new_mana = static_cast<uint16_t>(mana > 0xFFFFu ? 0xFFFFu : mana);
+	out.spell_id = 0;
+	m_tzs->SendToSession(m_session_key, 0x7f21,
+	                     reinterpret_cast<const uint8_t*>(&out),
+	                     static_cast<uint32_t>(sizeof(out)));
 }
 
 // ============================================================
@@ -7181,6 +7209,70 @@ void TrilogyClient::HandleIncomingGroupDisband(const uint8_t* data, uint32_t len
 
 	LogInfo("[Trilogy][Group] <- OP_GroupDisband (0x4420) target=[{}]", gg->name1);
 	Handle_OP_GroupDisband(&pkt);
+}
+
+// ============================================================
+// HandleIncomingGroupDisbandAll — inbound 0x9721, the leader disbanding the
+// whole party.
+//
+// v29c's disband routine (eqgame.exe 0x4cb4fa) has three outcomes, and only
+// one of them uses 0x4420:
+//   - not the leader                     → 0x4420 with its own name (leave)
+//   - leader, a member selected          → 0x4420 with that name (kick)
+//   - leader, nothing selected           → prints "You disband your party."
+//                                           and sends 0x9721 with NO payload
+// The client clears its own group window before sending, so dropping this
+// left the leader's window empty while the server group carried on.
+//
+// Not routed through Handle_OP_GroupDisband: that decides between disband,
+// leave and kick from the server-side target, but the client's choice came
+// from its group-window selection and is already made.  A leader with any
+// target at all would only have left the group there.  This mirrors that
+// handler's leader-with-no-target branch instead, bots and mercs included.
+//
+// A raid member has no Group (GetGroup() is null for raid members), and v29c
+// has no raid window to disband from, so that case is logged and left alone.
+// ============================================================
+void TrilogyClient::HandleIncomingGroupDisbandAll(uint32_t len)
+{
+	Group* group = GetGroup();
+	if (!group) {
+		LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) len={} char=[{}] not in a group{} — nothing to disband",
+		        len, GetName(), entity_list.GetRaidByClient(this) ? " (raid member)" : "");
+		return;
+	}
+
+	if (!group->IsLeader(this)) {
+		// The client only sends this when it believes it leads the group.  If the
+		// server disagrees, the player has still dropped the group on their side,
+		// so leave rather than leave them half-in.
+		LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) char=[{}] is not the leader — leaving instead",
+		        GetName());
+		LeaveGroup();
+		return;
+	}
+
+	LogInfo("[Trilogy][Group] <- OP_GroupDelete (0x9721) leader=[{}] members={} — disbanding",
+	        GetName(), group->GroupCount());
+
+	if (RuleB(Bots, Enabled) && Bot::GroupHasBot(group)) {
+		Bot::ProcessBotGroupDisband(this, std::string());
+		group = GetGroup();
+		if (!group) {
+			return;
+		}
+	}
+
+	if (group->GroupCount() > 2 && GetMerc() && !GetMerc()->IsSuspended()) {
+		group->DisbandGroup();
+		GetMerc()->MercJoinClientGroup();
+	}
+	else {
+		group->DisbandGroup();
+		if (GetMerc()) {
+			GetMerc()->Suspend();
+		}
+	}
 }
 
 // ============================================================

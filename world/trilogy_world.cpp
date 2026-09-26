@@ -284,19 +284,52 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 	if (is_new) {
 		m_sessions[key] = Session{};
 	} else if (seqstart) {
-		// Client reconnected with SEQSTART on an existing session (e.g. after the close handshake).
-		// Reset transport state but preserve auth fields so CharCreate can still identify the account.
 		Session& existing = m_sessions[key];
-		if (existing.account_id != 0)
-			existing.returning_from_zone = true;
-		existing.sack_init = false;
-		existing.seq_sent  = false;
-		existing.gsq       = 0;
-		existing.arq       = 0;
-		existing.asq_hi    = 1;
-		existing.asq_lo    = 0;
-		existing.ack_due   = false;
-		existing.frag_groups.clear();
+
+		// A new session, or the client resending its opener?  v29c resends the
+		// SEQSTART packet until it has processed our answer.  Treating each resend
+		// as a reconnect wiped sack_init/gsq/arq, so every ACK went out as SEQ=1
+		// with a fresh server ARQ and only the first could ever be accepted —
+		// the zone-side bug fixed in #73, which world shared.  It also set
+		// returning_from_zone on a first login, because HandleLoginInfo had
+		// already filled account_id by the time the resend arrived.
+		//
+		// The tell is the #54 one: the same client ARQ arriving twice.  A genuine
+		// reconnect carries a new random ARQ.  World sessions, unlike zone ones,
+		// outlive the trip into a zone and the client comes back on the same
+		// address and port, so the resend must also be recent — resends come
+		// seconds apart, a return from a zone never does.
+		const bool opener_retransmit =
+			has_arq &&
+			existing.have_last_rx_arq &&
+			existing.last_rx_arq == cli_arq &&
+			std::time(nullptr) - existing.last_pkt <= 10;
+
+		if (opener_retransmit) {
+			// Leave everything alone.  The dedup below sees the repeated ARQ,
+			// skips the handler and ACKs off the still-advancing gsq.
+			LogInfo("[TrilogyWorld] SEQSTART retransmit arq={:04X} from {}:{} — same opener, "
+			        "keeping session (no reset)", cli_arq, addr, port);
+		} else {
+			// Client reconnected with SEQSTART on an existing session (e.g. after the close handshake).
+			// Reset transport state but preserve auth fields so CharCreate can still identify the account.
+			LogInfo("[TrilogyWorld] Session restarted from {}:{} has_arq={} cli_arq={:04X} "
+			        "prev_arq={:04X} had_prev={} account_id=[{}]",
+			        addr, port, has_arq ? 1 : 0, cli_arq, existing.last_rx_arq,
+			        existing.have_last_rx_arq ? 1 : 0, existing.account_id);
+			if (existing.account_id != 0)
+				existing.returning_from_zone = true;
+			existing.sack_init = false;
+			existing.seq_sent  = false;
+			existing.gsq       = 0;
+			existing.arq       = 0;
+			existing.asq_hi    = 1;
+			existing.asq_lo    = 0;
+			existing.ack_due   = false;
+			existing.last_rx_arq      = 0;
+			existing.have_last_rx_arq = false;
+			existing.frag_groups.clear();
+		}
 	}
 
 	Session& session      = m_sessions[key];
@@ -330,6 +363,24 @@ void TrilogyWorldServer::OnDatagram(const std::string& addr, int port, Session& 
 
 	LogNetcode("[TrilogyWorld] hdr0={:02X} hdr1={:02X} has_arq={} cli_arq={:04X} opcode={:04X} size={}",
 	           hdr0, hdr1, has_arq, cli_arq, opcode, size);
+
+	// ARQ retransmit: a resend carries the same arq and must not run the handler
+	// again (a second EnterWorld, CharCreate or DeleteCharacter).  It still needs
+	// its ACK — the missing ACK is why the client resent.  Equality only, so the
+	// 16-bit wrap needs no special case; unreliable packets are never deduped.
+	// Same logic as the zone (#54).
+	if (has_arq) {
+		if (session.have_last_rx_arq && session.last_rx_arq == cli_arq) {
+			if (session.ack_due) SendAck(addr, port, session);
+			LogInfo("[TrilogyWorld] rx DUPLICATE arq={:04X} opcode={:04X} plen={} from {}:{} — "
+			        "retransmit of a packet already dispatched; skipping handler",
+			        cli_arq, opcode, plen, addr, port);
+			return;
+		}
+		session.last_rx_arq      = cli_arq;
+		session.have_last_rx_arq = true;
+	}
+
 	OnOpcode(addr, port, session, opcode, payload, plen, hdr1);
 	CheckPendingZoneEntry(addr, port, session);
 }
@@ -562,6 +613,12 @@ void TrilogyWorldServer::HandleLoginInfo(const std::string& addr, int port, Sess
 
 	LogInfo("[TrilogyWorld] Auth success | account [{}] ls_id [{}] eqemu_id [{}] session_account_id [{}] from {}:{}",
 	        s.account_name, account_id, eqemu_account_id, s.account_id, addr, port);
+
+	// account_ip: record the address this account logged in from, as
+	// world/client.cpp does at the same point (L513 / L599).  v29c also comes
+	// through here on every zone line, so `count` grows faster than on a modern
+	// client; `lastused` and the address list are what matter.
+	database.LoginIP(s.account_id, addr);
 
 	// EQClassic sequence (client_process.cpp ProcessOP_SendLoginInfo):
 	//   SendLoginApproved() -> SendEnterWorld() -> SendExpansionInfo() -> SendCharInfo()
@@ -926,6 +983,19 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	uint32_t char_id = static_cast<uint32_t>(Strings::ToInt(row[0]));
 	uint32_t zone_id = static_cast<uint32_t>(Strings::ToInt(row[1]));
 
+	// A character saved in a zone that no longer exists (a removed or renumbered
+	// zone row) goes to the Arena, as in world/client.cpp ~L962.  Otherwise the
+	// boot below fails and the character can never enter the world.  Unlike the
+	// stock code, zone_id is updated too, so this login goes to the Arena rather
+	// than to the zone that could not be found.
+	if (!zone_id || !ZoneName(zone_id)) {
+		const uint32_t arena = ZoneID("arena");
+		LogInfo("[TrilogyWorld] EnterWorld | char [{}] zone [{}] not found — moving to Arena [{}]",
+		        char_name, zone_id, arena);
+		database.MoveCharacterToZone(char_id, arena);
+		zone_id = arena;
+	}
+
 	// Same two gates world/client.cpp applies at EnterWorld (L829 and L1494):
 	// an account banned or suspended since it logged in, and a GM-locked zone.
 	{
@@ -948,6 +1018,11 @@ void TrilogyWorldServer::HandleEnterWorld(const std::string& addr, int port, Ses
 	strncpy(s.char_name, char_name, sizeof(s.char_name) - 1);
 	s.char_id = char_id;
 	s.zone_id = zone_id;
+
+	// account.charname = the character this account is playing (world/client.cpp
+	// ~L1506).  Never written on this path, so it stayed on whatever a modern
+	// client last logged in with.
+	database.UpdateLiveChar(char_name, s.account_id);
 
 	// Fresh login or zone change?  EnterWorld comes from BOTH: v29c crosses a
 	// zone line by reconnecting to world on a new port and running
@@ -1613,6 +1688,36 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 	        client_deity, client_deity_valid ? "yes" : "no",
 	        (int)str_v, (int)sta_v, (int)cha_v, (int)dex_v, (int)int_v, (int)agi_v, (int)wis_v,
 	        addr, port);
+
+	// Validate race/class and the stat spend before anything is written, the way
+	// stock world does for Titanium and earlier (Client::OPCharCreate).  Its
+	// tables are the classic ones — base stats per race and class, and the
+	// 20/25/30 bonus points — so they are v29c's too.  Nothing checked this, so a
+	// crafted CharCreate could make any combination with any stats.  Checked
+	// against the existing characters: every one made through a creation screen,
+	// including the Trilogy-made ones, passes.  On failure, do what stock does:
+	// drop the reserved name row and refuse the name.
+	{
+		CharCreate_Struct cc{};
+		cc.class_ = class_;
+		cc.race   = race;
+		cc.STR    = str_v;
+		cc.STA    = sta_v;
+		cc.AGI    = agi_v;
+		cc.DEX    = dex_v;
+		cc.WIS    = wis_v;
+		cc.INT    = int_v;
+		cc.CHA    = cha_v;
+		if (!CheckCharCreateInfoTitanium(&cc)) {
+			LogInfo("[TrilogyWorld] CharCreate REJECTED | account [{}] name [{}] race [{}] class [{}] "
+			        "— invalid race/class or stats (see the validation lines above)",
+			        s.account_name, name, race, (int)class_);
+			database.DeleteCharacter(name);
+			uint8_t reject[1] = { 0 };
+			SendApp(addr, port, s, OP_NAME_APPROVAL, reject, 1);
+			return;
+		}
+	}
 
 	// Get char_id from the row created by ReserveName
 	uint32_t char_id = database.GetCharacterID(name);

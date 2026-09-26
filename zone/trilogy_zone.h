@@ -78,6 +78,9 @@ public:
 	                   const uint8_t* data, uint32_t size,
 	                   bool ack_req = true);
 
+	// True while the session has an NPC or PC trade window open.
+	bool IsSessionTrading(uint64_t session_key) const;
+
 	// 0x9221 — the client's guild-name table, the same 30 KB payload world
 	// sends at char-select.  Needed from the zone too: a guild created
 	// mid-session has no name on any client already in a zone, and the client
@@ -602,6 +605,12 @@ private:
 		PcTradeBagSlot   pc_trade_bag[8][10] = {};         // bag contents per main slot
 		uint32_t         pc_trade_offer_cp = 0, pc_trade_offer_sp = 0;
 		uint32_t         pc_trade_offer_gp = 0, pc_trade_offer_pp = 0;
+		// A PC-trade request this session made that has been relayed to the
+		// recipient's client and not answered yet (see HandleTradeRequest): the
+		// entity id asked, and when (steady-clock ms).  The answer is the
+		// recipient's own 0xe620 (window opened) or 0xd620 (refused).
+		uint16_t         pc_trade_pending_to = 0;
+		uint64_t         pc_trade_pending_ms = 0;
 
 		// Inspect state — see HandleInspectRequest / HandleInspectAnswer.
 		//
@@ -726,31 +735,17 @@ private:
 	                        const uint8_t* payload, uint32_t plen);
 	void HandleTradeAccepted(const std::string& addr, int port, Session& s,
 	                         const uint8_t* payload, uint32_t plen);
+	// Inbound 0xd620: the recipient's client refused a relayed PC-trade request
+	// (trading off, group only, or busy).  Relayed to the requester.
+	void HandleTradeBusy(const std::string& addr, int port, Session& s,
+	                     const uint8_t* payload, uint32_t plen);
 	void HandleTradeCoins(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleTradeGive(const std::string& addr, int port, Session& s);
 	void HandleTradeCancel(const std::string& addr, int port, Session& s);
 	void HandleTradeMoveItem(Session& s, uint32_t from_wire, uint32_t to_wire,
 	                         uint32_t number_in_stack);
-	// Refund any partial-pickup cursor rows that ended up in trade_items back to
-	// their original source slot (merge if same item, else move/queue).  Used by
-	// HandleTradeCancel + the non-quest branch of HandleTradeGive so the server's
-	// DB stays in sync with the client's local-return behaviour.
-	void RefundPartialCursorTradeItems(Session& s);
-	// Clean up full-item cursor stages that were never given (trade closed with
-	// items still staged from cursor).  The v29c client visually clears its
-	// cursor when the player drags cursor → trade slot; if the trade ends
-	// without a Give, the client cursor stays empty but the DB row at slot 33 /
-	// 8000-8010 was never touched (staging is metadata-only).  DELETE the
-	// orphan row so subsequent CheckLoreConflict / #si / cursor pickups match
-	// what the client actually shows.  Partial-pickup materialized cursors
-	// (original_source_db_slot >= 0) are handled by RefundPartialCursorTradeItems
-	// and skipped here to avoid double-deletion.
-	void CleanupOrphanedCursorTradeItems(Session& s);
-	// PC-trade equivalent — same per-row merge logic against pc_trade_main.
-	// Called from PcTradeAbortBoth.
-	void RefundPartialCursorPcTradeItems(Session& s);
-	// m_inv resync helper used by both refund paths above.
+	// Reload the given DB slots into m_inv after the trade-return path moved rows.
 	void ResyncMInvForRefund(Session& s, const std::vector<int>& slots_to_sync);
 	// PC-trade internals (split out of the above for readability).
 	void PcTradeAbortBoth(Session& s, Session* partner,
@@ -763,6 +758,21 @@ private:
 	static void PcTradeRefundOfferedCoins(Session& s);
 	// Reset every PC-trade field on the session (does NOT refund coins).
 	static void PcTradeClearState(Session& s);
+	// Give a trade-window item back to its owner when the trade ends without it
+	// changing hands — v29c destroys its own copy.  free_slots is consumed as
+	// items are placed; every DB slot touched is appended to resync.
+	void ReturnStagedTradeItem(Session& s, uint32_t item_id, int from_db_slot,
+	                           std::vector<int>& free_slots, std::vector<int>& resync,
+	                           const char* why);
+	// Return every staged NPC-trade item and refund the offered coin.
+	void ReturnNpcTradeToPlayer(Session& s, const char* why);
+	// Return every item one side staged in a PC trade (coin: PcTradeRefundOfferedCoins).
+	void ReturnPcTradeItemsToPlayer(Session& s, const char* why);
+	// Put a session into an open PC trade with the given partner (fresh staging).
+	static void PcTradeInit(Session& s, uint16_t partner_entity, uint32_t partner_char);
+	// The session whose unanswered PC-trade request targets this entity, or
+	// nullptr.  The most recent one wins if there are several.
+	Session* FindPendingTradeRequester(uint16_t recipient_entity);
 	// Wire → DB slot (inventory positions only; mirrors HandleMoveItem's lambda).
 	static int  TradeWireToDb(const Session& s, uint32_t w);
 	// DB content-slot base for a bag at the given top slot (general + bank), -1 if
@@ -849,6 +859,15 @@ private:
 	// by TrilogyClient::HandleOutgoingWhoAllResponse.
 	void HandleWhoAll(const std::string& addr, int port, Session& s,
 	                  const uint8_t* payload, uint32_t plen);
+	// The GM toolset: /find /servers /hideme /becomenpc /name /emotezone
+	// /delcorpse /toggletell /lastname, plus swallowed /approval, /movelog and
+	// the console's name-approval answer.
+	void HandleGMToolPacket(const std::string& addr, int port, Session& s, uint16_t opcode,
+	                        const uint8_t* payload, uint32_t plen);
+	// 0xbd21 /report → Client::Handle_OP_Report (reports table).
+	void HandleReport(Session& s, const uint8_t* payload, uint32_t plen);
+	// 0xc521 /who all friends → Client::FriendsWho (world answers).
+	void HandleFriendsWho(Session& s, const uint8_t* payload, uint32_t plen);
 
 	// Inbound 0x4121 OP_ZoneEntryResend — the client asking for a spawn again.
 	// Resends it if the mob is still there, or answers with a DeleteSpawn if it

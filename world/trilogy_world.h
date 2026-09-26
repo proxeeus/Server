@@ -59,6 +59,12 @@ private:
 		uint8_t     asq_hi    = 1;
 		uint8_t     asq_lo    = 0;
 		uint16_t    cli_arq   = 0;
+		// Last client ARQ actually dispatched to OnOpcode, and whether one has
+		// been seen yet.  A v29c resend carries the SAME arq, so this is what
+		// tells a retransmit from a new packet — both for ordinary reliable
+		// packets and for the SEQSTART opener.  Same rule as the zone (#54, #73).
+		uint16_t    last_rx_arq      = 0;
+		bool        have_last_rx_arq = false;
 		bool        ack_due   = false;
 		bool        sack_init = false;
 		bool        seq_sent  = false;

@@ -261,9 +261,15 @@ public:
 	// OP_TradeMoneyUpdate (0x3d21) per non-zero amount.
 	void SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
 
-	// Check spell gem cooldowns and un-grey expired gems.
-	// Called from TrilogyZoneServer::Tick() each iteration.
-	void CheckSpellGemCooldowns();
+	// True while the v29c client is holding its input-block counter
+	// (player object +0xe5c): casting, a loot window, or a trade window.  Any
+	// 0x7f21 that is not a bard-song pulse releases that hold (eqgame.exe
+	// 0x4279b4 → 0x41f0c0 fails → both counters decremented), so regen-only
+	// mana updates wait until it is false.
+	bool InputHoldActive() const;
+	// Send the regen mana update held back by HandleManaChange, once no hold
+	// is active.  Called from TrilogyZoneServer::Tick() each iteration.
+	void FlushDeferredMana();
 
 	// Drain at most one queued OP_SpecialMesg per call, no faster than
 	// kTextDrainIntervalMs.  Called from TrilogyZoneServer::Tick() each
@@ -576,6 +582,7 @@ public:
 	void HandleIncomingGroupFollow(const uint8_t* data, uint32_t len);
 	void HandleIncomingGroupCancelInvite(const uint8_t* data, uint32_t len);
 	void HandleIncomingGroupDisband(const uint8_t* data, uint32_t len);
+	void HandleIncomingGroupDisbandAll(uint32_t len);
 
 	// Flush the per-session A120 batch buffer; called once per Tick by
 	// TrilogyZoneServer. No-op when nothing is pending. Bulk-packs up to
@@ -602,6 +609,19 @@ private:
 	// until after the item packet so the client processes them in the right order.
 	bool m_pending_loot_echo = false;
 	Trilogy::structs::LootingItem_Struct m_pending_echo_out{};
+
+	// Loot window open on the client: set by a successful loot response
+	// (0x5020, response 1 or 3), cleared when 0x4421 closes it.  Read by
+	// InputHoldActive.
+	bool m_loot_window_open = false;
+	// Corpse being looted, from the 0x4e20 echo (0 until it has gone out).  Lets
+	// InputHoldActive drop a loot window that closed without our 0x4421 — a
+	// corpse that despawned, or a loot the engine ended — instead of holding
+	// mana updates forever.
+	uint16_t m_loot_corpse_id = 0;
+	// A regen-only mana update was held back while an input hold was active;
+	// FlushDeferredMana sends the current value once it clears.
+	bool m_deferred_mana = false;
 
 	// v29c cursor deferred-delivery queue — see OnClientCursorCleared /
 	// EnqueueOrSendSummonedItem in the public section for the full rationale.
@@ -659,17 +679,6 @@ private:
 	float m_death_z = 0.0f;
 	float m_death_heading = 0.0f;
 	bool  m_has_death_pos = false;
-
-	// ---- Spell gem cooldown tracking ----
-	// v29c has no built-in per-gem recast display during gameplay (only at
-	// zone-in via PP spellSlotRefresh).  We track active cooldowns server-side
-	// and grey/un-grey gems with OP_MemorizeSpell scribing=3/1.
-	struct GemCooldown {
-		uint32_t spell_id = 0;
-		uint64_t end_ms   = 0;   // steady_clock ms when cooldown expires
-		bool     active   = false;
-	};
-	GemCooldown m_gem_cooldowns[Trilogy::structs::SPELL_MEMORY_SIZE]{};
 
 	// ---- Deferred OP_CastOn for correct resist behaviour ----
 	// EQEmu sends OP_Action (→ OP_CastOn for Trilogy) BEFORE the resist check.

@@ -90,15 +90,16 @@ static constexpr uint16_t ZN_OP_TradeItemPacket = 0xdf20; // zone -> client: Tra
 static constexpr uint16_t ZN_OP_CPlayerItem  = 0x6421; // zone -> client: single normal item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerBook  = 0x6521; // zone -> client: single book item at zone-in (raw ClassicItem_Struct, 292 bytes)
 static constexpr uint16_t ZN_OP_CPlayerCont  = 0x6621; // zone -> client: single container at zone-in (raw ClassicItem_Struct, 292 bytes)
-static constexpr uint16_t ZN_OP_CharInventory= 0xf621; // zone -> client: int16 count + (int16 opcode + ClassicItem_Struct)[count], no compression
+// 0xf621 OP_CharInventory (bulk inventory) is deliberately NOT sent — see the end of
+// SendInventoryItems.  v29c layout, for the record: int16 count, then
+// deflate({int16 opcode; ClassicItem_Struct} × count), 294 B per entry (eqgame.exe 0x495456).
 
 // ── PP-blanking experiment knobs (test DB) — see SendInventoryItems / SendPlayerProfile ──
-// SUPERSEDED.  SendInventoryItems now does the faithful EQMacEmu zone-in unconditionally:
-// INDIVIDUAL per-item packets (0x6421/0x6521/0x6621) for every slot THEN the DEFLATED 0xf621
-// bulk over the same items (the authoritative snapshot that builds bag contents + reconciles
-// placement).  The earlier "bulk renders NOTHING" finding was a false negative: mode 1 was raw
-// (the client requires deflate) and mode 2 deflated but with the PP arrays blanked.  With the PP
-// populated AND the deflated bulk present — exactly what AK sent in 2001 — the client renders it.
+// SUPERSEDED.  SendInventoryItems sends INDIVIDUAL per-item packets (0x6421/0x6521/0x6621)
+// for every slot and nothing else.  It used to follow them with a deflated 0xf621 bulk in
+// EQMacEmu's Mac-client layout, credited here with building bag contents; the binary shows
+// v29c could never parse that layout, so the per-item packets were doing all of it (see the
+// end of SendInventoryItems).
 // These two constants now ONLY gate the dormant PP-blanking diagnostic below; leave both at their
 // defaults (kInventoryMode==0, kBlankBankPP==false) so the PP stays fully populated.
 static constexpr int  kInventoryMode = 0;     // 0 = keep PP arrays populated (no blanking)
@@ -111,8 +112,7 @@ static constexpr bool kBlankBankPP   = true;  // Blank PP bank arrays to PREVENT
                                               // 0x3120 (loose) / 0x6621 (container) is sole allocator.
                                               // Container's 0x6621 expected to also allocate the bag-
                                               // content array (otherwise bag-open will crash — diagnostic).
-static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic; bulk is
-                                              // separately gated below — bank items are excluded from 0xf621).
+static constexpr bool kSkipBankItems = false; // Bank items participate in items[] (per EQClassic).
 
 // EQClassic-faithful bank zone-in: send each occupied bank slot (top 2000+i AND bag content
 // 2030+i) as a single 0x3120 (OP_ItemTradeIn = ZN_OP_MerchantItem) carrying the full
@@ -380,6 +380,17 @@ static constexpr uint16_t ZN_OP_GetGuildsList     = 0x2821;
 // zero-extend unchanged.  guildid is the exception -- EQEmu's "none" for that
 // one is 0xFFFFFFFF -- so it is mapped explicitly in HandleWhoAll.
 static constexpr uint16_t ZN_OP_WhoAll         = 0xf420;
+// 0xbd21 /report <name>.  5184 B fixed (eqgame.exe 0x4a4b76, send 0x4a4c23):
+// char reported[32]; char lines[10][512] (the last 10 chat-display lines);
+// 32 B never written.  No reply — the client prints its own confirmation and
+// allows one report per zone itself (ds:0x6b63e8).
+static constexpr uint16_t ZN_OP_Report         = 0xbd21;
+static constexpr uint32_t kTrilogyReportSize   = 5184;
+// 0xc521 /who all friends.  NUL-terminated comma-separated list of the names in
+// the client's own friends list (0x4ca5c7, send 0x4ca9e8).  The client prints
+// its "Friends currently on EverQuest:" header itself; the rows come back as a
+// who-all reply rendered to chat (HandleOutgoingWhoAllResponse).
+static constexpr uint16_t ZN_OP_FriendsWho     = 0xc521;
 
 // 0x4121 OP_ZoneEntryResend.  2 B: { int16 spawn_id }.  Client -> zone.
 //
@@ -432,6 +443,12 @@ static constexpr uint16_t ZN_OP_SetRunMode      = 0x1f20;
 // be dead weight.  EQEmu's own Handle_OP_Jump drains endurance instead, which
 // this era has no concept of.
 static constexpr uint16_t ZN_OP_Jump            = 0x2020; // client -> zone: 0 B
+
+// 0xab21 OP_SafeFallSuccess.  0 B.  Sent by the fall-damage routine (eqgame.exe
+// 0x42444c, send at 0x4244ed) when a fall did damage and the player has Safe Fall
+// (skill 39 — the client subtracts the skill value from the damage itself).  The
+// server's only job is the skill-up; nothing handled it, so Safe Fall never rose.
+static constexpr uint16_t ZN_OP_SafeFallSuccess = 0xab21; // client -> zone: 0 B
 
 // 0x4721 OP_ClientError.  92 B.  The client reporting its OWN faults — EQClassic
 // (Common/Include/eq_opcodes.h:222) describes it as "client sents this when an
@@ -622,11 +639,25 @@ static constexpr uint16_t ZN_OP_ClassTrainSkill  = 0x4021;
 
 // GM command opcodes (client -> zone, CONNECTED state)
 // Source: EQClassic/Common/Include/eq_opcodes.h
-static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // charname[30]+zonename[16]+...
+static constexpr uint16_t ZN_OP_GMZoneRequest = 0x4f21; // /zone leg 1: 84 B, zone @0x20; reply see dispatch
+static constexpr uint16_t ZN_OP_GMZoneRequest2 = 0x0822; // /zone leg 2: zone short name, NUL-terminated
 static constexpr uint16_t ZN_OP_GMGoto        = 0x6e20; // gotoname[30]+myname[30]+unknown[48]
 static constexpr uint16_t ZN_OP_GMSummon      = 0xc520; // charname[30]+gmname[30]+...
 static constexpr uint16_t ZN_OP_GMKill        = 0x6c20; // name[30]+gmname[30]+unknown[1]
 static constexpr uint16_t ZN_OP_GMKick        = 0x6d20; // name[30]+gmname[30]+unknown[1]
+// GM toolset — layouts read from eqgame.exe; see HandleGMToolPacket.
+static constexpr uint16_t ZN_OP_GMFind         = 0x6920; // /find, 108 B both ways
+static constexpr uint16_t ZN_OP_GMServers      = 0xa820; // /servers, 4 B (ignored)
+static constexpr uint16_t ZN_OP_GMHideMe       = 0xd421; // /hideme, 12 B uninitialised — state rides f520 type 3
+static constexpr uint16_t ZN_OP_GMBecomeNPC    = 0x8c21; // /becomenpc, 8 B {u32 id; u32 maxlevel} both ways
+static constexpr uint16_t ZN_OP_GMIllusion     = 0x9120; // /becomenpc look, 72 B client -> zone
+static constexpr uint16_t ZN_OP_GMNameChange   = 0xcb20; // /name, 94 B both ways
+static constexpr uint16_t ZN_OP_GMEmoteZone    = 0xe321; // /emotezone, 512 B text
+static constexpr uint16_t ZN_OP_GMDelCorpse    = 0xe921; // /delcorpse, 61 B {corpse[30]; gm[30]; ?}
+static constexpr uint16_t ZN_OP_GMToggle       = 0xde21; // /toggletell, 36 B, u32 on/off @0x20
+static constexpr uint16_t ZN_OP_GMApproval     = 0xef21; // /approval, 36 B; resent every zone-in — swallowed
+static constexpr uint16_t ZN_OP_GMNameApproval = 0x8c20; // GM-console name approval answer — no EQEmu queue, swallowed
+static constexpr uint16_t ZN_OP_MoveLog        = 0xe421; // /movelog yes, 0 B (server transfer) — swallowed
 
 // Corpse recovery: /corpse, /searchcorpse and the drag-permission line.
 //
@@ -720,6 +751,9 @@ static constexpr uint16_t ZN_OP_Sacrifice     = 0xea21; // bidirectional: ask / 
 // Source: EQClassic/Common/Include/eq_opcodes.h
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
 static constexpr uint16_t ZN_OP_TradeAccept  = 0xe620; // zone -> client: open trade window (Trade_Window_Struct, ids swapped)
+static constexpr uint16_t ZN_OP_TradeBusy    = 0xd620; // both: PC-trade request refused, 12 B {to, from, type}; type 0x62 not trading, 0x63 group only, else busy
+// How long a relayed PC-trade request waits for the recipient's client to answer.
+static constexpr uint64_t kTradeRequestPendingMs = 5000;
 static constexpr uint16_t ZN_OP_TradeCoins   = 0xe420; // client -> zone: coin placed in window (TradeCoin_Struct)
 static constexpr uint16_t ZN_OP_ClickGive    = 0xda20; // client -> zone: commit trade ("Give")
 static constexpr uint16_t ZN_OP_CloseTrade   = 0xdc20; // zone -> client: close trade window (no payload)
@@ -784,6 +818,7 @@ static constexpr uint16_t ZN_OP_GroupFollow        = 0x4220; // client -> zone: 
                                                             // NOT 0x3d20 — EQMacEmuTrilogy patch is wrong here, EQClassic Common is right
 static constexpr uint16_t ZN_OP_GroupCancelInvite  = 0x4120; // bidirectional: decline, GroupInviteDecline_Struct (65B)
 static constexpr uint16_t ZN_OP_GroupDisband       = 0x4420; // client -> zone: leave / kick / disband, GroupDisband_Struct (60B)
+static constexpr uint16_t ZN_OP_GroupDelete        = 0x9721; // client -> zone: leader disbands the whole party, 0 B (eqgame.exe 0x4cb5e8)
 static constexpr uint16_t ZN_OP_GroupUpdate        = 0x2620; // zone -> client: GroupUpdate_Struct (228B)
 
 // Inspect opcodes (right-click another player → equipment window + about-me text)
@@ -1261,8 +1296,8 @@ static int TranslateTrilogySkillId(uint8_t classic_skill)
 	//
 	// SAFE_FALL is marked passive here because the OP_SafeFallSuccess
 	// opcode (0xab21) is a status notification, not a "use" — the
-	// client tells the server "I fell"; the server does the absorb
-	// math.  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
+	// client does the absorb itself and tells the server so it can roll
+	// the skill-up (handled on its own, see ZN_OP_SafeFallSuccess).  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
 	// "client asks for heading text" ping, not a combat ability.
 	if (classic_skill > 73) {
 		return -1;
@@ -2653,6 +2688,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			// 0x9f20 Attack_Struct v29c expects.
 			s.trilogy_client->DoAnim(20);
 		}
+		else if (opcode == ZN_OP_SafeFallSuccess && s.trilogy_client) {
+			// The fall already happened client-side; this is the skill-up roll,
+			// as in EQClassic's ProcessOP_SafeFallSuccess and EQEmu's handler.
+			if (s.trilogy_client->HasSkill(EQ::skills::SkillSafeFall)) {
+				s.trilogy_client->CheckIncreaseSkill(EQ::skills::SkillSafeFall, nullptr);
+			}
+		}
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
 		// 0xe620 is also sent by the receiving client to ACCEPT a PC-trade request
@@ -2660,6 +2702,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		// recipient agreeing to open their window — relayed to the requester).
 		else if (opcode == ZN_OP_TradeAccept && s.trilogy_client)
 			HandleTradeAccepted(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_TradeBusy && s.trilogy_client)
+			HandleTradeBusy(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeCoins && s.trilogy_client)
 			HandleTradeCoins(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClickGive && s.trilogy_client)
@@ -2837,6 +2881,9 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_GroupDisband && s.trilogy_client) {
 			s.trilogy_client->HandleIncomingGroupDisband(payload, plen);
 		}
+		else if (opcode == ZN_OP_GroupDelete && s.trilogy_client) {
+			s.trilogy_client->HandleIncomingGroupDisbandAll(plen);
+		}
 		else if (opcode == ZN_OP_InspectRequest && s.trilogy_client)
 			HandleInspectRequest(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_InspectAnswer && s.trilogy_client)
@@ -2848,28 +2895,46 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		else if (opcode == ZN_OP_ClassEndTraining && s.trilogy_client)
 			HandleClassEndTraining(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_GMZoneRequest && s.trilogy_client) {
-			// GMZoneRequest_Struct: charname[30] + zonename[16] + unknown[32] + success[1] + unknown2[5] = 84 bytes
-			if (plen >= 46) {
-				char zonename[17] = {};
-				strncpy(zonename, reinterpret_cast<const char*>(payload + 30), 16);
-				if (zonename[0]) {
-					LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}'", s.char_name, zonename);
-					// Send back success=1 (EQClassic ProcessOP_GMZoneRequest behaviour) before issuing
-					// the zone command.  The Trilogy client expects this ACK to advance its state.
-					uint8_t resp[84] = {};
-					strncpy(reinterpret_cast<char*>(resp),      s.char_name, 29);
-					strncpy(reinterpret_cast<char*>(resp + 30), zonename,    15);
-					static const uint8_t kGMZoneUnk[32] = {
-						0xe8, 0xf0, 0x58, 0x00, 0x70, 0xef, 0xad, 0x0e,
-						0x74, 0xf3, 0xad, 0x0e, 0xc7, 0x01, 0x4c, 0x00,
-						0x00, 0xa0, 0x04, 0xc5, 0x00, 0x20, 0x5f, 0xc5,
-						0x00, 0x00, 0xba, 0xc2, 0x00, 0x00, 0x00, 0x00
-					};
-					memcpy(resp + 46, kGMZoneUnk, 32);
-					resp[78] = 1; // success
-					SendApp(addr, port, s, ZN_OP_GMZoneRequest, resp, 84);
-					command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
+			// /zone <short name>, first leg.  84 B (eqgame.exe 0x4a50d0): the zone
+			// name is strcpy'd to +0x20; +0x00..+0x1f are never written.  The client
+			// then spins up to 60 s (Sleep(10), deadline 0xea60 ms) for the 0x4f21
+			// reply, whose handler (0x49aa25) requires +0x00 == its own name and
+			// +0x20 == the zone it asked for, writes the floats at +0x40/+0x44/+0x48/
+			// +0x4c into its position as Y/X/Z/heading, and reads a uint32 success
+			// at +0x50.  Only on success does it send the second leg, 0x0822, which
+			// is what actually zones.  The old code read the zone at +30 and replied
+			// in EQClassic's layout (zone @30, success byte @78), which matches none
+			// of that, and zoned immediately instead.
+			if (plen >= 0x40) {
+				const char* zn = reinterpret_cast<const char*>(payload + 0x20);
+				const std::string zonename(zn, strnlen(zn, 0x20));
+				auto* z = zonename.empty() ? nullptr : zone_store.GetZone(zonename);
+
+				uint8_t resp[0x54] = {};
+				strncpy(reinterpret_cast<char*>(resp), s.char_name, 0x1f);
+				strncpy(reinterpret_cast<char*>(resp + 0x20), zonename.c_str(), 0x1f);
+				const uint32_t ok = z ? 1u : 0u;
+				if (z) {
+					const float y = z->safe_y, x = z->safe_x, zz = z->safe_z, h = z->safe_heading;
+					memcpy(resp + 0x40, &y,  4);
+					memcpy(resp + 0x44, &x,  4);
+					memcpy(resp + 0x48, &zz, 4);
+					memcpy(resp + 0x4c, &h,  4);
 				}
+				memcpy(resp + 0x50, &ok, 4);
+				LogInfo("[TrilogyZone] GM ZoneRequest: {} -> '{}' ({})", s.char_name, zonename,
+				        ok ? "found" : "no such zone");
+				SendApp(addr, port, s, ZN_OP_GMZoneRequest, resp, sizeof(resp));
+			}
+		}
+		else if (opcode == ZN_OP_GMZoneRequest2 && s.trilogy_client) {
+			// /zone second leg: the zone short name, NUL-terminated (0x4a518d),
+			// sent only after the client accepted our 0x4f21 reply.
+			const std::string zonename(reinterpret_cast<const char*>(payload),
+			                           strnlen(reinterpret_cast<const char*>(payload), plen));
+			if (!zonename.empty() && s.trilogy_client->GetGM()) {
+				LogInfo("[TrilogyZone] GM ZoneRequest2: {} -> '{}'", s.char_name, zonename);
+				command_dispatch(s.trilogy_client, std::string("#zone ") + zonename, false);
 			}
 		}
 		else if (opcode == ZN_OP_GMGoto && s.trilogy_client) {
@@ -2917,6 +2982,15 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				}
 			}
 		}
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_GMFind      || opcode == ZN_OP_GMServers     ||
+		          opcode == ZN_OP_GMHideMe    || opcode == ZN_OP_GMBecomeNPC   ||
+		          opcode == ZN_OP_GMIllusion  || opcode == ZN_OP_GMNameChange  ||
+		          opcode == ZN_OP_GMEmoteZone || opcode == ZN_OP_GMDelCorpse   ||
+		          opcode == ZN_OP_GMToggle    || opcode == ZN_OP_GMSurname     ||
+		          opcode == ZN_OP_GMApproval  || opcode == ZN_OP_GMNameApproval ||
+		          opcode == ZN_OP_MoveLog))
+			HandleGMToolPacket(addr, port, s, opcode, payload, plen);
 		else if (opcode == ZN_OP_Surname && s.trilogy_client)
 			HandleSurname(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SocialText && s.trilogy_client)
@@ -2973,6 +3047,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleServerFilter(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_WhoAll && s.trilogy_client)
 			HandleWhoAll(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_Report && s.trilogy_client)
+			HandleReport(s, payload, plen);
+		else if (opcode == ZN_OP_FriendsWho && s.trilogy_client)
+			HandleFriendsWho(s, payload, plen);
 		else if (opcode == ZN_OP_ZoneEntryResend && s.trilogy_client)
 			HandleZoneEntryResend(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SetRunMode && s.trilogy_client)
@@ -4307,12 +4385,9 @@ void TrilogyZoneServer::HandlePostInventory(const std::string& addr, int port, S
 }
 
 // ============================================================
-// SendInventoryItems — query all carried items and send as OP_CharInventory (0xf621).
-//
-// Wire format (EQClassic uncompressed):
-//   int16 count
-//   (int16 opcode + ClassicItem_Struct)[count]
-//   Opcodes: 0x6421 normal, 0x6521 book, 0x6621 container
+// SendInventoryItems — query all carried items and send one packet per item:
+//   0x6421 normal, 0x6521 book, 0x6621 container (raw ClassicItem_Struct each);
+//   bank items as described below.  No 0xf621 bulk — see the end of the function.
 //
 // Slot mapping (v29c SLOT_PERSONAL_BEGIN=21, no charm slot):
 //   EQEmu 0      → skipped           (charm; no v29c equivalent)
@@ -4758,7 +4833,7 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 
 		// DIAG kSkipBankItems: drop bank-top (DB 2000-2007) and bank-bag content (DB 2031-2110)
-		// from the items vector — excludes them from both per-item passes AND the 0xf621 bulk.
+		// from the items vector — excludes them from the per-item pass.
 		if (kSkipBankItems && slot_id >= 2000) {
 			LogInfo("[TrilogyZone] DIAG kSkipBankItems: dropped slot {} (item {})",
 			        slot_id, item_id);
@@ -4769,45 +4844,31 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		++sent_count;
 	}
 
-	// ── FAITHFUL EQMacEmu (Al'Kabor) ZONE-IN INVENTORY DELIVERY ───────────────────────────
-	// Replicates the live Mac server's exact zone-in sequence.  EQMacEmuTrilogy
-	// Handle_Connect_OP_SendExpZonein does, in order (client_packet.cpp:1512-1514):
-	//   (1) BulkSendItems()          → one INDIVIDUAL per-item packet per occupied slot, inline:
-	//                                   0x6421 item / 0x6621 container / 0x6521 book.  Worn,
-	//                                   general, general-bag contents, BANK top, AND BANK-BAG
-	//                                   contents are ALL sent this way — bank is not special-cased
-	//                                   (client_process.cpp BulkSendItems, slots …→BANK_BAGS_END).
-	//   (2) BulkSendInventoryItems() → the single DEFLATED 0xf621 bulk over the SAME items.  This
-	//                                   is the AUTHORITATIVE inventory snapshot: it BUILDS each
-	//                                   bag's content structure (so bags open without crashing) and
-	//                                   reconciles per-item placement (kills the bank "bleed").
-	//                                   Wire format (ENCODE OP_CharInventory, trilogy.cpp:1779):
-	//                                     [uint8 itemcount][uint8 0][zlib-deflate(itemcount × 292B)]
-	//                                   EVERY entry is the FULL 292-byte item struct — containers
-	//                                   and books included (homogeneous, NOT the short forms).
+	// ── ZONE-IN INVENTORY DELIVERY ─────────────────────────────────────────────────────────
+	// Modelled on EQMacEmu's Handle_Connect_OP_SendExpZonein (client_packet.cpp:1512-1514),
+	// which does (1) BulkSendItems — one INDIVIDUAL per-item packet per occupied slot,
+	// 0x6421 item / 0x6621 container / 0x6521 book — then (2) BulkSendInventoryItems, a deflated
+	// 0xf621 bulk.  Only (1) is done here.  (2) was carried over for a while and credited with
+	// building bag contents and fixing the bank "bleed", but it was in the Al'Kabor Mac client's
+	// layout, which v29c cannot parse — see the end of this function.  Everything credited to it
+	// was the per-item packets.
 	// The PP bank arrays stay POPULATED (EQMacEmu populates them; kInventoryMode==0 keeps the
-	// SendPlayerProfile blanking dormant).  No 0xdf20, no deferral — both were workarounds for the
-	// MISSING bulk: without the authoritative snapshot the per-item bank packets bled a slot and
-	// bags had no content structure (→ empty bag / crash-on-open).  The bulk is the real fix.
+	// SendPlayerProfile blanking dormant).
 	// Items are iterated in DB-slot order (query is ORDER BY slotid), which already yields
 	// EQMacEmu's order — worn, general, general-bags, bank-top, bank-bags — so every parent
-	// container precedes its contents in BOTH passes.  [[project-trilogy-banker]]
+	// container precedes its contents.  [[project-trilogy-banker]]
 
 	// (1) INDIVIDUAL per-item packets — every item, inline, in slot order.
 	// ONE deviation from EQMacEmu's plain-0x6421-for-everything: a LOOSE (non-container) item in a
 	// bank TOP slot (2000-2007) sent via 0x6421 places by equipSlot and BLEEDS DOWN one slot on the
 	// v29c client — item@N also draws a phantom copy at N-1 (proven: a lone naginata at bank slot 2
-	// rendered at slots 1 AND 2).  The 0xf621 bulk is a MERGE, not a replace: it adds bag contents
-	// but does NOT clear that phantom.  So send bank-top LOOSE items via OP_TradeItemPacket (0xdf20),
+	// rendered at slots 1 AND 2).  So send bank-top LOOSE items via OP_TradeItemPacket (0xdf20),
 	// which carries an EXPLICIT slotid — the client places by slotid, no bleed.  Containers (0x6621)
 	// only bleed down to slot 1999 (invalid → harmless) and bank-bag contents (2030+) do NOT bleed
 	// (their render was pixel-perfect), so both keep the normal opcode.
 	int sent_packets = 0;
 	int bank_trade   = 0;
 	int bank_3120    = 0;
-	auto is_bank_slot = [](int16_t es) {
-		return (es >= 2000 && es <= 2007) || (es >= 2030 && es <= 2109);
-	};
 	auto send_one = [&](const Trilogy::structs::ClassicItem_Struct& ci) {
 		const uint16_t opc =
 		    (ci.itemclass == 1) ? ZN_OP_CPlayerCont :
@@ -4861,39 +4922,28 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		}
 	}
 
-	// (2) DEFLATED 0xf621 bulk over the SAME items (authoritative snapshot — builds bag
-	//     contents + reconciles placement).  [uint8 count][uint8 0][deflate(count × 292B)].
-	// When kBankVia3120 is true: EXCLUDE bank items from the bulk — EQClassic doesn't send
-	// a bulk for bank, and including bank in 0xf621 alongside per-item 0x3120 may cause
-	// double-allocation in the v29c client's bank pointer arrays.
-	std::vector<uint8_t> raw;
-	uint8_t item_count = 0;
-	for (const auto& ci : items) {
-		if (kBankVia3120 && is_bank_slot(ci.equipslot)) continue;
-		const auto* ip = reinterpret_cast<const uint8_t*>(&ci);
-		raw.insert(raw.end(), ip, ip + sizeof(ci));
-		++item_count;
-	}
-	std::vector<uint8_t> out;
-	out.push_back(item_count);   // [0] uint8 itemcount
-	out.push_back(0);            // [1] pad (EQMacEmu leaves byte[1]=0; deflate stream starts at [2])
-	uint32_t payload_bytes = 0;
-	{
-		const size_t hdr = out.size();
-		out.resize(hdr + EQ::EstimateDeflateBuffer(static_cast<uint32_t>(raw.size())) + 16, 0);
-		uint32_t clen = raw.empty() ? 0 : EQ::DeflateData(
-			reinterpret_cast<const char*>(raw.data()), static_cast<uint32_t>(raw.size()),
-			reinterpret_cast<char*>(out.data() + hdr), static_cast<uint32_t>(out.size() - hdr));
-		out.resize(hdr + clen);
-		payload_bytes = clen;
-	}
-	SendApp(addr, port, s, ZN_OP_CharInventory, out.data(), static_cast<uint32_t>(out.size()));
+	// (2) NO 0xf621 bulk.  One used to follow here, and it never worked: it was built in the
+	//     EQMacEmu Mac-client layout, [uint8 count][uint8 0][deflate(count × 292B)].  v29c's
+	//     0xf621 parser (eqgame.exe 0x495456) inflates the payload and walks it in 294-byte
+	//     entries, {int16 opcode; ClassicItem_Struct}, dispatching each on its own embedded
+	//     opcode — 0x6421 item, 0x6621 container, 0x6521 book, anything else skipped — which
+	//     is exactly EQClassic's CPlayerItems_packet_Struct.  Handed 292-byte entries it
+	//     re-derived the count as len/294 and read every entry out of phase: nearly all were
+	//     skipped, and whichever happened to line up with an item opcode became a garbage item
+	//     that failed the client's own check (itemtype@194 == 13 or id@130 < 1000), printed
+	//     "Got a bogus item, deleting it" and sent 0x4721 {-2,-2,1} — on every zone-in.  So
+	//     everything that works at zone-in has always come from the per-item pass above.
+	//
+	//     Not rebuilt in the right layout on purpose: the per-item packets already place every
+	//     item, and v29c's item handlers reject an item for a slot that is already filled
+	//     (0x4721 codes 3–7), so a working bulk on top of them would only add a second copy of
+	//     everything.  EQClassic sends the bulk INSTEAD of per-item packets; switching to that
+	//     would mean retiring the per-item path, which is a separate change.
 
 	LogInfo("[TrilogyZone] SendInventoryItems | char [{}] db_rows={} built={} individual={} "
-	        "bank_trade={} bank_3120={} bulk_items={} bulk_payload={} bulk_total={} "
-	        "(bank via 0x3120 EQClassic-faithful; PP bank_inv populated)",
-	        s.char_name, db_rows, sent_count, sent_packets, bank_trade, bank_3120,
-	        static_cast<int>(item_count), payload_bytes, out.size());
+	        "bank_trade={} bank_3120={} (per-item only; bank via 0x3120 EQClassic-faithful; "
+	        "PP bank_inv populated)",
+	        s.char_name, db_rows, sent_count, sent_packets, bank_trade, bank_3120);
 }
 
 // ============================================================
@@ -5006,46 +5056,6 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// (ArmTrilogyZoneInGuard emits its own "guard ARMED" log with the
 		//  per-line effective_r and computed threshold under TrilogyZonePointDebug.)
 
-		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
-		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
-		// which translates what it can and silently drops the rest.
-		tc->CompleteConnect();
-
-		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
-		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
-		// runs, so clear it here — otherwise every later zone-in would fire the
-		// first-login events again.
-		database.SetFirstLogon(tc->CharacterID(), 0);
-
-		// Guild appearance on zone-in.
-		//
-		// v29c keeps TWO copies of a player's guild id and reads a different one
-		// depending on what it is doing.  Both were found in eqgame.exe:
-		//
-		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
-		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
-		//                   by the SpawnAppearance type-22 handler (0x493d31).
-		//                   This is what the guild COMMANDS gate on.
-		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
-		//                   the same appearance handler (0x493cb4).  This is what
-		//                   /guildinvite and /guildremove check.
-		//
-		// The local player's own actor is not built from a Spawn_Struct, so its
-		// copy stays at the 0xFFFF "no guild" default for the whole session unless
-		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
-		// only fires SendGuildSpawnAppearance on a membership change, so a player
-		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
-		//
-		// The visible symptom was oddly narrow.  The guild TAG still rendered —
-		// that comes from a different actor field the spawn parser does fill — and
-		// /guildinvite worked once the profile copy was populated.  Only
-		// /guildmotd failed, with "You are not in a guild." printed by the client
-		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
-		// before it will send anything), so the server never saw a packet at all.
-		if (tc->IsInAGuild()) {
-			tc->SendGuildSpawnAppearance();
-		}
-
 		// Group restoration on zone-in.
 		//
 		// EQEmu's standard restoration block lives in Client::Handle_Connect_OP_ZoneEntry
@@ -5134,6 +5144,53 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 				        "restored={}", tc->GetName(), pi->SpellID, tc->GetPet() != nullptr);
 				pi->SpellID = 0;
 			}
+		}
+
+		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
+		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
+		// which translates what it can and silently drops the rest.
+		//
+		// After the group, bots and pet, not before.  That is the stock order:
+		// Handle_Connect_OP_ZoneEntry restores all three, and CompleteConnect only
+		// runs later from OP_ClientReady.  CompleteConnect relies on it — it sends
+		// the pet's buffs and wear-change and reads GetGroup() — and so do the
+		// scripts it starts: EVENT_ENTER_ZONE used to fire with no group, no pet
+		// and no bots in the zone yet.
+		tc->CompleteConnect();
+
+		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
+		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
+		// runs, so clear it here — otherwise every later zone-in would fire the
+		// first-login events again.
+		database.SetFirstLogon(tc->CharacterID(), 0);
+
+		// Guild appearance on zone-in.
+		//
+		// v29c keeps TWO copies of a player's guild id and reads a different one
+		// depending on what it is doing.  Both were found in eqgame.exe:
+		//
+		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
+		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
+		//                   by the SpawnAppearance type-22 handler (0x493d31).
+		//                   This is what the guild COMMANDS gate on.
+		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
+		//                   the same appearance handler (0x493cb4).  This is what
+		//                   /guildinvite and /guildremove check.
+		//
+		// The local player's own actor is not built from a Spawn_Struct, so its
+		// copy stays at the 0xFFFF "no guild" default for the whole session unless
+		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
+		// only fires SendGuildSpawnAppearance on a membership change, so a player
+		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
+		//
+		// The visible symptom was oddly narrow.  The guild TAG still rendered —
+		// that comes from a different actor field the spawn parser does fill — and
+		// /guildinvite worked once the profile copy was populated.  Only
+		// /guildmotd failed, with "You are not in a guild." printed by the client
+		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
+		// before it will send anything), so the server never saw a packet at all.
+		if (tc->IsInAGuild()) {
+			tc->SendGuildSpawnAppearance();
 		}
 
 		// Group roster sync to the joining v29c client.
@@ -7532,6 +7589,298 @@ void TrilogyZoneServer::HandleWhoAll(const std::string& addr, int port, Session&
 }
 
 // ============================================================
+// HandleReport — inbound 0xbd21, /report <name>
+//
+// Rebuilt into the text form Client::Handle_OP_Report parses —
+// "reported|reporter|line\nline...\0" — which writes the `reports` table.  The
+// reporter is not in the v29c payload; it is this session.  A '|' in the typed
+// name would shift that parse, so it is replaced.  Empty chat lines are skipped.
+// ============================================================
+void TrilogyZoneServer::HandleReport(Session& s, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+	if (plen < 32 + 10 * 512) {
+		LogInfo("[TrilogyZone] Report: char={} short packet plen={} (need {})",
+		        s.char_name, plen, kTrilogyReportSize);
+		return;
+	}
+
+	std::string reported(reinterpret_cast<const char*>(payload),
+	                     strnlen(reinterpret_cast<const char*>(payload), 32));
+	std::replace(reported.begin(), reported.end(), '|', ' ');
+
+	std::string text;
+	for (int i = 0; i < 10; ++i) {
+		const char* line = reinterpret_cast<const char*>(payload + 32 + i * 512);
+		const size_t len = strnlen(line, 512);
+		if (len == 0) continue;
+		if (!text.empty()) text += '\n';
+		text.append(line, len);
+	}
+
+	const std::string body = reported + "|" + tc->GetName() + "|" + text;
+	auto* app = new EQApplicationPacket(OP_Report, static_cast<uint32>(body.size() + 1));
+	memcpy(app->pBuffer, body.c_str(), body.size() + 1);
+	LogInfo("[TrilogyZone] Report: char={} reported='{}' lines_bytes={}",
+	        s.char_name, reported, text.size());
+	tc->Handle_OP_Report(app);
+	delete app;
+}
+
+// ============================================================
+// HandleFriendsWho — inbound 0xc521, /who all friends
+//
+// The payload is already the comma-separated name list Client::FriendsWho
+// takes.  That goes to world (ClientList::SendFriendsWho), which answers with a
+// who-all reply marked playerineqstring 0xFFFFFFFF; HandleOutgoingWhoAllResponse
+// renders it without the "Players on EverQuest:" header the client has already
+// printed.  The list lives only in the client's INI, so nothing is stored here.
+// ============================================================
+void TrilogyZoneServer::HandleFriendsWho(Session& s, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc || plen == 0) return;
+
+	// Client::FriendsWho reads a C string; never trust the client to terminate it.
+	std::string names(reinterpret_cast<const char*>(payload),
+	                  strnlen(reinterpret_cast<const char*>(payload), plen));
+	if (names.empty()) return;
+
+	LogInfo("[TrilogyZone] FriendsWho: char={} names='{}'", s.char_name, names);
+	std::vector<char> buf(names.begin(), names.end());
+	buf.push_back('\0');
+	tc->FriendsWho(buf.data());
+}
+
+// ============================================================
+// HandleGMToolPacket — the v29c GM command surface.
+//
+// Every layout below was read out of eqgame.exe (command rows and send sites
+// named per case).  Where a stock Client::Handle_OP_* does the job it is fed a
+// rebuilt packet; where the stock handler has the wrong shape or a bug, the
+// work is done here.  The client gates all of these on its GM byte (player
+// +0xf1 = PlayerProfile 4174 = GetGM()), and so do we.
+// ============================================================
+void TrilogyZoneServer::HandleGMToolPacket(const std::string& addr, int port, Session& s,
+                                           uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	auto str_at = [&](uint32_t off, uint32_t len) -> std::string {
+		if (off >= plen) return {};
+		const uint32_t n = std::min(len, plen - off);
+		const char* p = reinterpret_cast<const char*>(payload + off);
+		return std::string(p, strnlen(p, n));
+	};
+	auto u16_at = [&](uint32_t off) -> uint16_t {
+		uint16_t v = 0;
+		if (off + 2 <= plen) memcpy(&v, payload + off, 2);
+		return v;
+	};
+	auto u32_at = [&](uint32_t off) -> uint32_t {
+		uint32_t v = 0;
+		if (off + 4 <= plen) memcpy(&v, payload + off, 4);
+		return v;
+	};
+	// A name as typed or targeted is in the client's spawn-table form; entity
+	// names differ for NPCs and corpses (see TrilogyWireNameToEntityName).
+	auto find_mob = [&](const std::string& wire) -> Mob* {
+		if (wire.empty()) return nullptr;
+		char ent[64] = {};
+		TrilogyWireNameToEntityName(wire.c_str(), ent, sizeof(ent));
+		Mob* m = entity_list.GetMob(ent);
+		return m ? m : entity_list.GetMob(wire.c_str());
+	};
+
+	switch (opcode) {
+	case ZN_OP_GMHideMe:
+		// Sent before its buffer is filled (0x4a506b); the state arrives as the
+		// f520 type 3 that follows — see HandleConnectedSpawnAppearance.
+	case ZN_OP_GMApproval:
+		// /approval (0x4a8b39): a GM's opt-in to name-approval requests, resent on
+		// every zone-in when off.  EQEmu approves names at creation; nothing to do.
+	case ZN_OP_GMNameApproval:
+		// The console's answer to a 0x8c20 name-approval request we never send.
+	case ZN_OP_MoveLog:
+		// /movelog yes (server transfer) — nothing on this server.
+		return;
+	default:
+		break;
+	}
+
+	if (!tc->GetGM()) {
+		LogInfo("[TrilogyGM] char={} sent GM opcode {:04X} without the GM flag — ignored",
+		        s.char_name, opcode);
+		return;
+	}
+
+	switch (opcode) {
+	case ZN_OP_GMServers: {
+		// /servers (0x4a50aa): 4 B own id; world answers as chat.
+		EQApplicationPacket app(OP_GMServers, 0);
+		tc->Handle_OP_GMServers(&app);
+		break;
+	}
+	case ZN_OP_GMEmoteZone: {
+		// /emotezone (0x4a9ff5): 512 B of text, same as GMEmoteZone_Struct.
+		EQApplicationPacket app(OP_GMEmoteZone, sizeof(::GMEmoteZone_Struct));
+		auto* e = reinterpret_cast<::GMEmoteZone_Struct*>(app.pBuffer);
+		memset(e, 0, sizeof(*e));
+		strn0cpy(e->text, str_at(0, sizeof(e->text)).c_str(), sizeof(e->text));
+		tc->Handle_OP_GMEmoteZone(&app);
+		break;
+	}
+	case ZN_OP_GMToggle: {
+		// /toggletell (0x4a911a): u32 on/off at +0x20.
+		EQApplicationPacket app(OP_GMToggle, sizeof(::GMToggle_Struct));
+		auto* t = reinterpret_cast<::GMToggle_Struct*>(app.pBuffer);
+		memset(t, 0, sizeof(*t));
+		t->toggle = u32_at(0x20);
+		tc->Handle_OP_GMToggle(&app);
+		break;
+	}
+	case ZN_OP_GMSurname: {
+		// /lastname (0x4a4c6d): name[30] @0, gm[30] @0x1e, last name @0x3c.
+		// Handle_OP_GMLastName renames and re-broadcasts OP_GMLastName, which
+		// goes back out to v29c as 0x6e21.  PlayerProfile Surname is 20 bytes.
+		EQApplicationPacket app(OP_GMLastName, sizeof(::GMLastName_Struct));
+		auto* g = reinterpret_cast<::GMLastName_Struct*>(app.pBuffer);
+		memset(g, 0, sizeof(*g));
+		std::string last = str_at(0x3c, 0x20);
+		if (last.size() > 19) last.resize(19);
+		strn0cpy(g->name,     str_at(0, 30).c_str(), sizeof(g->name));
+		strn0cpy(g->gmname,   tc->GetName(),         sizeof(g->gmname));
+		strn0cpy(g->lastname, last.c_str(),          sizeof(g->lastname));
+		tc->Handle_OP_GMLastName(&app);
+		break;
+	}
+	case ZN_OP_GMBecomeNPC: {
+		// /becomenpc (0x4aaa71): {u32 target spawn id; u32 max level}, the same 8
+		// bytes as BecomeNPC_Struct.  The id is the client's; our own player
+		// spawn id maps back to the entity.  The target's copy goes back out as
+		// 0x8c21 (TrilogyClient, OP_GMBecomeNPC).
+		EQApplicationPacket app(OP_GMBecomeNPC, sizeof(::BecomeNPC_Struct));
+		auto* b = reinterpret_cast<::BecomeNPC_Struct*>(app.pBuffer);
+		const uint32_t id = u32_at(0);
+		b->id       = (id == s.player_spawn_id) ? tc->GetID() : id;
+		b->maxlevel = static_cast<int32>(u32_at(4));
+		tc->Handle_OP_GMBecomeNPC(&app);
+		break;
+	}
+	case ZN_OP_GMIllusion: {
+		// /becomenpc's look, sent just before 0x8c21 (0x4aac89): target name[30]
+		// @0, race u16 @0x3e, gender u8 @0x40, texture u16 @0x42, helm u16 @0x44,
+		// face u16 @0x46.  Handle_OP_Illusion would re-skin the SENDER, so the
+		// named target is changed directly.
+		if (plen < 0x48) break;
+		Mob* m = find_mob(str_at(0, 30));
+		if (!m) {
+			tc->Message(Chat::Red, "Illusion target not found in this zone.");
+			break;
+		}
+		AppearanceStruct a;
+		a.race_id        = u16_at(0x3e);
+		a.gender_id      = payload[0x40];
+		a.texture        = static_cast<uint8>(u16_at(0x42));
+		a.helmet_texture = static_cast<uint8>(u16_at(0x44));
+		a.face           = static_cast<uint8>(u16_at(0x46));
+		m->SendIllusionPacket(a);
+		break;
+	}
+	case ZN_OP_GMFind: {
+		// /find (0x4a8721): target name[30] @0, gm[30] @0x1e.  Reply handler
+		// 0x496ee9: found u8 @0x3c, zone short name @0x3d, int32 @0x5c/@0x60/
+		// @0x64 printed as "x = %d y = %d z = %d" — which is Y, X, Z, the order
+		// EQClassic's GMSummon_Struct (y @92, x @96, z @100) uses.  In-zone only,
+		// as in EQClassic.
+		const std::string who = str_at(0, 30);
+		Mob* m = find_mob(who);
+		uint8_t out[108] = {};
+		strncpy(reinterpret_cast<char*>(out),        who.c_str(),   29);
+		strncpy(reinterpret_cast<char*>(out + 0x1e), tc->GetName(), 29);
+		if (m) {
+			out[0x3c] = 1;
+			strncpy(reinterpret_cast<char*>(out + 0x3d), zone ? zone->GetShortName() : "", 14);
+			const int32_t y = static_cast<int32_t>(m->GetY());
+			const int32_t x = static_cast<int32_t>(m->GetX());
+			const int32_t z = static_cast<int32_t>(m->GetZ());
+			memcpy(out + 0x5c, &y, 4);
+			memcpy(out + 0x60, &x, 4);
+			memcpy(out + 0x64, &z, 4);
+		}
+		LogInfo("[TrilogyGM] /find char={} who='{}' found={}", s.char_name, who, m != nullptr);
+		SendApp(addr, port, s, ZN_OP_GMFind, out, sizeof(out));
+		break;
+	}
+	case ZN_OP_GMDelCorpse: {
+		// /delcorpse (0x4a52e1): corpse name[30] @0 in the client's spawn-table
+		// form.  Stock Handle_OP_GMDelCorpse would dereference a name it cannot
+		// find (it tests the struct pointer, not the lookup).
+		const std::string wire = str_at(0, 30);
+		Mob* m = find_mob(wire);
+		if (!m || !m->IsCorpse()) {
+			tc->Message(Chat::Red, fmt::format("No corpse named {} in this zone.", wire).c_str());
+			break;
+		}
+		const std::string name = m->GetName();
+		m->CastToCorpse()->Delete();
+		tc->Message(Chat::Red, fmt::format("Corpse {} deleted.", name).c_str());
+		break;
+	}
+	case ZN_OP_GMNameChange: {
+		// /name <old> <new> [b] (0x4a4d37): old[30] @0, gm[30] @0x1e, new[30]
+		// @0x3c, u16 badname @0x5a.  The v29c handler (0x49742d) finds the spawn
+		// by OLD name and needs u16 @0x5c != 0.  Client::ChangeFirstName does the
+		// rename, but fills its OP_GMNameChange's oldname after renaming — so the
+		// broadcast is built here with the real old name.
+		const std::string oldname = str_at(0, 30);
+		std::string       newname = str_at(0x3c, 30);
+		const bool        badname = u16_at(0x5a) != 0;
+		Client* target = entity_list.GetClientByName(oldname.c_str());
+		if (!target) {
+			tc->Message(Chat::Red, fmt::format("/name: {} is not a player in this zone.", oldname).c_str());
+			break;
+		}
+		if (newname.size() < 4 || newname.size() > 29 ||
+		    !std::all_of(newname.begin(), newname.end(), [](char c) { return std::isalpha(static_cast<unsigned char>(c)); })) {
+			tc->Message(Chat::Red, "/name: the new name must be 4-29 letters.");
+			break;
+		}
+		newname[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(newname[0])));
+		if (!target->ChangeFirstName(newname.c_str(), tc->GetName())) {
+			tc->Message(Chat::Red, fmt::format("/name: {} is already in use.", newname).c_str());
+			break;
+		}
+		if (badname) database.AddToNameFilter(oldname);
+
+		uint8_t out[94] = {};
+		strncpy(reinterpret_cast<char*>(out),        oldname.c_str(), 29);
+		strncpy(reinterpret_cast<char*>(out + 0x1e), tc->GetName(),   29);
+		strncpy(reinterpret_cast<char*>(out + 0x3c), newname.c_str(), 29);
+		const uint16_t apply = 1;
+		memcpy(out + 0x5c, &apply, 2);
+		for (auto& kv : m_sessions) {
+			Session& o = kv.second;
+			if (!o.trilogy_client) continue;
+			SendApp(o.source_addr, o.source_port, o, ZN_OP_GMNameChange, out, sizeof(out));
+		}
+		// The session keeps the character's name for its own replies (/zone
+		// matches it against the client's profile name).
+		if (Session* ts = FindSessionByEntityId(static_cast<uint16_t>(target->GetID()))) {
+			strn0cpy(ts->char_name, newname.c_str(), sizeof(ts->char_name));
+		}
+		tc->Message(Chat::White, fmt::format("{} is now {}.", oldname, newname).c_str());
+		LogInfo("[TrilogyGM] /name char={} {} -> {} badname={}", s.char_name, oldname, newname, badname);
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+// ============================================================
 // HandleZoneEntryResend — inbound 0x4121, "send me this spawn again"
 //
 // See the constant for what the traffic looks like on the wire.  Three cases:
@@ -9766,6 +10115,186 @@ static void DeliverTradedItemToTrilogyClient(TrilogyClient* recipient,
 	safe_delete(inst);
 }
 
+// Free general slots 23-30 plus free bag-content slots inside any equipped
+// containers, in delivery order.
+static std::vector<int> TrilogyFreeInventorySlots(uint32 char_id)
+{
+	std::vector<int> free_slots;
+	bool occ[331] = {};
+	int  bagslots[31] = {};
+	auto r = database.QueryDatabase(fmt::format(
+	    "SELECT i.`slotid`, it.`bagslots`, it.`itemclass` FROM `inventory` i "
+	    "LEFT JOIN `items` it ON i.`itemid` = it.`id` "
+	    "WHERE i.`charid`={} AND ((i.`slotid` BETWEEN 23 AND 30) OR (i.`slotid` BETWEEN 251 AND 330))",
+	    char_id));
+	if (r.Success())
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			int sl = Strings::ToInt(row[0]);
+			if (sl >= 0 && sl <= 330) occ[sl] = true;
+			const int itemclass = row[2] ? Strings::ToInt(row[2]) : 0;
+			if (sl >= 23 && sl <= 30 && itemclass == 1 && row[1])
+				bagslots[sl] = Strings::ToInt(row[1]);
+		}
+	for (int sl = 23; sl <= 30; ++sl) if (!occ[sl]) free_slots.push_back(sl);
+	for (int G = 23; G <= 30; ++G) {
+		if (bagslots[G] <= 0) continue;
+		const int base = 251 + (G - 23) * 10;
+		const int n    = bagslots[G] > 10 ? 10 : bagslots[G];
+		for (int j = 0; j < n; ++j)
+			if (base + j <= 330 && !occ[base + j]) free_slots.push_back(base + j);
+	}
+	return free_slots;
+}
+
+static int TrilogyBagContentBase(int db_slot); // defined with HandleDropItem
+
+// ============================================================
+// ReturnStagedTradeItem — give one item that was sitting in a trade window back
+// to its owner, when the trade ends without it changing hands (cancel, a Give
+// to an NPC with no trade script, an aborted PC trade, a camp or zone line).
+//
+// The server has to do this.  v29c destroys its own copy of everything in the
+// window when the trade ends: both the cancel routine (eqgame.exe 0x4571eb,
+// reached from the player's own close and from an inbound 0xdb20) and the
+// close routine behind 0xdc20 (0x4573d2) loop the eight window slots at
+// +0x6c4ec and delete each item object.  Nothing is put back.  EQClassic's
+// ProcessOP_CancelTrade does it server-side with FinishTrade(this), which
+// re-delivers each TradeList item with AutoPutItemInInventory.
+//
+// Where the item is in the DB decides the work:
+//   - picked up whole from an inventory slot: HandleMoveItem wrote nothing on
+//     the pickup, so the row is still in that slot and only the client's copy
+//     is missing — resend it there.
+//   - a cursor row (33, or the 8000-8010 queue: loot, a partial-stack pickup):
+//     move it to a free slot and resend it there.  With no free slot a slot-33
+//     row goes back on the cursor; a queue row stays for the zone-in relocation.
+// A container's contents move and are resent with it.  Partial-stack pickups
+// come back as their own stack rather than being merged into the source: the
+// client is showing the remainder in that slot, and merging would need the
+// occupied slot redrawn.
+// ============================================================
+void TrilogyZoneServer::ReturnStagedTradeItem(Session& s, uint32_t item_id, int from_db,
+                                              std::vector<int>& free_slots,
+                                              std::vector<int>& resync, const char* why)
+{
+	if (!s.trilogy_client || item_id == 0 || from_db < 0) return;
+
+	auto r = database.QueryDatabase(fmt::format(
+	    "SELECT `charges` FROM `inventory` WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
+	    s.char_id, from_db, item_id));
+	if (!r.Success() || r.RowCount() == 0) {
+		LogInfo("[TrilogyZone] TradeReturn ({}) char={} item={} from_db={} — no such row, nothing to return",
+		        why, s.char_id, item_id, from_db);
+		return;
+	}
+	const int16_t charges = static_cast<int16_t>(Strings::ToInt(r.begin()[0]));
+
+	const EQ::ItemData* item  = database.GetItem(item_id);
+	const bool is_bag         = item && item->ItemClass == EQ::item::ItemClassBag;
+	const bool is_cursor_row  = (from_db == 33) || (from_db >= 8000 && from_db <= 8010);
+
+	int dest = from_db;
+	if (is_cursor_row) {
+		for (size_t k = 0; k < free_slots.size(); ++k) {
+			const int sl = free_slots[k];
+			if (is_bag && (sl < 23 || sl > 30)) continue; // bags only in general slots
+			dest = sl;
+			free_slots.erase(free_slots.begin() + k);
+			break;
+		}
+	}
+
+	const int src_base = is_bag ? TrilogyBagContentBase(from_db) : -1;
+	const int dst_base = is_bag ? TrilogyBagContentBase(dest)    : -1;
+
+	if (dest != from_db) {
+		database.QueryDatabase(fmt::format(
+		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
+		    dest, s.char_id, from_db, item_id));
+		if (src_base >= 0 && dst_base >= 0 && src_base != dst_base) {
+			database.QueryDatabase(fmt::format(
+			    "UPDATE `inventory` SET `slotid`=`slotid`+({}) WHERE `charid`={} "
+			    "AND `slotid` BETWEEN {} AND {}",
+			    dst_base - src_base, s.char_id, src_base, src_base + 9));
+		}
+	}
+
+	resync.push_back(from_db);
+	resync.push_back(dest);
+	if (src_base >= 0) for (int j = 0; j < 10; ++j) resync.push_back(src_base + j);
+	if (dst_base >= 0) for (int j = 0; j < 10; ++j) resync.push_back(dst_base + j);
+
+	if (dest >= 8000) {
+		// No free slot and not the front cursor: v29c shows one cursor item only.
+		// SendInventoryItems moves queue rows into free slots at the next zone-in.
+		s.trilogy_client->Message(Chat::Red,
+		    "Your inventory is full; an item from the trade will be returned when you next zone.");
+		LogInfo("[TrilogyZone] TradeReturn ({}) char={} item={} left in cursor queue slot {}",
+		        why, s.char_id, item_id, dest);
+		return;
+	}
+
+	DeliverTradedItemToTrilogyClient(s.trilogy_client, static_cast<int16_t>(dest), item_id, charges);
+	if (dst_base >= 0) {
+		auto c = database.QueryDatabase(fmt::format(
+		    "SELECT `slotid`,`itemid`,`charges` FROM `inventory` WHERE `charid`={} "
+		    "AND `slotid` BETWEEN {} AND {} ORDER BY `slotid`",
+		    s.char_id, dst_base, dst_base + 9));
+		if (c.Success())
+			for (auto row = c.begin(); row != c.end(); ++row)
+				DeliverTradedItemToTrilogyClient(s.trilogy_client,
+				    static_cast<int16_t>(Strings::ToInt(row[0])),
+				    static_cast<uint32_t>(Strings::ToInt(row[1])),
+				    static_cast<int16_t>(Strings::ToInt(row[2])));
+	}
+
+	LogInfo("[TrilogyZone] TradeReturn ({}) char={} item={} charges={} db {} -> {}{}",
+	        why, s.char_id, item_id, (int)charges, from_db, dest, is_bag ? " (bag)" : "");
+}
+
+// ============================================================
+// ReturnNpcTradeToPlayer — end an NPC trade with nothing changing hands: every
+// staged item goes back (ReturnStagedTradeItem) and the coin offered is
+// refunded, as EQClassic's ProcessOP_CancelTrade does with FinishTrade(this)
+// and AddMoneyToPP(npctradecp..).  The coin comes back exactly: it left the
+// carried/cursor figures once, in HandleMoveCoin's slot-3 intercept.
+// ============================================================
+void TrilogyZoneServer::ReturnNpcTradeToPlayer(Session& s, const char* why)
+{
+	if (!s.trilogy_client) return;
+
+	std::vector<int> free_slots = TrilogyFreeInventorySlots(s.char_id);
+	std::vector<int> resync;
+	for (auto& st : s.trade_items) {
+		if (st.item_id == 0) continue;
+		ReturnStagedTradeItem(s, st.item_id, st.from_db_slot, free_slots, resync, why);
+		st = Session::TradeStageItem{};
+	}
+	ResyncMInvForRefund(s, resync);
+
+	if (s.trade_cp || s.trade_sp || s.trade_gp || s.trade_pp) {
+		LogInfo("[TrilogyZone] TradeReturn ({}) char={} coin cp={} sp={} gp={} pp={}",
+		        why, s.char_id, s.trade_cp, s.trade_sp, s.trade_gp, s.trade_pp);
+		s.trilogy_client->AddMoneyToPP(s.trade_cp, s.trade_sp, s.trade_gp, s.trade_pp, true);
+	}
+	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
+}
+
+// PC-trade counterpart for one side: every item that side staged comes back.
+// Coin is handled separately by PcTradeRefundOfferedCoins.
+void TrilogyZoneServer::ReturnPcTradeItemsToPlayer(Session& s, const char* why)
+{
+	if (!s.trilogy_client) return;
+
+	std::vector<int> free_slots = TrilogyFreeInventorySlots(s.char_id);
+	std::vector<int> resync;
+	for (auto& st : s.pc_trade_main) {
+		if (st.item_id == 0) continue;
+		ReturnStagedTradeItem(s, st.item_id, st.from_db_slot, free_slots, resync, why);
+	}
+	ResyncMInvForRefund(s, resync);
+}
+
 void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Session& s,
                                            const uint8_t* payload, uint32_t plen)
 {
@@ -9791,16 +10320,10 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 
 	// ── NPC trade ────────────────────────────────────────────────────────────
 	if (other->IsNPC()) {
-		// Clear any leftover staged state from a previous (aborted) trade.
-		// v29c doesn't always send OP_CancelTrade on window-close, so items
-		// staged from cursor last time may still be orphaned in the DB —
-		// clean those up before we drop the metadata (same reason
-		// HandleTradeCancel does it).  Partial-pickup cursors also get their
-		// refund here so we don't strand items across a spam-click reopen.
-		RefundPartialCursorTradeItems(s);
-		CleanupOrphanedCursorTradeItems(s);
-		for (auto& st : s.trade_items) st = Session::TradeStageItem{};
-		s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
+		// Anything still staged is left over from a previous trade that ended
+		// without a Cancel or Give reaching us.  The client destroyed its copies
+		// when that window closed, so give them back before starting over.
+		ReturnNpcTradeToPlayer(s, "stale trade");
 		s.trade_npc_id = other_id;
 
 		// Echo OP_TradeAccepted with the ids swapped so the client opens its window.
@@ -9838,42 +10361,107 @@ void TrilogyZoneServer::HandleTradeRequest(const std::string& addr, int port, Se
 		return;
 	}
 
-	// Initialise PC-trade state on BOTH sessions.  We set up the recipient too so
-	// their incoming stage/coin packets find pc_trade_active=true on the relay.
-	auto init_pc_trade = [](Session& sess, uint16_t partner_entity, uint32_t partner_char) {
-		sess.pc_trade_active     = true;
-		sess.pc_trade_partner_id = partner_entity;
-		sess.pc_trade_partner_ch = partner_char;
-		sess.pc_trade_gave       = false;
-		for (auto& it : sess.pc_trade_main) it = Session::PcTradeStageItem{};
-		for (auto& row : sess.pc_trade_bag) for (auto& it : row) it = Session::PcTradeBagSlot{};
-		sess.pc_trade_offer_cp = sess.pc_trade_offer_sp = 0;
-		sess.pc_trade_offer_gp = sess.pc_trade_offer_pp = 0;
-	};
-	init_pc_trade(s,        other_id, partner->char_id);
-	init_pc_trade(*partner, self_id,  s.char_id);
+	// Relay the request to the recipient's client and let IT decide, as EQClassic
+	// does.  v29c's 0xd120 handler (eqgame.exe 0x49dfeb) applies the player's own
+	// trade preference (options panel: anyone / group only / nobody — "anyone" by
+	// default) and its busy checks, then either opens its trade window and sends
+	// 0xe620 {requester, self} back (0x49e187), or refuses with 0xd620
+	// {requester, self, type} and prints "%s is interested in making a trade."
+	// (0x49e0c7).  HandleTradeAccepted and HandleTradeBusy take it from there.
+	//
+	// This used to open both windows server-side, on the belief that a relayed
+	// 0xd120 is discarded and v29c never sends the ack.  The handler does send it.
+	// What the 2026-06-21 test relayed was the requester's own bytes, and those
+	// name the requester by the SELF id its own client uses (player_spawn_id,
+	// 0x4000|char_id).  No other client knows that id, the handler's first spawn
+	// lookup failed, and it returned without a word.  So the request is rebuilt
+	// here in the recipient's terms: +0 its own id, +4 the requester's entity id.
+	// Bypassing the client meant the preference and the busy refusals never ran.
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	if (s.pc_trade_pending_to == other_id &&
+	    now_ms - s.pc_trade_pending_ms < kTradeRequestPendingMs) {
+		// A repeat click while the first request is still in flight.  Relaying it
+		// again would reach a client whose trade window is already opening, and
+		// that client would refuse the second copy as busy.
+		return;
+	}
+	s.pc_trade_pending_to = other_id;
+	s.pc_trade_pending_ms = now_ms;
 
-	// Open the trade window on BOTH sides by sending OP_TradeAccepted (0xe620).
-	// v29c only renders the trade window in response to 0xe620 — forwarding the
-	// raw 0xd120 packet is silently discarded by the receiving client (proven by
-	// the 2026-06-21 log where the relayed 0xd120 produced no window).  EQClassic
-	// goes through a 0xd120 echo + recipient-generated 0xe620 ack, but v29c does
-	// not auto-generate the ack, so we open both windows server-side immediately.
-	// Convention from the NPC path: each side receives {fromid=self, toid=other}.
-	auto send_open = [&](Session& sess, uint16_t self_e, uint16_t other_e) {
-		uint8_t resp[8] = {};
-		const uint32_t f = self_e;
-		const uint32_t t = other_e;
-		std::memcpy(resp + 0, &f, 4);
-		std::memcpy(resp + 4, &t, 4);
-		SendApp(sess.source_addr, sess.source_port, sess,
-		        ZN_OP_TradeAccept, resp, 8);
-	};
-	send_open(s,        self_id,  other_id);
-	send_open(*partner, other_id, self_id);
+	uint8_t req[8] = {};
+	const uint32_t to   = partner->trilogy_client->TranslateId(partner->trilogy_client->GetID());
+	const uint32_t from = self_id;
+	std::memcpy(req + 0, &to,   4);
+	std::memcpy(req + 4, &from, 4);
+	SendApp(partner->source_addr, partner->source_port, *partner,
+	        ZN_OP_TradeRequest, req, 8);
 
-	LogInfo("[TrilogyZone] PCTrade opened: {} (entity {}) <-> {} (entity {})",
-	        s.char_name, self_id, partner->char_name, other_id);
+	LogInfo("[TrilogyZone] PCTrade request relayed: {} (entity {}) -> {} (entity {}, self id {})",
+	        s.char_name, self_id, partner->char_name, other_id, to);
+}
+
+void TrilogyZoneServer::PcTradeInit(Session& s, uint16_t partner_entity, uint32_t partner_char)
+{
+	PcTradeClearState(s);
+	s.pc_trade_active     = true;
+	s.pc_trade_partner_id = partner_entity;
+	s.pc_trade_partner_ch = partner_char;
+}
+
+bool TrilogyZoneServer::IsSessionTrading(uint64_t session_key) const
+{
+	auto it = m_sessions.find(session_key);
+	return it != m_sessions.end() &&
+	       (it->second.trade_npc_id != 0 || it->second.pc_trade_active);
+}
+
+TrilogyZoneServer::Session* TrilogyZoneServer::FindPendingTradeRequester(uint16_t recipient_entity)
+{
+	const uint64_t now_ms = static_cast<uint64_t>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now().time_since_epoch()).count());
+	Session* best = nullptr;
+	for (auto& kv : m_sessions) {
+		Session& cand = kv.second;
+		if (!cand.trilogy_client || cand.pc_trade_pending_to != recipient_entity) continue;
+		if (now_ms - cand.pc_trade_pending_ms > kTradeRequestPendingMs) continue;
+		if (!best || cand.pc_trade_pending_ms > best->pc_trade_pending_ms) best = &cand;
+	}
+	return best;
+}
+
+void TrilogyZoneServer::HandleTradeBusy(const std::string& /*addr*/, int /*port*/, Session& s,
+                                        const uint8_t* payload, uint32_t plen)
+{
+	// The recipient's client refused a relayed request (0x49e0c7):
+	// {+0 requester, +4 its own self id, +8 type}.  The requester's client prints
+	// the refusal itself (0x49df8f) — 0x62 "not interested in trading with anyone
+	// at all", 0x63 "only ... members of my group", anything else "I'm busy right
+	// now" — resolving +4 as the refuser, so the ids are rebuilt in the
+	// requester's terms: +0 its own self id, +4 the recipient's entity id.
+	if (!s.trilogy_client || plen < 12) return;
+
+	const uint16_t self_e = static_cast<uint16_t>(s.trilogy_client->GetID());
+	Session* req = FindPendingTradeRequester(self_e);
+	if (!req) {
+		LogInfo("[TrilogyZone] PCTrade refusal from {} matches no pending request — dropped",
+		        s.char_name);
+		return;
+	}
+	req->pc_trade_pending_to = 0;
+
+	uint8_t out[12] = {};
+	const uint32_t to   = req->trilogy_client->TranslateId(req->trilogy_client->GetID());
+	const uint32_t from = self_e;
+	std::memcpy(out + 0, &to,   4);
+	std::memcpy(out + 4, &from, 4);
+	std::memcpy(out + 8, payload + 8, 4);
+	SendApp(req->source_addr, req->source_port, *req, ZN_OP_TradeBusy, out, 12);
+
+	LogInfo("[TrilogyZone] PCTrade request refused by {} (type=0x{:02X}) — relayed to {}",
+	        s.char_name, payload[8], req->char_name);
 }
 
 void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*port*/, Session& s,
@@ -9898,6 +10486,41 @@ void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*p
 	// appeared to work, because by then the observer had already seen the
 	// window-opening 0xe620 for that trade and had a green name to show.
 	if (!s.trilogy_client) return;
+
+	// The recipient's client answering a relayed request (HandleTradeRequest): it
+	// has already opened its own window and sent this 0xe620 {requester, self}
+	// (eqgame.exe 0x49e187).  Open the trade on both sessions and send the
+	// requester its window.  Every later 0xe620 in this trade is an Accept click
+	// and takes the relay below.
+	if (!s.pc_trade_active && !s.trade_npc_id) {
+		const uint16_t self_e = static_cast<uint16_t>(s.trilogy_client->GetID());
+		Session* req = FindPendingTradeRequester(self_e);
+		if (req) {
+			req->pc_trade_pending_to = 0;
+			if (req->pc_trade_active || req->trade_npc_id) {
+				// The requester started something else in the meantime.
+				LogInfo("[TrilogyZone] PCTrade window-open from {} but {} is already trading — ignored",
+				        s.char_name, req->char_name);
+				return;
+			}
+			const uint16_t req_e = static_cast<uint16_t>(req->trilogy_client->GetID());
+			PcTradeInit(*req, self_e, s.char_id);
+			PcTradeInit(s,    req_e,  req->char_id);
+
+			// {+0 the requester itself, +4 its partner}: the handler (0x49ea74)
+			// looks the partner up at +4 and opens the window on it.
+			uint8_t resp[8] = {};
+			const uint32_t f = req_e;
+			const uint32_t t = self_e;
+			std::memcpy(resp + 0, &f, 4);
+			std::memcpy(resp + 4, &t, 4);
+			SendApp(req->source_addr, req->source_port, *req, ZN_OP_TradeAccept, resp, 8);
+
+			LogInfo("[TrilogyZone] PCTrade opened: {} (entity {}) <-> {} (entity {})",
+			        req->char_name, req_e, s.char_name, self_e);
+			return;
+		}
+	}
 
 	if (!s.pc_trade_active || s.pc_trade_partner_id == 0) {
 		// Accept outside an active PC trade — an NPC trade or a stale click.
@@ -10097,12 +10720,20 @@ void TrilogyZoneServer::HandleTradeMoveItem(Session& s, uint32_t from_wire, uint
 	// ── Item moved OUT of a trade slot ──────────────────────────────────────
 	if (from_wire >= 3000 && from_wire <= 3007) {
 		const int idx = static_cast<int>(from_wire - 3000);
+		// The item goes back onto the cursor, and its DB row is wherever it was
+		// staged from (staging writes nothing).  Point the cursor tracking at that
+		// row, or the next drop cannot tell which row it is placing.
+		const int back_db  = s.pc_trade_active ? s.pc_trade_main[idx].from_db_slot
+		                                       : s.trade_items[idx].from_db_slot;
+		const int back_org = s.pc_trade_active ? s.pc_trade_main[idx].original_source_db_slot
+		                                       : s.trade_items[idx].original_source_db_slot;
 		if (s.pc_trade_active) {
 			s.pc_trade_main[idx] = Session::PcTradeStageItem{};
 			for (auto& bs : s.pc_trade_bag[idx]) bs = Session::PcTradeBagSlot{};
 		}
 		s.trade_items[idx] = Session::TradeStageItem{};
-		s.cursor_from_db = -1;
+		s.cursor_from_db           = (to_wire == 0) ? back_db  : -1;
+		s.cursor_partial_origin_db = (to_wire == 0) ? back_org : -1;
 		return;
 	}
 }
@@ -10152,17 +10783,12 @@ void TrilogyZoneServer::HandleTradeCoins(const std::string& addr, int port, Sess
 		return;
 	}
 
-	// ── NPC trade: existing accumulation ────────────────────────────────────
-	switch (coin_type) {
-		case 0: s.trade_cp += amount; break;
-		case 1: s.trade_sp += amount; break;
-		case 2: s.trade_gp += amount; break;
-		case 3: s.trade_pp += amount; break;
-		default: return;
-	}
-
-	LogInfo("[TrilogyZone] Trade coins char={} type={} amount={}",
-	        s.char_name, coin_type, amount);
+	// ── NPC trade: not counted here ─────────────────────────────────────────
+	// NPC-trade coin is counted in HandleMoveCoin's slot-3 intercept, from the
+	// OP_MoveCoin v29c actually sends (no 0xe420 has ever been logged for an NPC
+	// trade).  Adding it here as well would count it twice if one ever arrived.
+	LogInfo("[TrilogyZone] Trade coins (0xe420) char={} type={} amount={} — NPC trade, "
+	        "ignored (counted from OP_MoveCoin)", s.char_name, coin_type, amount);
 }
 
 // Refund THIS session's offered coins to its PlayerProfile carried money and
@@ -10201,9 +10827,10 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 	if (my_msg && *my_msg && s.trilogy_client)
 		s.trilogy_client->Message(Chat::Red, my_msg);
 	PcTradeRefundOfferedCoins(s);
-	// Refund any partial-pickup cursor rows BEFORE PcTradeClearState wipes
-	// the pc_trade_main array (the refund needs from_db_slot + origin).
-	RefundPartialCursorPcTradeItems(s);
+	// Give every staged item back BEFORE PcTradeClearState wipes pc_trade_main.
+	// Both clients destroy the window's items when the trade closes (0x4571eb /
+	// 0x4573d2), so this is the only way they reappear — see ReturnStagedTradeItem.
+	ReturnPcTradeItemsToPlayer(s, "pc trade aborted");
 	SendApp(s.source_addr, s.source_port, s, ZN_OP_CloseTrade, &z, 0);
 	PcTradeClearState(s);
 
@@ -10211,7 +10838,7 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 		if (partner_msg && *partner_msg)
 			partner->trilogy_client->Message(Chat::Red, partner_msg);
 		PcTradeRefundOfferedCoins(*partner);
-		RefundPartialCursorPcTradeItems(*partner);
+		ReturnPcTradeItemsToPlayer(*partner, "pc trade aborted");
 		SendApp(partner->source_addr, partner->source_port, *partner,
 		        ZN_OP_CloseTrade, &z, 0);
 		PcTradeClearState(*partner);
@@ -10227,13 +10854,20 @@ void TrilogyZoneServer::PcTradeAbortBoth(Session& s, Session* partner,
 // linkdead or timeout was gone for good, and the partner kept pc_trade_active
 // pointing at an entity id that could later be reused.
 //
-// PC trades only.  NPC-trade coin is deliberately left alone: coin that
-// reaches that window from the cursor is still counted in m_pp.*_cursor, so
-// refunding trade_cp..pp on exit would mint it, and nothing here can tell
-// which path a given amount took.
+// An NPC trade open at exit is returned the same way as a cancel.  That used
+// to be unsafe for the coin — cursor coin dropped into the window was never
+// taken out of m_pp.*_cursor, so a refund would have minted it — but
+// HandleMoveCoin's slot-3 intercept now takes it out of the cursor and carried
+// figures as it lands in trade_cp..pp, so the refund is exact.
 // ============================================================
 void TrilogyZoneServer::PcTradeAbortOnExit(Session& s, const char* why)
 {
+	if (s.trade_npc_id && !s.pc_trade_active && s.trilogy_client) {
+		LogInfo("[TrilogyZone] NPC trade abandoned on exit ({}) | char={}", why, s.char_name);
+		ReturnNpcTradeToPlayer(s, why);
+		s.trade_npc_id = 0;
+		return;
+	}
 	if (!s.pc_trade_active || !s.trilogy_client) return;
 	Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
 	LogInfo("[TrilogyZone] PCTrade aborted on exit ({}) | char={} offer cp={} sp={} gp={} pp={}",
@@ -10255,6 +10889,7 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 			// Partner gone — treat as cancel for us.  Items unchanged in DB.
 			s.trilogy_client->Message(Chat::Red, "Your trade partner is no longer here.");
 			PcTradeRefundOfferedCoins(s);
+			ReturnPcTradeItemsToPlayer(s, "pc trade partner gone");
 			uint8_t z = 0;
 			SendApp(addr, port, s, ZN_OP_CloseTrade, &z, 0);
 			PcTradeClearState(s);
@@ -10274,33 +10909,7 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 		// Both Gave — run the precheck.
 		auto count_free_slots = [](uint32 char_id) -> std::vector<int> {
-			// Free general slots 23-30 plus free bag-content slots inside any
-			// equipped containers.  Sorted in delivery order.
-			std::vector<int> free_slots;
-			bool occ[331] = {};
-			int  bagslots[31] = {};
-			auto r = database.QueryDatabase(fmt::format(
-			    "SELECT i.`slotid`, it.`bagslots`, it.`itemclass` FROM `inventory` i "
-			    "LEFT JOIN `items` it ON i.`itemid` = it.`id` "
-			    "WHERE i.`charid`={} AND ((i.`slotid` BETWEEN 23 AND 30) OR (i.`slotid` BETWEEN 251 AND 330))",
-			    char_id));
-			if (r.Success())
-				for (auto row = r.begin(); row != r.end(); ++row) {
-					int sl = Strings::ToInt(row[0]);
-					if (sl >= 0 && sl <= 330) occ[sl] = true;
-					const int itemclass = row[2] ? Strings::ToInt(row[2]) : 0;
-					if (sl >= 23 && sl <= 30 && itemclass == 1 && row[1])
-						bagslots[sl] = Strings::ToInt(row[1]);
-				}
-			for (int sl = 23; sl <= 30; ++sl) if (!occ[sl]) free_slots.push_back(sl);
-			for (int G = 23; G <= 30; ++G) {
-				if (bagslots[G] <= 0) continue;
-				const int base = 251 + (G - 23) * 10;
-				const int n    = bagslots[G] > 10 ? 10 : bagslots[G];
-				for (int j = 0; j < n; ++j)
-					if (base + j <= 330 && !occ[base + j]) free_slots.push_back(base + j);
-			}
-			return free_slots;
+			return TrilogyFreeInventorySlots(char_id);
 		};
 
 		// Count items each side will receive (skip stale / disappeared slots).
@@ -10530,10 +11139,9 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 			    s.char_id, st.from_db_slot, st.item_id));
 		}
 
-		const uint64_t copper = (uint64_t)s.trade_cp + (uint64_t)s.trade_sp * 10 +
-		                        (uint64_t)s.trade_gp * 100 + (uint64_t)s.trade_pp * 1000;
-		if (copper) s.trilogy_client->TakeMoneyFromPP(copper, true);
-
+		// The coin already left the player when it was dropped into the window
+		// (HandleMoveCoin's slot-3 intercept), so there is nothing to take here —
+		// the NPC's script gets it through the copper.N..platinum.N vars below.
 		const uint32_t npc_id = npc->GetNPCTypeID();
 		parse->AddVar(fmt::format("copper.{}",   npc_id), std::to_string(s.trade_cp));
 		parse->AddVar(fmt::format("silver.{}",   npc_id), std::to_string(s.trade_sp));
@@ -10550,11 +11158,10 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 		LogInfo("[TrilogyZone] EVENT_TRADE fired: {} -> NPC {}", s.char_name, npc_id);
 	} else {
-		// Non-quest NPC: server doesn't take or move anything; the client
-		// returns the trade-window items to their visual source slot locally.
-		// Refund any partial-pickup cursor rows back into their source DB
-		// slot so server state matches the client's local return.
-		RefundPartialCursorTradeItems(s);
+		// Non-quest NPC: nothing changes hands.  The client does NOT return the
+		// window's items itself — its 0xdc20 close routine (0x4573d2) deletes
+		// them — so everything, coin included, comes back from here.
+		ReturnNpcTradeToPlayer(s, "give to non-quest NPC");
 	}
 
 	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
@@ -10563,98 +11170,6 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 
 	uint8_t close_dummy = 0;
 	SendApp(addr, port, s, ZN_OP_CloseTrade, &close_dummy, 0);
-}
-
-// ──────────────────────────────────────────────────────────────────────────
-// Cursor-row refund (trade cancel / non-quest give)
-//
-// When a partial-stack pickup is staged into the NPC or PC trade window, the
-// cursor row at DB slot 33 / 8000-8010 PERSISTS in DB until commit or cancel.
-// On commit (quest NPC give, PC two-sided give), the row is consumed by the
-// commit path — correct.  On CANCEL or GIVE-TO-NON-QUEST-NPC, the client
-// locally returns the partial back to its visual source slot; without a
-// refund, the server's cursor row would stay orphaned and drift from the
-// client's view.
-//
-// Strategy per cursor-row trade item:
-//   1. Source slot still holds the same item AND stackable: merge (cap at
-//      StackSize, overflow stays in the cursor row).  Delete cursor row if
-//      overflow is 0.
-//   2. Source slot empty: UPDATE the cursor row's slotid back to the source
-//      slot (puts the partial back exactly where the client returned it).
-//   3. Source holds a different item now: leave the cursor row alone (would
-//      otherwise trample real data).  Drift self-heals on zone-in.
-//
-// Whole-stack staging (original_source_db_slot < 0) needs no refund — the
-// server never moved that row.  Skipped.
-// ──────────────────────────────────────────────────────────────────────────
-static void RefundOneCursorRow(uint32 char_id, uint32 item_id,
-                               int cur_db, int src_db, int log_slot, const char* ctx)
-{
-	const bool is_cursor_row = (cur_db == 33) ||
-	                           (cur_db >= 8000 && cur_db <= 8010);
-	if (!is_cursor_row || src_db < 0 || item_id == 0) return;
-
-	auto cur_q = database.QueryDatabase(fmt::format(
-	    "SELECT `charges` FROM `inventory` "
-	    "WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
-	    char_id, cur_db, item_id));
-	if (!cur_q.Success() || cur_q.RowCount() == 0) return;
-	const int16 cur_chg = static_cast<int16>(Strings::ToInt(cur_q.begin()[0]));
-
-	auto src_q = database.QueryDatabase(fmt::format(
-	    "SELECT `itemid`, `charges` FROM `inventory` "
-	    "WHERE `charid`={} AND `slotid`={}",
-	    char_id, src_db));
-	const bool   src_present = (src_q.Success() && src_q.RowCount() > 0);
-	const uint32 src_iid = src_present
-	    ? static_cast<uint32>(Strings::ToInt(src_q.begin()[0])) : 0u;
-	const int16  src_chg = src_present
-	    ? static_cast<int16>(Strings::ToInt(src_q.begin()[1])) : int16{0};
-
-	if (!src_present) {
-		database.QueryDatabase(fmt::format(
-		    "UPDATE `inventory` SET `slotid`={} WHERE `charid`={} AND `slotid`={}",
-		    src_db, char_id, cur_db));
-		LogInfo("[TrilogyZone] {} char={} slot={} item={} chg={} cursor_db={} src_db={} (source empty)",
-		        ctx, char_id, log_slot, item_id, (int)cur_chg, cur_db, src_db);
-		return;
-	}
-
-	if (src_iid != item_id) {
-		LogInfo("[TrilogyZone] {} char={} slot={} item={} cursor_db={} src_db={} "
-		        "src now holds item={} - leaving cursor row in place",
-		        ctx, char_id, log_slot, item_id, cur_db, src_db, src_iid);
-		return;
-	}
-
-	const EQ::ItemData* item = database.GetItem(item_id);
-	const int stack_max = (item && item->StackSize > 0) ? item->StackSize : 1;
-	const int total     = src_chg + cur_chg;
-
-	if (total <= stack_max) {
-		database.QueryDatabase(fmt::format(
-		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
-		    total, char_id, src_db));
-		database.QueryDatabase(fmt::format(
-		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={}",
-		    char_id, cur_db));
-		LogInfo("[TrilogyZone] {} char={} slot={} item={} merged cursor_db={} ({}) "
-		        "into src_db={} ({}) result={} (stack_max={})",
-		        ctx, char_id, log_slot, item_id, cur_db, (int)cur_chg,
-		        src_db, (int)src_chg, total, stack_max);
-	} else {
-		database.QueryDatabase(fmt::format(
-		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
-		    stack_max, char_id, src_db));
-		database.QueryDatabase(fmt::format(
-		    "UPDATE `inventory` SET `charges`={} WHERE `charid`={} AND `slotid`={}",
-		    total - stack_max, char_id, cur_db));
-		LogInfo("[TrilogyZone] {} char={} slot={} item={} partial merge cursor_db={} ({}) "
-		        "+ src_db={} ({}) result={} overflow={} (stack_max={})",
-		        ctx, char_id, log_slot, item_id, cur_db, (int)cur_chg,
-		        src_db, (int)src_chg, stack_max, total - stack_max, stack_max);
-	}
 }
 
 // Resync the player's m_inv for any DB rows the refund just touched so engine
@@ -10688,78 +11203,6 @@ void TrilogyZoneServer::ResyncMInvForRefund(Session& s,
 	}
 }
 
-void TrilogyZoneServer::RefundPartialCursorTradeItems(Session& s)
-{
-	std::vector<int> resync;
-	for (int i = 0; i < 4; ++i) {
-		auto& st = s.trade_items[i];
-		if (st.item_id == 0) continue;
-		if (st.original_source_db_slot < 0) continue;
-		RefundOneCursorRow(s.char_id, st.item_id,
-		                   st.from_db_slot, st.original_source_db_slot,
-		                   i, "TradeRefund");
-		resync.push_back(st.original_source_db_slot);
-		resync.push_back(st.from_db_slot);
-	}
-	ResyncMInvForRefund(s, resync);
-}
-
-// PC-trade equivalent: same per-cursor-row refund logic across pc_trade_main.
-// Called from PcTradeAbortBoth (and the abort branches inside HandleTradeGive
-// PC commit failures) so a cancelled PC trade after partial pickups leaves
-// the server's DB matching what the client locally restored.
-void TrilogyZoneServer::RefundPartialCursorPcTradeItems(Session& s)
-{
-	std::vector<int> resync;
-	for (int i = 0; i < 8; ++i) {
-		auto& st = s.pc_trade_main[i];
-		if (st.item_id == 0) continue;
-		if (st.original_source_db_slot < 0) continue;
-		RefundOneCursorRow(s.char_id, st.item_id,
-		                   st.from_db_slot, st.original_source_db_slot,
-		                   i, "PCTradeRefund");
-		resync.push_back(st.original_source_db_slot);
-		resync.push_back(st.from_db_slot);
-	}
-	ResyncMInvForRefund(s, resync);
-}
-
-void TrilogyZoneServer::CleanupOrphanedCursorTradeItems(Session& s)
-{
-	if (!s.trilogy_client) return;
-
-	for (int i = 0; i < 4; ++i) {
-		const auto& st = s.trade_items[i];
-		if (st.item_id == 0) continue;
-		// Partial-pickup materialized cursors are handled by
-		// RefundPartialCursorTradeItems — skip so we don't double-touch.
-		if (st.original_source_db_slot >= 0) continue;
-
-		const bool is_cursor_row = (st.from_db_slot == 33) ||
-		                           (st.from_db_slot >= 8000 && st.from_db_slot <= 8010);
-		if (!is_cursor_row) continue;
-
-		// Match on itemid too so we don't accidentally nuke an unrelated row
-		// that happens to occupy the same slot after a race / desync.
-		database.QueryDatabase(fmt::format(
-		    "DELETE FROM `inventory` WHERE `charid`={} AND `slotid`={} AND `itemid`={}",
-		    s.char_id, st.from_db_slot, st.item_id));
-
-		// Keep m_inv in sync — pop the cursor entry the base engine may hold
-		// so CheckLoreConflict / GetInv() reads don't lag the DB.  Only the
-		// EQEmu-slotCursor mirror is relevant here; the 8000-8010 queue lives
-		// only in DB, not m_inv.
-		if (st.from_db_slot == 33) {
-			auto& inv = s.trilogy_client->GetInv();
-			if (auto* old = inv.PopItem(EQ::invslot::slotCursor)) safe_delete(old);
-		}
-
-		LogInfo("[TrilogyZone] TradeOrphanCleanup char={} slot_idx={} item={} "
-		        "from_db={} — client already cleared cursor visually, DELETE row",
-		        s.char_id, i, st.item_id, st.from_db_slot);
-	}
-}
-
 void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Session& s)
 {
 	if (!s.trilogy_client) return;
@@ -10773,17 +11216,13 @@ void TrilogyZoneServer::HandleTradeCancel(const std::string& addr, int port, Ses
 	}
 
 	// ── NPC cancel ──────────────────────────────────────────────────────────
-	// Refund any partial-pickup cursor rows so server state matches the
-	// client's local return-to-source behaviour.  Must run BEFORE clearing
-	// trade_items (the refund needs the staged from_db_slot + origin).
-	RefundPartialCursorTradeItems(s);
-	// Delete any full-item cursor stages the client never gave (client visually
-	// cleared cursor on stage-in and v29c does NOT auto-restore on close).
-	// Also runs before trade_items clear because it reads from_db_slot.
-	CleanupOrphanedCursorTradeItems(s);
-
-	for (auto& st : s.trade_items) st = Session::TradeStageItem{};
-	s.trade_cp = s.trade_sp = s.trade_gp = s.trade_pp = 0;
+	// v29c has already destroyed everything in its window (its cancel routine
+	// deletes each item object and puts nothing back), so hand every staged item
+	// and the offered coin back from here — EQClassic's FinishTrade(this) plus
+	// AddMoneyToPP.  This used to DELETE items staged from a cursor row and leave
+	// the rest in their DB slots unseen, and to zero the coin: close the window
+	// and the lot was gone.
+	ReturnNpcTradeToPlayer(s, "cancel");
 	s.trade_npc_id = 0;
 
 	uint8_t close_dummy = 0;
@@ -11120,25 +11559,35 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	        static_cast<int>(mc->cointype1), static_cast<int>(mc->cointype2),
 	        static_cast<int>(mc->amount));
 
-	// ── PC trade coin deposit / withdraw (trade slot = 3) ─────────────────
+	// ── Trade coin deposit / withdraw (trade slot = 3) ────────────────────
 	// v29c sends OP_MoveCoin with to_slot==3 when the player drops coin into
-	// the trade window and from_slot==3 when they pull it back out.  The
-	// carried↔bank logic below doesn't know about the trade window — it
+	// the trade window and from_slot==3 when they pull it back out — for an
+	// NPC trade exactly as for a PC trade (it never sends 0xe420 for either).
+	// The carried↔bank logic below doesn't know about the trade window — it
 	// either silently early-returns (cursor↔trade) or vaporises the coin
-	// (carried→trade: PP debited, never tracked).  Intercept here so the
-	// coin lands in pc_trade_offer_* and the partner is notified via
-	// OP_TradeCoins so their trade window paints the amount.
-	if (s.pc_trade_active && (from_slot == 3 || to_slot == 3) &&
+	// (carried→trade: PP debited, never tracked).  Intercept here so the coin
+	// lands in the offer (pc_trade_offer_* / trade_cp..pp, EQClassic's
+	// tradecp / npctradecp) and, for a PC trade, the partner is notified via
+	// OP_TradeCoins so their trade window paints the amount.  Once here the
+	// coin has left the carried and cursor figures exactly once, so every exit
+	// from the trade can hand it back with AddMoneyToPP without minting any.
+	const bool coin_npc_trade = !s.pc_trade_active && s.trade_npc_id != 0;
+	if ((s.pc_trade_active || coin_npc_trade) && (from_slot == 3 || to_slot == 3) &&
 	    mc->cointype1 <= 3 && mc->amount > 0) {
 		const uint32_t denom  = mc->cointype1; // source denomination
 		const uint32_t amount = static_cast<uint32_t>(mc->amount);
 		auto& pp = s.trilogy_client->GetPP();
 
 		auto add_offer = [&](int dir) {
-			auto& f = (denom == 0) ? s.pc_trade_offer_cp :
-			          (denom == 1) ? s.pc_trade_offer_sp :
-			          (denom == 2) ? s.pc_trade_offer_gp :
-			                         s.pc_trade_offer_pp;
+			auto& f = coin_npc_trade
+			        ? ((denom == 0) ? s.trade_cp :
+			           (denom == 1) ? s.trade_sp :
+			           (denom == 2) ? s.trade_gp :
+			                          s.trade_pp)
+			        : ((denom == 0) ? s.pc_trade_offer_cp :
+			           (denom == 1) ? s.pc_trade_offer_sp :
+			           (denom == 2) ? s.pc_trade_offer_gp :
+			                          s.pc_trade_offer_pp);
 			if (dir > 0) f += amount;
 			else         f  = (f >= amount) ? f - amount : 0;
 		};
@@ -11180,7 +11629,8 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 			if (from_slot == 0) adjust_cursor(-1);
 
 			// Notify partner so their window paints our offer.
-			Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+			Session* partner = coin_npc_trade ? nullptr
+			                                  : FindSessionByEntityId(s.pc_trade_partner_id);
 			if (partner && partner->trilogy_client) {
 				uint8_t out[22];
 				std::memset(out, 0, sizeof(out));
@@ -11195,11 +11645,14 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 				        ZN_OP_TradeCoins, out, static_cast<uint32_t>(sizeof(out)));
 			}
 
-			LogInfo("[TrilogyZone] PCTrade coin deposit char={} denom={} amount={} from={} "
+			LogInfo("[TrilogyZone] {} coin deposit char={} denom={} amount={} from={} "
 			        "(offer cp={} sp={} gp={} pp={})",
+			        coin_npc_trade ? "NPCTrade" : "PCTrade",
 			        s.char_name, denom, amount, from_slot,
-			        s.pc_trade_offer_cp, s.pc_trade_offer_sp,
-			        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+			        coin_npc_trade ? s.trade_cp : s.pc_trade_offer_cp,
+			        coin_npc_trade ? s.trade_sp : s.pc_trade_offer_sp,
+			        coin_npc_trade ? s.trade_gp : s.pc_trade_offer_gp,
+			        coin_npc_trade ? s.trade_pp : s.pc_trade_offer_pp);
 		} else { // from_slot == 3 — withdrawing from trade window
 			add_offer(-1);
 			// Dest = carried (1) → credit PP now.
@@ -11207,11 +11660,14 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 			if (to_slot == 1) adjust_pp(+1);
 			if (to_slot == 0) adjust_cursor(+1);
 
-			LogInfo("[TrilogyZone] PCTrade coin withdraw char={} denom={} amount={} to={} "
+			LogInfo("[TrilogyZone] {} coin withdraw char={} denom={} amount={} to={} "
 			        "(offer cp={} sp={} gp={} pp={})",
+			        coin_npc_trade ? "NPCTrade" : "PCTrade",
 			        s.char_name, denom, amount, to_slot,
-			        s.pc_trade_offer_cp, s.pc_trade_offer_sp,
-			        s.pc_trade_offer_gp, s.pc_trade_offer_pp);
+			        coin_npc_trade ? s.trade_cp : s.pc_trade_offer_cp,
+			        coin_npc_trade ? s.trade_sp : s.pc_trade_offer_sp,
+			        coin_npc_trade ? s.trade_gp : s.pc_trade_offer_gp,
+			        coin_npc_trade ? s.trade_pp : s.pc_trade_offer_pp);
 		}
 
 		s.trilogy_client->Save();
@@ -13901,9 +14357,9 @@ void TrilogyZoneServer::Tick()
 		// the wire cost negligible (~1.8 pps for 217 stationary Freport NPCs).
 		SendMobHeartbeat(s.source_addr, s.source_port, s);
 
-		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
+		// Regen mana held back during a cast, loot or trade (see InputHoldActive).
 		if (s.trilogy_client) {
-			s.trilogy_client->CheckSpellGemCooldowns();
+			s.trilogy_client->FlushDeferredMana();
 		}
 
 		// Paced OP_SpecialMesg drain: see QueueTextPacket in trilogy_client.
@@ -17017,6 +17473,30 @@ void TrilogyZoneServer::HandleConnectedSpawnAppearance(const std::string& addr, 
 		s.camping    = false;
 		s.camp_start = 0;
 		LogInfo("[TrilogyZone] Camp cancelled (stood up) for {}", s.char_name);
+	}
+
+	// Two GM commands arrive as a client-sent SpawnAppearance, which the stock
+	// handler treats as a possible hack and drops:
+	//  - /height (eqgame.exe 0x4a5375): type 29 Size {target, size}.
+	//  - /hideme (0x4a4f81): the client toggles its own invisibility and sends
+	//    type 3 {self, 1 = hidden / 0 = shown}; its 0xd421 carries nothing.
+	if (s.trilogy_client->GetGM()) {
+		const uint32 type = static_cast<uint32>(tri->type);
+		if (type == AppearanceType::Size) {
+			if (Mob* m = entity_list.GetMob(emu->spawn_id)) {
+				LogInfo("[TrilogyGM] /height char={} target={} size={}",
+				        s.char_name, m->GetName(), emu->parameter);
+				m->ChangeSize(static_cast<float>(emu->parameter), true);
+			}
+			return;
+		}
+		if (type == AppearanceType::Invisibility &&
+		    emu->spawn_id == s.trilogy_client->GetID() &&
+		    (emu->parameter != 0 || s.trilogy_client->GetHideMe())) {
+			LogInfo("[TrilogyGM] /hideme char={} hidden={}", s.char_name, emu->parameter != 0);
+			s.trilogy_client->SetHideMe(emu->parameter != 0);
+			return;
+		}
 	}
 
 	s.trilogy_client->Handle_OP_SpawnAppearance(&sapkt);
