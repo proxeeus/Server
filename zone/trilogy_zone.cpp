@@ -4987,46 +4987,6 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// (ArmTrilogyZoneInGuard emits its own "guard ARMED" log with the
 		//  per-line effective_r and computed threshold under TrilogyZonePointDebug.)
 
-		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
-		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
-		// which translates what it can and silently drops the rest.
-		tc->CompleteConnect();
-
-		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
-		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
-		// runs, so clear it here — otherwise every later zone-in would fire the
-		// first-login events again.
-		database.SetFirstLogon(tc->CharacterID(), 0);
-
-		// Guild appearance on zone-in.
-		//
-		// v29c keeps TWO copies of a player's guild id and reads a different one
-		// depending on what it is doing.  Both were found in eqgame.exe:
-		//
-		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
-		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
-		//                   by the SpawnAppearance type-22 handler (0x493d31).
-		//                   This is what the guild COMMANDS gate on.
-		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
-		//                   the same appearance handler (0x493cb4).  This is what
-		//                   /guildinvite and /guildremove check.
-		//
-		// The local player's own actor is not built from a Spawn_Struct, so its
-		// copy stays at the 0xFFFF "no guild" default for the whole session unless
-		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
-		// only fires SendGuildSpawnAppearance on a membership change, so a player
-		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
-		//
-		// The visible symptom was oddly narrow.  The guild TAG still rendered —
-		// that comes from a different actor field the spawn parser does fill — and
-		// /guildinvite worked once the profile copy was populated.  Only
-		// /guildmotd failed, with "You are not in a guild." printed by the client
-		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
-		// before it will send anything), so the server never saw a packet at all.
-		if (tc->IsInAGuild()) {
-			tc->SendGuildSpawnAppearance();
-		}
-
 		// Group restoration on zone-in.
 		//
 		// EQEmu's standard restoration block lives in Client::Handle_Connect_OP_ZoneEntry
@@ -5115,6 +5075,53 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 				        "restored={}", tc->GetName(), pi->SpellID, tc->GetPet() != nullptr);
 				pi->SpellID = 0;
 			}
+		}
+
+		// Complete the connection: fires EVENT_ENTER_ZONE, UpdateWho, loads zone flags,
+		// starts timers.  Outgoing packets from this call flow through TrilogyClient::QueuePacket
+		// which translates what it can and silently drops the rest.
+		//
+		// After the group, bots and pet, not before.  That is the stock order:
+		// Handle_Connect_OP_ZoneEntry restores all three, and CompleteConnect only
+		// runs later from OP_ClientReady.  CompleteConnect relies on it — it sends
+		// the pet's buffs and wear-change and reads GetGroup() — and so do the
+		// scripts it starts: EVENT_ENTER_ZONE used to fire with no group, no pet
+		// and no bots in the zone yet.
+		tc->CompleteConnect();
+
+		// CompleteConnect has consumed firstlogon (see InitTrilogyFields).  The
+		// normal path clears it in Client::OnDisconnect, which no Trilogy exit
+		// runs, so clear it here — otherwise every later zone-in would fire the
+		// first-login events again.
+		database.SetFirstLogon(tc->CharacterID(), 0);
+
+		// Guild appearance on zone-in.
+		//
+		// v29c keeps TWO copies of a player's guild id and reads a different one
+		// depending on what it is doing.  Both were found in eqgame.exe:
+		//
+		//   actor + 0x90    the entity's guild id.  Written by the spawn parser
+		//                   (0x4a3af2, from a word at Spawn_Struct offset 74) and
+		//                   by the SpawnAppearance type-22 handler (0x493d31).
+		//                   This is what the guild COMMANDS gate on.
+		//   profile + 0x103a  the PlayerProfile copy, our pp.guildid.  Written by
+		//                   the same appearance handler (0x493cb4).  This is what
+		//                   /guildinvite and /guildremove check.
+		//
+		// The local player's own actor is not built from a Spawn_Struct, so its
+		// copy stays at the 0xFFFF "no guild" default for the whole session unless
+		// an appearance packet sets it.  Nothing sent one at zone-in: guild_mgr
+		// only fires SendGuildSpawnAppearance on a membership change, so a player
+		// who was already in a guild when they logged in had actor+0x90 = 0xFFFF.
+		//
+		// The visible symptom was oddly narrow.  The guild TAG still rendered —
+		// that comes from a different actor field the spawn parser does fill — and
+		// /guildinvite worked once the profile copy was populated.  Only
+		// /guildmotd failed, with "You are not in a guild." printed by the client
+		// itself (eqgame.exe 0x4a54c8 checks actor+0x90 against 0xFFFF and 512
+		// before it will send anything), so the server never saw a packet at all.
+		if (tc->IsInAGuild()) {
+			tc->SendGuildSpawnAppearance();
 		}
 
 		// Group roster sync to the joining v29c client.
