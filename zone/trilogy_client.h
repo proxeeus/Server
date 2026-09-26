@@ -261,15 +261,11 @@ public:
 	// OP_TradeMoneyUpdate (0x3d21) per non-zero amount.
 	void SendTrilogyMoneyDelta(uint32 copper, uint32 silver, uint32 gold, uint32 platinum);
 
-	// Check spell gem cooldowns and un-grey expired gems.
-	// Called from TrilogyZoneServer::Tick() each iteration.
-	void CheckSpellGemCooldowns();
-
 	// True while the v29c client is holding its input-block counter
 	// (player object +0xe5c): casting, a loot window, or a trade window.  Any
 	// 0x7f21 that is not a bard-song pulse releases that hold (eqgame.exe
 	// 0x4279b4 → 0x41f0c0 fails → both counters decremented), so regen-only
-	// mana updates and the gem un-grey pulse wait until it is false.
+	// mana updates wait until it is false.
 	bool InputHoldActive() const;
 	// Send the regen mana update held back by HandleManaChange, once no hold
 	// is active.  Called from TrilogyZoneServer::Tick() each iteration.
@@ -683,17 +679,6 @@ private:
 	float m_death_z = 0.0f;
 	float m_death_heading = 0.0f;
 	bool  m_has_death_pos = false;
-
-	// ---- Spell gem cooldown tracking ----
-	// v29c has no built-in per-gem recast display during gameplay (only at
-	// zone-in via PP spellSlotRefresh).  We track active cooldowns server-side
-	// and grey/un-grey gems with OP_MemorizeSpell scribing=3/1.
-	struct GemCooldown {
-		uint32_t spell_id = 0;
-		uint64_t end_ms   = 0;   // steady_clock ms when cooldown expires
-		bool     active   = false;
-	};
-	GemCooldown m_gem_cooldowns[Trilogy::structs::SPELL_MEMORY_SIZE]{};
 
 	// ---- Deferred OP_CastOn for correct resist behaviour ----
 	// EQEmu sends OP_Action (→ OP_CastOn for Trilogy) BEFORE the resist check.

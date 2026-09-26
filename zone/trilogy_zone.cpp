@@ -14009,9 +14009,8 @@ void TrilogyZoneServer::Tick()
 		// the wire cost negligible (~1.8 pps for 217 stationary Freport NPCs).
 		SendMobHeartbeat(s.source_addr, s.source_port, s);
 
-		// Spell gem cooldown expiry: un-grey gems whose recast timers have elapsed.
+		// Regen mana held back during a cast, loot or trade (see InputHoldActive).
 		if (s.trilogy_client) {
-			s.trilogy_client->CheckSpellGemCooldowns();
 			s.trilogy_client->FlushDeferredMana();
 		}
 

@@ -5369,30 +5369,11 @@ void TrilogyClient::HandleManaChange(const EQApplicationPacket* app)
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
 
-	// Re-grey gems still on cooldown.  SendSpellBarEnable (keepcasting=0,
-	// spell_id>0) may have un-greyed them; push them back to grey state.
-	if (emu->keepcasting == 0 && emu->spell_id != 0) {
-		uint64_t now_ms = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
-
-		for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-			if (!m_gem_cooldowns[i].active) continue;
-			if (now_ms >= m_gem_cooldowns[i].end_ms) {
-				m_gem_cooldowns[i].active = false;
-				continue;
-			}
-
-			Trilogy::structs::MemorizeSpell_Struct mem{};
-			mem.slot     = static_cast<int32_t>(i);
-			mem.spell_id = static_cast<int32_t>(m_gem_cooldowns[i].spell_id);
-			mem.scribing = 3;  // grey-out
-
-			m_tzs->SendToSession(m_session_key, 0x8221,
-			                     reinterpret_cast<const uint8_t*>(&mem),
-			                     static_cast<uint32_t>(sizeof(mem)));
-		}
-	}
+	// No gem re-grey here.  This handler (eqgame.exe 0x49ad3d) touches only the
+	// gem being cast (player actor +0x24a) and the global spell-bar lockout
+	// (+0x15c); every other gem keeps the recast timer its own 0x8221 started.
+	// Re-sending scribing=3 for them restarted each one's FULL recast from now
+	// and re-armed the global lockout, so the whole bar greyed out.
 }
 
 // ============================================================
@@ -5464,8 +5445,8 @@ void TrilogyClient::HandleMobHealth(const EQApplicationPacket* app)
 //
 // memSpellSpellbar (3) is sent by CastedSpellFinished to update gem
 // cooldown state after a spell completes.  For Trilogy we translate
-// this into an explicit grey-out (scribing=3) for the cast gem, and
-// track the cooldown so CheckSpellGemCooldowns can un-grey it later.
+// this into an explicit grey-out (scribing=3) for the cast gem; the client
+// runs that gem's recast timer and un-greys it itself.
 // ============================================================
 
 void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
@@ -5492,14 +5473,11 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 		// The server enforces the recast check at >1000 ms (spells.cpp:1465).
 		if (cooldown_ms <= 1500) return;
 
-		uint64_t now_ms = static_cast<uint64_t>(
-			std::chrono::duration_cast<std::chrono::milliseconds>(
-				std::chrono::steady_clock::now().time_since_epoch()).count());
-
-		m_gem_cooldowns[emu->slot].spell_id = emu->spell_id;
-		m_gem_cooldowns[emu->slot].end_ms   = now_ms + cooldown_ms;
-		m_gem_cooldowns[emu->slot].active   = true;
-
+		// One scribing=3 per cast is the whole job.  v29c's handler (0x491e6e)
+		// starts this gem's recast timer itself — now + the spell's recast from
+		// its own spell data — and counts it down and un-greys the gem with no
+		// further packet.  It also arms the global spell-bar lockout for the
+		// spell's recovery time, so it must not be repeated for other gems.
 		Trilogy::structs::MemorizeSpell_Struct out{};
 		out.slot     = static_cast<int32_t>(emu->slot);
 		out.spell_id = static_cast<int32_t>(emu->spell_id);
@@ -5511,11 +5489,6 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 		return;
 	}
 
-	// Memorize (1) or forget (2→3): clear any active cooldown on this slot.
-	if (emu->scribing == memSpellMemorize || emu->scribing == memSpellForget) {
-		m_gem_cooldowns[emu->slot].active = false;
-	}
-
 	Trilogy::structs::MemorizeSpell_Struct out{};
 	out.slot     = static_cast<int32_t>(emu->slot);
 	out.spell_id = static_cast<int32_t>(emu->spell_id);
@@ -5524,65 +5497,6 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x8221,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
-}
-
-// ============================================================
-// CheckSpellGemCooldowns — called from TrilogyZoneServer::Tick().
-//
-// Un-greys spell gems whose recast cooldowns have expired.
-// Uses OP_ManaChange (the EQClassic EnableSpellBar mechanism)
-// to signal "spellbar ready" — this un-greys gems without
-// triggering the "Finished memorizing" message that scribing=1
-// would produce.  After the ManaChange, any gems whose cooldowns
-// are still running are immediately re-greyed.
-// ============================================================
-
-void TrilogyClient::CheckSpellGemCooldowns()
-{
-	// The un-grey pulse below is a 0x7f21, which also releases the client's
-	// input hold (see InputHoldActive).  Leave expired cooldowns marked active
-	// until the hold ends; this runs every Tick, so they are picked up then.
-	if (InputHoldActive()) return;
-
-	uint64_t now_ms = static_cast<uint64_t>(
-		std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now().time_since_epoch()).count());
-
-	bool any_expired = false;
-	for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-		if (!m_gem_cooldowns[i].active) continue;
-		if (now_ms >= m_gem_cooldowns[i].end_ms) {
-			m_gem_cooldowns[i].active = false;
-			any_expired = true;
-		}
-	}
-
-	if (!any_expired) return;
-
-	// OP_ManaChange with spell_id > 0 tells the client the spellbar is
-	// enabled (same as EQClassic EnableSpellBar).  This un-greys gems.
-	Trilogy::structs::ManaChange_Struct mc{};
-	uint32_t mana = static_cast<uint32_t>(GetMana());
-	mc.new_mana = static_cast<uint16_t>(mana > 0xFFFFu ? 0xFFFFu : mana);
-	mc.spell_id = 1;
-
-	m_tzs->SendToSession(m_session_key, 0x7f21,
-	                     reinterpret_cast<const uint8_t*>(&mc),
-	                     static_cast<uint32_t>(sizeof(mc)));
-
-	// Re-grey gems whose cooldowns are still running.
-	for (uint32_t i = 0; i < Trilogy::structs::SPELL_MEMORY_SIZE; ++i) {
-		if (!m_gem_cooldowns[i].active) continue;
-
-		Trilogy::structs::MemorizeSpell_Struct mem{};
-		mem.slot     = static_cast<int32_t>(i);
-		mem.spell_id = static_cast<int32_t>(m_gem_cooldowns[i].spell_id);
-		mem.scribing = 3;
-
-		m_tzs->SendToSession(m_session_key, 0x8221,
-		                     reinterpret_cast<const uint8_t*>(&mem),
-		                     static_cast<uint32_t>(sizeof(mem)));
-	}
 }
 
 // ============================================================
