@@ -848,7 +848,10 @@ void ClientList::SendWhoAll(uint32 fromid,const char* to, int16 admin, Who_All_S
 					unknown80[0]=0xFFFFFFFF;
 				}
 
-				unknown80[1]=0xFFFFFFFF;//1035
+				// The row's trailing tag slot is an eqstr id: 12314 " LFG" (12315
+				// is " TRADER").  Left at 0xFFFFFFFF, nothing — not even LFG —
+				// could be shown for a player in another zone.
+				unknown80[1] = cle->LFG() ? 12314 : 0xFFFFFFFF;
 
 				//char plstatus[20]={0};
 				//sprintf(plstatus, "Status %i",cle->Admin());

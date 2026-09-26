@@ -4843,7 +4843,7 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 
 		if (!room(28)) break;
 		const uint32_t admin      = rd32();
-		rd32();                                  // unknown
+		const uint32_t tagstring  = rd32();      // eqstr id: 12314 " LFG", or 0xFFFFFFFF
 		const uint32_t zonestring = rd32();
 		const uint32_t zone_id    = rd32();
 		const uint32_t class_id   = rd32();
@@ -4885,21 +4885,23 @@ void TrilogyClient::HandleOutgoingWhoAllResponse(const EQApplicationPacket* app)
 
 		// LFG marker.  EQClassic appends " LFG" from ClientListEntry::LFG()
 		// while world is building the text (World/Source/ZSList.cpp:569-621).
-		// Our world sends structured rows instead and WhoAllPlayer carries no
-		// LFG field, so the flag is recovered here from the live entity.
+		// Our world sends structured rows, and the row's tag slot carries it:
+		// ClientList::SendWhoAll writes eqstr 12314 (" LFG") there from the
+		// same world-side flag, so this works for players in every zone.
 		//
-		// That limits it to players in THIS zone.  Accepted deliberately: the
-		// alternative is adding a field to what world sends every client, and
-		// a same-zone-only marker is strictly better than none — it is additive
-		// text, so a remote row simply reads as it does today rather than
-		// claiming the player is not LFG.
+		// The live-entity check stays as a fallback for a player in this zone
+		// whose LFG change has not reached world yet.
 		//
 		// Worth knowing when testing: a bare /who never reaches the server at
 		// all (v29c builds that roster from its own spawn list), so this only
 		// shows up under /who all.
-		if (Client* who_c = entity_list.GetClientByName(name.c_str())) {
-			if (who_c->IsLFG()) line += " LFG";
+		bool lfg = (tagstring == 12314);
+		if (!lfg) {
+			if (Client* who_c = entity_list.GetClientByName(name.c_str())) {
+				lfg = who_c->IsLFG();
+			}
 		}
+		if (lfg) line += " LFG";
 
 		// Account and status are only populated for privileged viewers.
 		if (!account.empty()) line += fmt::format(" AccName: {}", account);
