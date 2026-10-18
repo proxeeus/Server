@@ -5101,10 +5101,17 @@ void Mob::Say(const char *format, ...)
 		return;
 	}
 	else if (RuleB(Chat, AutoInjectSaylinksToSay)) {
+		// This branch runs first while saylinks are on (the compiled default),
+		// so the PlayerBot branch below never did: a PlayerBot spoke under
+		// GetCleanName(), which strips the ' and - its generated name may have.
+		const char *speaker = (npctype_id == RuleI(PlayerBots, PlayerBotId) && playerbot_temp_name[0] != '\0')
+			? playerbot_temp_name
+			: GetCleanName();
+
 		std::string new_message = EQ::SayLinkEngine::InjectSaylinksIfNotExist(buf);
 		entity_list.MessageCloseString(
 			talker, false, distance, Chat::NPCQuestSay,
-			GENERIC_SAY, GetCleanName(), new_message.c_str()
+			GENERIC_SAY, speaker, new_message.c_str()
 		);
 	}
 	// If playerbot, use the lua-generated playerbot
