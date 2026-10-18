@@ -308,3 +308,140 @@ std::string PlayerBotNameGen::PruneSpaces(const std::string &in)
 	}
 	return out;
 }
+
+// ---------------------------------------------------------------------------
+// PlayerBotClientNameGen -- eqgame.exe 0x4af3d7
+// ---------------------------------------------------------------------------
+
+namespace {
+
+	// eqgame.exe 0x4af5e7
+	bool ClientIsVowel(char c)
+	{
+		switch (c) {
+			case 'a': case 'e': case 'i': case 'o': case 'u': case 'y':
+			case 'A': case 'E': case 'I': case 'O': case 'U': case 'Y':
+				return true;
+			default:
+				return false;
+		}
+	}
+
+} // namespace
+
+void PlayerBotClientNameGen::Clear()
+{
+	m_races.clear();
+	m_global_bans.clear();
+}
+
+void PlayerBotClientNameGen::SetPart(uint16 race, uint8 slot, uint8 row, const std::string &part)
+{
+	if (slot >= kSlots) {
+		return;
+	}
+	auto &rows = m_races[race].slots[slot];
+	if (rows.size() <= row) {
+		rows.resize(row + 1);
+	}
+	rows[row] = part;
+}
+
+void PlayerBotClientNameGen::AddBan(uint16 race, const std::string &pattern)
+{
+	if (pattern.empty()) {
+		return;
+	}
+	if (race == 0) {
+		m_global_bans.push_back(ToLowerCopy(pattern));
+	}
+	else {
+		m_races[race].bans.push_back(pattern);
+	}
+}
+
+bool PlayerBotClientNameGen::HasRace(uint16 race) const
+{
+	auto it = m_races.find(race);
+	if (it == m_races.end()) {
+		return false;
+	}
+	for (const auto &rows : it->second.slots) {
+		if (rows.empty()) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool PlayerBotClientNameGen::Rejected(const RaceParts &r, const std::string &name) const
+{
+	// eqgame.exe 0x4af621
+	const size_t len = name.size();
+	for (size_t i = 0; i < len; ++i) {
+		if (i + 2 < len && name[i] == name[i + 1] && name[i] == name[i + 2]) {
+			return true;
+		}
+		if (i + 3 < len && !ClientIsVowel(name[i]) && !ClientIsVowel(name[i + 1]) &&
+			!ClientIsVowel(name[i + 2]) && !ClientIsVowel(name[i + 3])) {
+			return true;
+		}
+	}
+
+	const std::string lower = ToLowerCopy(name);
+	for (const auto &bad : m_global_bans) {
+		if (lower.find(bad) != std::string::npos) {
+			return true;
+		}
+	}
+
+	// eqgame.exe 0x4af7d7
+	for (const auto &bad : r.bans) {
+		if (name.find(bad) != std::string::npos) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+std::string PlayerBotClientNameGen::Generate(uint16 race, bool female) const
+{
+	auto it = m_races.find(race);
+	if (it == m_races.end() || !HasRace(race)) {
+		return "";
+	}
+	const RaceParts &r = it->second;
+
+	// Per-slot chance out of rand(0, 100) inclusive: 100 always, 0 never.
+	const int chance[kSlots] = {100, 80, 80, 100, female ? 100 : 0};
+
+	for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+		std::string name;
+		for (int slot = 0; slot < kSlots; ++slot) {
+			const int roll = NameGenRandom().Int(0, 100);
+			if (chance[slot] == 100 || roll < chance[slot]) {
+				const auto &rows = r.slots[slot];
+				name += rows[NameGenRandom().Int(0, static_cast<int>(rows.size()) - 1)];
+			}
+		}
+
+		if (name.size() < static_cast<size_t>(kMinLength) || name.size() > static_cast<size_t>(kMaxLength)) {
+			continue;
+		}
+
+		// eqgame.exe 0x4af536: "Bdd..." -> "B<vowel>dd..." (0x4af841 picks a e i o u y)
+		if (!ClientIsVowel(name[0]) && !ClientIsVowel(name[1]) && name[1] == name[2]) {
+			static const char vowels[] = "aeiouy";
+			name.insert(name.begin() + 1, vowels[NameGenRandom().Int(0, 5)]);
+		}
+
+		if (Rejected(r, name)) {
+			continue;
+		}
+
+		return name.substr(0, kMaxLength);
+	}
+
+	return "";
+}

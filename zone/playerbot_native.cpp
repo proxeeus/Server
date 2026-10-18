@@ -380,7 +380,48 @@ bool PlayerBotNative::LoadAll(std::string &summary_out)
 			LogWarning("[pbnative] [{}] playerbot_name_sets rows have an unknown property and were ignored", unknown_properties);
 		}
 	}
-	const std::string names_summary = fmt::format("{} name sets", m_names.SetCount());
+	// ---- the Trilogy client's Random Name tables ----
+	// Optional on purpose: a database without them (or without the
+	// playerbot_races.client_name_chance column) just names every bot from the
+	// sets above, instead of failing all PlayerBot content.
+	m_client_names.Clear();
+	{
+		auto parts = database.QueryDatabase(
+			"SELECT `race`, `slot`, `row_index`, `part` FROM `playerbot_client_name_parts`");
+		auto bans = database.QueryDatabase("SELECT `race`, `pattern` FROM `playerbot_client_name_bans`");
+		auto chances = database.QueryDatabase(
+			"SELECT `race`, `client_name_chance` FROM `playerbot_races` WHERE `client_name_chance` IS NOT NULL");
+
+		if (parts.Success() && bans.Success()) {
+			for (auto row = parts.begin(); row != parts.end(); ++row) {
+				m_client_names.SetPart(
+					static_cast<uint16>(RowU32(row[0])),
+					static_cast<uint8>(RowU32(row[1])),
+					static_cast<uint8>(RowU32(row[2])),
+					RowStr(row[3])
+				);
+			}
+			for (auto row = bans.begin(); row != bans.end(); ++row) {
+				m_client_names.AddBan(static_cast<uint16>(RowU32(row[0])), RowStr(row[1]));
+			}
+		}
+		else {
+			LogWarning("[pbnative] client name tables missing (2026_10_18_bots_playerbot_native_client_names.sql not run?): every PlayerBot is named from playerbot_name_sets");
+		}
+
+		if (chances.Success()) {
+			for (auto row = chances.begin(); row != chances.end(); ++row) {
+				auto it = m_races.find(static_cast<uint16>(RowU32(row[0])));
+				if (it != m_races.end()) {
+					it->second.client_name_chance = static_cast<int16>(std::min<uint32>(100, RowU32(row[1])));
+				}
+			}
+		}
+	}
+
+	const std::string names_summary = fmt::format(
+		"{} name sets, client names for {} races", m_names.SetCount(), m_client_names.RaceCount()
+	);
 	int missing_sets = 0;
 	for (const auto &kv : m_races) {
 		for (const auto *sets : {&kv.second.male_sets, &kv.second.female_sets}) {
@@ -483,8 +524,8 @@ bool PlayerBotNative::OnSpawn(NPC *npc)
 	}
 
 	LogInfo(
-		"[pbnative] generated [{}] level [{}] class [{}] race [{}] gender [{}] {} items [{}] zone [{}]",
-		npc->playerbot_temp_name, p.level, p.class_, p.race, p.gender,
+		"[pbnative] generated [{}] ({}) level [{}] class [{}] race [{}] gender [{}] {} items [{}] zone [{}]",
+		npc->playerbot_temp_name, p.client_name ? "client name" : "name set", p.level, p.class_, p.race, p.gender,
 		p.is_static ? (p.sitting ? "static/sitting" : "static") : "roaming",
 		items, zone ? zone->GetShortName() : "?"
 	);
@@ -520,9 +561,18 @@ bool PlayerBotNative::RollProfile(NPC *npc, Profile &p)
 	auto class_it = m_classes.find(p.class_);
 	p.npc_spells_id = class_it == m_classes.end() ? 0 : class_it->second.npc_spells_id;
 
-	// Name: one of the race/gender sets at random; if that set cannot make a
-	// name, try the others before giving up. Giving up fails the whole spawn
-	// rather than apply half a profile.
+	// Name: sometimes the Trilogy client's own Random Name generator (a share
+	// set by rule, or per race); otherwise -- or when it comes up empty -- one
+	// of the race/gender sets at random, trying the others if one cannot make a
+	// name. Giving up fails the whole spawn rather than apply half a profile.
+	const int client_chance = race.client_name_chance >= 0
+		? race.client_name_chance
+		: RuleI(PlayerBots, ClientNameChance);
+	if (m_client_names.HasRace(p.race) && RandRoll(client_chance)) {
+		p.name        = m_client_names.Generate(p.race, p.gender == 1);
+		p.client_name = !p.name.empty();
+	}
+
 	std::vector<std::string> sets = p.gender == 0 ? race.male_sets : race.female_sets;
 	while (!sets.empty() && p.name.empty()) {
 		const size_t i = static_cast<size_t>(RandInt(0, static_cast<int>(sets.size()) - 1));

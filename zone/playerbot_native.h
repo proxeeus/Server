@@ -113,6 +113,7 @@ private:
 		uint8                    size_class = SizeMedium;
 		std::vector<std::string> male_sets;
 		std::vector<std::string> female_sets;
+		int16                    client_name_chance = -1; // -1 = rule ClientNameChance
 	};
 
 	struct ClassRow {
@@ -164,6 +165,7 @@ private:
 		bool        sitting   = false;
 		int32       npc_faction_id = -1;
 		std::string name;
+		bool        client_name = false; // named by the client's Random Name generator
 	};
 
 	bool EnsureLoaded();
@@ -201,7 +203,8 @@ private:
 	std::vector<TradeRow>                       m_trades;
 	std::unordered_map<uint32, size_t>          m_trade_by_item; // kinds 0/3, item_id -> index
 
-	PlayerBotNameGen m_names;
+	PlayerBotNameGen       m_names;
+	PlayerBotClientNameGen m_client_names;
 
 	uint32 m_generated = 0;
 	uint32 m_declined  = 0;
