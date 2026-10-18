@@ -274,7 +274,15 @@ struct CharacterSelect_Struct
 /*0650*/	int8	unknown1[2];
 /*0652*/	uint32	cs_colors[10][9];	// RRGGBBAA per slot
 /*1012*/	int8	unknown2[20];
-/*1032*/	int8	unknown3[216];
+	// Weapon model numbers (the N of "ITN"), one per roster slot.  The client's
+	// show-selected-character routine (0x4d3940) reads these as int32 from the
+	// copy of this packet at game+0x22400 (+0x22808 / +0x22830), sprintf's
+	// "IT%d" and attaches the model to the paperdoll; <= 0 empties the hand.
+	// EQClassic filled them with 0x01010101-style "slot markers", which is
+	// why the client used to report the char index back in OP_WearChange.
+/*1032*/	int32	primary_model[10];
+/*1072*/	int32	secondary_model[10];
+/*1112*/	int8	unknown3[136];
 /*1248*/
 };
 

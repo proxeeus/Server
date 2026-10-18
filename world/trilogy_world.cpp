@@ -420,34 +420,6 @@ void TrilogyWorldServer::OnOpcode(const std::string& addr, int port, Session& s,
 		// WorldGuildManager::SendGuildsList replies with the full 30724-byte
 		// GuildsList_Struct (4-byte head + 512 entries).  See
 		// SendGuildsList below.
-		//
-		// Attempt 5 for 1-char auto-select weapon rendering: the OP_GuildsList
-		// request is the client's "I'm settled at char-select" signal — it
-		// arrives many seconds after CharacterSelect_Struct (the wire capture
-		// showed a 12-second gap). Attempts 1-4 sent proactive OP_WearChange
-		// immediately after SendCharSelect and were ignored / caused flicker.
-		// Pushing the weapon assignment right BEFORE the guilds list response
-		// puts it at a moment the client is definitively ready to process it.
-		if (s.cs_char_count == 1 && !s.cs_wpn_pushed_this_cs) {
-			using TrilWC = Trilogy::structs::WearChange_Struct;
-			constexpr int16_t kPollTag  = 9410;
-			constexpr int8_t  kPollFlag = static_cast<int8_t>(0xFA);
-			for (int hand = 0; hand < 2; ++hand) {
-				TrilWC wc{};
-				wc.wear_slot_id = static_cast<int8_t>(7 + hand);
-				wc.slot_graphic = s.cs_weapon_model[0][hand];
-				wc.sub_op       = kPollTag;
-				wc.flag         = kPollFlag;
-				SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-				        reinterpret_cast<const uint8_t*>(&wc), sizeof(wc));
-			}
-			s.cs_wpn_pushed_this_cs = true;
-			LogInfo("[TrilogyWorld] OP_GuildsList | attempt5 pushed WearChange primary=[{}] "
-			        "secondary=[{}] BEFORE guilds reply to {}:{}",
-			        static_cast<int>(s.cs_weapon_model[0][0]),
-			        static_cast<int>(s.cs_weapon_model[0][1]),
-			        addr, port);
-		}
 		SendGuildsList(addr, port, s);
 		break;
 	case OP_NAME_APPROVAL:
@@ -662,15 +634,20 @@ void TrilogyWorldServer::SendExpansionInfo(const std::string& addr, int port, Se
 }
 
 // ============================================================
-// OP_WearChange (0x9220): char-select weapon-graphic request
+// OP_WearChange (0x9220): char-select weapon REPORT — never answer it
 //
-// While on the char-select screen, the v29c client sends one OP_WearChange
-// per character per weapon slot (wear_slot_id=7 primary / 8 secondary) and
-// expects the server to reply with the weapon's model number in slot_graphic.
-// The request uses slot_graphic = 1-based char index. sub_op = WS_SUB_CHANGE_CHAR
-// (32767) is an informational "I changed selected char" event with no reply.
-// Source: EQClassic World/Source/client_process.cpp ProcessOP_WearChange +
-// ClientNetwork.cpp SendWearChangeRequestSlot.
+// These are not requests.  Selecting a character runs 0x4d3940, which reads
+// CharacterSelect_Struct::primary_model/secondary_model, attaches "IT<n>" to
+// the paperdoll through 0x40b6e0, and 0x40b6e0 tells the server about every
+// weapon it puts on the player actor: wear_slot 7/8, slot_graphic = (int8)n.
+// sub_op and flag are never written there (stack garbage).  sub_op 32767 is
+// a separate "selection changed" notice.
+//
+// We used to answer them (EQClassic's design, with 0x01010101 markers in the
+// model fields so the report carried the char index).  Every answer was
+// attached and reported again, and a model number in 1..roster was read as
+// another char's index — the ~1 s weapon delay, other characters' weapons on
+// the paperdoll, and the missing offhand (dropped by the old ARSP filter).
 // ============================================================
 
 void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Session& s,
@@ -684,67 +661,17 @@ void TrilogyWorldServer::HandleWearChange(const std::string& addr, int port, Ses
 		return;
 	}
 
-	const auto* req = reinterpret_cast<const TrilWC*>(payload);
+	const auto* rpt = reinterpret_cast<const TrilWC*>(payload);
 
-	// Diagnostic: dump every inbound OP_WearChange we see at world so we can
-	// tell what the client sends during 1-char auto-select vs post-click.
-	LogInfo("[TrilogyWorld] WearChange RX hdr1=0x{:02X} spawn_id={} wear_slot={} slot_graphic={} "
-	        "sub_op={} color=0x{:08X} flag=0x{:02X} from {}:{}",
-	        hdr1, static_cast<int>(req->spawn_id), static_cast<int>(req->wear_slot_id),
-	        static_cast<int>(req->slot_graphic), static_cast<int>(req->sub_op),
-	        static_cast<uint32_t>(req->color), static_cast<int>(req->flag), addr, port);
+	// slot_graphic is the model the client just attached (the low byte of N
+	// in "IT<n>"); it should match the primary/secondary model logged by
+	// SendCharSelect for the selected character.
+	LogInfo("[TrilogyWorld] WearChange report hdr1=0x{:02X} wear_slot={} slot_graphic={} sub_op={} "
+	        "from {}:{} (no reply)",
+	        hdr1, static_cast<int>(rpt->wear_slot_id), static_cast<int>(rpt->slot_graphic),
+	        static_cast<int>(rpt->sub_op), addr, port);
 
-	// SUB_ChangeChar is informational — no response expected.
-	if (req->sub_op == WS_SUB_CHANGE_CHAR) {
-		if (s.ack_due) SendAck(addr, port, s);
-		return;
-	}
-
-	// Skip ARSP-bundled echo confirmations.  v29c re-sends every OP_WearChange
-	// reply we send back to us as a transport-layer confirmation, bundled with
-	// the ack of our TX (hdr1 bit 0x04 = HDR1_ARSP).  The echo packet carries
-	// the (wear_slot_id, slot_graphic) we just sent — i.e. slot_graphic is the
-	// weapon MODEL number, not the 1-based char index of a real query.  When
-	// that model number happens to fall in [1, char_count] (e.g. Sarallron's
-	// IT2 → model 2 → looks like a query for char 2 in a 4-char roster), the
-	// naive handler treated the echo as a fresh query, looked up the OTHER
-	// character's weapon, and shipped it back.  v29c then applied that to the
-	// displayed character's paperdoll (the "model switches to another char's
-	// weapon when I click between chars" cosmetic bug).
-	//
-	// Real queries arrive with hdr1=0x00 (no ARSP); echoes arrive with
-	// hdr1 & 0x04 set.  Wire-confirmed against world_6416.log: every
-	// hdr1=0x04 OP_WearChange RX in that capture had a slot_graphic that
-	// matched one of our prior TX model numbers (02 / 22 / 24 / 70 / 00),
-	// and every hdr1=0x00 RX with non-CHANGE_CHAR sub_op carried a real
-	// 1-based char index (01..04).  Drop ARSP-bundled echoes and just ACK.
-	if (hdr1 & HDR1_ARSP) {
-		if (s.ack_due) SendAck(addr, port, s);
-		return;
-	}
-
-	// Only primary (7) and secondary (8) weapon slots are requested on char select.
-	if (req->wear_slot_id != 7 && req->wear_slot_id != 8) {
-		if (s.ack_due) SendAck(addr, port, s);
-		return;
-	}
-
-	const int char_slot = static_cast<int>(req->slot_graphic) - 1; // wire is 1-based
-	if (char_slot < 0 || char_slot >= 10) {
-		if (s.ack_due) SendAck(addr, port, s);
-		return;
-	}
-
-	const int hand = (req->wear_slot_id == 7) ? 0 : 1;
-	const int8_t model = s.cs_weapon_model[char_slot][hand];
-
-	TrilWC resp{};
-	resp.wear_slot_id = req->wear_slot_id;
-	resp.slot_graphic = model;       // weapon model number (digits of idfile)
-	resp.sub_op       = req->sub_op; // echo the request tag
-
-	SendApp(addr, port, s, WS_OP_WEAR_CHANGE,
-	        reinterpret_cast<const uint8_t*>(&resp), sizeof(resp));
+	if (s.ack_due) SendAck(addr, port, s);
 }
 
 // ============================================================
@@ -761,14 +688,6 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 	// or a "Create new Character" button. An empty string ("") leaves the slot visually blank.
 	for (int i = 0; i < 10; ++i) {
 		strncpy(cs.name[i], "<none>", sizeof(cs.name[i]) - 1);
-	}
-
-	// Slot-identity markers in unknown3 (EQClassic database.cpp GetCharSelectInfo, Tazadar comment):
-	// "you must let that in order to let us know what character you are selecting when client sends packet"
-	// Two groups of 8×4 bytes (values 1..8) at offsets 0 and 40 within unknown3[216].
-	for (int i = 0; i < 8; ++i) {
-		memset(cs.unknown3 +      4 * i, static_cast<uint8_t>(i + 1), 4);
-		memset(cs.unknown3 + 40 + 4 * i, static_cast<uint8_t>(i + 1), 4);
 	}
 
 	auto query = fmt::format(
@@ -799,10 +718,6 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 			        s.account_id, dr[0], dr[1]);
 		}
 	}
-
-	// Reset weapon-graphic cache for this session — the client will request these
-	// per-char via OP_WearChange after CharacterSelect_Struct arrives.
-	memset(s.cs_weapon_model, 0, sizeof(s.cs_weapon_model));
 
 	int slot = 0;
 	for (auto row = results.begin(); row != results.end() && slot < 10; ++row, ++slot) {
@@ -873,10 +788,9 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 			if (eqidx < 0) continue;
 
 			// Weapon model: parse the digits after "IT" in idfile.
-			// The v29c client ignores equip[7]/equip[8] from this struct and
-			// requests weapon graphics on demand via OP_WearChange — we still
-			// stash the model in equip[] for completeness and cache it on the
-			// session so HandleWearChange can answer the per-char requests.
+			// The client draws the paperdoll's weapons from primary_model[] /
+			// secondary_model[] (see the struct); equip[7..8] keeps the same
+			// number for completeness.
 			if (eqidx >= 7) {
 				uint32_t model = 0;
 				if (strlen(idfile) > 2 && Strings::IsNumber(idfile + 2)) {
@@ -886,7 +800,10 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 				const int      item_type = erow[5] ? Strings::ToInt(erow[5]) : -1;
 				const uint8_t  graphic   = Trilogy::WeaponModels::Resolve(model, item_id, item_type);
 				cs.equip[slot][eqidx] = static_cast<int8_t>(graphic);
-				s.cs_weapon_model[slot][eqidx - 7] = static_cast<int8_t>(graphic);
+				if (eqidx == 7)
+					cs.primary_model[slot]   = graphic;
+				else
+					cs.secondary_model[slot] = graphic;
 			} else {
 				cs.equip[slot][eqidx] = static_cast<int8_t>(mat);
 			}
@@ -905,42 +822,31 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		}
 	}
 
-	// Attempt 9: attempt 8's minimum phantom successfully TRIGGERED the
-	// client's auto-poll cycle (verified in world_17392.log: 0x3521/0x3921
-	// checksums + SUB_ChangeChar + polls for slot_graphic=1 AND 2 fired
-	// automatically). BUT weapons still didn't render, because the client
-	// applies WearChange responses to the DISPLAYED CHAR regardless of
-	// which slot_graphic was polled — multiple responses overwrite in order.
-	// Sequence in attempt 8: response (7,model=2) for real → weapon on,
-	// then response (7,model=0) for empty phantom → weapon cleared → flicker.
-	//
-	// Attempt 9: keep the invisible minimum phantom (name=<none>, level/
-	// class/race set) BUT mirror the weapon-model cache to slot 1 so
-	// HandleWearChange returns the SAME model for both slot_graphic=1 and
-	// slot_graphic=2 polls. Both responses paint the same weapon on the
-	// displayed char → no overwrite-clear → weapon stays rendered.
+	// A 1-char roster never runs the client's select-character routine, so
+	// its paperdoll got armor but no weapons.  An invisible phantom in slot 1
+	// (name=<none>, level/class/race set) makes the roster count as 2+ and
+	// the routine fires.  It runs for the phantom too, and the last run
+	// paints the one paperdoll on screen, so the phantom carries slot 0's
+	// weapons — otherwise it would empty the hands slot 0 just filled.
 	if (slot == 1) {
-		LogInfo("[TrilogyWorld] SendCharSelect | attempt9 invisible phantom + mirrored "
-		        "weapon cache (slot1_wpn=slot0_wpn) to {}:{}", addr, port);
+		LogInfo("[TrilogyWorld] SendCharSelect | invisible phantom in slot 1 "
+		        "(weapons mirrored from slot 0) to {}:{}", addr, port);
 		cs.level[1]  = 1;
 		cs.class_[1] = 1;
 		cs.race[1]   = 1;
 		cs.gender[1] = 0;
 		cs.face[1]   = 0;
-		// Mirror the weapon-model cache so poll responses for phantom slot
-		// return the same model as the real char — avoids overwrite-clear.
-		s.cs_weapon_model[1][0] = s.cs_weapon_model[0][0];
-		s.cs_weapon_model[1][1] = s.cs_weapon_model[0][1];
+		cs.primary_model[1]   = cs.primary_model[0];
+		cs.secondary_model[1] = cs.secondary_model[0];
+	}
+
+	for (int i = 0; i < slot; ++i) {
+		LogInfo("[TrilogyWorld] SendCharSelect | slot [{}] [{}] primary_model [{}] secondary_model [{}]",
+		        i, cs.name[i], cs.primary_model[i], cs.secondary_model[i]);
 	}
 
 	SendApp(addr, port, s, WS_SEND_CHAR_INFO,
 	        reinterpret_cast<const uint8_t*>(&cs), sizeof(cs));
-
-	// Stash roster count for the OP_GuildsList-timed push (attempt 5 backup).
-	s.cs_char_count         = static_cast<uint8_t>(slot);
-	s.cs_wpn_pushed_this_cs = false;
-	LogInfo("[TrilogyWorld] SendCharSelect | cs_char_count=[{}] to {}:{}",
-	        s.cs_char_count, addr, port);
 }
 
 // ============================================================
