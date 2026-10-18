@@ -29,6 +29,7 @@
 #include "mob_movement_manager.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
+#include "../common/patches/trilogy_weapon_models.h"
 #include "../common/item_instance.h"
 #include "../common/item_data.h"
 #include "../common/strings.h"
@@ -60,6 +61,45 @@
 #include <vector>
 
 extern EntityList entity_list;
+
+// ============================================================
+// Weapon models — see the declarations in trilogy_client.h.
+// ============================================================
+uint8_t TrilogyWeaponGraphic(const Mob* mob, uint8_t material_slot, uint32_t material)
+{
+	// Fast path: what v29c can already show goes out exactly as before.
+	if (material == 0 || Trilogy::WeaponModels::IsRenderable(material)) {
+		return static_cast<uint8_t>(material);
+	}
+
+	Trilogy::WeaponModels::EnsureLoaded(content_db);
+
+	// Use the item in that hand only when the number is its model.  A
+	// texture-profile override (quest WearChange, illusion) or an ornament
+	// supplies a different number, and must not borrow the item's row.
+	uint32_t item_id   = 0;
+	int      item_type = -1;
+	if (mob) {
+		const EQ::ItemData* item = database.GetItem(mob->GetEquippedItemFromTextureSlot(material_slot));
+		if (item && Trilogy::WeaponModels::ParseIDFile(item->IDFile) == material) {
+			item_id   = item->ID;
+			item_type = item->ItemType;
+		}
+	}
+	return Trilogy::WeaponModels::Resolve(material, item_id, item_type);
+}
+
+uint8_t TrilogyWeaponGraphic(const Mob* mob, uint8_t material_slot)
+{
+	if (!mob) return 0;
+	return TrilogyWeaponGraphic(mob, material_slot, mob->GetEquipmentMaterial(material_slot));
+}
+
+std::string TrilogyItemIDFile(const char* idfile, uint32_t item_id, int item_type, uint32_t slots)
+{
+	Trilogy::WeaponModels::EnsureLoaded(content_db);
+	return Trilogy::WeaponModels::ResolveIDFile(idfile, item_id, item_type, slots);
+}
 
 // ============================================================
 // EncryptSpawnPacket — cipher for single OP_NewSpawn (0x4921).
@@ -1942,8 +1982,8 @@ void TrilogyClient::HandleNewSpawn(const EQApplicationPacket* app)
 		sp.npc_armor_graphic = (tex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(tex);
 		sp.npc_helm_graphic  = (helmtex > 7) ? static_cast<int8_t>(0xFF) : static_cast<int8_t>(helmtex);
 	}
-	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(mob->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(mob, EQ::textures::weaponPrimary));
+	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(mob, EQ::textures::weaponSecondary));
 	// equipment[7]=primary, equipment[8]=secondary.  v29c has no Range visual slot
 	// — bows in slotRange are NOT rendered on the player.  EQClassic's own
 	// MakeSpawnUpdate (Zone/Source/client.cpp:1832-1846) reads pp.inventory[13]/[14]
@@ -3321,9 +3361,15 @@ void TrilogyClient::HandleOutgoingWearChange(const EQApplicationPacket* app)
 	// fidelity is preserved across all paths (spawn struct equipment[9],
 	// per-slot mutation, unequip→0 transitions, skeleton texture variants
 	// — all pass through correctly on the first change).
-	const uint8_t material = static_cast<uint8_t>(src->material & 0xFF);
 	const uint16_t spawn_id_w = static_cast<uint16_t>(src->spawn_id);
 	const uint8_t slot       = static_cast<uint8_t>(src->wear_slot_id);
+	// Weapon slots carry model numbers, which v29c takes as one byte (see
+	// TrilogyWeaponGraphic); armor slots carry materials and pass as before.
+	const bool weapon_slot =
+		slot == EQ::textures::weaponPrimary || slot == EQ::textures::weaponSecondary;
+	const uint8_t material = weapon_slot
+		? TrilogyWeaponGraphic(entity_list.GetMob(spawn_id_w), slot, src->material)
+		: static_cast<uint8_t>(src->material & 0xFF);
 	const uint32_t cache_key =
 		(static_cast<uint32_t>(spawn_id_w) << 8) | static_cast<uint32_t>(slot);
 
@@ -7429,12 +7475,14 @@ bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 	// trilogy_zone.cpp:SendInventoryItems.  v29c renders the bow during
 	// archery animations from this idfile; truncated modern IDs collide
 	// with sword models.  "IT4" = v29c bow model (NPC ranger trainers
-	// confirmed render bow with melee1 texture=4).
-	const char* src_idfile =
+	// confirmed render bow with melee1 texture=4).  Other hand-held items
+	// get a classic model when theirs is one v29c lacks — the client
+	// draws the player's own hands from this string (TrilogyItemIDFile).
+	const std::string src_idfile =
 	    (it->ItemType == static_cast<uint8_t>(EQ::item::ItemType::ItemTypeBow))
-	    ? "IT4"
-	    : it->IDFile;
-	strncpy(ci.idfile, src_idfile, sizeof(ci.idfile)  - 1);
+	    ? std::string("IT4")
+	    : TrilogyItemIDFile(it->IDFile, it->ID, it->ItemType, it->Slots);
+	strncpy(ci.idfile, src_idfile.c_str(), sizeof(ci.idfile)  - 1);
 
 	// Lore prefix.  EQClassic/Trilogy clients use the first character of the
 	// Lore string as a flag marker — confirmed in EQClassic source:
