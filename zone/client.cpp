@@ -1687,8 +1687,7 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				CheckEmoteHail(t, message);
 
 				if (DistanceNoZ(m_Position, t->GetPosition()) <= RuleI(Range, Say)) {
-					// Native PlayerBot hail/leave/buy/multiquest; anything it
-					// does not recognise still reaches Player_Bot.lua.
+					// PlayerBot hail/leave/buy/multiquest (playerbot_native)
 					if (playerbot_native.OnSay(this, t, message)) {
 						// handled
 					}

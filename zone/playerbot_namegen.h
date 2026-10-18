@@ -2,14 +2,13 @@
 #define EQEMU_PLAYERBOT_NAMEGEN_H
 
 /*
- * C++ port of LuaNameGen (lua_modules/namegen.lua, MIT, Lucas Siqueira), which
- * is itself a port of libtcod's namegen. It reads the SAME .cfg files through
- * the SAME namegen.index, so name content stays in one place and the Lua
- * fallback (PlayerBots:NativeGeneration off) keeps producing the same names.
+ * C++ port of LuaNameGen (the old lua_modules/namegen.lua, MIT, Lucas
+ * Siqueira), itself a port of libtcod's namegen. The sets used to live in
+ * lua_modules/data/*.cfg; they are now rows of playerbot_name_sets, one per
+ * set property, fed in through SetProperty() with the .cfg's property names.
  *
- * Kept deliberately faithful -- the grammar, the weighted rule pick, and the
- * three rejection tests are byte-for-byte the Lua behaviour -- except for the
- * Lua bugs listed here, which are fixed:
+ * The grammar, the weighted rule pick and the three rejection tests are the
+ * Lua behaviour, except for these Lua bugs, which are fixed:
  *
  *  - `$?` called an undefined global `random` and raised; it now picks the
  *    vowel or the consonant list as the libtcod original intended.
@@ -29,11 +28,12 @@
 
 class PlayerBotNameGen {
 public:
-	// Parses <dir>/namegen.index and every .cfg it lists (paths relative to
-	// <dir>, as namegen.lua resolves them against its own directory).
-	// Replaces whatever was loaded before. Returns false when the index is
-	// missing; individual unreadable .cfg files are logged and skipped.
-	bool Load(const std::string &dir, std::string &summary_out);
+	void Clear() { m_sets.clear(); }
+
+	// One property of one set, named as in the .cfg it came from:
+	// syllablesStart/Middle/End/Pre/Post, phonemesVocals/Consonants,
+	// customGroupA..O, rules, illegal. False for an unknown property.
+	bool SetProperty(const std::string &set, const std::string &property, const std::string &value);
 
 	bool HasSet(const std::string &set) const;
 	size_t SetCount() const { return m_sets.size(); }
@@ -59,7 +59,6 @@ private:
 		uint32                                             total_weight = 0;
 	};
 
-	bool ParseFile(const std::string &path);
 	bool GenerateCustom(const Set &set, const std::string &rule, std::string &out) const;
 	const std::vector<std::string> *ListFor(const Set &set, char token) const;
 

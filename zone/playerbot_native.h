@@ -2,39 +2,23 @@
 #define EQEMU_PLAYERBOT_NATIVE_H
 
 /*
- * Native (C++) PlayerBot generation + trading -- the port of
- * quests/global/Player_Bot.lua and lua_modules/playerbot_*.lua.
+ * PlayerBots -- generation, trading and combat flavor.
  *
  * Spec: docs/PLAYERBOT_NATIVE.md.
  *
+ * Formerly quests/global/Player_Bot.lua + lua_modules/playerbot_*.lua; that
+ * script version is sunset, and everything it did lives here and in the
+ * playerbot_* content tables (names included: playerbot_name_sets).
+ *
  * PlayerBots stay ordinary NPCs (npc_types id RuleI(PlayerBots, PlayerBotId));
- * this object only decides what they ARE at spawn and how they answer trades.
+ * this object decides what they ARE at spawn and how they answer players.
+ * Every hook runs before its caller's HasQuestSub check, so a PlayerBot needs
+ * no quest script at all. If the content tables cannot be read, OnSpawn fails
+ * loudly ([pbnative] LogError) and the bot stands as the bare npc_types row
+ * until #pbnative reload succeeds -- there is no script to fall back to.
  *
- * ROLLBACK CONTRACT -- every entry point here may decline, and declining
- * always means "the Lua system does exactly what it did before":
- *
- *   OnSpawn  declines when PlayerBots:NativeGeneration is off, the content
- *            tables are missing/empty, or a profile cannot be rolled. Lua
- *            event_spawn then generates the bot as it always has. When it
- *            does NOT decline it stamps the entity variable kNativeVar, which
- *            is the only thing Player_Bot.lua reads to skip its generation.
- *   OnTrade  declines when PlayerBots:NativeTrading is off (or no data);
- *   OnSay    the caller then fires EVENT_TRADE / EVENT_SAY as before.
- *   OnCombat / OnSlay / OnDeathComplete decline when PlayerBots:NativeFlavor
- *            is off; the caller then fires the PlayerBot's Lua event.
- *
- * So the rollback is one rule flip; no code revert, no SQL revert, no quest
- * revert. The content tables are additive and inert while the rules are off.
- *
- * With all three rules on, nothing PlayerBot-specific needs Player_Bot.lua
- * or lua_modules/playerbot_*.lua any more -- every hook runs BEFORE the
- * caller's HasQuestSub check, so deleting the script removes nothing native.
- * (Deleting it also removes the fallback the rules roll back to, so do that
- * only once the native path has soaked.) One thing is not ported: the
- * static-bot roam timer (enable_timer_events / enable_static_movement, both
- * off in the shipped script). The script's other config knobs are rules now.
- * Name data still lives in lua_modules/data unless PlayerBots:NameGenPath
- * points at a copy.
+ * Not carried over from the script: the static-bot roam timer
+ * (enable_timer_events / enable_static_movement), which shipped disabled.
  */
 
 #include <string>
@@ -54,20 +38,10 @@ namespace EQ {
 
 class PlayerBotNative {
 public:
-	// Entity variable stamped on every natively generated PlayerBot, BEFORE
-	// EVENT_SPAWN fires. Player_Bot.lua event_spawn skips generation when it
-	// reads "1". Old binaries never set it, so old/new quests x old/new
-	// binary all agree.
-	static constexpr const char *kNativeVar = "playerbot_native";
-	// kNativeVar values: generated here, Lua keeps its post-spawn extras
-	// (timers, arrival hello) -- or generated AND the extras are C++ too
-	// (PlayerBots:NativeFlavor), so Lua event_spawn has nothing left to do.
-	static constexpr const char *kNativeGenerated = "1";
-	static constexpr const char *kNativeComplete  = "2";
-
 	static bool IsPlayerBot(Mob *m);
 
-	// EntityList::AddNPC, right before EVENT_SPAWN. True = generated here.
+	// EntityList::AddNPC, right before EVENT_SPAWN and the spawn packet.
+	// True = generated.
 	bool OnSpawn(NPC *npc);
 
 	// Both trade paths (Client::FinishTrade and the Trilogy give handler)
@@ -79,17 +53,16 @@ public:
 	             uint32 cp, uint32 sp, uint32 gp, uint32 pp);
 
 	// Whether OnTrade WILL handle a trade with this NPC. Trade paths use it
-	// to treat a PlayerBot as a quest NPC even if its script loses event_trade.
+	// to treat a PlayerBot as a quest NPC although it has no script.
 	bool WantsTrade(NPC *npc);
 
 	// Client::ChannelMessageReceived, where EVENT_SAY would fire for the
 	// targeted NPC. True = handled (hail / leave / buy / multiquest).
 	bool OnSay(Client *c, NPC *npc, const std::string &message);
 
-	// PlayerBots:NativeFlavor -- the Player_Bot.lua combat/slay/death lines.
-	// Called where EVENT_COMBAT (joined) / EVENT_SLAY + EVENT_NPC_SLAY (Lua
-	// sees both as event_slay) / EVENT_DEATH_COMPLETE would fire for the
-	// PlayerBot. True = handled; the caller then skips that Lua event.
+	// The aggro / victory / death lines. Called where EVENT_COMBAT (joined) /
+	// EVENT_SLAY + EVENT_NPC_SLAY / EVENT_DEATH_COMPLETE would fire for the
+	// PlayerBot. True = handled; the caller then skips the quest event.
 	bool OnCombat(NPC *npc, Mob *attacker);
 	bool OnSlay(NPC *npc, Mob *victim);
 	bool OnDeathComplete(NPC *npc);

@@ -699,11 +699,8 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 
 	entity_list.ScanCloseMobs(npc->close_mobs, npc, true);
 
-	// Native PlayerBot generation. Must run before EVENT_SPAWN (which is where
-	// Player_Bot.lua would otherwise build the bot, and which reads the entity
-	// variable this sets) and before the spawn packet below (so the packet
-	// carries the rolled race/name/look). A no-op unless
-	// PlayerBots:NativeGeneration is on.
+	// PlayerBot generation. Before the spawn packet below, so the packet itself
+	// carries the rolled race/name/look; a no-op for every other NPC.
 	playerbot_native.OnSpawn(npc);
 
 	if (parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_SPAWN)) {

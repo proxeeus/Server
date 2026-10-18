@@ -2,8 +2,6 @@
 
 #include <algorithm>
 #include <cctype>
-#include <fstream>
-#include <regex>
 
 #include "../common/eqemu_logsys.h"
 #include "../common/random.h"
@@ -64,152 +62,70 @@ namespace {
 
 } // namespace
 
-bool PlayerBotNameGen::Load(const std::string &dir, std::string &summary_out)
+bool PlayerBotNameGen::SetProperty(const std::string &set, const std::string &property, const std::string &value)
 {
-	m_sets.clear();
+	Set &data = m_sets[set];
 
-	const std::string index_path = dir + "/namegen.index";
-	std::ifstream     index(index_path);
-	if (!index.is_open()) {
-		summary_out = "namegen.index not found at " + index_path;
-		return false;
+	if (property == "syllablesStart") {
+		data.lists['s'] = SplitTokens(value);
 	}
-
-	int files_ok = 0, files_bad = 0;
-
-	std::string line;
-	while (std::getline(index, line)) {
-		while (!line.empty() && (line.back() == '\r' || line.back() == ' ' || line.back() == '\t')) {
-			line.pop_back();
-		}
-		if (line.empty()) {
-			continue;
-		}
-
-		// namegen.lua get_path(): append .cfg unless it is already there.
-		std::string rel = line;
-		if (rel.size() < 4 || rel.compare(rel.size() - 4, 4, ".cfg") != 0) {
-			rel += ".cfg";
-		}
-
-		if (ParseFile(dir + "/" + rel)) {
-			++files_ok;
-		}
-		else {
-			++files_bad;
-		}
+	else if (property == "syllablesMiddle") {
+		data.lists['m'] = SplitTokens(value);
 	}
-
-	summary_out = std::to_string(m_sets.size()) + " name sets from " + std::to_string(files_ok) + " files";
-	if (files_bad) {
-		summary_out += " (" + std::to_string(files_bad) + " unreadable)";
+	else if (property == "syllablesEnd") {
+		data.lists['e'] = SplitTokens(value);
 	}
-
-	return true;
-}
-
-bool PlayerBotNameGen::ParseFile(const std::string &path)
-{
-	std::ifstream in(path);
-	if (!in.is_open()) {
-		LogError("[pbnative] namegen file [{}] not found", path);
-		return false;
+	else if (property == "syllablesPre") {
+		data.lists['P'] = SplitTokens(value);
 	}
-
-	// The same two patterns namegen.lua parse_lines() matches, unanchored.
-	static const std::regex name_re(R"re(name ?"(.+)" ?\{)re");
-	static const std::regex prop_re(R"re([ \t]+(.+) = "(.+)")re");
-
-	Set        *data = nullptr;
-	bool        body = false;
-	std::string line;
-
-	while (std::getline(in, line)) {
-		if (!line.empty() && line.back() == '\r') {
-			line.pop_back();
-		}
-
-		std::smatch m;
-		if (std::regex_search(line, m, name_re)) {
-			data = &m_sets[m[1].str()];
-			*data = Set{};
-			body  = true;
-			continue;
-		}
-
-		if (!body || !data) {
-			continue;
-		}
-
-		if (line.find('}') != std::string::npos) {
-			body = false;
-			continue;
-		}
-
-		if (!std::regex_search(line, m, prop_re)) {
-			continue;
-		}
-
-		const std::string name  = m[1].str();
-		const std::string value = m[2].str();
-
-		if (name == "syllablesStart") {
-			data->lists['s'] = SplitTokens(value);
-		}
-		else if (name == "syllablesMiddle") {
-			data->lists['m'] = SplitTokens(value);
-		}
-		else if (name == "syllablesEnd") {
-			data->lists['e'] = SplitTokens(value);
-		}
-		else if (name == "syllablesPre") {
-			data->lists['P'] = SplitTokens(value);
-		}
-		else if (name == "syllablesPost") {
-			data->lists['p'] = SplitTokens(value);
-		}
-		else if (name == "phonemesVocals") {
-			data->lists['v'] = SplitTokens(value);
-		}
-		else if (name == "phonemesConsonants") {
-			data->lists['c'] = SplitTokens(value);
-		}
-		else if (name == "illegal") {
-			data->illegal = SplitTokens(ToLowerCopy(value));
-		}
-		else if (name == "rules") {
-			// parse_rules(): "^%*(%d*)(%S+)" per token -- any leading '%', an
-			// optional weight, then the rule. No weight means 100.
-			data->rules.clear();
-			data->total_weight = 0;
-			for (const auto &tok : SplitTokens(value)) {
-				size_t i = 0;
-				while (i < tok.size() && tok[i] == '%') {
-					++i;
-				}
-				uint32 weight     = 0;
-				bool   has_weight = false;
-				while (i < tok.size() && IsDigit(tok[i])) {
-					weight     = weight * 10 + static_cast<uint32>(tok[i] - '0');
-					has_weight = true;
-					++i;
-				}
-				if (i >= tok.size()) {
-					continue; // (%S+) needs at least one character
-				}
-				Rule r;
-				r.weight = has_weight ? weight : 100;
-				r.text   = tok.substr(i);
-				data->total_weight += r.weight;
-				data->rules.push_back(std::move(r));
+	else if (property == "syllablesPost") {
+		data.lists['p'] = SplitTokens(value);
+	}
+	else if (property == "phonemesVocals") {
+		data.lists['v'] = SplitTokens(value);
+	}
+	else if (property == "phonemesConsonants") {
+		data.lists['c'] = SplitTokens(value);
+	}
+	else if (property == "illegal") {
+		data.illegal = SplitTokens(ToLowerCopy(value));
+	}
+	else if (property == "rules") {
+		// parse_rules(): "^%*(%d*)(%S+)" per token -- any leading '%', an
+		// optional weight, then the rule. No weight means 100.
+		data.rules.clear();
+		data.total_weight = 0;
+		for (const auto &tok : SplitTokens(value)) {
+			size_t i = 0;
+			while (i < tok.size() && tok[i] == '%') {
+				++i;
 			}
-		}
-		else if (name.size() == std::string("customGroupX").size() && name.compare(0, 11, "customGroup") == 0) {
-			const char g = static_cast<char>(std::toupper(static_cast<unsigned char>(name[11])));
-			if (g >= 'A' && g < 'P') {
-				data->lists[g] = SplitTokens(value);
+			uint32 weight     = 0;
+			bool   has_weight = false;
+			while (i < tok.size() && IsDigit(tok[i])) {
+				weight     = weight * 10 + static_cast<uint32>(tok[i] - '0');
+				has_weight = true;
+				++i;
 			}
+			if (i >= tok.size()) {
+				continue; // (%S+) needs at least one character
+			}
+			Rule r;
+			r.weight = has_weight ? weight : 100;
+			r.text   = tok.substr(i);
+			data.total_weight += r.weight;
+			data.rules.push_back(std::move(r));
 		}
+	}
+	else if (property.size() == std::string("customGroupX").size() && property.compare(0, 11, "customGroup") == 0) {
+		const char g = static_cast<char>(std::toupper(static_cast<unsigned char>(property[11])));
+		if (g < 'A' || g >= 'P') {
+			return false;
+		}
+		data.lists[g] = SplitTokens(value);
+	}
+	else {
+		return false;
 	}
 
 	return true;

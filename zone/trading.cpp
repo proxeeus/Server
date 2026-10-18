@@ -741,8 +741,8 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 		bool quest_npc = false;
 		if (parse->HasQuestSub(tradingWith->GetNPCTypeID(), EVENT_TRADE) ||
 			playerbot_native.WantsTrade(tradingWith->CastToNPC())) {
-			// This is a quest NPC (a natively-traded PlayerBot counts as one:
-			// it pays for or returns everything itself, below)
+			// This is a quest NPC (a PlayerBot counts as one: playerbot_native
+			// pays for or returns everything itself, below)
 			quest_npc = true;
 		}
 

@@ -6,7 +6,6 @@
 #include "../common/eq_constants.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/item_instance.h"
-#include "../common/path_manager.h"
 #include "../common/rulesys.h"
 #include "../common/strings.h"
 
@@ -137,7 +136,7 @@ bool PlayerBotNative::EnsureLoaded()
 
 	m_load_failed  = true;
 	m_load_summary = summary;
-	LogError("[pbnative] content NOT loaded, Lua keeps handling PlayerBots: {}", summary);
+	LogError("[pbnative] content NOT loaded -- PlayerBots will spawn as the bare npc_types row until #pbnative reload succeeds: {}", summary);
 	return false;
 }
 
@@ -364,16 +363,24 @@ bool PlayerBotNative::LoadAll(std::string &summary_out)
 		return false;
 	}
 
-	// ---- names (by default the same files namegen.lua reads) ----
-	std::string names_dir = RuleS(PlayerBots, NameGenPath);
-	if (names_dir.empty()) {
-		names_dir = path.GetLuaModulesPath();
+	// ---- names ----
+	m_names.Clear();
+	{
+		auto r = query("playerbot_name_sets", "SELECT `set_name`, `property`, `value` FROM `playerbot_name_sets`");
+		if (!r.Success()) {
+			return false;
+		}
+		int unknown_properties = 0;
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			if (!m_names.SetProperty(RowStr(row[0]), RowStr(row[1]), RowStr(row[2]))) {
+				++unknown_properties;
+			}
+		}
+		if (unknown_properties) {
+			LogWarning("[pbnative] [{}] playerbot_name_sets rows have an unknown property and were ignored", unknown_properties);
+		}
 	}
-	std::string names_summary;
-	if (!m_names.Load(names_dir, names_summary)) {
-		summary_out = names_summary;
-		return false;
-	}
+	const std::string names_summary = fmt::format("{} name sets", m_names.SetCount());
 	int missing_sets = 0;
 	for (const auto &kv : m_races) {
 		for (const auto *sets : {&kv.second.male_sets, &kv.second.female_sets}) {
@@ -398,9 +405,7 @@ std::string PlayerBotNative::Status()
 {
 	EnsureLoaded();
 	return fmt::format(
-		"generation [{}] trading [{}] | content [{}] {} | this zone: generated [{}] declined [{}]",
-		RuleB(PlayerBots, NativeGeneration) ? "native" : "lua",
-		RuleB(PlayerBots, NativeTrading) ? "native" : "lua",
+		"content [{}] {} | this zone: generated [{}] failed [{}]",
 		m_loaded ? "loaded" : "NOT loaded",
 		m_load_summary,
 		m_generated,
@@ -440,7 +445,7 @@ uint32 PlayerBotNative::PickWeighted(const std::vector<Weighted> &v)
 
 bool PlayerBotNative::OnSpawn(NPC *npc)
 {
-	if (!RuleB(PlayerBots, NativeGeneration) || !IsPlayerBot(npc)) {
+	if (!IsPlayerBot(npc)) {
 		return false;
 	}
 	if (!EnsureLoaded()) {
@@ -448,11 +453,12 @@ bool PlayerBotNative::OnSpawn(NPC *npc)
 		return false;
 	}
 
-	// Roll EVERYTHING before touching the NPC, so a decline leaves it exactly
-	// as Lua expects to find it.
+	// Roll everything before touching the NPC, so a failure leaves the
+	// npc_types row as it was rather than half a bot.
 	Profile p;
 	if (!RollProfile(npc, p)) {
 		++m_declined;
+		LogError("[pbnative] could not roll a PlayerBot (no class/race/name) in zone [{}]", zone ? zone->GetShortName() : "?");
 		return false;
 	}
 
@@ -468,13 +474,11 @@ bool PlayerBotNative::OnSpawn(NPC *npc)
 	ApplyStats(npc, p);
 	const int items = ApplyGear(npc, p);
 
-	const bool flavor = RuleB(PlayerBots, NativeFlavor);
-	npc->SetEntityVariable(kNativeVar, flavor ? kNativeComplete : kNativeGenerated);
 	++m_generated;
 
-	// Player_Bot.lua [19.13]: a hello on arrival, rarely. After the name is
-	// set -- the chat engine seeds the persona from it.
-	if (flavor && RandRoll(RuleI(PlayerBots, ArrivalChatChance))) {
+	// [19.13] a hello on arrival, rarely. After the name is set -- the chat
+	// engine seeds the persona from it.
+	if (RandRoll(RuleI(PlayerBots, ArrivalChatChance))) {
 		playerbot_chat.ScriptSayNamed(npc, "arrival", ChatChannel_Say);
 	}
 
@@ -517,9 +521,8 @@ bool PlayerBotNative::RollProfile(NPC *npc, Profile &p)
 	p.npc_spells_id = class_it == m_classes.end() ? 0 : class_it->second.npc_spells_id;
 
 	// Name: one of the race/gender sets at random; if that set cannot make a
-	// name, try the others before giving up. Giving up DECLINES the whole
-	// spawn -- Lua then builds the bot, which is better than a bot standing in
-	// the zone called "Player_Bot".
+	// name, try the others before giving up. Giving up fails the whole spawn
+	// rather than apply half a profile.
 	std::vector<std::string> sets = p.gender == 0 ? race.male_sets : race.female_sets;
 	while (!sets.empty() && p.name.empty()) {
 		const size_t i = static_cast<size_t>(RandInt(0, static_cast<int>(sets.size()) - 1));
@@ -699,7 +702,7 @@ int PlayerBotNative::ApplyGear(NPC *npc, const Profile &p)
 
 bool PlayerBotNative::FlavorOn(Mob *m)
 {
-	return RuleB(PlayerBots, NativeFlavor) && IsPlayerBot(m);
+	return IsPlayerBot(m);
 }
 
 uint8 PlayerBotNative::FlavorChannel()
@@ -784,7 +787,7 @@ bool PlayerBotNative::MeetsRequirements(NPC *npc, const TradeRow &row) const
 
 bool PlayerBotNative::WantsTrade(NPC *npc)
 {
-	return RuleB(PlayerBots, NativeTrading) && IsPlayerBot(npc) && EnsureLoaded();
+	return IsPlayerBot(npc) && EnsureLoaded();
 }
 
 bool PlayerBotNative::OnTrade(Client *c, NPC *npc, const std::vector<EQ::ItemInstance *> &items,
@@ -884,7 +887,7 @@ const PlayerBotNative::TradeRow *PlayerBotNative::MatchPhrase(uint8 kind, const 
 
 bool PlayerBotNative::OnSay(Client *c, NPC *npc, const std::string &message)
 {
-	if (!c || !RuleB(PlayerBots, NativeTrading) || !IsPlayerBot(npc) || !EnsureLoaded()) {
+	if (!c || !IsPlayerBot(npc) || !EnsureLoaded()) {
 		return false;
 	}
 
