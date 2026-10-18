@@ -464,6 +464,14 @@ INSERT INTO playerbot_trades (id, kind, item_id, phrase, label, plural, price_pl
 (131, 2, 24982, 'multiquest a tattered silk turban', 'tattered silk turban', '', 5000, 0, 0, 0, 0, 0, '', ''),
 (132, 2, 24981, 'multiquest a tattered silk wristband', 'tattered silk wristband', '', 10000, 0, 0, 0, 0, 0, '', '');
 
+-- Added after the port: the hail always said "I'm buying ... bone chips" and the
+-- script defined bone_chips_stack_price = 20, but no turn-in existed, so chips
+-- were handed back. Item 13073 is the reagent every Necromancer pet spell
+-- consumes (Cavorting Bones .. Emissary of Thule). 1pp per chip: a stack of 20
+-- pays 20pp (stacks are paid per item).
+INSERT INTO playerbot_trades (id, kind, item_id, phrase, label, plural, price_platinum, req_class, req_min_level, req_race, reward_item_id, spell_id, message, fail_message) VALUES
+(133, 0, 13073, '', 'Bone Chips', '', 1, 0, 0, 0, 0, 0, '', '');
+
 
 -- ---------------------------------------------------------------------------
 -- VERIFY (every count should be what the comment says)
@@ -473,7 +481,7 @@ SELECT COUNT(*) AS races_expect_13 FROM playerbot_races;
 SELECT COUNT(*) AS classes_expect_14 FROM playerbot_classes;
 SELECT COUNT(*) AS class_races_expect_77 FROM playerbot_class_races;
 SELECT COUNT(DISTINCT zone) AS lore_zones_expect_20 FROM playerbot_lore_races;
-SELECT COUNT(*) AS trades_expect_132 FROM playerbot_trades;
+SELECT COUNT(*) AS trades_expect_133 FROM playerbot_trades;
 -- every lore race must have at least one class (expect no rows)
 SELECT lr.zone, lr.race FROM playerbot_lore_races lr
 LEFT JOIN playerbot_lore_classes lc ON lc.zone = lr.zone AND lc.race = lr.race
