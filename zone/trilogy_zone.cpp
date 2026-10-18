@@ -39,6 +39,7 @@
 #include "../common/strings.h"
 #include "../common/item_data.h"
 #include "../common/spdat.h"
+#include "../common/skill_caps.h"
 #include "../common/features.h"
 #include "command.h"
 #include "guild_mgr.h"
@@ -4492,6 +4493,10 @@ static inline int32 clamp_i8(int32 v) {
 	return v < -128 ? -128 : (v > 127 ? 127 : v);
 }
 
+// Defined non-static in trilogy_client.cpp: books.language for a book item's
+// book_data.language byte (the client garbles book text by it).
+extern int8_t TrilogyBookLanguage(const char* filename);
+
 // NOTE: Bank slot compaction was REMOVED.  The v29c client addresses each bank slot
 // (and each bank-bag content slot) by a FIXED array index derived from the slot ID —
 // top row = slot-2000, bag contents = slot-2031 — and the per-item CPlayerItem packets
@@ -4755,8 +4760,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		if (ci.itemclass == 2) {
 			// Book
 			ci.book_data.book     = static_cast<int8>(Strings::ToInt(row[77]));
-			ci.book_data.booktype = static_cast<int16>(Strings::ToInt(row[78]));
+			ci.book_data.booktype = static_cast<int8>(Strings::ToInt(row[78]));
 			if (row[79]) strncpy(ci.book_data.filename, row[79], sizeof(ci.book_data.filename) - 1);
+			ci.book_data.language = TrilogyBookLanguage(row[79]);
 		} else {
 			ci.common.unknown0282 = static_cast<int8>(0xFF);
 			ci.common.unknown0283 = static_cast<int8>(0xFF);
@@ -5865,6 +5871,26 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 }
 
 
+// The v29c skill byte for a skill with no points in it.  The client writes
+// these itself at character creation (eqgame.exe 0x41cb8b): 0xFF = the class
+// can never learn it, 0xFE = a skill the class gets at a later level and has
+// not trained yet, 0 = trainable from level 1.  The server stores 0 for all
+// three, and sending a plain 0 made the client treat every one as trained.
+static int8_t TrilogyUntrainedSkillByte(uint8 class_id, uint16 race, EQ::skills::SkillType skill)
+{
+	// Tinkering is the Gnome racial skill; skill_caps carries it for every class.
+	if (skill == EQ::skills::SkillTinkering && race != GNOME) {
+		return static_cast<int8_t>(0xFF);
+	}
+	if (skill_caps.GetSkillCap(class_id, skill, RuleI(Character, MaxLevel)).cap == 0) {
+		return static_cast<int8_t>(0xFF);
+	}
+	if (skill_caps.GetSkillCap(class_id, skill, 1).cap == 0) {
+		return static_cast<int8_t>(0xFE);
+	}
+	return 0;
+}
+
 // ============================================================
 // SendPlayerProfile — build Trilogy PP from DB, compress,
 //   encrypt, and send as OP_PlayerProfile (0x2d20)
@@ -6499,15 +6525,23 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 
 	// ---- character_skills ----
 	{
+		for (int sid = 0; sid < static_cast<int>(sizeof(pp.skills)); ++sid) {
+			pp.skills[sid] = TrilogyUntrainedSkillByte(
+				static_cast<uint8>(pp.class_), static_cast<uint16>(pp.race),
+				static_cast<EQ::skills::SkillType>(sid));
+		}
+
 		auto q = fmt::format(
 			"SELECT `skill_id`, `value` FROM `character_skills` WHERE `id` = {}",
 			s.char_id
 		);
 		auto r = database.QueryDatabase(q);
 		for (auto row = r.begin(); row != r.end(); ++row) {
-			int sid = Strings::ToInt(row[0]);
-			if (sid >= 0 && sid < 74)
-				pp.skills[sid] = static_cast<int8_t>(Strings::ToInt(row[1]));
+			int sid   = Strings::ToInt(row[0]);
+			int value = Strings::ToInt(row[1]);
+			// A stored 0 is "no points", which keeps the marker set above.
+			if (sid >= 0 && sid < 74 && value > 0)
+				pp.skills[sid] = static_cast<int8_t>(value);
 		}
 	}
 
@@ -12801,11 +12835,21 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	// producing a per-level cap (~30 at level 5) that the tier bar can move
 	// meaningfully against.  Match that.
 	//
-	// Iterate only the 73 indices the wire struct holds; the Trilogy enum is
+	// Iterate all 74 indices the client reads (0..73, Taunt last — sending only
+	// 73 left Taunt reading the magic 1 below, so every class was offered it);
+	// the Trilogy enum is
 	// densely packed in the same order EQEmu uses for these indices, so a
 	// direct id→id mapping works.  Skills the class can never learn
 	// (CanHaveSkill==false) get 0 → hidden from the window.
-	for (int sid = 0; sid < 73; ++sid) {
+	//
+	// The client lists a skill only when its highesttrain is non-zero
+	// (eqgame.exe 0x493701), so a skill the class gets at a later level must
+	// not be 0 either.  EQClassic sends the level-formula cap regardless of
+	// availability, which lists every class skill; clicking one too early gets
+	// the client's own "You are not ready to learn that skill" (0x4a108f checks
+	// its availability table before any cap).  skill_caps has no rows before a
+	// skill's first level, so send the cap at that first level instead.
+	for (int sid = 0; sid < static_cast<int>(sizeof(reply.highesttrain)); ++sid) {
 		const auto skill = static_cast<EQ::skills::SkillType>(sid);
 		if (!s.trilogy_client->CanHaveSkill(skill)) {
 			reply.highesttrain[sid] = 0;
@@ -12816,10 +12860,14 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 			reply.highesttrain[sid] = 0;
 			continue;
 		}
-		const uint16 cap = s.trilogy_client->GetMaxSkillAfterSpecializationRules(
-		    skill,
-		    s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
-		                               s.trilogy_client->GetLevel()));
+		uint16 cap = s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
+		                                        s.trilogy_client->GetLevel());
+		for (int lvl = s.trilogy_client->GetLevel() + 1;
+		     cap == 0 && lvl <= RuleI(Character, MaxLevel); ++lvl) {
+			cap = s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(),
+			                                 static_cast<uint8>(lvl));
+		}
+		cap = s.trilogy_client->GetMaxSkillAfterSpecializationRules(skill, cap);
 		reply.highesttrain[sid] = static_cast<int8_t>(cap > 200 ? 200 : cap);
 	}
 
@@ -12834,7 +12882,8 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	// unless these bytes are non-zero.  Confirmed by the EQClassic Zone reference
 	// (ProcessOP_ClassTraining sets every byte of unknown[] to 1) and the
 	// Wizzel comment in eq_packet_structs.h ("one of these are important or the
-	// trainer wont open the training window").
+	// trainer wont open the training window").  The one that matters is packet
+	// byte 112, the last of these (eqgame.exe 0x4935be).
 	memset(reply.unknown,  1, sizeof(reply.unknown));
 	memset(reply.unknown2, 0, sizeof(reply.unknown2));
 
@@ -12842,7 +12891,7 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	// modern EQEmu's OPGMTraining treats as "last 40 bytes = trailing metadata
 	// block" (see client_process.cpp:1674-1679 — a `memcpy(&outapp->pBuffer
 	// [outapp->size-40], ending, 40)` where ending starts with a float ≈ 1.08).
-	// In our 148 B response that puts greed at offset 108 (= unknown[27..30]).
+	// In our 148 B response that puts greed at offset 108 (= unknown[26..29]).
 	//
 	// Symptom before this fix: the per-skill cost widget rendered "No charge"
 	// at every skill level because our all-1s pattern in unknown[] made the
@@ -12885,6 +12934,77 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	LogInfo("[TrilogyZone] ClassTraining open: char={} trainer={} (class {}), points={}",
 	        s.char_name, m->GetCleanName(), trainer_class,
 	        s.trilogy_client->GetSkillPoints());
+}
+
+// Whether a guildmaster may teach this language to this race/class yet — a port
+// of eqgame.exe 0x4a08d7.  The client already hides and refuses these in the
+// trainer window; this is the server's check of the same rule.
+static bool TrilogyCanLearnLanguage(uint16 race, uint8 class_id, uint8 level, int lang)
+{
+	// Minimum level per language (rows, 0..24) and race (columns), from the
+	// client's table at 0x560c08.  99 = never.  Columns: Human, Barbarian,
+	// Erudite, Wood Elf, High Elf, Dark Elf, Half Elf, Dwarf, Troll, Ogre,
+	// Halfling, Gnome, Iksar, Vah Shir.
+	static constexpr uint8 kLearnLevel[25][14] = {
+		{ 1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1,  1 }, // CommonTongue
+		{10,  1, 15, 20, 20, 10, 15, 25, 15, 15, 10, 20, 15, 30 }, // Barbarian
+		{ 5, 20,  1, 35, 35, 23, 25, 35, 20, 20, 20, 35, 20, 10 }, // Erudian
+		{20, 25, 30,  1,  1, 25,  1, 10, 25, 25, 25, 10, 25, 30 }, // Elvish
+		{25, 10, 25, 15, 15,  1, 15, 15, 30, 30, 15, 15, 30, 30 }, // DarkElvish
+		{20, 25, 30, 10, 10, 25, 10,  1, 20, 20, 25, 10, 20, 30 }, // Dwarvish
+		{15, 15, 25, 25, 25, 13, 20, 25,  1,  5, 20, 30, 15, 30 }, // Troll
+		{15, 15, 25, 25, 25, 13, 20, 25,  5,  1, 20, 30, 15, 30 }, // Ogre
+		{20, 25, 15, 10, 10, 25, 10, 15, 25, 25, 30,  1, 20, 30 }, // Gnomish
+		{15, 10, 20, 20, 20, 10, 15, 20, 20, 20,  1, 25, 25, 30 }, // Halfling
+		{99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99 }, // ThievesCant
+		{12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12 }, // OldErudian
+		{25, 30, 30, 15, 15, 30, 15, 30, 30, 30, 15, 20, 30, 30 }, // ElderElvish
+		{15, 20, 20, 20, 20, 20, 20, 20, 15, 15, 20, 20, 15, 20 }, // Froglok
+		{20, 15, 20, 15, 15, 15, 15, 20, 20, 20, 15, 15, 15, 20 }, // Goblin
+		{10, 15, 10, 10, 10, 10, 10, 10, 10, 10, 10, 15, 15, 15 }, // Gnoll
+		{20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20,  1 }, // CombineTongue
+		{12, 30, 30, 15, 15, 12, 15, 30, 12, 12, 15, 20, 12, 30 }, // ElderTeirDal
+		{15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,  1, 15 }, // Lizardman
+		{20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20 }, // Orcish
+		{20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20 }, // Faerie
+		{30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30 }, // Dragon
+		{40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40 }, // ElderDragon
+		{99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99 }, // DarkSpeech
+		{99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,  1 }, // VahShir
+	};
+
+	if (lang < 0 || lang >= 25) {
+		return false;
+	}
+
+	int column;
+	if (race >= Race::Human && race <= Race::Gnome) {
+		column = race - Race::Human;
+	} else if (race == Race::Iksar) {
+		column = 12;
+	} else if (race == Race::VahShir) {
+		column = 13;
+	} else {
+		return false;
+	}
+
+	if (level >= kLearnLevel[lang][column]) {
+		return true;
+	}
+
+	// Class exceptions, after the table lookup.
+	switch (class_id) {
+		case Class::Necromancer:
+			return (level >= 8 && lang == Language::ElderElvish) ||
+			       (level >= 20 && lang == Language::ElderTeirDal);
+		case Class::Wizard:
+		case Class::Magician:
+			return level >= 8 && lang == Language::OldErudian;
+		case Class::Enchanter:
+			return lang == Language::OldErudian;
+		default:
+			return false;
+	}
 }
 
 void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port, Session& s,
@@ -12937,6 +13057,13 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 			LogInfo("[TrilogyZone] ClassTrainSkill: invalid language id {}", lang_id);
 			return;
 		}
+		if (!TrilogyCanLearnLanguage(s.trilogy_client->GetBaseRace(), s.trilogy_client->GetClass(),
+		                             s.trilogy_client->GetLevel(), lang_id)) {
+			s.trilogy_client->Message(Chat::Tell,
+			    "%s tells you, 'You are not experienced enough to learn that language yet.  "
+			    "Come back after you have adventured more.'", m->GetCleanName());
+			return;
+		}
 		const uint8 cur = s.trilogy_client->GetLanguageSkill(static_cast<uint8>(lang_id));
 		if (cur >= Language::MaxValue) {
 			s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
@@ -12949,10 +13076,10 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 			    static_cast<unsigned long long>(cost));
 			return;
 		}
-		// SetLanguageSkill updates m_pp.languages + saves to DB.  EQClassic's
-		// reference notes that the v29c client never auto-displays a language
-		// skillup line (only "You have become better at..." for normal skills
-		// below 100), so emit the classic LANG_SKILL_IMPROVED text ourselves.
+		// SetLanguageSkill updates m_pp.languages + saves to DB.  v29c has no
+		// packet that updates a language (its skill update, 0x49553f, takes ids
+		// below 100 only), so the client prints nothing and keeps the old value
+		// until the next zone-in — emit the classic LANG_SKILL_IMPROVED text.
 		s.trilogy_client->SetLanguageSkill(static_cast<uint8>(lang_id),
 		                                   static_cast<uint8>(cur + 1));
 		s.trilogy_client->Message(Chat::Skills, "Your language skills have improved.");
@@ -12975,17 +13102,22 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 		}
 
 		uint16 skilllevel = static_cast<uint16>(s.trilogy_client->GetRawSkill(skill));
-		uint16 new_value  = 0;
 
 		if (skilllevel == 0) {
-			// First-time train — seed at the class/race base level.
-			const uint16 t_level = s.trilogy_client->GetSkillTrainLevel(skill, s.trilogy_client->GetClass());
-			if (t_level == 0) {
-				LogInfo("[TrilogyZone] ClassTrainSkill: skill {} invalid for class/race", sid);
-				return;
+			// First-time train: the skill starts at the level the class gets it.
+			// The v29c client does this itself on the click — for an untrained
+			// skill it writes the class's availability level into the skill and
+			// prints "You have learned the basics of %s." (eqgame.exe 0x464640) —
+			// so a Bard first training Dual Wield at 20 starts at 17, and a skill
+			// trainable from level 1 starts at 1.  (EQClassic seeds at the current
+			// level instead; the client wins.  GetSkillTrainLevel means the same
+			// thing but builds its lookup key outside its loop, so it answers 1.)
+			uint8 avail_level = 1;
+			while (avail_level < s.trilogy_client->GetLevel() &&
+			       s.trilogy_client->MaxSkill(skill, s.trilogy_client->GetClass(), avail_level) == 0) {
+				++avail_level;
 			}
-			s.trilogy_client->SetSkill(skill, t_level);
-			new_value = t_level;
+			s.trilogy_client->SetSkill(skill, std::min<uint16>(avail_level, s.trilogy_client->MaxSkill(skill)));
 		} else {
 			// Tradeskill / specialization / research caps mirror OPGMTrainSkill.
 			switch (skill) {
@@ -13045,21 +13177,10 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 				return;
 			}
 			s.trilogy_client->SetSkill(skill, skilllevel + 1);
-			new_value = skilllevel + 1;
 		}
 
-		// EQClassic ref note (Zone/Source/client.cpp:1097): the v29c client
-		// auto-prints "You have become better at ..." on OP_SkillUpdate ONLY for
-		// skills below 100.  At 100+ the message is dropped client-side, so
-		// emit it explicitly via OP_SpecialMesg here for consistency at all
-		// skill levels (matches the original EQ Velious behaviour at 100+).
-		if (new_value >= 100) {
-			const std::string name = EQ::skills::GetSkillName(skill);
-			s.trilogy_client->Message(Chat::Skills,
-			    "You have become better at %s! (%u)",
-			    name.empty() ? "your skill" : name.c_str(),
-			    static_cast<unsigned>(new_value));
-		}
+		// No skill-up text here: the client prints "You have become better at
+		// %s! (%d)" itself for every OP_SkillUpdate, at any value (0x49553f).
 	}
 
 	// Spend a training point + persist the new total (the v29c client decrements

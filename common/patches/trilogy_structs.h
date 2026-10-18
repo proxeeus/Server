@@ -1325,7 +1325,10 @@ struct ClassicItem_Struct
 union {
 	struct {
 /*0172*/	int8	book;
-/*0173*/	int16	booktype;
+/*0173*/	int8	booktype;
+// The client garbles book text itself by the reader's skill in this language
+// (eqgame.exe 0x419160: item+0xae, used only when 0 <= language < 32).
+/*0174*/	int8	language;
 /*0175*/	char	filename[15];
 /*0190*/	uint8	buffer1[102];   // pad to 120 bytes
 	} book_data;
@@ -1737,8 +1740,13 @@ struct ClassTrain_Struct
 {
 /*000*/	int32	npcid;
 /*004*/	int32	playerid;
-/*008*/	int8	highesttrain[73];
-/*081*/	int8	unknown[32];          // must be non-zero or window won't open
+// 74 entries, one per skill 0..73 (EQClassic declares 73, then writes the
+// 74th, Taunt, into unknown[0]).  The client lists a skill when its entry is
+// 1..252 and skips index 72 (eqgame.exe 0x493701).
+/*008*/	int8	highesttrain[74];
+// Only byte 112 (unknown[30]) is read: zero and the client closes the window
+// instead of opening it (0x4935be).  The greed float sits at 108..111.
+/*082*/	int8	unknown[31];
 /*113*/	int8	highesttrainLang[24];
 /*137*/	int8	unknown2[11];
 /*148*/
@@ -2215,6 +2223,9 @@ static_assert(sizeof(ItemProperties_Struct)   == 10,
 
 static_assert(sizeof(PlayerProfile_Struct)    == 8104,
 	"Trilogy PlayerProfile_Struct must be 8104 bytes");
+
+static_assert(sizeof(ClassTrain_Struct)       == 148,
+	"Trilogy ClassTrain_Struct must be 148 bytes");
 
 static_assert(sizeof(ZoneServerInfo_Struct)   == 130,
 	"Trilogy ZoneServerInfo_Struct must be 130 bytes");

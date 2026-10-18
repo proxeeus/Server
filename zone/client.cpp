@@ -2795,7 +2795,11 @@ void Client::ReadBook(BookRequest_Struct *book) {
 
 		memcpy(out->booktext, booktxt2.c_str(), length);
 
-		if (EQ::ValueWithin(book_language, Language::CommonTongue, Language::Unknown27)) {
+		// The Trilogy client garbles the text itself, by the language in the
+		// item's book_data.language byte (see TrilogyBookLanguage).  Garbling
+		// here as well scrambled ~5% of every note for Common-95 races.
+		if (ClientVersion() != EQ::versions::ClientVersion::Trilogy &&
+			EQ::ValueWithin(book_language, Language::CommonTongue, Language::Unknown27)) {
 			if (m_pp.languages[book_language] < Language::MaxValue) {
 				GarbleMessage(out->booktext, (Language::MaxValue - m_pp.languages[book_language]));
 			}
@@ -3142,6 +3146,19 @@ bool Client::CheckIncreaseSkill(EQ::skills::SkillType skillid, Mob *against_who,
 		) {
 			return false;
 		}
+	}
+
+	// Trilogy: a skill the class only gets at a later level stays "not trained
+	// yet" (0xFE on the v29c wire) until a guildmaster trains it, and does not
+	// improve through use before then — EQClassic's CheckMaxSkill caps an
+	// untrained skill at 0.  The first train seeds it at the level the class
+	// gets it, as the v29c client does on the click.
+	if (
+		ClientVersion() == EQ::versions::ClientVersion::Trilogy &&
+		skillval == 0 &&
+		MaxSkill(skillid, GetClass(), 1) == 0
+	) {
+		return false;
 	}
 
 	// Make sure we're not already at skill cap
