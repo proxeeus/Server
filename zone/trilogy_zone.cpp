@@ -43,6 +43,7 @@
 #include "../common/features.h"
 #include "command.h"
 #include "guild_mgr.h"
+#include "playerbot_native.h"
 #include "quest_parser_collection.h"
 #include "event_codes.h"
 #include "string_ids.h"
@@ -11483,7 +11484,8 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 		if (m && m->IsNPC()) npc = m->CastToNPC();
 	}
 
-	const bool quest_npc = npc && parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_TRADE);
+	const bool quest_npc = npc && (parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_TRADE) ||
+	                               playerbot_native.WantsTrade(npc));
 
 	if (quest_npc) {
 		std::vector<EQ::ItemInstance*> taken(4, nullptr);
@@ -11521,8 +11523,11 @@ void TrilogyZoneServer::HandleTradeGive(const std::string& addr, int port, Sessi
 		parse->AddVar(fmt::format("gold.{}",     npc_id), std::to_string(s.trade_gp));
 		parse->AddVar(fmt::format("platinum.{}", npc_id), std::to_string(s.trade_pp));
 
-		std::vector<std::any> item_list(taken.begin(), taken.end());
-		parse->EventNPC(EVENT_TRADE, npc, s.trilogy_client, "", 0, &item_list);
+		if (!playerbot_native.OnTrade(s.trilogy_client, npc, taken,
+		                              s.trade_cp, s.trade_sp, s.trade_gp, s.trade_pp)) {
+			std::vector<std::any> item_list(taken.begin(), taken.end());
+			parse->EventNPC(EVENT_TRADE, npc, s.trilogy_client, "", 0, &item_list);
+		}
 
 		if (npc->GetAppearance() != eaDead)
 			npc->FaceTarget(s.trilogy_client);

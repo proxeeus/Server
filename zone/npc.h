@@ -553,6 +553,23 @@ public:
 	void RecalculateSkills();
 	void ReloadSpells();
 
+	// Native PlayerBot generation (playerbot_native.cpp). Writes a rolled
+	// profile straight into this entity BEFORE its spawn packet exists, so the
+	// spawn struct itself carries the race/gender/face/size/name -- no rename,
+	// illusion, level or appearance packets for an entity no client has yet.
+	// Sets base_* too, so an illusion that fades reverts to the PlayerBot's
+	// rolled race instead of the npc_types placeholder.
+	void ApplyPlayerBotProfile(
+		uint8 new_level,
+		uint8 new_class,
+		uint16 new_race,
+		uint8 new_gender,
+		uint8 new_face,
+		float new_size,
+		const char *new_name,
+		bool sitting
+	);
+
 	void SendPositionToClients();
 
 

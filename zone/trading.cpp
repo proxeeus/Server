@@ -31,6 +31,7 @@
 #include "entity.h"
 #include "mob.h"
 
+#include "playerbot_native.h"
 #include "quest_parser_collection.h"
 #include "string_ids.h"
 #include "worldserver.h"
@@ -738,8 +739,10 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 		}
 
 		bool quest_npc = false;
-		if (parse->HasQuestSub(tradingWith->GetNPCTypeID(), EVENT_TRADE)) {
-			// This is a quest NPC
+		if (parse->HasQuestSub(tradingWith->GetNPCTypeID(), EVENT_TRADE) ||
+			playerbot_native.WantsTrade(tradingWith->CastToNPC())) {
+			// This is a quest NPC (a natively-traded PlayerBot counts as one:
+			// it pays for or returns everything itself, below)
 			quest_npc = true;
 		}
 
@@ -908,7 +911,16 @@ void Client::FinishTrade(Mob* tradingWith, bool finalizer, void* event_entry, st
 			tradingWith->FaceTarget(this);
 		}
 
-		if (parse->HasQuestSub(tradingWith->GetNPCTypeID(), EVENT_TRADE)) {
+		// In combat the items were already pushed back to the cursor above, so a
+		// native PlayerBot sees none of them -- only the coin, which it refunds.
+		static const std::vector<EQ::ItemInstance *> no_items;
+		if (playerbot_native.OnTrade(
+				this, tradingWith->CastToNPC(),
+				tradingWith->CheckAggro(this) ? no_items : items,
+				trade->cp, trade->sp, trade->gp, trade->pp)) {
+			// handled natively: paid, returned, coin refunded
+		}
+		else if (parse->HasQuestSub(tradingWith->GetNPCTypeID(), EVENT_TRADE)) {
 			std::vector<std::any> item_list(items.begin(), items.end());
 			parse->EventNPC(EVENT_TRADE, tradingWith->CastToNPC(), this, "", 0, &item_list);
 		}

@@ -802,6 +802,23 @@ RULE_INT(PlayerBots, CorpseDecayTimer, 3600000,"How long do PlayerBot corpses st
 RULE_INT(PlayerBots, InviteLevelGap, 5, "PlayerBots level above or below this value won't be able to be ^invite'd.")
 RULE_BOOL(PlayerBots, PlayerBotsCanBeGuilded, false, "Can PlayerBots be assigned cosmetic guild tags upon spawning?")
 RULE_INT(PlayerBots, PlayerBotsGuildChance, 50, "Chance % of a PlayerBot being guilded.")
+// Native (C++) PlayerBot system -- see zone/playerbot_native.h. Both switches
+// default OFF so the Lua system in quests/global/Player_Bot.lua stays in charge
+// until an operator opts in. Turning a switch back off IS the rollback: nothing
+// else needs reverting, because the Lua code still runs whenever C++ declines.
+RULE_BOOL(PlayerBots, NativeGeneration, false, "Generate PlayerBots (level, race, class, name, look, gear) in C++ at spawn instead of in Player_Bot.lua event_spawn. Read per spawn: bots already standing keep what they were generated with.")
+RULE_BOOL(PlayerBots, NativeTrading, false, "Handle PlayerBot hail/leave, trade-window buying and say-based buy/multiquest in C++ instead of Player_Bot.lua. Read per interaction.")
+RULE_INT(PlayerBots, PlayerBotMaxLevel, 60, "Native generation: highest level a PlayerBot can roll.")
+RULE_BOOL(PlayerBots, StaticBotsRandomLevel, true, "Native generation: PlayerBots with no roambox ('static' bots idling in cities) roll a level from 1 to PlayerBotMaxLevel instead of the zone band.")
+RULE_BOOL(PlayerBots, StaticDungeonLevelCheck, true, "Native generation: static PlayerBots in a zone flagged is_dungeon keep the zone band anyway, so no level 3 sits in City of Mist.")
+RULE_INT(PlayerBots, StaticHighLevelChance, 10, "Native generation: % chance a static PlayerBot in a dungeon rolls from the zone minimum up to PlayerBotMaxLevel.")
+RULE_BOOL(PlayerBots, LoreRaces, true, "Native generation: zones listed in playerbot_lore_races favour their home races and classes.")
+RULE_INT(PlayerBots, NonLoreRaceChance, 15, "Native generation: % chance a PlayerBot in a lore zone ignores the lore tables and rolls any race/class.")
+RULE_BOOL(PlayerBots, NativeFlavor, false, "Speak PlayerBot aggro/victory/death/arrival lines (and the victory cheer) from C++ instead of Player_Bot.lua's event_combat/event_slay/event_death_complete. The PlayerBot's Lua event is then not fired. The arrival hello needs NativeGeneration too.")
+RULE_INT(PlayerBots, FlavorOOCChance, 10, "Native flavor: % chance a victory/death line goes out on /ooc (Player_Bot.lua flavor_ooc_chance).")
+RULE_INT(PlayerBots, FlavorShoutChance, 5, "Native flavor: % chance a victory/death line goes out on /shout (Player_Bot.lua flavor_shout_chance). The rest are /say.")
+RULE_INT(PlayerBots, ArrivalChatChance, 5, "Native flavor: % chance a PlayerBot says hello when it spawns. Keep it small: a zone boot spawns every PlayerBot at once.")
+RULE_STRING(PlayerBots, NameGenPath, "", "Directory holding namegen.index and the .cfg files it lists. Empty = the lua_modules directory, shared with namegen.lua. Point it elsewhere before deleting lua_modules.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBotChat)

@@ -51,6 +51,7 @@ extern volatile bool RunLoops;
 #include "water_map.h"
 #include "bot_command.h"
 #include "playerbot_chat.h"
+#include "playerbot_native.h"
 #include "string_ids.h"
 
 #include "guild_mgr.h"
@@ -1686,7 +1687,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				CheckEmoteHail(t, message);
 
 				if (DistanceNoZ(m_Position, t->GetPosition()) <= RuleI(Range, Say)) {
-					if (parse->HasQuestSub(t->GetNPCTypeID(), EVENT_SAY)) {
+					// Native PlayerBot hail/leave/buy/multiquest; anything it
+					// does not recognise still reaches Player_Bot.lua.
+					if (playerbot_native.OnSay(this, t, message)) {
+						// handled
+					}
+					else if (parse->HasQuestSub(t->GetNPCTypeID(), EVENT_SAY)) {
 						parse->EventNPC(EVENT_SAY, t, this, message, language);
 					}
 

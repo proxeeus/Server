@@ -144,6 +144,7 @@ void command_object(Client *c, const Seperator *sep);
 void command_oocmute(Client *c, const Seperator *sep);
 void command_parcels(Client *c, const Seperator *sep);
 void command_pbchat(Client *c, const Seperator *sep);
+void command_pbnative(Client *c, const Seperator *sep);
 void command_path(Client *c, const Seperator *sep);
 void command_peqzone(Client *c, const Seperator *sep);
 void command_petitems(Client *c, const Seperator *sep);

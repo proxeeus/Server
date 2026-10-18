@@ -130,6 +130,8 @@ SET(zone_sources
     petitions.cpp
     pets.cpp
     playerbot_chat.cpp
+    playerbot_namegen.cpp
+    playerbot_native.cpp
     position.cpp
     qglobals.cpp
     queryserv.cpp
@@ -255,6 +257,8 @@ SET(zone_headers
     petitions.h
     pets.h
     playerbot_chat.h
+    playerbot_namegen.h
+    playerbot_native.h
     position.h
     qglobals.h
     quest_interface.h

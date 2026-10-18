@@ -44,6 +44,7 @@
 #include "pathfinder_null.h"
 #include "petitions.h"
 #include "playerbot_chat.h"
+#include "playerbot_native.h"
 #include "quest_parser_collection.h"
 #include "spawn2.h"
 #include "spawngroup.h"
@@ -1223,6 +1224,10 @@ bool Zone::Init(bool is_static) {
 	// Zone objects are reused inside one process, so the chat engine has to
 	// drop the previous zone's cooldowns/threads and reload content here.
 	playerbot_chat.OnZoneBoot();
+
+	// Native PlayerBot content is read lazily on first use; dropping it here
+	// makes table edits reach each zone process at its next boot.
+	playerbot_native.OnZoneBoot();
 
 	LogInfo("Zone booted successfully zone_id [{}] time_offset [{}]", zoneid, zone_time.getEQTimeZone());
 

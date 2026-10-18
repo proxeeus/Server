@@ -36,6 +36,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "mob.h"
 #include "npc.h"
 #include "playerbot_chat.h"
+#include "playerbot_native.h"
 
 #include "bot.h"
 
@@ -1929,7 +1930,10 @@ bool Client::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::Skil
 
 	if (killer_mob) {
 		if (killer_mob->IsNPC()) {
-			if (parse->HasQuestSub(killer_mob->GetNPCTypeID(), EVENT_SLAY)) {
+			if (playerbot_native.OnSlay(killer_mob->CastToNPC(), this)) {
+				// PlayerBot victory line spoken natively
+			}
+			else if (parse->HasQuestSub(killer_mob->GetNPCTypeID(), EVENT_SLAY)) {
 				parse->EventNPC(EVENT_SLAY, killer_mob->CastToNPC(), this, "", 0);
 			}
 
@@ -3056,7 +3060,12 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 
 	if (owner_or_self) {
 		if (owner_or_self->IsNPC()) {
-			if (parse->HasQuestSub(owner_or_self->GetNPCTypeID(), EVENT_NPC_SLAY)) {
+			// Lua sees EVENT_NPC_SLAY as event_slay (ConvertLuaEvent), so this
+			// is the PlayerBot victory line for an NPC kill.
+			if (playerbot_native.OnSlay(owner_or_self->CastToNPC(), this)) {
+				// spoken natively
+			}
+			else if (parse->HasQuestSub(owner_or_self->GetNPCTypeID(), EVENT_NPC_SLAY)) {
 				parse->EventNPC(EVENT_NPC_SLAY, owner_or_self->CastToNPC(), this, "", 0);
 			}
 
@@ -3134,7 +3143,10 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		}
 	}
 
-	if (parse->HasQuestSub(GetNPCTypeID(), EVENT_DEATH_COMPLETE)) {
+	if (playerbot_native.OnDeathComplete(this)) {
+		// PlayerBot death line spoken natively
+	}
+	else if (parse->HasQuestSub(GetNPCTypeID(), EVENT_DEATH_COMPLETE)) {
 		const auto& export_string = fmt::format(
 			"{} {} {} {} {} {} {} {} {}",
 			killer_mob ? killer_mob->GetID() : 0,
