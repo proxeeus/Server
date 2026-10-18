@@ -392,6 +392,86 @@ static constexpr uint32_t kTrilogyReportSize   = 5184;
 // who-all reply rendered to chat (HandleOutgoingWhoAllResponse).
 static constexpr uint16_t ZN_OP_FriendsWho     = 0xc521;
 
+// ── Message boards (the BBBOARD in city inns) ────────────────────────────────
+//
+// Seven opcodes, all pinned in eqgame.exe.  The client owns the whole UI — a
+// six-category list, a reader and a compose screen — and the server only
+// stores posts.  Opening is client-side too: the door-click handler at
+// 0x41621b tests the door's opentype byte (+0x1c == 0x37, i.e. 55) and, within
+// 20.0 units (ds:0x534498), sends 0x0821 instead of a click; the door-click
+// sender 0x4be44e returns early for opentypes 0x36..0x38, so a board click
+// never reaches OP_ClickDoor.
+//
+// THE ONE RULE: every request leaves the window's busy byte (+0x100) set, and
+// only 0x0e21 or 0x0b21 clears it.  While it is set, further board clicks are
+// ignored with no message.  So every 0x0821 must end in 0x0e21 and every 0x0921
+// in 0x0b21, including on error or the client is locked out of every board
+// until it restarts.
+//
+// Client -> zone (spawn_id is the player's own, player+0x80; the board itself
+// is never identified, so the board is one global store like EQClassic's):
+//   0x0821 list    8 B  { u32 spawn_id; u8 category; pad[3] }
+//                       sent on board click (category 2 General), on every
+//                       category button (0x462f46), and by the client itself
+//                       straight after every post and erase (0x463264).
+//   0x0921 read   12 B  { u32 spawn_id; u32 msg_id; u8 category; pad[3] }
+//                       right-click on a row (0x462d3c).
+//   0x0c21 post  89+ B  { u32 spawn_id @0; char date[16] @4;
+//                         char author[32] @0x14; u16 language @0x34;
+//                         char subject[32] @0x36; u16 category @0x56;
+//                         char message[] @0x58 }   size = strlen(msg) + 0x59
+//                       built at 0x4632c7.  date is sprintf'd from the game
+//                       clock ds:0x6e4d54 as "%02d"x5 of year/month/day/hour/
+//                       minute and the first two characters dropped, so it is
+//                       YYMMDDHHMM in Norrath time.  author is strcpy'd from the
+//                       profile name.  Input limits (0x4e9fd4): subject < 0x1d
+//                       chars, message < 0x3ff chars and < 10 lines.
+//                       Posting to category 0 needs the GM byte (player +0xf1).
+//   0x0d21 erase  12 B  { u32 spawn_id; u32 msg_id; u32 category }
+//                       three sites (0x462fec 0x4630bf 0x463242); offered only
+//                       when the selected row's author equals the reader's own
+//                       name (strcmp at 0x462c73 -> window +0xdae).
+// Neither post nor erase waits for an answer: the client frees its list and
+// sends 0x0821 at once, and that request's 0x0e21 is the reply.  EQClassic's
+// extra 0x0e21 after each is redundant (it reopens the empty list a beat
+// before the real one), so it is not sent here.
+//
+// Zone -> client:
+//   0x0a21 row          handler 0x4982e9 copies into a 92-byte list node and
+//                       bumps the row count; reads id @0 (u32), date @4,
+//                       author @0x14, language @0x34 (u8), subject @0x36.  No
+//                       size check, body and category never read.  Node
+//                       buffers: date 16, author 30, subject 33.
+//   0x0b21 body         handler 0x49846f strcpy's the payload into the reader
+//                       (garbled through 0x4aff13 by the reader's skill in the
+//                       row's language when that id is < 0x20), clears busy.
+//   0x0e21 open         handler 0x498364 reads no payload: shows the window in
+//                       list state, sorts by the current column (0x4e1d09),
+//                       fills the 20-slot page from the row list, clears busy.
+//
+// The list draws date as "MM/DD/YY HH:MM" by fixed character positions
+// (0x44f52f), 18 rows a page.
+static constexpr uint16_t ZN_OP_MBRetrieveMessages     = 0x0821;
+static constexpr uint16_t ZN_OP_MBRetrieveMessage      = 0x0921;
+static constexpr uint16_t ZN_OP_MBSendMessageToClient  = 0x0a21;
+static constexpr uint16_t ZN_OP_MBMessageDetail        = 0x0b21;
+static constexpr uint16_t ZN_OP_MBPostMessage          = 0x0c21;
+static constexpr uint16_t ZN_OP_MBEraseMessage         = 0x0d21;
+static constexpr uint16_t ZN_OP_MBOpenBoard            = 0x0e21;
+
+static constexpr uint32_t kTrilogyMBRowSize      = 0x58; // header only; EQClassic sent 2136 with an empty body
+static constexpr uint32_t kTrilogyMBDate         = 0x04;
+static constexpr uint32_t kTrilogyMBAuthor       = 0x14;
+static constexpr uint32_t kTrilogyMBLanguage     = 0x34;
+static constexpr uint32_t kTrilogyMBSubject      = 0x36;
+static constexpr uint32_t kTrilogyMBCategory     = 0x56;
+static constexpr uint32_t kTrilogyMBMessage      = 0x58;
+static constexpr uint8_t  kTrilogyMBCategoryMax  = 5;    // Official..Guilds
+static constexpr size_t   kTrilogyMBDateLen      = 10;   // YYMMDDHHMM
+static constexpr size_t   kTrilogyMBAuthorMax    = 29;   // 30-byte node buffer
+static constexpr size_t   kTrilogyMBSubjectMax   = 29;   // client input limit
+static constexpr size_t   kTrilogyMBMessageMax   = 1023; // client input limit
+
 // 0x4121 OP_ZoneEntryResend.  2 B: { int16 spawn_id }.  Client -> zone.
 //
 // The client asking us to send a spawn again.  It arrives as a sweep: one
@@ -3051,6 +3131,10 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleReport(s, payload, plen);
 		else if (opcode == ZN_OP_FriendsWho && s.trilogy_client)
 			HandleFriendsWho(s, payload, plen);
+		else if (s.trilogy_client &&
+		         (opcode == ZN_OP_MBRetrieveMessages || opcode == ZN_OP_MBRetrieveMessage ||
+		          opcode == ZN_OP_MBPostMessage      || opcode == ZN_OP_MBEraseMessage))
+			HandleMessageBoard(addr, port, s, opcode, payload, plen);
 		else if (opcode == ZN_OP_ZoneEntryResend && s.trilogy_client)
 			HandleZoneEntryResend(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SetRunMode && s.trilogy_client)
@@ -7651,6 +7735,252 @@ void TrilogyZoneServer::HandleFriendsWho(Session& s, const uint8_t* payload, uin
 	std::vector<char> buf(names.begin(), names.end());
 	buf.push_back('\0');
 	tc->FriendsWho(buf.data());
+}
+
+// ============================================================
+// HandleMessageBoard — inbound 0x0821 / 0x0921 / 0x0c21 / 0x0d21
+//
+// The server half of the inn message boards, after EQClassic's
+// ProcessOP_MB* (Zone/Source/client_process.cpp) with the wire taken from
+// eqgame.exe instead; see the opcode block at ZN_OP_MBRetrieveMessages for
+// every offset and where it was read.  Storage is trilogy_message_board
+// (utils/sql/git/optional/2026_10_18_trilogy_message_board.sql).
+//
+// Requests arrive as raw UDP, so the client's own gates are re-checked here
+// rather than trusted: posting to Official needs GetGM() (the byte behind
+// player +0xf1), and an erase must come from the post's author or a GM.  The
+// author is always the poster's real name, never the payload's.
+//
+// If the table is missing every query fails, and the board still opens, empty,
+// because a list request left unanswered would lock the client's boards.
+// ============================================================
+void TrilogyZoneServer::HandleMessageBoard(const std::string& addr, int port, Session& s,
+                                           uint16_t opcode, const uint8_t* payload, uint32_t plen)
+{
+	auto* tc = s.trilogy_client;
+	if (!tc) return;
+
+	// Large enough to page through and small enough to arrive quickly behind
+	// the outbound ARQ gate in SendApp, which keeps at most 9 rows in flight.
+	// EQClassic capped at 500 and measured ~5 s for 1000 rows on its own link.
+	static constexpr int kMaxRows = 200;
+
+	auto u32_at = [&](uint32_t off) -> uint32_t {
+		uint32_t v = 0;
+		if (off + 4 <= plen) memcpy(&v, payload + off, 4);
+		return v;
+	};
+	auto u16_at = [&](uint32_t off) -> uint16_t {
+		uint16_t v = 0;
+		if (off + 2 <= plen) memcpy(&v, payload + off, 2);
+		return v;
+	};
+	auto u8_at = [&](uint32_t off) -> uint8_t {
+		return off < plen ? payload[off] : 0;
+	};
+	auto str_at = [&](uint32_t off, size_t max_len) -> std::string {
+		if (off >= plen) return {};
+		const size_t n = std::min<size_t>(max_len, plen - off);
+		const char* p = reinterpret_cast<const char*>(payload + off);
+		return std::string(p, strnlen(p, n));
+	};
+
+	// Clears the busy byte and shows the list.  Payload unread by the client;
+	// one byte as EQClassic sent.
+	auto send_open = [&]() {
+		const uint8_t z = 0;
+		SendApp(addr, port, s, ZN_OP_MBOpenBoard, &z, 1);
+	};
+	// Clears the busy byte and shows the reader.
+	auto send_body = [&](const std::string& text) {
+		std::vector<uint8_t> out(text.begin(), text.end());
+		out.push_back(0);
+		SendApp(addr, port, s, ZN_OP_MBMessageDetail, out.data(),
+		        static_cast<uint32_t>(out.size()));
+	};
+
+	switch (opcode) {
+
+	// ---- list -------------------------------------------------------------
+	case ZN_OP_MBRetrieveMessages: {
+		const uint8_t category = u8_at(4);
+		if (plen < 5 || category > kTrilogyMBCategoryMax) {
+			LogInfo("[TrilogyMB] list char={} bad request plen={} category={}",
+			        s.char_name, plen, static_cast<int>(category));
+			send_open();
+			return;
+		}
+
+		const std::string q = fmt::format(
+			"SELECT `id`, `date`, `author`, `language`, `subject` "
+			"FROM `trilogy_message_board` "
+			"WHERE `category` = {} "
+			"ORDER BY `time` DESC, `id` DESC LIMIT {}",
+			static_cast<int>(category), kMaxRows
+		);
+		auto r = database.QueryDatabase(q);
+		if (!r.Success()) {
+			LogInfo("[TrilogyMB] list char={} category={} query failed: {} "
+			        "(is utils/sql/git/optional/2026_10_18_trilogy_message_board.sql applied?)",
+			        s.char_name, static_cast<int>(category), r.ErrorMessage());
+			send_open();
+			return;
+		}
+
+		int sent = 0;
+		for (auto row = r.begin(); row != r.end(); ++row) {
+			uint8_t out[kTrilogyMBRowSize] = {};
+			const uint32 id = row[0] ? Strings::ToUnsignedInt(row[0]) : 0;
+			memcpy(out, &id, 4);
+			strncpy(reinterpret_cast<char*>(out) + kTrilogyMBDate,
+			        row[1] ? row[1] : "", kTrilogyMBDateLen);
+			strncpy(reinterpret_cast<char*>(out) + kTrilogyMBAuthor,
+			        row[2] ? row[2] : "", kTrilogyMBAuthorMax);
+			out[kTrilogyMBLanguage] = static_cast<uint8_t>(row[3] ? Strings::ToUnsignedInt(row[3]) : 0);
+			strncpy(reinterpret_cast<char*>(out) + kTrilogyMBSubject,
+			        row[4] ? row[4] : "", kTrilogyMBSubjectMax);
+			out[kTrilogyMBCategory] = category;
+			SendApp(addr, port, s, ZN_OP_MBSendMessageToClient, out, kTrilogyMBRowSize);
+			++sent;
+		}
+		send_open();
+
+		LogInfo("[TrilogyMB] list char={} category={} rows={}",
+		        s.char_name, static_cast<int>(category), sent);
+		return;
+	}
+
+	// ---- read -------------------------------------------------------------
+	case ZN_OP_MBRetrieveMessage: {
+		const uint32_t id       = u32_at(4);
+		const uint8_t  category = u8_at(8);
+		if (plen < 9) {
+			LogInfo("[TrilogyMB] read char={} short packet plen={}", s.char_name, plen);
+			send_body("");
+			return;
+		}
+
+		const std::string q = fmt::format(
+			"SELECT `message` FROM `trilogy_message_board` "
+			"WHERE `id` = {} AND `category` = {} LIMIT 1",
+			id, static_cast<int>(category)
+		);
+		auto r = database.QueryDatabase(q);
+		if (!r.Success() || r.RowCount() == 0) {
+			// Erased by someone else since this list was fetched, or no table.
+			LogInfo("[TrilogyMB] read char={} id={} category={} not found{}",
+			        s.char_name, id, static_cast<int>(category),
+			        r.Success() ? "" : fmt::format(" (query failed: {})", r.ErrorMessage()));
+			send_body("");
+			return;
+		}
+
+		auto row = r.begin();
+		std::string body = row[0] ? row[0] : "";
+		if (body.size() > kTrilogyMBMessageMax) body.resize(kTrilogyMBMessageMax);
+		send_body(body);
+
+		LogInfo("[TrilogyMB] read char={} id={} category={} len={}",
+		        s.char_name, id, static_cast<int>(category), body.size());
+		return;
+	}
+
+	// ---- post -------------------------------------------------------------
+	case ZN_OP_MBPostMessage: {
+		if (plen < kTrilogyMBMessage + 1) {
+			LogInfo("[TrilogyMB] post char={} short packet plen={}", s.char_name, plen);
+			return;
+		}
+
+		const uint16_t category = u16_at(kTrilogyMBCategory);
+		const uint16_t language = u16_at(kTrilogyMBLanguage);
+		std::string date        = str_at(kTrilogyMBDate, 16);
+		const std::string subject = str_at(kTrilogyMBSubject, kTrilogyMBSubjectMax);
+		const std::string body    = str_at(kTrilogyMBMessage, kTrilogyMBMessageMax);
+
+		if (category > kTrilogyMBCategoryMax) {
+			LogInfo("[TrilogyMB] post char={} REFUSED category={}", s.char_name, category);
+			return;
+		}
+		if (category == 0 && !tc->GetGM()) {
+			LogInfo("[TrilogyMB] post char={} REFUSED Official without GM flag", s.char_name);
+			tc->Message(Chat::Red, "Only a Guide may post to the Official board.");
+			return;
+		}
+
+		// The list draws the stamp by fixed character position, so anything
+		// but ten digits renders as garbage.  The client always sends its
+		// game clock; if this one did not, stamp the server's.
+		const bool date_ok = date.size() == kTrilogyMBDateLen &&
+		                     std::all_of(date.begin(), date.end(),
+		                                 [](char c) { return c >= '0' && c <= '9'; });
+		if (!date_ok) {
+			TimeOfDay_Struct eqt{};
+			if (zone) zone->zone_time.GetCurrentEQTimeOfDay(std::time(nullptr), &eqt);
+			LogInfo("[TrilogyMB] post char={} client date '{}' unusable, using game time",
+			        s.char_name, date);
+			date = fmt::format("{:02}{:02}{:02}{:02}{:02}", eqt.year % 100, eqt.month,
+			                   eqt.day, eqt.hour, eqt.minute);
+		}
+
+		const std::string q = fmt::format(
+			"INSERT INTO `trilogy_message_board` "
+			"(`category`, `date`, `author`, `char_id`, `language`, `subject`, `message`, `time`) "
+			"VALUES ({}, '{}', '{}', {}, {}, '{}', '{}', UNIX_TIMESTAMP())",
+			category, Strings::Escape(date), Strings::Escape(tc->GetName()),
+			tc->CharacterID(), std::min<uint16_t>(language, 255),
+			Strings::Escape(subject), Strings::Escape(body)
+		);
+		auto r = database.QueryDatabase(q);
+		if (!r.Success()) {
+			LogInfo("[TrilogyMB] post char={} insert failed: {} "
+			        "(is utils/sql/git/optional/2026_10_18_trilogy_message_board.sql applied?)",
+			        s.char_name, r.ErrorMessage());
+			tc->Message(Chat::Red, "Your message could not be posted.");
+			return;
+		}
+
+		// No reply: the client has already sent 0x0821 for this category and
+		// that answer refreshes the list with the new post in it.
+		LogInfo("[TrilogyMB] post char={} id={} category={} language={} date={} "
+		        "subject='{}' len={}",
+		        s.char_name, r.LastInsertedID(), category, language, date,
+		        subject, body.size());
+		return;
+	}
+
+	// ---- erase ------------------------------------------------------------
+	case ZN_OP_MBEraseMessage: {
+		if (plen < 12) {
+			LogInfo("[TrilogyMB] erase char={} short packet plen={}", s.char_name, plen);
+			return;
+		}
+		const uint32_t id       = u32_at(4);
+		const uint32_t category = u32_at(8);
+
+		// The client offers Erase only on the reader's own posts; a GM may
+		// remove anything.  char_id rather than the name, so a rename keeps
+		// ownership.
+		const std::string q = fmt::format(
+			"DELETE FROM `trilogy_message_board` "
+			"WHERE `id` = {} AND `category` = {}{}",
+			id, category,
+			tc->GetGM() ? std::string() : fmt::format(" AND `char_id` = {}", tc->CharacterID())
+		);
+		auto r = database.QueryDatabase(q);
+
+		// No reply, as for post: the client's own 0x0821 follows.
+		LogInfo("[TrilogyMB] erase char={} id={} category={} gm={} {}",
+		        s.char_name, id, category, tc->GetGM() ? 1 : 0,
+		        !r.Success()           ? fmt::format("query failed: {}", r.ErrorMessage()) :
+		        r.RowsAffected() == 0  ? std::string("REFUSED (not found or not the author)") :
+		                                 std::string("deleted"));
+		return;
+	}
+
+	default:
+		return;
+	}
 }
 
 // ============================================================

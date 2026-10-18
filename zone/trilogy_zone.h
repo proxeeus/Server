@@ -869,6 +869,14 @@ private:
 	// 0xc521 /who all friends → Client::FriendsWho (world answers).
 	void HandleFriendsWho(Session& s, const uint8_t* payload, uint32_t plen);
 
+	// Message boards: 0x0821 list, 0x0921 read, 0x0c21 post, 0x0d21 erase,
+	// backed by the trilogy_message_board table.  Every list request is
+	// answered with 0x0e21 and every read with 0x0b21 even on error, because
+	// the client locks every board until one of those arrives.  See the opcode
+	// block at ZN_OP_MBRetrieveMessages in trilogy_zone.cpp.
+	void HandleMessageBoard(const std::string& addr, int port, Session& s, uint16_t opcode,
+	                        const uint8_t* payload, uint32_t plen);
+
 	// Inbound 0x4121 OP_ZoneEntryResend — the client asking for a spawn again.
 	// Resends it if the mob is still there, or answers with a DeleteSpawn if it
 	// is gone.  This is v29c's own repair path for spawn desync; see the
