@@ -42,6 +42,7 @@
 #include "water_map.h"
 #include "npc_scale_manager.h"
 #include "dialogue_window.h"
+#include "playerbot_native.h"
 
 #ifdef _WINDOWS
 	#define snprintf	_snprintf
@@ -697,6 +698,10 @@ void EntityList::AddNPC(NPC *npc, bool send_spawn_packet, bool dont_queue)
 	mob_list.emplace(std::pair<uint16, Mob *>(npc->GetID(), npc));
 
 	entity_list.ScanCloseMobs(npc->close_mobs, npc, true);
+
+	// PlayerBot generation. Before the spawn packet below, so the packet itself
+	// carries the rolled race/name/look; a no-op for every other NPC.
+	playerbot_native.OnSpawn(npc);
 
 	if (parse->HasQuestSub(npc->GetNPCTypeID(), EVENT_SPAWN)) {
 		parse->EventNPC(EVENT_SPAWN, npc, nullptr, "", 0);

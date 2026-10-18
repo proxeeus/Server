@@ -3519,6 +3519,49 @@ void NPC::AIYellForHelp(Mob *sender, Mob *attacker)
 
 }
 
+void NPC::ApplyPlayerBotProfile(
+	uint8 new_level,
+	uint8 new_class,
+	uint16 new_race,
+	uint8 new_gender,
+	uint8 new_face,
+	float new_size,
+	const char *new_name,
+	bool sitting
+)
+{
+	level       = new_level;
+	class_      = new_class;
+	race        = new_race;
+	base_race   = new_race;
+	gender      = new_gender;
+	base_gender = new_gender;
+	luclinface  = new_face;
+	size        = new_size;
+	base_size   = new_size;
+
+	// Same special case SendIllusionPacket applies to PlayerBots: texture 0,
+	// or the body renders the npc_types plate chest under the real gear.
+	texture = 0;
+
+	if (sitting) {
+		_appearance = eaSitting;
+	}
+
+	// Mob::TempName without SendRename: de-digit, make unique, and keep the
+	// de-digited display name every PlayerBot-facing string path reads.
+	if (new_name && new_name[0] != '\0') {
+		char temp_name[64];
+		strn0cpy(temp_name, new_name, sizeof(temp_name));
+		EntityList::RemoveNumbers(temp_name);
+		entity_list.MakeNameUnique(temp_name);
+		SetName(temp_name);
+		clean_name[0] = 0;
+		strn0cpy(playerbot_temp_name, temp_name, sizeof(playerbot_temp_name));
+		EntityList::RemoveNumbers(playerbot_temp_name);
+	}
+}
+
 void NPC::RecalculateSkills()
 {
   	int r;

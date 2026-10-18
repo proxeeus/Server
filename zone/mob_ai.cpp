@@ -33,6 +33,7 @@
 #include "../common/data_verification.h"
 
 #include "bot.h"
+#include "playerbot_native.h"
 #include "../common/repositories/npc_spells_repository.h"
 #include "../common/repositories/npc_spells_entries_repository.h"
 #include "../common/repositories/criteria/content_filter_criteria.h"
@@ -2012,7 +2013,10 @@ void Mob::AI_Event_Engaged(Mob *attacker, bool yell_for_help)
 			//if the target dies before it goes off
 			if (attacker->GetHP() > 0) {
 				if (!CastToNPC()->GetCombatEvent() && GetHP() > 0) {
-					if (parse->HasQuestSub(GetNPCTypeID(), EVENT_COMBAT)) {
+					if (playerbot_native.OnCombat(CastToNPC(), attacker)) {
+						// PlayerBot aggro line spoken natively
+					}
+					else if (parse->HasQuestSub(GetNPCTypeID(), EVENT_COMBAT)) {
 						parse->EventNPC(EVENT_COMBAT, CastToNPC(), attacker, "1", 0);
 					}
 

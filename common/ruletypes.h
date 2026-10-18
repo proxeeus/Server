@@ -802,6 +802,17 @@ RULE_INT(PlayerBots, CorpseDecayTimer, 3600000,"How long do PlayerBot corpses st
 RULE_INT(PlayerBots, InviteLevelGap, 5, "PlayerBots level above or below this value won't be able to be ^invite'd.")
 RULE_BOOL(PlayerBots, PlayerBotsCanBeGuilded, false, "Can PlayerBots be assigned cosmetic guild tags upon spawning?")
 RULE_INT(PlayerBots, PlayerBotsGuildChance, 50, "Chance % of a PlayerBot being guilded.")
+// PlayerBot generation/trading/flavor -- zone/playerbot_native.h; content in
+// the playerbot_* tables.
+RULE_INT(PlayerBots, PlayerBotMaxLevel, 60, "Highest level a PlayerBot can roll.")
+RULE_BOOL(PlayerBots, StaticBotsRandomLevel, true, "PlayerBots with no roambox ('static' bots idling in cities) roll a level from 1 to PlayerBotMaxLevel instead of the zone band.")
+RULE_BOOL(PlayerBots, StaticDungeonLevelCheck, true, "Static PlayerBots in a zone flagged is_dungeon keep the zone band anyway, so no level 3 sits in City of Mist.")
+RULE_INT(PlayerBots, StaticHighLevelChance, 10, "% chance a static PlayerBot in a dungeon rolls from the zone minimum up to PlayerBotMaxLevel.")
+RULE_BOOL(PlayerBots, LoreRaces, true, "Zones listed in playerbot_lore_races favour their home races and classes.")
+RULE_INT(PlayerBots, NonLoreRaceChance, 15, "% chance a PlayerBot in a lore zone ignores the lore tables and rolls any race/class.")
+RULE_INT(PlayerBots, FlavorOOCChance, 10, "% chance a PlayerBot victory/death line goes out on /ooc.")
+RULE_INT(PlayerBots, FlavorShoutChance, 5, "% chance a PlayerBot victory/death line goes out on /shout. The rest are /say.")
+RULE_INT(PlayerBots, ArrivalChatChance, 5, "% chance a PlayerBot says hello when it spawns. Keep it small: a zone boot spawns every PlayerBot at once.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBotChat)
