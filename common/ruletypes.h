@@ -813,6 +813,7 @@ RULE_INT(PlayerBots, NonLoreRaceChance, 15, "% chance a PlayerBot in a lore zone
 RULE_INT(PlayerBots, FlavorOOCChance, 10, "% chance a PlayerBot victory/death line goes out on /ooc.")
 RULE_INT(PlayerBots, FlavorShoutChance, 5, "% chance a PlayerBot victory/death line goes out on /shout. The rest are /say.")
 RULE_INT(PlayerBots, ArrivalChatChance, 5, "% chance a PlayerBot says hello when it spawns. Keep it small: a zone boot spawns every PlayerBot at once.")
+RULE_INT(PlayerBots, ClientNameChance, 50, "% chance a PlayerBot is named by the Trilogy client's own Random Name generator (playerbot_client_name_parts) instead of the playerbot_name_sets generator. 0 = never, 100 = always. playerbot_races.client_name_chance overrides it per race.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(PlayerBotChat)
