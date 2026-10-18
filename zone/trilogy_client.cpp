@@ -7377,6 +7377,40 @@ static inline int8_t clamp_i8_tc(int32_t v) {
 	return static_cast<int8_t>(v < -128 ? -128 : (v > 127 ? 127 : v));
 }
 
+// The language a book is written in (books.language), for the item's
+// book_data.language byte.  The v29c client garbles book text itself by the
+// reader's skill in that language (eqgame.exe 0x419160 -> 0x4aff13: skill 90+
+// reads clean), so Client::ReadBook skips its own garbling for this client.
+// An unknown book reports -1, which the client treats as no language.
+// Non-static: the zone-in inventory loader in trilogy_zone.cpp uses it too.
+int8_t TrilogyBookLanguage(const char* filename)
+{
+	if (!filename || !filename[0]) {
+		return -1;
+	}
+
+	static std::unordered_map<std::string, int8_t> cache;
+	const std::string key = filename;
+	auto cached = cache.find(key);
+	if (cached != cache.end()) {
+		return cached->second;
+	}
+
+	int8_t language = -1;
+	auto r = content_db.QueryDatabase(fmt::format(
+		"SELECT `language` FROM `books` WHERE `name` = '{}' LIMIT 1",
+		Strings::Escape(key)));
+	if (r.Success() && r.RowCount() > 0) {
+		const int v = Strings::ToInt(r.begin()[0]);
+		if (v >= Language::CommonTongue && v <= Language::Unknown27) {
+			language = static_cast<int8_t>(v);
+		}
+	}
+
+	cache.emplace(key, language);
+	return language;
+}
+
 // Non-static: trilogy_zone.cpp's PC-trade stage notifier needs this same
 // serialiser to build a 292-byte ClassicItem_Struct for OP_TradeItemPacket
 // (0xdf20).  Declared in trilogy_zone.cpp via a local extern.
@@ -7460,7 +7494,8 @@ bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 
 	if (it->ItemClass == 2) {
 		ci.book_data.book     = static_cast<int8>(it->Book);
-		ci.book_data.booktype = static_cast<int16>(it->BookType);
+		ci.book_data.booktype = static_cast<int8>(it->BookType);
+		ci.book_data.language = TrilogyBookLanguage(it->Filename);
 		if (it->Filename[0])
 			strncpy(ci.book_data.filename, it->Filename, sizeof(ci.book_data.filename) - 1);
 	} else if (it->ItemClass == 1) {

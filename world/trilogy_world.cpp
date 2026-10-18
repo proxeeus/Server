@@ -46,6 +46,7 @@
 #include "wguild_mgr.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <cstdlib>
 #include <cstdio>
@@ -2113,15 +2114,61 @@ void TrilogyWorldServer::HandleCharCreate(const std::string& addr, int port, Ses
 		}
 	}
 
-	// Set default skills
-	pp.skills[EQ::skills::SkillSwimming]     = RuleI(Skills, SwimmingStartValue);
-	pp.skills[EQ::skills::SkillSenseHeading] = RuleI(Skills, SenseHeadingStartValue);
+	// Starting skills, languages and practices: take the client's.  The payload
+	// is the client's own PlayerProfile (minus the checksum), and the v29c
+	// client fills these in itself at creation — class skills (eqgame.exe
+	// 0x41cb8b), racial skills (0x41d17e), languages plus an INT bonus
+	// (0x41a4fc), 5 practices (0x4d29a7).  EQClassic saves that profile as sent
+	// (ProcessOP_CharacterCreate).  Class skills arrive at 0, never at their
+	// cap; the stock SetClassStartingSkills raises every one to its level-1 cap
+	// (a 2014 match-live change), which left a fresh Warrior at 1H Slashing 10
+	// of 10 with nothing to train.  The stock helpers stay as the fallback for
+	// a payload too short to carry these fields.
+	using TrilogyPP = Trilogy::structs::PlayerProfile_Struct;
+	constexpr uint32_t kChecksum      = sizeof(TrilogyPP::checksum);
+	constexpr uint32_t kPractices     = offsetof(TrilogyPP, trainingpoints) - kChecksum;
+	constexpr uint32_t kLanguages     = offsetof(TrilogyPP, languages) - kChecksum;
+	constexpr uint32_t kLanguageCount = sizeof(TrilogyPP::languages);
+	constexpr uint32_t kSkills        = offsetof(TrilogyPP, skills) - kChecksum;
+	constexpr uint32_t kSkillCount    = sizeof(TrilogyPP::skills);
+	// The client writes these at player-object 0x40 / 0x7e / 0x9c8.
+	static_assert(kPractices == 0x40 && kLanguages == 0x7e && kSkills == 0x9c8,
+	              "Trilogy PlayerProfile no longer matches the client's CharCreate layout");
 
-	// Set racial and class languages and skills
-	Client::SetRacialLanguages(&pp);
-	Client::SetRaceStartingSkills(&pp);
-	Client::SetClassStartingSkills(&pp, static_cast<uint8>(EQ::versions::ClientVersion::Trilogy));
-	Client::SetClassLanguages(&pp);
+	if (plen >= kSkills + kSkillCount) {
+		// 0xFE = learnable at a later level, 0xFF = never.  EQEmu has no
+		// untrained marker, so both are stored as 0.  The client's largest
+		// starting value is 100 (Iksar Swimming).
+		std::string trained;
+		for (uint32_t i = 0; i < kSkillCount; ++i) {
+			const uint8_t v = payload[kSkills + i];
+			pp.skills[i] = (v >= 0xFE) ? 0 : std::min<uint8_t>(v, 100);
+			if (pp.skills[i]) {
+				trained += fmt::format(" {}={}", i, pp.skills[i]);
+			}
+		}
+
+		for (uint32_t i = 0; i < kLanguageCount; ++i) {
+			pp.languages[i] = std::min<uint8_t>(payload[kLanguages + i], Language::MaxValue);
+		}
+
+		const int16_t practices = *reinterpret_cast<const int16_t*>(payload + kPractices);
+		pp.points = (practices >= 0 && practices <= 5) ? practices : 5;
+
+		LogInfo("[TrilogyWorld] CharCreate | client starting skills [{} ] practices [{}]",
+		        trained, pp.points);
+	} else {
+		pp.skills[EQ::skills::SkillSwimming]     = RuleI(Skills, SwimmingStartValue);
+		pp.skills[EQ::skills::SkillSenseHeading] = RuleI(Skills, SenseHeadingStartValue);
+
+		Client::SetRacialLanguages(&pp);
+		Client::SetRaceStartingSkills(&pp);
+		Client::SetClassStartingSkills(&pp, static_cast<uint8>(EQ::versions::ClientVersion::Trilogy));
+		Client::SetClassLanguages(&pp);
+
+		LogInfo("[TrilogyWorld] CharCreate | payload {} bytes carries no skills — stock starting skills used",
+		        plen);
+	}
 
 	// Build and persist starting inventory
 	EQ::InventoryProfile inv;
