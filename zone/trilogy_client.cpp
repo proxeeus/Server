@@ -6493,6 +6493,24 @@ static void BuildTrilogyDoorWire(const char* name,
 	*reinterpret_cast<float*>(out + 32) = incline;
 	// out+36 padding stays 0
 	out[40] = doorid;
+
+	// v29c treats EVERY opentype-55 door as a message board: its click
+	// handler (eqgame.exe 0x41621b) sends 0x0821 for any door with that byte.
+	// Only BBBOARD is one.  The other opentype-55 rows (crates, barrels,
+	// tents, The Hole debris, provinggrounds walls — EQClassic's own data
+	// has most of them too) are props, and on v29c clicking one opened a
+	// board.  Send those as 56 instead.
+	//
+	// 56 is the only value that changes nothing else.  Every read of the
+	// opentype in the client's door code handles 55 and 56 identically
+	// (no click sent 0x4be44e, no sound 0x4bd6a9, default timer 0x4bddf1,
+	// generic state change 0x4bdf41) except the board test above and one
+	// key-on-cursor packet (0x4dcf74 sends 0x0f21, which we do not handle).
+	// NOT 54: that one calls t3dSetActorInvisible on the model at spawn
+	// (0x4bdbcf), which would make every prop vanish.  The server-side door
+	// keeps its DB opentype; this is wire-only.
+	if (opentype == 55 && strncasecmp(name, "BBBOARD", 7) != 0)
+		opentype = 56;
 	out[41] = opentype;
 
 	const bool is_elevator =
