@@ -4674,10 +4674,16 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		// melee1 texture=4 and render with bow visuals).  To swap models, change
 		// the literal here and at the matching site in
 		// trilogy_client.cpp:BuildClassicItemFromInst.
+		// Other hand-held items get a classic model when theirs is one v29c
+		// lacks — the client draws the player's own hands from this string
+		// (TrilogyItemIDFile; the matching site is BuildClassicItemFromInst).
 		const int itemtype_val = row[35] ? Strings::ToInt(row[35]) : 0;
 		const bool is_bow = itemtype_val == static_cast<int>(EQ::item::ItemType::ItemTypeBow);
-		const char* src_idfile = is_bow ? "IT4" : (row[5] ? row[5] : "");
-		strncpy(ci.idfile, src_idfile, sizeof(ci.idfile) - 1);
+		const std::string src_idfile = is_bow
+		    ? std::string("IT4")
+		    : TrilogyItemIDFile(row[5] ? row[5] : "", static_cast<uint32_t>(item_id), itemtype_val,
+		                        row[12] ? Strings::ToUnsignedInt(row[12]) : 0u);
+		strncpy(ci.idfile, src_idfile.c_str(), sizeof(ci.idfile) - 1);
 
 		// Lore prefix.  EQClassic/Trilogy clients use the first character of
 		// the Lore string as a flag marker (confirmed in EQClassic source):
@@ -5391,6 +5397,9 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		sp.unknown163[6] = static_cast<int8_t>(tc->GetLuclinFace());
 		for (int mi = 0; mi < EQ::textures::materialCount; ++mi)
 			sp.equipment[mi] = static_cast<int8_t>(tc->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
+		// Weapon slots carry model numbers, which v29c takes as one byte.
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(tc, EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(tc, EQ::textures::weaponSecondary));
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi)
 			sp.equipcolors[mi] = static_cast<int32_t>(
 				Trilogy::NormalizeTintColor(tc->GetEquipmentColor(static_cast<uint8_t>(mi))));
@@ -13962,8 +13971,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 						Trilogy::NormalizeTintColor(npc->GetEquipmentColor(static_cast<uint8_t>(mi))));
 				}
 				// Weapon slots (Melee1, Melee2) — use equipped item material as-is
-				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponPrimary));
+				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponSecondary));
 				// Face / hair appearance bytes — in Spawn_Struct these sit in unknown163[0..6],
 				// after name+Surname (mirrors EQClassic offsets 207–213 after name+lastname)
 				sp.unknown163[0] = static_cast<int8_t>(npc->GetHairColor());
@@ -13978,8 +13987,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 				sp.npc_armor_graphic = static_cast<int8_t>(tex);
 				sp.npc_helm_graphic  = static_cast<int8_t>(helmtex);
 				// Weapon slots from equipped items
-				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+				sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponPrimary));
+				sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponSecondary));
 			}
 		}
 		sp.guildrank = static_cast<int8_t>(0xFF);
@@ -14080,8 +14089,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 			sp.equipcolors[mi] = static_cast<int32_t>(
 				Trilogy::NormalizeTintColor(bot->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
-		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(bot->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(bot, EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(bot, EQ::textures::weaponSecondary));
 
 		// Seed v29c-client-known-material model from the spawn struct.
 		if (s.trilogy_client) s.trilogy_client->SeedKnownMaterials(
@@ -14158,6 +14167,9 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 		for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
 			sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 		}
+		// Weapon slots carry model numbers, which v29c takes as one byte.
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(c, EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(c, EQ::textures::weaponSecondary));
 		for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 			sp.equipcolors[mi] = static_cast<int32_t>(
 				Trilogy::NormalizeTintColor(c->GetEquipmentColor(static_cast<uint8_t>(mi))));
@@ -14214,8 +14226,8 @@ void TrilogyZoneServer::SendZoneSpawns(const std::string& addr, int port, Sessio
 				sp.equipcolors[mi] = static_cast<int32_t>(
 					Trilogy::NormalizeTintColor(corpse->GetEquipmentColor(static_cast<uint8_t>(mi))));
 			}
-			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+			sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(corpse, EQ::textures::weaponPrimary));
+			sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(corpse, EQ::textures::weaponSecondary));
 		} else {
 			const uint8_t tex     = corpse->GetTexture();
 			const uint8_t helmtex = corpse->GetHelmTexture();
@@ -14321,6 +14333,9 @@ void TrilogyZoneServer::SendPlayerSpawnPermanent(uint64_t session_key, Client* c
 	for (int mi = 0; mi < EQ::textures::materialCount; ++mi) {
 		sp.equipment[mi] = static_cast<int8_t>(c->GetEquipmentMaterial(static_cast<uint8_t>(mi)));
 	}
+	// Weapon slots carry model numbers, which v29c takes as one byte.
+	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(c, EQ::textures::weaponPrimary));
+	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(c, EQ::textures::weaponSecondary));
 	for (int mi = 0; mi < EQ::textures::weaponPrimary; ++mi) {
 		sp.equipcolors[mi] = static_cast<int32_t>(
 			Trilogy::NormalizeTintColor(c->GetEquipmentColor(static_cast<uint8_t>(mi))));
@@ -14453,8 +14468,8 @@ void TrilogyZoneServer::SendPlayerbotSpawnPermanent(uint64_t session_key, NPC* n
 		sp.equipcolors[mi] = static_cast<int32_t>(
 			Trilogy::NormalizeTintColor(npc->GetEquipmentColor(static_cast<uint8_t>(mi))));
 	}
-	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(npc->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+	sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponPrimary));
+	sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(npc, EQ::textures::weaponSecondary));
 
 	// Seed v29c-client-known-material model from the spawn struct.
 	if (auto sit = m_sessions.find(session_key); sit != m_sessions.end() && sit->second.trilogy_client) {
@@ -14539,8 +14554,8 @@ void TrilogyZoneServer::SendCorpseSpawnPermanent(uint64_t session_key, Corpse* c
 			sp.equipcolors[mi] = static_cast<int32_t>(
 				Trilogy::NormalizeTintColor(corpse->GetEquipmentColor(static_cast<uint8_t>(mi))));
 		}
-		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponPrimary));
-		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(corpse->GetEquipmentMaterial(EQ::textures::weaponSecondary));
+		sp.equipment[EQ::textures::weaponPrimary]   = static_cast<int8_t>(TrilogyWeaponGraphic(corpse, EQ::textures::weaponPrimary));
+		sp.equipment[EQ::textures::weaponSecondary] = static_cast<int8_t>(TrilogyWeaponGraphic(corpse, EQ::textures::weaponSecondary));
 	} else {
 		const uint8_t tex     = corpse->GetTexture();
 		const uint8_t helmtex = corpse->GetHelmTexture();
@@ -16956,12 +16971,15 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 		safe_delete(outapp);
 
 		// Deliver to the moving player's own v29c session so they see their
-		// own swap immediately.
+		// own swap immediately.  The cache and the broadcast above keep the
+		// server's model number (Titanium shows it as is); only these v29c
+		// bytes get the one-byte classic model.
+		const uint8_t graphic = TrilogyWeaponGraphic(tc, vs.material_slot, material);
 		using TrilWC = Trilogy::structs::WearChange_Struct;
 		TrilWC wc{};
 		wc.spawn_id     = static_cast<int32_t>(tc->GetPlayerSpawnId());
 		wc.wear_slot_id = static_cast<int8_t>(vs.material_slot);
-		wc.slot_graphic = static_cast<int8_t>(material & 0xFF);
+		wc.slot_graphic = static_cast<int8_t>(graphic);
 		wc.sub_op       = 0;
 		wc.color        = static_cast<int32_t>(color);
 		wc.wc_unknown3  = 0;
@@ -16973,7 +16991,7 @@ void TrilogyZoneServer::RefreshWornSlotsAfterMove(Session& s, int from_db, int t
 		tc->RecordKnownMaterial(
 			static_cast<uint16_t>(tc->GetPlayerSpawnId()),
 			static_cast<uint8_t>(vs.material_slot),
-			static_cast<uint8_t>(material & 0xFF));
+			graphic);
 	}
 }
 

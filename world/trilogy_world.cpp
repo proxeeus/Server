@@ -29,6 +29,7 @@
 #include "../common/eqemu_logsys.h"
 #include "../common/eq_packet_structs.h"
 #include "../common/patches/trilogy_structs.h"
+#include "../common/patches/trilogy_weapon_models.h"
 #include "../common/strings.h"
 
 #ifndef _WINDOWS
@@ -822,8 +823,11 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 		// equip[7..8] = weapon model number: the digits in items.idfile (e.g. "IT63" → 63),
 		// same source the in-zone OP_WearChange path uses (Mob::GetEquipmentMaterial).
 		// items.material is 0 for weapons so it can't be used there.
+		// i.id / i.itemtype feed Trilogy::WeaponModels::Resolve (the weapon
+		// model v29c can show, same as the in-zone spawn and WearChange paths).
+		Trilogy::WeaponModels::EnsureLoaded(content_db);
 		auto eq = database.QueryDatabase(fmt::format(
-			"SELECT inv.`slotid`, i.`material`, i.`idfile`, i.`color` "
+			"SELECT inv.`slotid`, i.`material`, i.`idfile`, i.`color`, i.`id`, i.`itemtype` "
 			"FROM `inventory` inv "
 			"JOIN `items` i ON i.`id` = inv.`itemid` "
 			"WHERE inv.`charid` = {} AND inv.`slotid` IN (2,7,10,12,13,14,17,18,19)",
@@ -878,8 +882,11 @@ void TrilogyWorldServer::SendCharSelect(const std::string& addr, int port, Sessi
 				if (strlen(idfile) > 2 && Strings::IsNumber(idfile + 2)) {
 					model = Strings::ToUnsignedInt(idfile + 2);
 				}
-				cs.equip[slot][eqidx] = static_cast<int8_t>(model & 0xFFu);
-				s.cs_weapon_model[slot][eqidx - 7] = static_cast<int8_t>(model & 0xFFu);
+				const uint32_t item_id   = erow[4] ? Strings::ToUnsignedInt(erow[4]) : 0;
+				const int      item_type = erow[5] ? Strings::ToInt(erow[5]) : -1;
+				const uint8_t  graphic   = Trilogy::WeaponModels::Resolve(model, item_id, item_type);
+				cs.equip[slot][eqidx] = static_cast<int8_t>(graphic);
+				s.cs_weapon_model[slot][eqidx - 7] = static_cast<int8_t>(graphic);
 			} else {
 				cs.equip[slot][eqidx] = static_cast<int8_t>(mat);
 			}

@@ -91,6 +91,22 @@ private:
 };
 
 // ============================================================
+// TrilogyWeaponGraphic — the weapon model byte to put on the v29c wire for
+// `mob`'s primary or secondary hand (Spawn_Struct equipment[7..8],
+// WearChange_Struct slot_graphic).  `material` is what the server would
+// display, GetEquipmentMaterial(material_slot) when not given.  A model v29c
+// has passes through unchanged; anything else goes through
+// Trilogy::WeaponModels::Resolve (common/patches/trilogy_weapon_models.h),
+// using the item in that hand when it is where the number came from.
+// `mob` may be null.  Weapon slots only — armor materials are not models.
+// ============================================================
+uint8_t TrilogyWeaponGraphic(const Mob* mob, uint8_t material_slot);
+uint8_t TrilogyWeaponGraphic(const Mob* mob, uint8_t material_slot, uint32_t material);
+
+// ClassicItem_Struct.idfile for an item (see Trilogy::WeaponModels::ResolveIDFile).
+std::string TrilogyItemIDFile(const char* idfile, uint32_t item_id, int item_type, uint32_t slots);
+
+// ============================================================
 // TrilogyClient — a proper Client subclass backed by an EQNetwork
 // UDP session managed by TrilogyZoneServer.
 //

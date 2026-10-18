@@ -114,6 +114,7 @@ SET(common_sources
     patches/trilogy.cpp
     patches/trilogy_crypto.cpp
     patches/trilogy_limits.cpp
+    patches/trilogy_weapon_models.cpp
     patches/sod.cpp
     patches/sod_limits.cpp
     patches/sof.cpp
@@ -663,6 +664,7 @@ SET(common_headers
     patches/trilogy_limits.h
     patches/trilogy_ops.h
     patches/trilogy_structs.h
+    patches/trilogy_weapon_models.h
     patches/sod.h
     patches/sod_limits.h
     patches/sod_ops.h
@@ -754,6 +756,7 @@ SOURCE_GROUP(Patches FILES
     patches/trilogy_limits.h
     patches/trilogy_ops.h
     patches/trilogy_structs.h
+    patches/trilogy_weapon_models.h
     patches/sod.h
     patches/sod_limits.h
     patches/sod_ops.h
@@ -785,6 +788,7 @@ SOURCE_GROUP(Patches FILES
     patches/trilogy.cpp
     patches/trilogy_crypto.cpp
     patches/trilogy_limits.cpp
+    patches/trilogy_weapon_models.cpp
     patches/sod.cpp
     patches/sod_limits.cpp
     patches/sof.cpp
