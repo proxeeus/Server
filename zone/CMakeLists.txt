@@ -14,6 +14,7 @@ SET(zone_sources
     bot_raid.cpp
     bot_command.cpp
     bot_database.cpp
+    bot_tactics.cpp
     botspellsai.cpp
     cheat_manager.cpp
     client.cpp
@@ -186,6 +187,7 @@ SET(zone_headers
     bot_command.h
     bot_database.h
     bot_structs.h
+    bot_tactics.h
     cheat_manager.h
     client.h
     client_packet.h

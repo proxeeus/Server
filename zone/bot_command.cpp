@@ -1151,6 +1151,7 @@ int bot_command_init(void)
 		bot_command_add("removefromroster", "Removes a bot from your raid roster.", 0, bot_command_removefromroster) ||
 		bot_command_add("raidshow", "Prints the current raid roster and group composition to chat (text-only; primarily for Trilogy clients with no raid UI).", 0, bot_command_raid_show) ||
 		bot_command_add("rosterlist", "Prints your current raid roster (bots pre-selected for ^createraid) to chat.", 0, bot_command_roster_list) ||
+		bot_command_add("tactics", "Shows your group or raid's automatic plan (main tank, off-tanks, CH chain). Overrides: mt <name|auto>, chain <seconds|auto>, on|off.", AccountStatus::Player, bot_command_tactics) ||
 		bot_command_add("spellshow", "Text-only mirror of ^spells for clients without saylinks (Trilogy). Args: [min_level] [name-filter].", AccountStatus::Player, bot_command_spell_show) ||
 		bot_command_add("ssshow", "Text-only mirror of ^spellsettings; numbers each setting for use with ^sstoggle / ^ssdel.", AccountStatus::Player, bot_command_ss_show) ||
 		bot_command_add("sstoggle", "Toggle a spell setting by its ^ssshow row number. Args: <row> [on|off] (no arg = flip).", AccountStatus::Player, bot_command_ss_toggle) ||
@@ -1992,4 +1993,5 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/rdefensive.cpp"
 #include "bot_commands/createraid.cpp"
 #include "bot_commands/raid_show.cpp"
+#include "bot_commands/tactics.cpp"
 #include "bot_commands/spell_show.cpp"

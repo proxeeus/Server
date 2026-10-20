@@ -37,6 +37,8 @@
 
 #include <sstream>
 
+struct BotTacticsPlan; // bot_tactics.h
+
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT = 184; // as DSq value (~13.565 units)
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT_MAX = 2500; // as DSq value (50 units)
 
@@ -908,6 +910,19 @@ public:
 	void ClearCastRangeIntent();
 	bool IsHoldingCastPosition() const { return m_cast_position_hold_ms > Timer::GetCurrentTime(); }
 
+	// Tactics (bot_tactics.cpp, docs/BOT_AI_REWORK.md phase 2+): the shared
+	// plan of this bot's raid or group -- main tank, off-tanks, assist
+	// target, CH chain -- and what this bot does with it.
+	const BotTacticsPlan* GetTacticsPlan() const;
+	void RefreshTactics(Raid* raid, Group* group);
+	bool TacticsReservesCasting() const;   // in a running CH chain: no other casts
+	bool TacticsChainCheck();              // our turn in the chain: cast it
+	bool TacticsHeal();                    // healer triage over the whole unit
+	bool TryTacticsAssist(Client* leash_owner, float leash_distance);
+	Mob* TacticsRetarget(Mob* tar);
+	void TacticsTankChecks(Mob* tar);
+	void TryDefensiveDiscipline();
+
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
 
@@ -992,6 +1007,8 @@ private:
 	uint32 m_cast_range_expire_ms  = 0;
 	bool   m_cast_range_moving     = false;
 	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
+
+	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

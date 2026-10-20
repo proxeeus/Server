@@ -1440,6 +1440,12 @@ bool Bot::AI_PursueCastCheck() {
 bool Bot::AI_IdleCastCheck() {
 	bool result = false;
 
+	// A cleric on a running CH chain casts nothing else: a 3s heal at the
+	// wrong moment is a missed turn. Its turn comes from TacticsChainCheck.
+	if (TacticsReservesCasting()) {
+		return false;
+	}
+
 	if (AIautocastspell_timer->Check(false)) {
 		LogAIDetail("Bot Non-Engaged autocast check triggered: [{}]", GetCleanName());
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
@@ -1609,6 +1615,11 @@ bool Bot::AI_IdleCastCheck() {
 bool Bot::AI_EngagedCastCheck() {
 	bool result = false;
 	bool failedToCast = false;
+
+	// See AI_IdleCastCheck: chain clerics only cast their turn.
+	if (TacticsReservesCasting()) {
+		return false;
+	}
 
 	if (GetTarget() && AIautocastspell_timer->Check(false)) {
 

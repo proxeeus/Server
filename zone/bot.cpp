@@ -23,6 +23,7 @@
 #include "quest_parser_collection.h"
 #include "lua_parser.h"
 #include "playerbot_chat.h"
+#include "bot_tactics.h"
 #include "../common/repositories/bot_inventories_repository.h"
 #include "../common/repositories/bot_spell_settings_repository.h"
 #include "../common/repositories/bot_starting_items_repository.h"
@@ -2155,6 +2156,9 @@ void Bot::AI_Process()
 		return;
 	}
 
+	// The shared plan of our raid or group (bot_tactics.cpp)
+	RefreshTactics(raid, bot_group);
+
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 
 	if (!leash_owner) {
@@ -2185,6 +2189,12 @@ void Bot::AI_Process()
 // HEAL ROTATION CASTING CHECKS
 
 	HealRotationChecks();
+
+// TACTICS: OUR TURN IN THE CH CHAIN
+
+	if (TacticsChainCheck()) {
+		return;
+	}
 
 // MOVE-TO-CAST (a cast was skipped for range last cycle: go get in range)
 
@@ -2243,6 +2253,9 @@ void Bot::AI_Process()
 		if (!tar) {
 			return;
 		}
+
+		// Off-tanks hold their add; the rest leave held adds for the main target
+		tar = TacticsRetarget(tar);
 
 // ATTACKING FLAG (HATE VALIDATION)
 
@@ -2314,6 +2327,9 @@ void Bot::AI_Process()
 					return;
 				}
 			}
+
+			// Tanks: taunt only what we hold; defensive discipline when it counts
+			TacticsTankChecks(tar);
 
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
@@ -2430,6 +2446,12 @@ void Bot::AI_Process()
 
 			SetPullingFlag(false);
 			SetReturningFlag(false);
+		}
+
+// TACTICS: ASSIST (join the tank's fight, or hold our add, without ^attack)
+
+		if (TryTacticsAssist(leash_owner, leash_distance)) {
+			return;
 		}
 
 // AUTO DEFEND
@@ -8111,6 +8133,13 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 	if (iSpellTypes == SpellType_Heal)	{
 		if (botCasterClass == Class::Cleric || botCasterClass == Class::Druid || botCasterClass == Class::Shaman) {
+			// With a shared plan, score the whole unit (tanks from every raid
+			// group included) instead of healing the first slot of our own
+			// group under a threshold. bot_tactics.cpp.
+			if (caster->GetTacticsPlan()) {
+				return caster->TacticsHeal();
+			}
+
 			if (caster->IsRaidGrouped()) {
 				Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 				uint32 gid = raid->GetGroup(caster->GetName());
