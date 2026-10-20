@@ -46,6 +46,9 @@
  *   - crowd control: mezzers pick from the plan's adds and claim them; when
  *     the unit can mez (a human enchanter counts), off-tanks give a fresh
  *     add a few seconds before grabbing it, so they do not break the mez.
+ *   - camp: the spot of the first fight. Bots stand on a ring around it
+ *     between fights, hold it while the player pulls, and the main tank
+ *     turns the mob so its back is to the group.
  *
  * The plan never orders a human: it plans around whatever the player plays.
  * Plans live in a node-based map, so a plan pointer stays valid until the
@@ -55,6 +58,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <glm/vec3.hpp>
 
 #include "../common/types.h"
 
@@ -83,6 +88,18 @@ struct BotTacticsPlan {
 	// Mez claims: add id -> (caster id, until). Two enchanters must not
 	// both spend a cast on the same add while the first mez is in the air.
 	std::unordered_map<uint16, std::pair<uint16, uint32>> mez_claims;
+
+	// Camp (phase 4). Made where the player stands when the group's first
+	// fight at a spot starts. The player walking out of it and getting a mob
+	// within kCampGraceMs is a pull: bots hold camp until the mob arrives.
+	// Walking out without a fight breaks camp: bots follow again.
+	bool                camp_set       = false;
+	glm::vec3           camp           = glm::vec3(0.0f);
+	uint16              camp_leader_id = 0;      // the player the camp follows
+	uint32              camp_left_ms   = 0;      // leader walked out of camp, 0 = in camp
+	bool                pull_active    = false;  // leader fighting out there, mob not here yet
+	uint32              pull_start_ms  = 0;
+	std::vector<uint16> camp_slots;              // bot ids, in ring order
 
 	// Complete heal chain
 	std::vector<uint16> chain;                     // cleric ids, in casting order

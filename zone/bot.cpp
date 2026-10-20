@@ -2180,6 +2180,13 @@ void Bot::AI_Process()
 	float lo_distance = DistanceSquared(m_Position, leash_owner->GetPosition());
 	float leash_distance = RuleR(Bots, LeashDistance);
 
+	// With a camp, our place on it is our follow point: idle casting,
+	// meditating and the out-of-combat cast interrupt all measure from it.
+	glm::vec3 camp_slot;
+	if (TacticsCampSlot(camp_slot)) {
+		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
+	}
+
 // CURRENTLY CASTING CHECKS
 
 	if (CheckIfCasting(fm_distance)) {
@@ -2331,6 +2338,11 @@ void Bot::AI_Process()
 			// Tanks: taunt only what we hold; defensive discipline when it counts
 			TacticsTankChecks(tar);
 
+			// Main tank at camp: turn the mob's back to the group
+			if (TacticsTankPositioning(tar, p_item, s_item)) {
+				return;
+			}
+
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
 			{
@@ -2454,9 +2466,9 @@ void Bot::AI_Process()
 			return;
 		}
 
-// AUTO DEFEND
+// AUTO DEFEND (not while the player pulls: the camp waits for the mob)
 
-		if (TryAutoDefend(bot_owner, leash_distance) ) {
+		if (!TacticsPullActive() && TryAutoDefend(bot_owner, leash_distance) ) {
 			return;
 		}
 
@@ -2596,15 +2608,24 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 	}
 
 	if (AI_movement_timer->Check() && (!IsCasting() || GetClass() == Class::Bard)) {
+		// At camp each bot has its own place on a ring around it; it stands
+		// there rather than trailing the player around (bot_tactics.cpp).
+		glm::vec3 camp_slot;
+		const bool at_camp = !GUARDING && TacticsCampSlot(camp_slot);
+
 		if (GUARDING) {
 			Goal = GetGuardPoint();
+		}
+		else if (at_camp) {
+			Goal = camp_slot;
 		}
 		else {
 			Goal = follow_mob->GetPosition();
 		}
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
+		const float arrive_distance = at_camp ? 9.0f : static_cast<float>(GetFollowDistance()); // a place is 3 units, not follow range
 
-		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > GetFollowDistance())) {
+		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {
 
 			if (!IsRooted()) {
 				if (rest_timer.Enabled()) {

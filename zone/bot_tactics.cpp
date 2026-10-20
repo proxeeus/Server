@@ -23,6 +23,7 @@
 #include "bot_tactics.h"
 #include "entity.h"
 #include "groups.h"
+#include "position.h"
 #include "raids.h"
 
 #include "../common/classes.h"
@@ -49,6 +50,11 @@ constexpr uint32 kAssistDelayMs    = 3000;  // let the tank get a hold before pi
 constexpr float  kAssistHPRatio    = 97.0f; // ...unless it is already being hurt
 constexpr uint32 kOffTankWaitMs    = 5000;  // a fresh add is the mezzer's first
 constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
+constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
+constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
+constexpr uint32 kCampGraceMs      = 10000; // out of camp this long, no fight = moving on
+constexpr uint32 kPullRescueMs     = 20000; // a pull this long has gone wrong
+constexpr uint32 kTankRepositionMs = 3000;  // tank turns the mob at most this often
 
 bool IsAlive(Mob* m)
 {
@@ -419,6 +425,96 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		p.assist_since_ms = now;
 		if (assist) {
 			LogInfo("[BotTactics] unit [{:#x}] assist [{}]", p.key, assist->GetCleanName());
+		}
+	}
+
+	// ---- camp ----
+
+	// The camp follows the group leader when that is a player, else the
+	// first player of the unit.
+	Mob* leader = nullptr;
+	if (group && group->GetLeader() && group->GetLeader()->IsClient()) {
+		leader = group->GetLeader();
+	}
+	for (Mob* m : mobs) {
+		if (leader) {
+			break;
+		}
+		if (m->IsClient()) {
+			leader = m;
+		}
+	}
+	p.camp_leader_id = leader ? leader->GetID() : 0;
+
+	if (leader && IsAlive(leader)) {
+		const glm::vec3 lpos(leader->GetPosition());
+
+		// The first fight at a spot makes it camp.
+		if (!p.camp_set && assist && !old_assist) {
+			p.camp_set     = true;
+			p.camp         = lpos;
+			p.camp_left_ms = 0;
+			p.pull_active  = false;
+			LogInfo("[BotTactics] unit [{:#x}] camp made at [{:.0f}, {:.0f}, {:.0f}]", p.key, lpos.x, lpos.y, lpos.z);
+		}
+
+		if (p.camp_set) {
+			const bool leader_in_camp = DistanceSquaredNoZ(lpos, p.camp) <= kCampRadius * kCampRadius;
+
+			if (!assist) {
+				p.pull_active = false;
+
+				if (leader_in_camp) {
+					p.camp_left_ms = 0;
+				}
+				else if (!p.camp_left_ms) {
+					p.camp_left_ms = now;
+				}
+				else if (now - p.camp_left_ms > kCampGraceMs) {
+					// Walked off and found nothing to fight: moving on.
+					LogInfo("[BotTactics] unit [{:#x}] camp broken: [{}] moved on", p.key, leader->GetCleanName());
+					p.camp_set     = false;
+					p.camp_left_ms = 0;
+				}
+			}
+			else {
+				p.camp_left_ms = 0;
+
+				// The leader is out there fighting and the mob is not here
+				// yet: a pull. The camp waits for it.
+				const bool mob_in_camp = DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) <= kCampArriveRadius * kCampArriveRadius;
+				bool       pull        = !leader_in_camp && !mob_in_camp;
+
+				if (pull && !p.pull_active) {
+					p.pull_start_ms = now;
+					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] by [{}]: holding camp", p.key, assist->GetCleanName(), leader->GetCleanName());
+				}
+
+				// A pull gone wrong (taking too long, or the puller is hurt):
+				// go help, and fight wherever this is.
+				if (pull && p.pull_active && (now - p.pull_start_ms > kPullRescueMs || leader->GetHPRatio() < 50.0f)) {
+					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help, camp broken", p.key, assist->GetCleanName());
+					pull       = false;
+					p.camp_set = false;
+				}
+				else if (!pull && p.pull_active) {
+					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] arrived", p.key, assist->GetCleanName());
+				}
+
+				p.pull_active = pull;
+			}
+		}
+	}
+	else {
+		p.pull_active = false; // nobody to hold camp for; the camp itself stays
+	}
+
+	p.camp_slots.clear();
+	if (p.camp_set) {
+		for (Mob* m : mobs) {
+			if (m->IsBot() && IsAlive(m)) {
+				p.camp_slots.push_back(m->GetID());
+			}
 		}
 	}
 
@@ -907,8 +1003,11 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 		return false;
 	}
 
-	// ^pull in progress: the camp waits until the puller is back.
+	// ^pull in progress, or the player pulling: the camp waits for the mob.
 	if (Mob* owner = GetBotOwner(); owner && owner->IsClient() && owner->CastToClient()->GetBotPulling()) {
+		return false;
+	}
+	if (p->pull_active) {
 		return false;
 	}
 
@@ -1005,6 +1104,104 @@ void Bot::TacticsTankChecks(Mob* tar)
 	if (holding && (tar->IsRaidTarget() || GetHPRatio() < 40.0f)) {
 		TryDefensiveDiscipline();
 	}
+}
+
+bool Bot::TacticsPullActive() const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	return p && p->pull_active;
+}
+
+bool Bot::TacticsCampSlot(glm::vec3& out)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->camp_set || GetGuardFlag()) {
+		return false;
+	}
+
+	const auto it = std::find(p->camp_slots.begin(), p->camp_slots.end(), GetID());
+	if (it == p->camp_slots.end()) {
+		return false;
+	}
+
+	const uint32 idx = static_cast<uint32>(it - p->camp_slots.begin());
+	const uint32 n   = static_cast<uint32>(p->camp_slots.size());
+	const uint32 sig = (idx << 16) | n;
+
+	// TryMoveAlong ray-casts the zone map: only redo it when the camp or our
+	// place on the ring changes.
+	if (sig != m_camp_slot_sig || DistanceSquared(p->camp, m_camp_slot_camp) > 1.0f) {
+		const float     radius  = std::clamp(6.0f + 1.5f * n, 8.0f, 30.0f);
+		const float     heading = 512.0f * idx / n;
+		const glm::vec4 slot    = TryMoveAlong(glm::vec4(p->camp, 0.0f), radius, heading);
+
+		m_camp_slot      = glm::vec3(slot);
+		m_camp_slot_camp = p->camp;
+		m_camp_slot_sig  = sig;
+	}
+
+	out = m_camp_slot;
+	return true;
+}
+
+bool Bot::TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (
+		!p ||
+		!p->camp_set ||
+		!tar ||
+		!p->IsMainTank(GetID()) ||
+		tar->GetTarget() != this || // it is not facing us: moving will not turn it
+		tar->IsPermaRooted() ||      // handled by the rooted-mob positioning
+		IsRooted()
+	) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_tank_reposition_ms) {
+		return false;
+	}
+
+	// Only at camp: a fight out in the open has no group behind it to protect.
+	if (DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), p->camp) > kCampArriveRadius * kCampArriveRadius) {
+		return false;
+	}
+
+	// The mob faces us. Standing on the far side of it from camp turns its
+	// back (breath, rampage, ripostes) to the group.
+	const float to_camp = tar->CalculateHeadingToTarget(p->camp.x, p->camp.y);
+	const float to_me   = tar->CalculateHeadingToTarget(GetX(), GetY());
+	float       diff    = std::fabs(to_me - to_camp);
+	if (diff > 256.0f) {
+		diff = 512.0f - diff;
+	}
+	if (diff >= 192.0f) {
+		return false; // within 45 degrees of straight across: good enough
+	}
+
+	m_tank_reposition_ms = now + kTankRepositionMs;
+
+	float melee_distance_max = 0.0f;
+	float melee_distance     = 0.0f;
+	CalcMeleeDistances(tar, p_item, s_item, false, false, melee_distance_max, melee_distance);
+
+	const float     dist  = std::max(3.0f, sqrtf(melee_distance) * 0.8f);
+	const glm::vec4 start(tar->GetX(), tar->GetY(), tar->GetZ(), FixHeading(to_camp + 256.0f));
+	glm::vec4       dest  = TryMoveAlong(start, dist, 0.0f);
+
+	// Same ledge/bridge guard as the behind-the-mob positioning.
+	const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
+	const float dz         = dest.z - expected_z;
+	if (dz <= -15.0f || dz >= 15.0f) {
+		return false;
+	}
+
+	dest.w = to_camp; // from out there, the mob lies toward camp: face it
+	Teleport(dest);
+	LogInfo("[BotTactics] [{}] turns [{}] away from camp", GetCleanName(), tar->GetCleanName());
+	return true;
 }
 
 void Bot::TryDefensiveDiscipline()

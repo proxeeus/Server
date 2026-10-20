@@ -922,6 +922,9 @@ public:
 	Mob* TacticsRetarget(Mob* tar);
 	void TacticsTankChecks(Mob* tar);
 	void TryDefensiveDiscipline();
+	bool TacticsPullActive() const;        // the player is pulling: hold camp
+	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
+	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
 
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
@@ -1009,6 +1012,12 @@ private:
 	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
 
 	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
+
+	// Camp place cache (TacticsCampSlot) and tank turning throttle
+	glm::vec3 m_camp_slot            = glm::vec3(0.0f);
+	glm::vec3 m_camp_slot_camp       = glm::vec3(0.0f);
+	uint32    m_camp_slot_sig        = 0xFFFFFFFF;
+	uint32    m_tank_reposition_ms   = 0;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 
