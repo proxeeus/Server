@@ -2186,6 +2186,12 @@ void Bot::AI_Process()
 
 	HealRotationChecks();
 
+// MOVE-TO-CAST (a cast was skipped for range last cycle: go get in range)
+
+	if (TryMoveToCast(leash_owner, leash_distance)) {
+		return;
+	}
+
 	if (IsFDPulling()) {
 		FDPullerProcess(bot_owner, raid);
 		if (IsFDPulling()) { // still in FD state — skip normal AI this tick
@@ -2469,7 +2475,103 @@ bool Bot::TryBardMovementCasts() {// Basically, bard bots get a chance to cast i
 	return false;
 }
 
+bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
+{
+	if (!m_cast_range_target_id) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Pullers, guards and rooted bots keep their place; a cast in progress
+	// means the intent is already served or superseded.
+	if (
+		now > m_cast_range_expire_ms ||
+		IsCasting() ||
+		PULLING_BOT ||
+		IsFDPulling() ||
+		GUARDING ||
+		IsRooted()
+	) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	Mob* tar = entity_list.GetMob(m_cast_range_target_id);
+	if (!tar || tar->IsCorpse() || tar->GetHP() <= 0) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// Never chase past the leash: a target that far off is not ours to serve.
+	if (leash_owner && DistanceSquared(tar->GetPosition(), leash_owner->GetPosition()) > leash_distance) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	const float range = GetActSpellRange(m_cast_range_spell_id, spells[m_cast_range_spell_id].range);
+	const float want  = range * 0.85f; // a margin, so a step from the target does not put us out again
+	const float dist2 = DistanceSquared(m_Position, tar->GetPosition());
+
+	if (dist2 <= want * want && CheckLosFN(tar)) {
+		if (IsMoving()) {
+			StopMoving(CalculateHeadingToTarget(tar->GetX(), tar->GetY()));
+		}
+
+		if (m_cast_range_moving) {
+			LogInfo(
+				"[BotAI] [{}] in range to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}])",
+				GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2), range
+			);
+		}
+
+		// Stay here long enough for the cast check to fire, rather than being
+		// pulled straight back to the follow point. AIDoSpellCast extends it
+		// over the cast time.
+		m_cast_position_hold_ms = now + 3000;
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// On top of the target and still no line of sight: nothing more walking can fix.
+	if (dist2 <= 10.0f * 10.0f) {
+		LogInfo(
+			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no line of sight at [{:.0f}]",
+			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2)
+		);
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	if (!m_cast_range_moving) {
+		m_cast_range_moving = true;
+		LogInfo(
+			"[BotAI] [{}] moving to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}] priority [{}])",
+			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2), range, m_cast_range_priority
+		);
+	}
+
+	if (AI_movement_timer->Check()) {
+		if (IsSitting()) {
+			Stand();
+		}
+
+		if (rest_timer.Enabled()) {
+			rest_timer.Disable();
+		}
+
+		RunTo(tar->GetX(), tar->GetY(), tar->GetZ());
+	}
+
+	return true;
+}
+
 bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, glm::vec3& Goal) {// Non-engaged movement checks
+
+	// Walked away to make a cast: don't get pulled back before it lands.
+	if (IsHoldingCastPosition()) {
+		return false;
+	}
 
 	if (AI_movement_timer->Check() && (!IsCasting() || GetClass() == Class::Bard)) {
 		if (GUARDING) {
@@ -2509,7 +2611,8 @@ bool Bot::TryIdleChecks(float fm_distance) {
 	if (
 		(
 			(NOT_GUARDING && fm_distance <= GetFollowDistance()) ||
-			(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) <= GetFollowDistance())) &&
+			(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) <= GetFollowDistance()) ||
+			IsHoldingCastPosition()) && // walked away on purpose to make a cast
 			!IsMoving() &&
 			AI_think_timer->Check() &&
 			!spellend_timer.Enabled()
@@ -3180,8 +3283,9 @@ bool Bot::CheckIfCasting(float fm_distance) {
 			}
 
 			if (
+				!IsHoldingCastPosition() && ( // walked away on purpose to make this cast
 				(NOT_GUARDING && fm_distance > GetFollowDistance()) || // Cancel out-of-combat casting if movement to follow mob is required
-				(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) > GetFollowDistance()) // Cancel out-of-combat casting if movement to guard point is required
+				(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) > GetFollowDistance())) // Cancel out-of-combat casting if movement to guard point is required
 			) {
 				InterruptSpell();
 			}

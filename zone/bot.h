@@ -358,7 +358,10 @@ public:
 	void SetGuardMode();
 	void SetHoldMode();
 	uint32 GetBotCasterRange() const { return m_bot_caster_range; }
-	bool IsValidSpellRange(uint16 spell_id, Mob const* tar);
+	// note_out_of_range: record a move-to-cast intent when the target is too far
+	// (see TryMoveToCast). Off for casts that must never pull the bot toward the
+	// target, like escapes.
+	bool IsValidSpellRange(uint16 spell_id, Mob const* tar, bool note_out_of_range = true);
 
 	// Bot AI Methods
 	void AI_Bot_Init();
@@ -896,6 +899,15 @@ public:
 	bool TryBardMovementCasts();
 	void SetRangerCombatWeapon(bool atArcheryRange);
 
+	// Move-to-cast (docs/BOT_AI_REWORK.md, phase 1). The spell AI records the
+	// most important cast it wanted but could not make because the target was
+	// out of range; AI_Process then walks the bot into range instead of
+	// silently skipping the cast, and holds it there long enough to cast.
+	bool TryMoveToCast(Client* leash_owner, float leash_distance);
+	void NoteOutOfRangeCast(uint16 spell_id, const Mob* tar);
+	void ClearCastRangeIntent();
+	bool IsHoldingCastPosition() const { return m_cast_position_hold_ms > Timer::GetCurrentTime(); }
+
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
 
@@ -972,6 +984,14 @@ private:
 	bool is_using_item_click;
 	uint32 m_bot_caster_range;
 	BotCastingRoles m_CastingRoles;
+
+	// Move-to-cast state (TryMoveToCast)
+	uint16 m_cast_range_target_id  = 0;
+	uint16 m_cast_range_spell_id   = 0;
+	uint8  m_cast_range_priority   = 0;     // 3 heal, 2 other beneficial, 1 detrimental
+	uint32 m_cast_range_expire_ms  = 0;
+	bool   m_cast_range_moving     = false;
+	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

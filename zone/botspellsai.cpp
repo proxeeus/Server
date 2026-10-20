@@ -887,7 +887,8 @@ bool Bot::BotCastEscape(Mob*& tar, uint8 botClass, BotSpell& botSpell, uint32 iS
 			tar = this; //target self for invul type spells
 		}
 
-		if (IsValidSpellRange(botSpell.SpellId, tar) || botClass == Class::Bard) {
+		// Never walk toward the target of an escape.
+		if (IsValidSpellRange(botSpell.SpellId, tar, false) || botClass == Class::Bard) {
 			casted_spell = AIDoSpellCast(botSpell.SpellIndex, tar, botSpell.ManaCost);
 		}
 	}
@@ -1364,6 +1365,12 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 
 		if (IsCasting() && IsSitting())
 			Stand();
+
+		// Walked here to make this cast: stay until it lands.
+		if (result && IsHoldingCastPosition()) {
+			const uint32 cast_end = Timer::GetCurrentTime() + spells[AIBot_spells[i].spellid].cast_time + 1500;
+			m_cast_position_hold_ms = std::max(m_cast_position_hold_ms, cast_end);
+		}
 
 		// Announce the cast on the real group/raid channel so it lands in
 		// the group chat window, not as an inline "says" line.  Skip buff
@@ -3642,7 +3649,7 @@ bool Bot::HasBotSpellEntry(uint16 spellid) {
 	return false;
 }
 
-bool Bot::IsValidSpellRange(uint16 spell_id, Mob const* tar) {
+bool Bot::IsValidSpellRange(uint16 spell_id, Mob const* tar, bool note_out_of_range) {
 	if (!IsValidSpell(spell_id)) {
 		return false;
 	}
@@ -3652,6 +3659,59 @@ bool Bot::IsValidSpellRange(uint16 spell_id, Mob const* tar) {
 		if (spellrange >= DistanceSquared(m_Position, tar->GetPosition())) {
 			return true;
 		}
+
+		// Every AI cast path ends in this check, and used to just skip the
+		// cast here. Remember it so TryMoveToCast can walk us into range.
+		if (note_out_of_range) {
+			NoteOutOfRangeCast(spell_id, tar);
+		}
 	}
 	return false;
+}
+
+void Bot::NoteOutOfRangeCast(uint16 spell_id, const Mob* tar)
+{
+	// Bards sing on the move and their heals ignore range anyway.
+	if (!tar || tar == this || GetClass() == Class::Bard || !IsValidSpell(spell_id)) {
+		return;
+	}
+
+	uint8 priority = 1;
+	if (IsBeneficialSpell(spell_id)) {
+		priority = (IsHealthSpell(spell_id) || IsCompleteHealSpell(spell_id) || IsHealOverTimeSpell(spell_id)) ? 3 : 2;
+	}
+
+	// Within a think cycle the cast chains run most important first, so the
+	// first intent of a given priority wins; only a more urgent one replaces it.
+	const uint32 now = Timer::GetCurrentTime();
+	if (m_cast_range_target_id && now <= m_cast_range_expire_ms) {
+		if (m_cast_range_target_id == tar->GetID() && priority >= m_cast_range_priority) {
+			m_cast_range_spell_id  = spell_id; // still needed: keep walking
+			m_cast_range_priority  = priority;
+			m_cast_range_expire_ms = now + 4000;
+			return;
+		}
+
+		if (priority <= m_cast_range_priority) {
+			return;
+		}
+	}
+
+	if (m_cast_range_target_id != tar->GetID()) {
+		m_cast_range_moving = false;
+	}
+
+	m_cast_range_target_id = tar->GetID();
+	m_cast_range_spell_id  = spell_id;
+	m_cast_range_priority  = priority;
+	m_cast_range_expire_ms = now + 4000;
+}
+
+void Bot::ClearCastRangeIntent()
+{
+	m_cast_range_target_id = 0;
+	m_cast_range_spell_id  = 0;
+	m_cast_range_priority  = 0;
+	m_cast_range_expire_ms = 0;
+	m_cast_range_moving    = false;
 }
