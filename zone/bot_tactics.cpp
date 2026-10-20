@@ -392,12 +392,22 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// ---- assist target ----
 
 	// What the main tank is fighting; with no tank, or a tank not yet
-	// engaged, whatever a player of the unit is fighting -- the tank then
-	// goes in too (see TryTacticsAssist).
+	// engaged, whatever a player of the unit is fighting, else whatever
+	// jumped one of the bots -- the tank then goes in too (TryTacticsAssist).
 	Mob* assist = mt ? FightingTarget(mt) : nullptr;
-	if (!assist) {
+	for (int pass = 0; pass < 2 && !assist; ++pass) {
 		for (Mob* m : mobs) {
-			if (m->IsClient() && (assist = FightingTarget(m))) {
+			if (m->IsClient() != (pass == 0)) {
+				continue;
+			}
+			// A puller's mob is not ours yet: the camp waits for it.
+			if (m->IsBot()) {
+				Bot* b = m->CastToBot();
+				if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
+					continue;
+				}
+			}
+			if ((assist = FightingTarget(m)) != nullptr) {
 				break;
 			}
 		}
@@ -894,6 +904,11 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 		GetReturningFlag() ||
 		IsFDPulling()
 	) {
+		return false;
+	}
+
+	// ^pull in progress: the camp waits until the puller is back.
+	if (Mob* owner = GetBotOwner(); owner && owner->IsClient() && owner->CastToClient()->GetBotPulling()) {
 		return false;
 	}
 
