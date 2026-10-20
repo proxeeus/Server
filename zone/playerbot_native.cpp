@@ -6,6 +6,7 @@
 #include "../common/eq_constants.h"
 #include "../common/eqemu_logsys.h"
 #include "../common/item_instance.h"
+#include "../common/races.h"
 #include "../common/rulesys.h"
 #include "../common/strings.h"
 
@@ -310,12 +311,12 @@ bool PlayerBotNative::LoadAll(std::string &summary_out)
 			if (!weight) {
 				continue;
 			}
-			if (!database.GetItem(item_id)) {
+			const auto *item = database.GetItem(item_id);
+			if (!item) {
 				++unknown_items; // the Lua AddItem'd these and got nothing either
 				continue;
 			}
-			m_gear[it->second].items.push_back({item_id, weight});
-			m_gear[it->second].total_weight += weight;
+			m_gear[it->second].items.push_back({item_id, weight, item->Classes, item->Races});
 		}
 		if (unknown_items) {
 			LogWarning("[pbnative] [{}] gear rows name an item id missing from the items table; skipped", unknown_items);
@@ -513,7 +514,8 @@ bool PlayerBotNative::OnSpawn(NPC *npc)
 	}
 
 	ApplyStats(npc, p);
-	const int items = ApplyGear(npc, p);
+	int       gear_skipped = 0;
+	const int items        = ApplyGear(npc, p, gear_skipped);
 
 	++m_generated;
 
@@ -524,10 +526,10 @@ bool PlayerBotNative::OnSpawn(NPC *npc)
 	}
 
 	LogInfo(
-		"[pbnative] generated [{}] ({}) level [{}] class [{}] race [{}] gender [{}] {} items [{}] zone [{}]",
+		"[pbnative] generated [{}] ({}) level [{}] class [{}] race [{}] gender [{}] {} items [{}] gear_skipped [{}] zone [{}]",
 		npc->playerbot_temp_name, p.client_name ? "client name" : "name set", p.level, p.class_, p.race, p.gender,
 		p.is_static ? (p.sitting ? "static/sitting" : "static") : "roaming",
-		items, zone ? zone->GetShortName() : "?"
+		items, gear_skipped, zone ? zone->GetShortName() : "?"
 	);
 	return true;
 }
@@ -702,12 +704,16 @@ void PlayerBotNative::ApplyStats(NPC *npc, const Profile &p)
 	npc->SetMaxHP();
 }
 
-int PlayerBotNative::ApplyGear(NPC *npc, const Profile &p)
+int PlayerBotNative::ApplyGear(NPC *npc, const Profile &p, int &skipped_out)
 {
 	const uint32 class_bit = ClassBit(p.class_);
+	const uint32 race_bit  = GetPlayerRaceBit(p.race);
 	int          added     = 0;
 
-	std::vector<uint8> outcome(m_gear.size(), DrawSkipped);
+	skipped_out = 0;
+
+	std::vector<uint8>    outcome(m_gear.size(), DrawSkipped);
+	std::vector<Weighted> legal;
 
 	for (size_t i = 0; i < m_gear.size(); ++i) {
 		const GearDraw &d = m_gear[i];
@@ -736,7 +742,24 @@ int PlayerBotNative::ApplyGear(NPC *npc, const Profile &p)
 			continue;
 		}
 
-		const uint32 item_id = PickWeighted(d.items);
+		// Pick only among items this class and race may wear. The draws only
+		// know a class bit and a 3-way size class, which is coarser than the
+		// items' own masks (Iksar, medium-only plate in the small/large pools,
+		// one-class rings in the shared ring pools...). Nothing legal -> the
+		// slot stays empty. The outcome stays a hit: no gate points at an item
+		// draw, only at the item-less condition draws.
+		legal.clear();
+		for (const auto &gi : d.items) {
+			if ((gi.classes & class_bit) && (gi.races & race_bit)) {
+				legal.push_back({gi.id, gi.weight});
+			}
+		}
+		if (legal.empty()) {
+			++skipped_out;
+			continue;
+		}
+
+		const uint32 item_id = PickWeighted(legal);
 		if (item_id) {
 			npc->AddItem(item_id, 1, true);
 			++added;
