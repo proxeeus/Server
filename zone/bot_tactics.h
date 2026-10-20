@@ -52,6 +52,9 @@
  *   - recovery: fallen bots are resurrected after the fight by a bot that
  *     can; casters call "Out of mana" once a fight; after it, one "Medding"
  *     and one "Ready" line tell the player when to pull.
+ *   - raid encounters: a bot_raid_encounters row for the assist target
+ *     (any zone) keeps casters back, everyone out of its front, or holds
+ *     the damage to a health %.
  *   - roles: buffs and cures cover the whole raid (own group first); one
  *     slow / one of each debuff per mob; a player who slows or mezzes gets
  *     the first go, and a player cleric is called on their CH chain turn.
@@ -73,6 +76,17 @@ class Bot;
 class Group;
 class Mob;
 class Raid;
+
+// One row of bot_raid_encounters (utils/sql/git/bots/optional/
+// 2026_10_20_bots_raid_encounters.sql): what to do differently against one
+// raid target, any zone.
+struct BotRaidEncounter {
+	uint32      npc_type_id      = 0;
+	std::string name;
+	float       caster_min_range = 0.0f;  // casters and healers keep at least this far
+	bool        avoid_front      = false; // nobody but its tank in its front arc
+	uint8       assist_hp        = 0;     // damage waits for this health %, 0 = default
+};
 
 struct BotTacticsPlan {
 	uint32 key          = 0;
@@ -128,6 +142,11 @@ struct BotTacticsPlan {
 	bool                recovery_announced  = false;
 	uint16              recovery_speaker_id = 0;
 	std::vector<uint16> oom_called;
+
+	// Raid encounter (phase 8): the assist target's bot_raid_encounters row
+	bool             has_encounter    = false;
+	uint16           encounter_mob_id = 0;
+	BotRaidEncounter encounter;
 
 	// Emergencies (phase 7)
 	uint32 mt_changed_ms  = 0;     // the tank died / was replaced mid-fight then
@@ -188,6 +207,11 @@ public:
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);
 
+	// bot_raid_encounters, read on first use and on ^tactics reload. A
+	// missing table reads as empty (logged).
+	const BotRaidEncounter* EncounterFor(uint32 npc_type_id);
+	bool ReloadEncounters(std::string& summary_out);
+
 	// ^tactics overrides, per unit. They last as long as the group or raid.
 	void SetEnabled(uint32 key, bool on);
 	bool IsEnabled(uint32 key) const;
@@ -208,8 +232,10 @@ private:
 	void Announce(Raid* raid, Group* group, Mob* speaker, const std::string& msg);
 	void Sweep(uint32 now);
 
-	std::unordered_map<uint32, BotTacticsPlan> m_plans;
-	std::unordered_map<uint32, Overrides>      m_overrides;
+	std::unordered_map<uint32, BotTacticsPlan>   m_plans;
+	std::unordered_map<uint32, Overrides>        m_overrides;
+	std::unordered_map<uint32, BotRaidEncounter> m_encounters;
+	bool                                         m_encounters_loaded = false;
 	uint32                                     m_last_sweep_ms = 0;
 };
 

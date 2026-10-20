@@ -501,6 +501,35 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// ---- raid encounter ----
+
+	const BotRaidEncounter* enc     = assist && assist->IsNPC() ? EncounterFor(assist->GetNPCTypeID()) : nullptr;
+	const uint16            enc_mob = enc ? assist->GetID() : 0;
+	if (enc_mob != p.encounter_mob_id) {
+		p.encounter_mob_id = enc_mob;
+		p.has_encounter    = enc != nullptr;
+
+		if (enc) {
+			p.encounter = *enc;
+
+			// Say what changes, so the player knows the bots know the fight.
+			std::string what;
+			if (enc->caster_min_range > 0.0f) {
+				what += fmt::format(", casters and healers {:.0f} back", enc->caster_min_range);
+			}
+			if (enc->avoid_front) {
+				what += ", stay out of its front";
+			}
+			if (enc->assist_hp) {
+				what += fmt::format(", damage waits for {}%", static_cast<int>(enc->assist_hp));
+			}
+
+			const std::string name = enc->name.empty() ? std::string(assist->GetCleanName()) : enc->name;
+			LogInfo("[BotTactics] unit [{:#x}] encounter [{}] (npc_type [{}])", p.key, name, enc->npc_type_id);
+			Announce(raid, group, (mt && mt->IsBot()) ? mt : first_bot, fmt::format("Encounter: {}{}.", name, what));
+		}
+	}
+
 	// ---- camp ----
 
 	// The camp follows the group leader when that is a player, else the
@@ -1051,6 +1080,48 @@ bool BotTactics::ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 cast
 	return true;
 }
 
+bool BotTactics::ReloadEncounters(std::string& summary_out)
+{
+	m_encounters.clear();
+	m_encounters_loaded = true;
+
+	auto results = database.QueryDatabase(
+		"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp` FROM `bot_raid_encounters`"
+	);
+	if (!results.Success()) {
+		summary_out = "bot_raid_encounters is not readable; run utils/sql/git/bots/optional/2026_10_20_bots_raid_encounters.sql";
+		LogInfo("[BotTactics] {}", summary_out);
+		return false;
+	}
+
+	for (auto row = results.begin(); row != results.end(); ++row) {
+		BotRaidEncounter e;
+		e.npc_type_id      = Strings::ToUnsignedInt(row[0] ? row[0] : "0");
+		e.name             = row[1] ? row[1] : "";
+		e.caster_min_range = std::max(0.0f, Strings::ToFloat(row[2] ? row[2] : "0"));
+		e.avoid_front      = Strings::ToInt(row[3] ? row[3] : "0") != 0;
+		e.assist_hp        = static_cast<uint8>(std::clamp(Strings::ToInt(row[4] ? row[4] : "0"), 0, 100));
+		if (e.npc_type_id) {
+			m_encounters[e.npc_type_id] = e;
+		}
+	}
+
+	summary_out = fmt::format("{} raid encounter(s) loaded", m_encounters.size());
+	LogInfo("[BotTactics] {}", summary_out);
+	return true;
+}
+
+const BotRaidEncounter* BotTactics::EncounterFor(uint32 npc_type_id)
+{
+	if (!m_encounters_loaded) {
+		std::string ignored;
+		ReloadEncounters(ignored);
+	}
+
+	const auto it = m_encounters.find(npc_type_id);
+	return it == m_encounters.end() ? nullptr : &it->second;
+}
+
 void BotTactics::NoteFallen(uint32 key, Bot* bot)
 {
 	BotTacticsPlan* p = Find(key);
@@ -1157,6 +1228,27 @@ std::vector<std::string> BotTactics::Describe(uint32 key)
 	}
 
 	out.emplace_back("Assist: " + (p->assist_target_id ? NameOf(p->assist_target_id) : std::string("nothing, not fighting")) + ".");
+
+	if (p->has_encounter) {
+		out.emplace_back(
+			fmt::format(
+				"Encounter: {} (npc_type {}): casters {:.0f} back, front {}, damage at {}%.",
+				p->encounter.name.empty() ? NameOf(p->encounter_mob_id) : p->encounter.name,
+				p->encounter.npc_type_id, p->encounter.caster_min_range,
+				p->encounter.avoid_front ? "avoided" : "free",
+				p->encounter.assist_hp ? static_cast<int>(p->encounter.assist_hp) : 97
+			)
+		);
+	}
+
+	if (p->camp_set) {
+		out.emplace_back(
+			fmt::format(
+				"Camp at {:.0f}, {:.0f}, {:.0f}{}.", p->camp.x, p->camp.y, p->camp.z,
+				p->pull_active ? ", holding for a pull" : ""
+			)
+		);
+	}
 
 	if (p->chain.empty()) {
 		out.emplace_back("CH chain: none. It runs in raids, with two clerics of level 39 or more and a main tank.");
@@ -1370,10 +1462,18 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 		return false;
 	}
 
-	// Tanks go straight in; everyone else gives the tank a moment first.
+	// Tanks go straight in; everyone else gives the tank a moment first, or
+	// waits for the health % a raid encounter asks for.
 	const bool tanking = p->IsMainTank(GetID()) || add == want_id;
-	if (!tanking && t->GetHPRatio() > kAssistHPRatio && Timer::GetCurrentTime() - p->assist_since_ms < kAssistDelayMs) {
-		return false;
+	if (!tanking) {
+		if (p->has_encounter && p->encounter_mob_id == want_id && p->encounter.assist_hp) {
+			if (t->GetHPRatio() > p->encounter.assist_hp) {
+				return false;
+			}
+		}
+		else if (t->GetHPRatio() > kAssistHPRatio && Timer::GetCurrentTime() - p->assist_since_ms < kAssistDelayMs) {
+			return false;
+		}
 	}
 
 	AddToHateList(t, 1);
@@ -1767,6 +1867,82 @@ bool Bot::TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const
 	dest.w = to_camp; // from out there, the mob lies toward camp: face it
 	Teleport(dest);
 	LogInfo("[BotTactics] [{}] turns [{}] away from camp", GetCleanName(), tar->GetCleanName());
+	return true;
+}
+
+bool Bot::TacticsEncounterPositioning(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->has_encounter || !tar || tar->GetID() != p->encounter_mob_id) {
+		return false;
+	}
+
+	// Whoever it is hitting stays where it is: moving would only drag it.
+	if (p->IsMainTank(GetID()) || p->AssignedAdd(GetID()) == tar->GetID() || tar->GetTarget() == this || IsRooted()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_encounter_reposition_ms) {
+		return false;
+	}
+
+	const bool caster = GetArchetype() == Archetype::Caster ||
+		GetClass() == Class::Cleric || GetClass() == Class::Druid || GetClass() == Class::Shaman;
+
+	const float dist   = DistanceNoZ(m_Position, tar->GetPosition());
+	const float to_me  = tar->CalculateHeadingToTarget(GetX(), GetY());
+	float       facing = std::fabs(to_me - tar->GetHeading());
+	if (facing > 256.0f) {
+		facing = 512.0f - facing;
+	}
+
+	const bool  in_front  = p->encounter.avoid_front && facing < 96.0f; // within ~67 degrees of its nose
+	const float min_range = caster ? p->encounter.caster_min_range : 0.0f;
+	const bool  too_close = min_range > 0.0f && dist < min_range;
+	if (!in_front && !too_close) {
+		return false;
+	}
+
+	m_encounter_reposition_ms = now + kTankRepositionMs;
+
+	// Far enough (casters), but not past where we can still cast at it, or
+	// TryPursueTarget would walk us straight back in.
+	float want_dist = too_close ? min_range + 5.0f : dist;
+	if (caster) {
+		float melee_distance_max = 0.0f;
+		float melee_distance     = 0.0f;
+		CalcMeleeDistances(
+			tar, GetBotItem(EQ::invslot::slotPrimary), GetBotItem(EQ::invslot::slotSecondary),
+			false, false, melee_distance_max, melee_distance
+		);
+		const float cap = sqrtf(GetBotCasterMaxRange(melee_distance_max));
+		if (cap > 0.0f) {
+			want_dist = std::min(want_dist, cap * 0.95f);
+		}
+	}
+
+	// Out of the front: behind it, spread over a 160 degree arc. Only too
+	// close: straight back out along the same bearing.
+	static constexpr float spread[] = {0.0f, -55.0f, 55.0f, -110.0f, 110.0f};
+	const float heading = in_front ? FixHeading(tar->GetHeading() + 256.0f + spread[GetID() % 5]) : to_me;
+
+	const glm::vec4 start(tar->GetX(), tar->GetY(), tar->GetZ(), heading);
+	glm::vec4       dest = TryMoveAlong(start, want_dist, 0.0f);
+
+	// Bridges and ledges, as elsewhere (looser: casters stand further out).
+	const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
+	const float dz         = dest.z - expected_z;
+	if (dz <= -25.0f || dz >= 25.0f) {
+		return false;
+	}
+
+	dest.w = FixHeading(heading + 256.0f); // facing the mob
+	Teleport(dest);
+	LogInfo(
+		"[BotTactics] [{}] repositions for [{}] ({})", GetCleanName(), tar->GetCleanName(),
+		in_front ? "out of its front" : "out of its reach"
+	);
 	return true;
 }
 

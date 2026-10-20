@@ -2348,6 +2348,11 @@ void Bot::AI_Process()
 				return;
 			}
 
+			// Raid encounter: casters out of its reach, everyone out of its front
+			if (TacticsEncounterPositioning(tar)) {
+				return;
+			}
+
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
 			{

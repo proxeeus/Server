@@ -10,6 +10,7 @@
 //   ^tactics mt <name|auto>       main tank (no name: your target)
 //   ^tactics chain <seconds|auto> CH chain spacing
 //   ^tactics on|off               turn tactics off for this unit, and back on
+//   ^tactics reload               reread bot_raid_encounters (this zone process)
 //
 // Text only, no saylinks or brackets: Trilogy clients read it as plain chat.
 void bot_command_tactics(Client* c, const Seperator* sep)
@@ -29,6 +30,15 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		c->Message(Chat::White, "usage: ^tactics mt name -- set the main tank (no name: your target; auto: automatic)");
 		c->Message(Chat::White, "usage: ^tactics chain seconds -- set the CH chain spacing (auto: 12s split between the clerics)");
 		c->Message(Chat::White, "usage: ^tactics on / ^tactics off -- turn tactics on or off for this group or raid");
+		c->Message(Chat::White, "usage: ^tactics reload -- reread the bot_raid_encounters table");
+		return;
+	}
+
+	// Works from anywhere: the encounter table is per zone, not per unit.
+	if (arg == "reload") {
+		std::string summary;
+		bot_tactics.ReloadEncounters(summary);
+		c->Message(Chat::White, "%s.", summary.c_str());
 		return;
 	}
 
