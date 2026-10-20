@@ -833,6 +833,12 @@ std::string EQ::ItemInstance::GetCustomDataString() const {
 void EQ::ItemInstance::SetCustomDataString(const std::string& str)
 {
 	auto components = Strings::Split(str, "^");
+
+	// GetCustomDataString() doubles the separator between entries
+	// ("a^1^^b^2^"); drop the empty tokens or every entry after the first
+	// pairs up off by one.
+	std::erase_if(components, [](const std::string& s) { return s.empty(); });
+
 	auto value_count = components.size() / 2;
 
 	for (auto i = 0; i < value_count; i++) {

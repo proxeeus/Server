@@ -406,6 +406,17 @@ public:
 
 	// Bot Equipment & Inventory Class Methods
 	void BotTradeAddItem(const EQ::ItemInstance* inst, uint16 slot_id, bool save_to_database = true);
+
+	// Owner gift vs bot-bound gear (utils/sql/git/bots/optional/2026_10_20_bots_bot_vault.sql):
+	// an item tagged OWNER_GIFT_KEY=<owner character id> goes back to the owner;
+	// anything else is bot-bound and only ever moves to this bot's vault.
+	static constexpr const char* OWNER_GIFT_KEY = "bot_gift";
+	bool IsOwnerGift(const EQ::ItemInstance* inst) const;
+	void MarkOwnerGift(EQ::ItemInstance* inst) const;
+	static void ClearOwnerGift(EQ::ItemInstance* inst);
+	bool HasOwnerGiftEquipped();
+	bool EquipFromVault(Client* c, uint32 vault_id, int16 forced_slot);
+
 	void EquipBot();
 	bool CheckLoreConflict(const EQ::ItemData* item);
 	void UpdateEquipmentLight() override

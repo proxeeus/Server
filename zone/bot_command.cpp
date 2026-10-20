@@ -59,6 +59,7 @@
 #include "mob.h"
 
 #include <fmt/format.h>
+#include <memory>
 
 extern QueryServ* QServ;
 extern WorldServer worldserver;
@@ -1133,6 +1134,8 @@ int bot_command_init(void)
 		bot_command_add("lich", "Orders a designated Necromancer bot to buff itself with a Lich spell.", 0, bot_command_lich) ||
 		bot_command_add("dmf", "Orders a designated Necromancer bot to cast Dead Man Floating.", 0, bot_command_dmf) ||
 		bot_command_add("invite", "Invites the targeted PlayerBot into your your bot army.", 0, bot_command_invite) ||
+		bot_command_add("vaultlist", "Lists the gear in a bot's vault (its own gear it is not wearing; never tradeable to players).", AccountStatus::Player, bot_command_vault_list) ||
+		bot_command_add("vaultequip", "Equips an item from a bot's vault. Args: <vault #> [slot_id].", AccountStatus::Player, bot_command_vault_equip) ||
 		bot_command_add("stats", "Orders a bot to give you a full stats report.", 0, bot_command_stats) ||
 		//bot_command_add("feign", "Orders a monk bot to attempt to Feign Death.", 0, bot_command_feign) ||
 		//bot_command_add("rpull", "Orders a designated bot (usually a monk) to 'raid pull' an enemy", 0, bot_command_rpull) ||
@@ -1977,6 +1980,7 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/lich.cpp"
 #include "bot_commands/dmf.cpp"
 #include "bot_commands/invite.cpp"
+#include "bot_commands/vault.cpp"
 #include "bot_commands/stats.cpp"
 //#include "bot_commands/feign.cpp"
 //#include "bot_commands/rpull.cpp"

@@ -32,6 +32,9 @@
 #include "../../common/repositories/bot_data_repository.h"
 #include "../common/features.h"
 
+#include <algorithm>
+#include <memory>
+
 // This constructor is used during the bot create command
 Bot::Bot(NPCType *npcTypeData, Client* botOwner) : NPC(npcTypeData, nullptr, glm::vec4(), Ground, false), rest_timer(1), ping_timer(1) {
 	GiveNPCTypeData(npcTypeData);
@@ -1514,6 +1517,10 @@ bool Bot::DeleteBot()
 	}
 
 	if (!database.botdb.DeleteItems(GetBotID())) {
+		return false;
+	}
+
+	if (!database.botdb.DeleteVault(GetBotID())) {
 		return false;
 	}
 
@@ -4165,6 +4172,290 @@ void Bot::BotTradeAddItem(const EQ::ItemInstance* inst, uint16 slot_id, bool sav
 	BotAddEquipItem(slot_id, item_id);
 }
 
+bool Bot::IsOwnerGift(const EQ::ItemInstance* inst) const
+{
+	if (!inst || !GetBotOwnerCharacterID()) {
+		return false;
+	}
+
+	return const_cast<EQ::ItemInstance*>(inst)->GetCustomData(OWNER_GIFT_KEY) == std::to_string(GetBotOwnerCharacterID());
+}
+
+void Bot::MarkOwnerGift(EQ::ItemInstance* inst) const
+{
+	if (inst && GetBotOwnerCharacterID()) {
+		inst->SetCustomData(OWNER_GIFT_KEY, std::to_string(GetBotOwnerCharacterID()));
+	}
+}
+
+void Bot::ClearOwnerGift(EQ::ItemInstance* inst)
+{
+	if (inst) {
+		inst->DeleteCustomData(OWNER_GIFT_KEY);
+	}
+}
+
+bool Bot::HasOwnerGiftEquipped()
+{
+	for (uint16 slot_id = EQ::invslot::EQUIPMENT_BEGIN; slot_id <= EQ::invslot::EQUIPMENT_END; ++slot_id) {
+		if (IsOwnerGift(GetBotItem(slot_id))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+// ^vaultequip: move one bot-bound item from this bot's vault into an
+// equipment slot.  Whatever the slot (and, for weapons, the other hand) held
+// leaves by the usual rule: owner gifts to the owner's cursor, bot-bound gear
+// into the vault.  Every database write that can fail runs before anything
+// leaves the bot, and is undone if a later one fails.
+bool Bot::EquipFromVault(Client* c, uint32 vault_id, int16 forced_slot)
+{
+	using namespace EQ;
+
+	if (!c || GetOwner() != c) {
+		return false;
+	}
+
+	if (c->GetTradeskillObject() || c->trade->state == Trading) {
+		c->Message(Chat::Yellow, "You are busy; finish your trade first.");
+		return false;
+	}
+
+	if (c->IsEngaged() || IsEngaged()) {
+		c->Message(Chat::Yellow, "Bots can't change gear while engaged.");
+		return false;
+	}
+
+	BotVaultItem row;
+	if (!database.botdb.LoadVaultItem(GetBotID(), vault_id, row)) {
+		OwnerMessage(fmt::format("I have no item #{} in my vault.", vault_id));
+		return false;
+	}
+
+	std::unique_ptr<ItemInstance> inst(database.botdb.CreateVaultItemInstance(row));
+	if (!inst || !inst->GetItem()) {
+		LogError("[BotVault] bot_id [{}] vault_id [{}] holds invalid item_id [{}]", GetBotID(), vault_id, row.item_id);
+		OwnerMessage(fmt::format("Item #{} in my vault is not a valid item.", vault_id));
+		return false;
+	}
+
+	const auto* item = inst->GetItem();
+
+	if (!inst->IsType(EQ::item::ItemClassCommon) || item->ItemType == EQ::item::ItemTypeAugmentation) {
+		OwnerMessage(fmt::format("I can't equip {}.", item->Name));
+		return false;
+	}
+
+	if (!inst->IsClassEquipable(GetClass())) {
+		OwnerMessage(fmt::format("I can't equip {}: my class can't use it.", item->Name));
+		return false;
+	}
+
+	if (GetLevel() < item->ReqLevel) {
+		OwnerMessage(fmt::format("I can't equip {}: I need to be level {} (I'm {}).", item->Name, item->ReqLevel, GetLevel()));
+		return false;
+	}
+
+	if (!inst->IsRaceEquipable(GetBaseRace()) && !RuleB(Bots, AllowBotEquipAnyRaceGear)) {
+		OwnerMessage(fmt::format("I can't equip {}: my race can't use it.", item->Name));
+		return false;
+	}
+
+	const bool can_dual_wield = (GetSkill(skills::SkillDualWield) > 0);
+	auto hand_ok = [&](int16 slot_id) {
+		if (slot_id != invslot::slotSecondary) {
+			return true;
+		}
+
+		return (can_dual_wield && item->IsType1HWeapon()) || item->IsTypeShield() || !inst->IsWeapon();
+	};
+
+	int16 slot_id = invslot::SLOT_INVALID;
+	if (forced_slot >= 0) {
+		if (!(item->Slots & (1 << forced_slot))) {
+			OwnerMessage(
+				fmt::format(
+					"{} doesn't fit my {} (slot {}).",
+					item->Name,
+					invslot::GetInvPossessionsSlotName(forced_slot),
+					forced_slot
+				)
+			);
+			return false;
+		}
+
+		if (!hand_ok(forced_slot)) {
+			OwnerMessage(
+				fmt::format(
+					"I can't hold {} in my secondary: that needs Dual Wield for a one-handed weapon, or a shield or non-weapon.",
+					item->Name
+				)
+			);
+			return false;
+		}
+
+		slot_id = forced_slot;
+	} else {
+		// An empty slot first, then one we can swap out.
+		for (int pass = 0; pass < 2 && slot_id == invslot::SLOT_INVALID; ++pass) {
+			for (int16 s = invslot::EQUIPMENT_BEGIN; s <= invslot::EQUIPMENT_END; ++s) {
+				if (!(item->Slots & (1 << s)) || !hand_ok(s) || (pass == 0 && m_inv[s])) {
+					continue;
+				}
+
+				slot_id = s;
+				break;
+			}
+		}
+
+		if (slot_id == invslot::SLOT_INVALID) {
+			OwnerMessage(fmt::format("I have no equipment slot that fits {}.", item->Name));
+			return false;
+		}
+	}
+
+	std::vector<int16> release;
+	if (m_inv[slot_id]) {
+		release.push_back(slot_id);
+	}
+
+	if (slot_id == invslot::slotPrimary && item->IsType2HWeapon() && m_inv[invslot::slotSecondary]) {
+		release.push_back(invslot::slotSecondary);
+	}
+
+	if (slot_id == invslot::slotSecondary) {
+		auto primary = GetBotItem(invslot::slotPrimary);
+		if (primary && primary->GetItem() && primary->GetItem()->IsType2HWeapon()) {
+			release.push_back(invslot::slotPrimary);
+		}
+	}
+
+	auto is_released = [&](int16 s) {
+		return std::find(release.begin(), release.end(), s) != release.end();
+	};
+
+	// Lore against what the bot keeps wearing (the released items are leaving).
+	if (item->LoreFlag) {
+		for (int16 s = invslot::EQUIPMENT_BEGIN; s <= invslot::EQUIPMENT_END; ++s) {
+			auto worn = GetBotItem(s);
+			if (is_released(s) || !worn || !worn->GetItem()) {
+				continue;
+			}
+
+			const auto* w = worn->GetItem();
+			if (w->ID == item->ID || (item->LoreGroup > 0 && w->LoreGroup == item->LoreGroup)) {
+				OwnerMessage(fmt::format("I already have {}, which is lore.", w->Name));
+				return false;
+			}
+		}
+	}
+
+	for (auto s : release) {
+		auto out = GetBotItem(s);
+		if (IsOwnerGift(out) && c->CheckLoreConflict(out->GetItem())) {
+			c->MessageString(Chat::White, PICK_LORE);
+			return false;
+		}
+	}
+
+	std::vector<uint32> vaulted;
+	auto undo_vaulted = [&]() {
+		for (auto id : vaulted) {
+			database.botdb.DeleteVaultItem(GetBotID(), id);
+		}
+	};
+
+	for (auto s : release) {
+		auto out = GetBotItem(s);
+		if (IsOwnerGift(out)) {
+			continue;
+		}
+
+		uint32 new_vault_id = 0;
+		if (!database.botdb.SaveVaultItem(GetBotID(), out, new_vault_id)) {
+			undo_vaulted();
+			OwnerMessage("I couldn't reach my vault, so I changed nothing.");
+			return false;
+		}
+
+		vaulted.push_back(new_vault_id);
+	}
+
+	if (!database.botdb.DeleteVaultItem(GetBotID(), vault_id)) {
+		undo_vaulted();
+		OwnerMessage("I couldn't reach my vault, so I changed nothing.");
+		return false;
+	}
+
+	for (auto s : release) {
+		std::unique_ptr<ItemInstance> out(GetBotItem(s)->Clone());
+		const bool gift = IsOwnerGift(out.get());
+
+		if (s == invslot::slotRange || s == invslot::slotAmmo) {
+			SetBotArcherySetting(false, true);
+		}
+
+		RemoveBotItemBySlot(s);
+		BotRemoveEquipItem(s);
+
+		if (gift) {
+			ClearOwnerGift(out.get());
+			c->PushItemOnCursor(*out, true);
+			OwnerMessage(fmt::format("I have returned {}.", out->GetItem()->Name));
+		} else {
+			OwnerMessage(fmt::format("I have put {} in my vault.", out->GetItem()->Name));
+		}
+
+		if (parse->BotHasQuestSub(EVENT_UNEQUIP_ITEM_BOT)) {
+			const auto& export_string = fmt::format("{} {}", out->IsStackable() ? out->GetCharges() : 1, s);
+			std::vector<std::any> args = { out.get() };
+			parse->EventBot(EVENT_UNEQUIP_ITEM_BOT, this, nullptr, export_string, out->GetID(), &args);
+		}
+	}
+
+	if (!database.botdb.SaveItemBySlot(this, slot_id, inst.get())) {
+		// Back into the vault rather than lost.
+		uint32 new_vault_id = 0;
+		if (!database.botdb.SaveVaultItem(GetBotID(), inst.get(), new_vault_id)) {
+			LogError(
+				"[BotVault] LOST item_id [{}] charges [{}] of bot_id [{}]: could not equip it nor re-vault it",
+				inst->GetID(),
+				inst->GetCharges(),
+				GetBotID()
+			);
+		}
+
+		OwnerMessage(fmt::format("I couldn't equip {}; it is back in my vault.", item->Name));
+		CalcBotStats(c->GetBotOption(Client::booStatsUpdate));
+		return false;
+	}
+
+	m_inv.PutItem(slot_id, *inst);
+	BotAddEquipItem(slot_id, inst->GetID());
+
+	OwnerMessage(
+		fmt::format(
+			"I have equipped {} from my vault in my {} (slot {}).",
+			item->Name,
+			invslot::GetInvPossessionsSlotName(slot_id),
+			slot_id
+		)
+	);
+
+	if (parse->BotHasQuestSub(EVENT_EQUIP_ITEM_BOT)) {
+		const auto& export_string = fmt::format("{} {}", inst->IsStackable() ? inst->GetCharges() : 1, slot_id);
+		std::vector<std::any> args = { inst.get() };
+		parse->EventBot(EVENT_EQUIP_ITEM_BOT, this, nullptr, export_string, inst->GetID(), &args);
+	}
+
+	CalcBotStats(c->GetBotOption(Client::booStatsUpdate));
+
+	return true;
+}
+
 void Bot::AddBotItem(
 	uint16 slot_id,
 	uint32 item_id,
@@ -4377,6 +4668,8 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 		ItemInstance* return_item_instance;
 		int16 from_bot_slot;
 		int16 to_client_slot = invslot::SLOT_INVALID;
+		bool to_vault = false; // bot-bound gear leaving a bot slot: never to the client
+		uint32 vault_id = 0;
 
 		ClientReturn(ItemInstance* item, int16 from) : return_item_instance(item), from_bot_slot(from) { }
 	};
@@ -4861,6 +5154,14 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 			return;
 		}
 
+		if (
+			EQ::ValueWithin(return_iterator.from_bot_slot, invslot::EQUIPMENT_BEGIN, invslot::EQUIPMENT_END) &&
+			!IsOwnerGift(return_instance)
+		) {
+			return_iterator.to_vault = true;
+			continue;
+		}
+
 		EQ::SayLinkEngine linker;
 		linker.SetLinkType(EQ::saylink::SayLinkItemInst);
 		linker.SetItemInst(return_instance);
@@ -4937,6 +5238,37 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 		}
 	}
 
+	// Vault the outgoing bot-bound gear before anything moves, so a database
+	// failure can still cancel the trade cleanly.  A slot can be listed twice
+	// (2H swaps); it is vaulted once.
+	{
+		std::vector<int16> vaulted_slots;
+		for (auto& return_iterator : client_return) {
+			if (!return_iterator.to_vault) {
+				continue;
+			}
+
+			if (std::find(vaulted_slots.begin(), vaulted_slots.end(), return_iterator.from_bot_slot) != vaulted_slots.end()) {
+				return_iterator.to_vault = false;
+				continue;
+			}
+
+			if (!database.botdb.SaveVaultItem(GetBotID(), return_iterator.return_item_instance, return_iterator.vault_id)) {
+				for (const auto& undo : client_return) {
+					if (undo.vault_id) {
+						database.botdb.DeleteVaultItem(GetBotID(), undo.vault_id);
+					}
+				}
+
+				client->Message(Chat::Yellow, "The bot's vault could not be reached, the trade has been cancelled.");
+				client->ResetTrade();
+				return;
+			}
+
+			vaulted_slots.push_back(return_iterator.from_bot_slot);
+		}
+	}
+
 	// perform actual trades
 	// returns first since clients have trade slots and bots do not
 	for (auto& return_iterator : client_return) {
@@ -4983,7 +5315,14 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 				);
 			}
 
-			if (return_instance) {
+			if (return_instance && return_iterator.to_vault) {
+				OwnerMessage(
+					fmt::format(
+						"I have put {} in my vault.",
+						return_instance->GetItem()->Name
+					)
+				);
+			} else if (return_instance) {
 				EQ::SayLinkEngine linker;
 				linker.SetLinkType(EQ::saylink::SayLinkItemInst);
 				linker.SetItemInst(return_instance);
@@ -4996,6 +5335,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 					)
 				);
 
+				ClearOwnerGift(return_instance);
 				client->PutItemInInventory(return_iterator.to_client_slot, *return_instance, true);
 			}
 
@@ -5011,6 +5351,8 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 		if (!trade_iterator.trade_item_instance) {
 			continue;
 		}
+
+		MarkOwnerGift(trade_iterator.trade_item_instance);
 
 		if (!database.botdb.SaveItemBySlot(this, trade_iterator.to_bot_slot, trade_iterator.trade_item_instance)) {
 			OwnerMessage(

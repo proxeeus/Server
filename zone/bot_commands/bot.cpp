@@ -434,6 +434,16 @@ void bot_command_delete(Client *c, const Seperator *sep)
 		return;
 	}
 
+	// Deleting the bot destroys what it holds; the owner's own items come back first.
+	if (my_bot->HasOwnerGiftEquipped()) {
+		c->Message(
+			Chat::White,
+			"'%s' still holds items you gave it. Take them back with ^inventoryremove before deleting it.",
+			my_bot->GetCleanName()
+		);
+		return;
+	}
+
 	if (!my_bot->DeleteBot()) {
 		c->Message(Chat::White, "Failed to delete '%s' due to database error", my_bot->GetCleanName());
 		return;

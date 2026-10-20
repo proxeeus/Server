@@ -1782,6 +1782,8 @@ void bot_command_deity(Client* c, const Seperator* sep);
 void bot_command_lich(Client* c, const Seperator* sep);
 void bot_command_dmf(Client* c, const Seperator* sep);
 void bot_command_invite(Client* c, const Seperator* sep);
+void bot_command_vault_list(Client* c, const Seperator* sep);
+void bot_command_vault_equip(Client* c, const Seperator* sep);
 void bot_command_stats(Client* c, const Seperator* sep);
 void bot_command_feign(Client* c, const Seperator* sep);
 void bot_command_rpull(Client* c, const Seperator* sep);
