@@ -6550,8 +6550,22 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 			int sid   = Strings::ToInt(row[0]);
 			int value = Strings::ToInt(row[1]);
 			// A stored 0 is "no points", which keeps the marker set above.
-			if (sid >= 0 && sid < 74 && value > 0)
-				pp.skills[sid] = static_cast<int8_t>(value);
+			if (sid >= 0 && sid < 74 && value > 0) {
+				// The wire byte is 8-bit and 0xFE/0xFF are the untrained markers,
+				// so a value carried over from later-era caps (255, 262, 295...)
+				// either wraps or reads as "never learnable" and the client hides
+				// the skill.  Clamp to the v29c cap for this level; the client
+				// tables top out at 252.
+				const int cap = skill_caps.GetSkillCap(
+					static_cast<uint8>(pp.class_), static_cast<EQ::skills::SkillType>(sid),
+					static_cast<uint8>(pp.level)).cap;
+				if (cap > 0 && value > cap) {
+					LogInfo("[TrilogyZone] SkillClamp | char [{}] skill [{}] stored [{}] sent [{}]",
+					        s.char_name, sid, value, cap);
+					value = cap;
+				}
+				pp.skills[sid] = static_cast<int8_t>(std::min(value, 252));
+			}
 		}
 	}
 
