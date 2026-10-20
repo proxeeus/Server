@@ -30,6 +30,7 @@
 #include "../common/strings.h"
 
 #include <algorithm>
+#include <array>
 #include <iterator>
 
 BotTactics bot_tactics;
@@ -55,6 +56,12 @@ constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arriv
 constexpr uint32 kCampGraceMs      = 10000; // out of camp this long, no fight = moving on
 constexpr uint32 kPullRescueMs     = 20000; // a pull this long has gone wrong
 constexpr uint32 kTankRepositionMs = 3000;  // tank turns the mob at most this often
+constexpr uint32 kFallenMaxMs      = 30 * 60 * 1000; // a fallen bot not raised by then is left to ^botspawn
+constexpr float  kRezReachDist     = 15.0f; // the rezzer casts from this close to where it fell
+constexpr float  kOomRatio         = 10.0f; // "Out of mana."
+constexpr float  kMedRatio         = 60.0f; // someone under this after a fight: "Medding"
+constexpr float  kReadyRatio       = 90.0f; // everyone back over this: "Ready."
+constexpr uint32 kCalmMs           = 3000;  // no assist target this long = the fight is over
 
 bool IsAlive(Mob* m)
 {
@@ -113,47 +120,76 @@ std::string NameOf(uint16 id)
 	return m ? m->GetCleanName() : "none";
 }
 
-// The best defensive discipline (Defensive Discipline...) a class can use at
-// a level, found the same way ^defensive finds its stances.
-uint16 DefensiveDisciplineFor(uint8 class_id, uint8 level)
+// Per class: (level, spell id) of every spell of a kind the class can cast.
+// Built once from the spell table on first use.
+using SpellLadder = std::array<std::vector<std::pair<uint8, uint16>>, Class::PLAYER_CLASS_COUNT + 1>;
+
+template <typename Pred>
+void BuildLadder(SpellLadder& ladder, Pred pred)
 {
-	static std::vector<std::pair<uint8, uint16>> by_class[Class::PLAYER_CLASS_COUNT + 1];
-	static bool built = false;
+	for (int id = 0; id < SPDAT_RECORDS; ++id) {
+		if (!IsValidSpell(id) || !pred(static_cast<uint16>(id))) {
+			continue;
+		}
 
-	if (!built) {
-		built = true;
-		for (int id = 0; id < SPDAT_RECORDS; ++id) {
-			if (!IsValidSpell(id)) {
-				continue;
-			}
-
-			const auto& s = spells[id];
-			if (s.type_description_id != 27 || !s.good_effect || s.skill != EQ::skills::SkillDefense) {
-				continue;
-			}
-
-			for (uint8 c = 1; c <= Class::PLAYER_CLASS_COUNT; ++c) {
-				const uint8 l = s.classes[c - 1];
-				if (l && l < 255) {
-					by_class[c].emplace_back(l, static_cast<uint16>(id));
-				}
+		for (uint8 c = 1; c <= Class::PLAYER_CLASS_COUNT; ++c) {
+			const uint8 l = spells[id].classes[c - 1];
+			if (l && l < 255) {
+				ladder[c].emplace_back(l, static_cast<uint16>(id));
 			}
 		}
 	}
+}
 
+// The highest-level spell of the ladder a class has at a level.
+uint16 BestOnLadder(const SpellLadder& ladder, uint8 class_id, uint8 level)
+{
 	if (class_id < 1 || class_id > Class::PLAYER_CLASS_COUNT) {
 		return 0;
 	}
 
 	uint16 best       = 0;
 	uint8  best_level = 0;
-	for (const auto& e : by_class[class_id]) {
+	for (const auto& e : ladder[class_id]) {
 		if (e.first <= level && e.first >= best_level) {
 			best       = e.second;
 			best_level = e.first;
 		}
 	}
 	return best;
+}
+
+// The best defensive discipline (Defensive Discipline...) a class can use at
+// a level, found the same way ^defensive finds its stances.
+uint16 DefensiveDisciplineFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const auto& s = spells[id];
+			return s.type_description_id == 27 && s.good_effect && s.skill == EQ::skills::SkillDefense;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// The best resurrect (Revive effect) a class can cast at a level.
+uint16 ResurrectSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) { return IsEffectInSpell(id, SE_Revive); });
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+bool UsesMana(Mob* m)
+{
+	return m->GetMaxMana() > 0 && m->GetClass() != Class::Bard;
 }
 
 } // namespace
@@ -518,6 +554,143 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	auto alive_member = [&](uint16 id) -> Mob* {
+		if (!id) {
+			return nullptr;
+		}
+		for (Mob* m : mobs) {
+			if (m->GetID() == id) {
+				return IsAlive(m) ? m : nullptr;
+			}
+		}
+		return nullptr;
+	};
+
+	// ---- fallen bots ----
+
+	// Back already (^botspawn by hand), or down too long: not ours any more.
+	p.fallen.erase(
+		std::remove_if(
+			p.fallen.begin(), p.fallen.end(), [&](const BotTacticsPlan::Fallen& f) {
+				return entity_list.GetMobByBotID(f.bot_id) != nullptr || now - f.died_ms > kFallenMaxMs;
+			}
+		),
+		p.fallen.end()
+	);
+
+	// Not fighting for a few seconds: not just the gap between two mobs.
+	const bool calm = !assist && now - p.assist_since_ms >= kCalmMs;
+
+	for (auto& f : p.fallen) {
+		if (!calm) {
+			f.rez_done_ms = 0; // a fight interrupts a resurrect; it starts over after
+			continue;
+		}
+
+		if (!alive_member(f.rezzer_id)) {
+			f.rezzer_id   = 0;
+			f.rez_done_ms = 0;
+		}
+		if (f.rezzer_id) {
+			continue;
+		}
+
+		// The nearest bot that can resurrect and is not raising someone else.
+		Mob*  best   = nullptr;
+		float best_d = 0.0f;
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m) || !IsValidSpell(ResurrectSpellFor(m->GetClass(), m->GetLevel()))) {
+				continue;
+			}
+
+			const bool busy = std::any_of(
+				p.fallen.begin(), p.fallen.end(), [&](const BotTacticsPlan::Fallen& o) {
+					return o.rezzer_id == m->GetID();
+				}
+			);
+			if (busy) {
+				continue;
+			}
+
+			const float d = DistanceSquaredNoZ(glm::vec3(m->GetPosition()), f.pos);
+			if (!best || d < best_d) {
+				best   = m;
+				best_d = d;
+			}
+		}
+
+		if (best) {
+			f.rezzer_id = best->GetID();
+			LogInfo("[BotTactics] unit [{:#x}] [{}] will resurrect [{}]", p.key, best->GetCleanName(), f.name);
+		}
+	}
+
+	// ---- recovery calls ----
+
+	if (assist && !old_assist) {
+		p.oom_called.clear();
+		p.recovering         = false;
+		p.recovery_announced = false;
+	}
+
+	if (assist) {
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m) || !UsesMana(m) || m->GetManaRatio() >= kOomRatio) {
+				continue;
+			}
+			if (std::find(p.oom_called.begin(), p.oom_called.end(), m->GetID()) != p.oom_called.end()) {
+				continue;
+			}
+
+			p.oom_called.push_back(m->GetID());
+			LogInfo("[BotTactics] unit [{:#x}] [{}] out of mana", p.key, m->GetCleanName());
+			Announce(raid, group, m, "Out of mana.");
+		}
+	}
+	else if (old_assist) {
+		p.recovering         = true;
+		p.recovery_announced = false;
+	}
+
+	if (p.recovering && calm) {
+		// The bot furthest from ready, on health or on mana.
+		Mob*        lowest       = nullptr;
+		float       lowest_ratio = 101.0f;
+		const char* what         = "health";
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+			if (m->GetHPRatio() < lowest_ratio) {
+				lowest       = m;
+				lowest_ratio = m->GetHPRatio();
+				what         = "health";
+			}
+			if (UsesMana(m) && m->GetManaRatio() < lowest_ratio) {
+				lowest       = m;
+				lowest_ratio = m->GetManaRatio();
+				what         = "mana";
+			}
+		}
+
+		if (!p.recovery_announced) {
+			if (lowest && lowest_ratio < kMedRatio) {
+				p.recovery_announced  = true;
+				p.recovery_speaker_id = lowest->GetID();
+				Announce(raid, group, lowest, fmt::format("Medding, {:.0f}% {}.", lowest_ratio, what));
+			}
+			else {
+				p.recovering = false; // nobody low: nothing to say
+			}
+		}
+		else if ((!lowest || lowest_ratio >= kReadyRatio) && p.fallen.empty()) {
+			Mob* speaker = alive_member(p.recovery_speaker_id);
+			Announce(raid, group, speaker ? speaker : first_bot, "Ready.");
+			LogInfo("[BotTactics] unit [{:#x}] ready", p.key);
+			p.recovering = false;
+		}
+	}
+
 	// ---- adds, and who holds them ----
 
 	// Scanned around the tank, or around a bot when the unit has no tank.
@@ -729,6 +902,30 @@ void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
 	LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: {}", key, NameOf(caster_id), why);
 	p->chain_next    = (p->chain_next + 1) % p->chain.size();
 	p->chain_next_ms = Timer::GetCurrentTime();
+}
+
+void BotTactics::NoteFallen(uint32 key, Bot* bot)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p || !bot || !bot->GetBotID()) {
+		return;
+	}
+
+	for (const auto& f : p->fallen) {
+		if (f.bot_id == bot->GetBotID()) {
+			return;
+		}
+	}
+
+	BotTacticsPlan::Fallen f;
+	f.bot_id        = bot->GetBotID();
+	f.owner_char_id = bot->GetBotOwnerCharacterID();
+	f.name          = bot->GetCleanName();
+	f.pos           = glm::vec3(bot->GetPosition());
+	f.died_ms       = Timer::GetCurrentTime();
+	p->fallen.push_back(f);
+
+	LogInfo("[BotTactics] unit [{:#x}] [{}] fell at [{:.0f}, {:.0f}, {:.0f}]", key, f.name, f.pos.x, f.pos.y, f.pos.z);
 }
 
 bool BotTactics::ClaimMez(uint32 key, uint16 add_id, uint16 caster_id)
@@ -1104,6 +1301,91 @@ void Bot::TacticsTankChecks(Mob* tar)
 	if (holding && (tar->IsRaidTarget() || GetHPRatio() < 40.0f)) {
 		TryDefensiveDiscipline();
 	}
+}
+
+bool Bot::TryTacticsResurrect()
+{
+	BotTacticsPlan* p = m_tactics_key ? bot_tactics.Find(m_tactics_key) : nullptr;
+	if (!p || p->assist_target_id) {
+		return false;
+	}
+
+	for (size_t i = 0; i < p->fallen.size(); ++i) {
+		auto& f = p->fallen[i];
+		if (f.rezzer_id != GetID()) {
+			continue;
+		}
+
+		const uint16 spell_id = ResurrectSpellFor(GetClass(), GetLevel());
+		if (!IsValidSpell(spell_id)) {
+			f.rezzer_id = 0; // the next rebuild finds someone else
+			return false;
+		}
+
+		const uint32 now = Timer::GetCurrentTime();
+
+		// Walk to where it fell, then cast there.
+		if (!f.rez_done_ms) {
+			if (DistanceSquaredNoZ(glm::vec3(m_Position), f.pos) > kRezReachDist * kRezReachDist) {
+				if (AI_movement_timer->Check()) {
+					if (IsSitting()) {
+						Stand();
+					}
+					RunTo(f.pos.x, f.pos.y, f.pos.z);
+				}
+				return true;
+			}
+
+			if (IsMoving()) {
+				StopMoving();
+			}
+			if (IsSitting()) {
+				Stand();
+			}
+
+			// No corpse to target (bots leave none): play the cast for its
+			// cast time, then bring the bot back.
+			const uint32 cast_ms = std::clamp<uint32>(spells[spell_id].cast_time, 3000, 20000);
+			f.rez_done_ms        = now + cast_ms;
+			SendBeginCast(spell_id, cast_ms);
+			BotGroupSay(this, "Resurrecting %s.", f.name.c_str());
+			LogInfo("[BotTactics] [{}] resurrecting [{}] with [{}]", GetCleanName(), f.name, spells[spell_id].name);
+			return true;
+		}
+
+		if (now < f.rez_done_ms) {
+			return true; // casting: hold still
+		}
+
+		const BotTacticsPlan::Fallen done = f;
+		p->fallen.erase(p->fallen.begin() + static_cast<std::ptrdiff_t>(i));
+
+		Client* owner = entity_list.GetClientByCharID(done.owner_char_id);
+		if (!owner || entity_list.GetMobByBotID(done.bot_id)) {
+			return true; // owner gone, or already back by hand
+		}
+
+		Bot* raised = Bot::LoadBot(done.bot_id);
+		if (!raised) {
+			return true;
+		}
+		if (!raised->Spawn(owner)) {
+			safe_delete(raised);
+			return true;
+		}
+
+		// Spawn puts it on the owner and rejoins its group/raid slot; move it
+		// to where it fell, low, like anyone fresh off a resurrect.
+		raised->Teleport(glm::vec4(done.pos, GetHeading()));
+		raised->SetHP(std::max<int64>(1, raised->GetMaxHP() / 5));
+		raised->SetMana(raised->GetMaxMana() / 5);
+		raised->SendHPUpdate();
+
+		LogInfo("[BotTactics] [{}] resurrected [{}]", GetCleanName(), done.name);
+		return true;
+	}
+
+	return false;
 }
 
 bool Bot::TacticsPullActive() const

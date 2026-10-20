@@ -923,6 +923,7 @@ public:
 	void TacticsTankChecks(Mob* tar);
 	void TryDefensiveDiscipline();
 	bool TacticsPullActive() const;        // the player is pulling: hold camp
+	bool TryTacticsResurrect();            // raise a fallen bot after the fight
 	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
 	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
 

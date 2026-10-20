@@ -2460,6 +2460,12 @@ void Bot::AI_Process()
 			SetReturningFlag(false);
 		}
 
+// TACTICS: RESURRECT A FALLEN BOT (after the fight, if we were picked)
+
+		if (TryTacticsResurrect()) {
+			return;
+		}
+
 // TACTICS: ASSIST (join the tank's fight, or hold our add, without ^attack)
 
 		if (TryTacticsAssist(leash_owner, leash_distance)) {
@@ -5661,6 +5667,9 @@ bool Bot::Death(Mob *killer_mob, int64 damage, uint16 spell_id, EQ::skills::Skil
 	// [19.13] And one groupmate who saw it answers. Same placement constraint as
 	// OnChatDeath: the group has to still hold this bot for the scope to form.
 	playerbot_chat.NotifyGroupDeath(this);
+
+	// Remembered so a groupmate can resurrect us after the fight (bot_tactics.cpp).
+	bot_tactics.NoteFallen(m_tactics_key, this);
 
 	Zone();
 	entity_list.RemoveBot(GetID());

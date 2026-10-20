@@ -49,6 +49,9 @@
  *   - camp: the spot of the first fight. Bots stand on a ring around it
  *     between fights, hold it while the player pulls, and the main tank
  *     turns the mob so its back is to the group.
+ *   - recovery: fallen bots are resurrected after the fight by a bot that
+ *     can; casters call "Out of mana" once a fight; after it, one "Medding"
+ *     and one "Ready" line tell the player when to pull.
  *
  * The plan never orders a human: it plans around whatever the player plays.
  * Plans live in a node-based map, so a plan pointer stays valid until the
@@ -101,6 +104,28 @@ struct BotTacticsPlan {
 	uint32              pull_start_ms  = 0;
 	std::vector<uint16> camp_slots;              // bot ids, in ring order
 
+	// Recovery (phase 5). A bot that dies leaves no corpse (Bot::Death saves
+	// and depops it, its group slot kept by name); after the fight a bot of
+	// the unit with a resurrect spell walks to where it fell, casts, and it
+	// comes back there.
+	struct Fallen {
+		uint32      bot_id        = 0;
+		uint32      owner_char_id = 0;
+		std::string name;
+		glm::vec3   pos           = glm::vec3(0.0f);
+		uint32      died_ms       = 0;
+		uint16      rezzer_id     = 0;
+		uint32      rez_done_ms   = 0;           // 0 = not casting yet
+	};
+	std::vector<Fallen> fallen;
+
+	// After a fight: one "Medding" line when someone is low, one "Ready"
+	// line once everyone is back up. One "Out of mana" per caster per fight.
+	bool                recovering          = false;
+	bool                recovery_announced  = false;
+	uint16              recovery_speaker_id = 0;
+	std::vector<uint16> oom_called;
+
 	// Complete heal chain
 	std::vector<uint16> chain;                     // cleric ids, in casting order
 	uint16              chain_target_id   = 0;
@@ -134,6 +159,9 @@ public:
 
 	// False when another caster claimed this add within the last few seconds.
 	bool ClaimMez(uint32 key, uint16 add_id, uint16 caster_id);
+
+	// Bot::Death, before the bot leaves the zone.
+	void NoteFallen(uint32 key, Bot* bot);
 
 	// ^tactics overrides, per unit. They last as long as the group or raid.
 	void SetEnabled(uint32 key, bool on);
