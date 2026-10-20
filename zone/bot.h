@@ -924,6 +924,10 @@ public:
 	void TryDefensiveDiscipline();
 	bool TacticsPullActive() const;        // the player is pulling: hold camp
 	bool TryTacticsResurrect();            // raise a fallen bot after the fight
+	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
+	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
+	bool TacticsPlayerSlowsFirst(Mob* tar) const;
+	bool TacticsPlayerMezzesFirst(uint16 add_id) const;
 	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
 	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
 
@@ -1019,6 +1023,7 @@ private:
 	glm::vec3 m_camp_slot_camp       = glm::vec3(0.0f);
 	uint32    m_camp_slot_sig        = 0xFFFFFFFF;
 	uint32    m_tank_reposition_ms   = 0;
+	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

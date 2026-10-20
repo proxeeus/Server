@@ -8342,6 +8342,11 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 				return false;
 		}
 
+		// With a shared plan: our group, then the rest of the raid (bot_tactics.cpp).
+		if (caster->GetTacticsPlan()) {
+			return caster->TacticsBeneficial(SpellType_Buff, chanceToCast);
+		}
+
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 			uint32 g = raid->GetGroup(caster->GetName());
@@ -8369,6 +8374,11 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 	}
 
 	if (iSpellTypes == SpellType_Cure) {
+		// With a shared plan: our group, then anyone in the raid who needs it.
+		if (caster->GetTacticsPlan()) {
+			return caster->TacticsBeneficial(SpellType_Cure, caster->GetChanceToCastBySpellType(SpellType_Cure));
+		}
+
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 			uint32 gid = raid->GetGroup(caster->GetName());

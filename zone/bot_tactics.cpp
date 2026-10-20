@@ -41,6 +41,10 @@ constexpr uint32 kRebuildMs        = 1000;
 constexpr uint32 kSweepMs          = 30000;
 constexpr uint32 kStalePlanMs      = 60000;
 constexpr uint32 kChainSkipGraceMs = 2500;  // late by this much: the next cleric goes
+constexpr uint32 kChainPlayerGraceMs = 4000; // a player gets this long to start their CH
+constexpr uint32 kPlayerFirstSlowMs  = 6000; // a player slower's head start on the main target
+constexpr uint32 kPlayerFirstMezMs   = 4000; // a player mezzer's head start on a fresh add
+constexpr size_t kOutsiderBuffChecks = 6;    // raid members of other groups looked at per buff check
 constexpr uint8  kChainMinLevel    = 39;    // Complete Healing
 constexpr size_t kChainMax         = 6;
 constexpr uint32 kChainSpanMs      = 12000; // one CH (10s) per cleric plus slack
@@ -729,11 +733,27 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		it = now > it->second.second ? p.mez_claims.erase(it) : std::next(it);
 	}
 
-	p.has_mezzer = false;
+	for (auto it = p.cast_claims.begin(); it != p.cast_claims.end();) {
+		it = now > it->second.second ? p.cast_claims.erase(it) : std::next(it);
+	}
+
+	p.has_mezzer   = false;
+	p.human_mezzer = false;
+	p.human_slower = false;
 	for (Mob* m : mobs) {
-		if (IsAlive(m) && (m->GetClass() == Class::Enchanter || m->GetClass() == Class::Bard)) {
+		if (!IsAlive(m)) {
+			continue;
+		}
+
+		const uint8 c = m->GetClass();
+		if (c == Class::Enchanter || c == Class::Bard) {
 			p.has_mezzer = true;
-			break;
+			if (m->IsClient()) {
+				p.human_mezzer = true;
+			}
+		}
+		if (m->IsClient() && (c == Class::Shaman || c == Class::Enchanter || c == Class::Beastlord)) {
+			p.human_slower = true;
 		}
 	}
 
@@ -769,18 +789,21 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	// ---- complete heal chain ----
 
+	// Bots and players alike: a player cleric is called on their turn.
 	std::vector<uint16> eligible;
 	for (Mob* m : mobs) {
-		if (!m->IsBot() || m->GetClass() != Class::Cleric || m->GetLevel() < kChainMinLevel || !IsAlive(m)) {
+		if (m->GetClass() != Class::Cleric || m->GetLevel() < kChainMinLevel || !IsAlive(m)) {
 			continue;
 		}
 
 		// A hand-built ^healrotation keeps its clerics.
-		if (m->CastToBot()->IsHealRotationMember()) {
+		if (m->IsBot() && m->CastToBot()->IsHealRotationMember()) {
 			continue;
 		}
 
-		eligible.push_back(m->GetID());
+		if (m->IsBot() || m->IsClient()) {
+			eligible.push_back(m->GetID());
+		}
 	}
 
 	// Keep the order the chain already has, so turns do not reshuffle every
@@ -872,12 +895,32 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		return;
 	}
 
+	// A player cleric's turn: tell them, and take any complete heal they
+	// start as the turn. Bots take theirs in TacticsChainCheck.
+	Mob*       current     = alive_member(p.ChainCurrent());
+	const bool player_turn = current && current->IsClient();
+	if (player_turn && now >= p.chain_next_ms) {
+		if (current->IsCasting() && IsCompleteHealSpell(current->CastingSpellID())) {
+			p.chain_next      = (p.chain_next + 1) % p.chain.size();
+			p.chain_next_ms   = now + p.chain_interval_ms;
+			p.chain_called_id = 0;
+			return;
+		}
+
+		if (p.chain_called_id != current->GetID()) {
+			p.chain_called_id = current->GetID();
+			current->CastToClient()->Message(Chat::Yellow, "Your CH: %s.", NameOf(p.chain_target_id).c_str());
+		}
+	}
+
 	// A cleric that is stunned, walking, or simply late does not hold the
-	// chain up: the next one goes.
-	if (now > p.chain_next_ms + kChainSkipGraceMs) {
+	// chain up: the next one goes. A player gets a little longer to react.
+	const uint32 grace = player_turn ? kChainPlayerGraceMs : kChainSkipGraceMs;
+	if (now > p.chain_next_ms + grace) {
 		LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: late", p.key, NameOf(p.ChainCurrent()));
-		p.chain_next    = (p.chain_next + 1) % p.chain.size();
-		p.chain_next_ms = now;
+		p.chain_next      = (p.chain_next + 1) % p.chain.size();
+		p.chain_next_ms   = now;
+		p.chain_called_id = 0;
 	}
 }
 
@@ -888,8 +931,9 @@ void BotTactics::ChainCast(uint32 key, uint16 caster_id)
 		return;
 	}
 
-	p->chain_next    = (p->chain_next + 1) % p->chain.size();
-	p->chain_next_ms = Timer::GetCurrentTime() + p->chain_interval_ms;
+	p->chain_next      = (p->chain_next + 1) % p->chain.size();
+	p->chain_next_ms   = Timer::GetCurrentTime() + p->chain_interval_ms;
+	p->chain_called_id = 0;
 }
 
 void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
@@ -900,8 +944,27 @@ void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
 	}
 
 	LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: {}", key, NameOf(caster_id), why);
-	p->chain_next    = (p->chain_next + 1) % p->chain.size();
-	p->chain_next_ms = Timer::GetCurrentTime();
+	p->chain_next      = (p->chain_next + 1) % p->chain.size();
+	p->chain_next_ms   = Timer::GetCurrentTime();
+	p->chain_called_id = 0;
+}
+
+bool BotTactics::ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return true;
+	}
+
+	const uint64 claim = (static_cast<uint64>(target_id) << 32) | tag;
+	const uint32 now   = Timer::GetCurrentTime();
+	const auto   it    = p->cast_claims.find(claim);
+	if (it != p->cast_claims.end() && it->second.first != caster_id && now <= it->second.second) {
+		return false;
+	}
+
+	p->cast_claims[claim] = {caster_id, now + hold_ms};
+	return true;
 }
 
 void BotTactics::NoteFallen(uint32 key, Bot* bot)
@@ -1301,6 +1364,93 @@ void Bot::TacticsTankChecks(Mob* tar)
 	if (holding && (tar->IsRaidTarget() || GetHPRatio() < 40.0f)) {
 		TryDefensiveDiscipline();
 	}
+}
+
+bool Bot::TacticsBeneficial(uint32 spell_type, uint8 chance)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p) {
+		return false;
+	}
+
+	const bool   cure     = spell_type == SpellType_Cure;
+	const bool   in_raid  = !p->raid_group.empty();
+	const uint32 my_group = p->RaidGroupOf(GetID());
+
+	auto try_member = [&](Mob* m) -> bool {
+		if (!IsAlive(m)) {
+			return false;
+		}
+
+		if (cure) {
+			if (GetNeedsCured(m) && AICastSpell(m, chance, SpellType_Cure)) {
+				return true;
+			}
+			Mob* pet = m->GetPet();
+			return pet && GetNeedsCured(pet) && AICastSpell(pet, chance / 4, SpellType_Cure);
+		}
+
+		return AICastSpell(m, chance, SpellType_Buff) || AICastSpell(m->GetPet(), chance, SpellType_Buff);
+	};
+
+	// Our own group first, as before...
+	for (uint16 id : p->members) {
+		if (in_raid && p->RaidGroupOf(id) != my_group) {
+			continue;
+		}
+		if (try_member(entity_list.GetMob(id))) {
+			return true;
+		}
+	}
+
+	if (!in_raid || p->members.empty()) {
+		return false;
+	}
+
+	// ...then the rest of the raid: everyone for cures, a few in turn for
+	// buffs, so thirty buffers do not each walk seventy members every check.
+	const size_t n      = p->members.size();
+	const size_t checks = cure ? n : std::min(n, kOutsiderBuffChecks);
+	for (size_t k = 0; k < checks; ++k) {
+		const uint16 id = p->members[m_tactics_cursor++ % n];
+		if (p->RaidGroupOf(id) == my_group) {
+			continue;
+		}
+		if (try_member(entity_list.GetMob(id))) {
+			return true;
+		}
+	}
+
+	return false;
+}
+
+bool Bot::TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id)
+{
+	if (!tar || !m_tactics_key || !IsValidSpell(spell_id)) {
+		return true;
+	}
+	return bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), tag, GetID(), spells[spell_id].cast_time + 2000);
+}
+
+bool Bot::TacticsPlayerSlowsFirst(Mob* tar) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	return p &&
+		p->human_slower &&
+		tar &&
+		tar->GetID() == p->assist_target_id &&
+		Timer::GetCurrentTime() - p->assist_since_ms < kPlayerFirstSlowMs;
+}
+
+bool Bot::TacticsPlayerMezzesFirst(uint16 add_id) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->human_mezzer) {
+		return false;
+	}
+
+	const auto it = p->add_seen_ms.find(add_id);
+	return it != p->add_seen_ms.end() && Timer::GetCurrentTime() - it->second < kPlayerFirstMezMs;
 }
 
 bool Bot::TryTacticsResurrect()

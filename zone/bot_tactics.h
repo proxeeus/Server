@@ -52,6 +52,9 @@
  *   - recovery: fallen bots are resurrected after the fight by a bot that
  *     can; casters call "Out of mana" once a fight; after it, one "Medding"
  *     and one "Ready" line tell the player when to pull.
+ *   - roles: buffs and cures cover the whole raid (own group first); one
+ *     slow / one of each debuff per mob; a player who slows or mezzes gets
+ *     the first go, and a player cleric is called on their CH chain turn.
  *
  * The plan never orders a human: it plans around whatever the player plays.
  * Plans live in a node-based map, so a plan pointer stays valid until the
@@ -133,6 +136,17 @@ struct BotTacticsPlan {
 	size_t              chain_next        = 0;     // index into chain
 	uint32              chain_next_ms     = 0;     // when chain[chain_next] should start
 	bool                chain_active      = false;
+	uint16              chain_called_id   = 0;     // the player told "Your CH" this turn
+
+	// Fitting around the player (phase 6): a player who slows, or mezzes,
+	// gets the first go at it; bots cover when they have not.
+	bool human_slower = false;
+	bool human_mezzer = false;
+
+	// Debuff claims: (target id << 32 | tag) -> (caster id, until). Tag = a
+	// spell id, or kClaimSlow for any slow: one slow or one Tash in the air
+	// per mob, never two of the same.
+	std::unordered_map<uint64, std::pair<uint16, uint32>> cast_claims;
 
 	bool   IsMember(uint16 id) const;
 	bool   IsMainTank(uint16 id) const { return id && id == main_tank_id; }
@@ -159,6 +173,10 @@ public:
 
 	// False when another caster claimed this add within the last few seconds.
 	bool ClaimMez(uint32 key, uint16 add_id, uint16 caster_id);
+
+	// False when another caster has the same debuff (tag) in the air on target.
+	bool ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms);
+	static constexpr uint32 kClaimSlow = 0x10000; // above every spell id
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

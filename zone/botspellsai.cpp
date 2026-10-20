@@ -323,7 +323,8 @@ bool Bot::BotCastDebuff(Mob* tar, uint8 botLevel, BotSpell& botSpell, bool check
 			return casted_spell;
 		}
 
-		if (IsValidSpellRange(botSpell.SpellId, tar)) {
+		// One of each debuff in the air per mob: two Tashes never, Tash + Malo yes.
+		if (IsValidSpellRange(botSpell.SpellId, tar) && TacticsClaimCast(tar, botSpell.SpellId, botSpell.SpellId)) {
 			casted_spell = AIDoSpellCast(botSpell.SpellIndex, tar, botSpell.ManaCost);
 		}
 	}
@@ -335,6 +336,11 @@ bool Bot::BotCastSlow(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 	if (tar->GetHPRatio() <= 99.0f) {
 
 		if (!checked_los && (!CheckLosFN(tar) || !CheckWaterLoS(tar))) {
+			return casted_spell;
+		}
+
+		// A player who slows gets the first go at the main target.
+		if (TacticsPlayerSlowsFirst(tar)) {
 			return casted_spell;
 		}
 
@@ -366,7 +372,8 @@ bool Bot::BotCastSlow(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 					continue;
 				}
 
-				if (IsValidSpellRange(iter.SpellId, tar)) {
+				// One slow in the air per mob (bot_tactics.cpp)
+				if (IsValidSpellRange(iter.SpellId, tar) && TacticsClaimCast(tar, BotTactics::kClaimSlow, iter.SpellId)) {
 					casted_spell = AIDoSpellCast(iter.SpellIndex, tar, iter.ManaCost);
 				}
 
@@ -398,7 +405,8 @@ bool Bot::BotCastSlow(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 		if (!(!tar->IsImmuneToSpell(botSpell.SpellId, this) && tar->CanBuffStack(botSpell.SpellId, botLevel, true) >= 0)) {
 			return casted_spell;
 		}
-		if (IsValidSpellRange(botSpell.SpellId, tar)) {
+		// One slow in the air per mob (bot_tactics.cpp)
+		if (IsValidSpellRange(botSpell.SpellId, tar) && TacticsClaimCast(tar, BotTactics::kClaimSlow, botSpell.SpellId)) {
 			casted_spell = AIDoSpellCast(botSpell.SpellIndex, tar, botSpell.ManaCost);
 		}
 
@@ -1279,6 +1287,7 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 				!m ||
 				m->IsMezzed() ||
 				id == plan->assist_target_id ||
+				TacticsPlayerMezzesFirst(id) ||  // a player enchanter's add, for now
 				m->IsImmuneToSpell(botSpell.SpellId, this) ||
 				m->CanBuffStack(botSpell.SpellId, botLevel, true) < 0 ||
 				!bot_tactics.ClaimMez(plan->key, id, GetID())
