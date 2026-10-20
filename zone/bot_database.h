@@ -37,6 +37,17 @@ namespace EQ
 	class InventoryProfile;
 }
 
+// One row of `bot_vault`: a bot-bound item the bot is not wearing.
+struct BotVaultItem {
+	uint32      vault_id = 0;
+	uint32      item_id  = 0;
+	uint16      charges  = 0;
+	uint32      color    = 0;
+	bool        attuned  = false;
+	std::string custom_data;
+	uint32      augment[6] = { 0, 0, 0, 0, 0, 0 };
+};
+
 
 class BotDatabase
 {
@@ -85,6 +96,14 @@ public:
 	bool LoadItemBySlot(const uint32 bot_id, const uint32 slot_id, uint32& item_id);
 	bool SaveItemBySlot(Bot* b, const uint32 slot_id, const EQ::ItemInstance* inst);
 	bool DeleteItemBySlot(const uint32 bot_id, const uint32 slot_id);
+
+	/* Bot vault functions (utils/sql/git/bots/optional/2026_10_20_bots_bot_vault.sql) */
+	bool SaveVaultItem(const uint32 bot_id, const EQ::ItemInstance* inst, uint32& vault_id);
+	bool LoadVaultItems(const uint32 bot_id, std::vector<BotVaultItem>& items);
+	bool LoadVaultItem(const uint32 bot_id, const uint32 vault_id, BotVaultItem& item);
+	bool DeleteVaultItem(const uint32 bot_id, const uint32 vault_id);
+	bool DeleteVault(const uint32 bot_id);
+	EQ::ItemInstance* CreateVaultItemInstance(const BotVaultItem& e);
 
 	bool SaveEquipmentColor(const uint32 bot_id, const int16 slot_id, const uint32 color);
 

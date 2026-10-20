@@ -45,6 +45,7 @@
 #include "client.h"
 
 #include <fmt/format.h>
+#include <algorithm>
 
 
 bool BotDatabase::LoadBotCommandSettings(std::map<std::string, std::pair<uint8, std::vector<std::string>>> &bot_command_settings)
@@ -1046,7 +1047,15 @@ bool BotDatabase::DeleteItems(const uint32 bot_id)
 		return false;
 	}
 
-	BotInventoriesRepository::DeleteOne(database, bot_id);
+	// DeleteOne() keys on inventories_index, not bot_id: it removed one
+	// unrelated row of some other bot and left this bot's rows behind.
+	BotInventoriesRepository::DeleteWhere(
+		database,
+		fmt::format(
+			"`bot_id` = {}",
+			bot_id
+		)
+	);
 
 	return true;
 }
@@ -1170,6 +1179,191 @@ bool BotDatabase::DeleteItemBySlot(const uint32 bot_id, const uint32 slot_id)
 	);
 
 	return true;
+}
+
+bool BotDatabase::SaveVaultItem(const uint32 bot_id, const EQ::ItemInstance* inst, uint32& vault_id)
+{
+	vault_id = 0;
+
+	if (!bot_id || !inst || !inst->GetID()) {
+		return false;
+	}
+
+	const uint16 charges = inst->GetCharges() >= 0 ? inst->GetCharges() : INT16_MAX;
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"INSERT INTO `bot_vault` (`bot_id`, `item_id`, `charges`, `color`, `attuned`, `custom_data`, "
+			"`augment_1`, `augment_2`, `augment_3`, `augment_4`, `augment_5`, `augment_6`) "
+			"VALUES ({}, {}, {}, {}, {}, '{}', {}, {}, {}, {}, {}, {})",
+			bot_id,
+			inst->GetID(),
+			charges,
+			inst->GetColor(),
+			inst->IsAttuned() ? 1 : 0,
+			Strings::Escape(inst->GetCustomDataString()),
+			inst->GetAugmentItemID(0),
+			inst->GetAugmentItemID(1),
+			inst->GetAugmentItemID(2),
+			inst->GetAugmentItemID(3),
+			inst->GetAugmentItemID(4),
+			inst->GetAugmentItemID(5)
+		)
+	);
+
+	if (!results.Success() || !results.LastInsertedID()) {
+		LogError(
+			"[BotVault] failed to vault item_id [{}] for bot_id [{}] (is 2026_10_20_bots_bot_vault.sql applied?)",
+			inst->GetID(),
+			bot_id
+		);
+		return false;
+	}
+
+	vault_id = results.LastInsertedID();
+
+	return true;
+}
+
+static void ReadVaultRow(MySQLRequestRow& row, BotVaultItem& e)
+{
+	e.vault_id    = Strings::ToUnsignedInt(row[0]);
+	e.item_id     = Strings::ToUnsignedInt(row[1]);
+	e.charges     = static_cast<uint16>(Strings::ToUnsignedInt(row[2]));
+	e.color       = Strings::ToUnsignedInt(row[3]);
+	e.attuned     = Strings::ToUnsignedInt(row[4]) != 0;
+	e.custom_data = row[5] ? row[5] : "";
+
+	for (int i = 0; i < 6; ++i) {
+		e.augment[i] = Strings::ToUnsignedInt(row[6 + i]);
+	}
+}
+
+static const char* const kVaultColumns =
+	"`vault_id`, `item_id`, `charges`, `color`, `attuned`, `custom_data`, "
+	"`augment_1`, `augment_2`, `augment_3`, `augment_4`, `augment_5`, `augment_6`";
+
+bool BotDatabase::LoadVaultItems(const uint32 bot_id, std::vector<BotVaultItem>& items)
+{
+	if (!bot_id) {
+		return false;
+	}
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"SELECT {} FROM `bot_vault` WHERE `bot_id` = {} ORDER BY `vault_id`",
+			kVaultColumns,
+			bot_id
+		)
+	);
+
+	if (!results.Success()) {
+		return false;
+	}
+
+	for (auto row : results) {
+		BotVaultItem e;
+		ReadVaultRow(row, e);
+		items.push_back(e);
+	}
+
+	return true;
+}
+
+bool BotDatabase::LoadVaultItem(const uint32 bot_id, const uint32 vault_id, BotVaultItem& item)
+{
+	if (!bot_id || !vault_id) {
+		return false;
+	}
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"SELECT {} FROM `bot_vault` WHERE `bot_id` = {} AND `vault_id` = {} LIMIT 1",
+			kVaultColumns,
+			bot_id,
+			vault_id
+		)
+	);
+
+	if (!results.Success() || !results.RowCount()) {
+		return false;
+	}
+
+	ReadVaultRow(results.begin(), item);
+
+	return true;
+}
+
+bool BotDatabase::DeleteVaultItem(const uint32 bot_id, const uint32 vault_id)
+{
+	if (!bot_id || !vault_id) {
+		return false;
+	}
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"DELETE FROM `bot_vault` WHERE `bot_id` = {} AND `vault_id` = {}",
+			bot_id,
+			vault_id
+		)
+	);
+
+	return results.Success() && results.RowsAffected() == 1;
+}
+
+bool BotDatabase::DeleteVault(const uint32 bot_id)
+{
+	if (!bot_id) {
+		return false;
+	}
+
+	auto results = database.QueryDatabase(
+		fmt::format(
+			"DELETE FROM `bot_vault` WHERE `bot_id` = {}",
+			bot_id
+		)
+	);
+
+	// A server without the table has nothing to delete.
+	return results.Success() || results.ErrorNumber() == 1146;
+}
+
+EQ::ItemInstance* BotDatabase::CreateVaultItemInstance(const BotVaultItem& e)
+{
+	auto inst = database.CreateItem(
+		e.item_id,
+		e.charges,
+		e.augment[0],
+		e.augment[1],
+		e.augment[2],
+		e.augment[3],
+		e.augment[4],
+		e.augment[5],
+		e.attuned
+	);
+
+	if (!inst) {
+		return nullptr;
+	}
+
+	// Same charge rules as LoadItems().
+	if (e.charges == INT16_MAX) {
+		inst->SetCharges(-1);
+	} else if (e.charges == 0 && inst->IsStackable()) {
+		inst->SetCharges(1);
+	} else {
+		inst->SetCharges(e.charges);
+	}
+
+	if (e.color) {
+		inst->SetColor(e.color);
+	}
+
+	if (!e.custom_data.empty()) {
+		inst->SetCustomDataString(e.custom_data);
+	}
+
+	return inst;
 }
 
 bool BotDatabase::SaveEquipmentColor(const uint32 bot_id, const int16 slot_id, const uint32 color)
@@ -1761,6 +1955,17 @@ bool BotDatabase::CreateCloneBotInventory(const uint32 bot_id, const uint32 clon
 			"`bot_id` = {}",
 			bot_id
 		)
+	);
+
+	// Owner gifts stay with the original: a cloned copy would also be
+	// returnable, duplicating the item.  Bot-bound gear is copied (still
+	// bot-bound); the vault is not.
+	std::erase_if(
+		l,
+		[](const BotInventoriesRepository::BotInventories& e) {
+			const auto parts = Strings::Split(e.inst_custom_data, "^");
+			return std::find(parts.begin(), parts.end(), Bot::OWNER_GIFT_KEY) != parts.end();
+		}
 	);
 
 	if (l.empty()) {

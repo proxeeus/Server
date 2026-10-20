@@ -65,10 +65,42 @@ void bot_command_invite(Client* bot_owner, const Seperator* sep)
 				Log(Logs::General, Logs::Error, "NPC::QueryLoot() - ItemList error, null item");
 				continue;
 			}
-			if (!(*cur)->item_id || !database.GetItem((*cur)->item_id)) {
+			const auto* item_data = (*cur)->item_id ? database.GetItem((*cur)->item_id) : nullptr;
+			if (!item_data) {
 				Log(Logs::General, Logs::Error, "NPC::QueryLoot() - Database error, invalid item");
 				continue;
 			}
+
+			// Everything copied here is bot-bound (no owner-gift tag): it was
+			// the PlayerBot's, never the player's.  Carried-but-not-worn gear
+			// goes to the bot's vault; carried junk is not kept.  (These used
+			// to land in bot_inventories at an invalid slot that never loads.)
+			if (!EQ::ValueWithin((*cur)->equip_slot, EQ::invslot::EQUIPMENT_BEGIN, EQ::invslot::EQUIPMENT_END)) {
+				if (!item_data->IsClassCommon() || !item_data->Slots) {
+					continue;
+				}
+
+				std::unique_ptr<EQ::ItemInstance> carried(
+					database.CreateItem(
+						(*cur)->item_id,
+						(*cur)->charges,
+						(*cur)->aug_1,
+						(*cur)->aug_2,
+						(*cur)->aug_3,
+						(*cur)->aug_4,
+						(*cur)->aug_5,
+						(*cur)->aug_6
+					)
+				);
+
+				uint32 vault_id = 0;
+				if (!carried || !database.botdb.SaveVaultItem(bot_id, carried.get(), vault_id)) {
+					LogError("[BotVault] ^invite: could not vault carried item_id [{}] for bot_id [{}]", (*cur)->item_id, bot_id);
+				}
+
+				continue;
+			}
+
 			std::string query = StringFormat(
 				"INSERT INTO `bot_inventories` ("
 				"`bot_id`,"

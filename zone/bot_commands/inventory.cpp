@@ -298,66 +298,88 @@ void bot_command_inventory_remove(Client* c, const Seperator* sep)
 	}
 
 	const auto* itm = inst->GetItem();
-
-	if (inst && itm && c->CheckLoreConflict(itm)) {
-		LogInfo("[BotCmd] invremove: bail at owner LoreConflict on item_id={}", itm->ID);
-		c->MessageString(Chat::White, PICK_LORE);
+	if (!itm) {
 		return;
 	}
 
-	for (int m = EQ::invaug::SOCKET_BEGIN; m <= EQ::invaug::SOCKET_END; ++m) {
-		EQ::ItemInstance* augment = inst->GetAugment(m);
-		if (!augment) {
-			continue;
+	// Owner gifts go back to the owner; everything else is bot-bound and goes
+	// to the bot's vault (^vaultlist / ^vaultequip), never to a player.
+	const bool gift = my_bot->IsOwnerGift(inst);
+
+	if (gift) {
+		if (c->CheckLoreConflict(itm)) {
+			LogInfo("[BotCmd] invremove: bail at owner LoreConflict on item_id={}", itm->ID);
+			c->MessageString(Chat::White, PICK_LORE);
+			return;
 		}
 
-		if (!c->CheckLoreConflict(augment->GetItem())) {
-			continue;
-		}
+		for (int m = EQ::invaug::SOCKET_BEGIN; m <= EQ::invaug::SOCKET_END; ++m) {
+			EQ::ItemInstance* augment = inst->GetAugment(m);
+			if (!augment) {
+				continue;
+			}
 
-		LogInfo("[BotCmd] invremove: bail at augment LoreConflict (socket={})", m);
-		c->MessageString(Chat::White, PICK_LORE);
-		return;
+			if (!c->CheckLoreConflict(augment->GetItem())) {
+				continue;
+			}
+
+			LogInfo("[BotCmd] invremove: bail at augment LoreConflict (socket={})", m);
+			c->MessageString(Chat::White, PICK_LORE);
+			return;
+		}
+	} else {
+		uint32 vault_id = 0;
+		if (!database.botdb.SaveVaultItem(my_bot->GetBotID(), inst, vault_id)) {
+			LogInfo("[BotCmd] invremove: bail at vault insert failure on item_id={}", itm->ID);
+			my_bot->OwnerMessage("I couldn't reach my vault, so I am keeping it on.");
+			return;
+		}
 	}
 
-	if (itm) {
-		LogInfo("[BotCmd] invremove: pushing item_id={} to owner cursor (slot {})", itm->ID, slot_id);
-		EQ::SayLinkEngine linker;
-		linker.SetLinkType(EQ::saylink::SayLinkItemInst);
-		linker.SetItemInst(inst);
+	// RemoveBotItemBySlot() deletes inst; work from a copy.
+	std::unique_ptr<EQ::ItemInstance> removed(inst->Clone());
+	const std::string item_name = itm->Name;
 
-		c->PushItemOnCursor(*inst, true);
-		if (
-			slot_id == EQ::invslot::slotRange ||
-			slot_id == EQ::invslot::slotAmmo
-			) {
-			my_bot->SetBotArcherySetting(false, true);
-		}
+	if (gift) {
+		LogInfo("[BotCmd] invremove: pushing gift item_id={} to owner cursor (slot {})", itm->ID, slot_id);
+		Bot::ClearOwnerGift(removed.get());
+		c->PushItemOnCursor(*removed, true);
+	} else {
+		LogInfo("[BotCmd] invremove: vaulted bot-bound item_id={} (slot {})", itm->ID, slot_id);
+	}
 
-		my_bot->RemoveBotItemBySlot(slot_id);
-		my_bot->BotRemoveEquipItem(slot_id);
-		my_bot->CalcBotStats(c->GetBotOption(Client::booStatsUpdate));
+	if (
+		slot_id == EQ::invslot::slotRange ||
+		slot_id == EQ::invslot::slotAmmo
+		) {
+		my_bot->SetBotArcherySetting(false, true);
+	}
 
-		my_bot->OwnerMessage(
-			fmt::format(
-				"I have unequipped {} from my {} (Slot {}).",
-				linker.GenerateLink(),
-				EQ::invslot::GetInvPossessionsSlotName(slot_id),
-				slot_id
-			)
+	my_bot->RemoveBotItemBySlot(slot_id);
+	my_bot->BotRemoveEquipItem(slot_id);
+	my_bot->CalcBotStats(c->GetBotOption(Client::booStatsUpdate));
+
+	my_bot->OwnerMessage(
+		fmt::format(
+			"I have {} {} from my {} (Slot {}){}.",
+			gift ? "returned" : "put",
+			item_name,
+			EQ::invslot::GetInvPossessionsSlotName(slot_id),
+			slot_id,
+			gift ? "" : " in my vault"
+		)
+	);
+
+	if (parse->BotHasQuestSub(EVENT_UNEQUIP_ITEM_BOT)) {
+		const auto& export_string = fmt::format(
+			"{} {}",
+			removed->IsStackable() ? removed->GetCharges() : 1,
+			slot_id
 		);
 
-		if (parse->BotHasQuestSub(EVENT_UNEQUIP_ITEM_BOT)) {
-			const auto& export_string = fmt::format(
-				"{} {}",
-				inst->IsStackable() ? inst->GetCharges() : 1,
-				slot_id
-			);
+		std::vector<std::any> args = { removed.get() };
 
-			std::vector<std::any> args = { inst };
-
-			parse->EventBot(EVENT_UNEQUIP_ITEM_BOT, my_bot, nullptr, export_string, inst->GetID(), &args);
-		}
+		parse->EventBot(EVENT_UNEQUIP_ITEM_BOT, my_bot, nullptr, export_string, removed->GetID(), &args);
 	}
 }
 
