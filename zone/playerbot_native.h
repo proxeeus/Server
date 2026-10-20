@@ -121,6 +121,14 @@ private:
 		uint32 weight        = 1;
 	};
 
+	// An item a draw can hand out, with the items-table masks of who may wear it.
+	struct GearItem {
+		uint32 id      = 0;
+		uint32 weight  = 1;
+		uint32 classes = 0; // items.classes, bit (class-1)
+		uint32 races   = 0; // items.races, GetPlayerRaceBit()
+	};
+
 	struct GearDraw {
 		uint32                id         = 0;
 		uint8                 min_level  = 1;
@@ -130,8 +138,7 @@ private:
 		uint8                 chance     = 100;
 		int32                 gate_index = -1; // index into m_gear, -1 = none
 		bool                  gate_hit   = true;
-		std::vector<Weighted> items;
-		uint32                total_weight = 0;
+		std::vector<GearItem> items;
 	};
 
 	struct TradeRow {
@@ -175,7 +182,9 @@ private:
 	uint8 RollLevel(const ZoneRow &z, bool is_static);
 	bool RollRaceClass(const std::string &zone, const ZoneRow &z, bool is_static, Profile &p);
 	void ApplyStats(NPC *npc, const Profile &p);
-	int ApplyGear(NPC *npc, const Profile &p);
+	// Returns the items added; skipped_out = draws that hit but had no item
+	// this class/race may wear.
+	int ApplyGear(NPC *npc, const Profile &p, int &skipped_out);
 
 	const ZoneRow &ZoneFor(const std::string &zone) const;
 	static uint32 PickWeighted(const std::vector<Weighted> &v);
