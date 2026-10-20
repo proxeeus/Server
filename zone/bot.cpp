@@ -2176,6 +2176,11 @@ void Bot::AI_Process()
 		return;
 	}
 
+	// Wipe: if we were picked to evacuate, that is all we do (bot_tactics.cpp)
+	if (TacticsEvacCheck()) {
+		return;
+	}
+
 	float fm_distance = DistanceSquared(m_Position, follow_mob->GetPosition());
 	float lo_distance = DistanceSquared(m_Position, leash_owner->GetPosition());
 	float leash_distance = RuleR(Bots, LeashDistance);

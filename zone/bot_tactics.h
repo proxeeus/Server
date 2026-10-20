@@ -129,6 +129,13 @@ struct BotTacticsPlan {
 	uint16              recovery_speaker_id = 0;
 	std::vector<uint16> oom_called;
 
+	// Emergencies (phase 7)
+	uint32 mt_changed_ms  = 0;     // the tank died / was replaced mid-fight then
+	uint32 last_rush_ms   = 0;     // last time the CH chain was hurried
+	size_t fight_members  = 0;     // members standing when the fight started
+	bool   evac_called    = false; // once per fight
+	uint16 evac_caster_id = 0;     // the bot told to evacuate the group
+
 	// Complete heal chain
 	std::vector<uint16> chain;                     // cleric ids, in casting order
 	uint16              chain_target_id   = 0;

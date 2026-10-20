@@ -924,6 +924,7 @@ public:
 	void TryDefensiveDiscipline();
 	bool TacticsPullActive() const;        // the player is pulling: hold camp
 	bool TryTacticsResurrect();            // raise a fallen bot after the fight
+	bool TacticsEvacCheck();               // wipe: we were told to evacuate the group
 	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
 	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
 	bool TacticsPlayerSlowsFirst(Mob* tar) const;

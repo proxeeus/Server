@@ -66,6 +66,10 @@ constexpr float  kOomRatio         = 10.0f; // "Out of mana."
 constexpr float  kMedRatio         = 60.0f; // someone under this after a fight: "Medding"
 constexpr float  kReadyRatio       = 90.0f; // everyone back over this: "Ready."
 constexpr uint32 kCalmMs           = 3000;  // no assist target this long = the fight is over
+constexpr uint32 kTankSwapMs       = 5000;  // after a tank swap the main mob stays the target this long
+constexpr float  kChainRushHPRatio = 25.0f; // tank under this: the next CH now
+constexpr uint32 kChainRushMs      = 2000;  // ...but not more often than this
+constexpr float  kWipeTankHPRatio  = 15.0f; // half the unit down and the tank under this (or gone): evacuate
 
 bool IsAlive(Mob* m)
 {
@@ -187,6 +191,21 @@ uint16 ResurrectSpellFor(uint8 class_id, uint8 level)
 	if (!built) {
 		built = true;
 		BuildLadder(ladder, [](uint16 id) { return IsEffectInSpell(id, SE_Revive); });
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// The best group evacuate (Succor, Evacuate...) a class can cast at a level.
+uint16 EvacuateSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const auto t = spells[id].target_type;
+			return IsEffectInSpell(id, SE_Succor) && (t == ST_Group || t == ST_GroupTeleport);
+		});
 	}
 	return BestOnLadder(ladder, class_id, level);
 }
@@ -415,6 +434,9 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	const uint16 old_mt = p.main_tank_id;
 	p.main_tank_id = mt ? mt->GetID() : 0;
+	if (old_mt && p.main_tank_id != old_mt && was_fighting) {
+		p.mt_changed_ms = now; // tank swap mid-fight: see the assist target below
+	}
 	if (mt && p.main_tank_id != old_mt) {
 		LogInfo("[BotTactics] unit [{:#x}] main tank [{}]", p.key, mt->GetCleanName());
 		Announce(raid, group, mt->IsBot() ? mt : first_bot, fmt::format("Main tank: {}.", mt->GetCleanName()));
@@ -456,6 +478,17 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			if ((assist = FightingTarget(m)) != nullptr) {
 				break;
 			}
+		}
+	}
+
+	// Right after a tank swap the new tank is still on whatever it held: keep
+	// the main mob as the target, so the new tank goes to get it and the
+	// damage does not follow it onto its add.
+	if (now - p.mt_changed_ms < kTankSwapMs && p.assist_target_id) {
+		Mob* prev = entity_list.GetMob(p.assist_target_id);
+		Mob* top  = prev ? prev->GetHateTop() : nullptr;
+		if (prev && prev->IsNPC() && IsAlive(prev) && !prev->IsMezzed() && top && p.IsMember(top->GetID())) {
+			assist = prev;
 		}
 	}
 
@@ -635,6 +668,44 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		p.oom_called.clear();
 		p.recovering         = false;
 		p.recovery_announced = false;
+
+		p.evac_called    = false;
+		p.evac_caster_id = 0;
+		p.fight_members  = static_cast<size_t>(std::count_if(mobs.begin(), mobs.end(), IsAlive));
+	}
+
+	// ---- wipe: get the player's group out ----
+
+	if (assist && !p.evac_called && p.fight_members >= 3) {
+		const size_t standing = static_cast<size_t>(std::count_if(mobs.begin(), mobs.end(), IsAlive));
+		Mob*         tank     = alive_member(p.main_tank_id);
+
+		if (standing * 2 <= p.fight_members && (!tank || tank->GetHPRatio() < kWipeTankHPRatio)) {
+			p.evac_called = true;
+
+			// An evacuate only moves the caster's group: in a raid, pick one
+			// in the player's group.
+			const uint32 leader_group = p.RaidGroupOf(p.camp_leader_id);
+			for (Mob* m : mobs) {
+				if (!m->IsBot() || !IsAlive(m) || (raid && p.RaidGroupOf(m->GetID()) != leader_group)) {
+					continue;
+				}
+
+				const uint16 evac = EvacuateSpellFor(m->GetClass(), m->GetLevel());
+				if (IsValidSpell(evac) && m->GetMana() >= spells[evac].mana) {
+					p.evac_caster_id = m->GetID();
+					break;
+				}
+			}
+
+			if (Mob* caster = alive_member(p.evac_caster_id)) {
+				LogInfo("[BotTactics] unit [{:#x}] wipe ({} of {} standing): [{}] evacuates", p.key, standing, p.fight_members, caster->GetCleanName());
+				Announce(raid, group, caster, "Evacuating!");
+			}
+			else {
+				LogInfo("[BotTactics] unit [{:#x}] wipe ({} of {} standing): nobody can evacuate", p.key, standing, p.fight_members);
+			}
+		}
 	}
 
 	if (assist) {
@@ -893,6 +964,19 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		p.chain_next    = 0;
 		p.chain_next_ms = now;
 		return;
+	}
+
+	// The tank is going down: the next CH now, not at its slot.
+	if (Mob* tank = alive_member(p.chain_target_id)) {
+		if (
+			tank->GetHPRatio() < kChainRushHPRatio &&
+			p.chain_next_ms > now + 1000 &&
+			now - p.last_rush_ms >= kChainRushMs
+		) {
+			p.chain_next_ms = now;
+			p.last_rush_ms  = now;
+			LogInfo("[BotTactics] unit [{:#x}] CH chain hurried: [{}] at [{:.0f}]%", p.key, tank->GetCleanName(), tank->GetHPRatio());
+		}
 	}
 
 	// A player cleric's turn: tell them, and take any complete heal they
@@ -1315,6 +1399,19 @@ Mob* Bot::TacticsRetarget(Mob* tar)
 	// deal with them -- the off-tank holding it, or a mezzer about to -- and
 	// kills the main target. With neither, adds get killed where they stand.
 	uint16 want_id = p->AssignedAdd(GetID());
+
+	// Just became the main tank mid-fight (the tank died): leave our add and
+	// go get the main mob.
+	if (
+		!want_id &&
+		p->IsMainTank(GetID()) &&
+		Timer::GetCurrentTime() - p->mt_changed_ms < kTankSwapMs &&
+		p->assist_target_id &&
+		tar->GetID() != p->assist_target_id
+	) {
+		want_id = p->assist_target_id;
+	}
+
 	if (
 		!want_id &&
 		!p->IsMainTank(GetID()) &&
@@ -1364,6 +1461,43 @@ void Bot::TacticsTankChecks(Mob* tar)
 	if (holding && (tar->IsRaidTarget() || GetHPRatio() < 40.0f)) {
 		TryDefensiveDiscipline();
 	}
+}
+
+bool Bot::TacticsEvacCheck()
+{
+	BotTacticsPlan* p = m_tactics_key ? bot_tactics.Find(m_tactics_key) : nullptr;
+	if (!p || !p->evac_caster_id || p->evac_caster_id != GetID()) {
+		return false;
+	}
+
+	const uint16 spell_id = EvacuateSpellFor(GetClass(), GetLevel());
+	if (!IsValidSpell(spell_id)) {
+		p->evac_caster_id = 0;
+		return false;
+	}
+
+	if (IsCasting()) {
+		if (CastingSpellID() == spell_id) {
+			return true; // on its way
+		}
+		InterruptSpell(); // nothing else matters now
+	}
+
+	if (IsMoving()) {
+		StopMoving();
+	}
+	if (IsSitting()) {
+		Stand();
+	}
+
+	p->evac_caster_id = 0; // one try; the fight is lost either way
+	if (CastSpell(spell_id, GetID(), EQ::spells::CastingSlot::Gem2)) {
+		LogInfo("[BotTactics] [{}] casting [{}]", GetCleanName(), spells[spell_id].name);
+		return true;
+	}
+
+	LogInfo("[BotTactics] [{}] could not cast [{}]", GetCleanName(), spells[spell_id].name);
+	return false;
 }
 
 bool Bot::TacticsBeneficial(uint32 spell_type, uint8 chance)
