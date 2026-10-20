@@ -14,6 +14,7 @@
 */
 
 #include "bot.h"
+#include "bot_tactics.h"
 #include "../common/data_verification.h"
 #include "../common/repositories/bot_spells_entries_repository.h"
 #include "../common/repositories/npc_spells_repository.h"
@@ -1267,13 +1268,43 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 		return false;
 	}
 
-	Mob* addMob = GetFirstIncomingMobToMez(this, botSpell);
+	Mob* addMob = nullptr;
+
+	// With a shared plan: the unit's adds (raids included), never the main
+	// target, one mezzer per add. Without: the group scan.
+	if (const BotTacticsPlan* plan = GetTacticsPlan()) {
+		for (uint16 id : plan->adds) {
+			Mob* m = entity_list.GetMob(id);
+			if (
+				!m ||
+				m->IsMezzed() ||
+				id == plan->assist_target_id ||
+				m->IsImmuneToSpell(botSpell.SpellId, this) ||
+				m->CanBuffStack(botSpell.SpellId, botLevel, true) < 0 ||
+				!bot_tactics.ClaimMez(plan->key, id, GetID())
+			) {
+				continue;
+			}
+
+			addMob = m;
+			break;
+		}
+	}
+	else {
+		addMob = GetFirstIncomingMobToMez(this, botSpell);
+	}
 
 	if (!addMob) {
 		return false;
 	}
 
 	if (!(!addMob->IsImmuneToSpell(botSpell.SpellId, this) && addMob->CanBuffStack(botSpell.SpellId, botLevel, true) >= 0)) {
+		return false;
+	}
+
+	// The LOS test at the top is against our own target, not the add.
+	if (!CheckLosFN(addMob)) {
+		NoteOutOfRangeCast(botSpell.SpellId, addMob);
 		return false;
 	}
 
@@ -2518,7 +2549,10 @@ Mob* Bot::GetFirstIncomingMobToMez(Bot* botCaster, BotSpell botSpell) {
 		for (std::list<NPC*>::iterator itr = npc_list.begin(); itr != npc_list.end(); ++itr) {
 			NPC* npc = *itr;
 
-			if (DistanceSquaredNoZ(npc->GetPosition(), botCaster->GetPosition()) <= botCaster->GetActSpellRange(botSpell.SpellId, spells[botSpell.SpellId].range)) {
+			// Squared distance against squared range (it compared against the
+			// plain range: a 200 range mez only reached mobs within ~14 units).
+			const float mez_range = botCaster->GetActSpellRange(botSpell.SpellId, spells[botSpell.SpellId].range);
+			if (DistanceSquaredNoZ(npc->GetPosition(), botCaster->GetPosition()) <= mez_range * mez_range) {
 				if (!npc->IsMezzed()) {
 					if (botCaster->HasGroup()) {
 						Group* g = botCaster->GetGroup();

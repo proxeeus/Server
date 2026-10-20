@@ -29,6 +29,7 @@
 #include "../common/strings.h"
 
 #include <algorithm>
+#include <iterator>
 
 BotTactics bot_tactics;
 
@@ -46,6 +47,8 @@ constexpr uint32 kKeyGroup         = 0x80000000;
 constexpr uint32 kKeyIdMask        = 0x3FFFFFFF;
 constexpr uint32 kAssistDelayMs    = 3000;  // let the tank get a hold before piling in
 constexpr float  kAssistHPRatio    = 97.0f; // ...unless it is already being hurt
+constexpr uint32 kOffTankWaitMs    = 5000;  // a fresh add is the mezzer's first
+constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 
 bool IsAlive(Mob* m)
 {
@@ -411,9 +414,11 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	// ---- adds, and who holds them ----
 
+	// Scanned around the tank, or around a bot when the unit has no tank.
 	p.adds.clear();
-	if (mt && assist) {
-		for (const auto& e : entity_list.GetCloseMobList(mt, 0.0f)) {
+	Mob* anchor = mt ? mt : first_bot;
+	if (anchor && assist) {
+		for (const auto& e : entity_list.GetCloseMobList(anchor, 0.0f)) {
 			Mob* n = e.second;
 			if (!n || n == assist || !n->IsNPC() || !IsAlive(n) || n->IsMezzed()) {
 				continue;
@@ -433,6 +438,26 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// When an add first showed up, so a mezzer gets first go at it.
+	std::unordered_map<uint16, uint32> seen;
+	for (uint16 add : p.adds) {
+		const auto it = p.add_seen_ms.find(add);
+		seen[add] = it == p.add_seen_ms.end() ? now : it->second;
+	}
+	p.add_seen_ms.swap(seen);
+
+	for (auto it = p.mez_claims.begin(); it != p.mez_claims.end();) {
+		it = now > it->second.second ? p.mez_claims.erase(it) : std::next(it);
+	}
+
+	p.has_mezzer = false;
+	for (Mob* m : mobs) {
+		if (IsAlive(m) && (m->GetClass() == Class::Enchanter || m->GetClass() == Class::Bard)) {
+			p.has_mezzer = true;
+			break;
+		}
+	}
+
 	std::unordered_map<uint16, uint16> held;
 	for (const auto& e : p.off_tank_assignment) {
 		if (p.IsOffTank(e.first) && std::find(p.adds.begin(), p.adds.end(), e.second) != p.adds.end()) {
@@ -443,6 +468,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	for (uint16 add : p.adds) {
 		if (p.IsHeldAdd(add)) {
+			continue;
+		}
+
+		// Someone can mez: leave a fresh add to them for a moment. Taunting
+		// it now would only break the mez a second later.
+		if (p.has_mezzer && now - p.add_seen_ms[add] < kOffTankWaitMs) {
 			continue;
 		}
 
@@ -592,6 +623,23 @@ void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
 	LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: {}", key, NameOf(caster_id), why);
 	p->chain_next    = (p->chain_next + 1) % p->chain.size();
 	p->chain_next_ms = Timer::GetCurrentTime();
+}
+
+bool BotTactics::ClaimMez(uint32 key, uint16 add_id, uint16 caster_id)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return true;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	const auto   it  = p->mez_claims.find(add_id);
+	if (it != p->mez_claims.end() && it->second.first != caster_id && now <= it->second.second) {
+		return false;
+	}
+
+	p->mez_claims[add_id] = {caster_id, now + kMezClaimMs};
+	return true;
 }
 
 void BotTactics::SetEnabled(uint32 key, bool on)
@@ -889,15 +937,18 @@ Mob* Bot::TacticsRetarget(Mob* tar)
 		return tar;
 	}
 
-	uint16 want_id = p->AssignedAdd(GetID()); // an off-tank holds its add
+	// An off-tank holds its add. Everyone else leaves adds to whoever will
+	// deal with them -- the off-tank holding it, or a mezzer about to -- and
+	// kills the main target. With neither, adds get killed where they stand.
+	uint16 want_id = p->AssignedAdd(GetID());
 	if (
 		!want_id &&
 		!p->IsMainTank(GetID()) &&
 		p->assist_target_id &&
 		tar->GetID() != p->assist_target_id &&
-		p->IsHeldAdd(tar->GetID())
+		(p->IsHeldAdd(tar->GetID()) || (p->has_mezzer && std::find(p->adds.begin(), p->adds.end(), tar->GetID()) != p->adds.end()))
 	) {
-		want_id = p->assist_target_id; // leave the off-tank's add alone, kill the main one
+		want_id = p->assist_target_id;
 	}
 
 	if (!want_id || want_id == tar->GetID()) {

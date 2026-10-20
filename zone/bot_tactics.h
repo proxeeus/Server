@@ -43,6 +43,9 @@
  *     cannot cast or is late is skipped so the chain never stalls.
  *   - heal triage: every other healer scores the whole unit (tanks of every
  *     raid group included) instead of the first slot of its own group.
+ *   - crowd control: mezzers pick from the plan's adds and claim them; when
+ *     the unit can mez (a human enchanter counts), off-tanks give a fresh
+ *     add a few seconds before grabbing it, so they do not break the mez.
  *
  * The plan never orders a human: it plans around whatever the player plays.
  * Plans live in a node-based map, so a plan pointer stays valid until the
@@ -72,8 +75,14 @@ struct BotTacticsPlan {
 	std::vector<uint16> off_tank_ids;              // every other tank-class bot, best first
 	uint16              assist_target_id = 0;
 	uint32              assist_since_ms  = 0;
-	std::vector<uint16> adds;                      // other mobs fighting the unit
+	std::vector<uint16> adds;                      // other mobs fighting the unit, not mezzed
+	std::unordered_map<uint16, uint32> add_seen_ms;         // add id -> first seen
 	std::unordered_map<uint16, uint16> off_tank_assignment; // off-tank id -> add id
+	bool                has_mezzer = false;        // an enchanter or bard, bot or human
+
+	// Mez claims: add id -> (caster id, until). Two enchanters must not
+	// both spend a cast on the same add while the first mez is in the air.
+	std::unordered_map<uint16, std::pair<uint16, uint32>> mez_claims;
 
 	// Complete heal chain
 	std::vector<uint16> chain;                     // cleric ids, in casting order
@@ -105,6 +114,9 @@ public:
 	// The cleric whose turn it is started its heal / cannot take its turn.
 	void ChainCast(uint32 key, uint16 caster_id);
 	void ChainSkip(uint32 key, uint16 caster_id, const char* why);
+
+	// False when another caster claimed this add within the last few seconds.
+	bool ClaimMez(uint32 key, uint16 add_id, uint16 caster_id);
 
 	// ^tactics overrides, per unit. They last as long as the group or raid.
 	void SetEnabled(uint32 key, bool on);
