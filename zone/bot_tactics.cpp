@@ -1448,6 +1448,92 @@ const BotRaidEncounter* BotTactics::EncounterFor(uint32 npc_type_id)
 	return it == m_encounters.end() ? nullptr : &it->second;
 }
 
+std::vector<std::vector<Bot*>> BotTactics::LayoutRaid(const std::vector<Bot*>& bots, size_t max_groups)
+{
+	constexpr size_t kGroupSize = 6;
+
+	enum Role : size_t { Healer, Tank, Control, Melee, Caster, RoleCount };
+	auto role_of = [](Bot* b) -> size_t {
+		switch (b->GetClass()) {
+			case Class::Cleric:
+			case Class::Druid:
+			case Class::Shaman:
+				return Healer;
+			case Class::Warrior:
+			case Class::Paladin:
+			case Class::ShadowKnight:
+				return Tank;
+			case Class::Enchanter:
+			case Class::Bard:
+				return Control;
+			case Class::Rogue:
+			case Class::Monk:
+			case Class::Ranger:
+			case Class::Beastlord:
+			case Class::Berserker:
+				return Melee;
+			default:
+				return Caster;
+		}
+	};
+
+	std::array<std::vector<Bot*>, RoleCount> by_role;
+	for (Bot* b : bots) {
+		if (b) {
+			by_role[role_of(b)].push_back(b);
+		}
+	}
+
+	// Clerics first among healers (they make the CH chain), then by level;
+	// the best tank first, so it lands in group 1.
+	std::stable_sort(
+		by_role[Healer].begin(), by_role[Healer].end(), [](Bot* a, Bot* b) {
+			const bool ca = a->GetClass() == Class::Cleric;
+			const bool cb = b->GetClass() == Class::Cleric;
+			return ca != cb ? ca : a->GetLevel() > b->GetLevel();
+		}
+	);
+	std::stable_sort(
+		by_role[Tank].begin(), by_role[Tank].end(), [](Bot* a, Bot* b) { return BetterTank(a, b); }
+	);
+
+	size_t placed = 0;
+	for (const auto& r : by_role) {
+		placed += r.size();
+	}
+	const size_t group_count = std::clamp<size_t>((placed + kGroupSize - 1) / kGroupSize, 1, std::max<size_t>(1, max_groups));
+
+	std::vector<std::vector<Bot*>>             groups(group_count);
+	std::vector<std::array<size_t, RoleCount>> counts(group_count, std::array<size_t, RoleCount>{});
+
+	// Each bot goes to the group with the fewest of its role, then the
+	// fewest members, then the lowest number.
+	for (size_t role = 0; role < RoleCount; ++role) {
+		for (Bot* b : by_role[role]) {
+			size_t best = group_count;
+			for (size_t g = 0; g < group_count; ++g) {
+				if (groups[g].size() >= kGroupSize) {
+					continue;
+				}
+				if (
+					best == group_count ||
+					counts[g][role] < counts[best][role] ||
+					(counts[g][role] == counts[best][role] && groups[g].size() < groups[best].size())
+				) {
+					best = g;
+				}
+			}
+			if (best == group_count) {
+				break; // more bots than the groups hold
+			}
+			groups[best].push_back(b);
+			++counts[best][role];
+		}
+	}
+
+	return groups;
+}
+
 void BotTactics::NoteFallen(uint32 key, Bot* bot)
 {
 	BotTacticsPlan* p = Find(key);
@@ -1741,7 +1827,10 @@ bool Bot::TacticsHeal()
 			continue;
 		}
 
-		const bool outsider = in_raid && p->RaidGroupOf(id) != my_group;
+		// A raid member in no group (^createraid puts the player there) has
+		// no group healer: everyone's.
+		const uint32 their_group = p->RaidGroupOf(id);
+		const bool   outsider    = in_raid && their_group != my_group && their_group != RAID_GROUPLESS;
 		consider(m, false, outsider);
 
 		if (!outsider && m->HasPet()) {

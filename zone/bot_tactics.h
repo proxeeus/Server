@@ -233,6 +233,11 @@ public:
 	const BotRaidEncounter* EncounterFor(uint32 npc_type_id);
 	bool ReloadEncounters(std::string& summary_out);
 
+	// Raid groups for these bots, roles spread evenly: healers (clerics first)
+	// one per group before any gets two, tanks (best into group 1), then
+	// enchanters / bards, melee, casters. ^createraid and ^tactics layout.
+	static std::vector<std::vector<Bot*>> LayoutRaid(const std::vector<Bot*>& bots, size_t max_groups);
+
 	// Resist types (1..5) the encounter rows of this zone ask to keep up.
 	const std::vector<uint8>& ZoneResists();
 	static constexpr uint32 kClaimWater  = 0x10003;

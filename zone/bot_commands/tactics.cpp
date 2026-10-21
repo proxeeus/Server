@@ -12,6 +12,7 @@
 //   ^tactics on|off               turn tactics off for this unit, and back on
 //   ^tactics reload               reread bot_raid_encounters (this zone process)
 //   ^tactics pull on|off|<radius> a bot pulls whenever the camp is ready
+//   ^tactics layout               regroup the raid's bots by role
 //
 // Text only, no saylinks or brackets: Trilogy clients read it as plain chat.
 void bot_command_tactics(Client* c, const Seperator* sep)
@@ -33,6 +34,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		c->Message(Chat::White, "usage: ^tactics on / ^tactics off -- turn tactics on or off for this group or raid");
 		c->Message(Chat::White, "usage: ^tactics reload -- reread the bot_raid_encounters table");
 		c->Message(Chat::White, "usage: ^tactics pull on / off / radius -- a bot pulls whenever the camp is ready");
+		c->Message(Chat::White, "usage: ^tactics layout -- regroup the raid's bots by role (^createraid does it too)");
 		return;
 	}
 
@@ -81,6 +83,48 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 		bot_tactics.SetMainTankOverride(key, who);
 		c->Message(Chat::White, "Main tank set to %s (if they are in this %s and alive).", who.c_str(), raid ? "raid" : "group");
+		return;
+	}
+
+	if (arg == "layout") {
+		if (!raid) {
+			c->Message(Chat::White, "Layout is for raids; a group is one group already.");
+			return;
+		}
+
+		// The raid's bots that are here, laid out again by role.
+		std::vector<Bot*> bots;
+		for (const auto& m : raid->members) {
+			if (m.member_name[0] && m.is_bot) {
+				if (Bot* b = entity_list.GetBotByBotName(m.member_name)) {
+					bots.push_back(b);
+				}
+			}
+		}
+		if (bots.empty()) {
+			c->Message(Chat::White, "No bots of this raid are in the zone.");
+			return;
+		}
+
+		const auto groups = BotTactics::LayoutRaid(bots, MAX_RAID_GROUPS);
+		size_t     moved  = 0;
+		for (size_t g = 0; g < groups.size(); ++g) {
+			for (size_t i = 0; i < groups[g].size(); ++i) {
+				Bot* b = groups[g][i];
+				if (raid->GetGroup(b->GetCleanName()) != g) {
+					raid->MoveMember(b->GetCleanName(), static_cast<uint32>(g));
+					++moved;
+				}
+
+				// One leader per group: the first of it.
+				const bool lead = i == 0;
+				if (raid->IsGroupLeader(b->GetCleanName()) != lead) {
+					raid->SetGroupLeader(b->GetCleanName(), lead);
+				}
+			}
+		}
+
+		c->Message(Chat::White, "Raid laid out by role into %u groups (%u bots moved). ^raidshow to see it.", static_cast<uint32>(groups.size()), static_cast<uint32>(moved));
 		return;
 	}
 
