@@ -27,6 +27,7 @@
 #include "groups.h"
 #include "position.h"
 #include "raids.h"
+#include "water_map.h"
 #include "zone.h"
 
 #include "../common/classes.h"
