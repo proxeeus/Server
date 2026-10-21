@@ -106,9 +106,10 @@ struct BotEncounterObservation {
 };
 
 struct BotTacticsPlan {
-	uint32 key          = 0;
-	uint32 built_ms     = 0;
-	uint32 last_used_ms = 0;
+	uint32 key             = 0;
+	uint32 built_ms        = 0;
+	uint32 last_used_ms    = 0;
+	bool   settings_loaded = false; // the player's saved ^tactics choices read
 
 	std::vector<uint16>                members;    // entity ids, pets excluded
 	std::unordered_map<uint16, uint32> raid_group; // entity id -> raid group (raids only)
@@ -280,6 +281,10 @@ public:
 	void SetChainIntervalOverride(uint32 key, uint32 ms);           // 0 = automatic
 	void SetAutoPull(uint32 key, bool on, float radius = 0.0f);     // radius 0 = default
 
+	// ^tactics choices survive the session: saved per character (data
+	// bucket bot_tactics_<char id>), loaded when that player's unit forms.
+	void SaveSettings(uint32 key, uint32 char_id);
+
 	// Multi-line summary for ^tactics.
 	std::vector<std::string> Describe(uint32 key);
 
@@ -293,6 +298,7 @@ private:
 	};
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	void LoadSettings(uint32 key, uint32 char_id);
 	void AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids);
 
 	void Rebuild(BotTacticsPlan& plan, Raid* raid, Group* group);

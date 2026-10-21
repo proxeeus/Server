@@ -507,6 +507,19 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// The player's saved ^tactics choices, once per plan.
+	if (!p.settings_loaded) {
+		p.settings_loaded = true;
+		for (Mob* m : mobs) {
+			if (m->IsClient()) {
+				LoadSettings(p.key, m->CastToClient()->CharacterID());
+				break;
+			}
+		}
+		const auto it = m_overrides.find(p.key);
+		ov = it != m_overrides.end() ? &it->second : nullptr;
+	}
+
 	// ---- incoming damage ----
 
 	// Health lost per second, per member and pet, half old / half new. Net of
@@ -1938,6 +1951,58 @@ void BotTactics::SetMainTankOverride(uint32 key, const std::string& name)
 	if (BotTacticsPlan* p = Find(key)) {
 		p->built_ms = 0; // rebuild on the next think
 	}
+}
+
+void BotTactics::SaveSettings(uint32 key, uint32 char_id)
+{
+	if (!char_id) {
+		return;
+	}
+
+	const auto  it = m_overrides.find(key);
+	Overrides   o  = it != m_overrides.end() ? it->second : Overrides{};
+	const auto  v  = fmt::format(
+		"on={};mt={};chain={};pull={};radius={:.0f}",
+		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius
+	);
+	DataBucket::SetData(fmt::format("bot_tactics_{}", char_id), v);
+	LogInfo("[BotTactics] saved settings for character [{}]: {}", char_id, v);
+}
+
+void BotTactics::LoadSettings(uint32 key, uint32 char_id)
+{
+	const std::string v = DataBucket::GetData(fmt::format("bot_tactics_{}", char_id));
+	if (v.empty()) {
+		return;
+	}
+
+	Overrides& o = m_overrides[key];
+	for (const auto& part : Strings::Split(v, ';')) {
+		const auto eq = part.find('=');
+		if (eq == std::string::npos) {
+			continue;
+		}
+
+		const std::string k   = part.substr(0, eq);
+		const std::string val = part.substr(eq + 1);
+		if (k == "on") {
+			o.disabled = val == "0";
+		}
+		else if (k == "mt") {
+			o.main_tank = val;
+		}
+		else if (k == "chain") {
+			o.chain_interval_ms = Strings::ToUnsignedInt(val);
+		}
+		else if (k == "pull") {
+			o.auto_pull = val == "1";
+		}
+		else if (k == "radius") {
+			o.pull_radius = Strings::ToFloat(val);
+		}
+	}
+
+	LogInfo("[BotTactics] unit [{:#x}] settings of character [{}]: {}", key, char_id, v);
 }
 
 void BotTactics::SetAutoPull(uint32 key, bool on, float radius)

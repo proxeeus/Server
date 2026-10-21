@@ -60,6 +60,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 	if (arg == "on" || arg == "off") {
 		bot_tactics.SetEnabled(key, arg == "on");
+		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 		c->Message(Chat::White, "Tactics are %s for this %s.", arg.c_str(), raid ? "raid" : "group");
 		return;
 	}
@@ -77,11 +78,13 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 		if (Strings::ToLower(who) == "auto") {
 			bot_tactics.SetMainTankOverride(key, "");
+			bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 			c->Message(Chat::White, "The main tank is chosen automatically again.");
 			return;
 		}
 
 		bot_tactics.SetMainTankOverride(key, who);
+		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 		c->Message(Chat::White, "Main tank set to %s (if they are in this %s and alive).", who.c_str(), raid ? "raid" : "group");
 		return;
 	}
@@ -132,6 +135,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		const std::string value = Strings::ToLower(sep->arg[2]);
 		if (value == "off") {
 			bot_tactics.SetAutoPull(key, false);
+			bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 			c->Message(Chat::White, "Auto-pull is off: the bots wait for you to start fights.");
 			return;
 		}
@@ -146,6 +150,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		}
 
 		bot_tactics.SetAutoPull(key, true, radius);
+		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob. ^tactics pull off to stop.");
 		return;
 	}
@@ -154,6 +159,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		const std::string value = Strings::ToLower(sep->arg[2]);
 		if (value.empty() || value == "auto") {
 			bot_tactics.SetChainIntervalOverride(key, 0);
+			bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 			c->Message(Chat::White, "CH chain spacing is automatic again.");
 			return;
 		}
@@ -165,6 +171,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		}
 
 		bot_tactics.SetChainIntervalOverride(key, static_cast<uint32>(seconds * 1000.0f));
+		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
 		c->Message(Chat::White, "CH chain spacing set to %.1f seconds.", seconds);
 		return;
 	}
