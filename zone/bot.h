@@ -944,6 +944,9 @@ public:
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
 
+	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
+	void TacticsPetChecks();
+
 	// Runners (phase 11)
 	bool TacticsSnareRunner(Mob* tar);       // the main target is going: snare it (one of us)
 	bool TacticsTooFarFromCamp(Mob* tar);    // do not chase it out of camp

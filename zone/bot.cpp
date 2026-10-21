@@ -2175,6 +2175,7 @@ void Bot::AI_Process()
 
 	// The shared plan of our raid or group (bot_tactics.cpp)
 	RefreshTactics(raid, bot_group);
+	TacticsPetChecks();
 
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 

@@ -449,6 +449,17 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// No tank class at all: the toughest pet of the unit tanks (a mage or
+	// necro duo). It is not a member; heals and assist find it by id.
+	if (!mt) {
+		for (Mob* m : mobs) {
+			Mob* pet = IsAlive(m) ? m->GetPet() : nullptr;
+			if (IsAlive(pet) && (!mt || pet->GetMaxHP() > mt->GetMaxHP())) {
+				mt = pet;
+			}
+		}
+	}
+
 	const uint16 old_mt = p.main_tank_id;
 	p.main_tank_id = mt ? mt->GetID() : 0;
 	if (old_mt && p.main_tank_id != old_mt && was_fighting) {
@@ -1621,11 +1632,11 @@ bool Bot::TacticsHeal()
 		const bool   ot  = p->IsOffTank(id);
 		float        threshold;
 
-		if (is_pet) {
-			threshold = 50.0f;
+		if (mt || ot || (!is_pet && (TankWeight(m) || m->IsClient()))) {
+			threshold = 90.0f; // a pet tanking is a tank
 		}
-		else if (mt || ot || TankWeight(m) || m->IsClient()) {
-			threshold = 90.0f;
+		else if (is_pet) {
+			threshold = 50.0f;
 		}
 		else if (m->GetClass() == Class::Enchanter) {
 			threshold = 80.0f;
@@ -1649,7 +1660,7 @@ bool Bot::TacticsHeal()
 			return;
 		}
 
-		const float weight = is_pet ? 0.5f : mt ? 1.6f : ot ? 1.3f : m->IsClient() ? 1.1f : 1.0f;
+		const float weight = mt ? 1.6f : is_pet ? 0.5f : ot ? 1.3f : m->IsClient() ? 1.1f : 1.0f;
 		candidates.push_back({m, (threshold - hp) * weight + (100.0f - hp) * 0.1f});
 	};
 
@@ -1664,6 +1675,16 @@ bool Bot::TacticsHeal()
 
 		if (!outsider && m->HasPet()) {
 			consider(m->GetPet(), true, false);
+		}
+	}
+
+	// A pet tanking for another raid group is still the tank.
+	if (Mob* tank = entity_list.GetMob(p->main_tank_id); tank && !p->IsMember(tank->GetID())) {
+		const bool seen = std::any_of(
+			candidates.begin(), candidates.end(), [&](const Candidate& c) { return c.mob == tank; }
+		);
+		if (!seen) {
+			consider(tank, true, false);
 		}
 	}
 
@@ -2260,6 +2281,57 @@ void Bot::OwnerHoldAI()
 		if (!AI_IdleCastCheck() && !IsCasting() && GetClass() != Class::Bard) {
 			BotMeditate(true);
 		}
+	}
+}
+
+// ============================================================
+// Pets
+// ============================================================
+
+void Bot::TacticsPetChecks()
+{
+	const BotTacticsPlan* p   = GetTacticsPlan();
+	Mob*                  pet = GetPet();
+	if (!p || !pet || !pet->IsNPC() || !IsAlive(pet)) {
+		return;
+	}
+
+	NPC*       npet      = pet->CastToNPC();
+	const bool pet_tanks = p->IsMainTank(pet->GetID());
+
+	// Only a pet that is the tank taunts; any other would pull the mob off it.
+	if (npet->IsTaunting() != pet_tanks) {
+		npet->SetTaunting(pet_tanks);
+		LogInfo("[BotTactics] [{}]'s pet taunt [{}]", GetCleanName(), pet_tanks ? "on" : "off");
+	}
+
+	if (pet_tanks) {
+		return; // the tank picks its own fights
+	}
+
+	// Never a mezzed mob, nor an add someone else is dealing with: back to
+	// the main target.
+	Mob* t = pet->GetTarget();
+	if (!t || !t->IsNPC() || t->GetID() == p->assist_target_id) {
+		return;
+	}
+
+	const bool not_ours = t->IsMezzed() ||
+		p->IsHeldAdd(t->GetID()) ||
+		(p->has_mezzer && std::find(p->adds.begin(), p->adds.end(), t->GetID()) != p->adds.end());
+	if (!not_ours) {
+		return;
+	}
+
+	pet->RemoveFromHateList(t);
+
+	Mob* main_target = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+	if (main_target && IsAlive(main_target) && !main_target->IsMezzed()) {
+		pet->AddToHateList(main_target, 1);
+		pet->SetTarget(main_target);
+	}
+	else {
+		pet->SetTarget(nullptr);
 	}
 }
 
