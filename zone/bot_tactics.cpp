@@ -87,6 +87,8 @@ constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is cal
 constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
 constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
 constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases past this from it
+constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the tank's hate...
+constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
 
 bool IsAlive(Mob* m)
 {
@@ -2282,6 +2284,52 @@ void Bot::OwnerHoldAI()
 			BotMeditate(true);
 		}
 	}
+}
+
+// ============================================================
+// Aggro
+// ============================================================
+
+bool Bot::TacticsAggroBackoff(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || p->IsMainTank(GetID()) || p->AssignedAdd(GetID()) == tar->GetID()) {
+		m_aggro_backoff = false;
+		return false;
+	}
+
+	// Only while the tank is the one holding it: if it is on someone else
+	// already, backing off saves nothing.
+	Mob* tank = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
+	if (!tank || tar->GetHateTop() != tank) {
+		m_aggro_backoff = false;
+		return false;
+	}
+
+	const int64 mine   = tar->GetHateAmount(this);
+	const int64 theirs = tar->GetHateAmount(tank);
+	if (theirs <= 0) {
+		m_aggro_backoff = false;
+		return false;
+	}
+
+	// Stop at 80% of the tank's hate, start again under 70%.
+	const bool was = m_aggro_backoff;
+	if (mine * 100 >= theirs * kAggroStopPct) {
+		m_aggro_backoff = true;
+	}
+	else if (mine * 100 < theirs * kAggroResumePct) {
+		m_aggro_backoff = false;
+	}
+
+	if (m_aggro_backoff != was) {
+		LogInfo(
+			"[BotTactics] [{}] {} on [{}] ({} / {} hate)", GetCleanName(),
+			m_aggro_backoff ? "backs off" : "resumes", tar->GetCleanName(), mine, theirs
+		);
+	}
+
+	return m_aggro_backoff;
 }
 
 // ============================================================

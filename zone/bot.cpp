@@ -2448,6 +2448,11 @@ void Bot::AI_Process()
 			// if (!GetTarget() || GetAppearance() == eaDead) { return false; } call. Due to the chance of the target dying and our pointer
 			// being nullified, we need to test it before dereferencing to avoid crashes
 
+			// Close to the tank's hate: hold the swings until it builds a lead
+			if (TacticsAggroBackoff(tar)) {
+				return;
+			}
+
 			if (IsBotArcher() && TryRangedAttack(tar)) {
 				return;
 			}
@@ -9082,10 +9087,12 @@ bool Bot::HasOrMayGetAggro() {
 		if (topHate == this)
 			mayGetAggro = true;
 		else {
-			uint32 myHateAmt = GetTarget()->GetHateAmount(this);
-			uint32 topHateAmt = GetTarget()->GetHateAmount(topHate);
+			const int64 myHateAmt  = GetTarget()->GetHateAmount(this);
+			const int64 topHateAmt = GetTarget()->GetHateAmount(topHate);
 
-			if (myHateAmt > 0 && topHateAmt > 0 && (uint8)((myHateAmt / topHateAmt) * 100) > 90)
+			// Over 90% of the top. (This was integer division: my / top was 0
+			// until we matched the top, so it only fired once we had aggro.)
+			if (myHateAmt > 0 && topHateAmt > 0 && myHateAmt * 100 > topHateAmt * 90)
 				mayGetAggro = true;
 		}
 	}

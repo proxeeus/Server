@@ -947,6 +947,9 @@ public:
 	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
 	void TacticsPetChecks();
 
+	// Aggro (phase 13): close to the tank's hate on this mob, hold the damage
+	bool TacticsAggroBackoff(Mob* tar);
+
 	// Runners (phase 11)
 	bool TacticsSnareRunner(Mob* tar);       // the main target is going: snare it (one of us)
 	bool TacticsTooFarFromCamp(Mob* tar);    // do not chase it out of camp
@@ -1053,6 +1056,7 @@ private:
 	uint32    m_encounter_reposition_ms = 0;
 	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
 	uint32    m_owner_rez_retry_ms   = 0;
+	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

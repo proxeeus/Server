@@ -1666,7 +1666,8 @@ bool Bot::AI_EngagedCastCheck() {
 		AIautocastspell_timer->Disable();	//prevent the timer from going off AGAIN while we are casting.
 
 		uint8 botClass = GetClass();
-		bool mayGetAggro = HasOrMayGetAggro();
+		// Also hold the damage when close to the tank's hate (bot_tactics.cpp)
+		bool mayGetAggro = HasOrMayGetAggro() || TacticsAggroBackoff(GetTarget());
 
 		// If the target is immune to non-magical melee, the tank cannot build
 		// meaningful hate and mayGetAggro pins every caster's nuke chance to
