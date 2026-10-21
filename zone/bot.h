@@ -980,6 +980,9 @@ public:
 	// water, the zone's raid resist between fights
 	bool TacticsSituationalBuffs();
 
+	// Incoming damage (phase 19): taking almost none (no CH on a scratch)
+	bool TacticsTargetQuiet(Mob* tar) const;
+
 	// Stuck (phase 18): no progress toward the follow point / camp place for
 	// a few seconds while far from it -> rejoin it. True = we moved.
 	bool TacticsUnstick(const glm::vec3& goal, float dist);
@@ -1099,6 +1102,7 @@ private:
 	BotProgress m_follow_progress;          // walking to the follow point / camp place
 	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
 	uint32    m_catchup_said_ms      = 0;
+	uint16    m_heal_urgent_id       = 0;   // set by TacticsHeal around one AICastSpell
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

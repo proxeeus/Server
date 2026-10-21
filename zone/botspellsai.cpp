@@ -1082,8 +1082,13 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 				return false;
 			}
 
+			// Someone melting (bot_tactics.cpp, TacticsHeal): the fastest heal,
+			// not the biggest -- a complete heal lands ten seconds too late.
+			if (m_heal_urgent_id && tar->GetID() == m_heal_urgent_id &&
+				IsValidSpell((botSpell = GetBestBotSpellForFastHeal(this)).SpellId)) {
+			}
 			// Evaluate the situation
-			if ((IsEngaged()) && ((botClass == Class::Cleric) || (botClass == Class::Druid) || (botClass == Class::Shaman) || (botClass == Class::Paladin))) {
+			else if ((IsEngaged()) && ((botClass == Class::Cleric) || (botClass == Class::Druid) || (botClass == Class::Shaman) || (botClass == Class::Paladin))) {
 				if (tar->GetTarget() && tar->GetTarget()->GetHateTop() && tar->GetTarget()->GetHateTop() == tar) {
 					hasAggro = true;
 				}
@@ -1105,7 +1110,9 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 						botSpell = GetBestBotSpellForGroupHealOverTime(this);
 					}
 
-					if (hasAggro) {
+					// Not a complete heal for a tank that is barely being
+					// scratched: a regular heal does, for far less mana.
+					if (hasAggro && !TacticsTargetQuiet(tar)) {
 						botSpell = GetBestBotSpellForPercentageHeal(this);
 					}
 				}

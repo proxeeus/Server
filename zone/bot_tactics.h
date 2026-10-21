@@ -158,6 +158,14 @@ struct BotTacticsPlan {
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
 
+	// Incoming damage (phase 19): health % lost per second, smoothed, per
+	// member and member's pet (net of heals: what the healers see).
+	std::unordered_map<uint16, float> last_hp_ratio;
+	std::unordered_map<uint16, float> damage_rate;
+	uint32                            damage_sampled_ms = 0;
+	float DamagePct(uint16 id) const;                // % per second
+	float SecondsToDeath(uint16 id, float hp_ratio) const;
+
 	// Loot (phase 16): what the mobs we fight carry, by entity id. When one
 	// dies (its corpse keeps the id) its items are looked over for upgrades.
 	std::unordered_map<uint16, std::vector<uint32>> fight_loot;

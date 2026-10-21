@@ -96,6 +96,10 @@ constexpr float  kUpgradeMinGain     = 8.0f;   // an item scoring less over what
 constexpr uint32 kStuckWindowMs      = 5000;   // moved under 3 units in this long, trying to = stuck
 constexpr float  kStuckMinDist       = 20.0f;  // ...unless already this close
 constexpr uint32 kCatchUpSayMs       = 60000;  // "Catching up." at most this often
+constexpr float  kChainFastTtdS      = 10.0f;  // the tank dead in less than this at its rate: chain faster
+constexpr float  kChainQuietPct      = 0.5f;   // the tank losing less than this %/s: chain slower
+constexpr float  kHealLookaheadS     = 3.0f;   // heal on where health will be this soon
+constexpr float  kHealUrgentTtdS     = 6.0f;   // dead in less than this: the fastest heal
 
 bool IsAlive(Mob* m)
 {
@@ -354,6 +358,18 @@ bool BotTacticsPlan::IsHeldAdd(uint16 mob_id) const
 	return false;
 }
 
+float BotTacticsPlan::DamagePct(uint16 id) const
+{
+	const auto it = damage_rate.find(id);
+	return it == damage_rate.end() ? 0.0f : it->second;
+}
+
+float BotTacticsPlan::SecondsToDeath(uint16 id, float hp_ratio) const
+{
+	const float rate = DamagePct(id);
+	return rate > 0.05f ? hp_ratio / rate : 1.0e6f;
+}
+
 uint32 BotTacticsPlan::RaidGroupOf(uint16 id) const
 {
 	const auto it = raid_group.find(id);
@@ -488,6 +504,37 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			first_bot = m;
 			break;
 		}
+	}
+
+	// ---- incoming damage ----
+
+	// Health lost per second, per member and pet, half old / half new. Net of
+	// heals, which is what matters to the next healer: who is going down.
+	{
+		const float dt = p.damage_sampled_ms ? (now - p.damage_sampled_ms) / 1000.0f : 0.0f;
+		p.damage_sampled_ms = now;
+
+		std::unordered_map<uint16, float> ratios;
+		std::unordered_map<uint16, float> rates;
+		auto sample = [&](Mob* m) {
+			if (!IsAlive(m)) {
+				return;
+			}
+			const uint16 id = m->GetID();
+			const float  r  = m->GetHPRatio();
+			float        rate = p.DamagePct(id);
+			if (const auto it = p.last_hp_ratio.find(id); it != p.last_hp_ratio.end() && dt > 0.2f) {
+				rate = rate * 0.5f + std::max(0.0f, (it->second - r) / dt) * 0.5f;
+			}
+			ratios[id] = r;
+			rates[id]  = rate;
+		};
+		for (Mob* m : mobs) {
+			sample(m);
+			sample(m->GetPet());
+		}
+		p.last_hp_ratio.swap(ratios);
+		p.damage_rate.swap(rates);
 	}
 
 	auto member_by_name = [&](const std::string& lower_name) -> Mob* {
@@ -1135,8 +1182,23 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	if (ov && ov->chain_interval_ms) {
 		p.chain_interval_ms = ov->chain_interval_ms;
 	}
+	else if (n) {
+		// Paced to what the tank is taking: closer together when it is
+		// melting, further apart when it is barely scratched.
+		uint32 spacing = std::clamp<uint32>(kChainSpanMs / n, 2000, 6000);
+		if (Mob* tank = entity_list.GetMob(p.main_tank_id); IsAlive(tank)) {
+			const float rate = p.DamagePct(tank->GetID());
+			if (p.SecondsToDeath(tank->GetID(), tank->GetHPRatio()) < kChainFastTtdS) {
+				spacing = std::max<uint32>(2000, spacing * 6 / 10);
+			}
+			else if (rate < kChainQuietPct) {
+				spacing = std::min<uint32>(8000, spacing * 14 / 10);
+			}
+		}
+		p.chain_interval_ms = spacing;
+	}
 	else {
-		p.chain_interval_ms = n ? std::clamp<uint32>(kChainSpanMs / n, 2000, 6000) : 0;
+		p.chain_interval_ms = 0;
 	}
 
 	if (p.chain.empty() || !p.assist_target_id) {
@@ -1900,6 +1962,7 @@ bool Bot::TacticsHeal()
 	struct Candidate {
 		Mob*  mob;
 		float score;
+		bool  urgent; // dead within seconds at this rate: fastest heal
 	};
 	std::vector<Candidate> candidates;
 
@@ -1942,13 +2005,17 @@ bool Bot::TacticsHeal()
 			threshold = 35.0f;
 		}
 
-		const float hp = m->GetHPRatio();
-		if (hp >= threshold) {
+		// Where its health will be a few seconds from now, at the rate it is
+		// going: heal before the line, not after.
+		const float hp   = m->GetHPRatio();
+		const float soon = hp - p->DamagePct(id) * kHealLookaheadS;
+		if (soon >= threshold) {
 			return;
 		}
 
 		const float weight = mt ? 1.6f : is_pet ? 0.5f : ot ? 1.3f : m->IsClient() ? 1.1f : 1.0f;
-		candidates.push_back({m, (threshold - hp) * weight + (100.0f - hp) * 0.1f});
+		const bool  urgent = p->SecondsToDeath(id, hp) < kHealUrgentTtdS;
+		candidates.push_back({m, (threshold - soon) * weight + (100.0f - soon) * 0.1f + (urgent ? 50.0f : 0.0f), urgent});
 	};
 
 	for (uint16 id : p->members) {
@@ -1991,12 +2058,22 @@ bool Bot::TacticsHeal()
 	// Most urgent first. One out of range is noted for TryMoveToCast while
 	// we still help the next one we can reach.
 	for (const auto& c : candidates) {
-		if (AICastSpell(c.mob, 100, SpellType_Heal)) {
+		// BotCastHeal reads this: someone melting gets the fastest heal.
+		m_heal_urgent_id = c.urgent ? c.mob->GetID() : 0;
+		const bool cast  = AICastSpell(c.mob, 100, SpellType_Heal);
+		m_heal_urgent_id = 0;
+		if (cast) {
 			return true;
 		}
 	}
 
 	return false;
+}
+
+bool Bot::TacticsTargetQuiet(Mob* tar) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	return p && tar && p->DamagePct(tar->GetID()) < kChainQuietPct;
 }
 
 bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
