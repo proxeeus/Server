@@ -11,6 +11,7 @@
 //   ^tactics chain <seconds|auto> CH chain spacing
 //   ^tactics on|off               turn tactics off for this unit, and back on
 //   ^tactics reload               reread bot_raid_encounters (this zone process)
+//   ^tactics pull on|off|<radius> a bot pulls whenever the camp is ready
 //
 // Text only, no saylinks or brackets: Trilogy clients read it as plain chat.
 void bot_command_tactics(Client* c, const Seperator* sep)
@@ -31,6 +32,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		c->Message(Chat::White, "usage: ^tactics chain seconds -- set the CH chain spacing (auto: 12s split between the clerics)");
 		c->Message(Chat::White, "usage: ^tactics on / ^tactics off -- turn tactics on or off for this group or raid");
 		c->Message(Chat::White, "usage: ^tactics reload -- reread the bot_raid_encounters table");
+		c->Message(Chat::White, "usage: ^tactics pull on / off / radius -- a bot pulls whenever the camp is ready");
 		return;
 	}
 
@@ -79,6 +81,28 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 		bot_tactics.SetMainTankOverride(key, who);
 		c->Message(Chat::White, "Main tank set to %s (if they are in this %s and alive).", who.c_str(), raid ? "raid" : "group");
+		return;
+	}
+
+	if (arg == "pull") {
+		const std::string value = Strings::ToLower(sep->arg[2]);
+		if (value == "off") {
+			bot_tactics.SetAutoPull(key, false);
+			c->Message(Chat::White, "Auto-pull is off: the bots wait for you to start fights.");
+			return;
+		}
+
+		float radius = 0.0f;
+		if (!value.empty() && value != "on") {
+			radius = Strings::ToFloat(value);
+			if (radius < 50.0f || radius > 1000.0f) {
+				c->Message(Chat::White, "Pull radius must be between 50 and 1000.");
+				return;
+			}
+		}
+
+		bot_tactics.SetAutoPull(key, true, radius);
+		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob. ^tactics pull off to stop.");
 		return;
 	}
 

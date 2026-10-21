@@ -78,6 +78,12 @@ constexpr float  kWipeTankHPRatio  = 15.0f; // half the unit down and the tank u
 constexpr uint32 kOwnerHoldMs      = 10 * 60 * 1000; // bots hold camp this long after their owner dies
 constexpr uint32 kRezRetryMs       = 60000; // the owner's rez request goes out again this often
 constexpr float  kHoldChaseRadius  = 150.0f; // holding bots do not chase further than this from camp
+constexpr float  kAutoPullRadius     = 250.0f; // default: pull what is within this of camp
+constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor
+constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this close come along
+constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
+constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
+constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is called off
 
 bool IsAlive(Mob* m)
 {
@@ -745,6 +751,10 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// ---- auto-pull (opt-in) ----
+
+	AutoPull(p, raid, mobs, leader, ov);
+
 	if (assist) {
 		for (Mob* m : mobs) {
 			if (!m->IsBot() || !IsAlive(m) || !UsesMana(m) || m->GetManaRatio() >= kOomRatio) {
@@ -1045,6 +1055,197 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	}
 }
 
+void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov)
+{
+	const uint32 now = Timer::GetCurrentTime();
+	p.auto_pull      = ov && ov->auto_pull;
+
+	auto find_bot = [&](uint16 id) -> Bot* {
+		for (Mob* m : mobs) {
+			if (m->GetID() == id && m->IsBot() && IsAlive(m)) {
+				return m->CastToBot();
+			}
+		}
+		return nullptr;
+	};
+
+	// ---- a pull of ours under way? ----
+
+	if (p.autopull_puller_id) {
+		Bot* puller  = find_bot(p.autopull_puller_id);
+		const bool busy = puller && (puller->GetPullingFlag() || puller->GetReturningFlag() || puller->IsFDPulling());
+
+		if (!busy) {
+			// Done: the mob is in camp (the fight is on), or the pull fell through.
+			p.autopull_puller_id   = 0;
+			p.autopull_target_id   = 0;
+			p.autopull_last_end_ms = now;
+		}
+		else if (now - p.autopull_started_ms > kAutoPullTimeoutMs && !p.assist_target_id) {
+			LogInfo("[BotTactics] unit [{:#x}] pull by [{}] took too long: called off", p.key, puller->GetCleanName());
+			puller->TacticsAbortPull();
+			p.autopull_puller_id   = 0;
+			p.autopull_target_id   = 0;
+			p.autopull_last_end_ms = now;
+		}
+		return;
+	}
+
+	if (!p.auto_pull || !p.camp_set || !leader || !IsAlive(leader)) {
+		return;
+	}
+
+	// ---- is the camp ready for the next one? ----
+
+	if (
+		p.assist_target_id ||
+		now - p.assist_since_ms < kCalmMs ||
+		now - p.autopull_last_end_ms < kAutoPullGapMs ||
+		now - p.autopull_last_try_ms < kAutoPullTryMs ||
+		!p.fallen.empty() ||
+		p.pull_active ||
+		DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius
+	) {
+		return;
+	}
+	p.autopull_last_try_ms = now;
+
+	// Everyone up (the same bar as "Ready."), nobody pulling already.
+	p.readiness = 100.0f;
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
+			return;
+		}
+		p.readiness = std::min(p.readiness, m->GetHPRatio());
+		if (UsesMana(m)) {
+			p.readiness = std::min(p.readiness, m->GetManaRatio());
+		}
+	}
+	if (p.readiness < kReadyRatio) {
+		return;
+	}
+
+	// ---- who pulls ----
+
+	auto pull_rank = [](Mob* m) {
+		switch (m->GetClass()) {
+			case Class::Monk:    return 5; // FD: splits linked groups
+			case Class::Ranger:  return 4;
+			case Class::Bard:    return 3;
+			case Class::Rogue:   return 2;
+			default:             return 0;
+		}
+	};
+
+	Bot* puller = nullptr;
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetBotStance() == Stance::Passive || b->GetHoldFlag() || b->GetGuardFlag() || !b->GetBotOwner()) {
+			continue;
+		}
+		if (!puller || pull_rank(m) > pull_rank(puller)) {
+			puller = b;
+		}
+	}
+	// No pull class: the main tank brings them, if it is a bot.
+	if (puller && !pull_rank(puller)) {
+		puller = find_bot(p.main_tank_id);
+	}
+	if (!puller) {
+		return;
+	}
+
+	// ---- what to pull ----
+
+	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
+	const uint8  ref_level  = leader->GetLevel();
+	const bool   fd_puller  = puller->GetClass() == Class::Monk && puller->GetSkill(EQ::skills::SkillFeignDeath) > 0;
+	const size_t holdable   = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0) + (fd_puller ? 3 : 0);
+	const auto&  npcs       = entity_list.GetNPCList();
+
+	Mob*  best       = nullptr;
+	float best_score = 0.0f;
+
+	for (const auto& e : npcs) {
+		NPC* n = e.second;
+		if (!n || !IsAlive(n) || n->GetOwnerID() || n->IsEngaged() || n->IsMezzed() || n->IsBot()) {
+			continue;
+		}
+
+		// Fighters only: merchants, bankers, trainers and guildmasters are not.
+		if (n->GetClass() < Class::Warrior || n->GetClass() > Class::Berserker) {
+			continue;
+		}
+		if (n->GetBodyType() == BodyType::NoTarget || n->GetBodyType() == BodyType::NoTarget2) {
+			continue;
+		}
+		if (n->IsRaidTarget() && !raid) {
+			continue;
+		}
+
+		const glm::vec3 npos(n->GetPosition());
+		if (DistanceSquaredNoZ(npos, p.camp) > radius * radius || std::fabs(npos.z - p.camp.z) > kAutoPullMaxZ) {
+			continue;
+		}
+
+		// Worth killing, and not something that kills us.
+		const uint32 con = Mob::GetLevelCon(ref_level, n->GetLevel());
+		if (con == ConsiderColor::Gray || con == ConsiderColor::Red) {
+			continue;
+		}
+
+		// Not the friendly locals (guards, citizens).
+		if (n->GetReverseFactionCon(leader) < FACTION_INDIFFERENTLY) {
+			continue;
+		}
+		if (!puller->IsAttackAllowed(n)) {
+			continue;
+		}
+
+		// Linked mobs that would come along: same faction, close, idle.
+		size_t socials = 0;
+		if (n->GetPrimaryFaction()) {
+			for (const auto& o : npcs) {
+				NPC* s = o.second;
+				if (
+					s && s != n && IsAlive(s) && !s->IsEngaged() && !s->GetOwnerID() &&
+					s->GetPrimaryFaction() == n->GetPrimaryFaction() &&
+					DistanceSquared(glm::vec3(s->GetPosition()), npos) <= kAutoPullSocialDist * kAutoPullSocialDist
+				) {
+					++socials;
+				}
+			}
+		}
+		if (socials > holdable) {
+			continue;
+		}
+
+		const float score = sqrtf(DistanceSquaredNoZ(npos, p.camp)) + socials * 100.0f;
+		if (!best || score < best_score) {
+			best       = n;
+			best_score = score;
+		}
+	}
+
+	if (!best) {
+		return;
+	}
+
+	if (puller->TacticsStartPull(best)) {
+		p.autopull_puller_id  = puller->GetID();
+		p.autopull_target_id  = best->GetID();
+		p.autopull_started_ms = now;
+		LogInfo("[BotTactics] unit [{:#x}] auto-pull: [{}] pulls [{}] ({})", p.key, puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain");
+	}
+}
+
 void BotTactics::ChainCast(uint32 key, uint16 caster_id)
 {
 	BotTacticsPlan* p = Find(key);
@@ -1193,6 +1394,15 @@ void BotTactics::SetMainTankOverride(uint32 key, const std::string& name)
 	}
 }
 
+void BotTactics::SetAutoPull(uint32 key, bool on, float radius)
+{
+	m_overrides[key].auto_pull   = on;
+	m_overrides[key].pull_radius = radius;
+	if (BotTacticsPlan* p = Find(key)) {
+		p->built_ms = 0;
+	}
+}
+
 void BotTactics::SetChainIntervalOverride(uint32 key, uint32 ms)
 {
 	m_overrides[key].chain_interval_ms = ms;
@@ -1256,6 +1466,17 @@ std::vector<std::string> BotTactics::Describe(uint32 key)
 				p->pull_active ? ", holding for a pull" : ""
 			)
 		);
+	}
+
+	const float pull_radius = (ov_it != m_overrides.end() && ov_it->second.pull_radius > 0.0f) ? ov_it->second.pull_radius : kAutoPullRadius;
+	if (!p->auto_pull) {
+		out.emplace_back("Auto-pull: off. ^tactics pull on to let a bot pull when the camp is ready.");
+	}
+	else if (p->autopull_puller_id) {
+		out.emplace_back(fmt::format("Auto-pull: on ({:.0f} around camp), {} is pulling {}.", pull_radius, NameOf(p->autopull_puller_id), NameOf(p->autopull_target_id)));
+	}
+	else {
+		out.emplace_back(fmt::format("Auto-pull: on ({:.0f} around camp){}.", pull_radius, p->camp_set ? "" : ", waiting for a camp (the first fight makes one)"));
 	}
 
 	if (p->chain.empty()) {
@@ -2005,6 +2226,75 @@ void Bot::OwnerHoldAI()
 			BotMeditate(true);
 		}
 	}
+}
+
+// ============================================================
+// Auto-pull
+// ============================================================
+
+bool Bot::TacticsStartPull(Mob* target)
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+	if (!owner || !target || owner->GetBotPulling() || IsFDPulling() || GetPullingFlag() || GetReturningFlag()) {
+		return false;
+	}
+
+	if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
+		GetPet()->WipeHateList();
+		GetPet()->SetTarget(nullptr);
+		m_previous_pet_order = GetPet()->GetPetOrder();
+		GetPet()->SetPetOrder(SPO_Guard);
+	}
+
+	// A monk feign-pulls: tag, feign until the extras go home, re-tag alone
+	// (FDPullerProcess, the ^fdpull machine).
+	if (GetClass() == Class::Monk && GetSkill(EQ::skills::SkillFeignDeath) > 0) {
+		SetFDPullTargetID(target->GetID());
+		SetFDPullState(FDPullState::Tagging);
+		BotGroupSay(this, "FD pulling %s.", target->GetCleanName());
+		return true;
+	}
+
+	// Everyone else: as ^pull, with our own pick instead of the owner's target.
+	InterruptSpell();
+	WipeHateList();
+	AddToHateList(target, 1);
+	SetTarget(target);
+	SetPullingFlag();
+	owner->SetBotPulling();
+	BotGroupSay(this, "Pulling %s.", target->GetCleanName());
+	return true;
+}
+
+void Bot::TacticsAbortPull()
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+
+	if (IsFDPulling()) {
+		FDPullReset(owner);
+		return;
+	}
+
+	WipeHateList();
+	SetTarget(nullptr);
+	SetPullingFlag(false);
+	SetReturningFlag(false);
+	if (owner) {
+		owner->SetBotPulling(false);
+	}
+	if (HasPet()) {
+		GetPet()->SetPetOrder(m_previous_pet_order);
+	}
+}
+
+glm::vec3 Bot::PullReturnPoint(Client* bot_owner)
+{
+	// Bring it to camp: that is where the group is, not necessarily the owner.
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (p && p->camp_set) {
+		return p->camp;
+	}
+	return bot_owner ? glm::vec3(bot_owner->GetPosition()) : glm::vec3(m_Position);
 }
 
 bool Bot::TacticsPullActive() const

@@ -938,6 +938,11 @@ public:
 	void OwnerHoldAI();
 	bool TryRezOwnerCorpse();
 	static std::string OwnerHoldBucketKey(uint32 bot_id);
+
+	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
+	bool TacticsStartPull(Mob* target);
+	void TacticsAbortPull();
+	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
 	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
 	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
 	bool TacticsPlayerSlowsFirst(Mob* tar) const;

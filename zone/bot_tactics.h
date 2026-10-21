@@ -52,6 +52,8 @@
  *   - recovery: fallen bots are resurrected after the fight by a bot that
  *     can; casters call "Out of mana" once a fight; after it, one "Medding"
  *     and one "Ready" line tell the player when to pull.
+ *   - auto-pull (opt-in): with the camp ready, a bot pulls one mob at a time
+ *     (a monk with FD splits linked groups).
  *   - raid encounters: a bot_raid_encounters row for the assist target
  *     (any zone) keeps casters back, everyone out of its front, or holds
  *     the damage to a health %.
@@ -143,6 +145,17 @@ struct BotTacticsPlan {
 	uint16              recovery_speaker_id = 0;
 	std::vector<uint16> oom_called;
 
+	// Auto-pull (phase 10, opt-in: ^tactics pull on). When the camp is ready
+	// a bot puller (monk with FD first, then ranger, bard, rogue, the tank)
+	// brings back one mob at a time.
+	bool   auto_pull            = false;    // mirrored from the overrides each rebuild
+	float  readiness            = 100.0f;   // lowest bot health / mana %, from the recovery calls
+	uint16 autopull_puller_id   = 0;
+	uint16 autopull_target_id   = 0;
+	uint32 autopull_started_ms  = 0;
+	uint32 autopull_last_end_ms = 0;
+	uint32 autopull_last_try_ms = 0;
+
 	// Raid encounter (phase 8): the assist target's bot_raid_encounters row
 	bool             has_encounter    = false;
 	uint16           encounter_mob_id = 0;
@@ -218,6 +231,7 @@ public:
 	bool IsEnabled(uint32 key) const;
 	void SetMainTankOverride(uint32 key, const std::string& name); // "" = automatic
 	void SetChainIntervalOverride(uint32 key, uint32 ms);           // 0 = automatic
+	void SetAutoPull(uint32 key, bool on, float radius = 0.0f);     // radius 0 = default
 
 	// Multi-line summary for ^tactics.
 	std::vector<std::string> Describe(uint32 key);
@@ -227,7 +241,11 @@ private:
 		bool        disabled          = false;
 		std::string main_tank;          // clean name, lower-case
 		uint32      chain_interval_ms = 0;
+		bool        auto_pull         = false;
+		float       pull_radius       = 0.0f;
 	};
+
+	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
 
 	void Rebuild(BotTacticsPlan& plan, Raid* raid, Group* group);
 	void Announce(Raid* raid, Group* group, Mob* speaker, const std::string& msg);

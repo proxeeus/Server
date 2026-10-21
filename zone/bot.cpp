@@ -3556,7 +3556,9 @@ bool Bot::ExecuteFeignDeath() {
 			if (IsFDPulling() && static_cast<uint16>(npc->GetID()) != m_fd_pull_target_id && !npc->IsPet()) {
 				m_fd_pull_add_ids.push_back(static_cast<uint16>(npc->GetID()));
 			}
-			npc->WipeHateList();
+			// Forget us, not everyone: wiping the whole list made a mob that
+			// was on the group drop the tank too.
+			npc->RemoveFromHateList(this);
 		}
 	}
 	WipeHateList();
@@ -3657,7 +3659,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	entity_list.GetNPCList(npc_list);
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
-			npc->WipeHateList();
+			npc->RemoveFromHateList(this); // us only (see ExecuteFeignDeath)
 		}
 	}
 	WipeHateList();
@@ -3719,7 +3721,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			// Never FD immediately — the running distance determines how far adds must walk home
 			// before the monk re-enters their aggro range on the next approach.
 			if (!m_fd_tag_timer.Check()) {
-				RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+				const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
+				RunTo(back.x, back.y, back.z);
 			} else {
 				const bool had_adds = IsBeingChasedByAdds(pull_target);
 				const bool fd_ok = ExecuteFeignDeath();
@@ -3808,7 +3811,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 
-		float owner_dist_sq = DistanceSquared(GetPosition(), bot_owner->GetPosition());
+		const glm::vec3 back          = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
+		float           owner_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
 		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
 			InterruptSpell();
 			WipeHateList();
@@ -3833,7 +3837,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 
-		RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+		RunTo(back.x, back.y, back.z);
 		break;
 	}
 
