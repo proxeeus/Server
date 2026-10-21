@@ -109,6 +109,17 @@ constexpr uint32 kSummonClaimMs      = 30000;  // one summoner per corpse
 constexpr uint8  kRezMaxTries        = 3;      // resurrect offers per corpse before taking no for an answer
 constexpr uint32 kBardSongCheckMs    = 3000;   // a bard looks at what to sing this often
 constexpr float  kRaidManaReservePct = 30.0f;  // casters stop nuking a raid target under this much mana
+constexpr float  kHealerOptionalManaPct = 50.0f; // a healer under this casts nothing optional in a fight...
+constexpr float  kHealerPressureHPPct   = 70.0f; // ...nor while someone in its care is under this
+constexpr uint32 kResistMemoryMs        = 60000; // resists counted over this long
+constexpr size_t kResistNotesMax        = 24;
+constexpr uint8  kDebuffResistTries     = 2;     // a debuff resisted this often on a mob...
+constexpr uint32 kDebuffBackoffMs       = 30000; // ...is left alone this long
+constexpr uint8  kMezResistTries        = 3;     // a mez gets more tries...
+constexpr uint32 kMezBackoffMs          = 10000; // ...and a shorter break
+constexpr float  kHealerBuffManaPct     = 60.0f; // healers buff only above this much mana...
+constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
+constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 
 bool IsAlive(Mob* m)
 {
@@ -3120,7 +3131,8 @@ bool Bot::TacticsSituationalBuffs()
 				buffs[i].ticsremaining > kRefreshTics ||
 				spells[sid].buff_duration < kRefreshMinTics || // a short buff is just recast when it drops
 				spells[sid].classes[GetClass() - 1] > GetLevel() ||
-				GetMana() < spells[sid].mana
+				GetMana() < spells[sid].mana ||
+				!TacticsBuffWanted(sid, m) // a buff no longer wanted is let go
 			) {
 				continue;
 			}
@@ -3167,6 +3179,218 @@ bool Bot::TacticsConserveMana(Mob* tar) const
 		default:
 			return false;
 	}
+}
+
+// ============================================================
+// Healer discipline, resists, mez, buffs (after the Icewell test)
+// ============================================================
+
+bool Bot::TacticsHealerHoldsOptional() const
+{
+	const uint8 c = GetClass();
+	if (c != Class::Cleric && c != Class::Druid && c != Class::Shaman) {
+		return false;
+	}
+
+	// Icewell: the cleric started every fight dry from buffing, the shaman
+	// healed alone and spent its last twenty seconds re-casting a resisted
+	// Malosini. A healer's mana is for heals first.
+	if (GetManaRatio() < kHealerOptionalManaPct) {
+		return true;
+	}
+
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p) {
+		return false;
+	}
+
+	const bool   in_raid  = !p->raid_group.empty();
+	const uint32 my_group = p->RaidGroupOf(GetID());
+	for (uint16 id : p->members) {
+		const uint32 their_group = p->RaidGroupOf(id);
+		if (in_raid && their_group != my_group && their_group != RAID_GROUPLESS && !p->IsMainTank(id)) {
+			continue;
+		}
+		Mob* m = entity_list.GetMob(id);
+		if (IsAlive(m) && m->GetHPRatio() < kHealerPressureHPPct) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void Bot::TacticsNoteResist(uint16 spell_id, Mob* target)
+{
+	if (!target || !IsValidSpell(spell_id)) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Forget the old notes first.
+	m_resists.erase(
+		std::remove_if(
+			m_resists.begin(), m_resists.end(), [&](const ResistNote& n) {
+				return now - n.first_ms > kResistMemoryMs && now >= n.until_ms;
+			}
+		),
+		m_resists.end()
+	);
+
+	auto it = std::find_if(
+		m_resists.begin(), m_resists.end(), [&](const ResistNote& n) {
+			return n.target_id == target->GetID() && n.spell_id == spell_id;
+		}
+	);
+	if (it == m_resists.end()) {
+		if (m_resists.size() >= kResistNotesMax) {
+			m_resists.erase(m_resists.begin());
+		}
+		m_resists.push_back({target->GetID(), spell_id, 0, now, 0});
+		it = std::prev(m_resists.end());
+	}
+
+	++it->count;
+
+	// A mez is worth more tries (an unmezzed add kills the enchanter), a
+	// debuff two: then leave it, the fight goes on without it.
+	const bool  mez       = IsMesmerizeSpell(spell_id);
+	const uint8 threshold = mez ? kMezResistTries : kDebuffResistTries;
+	if (it->count >= threshold) {
+		it->until_ms = now + (mez ? kMezBackoffMs : kDebuffBackoffMs);
+		it->count    = 0;
+		it->first_ms = now;
+		LogInfo(
+			"[BotAI] [{}] backs off [{}] on [{}] for [{}]s: resisted [{}] times",
+			GetCleanName(), spells[spell_id].name, target->GetCleanName(), (mez ? kMezBackoffMs : kDebuffBackoffMs) / 1000, threshold
+		);
+	}
+	else {
+		LogInfo("[BotAI] [{}] [{}] resisted by [{}] ({} of {})", GetCleanName(), spells[spell_id].name, target->GetCleanName(), it->count, threshold);
+	}
+}
+
+bool Bot::TacticsResistBackoff(uint16 spell_id, Mob* target) const
+{
+	if (!target) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	for (const auto& n : m_resists) {
+		if (n.target_id == target->GetID() && n.spell_id == spell_id && now < n.until_ms) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Bot::TacticsHasMezWork() const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || p->adds.empty()) {
+		return false;
+	}
+
+	for (uint16 id : p->adds) {
+		Mob* m = entity_list.GetMob(id);
+		if (m && !m->IsMezzed() && id != p->assist_target_id) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !IsValidSpell(spell_id)) {
+		return true; // tactics off: the old buffing
+	}
+
+	// Mana is for heals (healers) and for mez / emergencies (casters).
+	const uint8 c      = GetClass();
+	const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+	if (GetManaRatio() < (healer ? kHealerBuffManaPct : kCasterBuffManaPct)) {
+		return false;
+	}
+
+	auto has = [&](int effect) { return IsEffectInSpell(spell_id, effect); };
+
+	// What it does. (SE_CHA is a spacer in old spells: it means nothing.)
+	const bool core     = has(SE_TotalHP) || has(SE_ArmorClass) || has(SE_Rune) || has(SE_ATK) ||
+	                      has(SE_AttackSpeed) || has(SE_CurrentMana) || has(SE_CurrentHP);
+	const bool shield   = has(SE_DamageShield);
+	const bool physical = has(SE_STR) || has(SE_DEX) || has(SE_AGI) || has(SE_STA);
+	const bool mental   = has(SE_INT) || has(SE_WIS);
+	const bool resist   = has(SE_ResistFire) || has(SE_ResistCold) || has(SE_ResistPoison) || has(SE_ResistDisease) || has(SE_ResistMagic);
+	const bool travel   = has(SE_MovementSpeed);
+	const bool utility  = has(SE_Levitate) || has(SE_SeeInvis) || has(SE_Invisibility) || has(SE_InvisVsUndead) || has(SE_WaterBreathing);
+
+	// Charisma and nothing else (Overwhelming Splendor): the enchanter's own
+	// business, worthless on anyone else. Effect 10 with a 0 base is the
+	// spacer, not charisma.
+	bool any_effect = false;
+	bool only_cha   = true;
+	for (int i = 0; i < EFFECT_COUNT; ++i) {
+		const int e = spells[spell_id].effect_id[i];
+		if (e == SE_Blank || (e == SE_CHA && spells[spell_id].base_value[i] == 0)) {
+			continue;
+		}
+		any_effect = true;
+		if (e != SE_CHA) {
+			only_cha = false;
+		}
+	}
+	if (any_effect && only_cha && tar != this) {
+		return false;
+	}
+
+	// Situational only, nothing core in it: only when the situation is on.
+	if (!core && !shield && !physical && !mental) {
+		if (utility) {
+			return false; // on request (tells) or when needed (water breathing)
+		}
+		if (travel) {
+			return !p->camp_set; // on the road, not at camp
+		}
+		if (resist) {
+			// Only resists the zone's raid targets ask for.
+			for (uint8 r : bot_tactics.ZoneResists()) {
+				const int e = ResistEffect(r);
+				if (e && has(e)) {
+					return true;
+				}
+			}
+			return false;
+		}
+	}
+
+	// A damage shield only matters on whoever is being hit.
+	if (shield && !core && !p->IsMainTank(tar->GetID()) && !p->IsOffTank(tar->GetID()) && !TankWeight(tar)) {
+		return false;
+	}
+
+	// Stats only where the stat counts.
+	const bool caster_target = tar->GetArchetype() == Archetype::Caster;
+	if (!core && !shield && physical && !mental && caster_target) {
+		return false;
+	}
+	if (!core && !shield && mental && !physical && tar->GetMaxMana() <= 0) {
+		return false;
+	}
+
+	// Leave room in the buff window (v29c has 15): a full one takes only the
+	// buffs that keep people alive.
+	const int free_slots = tar->GetMaxBuffSlots() - tar->GetActiveBuffCount();
+	if (free_slots <= 1) {
+		return false;
+	}
+	if (free_slots <= kBuffSlotsKeptFree && !core) {
+		return false;
+	}
+
+	return true;
 }
 
 // ============================================================

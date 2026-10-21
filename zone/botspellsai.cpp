@@ -40,6 +40,24 @@ bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 		return false;
 	}
 
+	// A healer short of mana, or with someone in its care going down, keeps
+	// its casts for heals: no debuffs, DoTs, nukes or combat buffs then.
+	// Slows, cures and heals are never held. (bot_tactics.cpp)
+	switch (iSpellTypes) {
+		case SpellType_Debuff:
+		case SpellType_DOT:
+		case SpellType_Nuke:
+		case SpellType_Lifetap:
+		case SpellType_Dispel:
+		case SpellType_InCombatBuff:
+			if (TacticsHealerHoldsOptional()) {
+				return false;
+			}
+			break;
+		default:
+			break;
+	}
+
 	uint8 botClass = GetClass();
 	uint8 botLevel = GetLevel();
 
@@ -936,6 +954,13 @@ bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 				continue;
 			}
 
+			// Not every buff it has on everyone it can: what matters for this
+			// target, situational ones only when on, room left in the window,
+			// mana kept for heals (bot_tactics.cpp).
+			if (!TacticsBuffWanted(s.SpellId, tar)) {
+				continue;
+			}
+
 			// Validate target
 			// TODO: Add ST_TargetsTarget support for Buffing.
 			if (
@@ -1268,7 +1293,10 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 
 bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSpell, Raid* raid) {
 	bool casted_spell = false;
-	if (!checked_los && (!CheckLosFN(tar) || !CheckWaterLoS(tar))) {
+
+	// Line of sight to our own target says nothing about the add we mez; with
+	// a plan the add's own LOS is checked below.
+	if (!GetTacticsPlan() && !checked_los && (!CheckLosFN(tar) || !CheckWaterLoS(tar))) {
 		return false;
 	}
 
@@ -1288,22 +1316,66 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 	// With a shared plan: the unit's adds (raids included), never the main
 	// target, one mezzer per add. Without: the group scan.
 	if (const BotTacticsPlan* plan = GetTacticsPlan()) {
+		// Why each add was passed over, for the log below.
+		int skipped_mezzed = 0, skipped_player = 0, skipped_immune = 0, skipped_stack = 0, skipped_claim = 0, skipped_resists = 0;
+
 		for (uint16 id : plan->adds) {
 			Mob* m = entity_list.GetMob(id);
-			if (
-				!m ||
-				m->IsMezzed() ||
-				id == plan->assist_target_id ||
-				TacticsPlayerMezzesFirst(id) ||  // a player enchanter's add, for now
-				m->IsImmuneToSpell(botSpell.SpellId, this) ||
-				m->CanBuffStack(botSpell.SpellId, botLevel, true) < 0 ||
-				!bot_tactics.ClaimMez(plan->key, id, GetID())
-			) {
+			if (!m || id == plan->assist_target_id) {
+				continue;
+			}
+			if (m->IsMezzed()) {
+				++skipped_mezzed;
+				continue;
+			}
+			if (TacticsPlayerMezzesFirst(id)) { // a player enchanter's add, for now
+				++skipped_player;
+				continue;
+			}
+			if (m->IsImmuneToSpell(botSpell.SpellId, this)) {
+				++skipped_immune;
+				continue;
+			}
+			if (m->CanBuffStack(botSpell.SpellId, botLevel, true) < 0) {
+				++skipped_stack;
+				continue;
+			}
+			if (TacticsResistBackoff(botSpell.SpellId, m)) {
+				++skipped_resists;
+				continue;
+			}
+			if (!bot_tactics.ClaimMez(plan->key, id, GetID())) {
+				++skipped_claim;
 				continue;
 			}
 
 			addMob = m;
 			break;
+		}
+
+		if (!addMob && !plan->adds.empty() && Timer::GetCurrentTime() >= m_mez_log_ms) {
+			m_mez_log_ms = Timer::GetCurrentTime() + 5000;
+			LogInfo(
+				"[BotAI] [{}] mez: nothing to take among [{}] add(s): mezzed [{}] player's [{}] immune [{}] no-stack [{}] backing-off [{}] claimed [{}]",
+				GetCleanName(), plan->adds.size(), skipped_mezzed, skipped_player, skipped_immune, skipped_stack, skipped_resists, skipped_claim
+			);
+		}
+
+		// Tash first on a high-MR add: Icewell's 150+ MR shrugged off every
+		// mez cast at it.
+		constexpr int32 kTashFirstMR = 100;
+		if (addMob && addMob->GetMR() > kTashFirstMR) {
+			const BotSpell tash = GetBestBotSpellForResistDebuff(this, addMob);
+			if (
+				IsValidSpell(tash.SpellId) &&
+				addMob->CanBuffStack(tash.SpellId, botLevel, true) >= 0 &&
+				!TacticsResistBackoff(tash.SpellId, addMob) &&
+				IsValidSpellRange(tash.SpellId, addMob) &&
+				AIDoSpellCast(tash.SpellIndex, addMob, tash.ManaCost)
+			) {
+				LogInfo("[BotAI] [{}] mez: [{}] first on [{}] (MR [{}])", GetCleanName(), spells[tash.SpellId].name, addMob->GetCleanName(), addMob->GetMR());
+				return true;
+			}
 		}
 	}
 	else {
@@ -1328,14 +1400,17 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 		casted_spell = AIDoSpellCast(botSpell.SpellIndex, addMob, botSpell.ManaCost);
 	}
 	if (casted_spell) {
+		LogInfo("[BotAI] [{}] mez: [{}] on [{}] (MR [{}])", GetCleanName(), spells[botSpell.SpellId].name, addMob->GetCleanName(), addMob->GetMR());
+
 		if (raid) {
+			// (message, then speaker: these were the other way round)
 			raid->RaidSay(
-				GetCleanName(),
 				fmt::format(
 					"Attempting to mesmerize {} with {}.",
 					addMob->GetCleanName(),
 					spells[botSpell.SpellId].name
 				).c_str(),
+				GetCleanName(),
 				0,
 				100
 			);
@@ -1356,6 +1431,12 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 
 bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgainBefore) {
 	bool result = false;
+
+	// Resisted too often on this mob just now: leave it (TacticsNoteResist).
+	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) &&
+		IsDetrimentalSpell(AIBot_spells[i].spellid) && TacticsResistBackoff(AIBot_spells[i].spellid, tar)) {
+		return false;
+	}
 
 	// manacost has special values, -1 is no mana cost, -2 is instant cast (no mana)
 	int32 manaCost = mana_cost;
@@ -1687,6 +1768,18 @@ bool Bot::AI_EngagedCastCheck() {
 		}
 
 		LogAIDetail("Engaged autocast check triggered (BOTS). Trying to cast healing spells then maybe offensive spells");
+
+		// An add to mez: that comes first, every time -- the plan says so,
+		// not a cast-chance roll (the chances table has mez at 0 for every
+		// class, so enchanters mezzed about one check in a hundred and bards
+		// never). bot_tactics.cpp.
+		if ((botClass == Class::Enchanter || botClass == Class::Bard) && TacticsHasMezWork() &&
+			AICastSpell(GetTarget(), 100, SpellType_Mez)) {
+			if (!AIautocastspell_timer->Enabled()) {
+				AIautocastspell_timer->Start(RandomTimer(150, 300), false);
+			}
+			return true;
+		}
 
 		if (botClass == Class::Cleric) {
 			if (!AICastSpell(GetTarget(), GetChanceToCastBySpellType(SpellType_Escape), SpellType_Escape)) {

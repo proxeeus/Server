@@ -971,6 +971,21 @@ public:
 	// casters under a reserve
 	bool TacticsConserveMana(Mob* tar) const;
 
+	// After the Icewell test (phase 28):
+	// - a healer short of mana, or with someone in its care low, casts
+	//   nothing optional (debuffs, DoTs, nukes, combat buffs)
+	bool TacticsHealerHoldsOptional() const;
+	// - a debuff resisted twice on a mob (a mez three times) is left alone
+	//   for a while: Icewell mobs carry 150+ MR
+	void TacticsNoteResist(uint16 spell_id, Mob* target);
+	bool TacticsResistBackoff(uint16 spell_id, Mob* target) const;
+	// - mez is the plan's call, not a cast-chance roll (the chances table has
+	//   mez at 0 for every class)
+	bool TacticsHasMezWork() const;
+	// - buffs: what matters for that target, situational ones only when the
+	//   situation is on, a few slots kept free, mana kept for heals
+	bool TacticsBuffWanted(uint16 spell_id, Mob* tar) const;
+
 	// Bard songs by situation (phase 25): travel song on the road, mana song
 	// while the group meds; combat songs stay with the bard AI
 	bool TacticsBardSongs(Client* leader);
@@ -1119,6 +1134,17 @@ private:
 	uint16    m_owner_rez_corpse_id  = 0;   // the corpse the offers below are for
 	uint8     m_owner_rez_tries      = 0;
 	uint32    m_bard_song_ms         = 0;
+	uint32    m_mez_log_ms           = 0;
+
+	// Resists seen on our own casts (TacticsNoteResist)
+	struct ResistNote {
+		uint16 target_id = 0;
+		uint16 spell_id  = 0;
+		uint8  count     = 0;
+		uint32 first_ms  = 0;
+		uint32 until_ms  = 0;   // backing off until then
+	};
+	std::vector<ResistNote> m_resists;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 
