@@ -37,6 +37,34 @@
 
 #include <sstream>
 
+struct BotTacticsPlan; // bot_tactics.h
+
+// Is a bot that is trying to move actually moving? (bot_tactics.cpp) Measured
+// on its own position, not the distance to its goal: following a running
+// player, that distance does not shrink however well the bot runs.
+struct BotProgress {
+	uint32    since_ms = 0;               // 0 = not tracking
+	uint32    last_ms  = 0;               // last time anyone asked
+	glm::vec3 anchor   = glm::vec3(0.0f); // where it was then
+
+	// True once the bot has not got `step` away from where it was for
+	// `window_ms` of continuous trying. A gap in the asking (a cast, a rest)
+	// starts the count over.
+	bool Stalled(const glm::vec3& pos, uint32 now, uint32 window_ms, float step = 3.0f)
+	{
+		const glm::vec3 d     = pos - anchor;
+		const bool      fresh = !since_ms || now - last_ms > 1500;
+		last_ms = now;
+		if (fresh || d.x * d.x + d.y * d.y + d.z * d.z >= step * step) {
+			since_ms = now;
+			anchor   = pos;
+			return false;
+		}
+		return now - since_ms >= window_ms;
+	}
+	void Reset() { since_ms = 0; }
+};
+
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT = 184; // as DSq value (~13.565 units)
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT_MAX = 2500; // as DSq value (50 units)
 
@@ -358,7 +386,10 @@ public:
 	void SetGuardMode();
 	void SetHoldMode();
 	uint32 GetBotCasterRange() const { return m_bot_caster_range; }
-	bool IsValidSpellRange(uint16 spell_id, Mob const* tar);
+	// note_out_of_range: record a move-to-cast intent when the target is too far
+	// (see TryMoveToCast). Off for casts that must never pull the bot toward the
+	// target, like escapes.
+	bool IsValidSpellRange(uint16 spell_id, Mob const* tar, bool note_out_of_range = true);
 
 	// Bot AI Methods
 	void AI_Bot_Init();
@@ -896,6 +927,112 @@ public:
 	bool TryBardMovementCasts();
 	void SetRangerCombatWeapon(bool atArcheryRange);
 
+	// Move-to-cast (docs/BOT_AI_REWORK.md, phase 1). The spell AI records the
+	// most important cast it wanted but could not make because the target was
+	// out of range; AI_Process then walks the bot into range instead of
+	// silently skipping the cast, and holds it there long enough to cast.
+	bool TryMoveToCast(Client* leash_owner, float leash_distance);
+	void NoteOutOfRangeCast(uint16 spell_id, const Mob* tar);
+	void ClearCastRangeIntent();
+	bool IsHoldingCastPosition() const { return m_cast_position_hold_ms > Timer::GetCurrentTime(); }
+
+	// Tactics (bot_tactics.cpp, docs/BOT_AI_REWORK.md phase 2+): the shared
+	// plan of this bot's raid or group -- main tank, off-tanks, assist
+	// target, CH chain -- and what this bot does with it.
+	const BotTacticsPlan* GetTacticsPlan() const;
+	void RefreshTactics(Raid* raid, Group* group);
+	bool TacticsReservesCasting() const;   // in a running CH chain: no other casts
+	bool TacticsChainCheck();              // our turn in the chain: cast it
+	bool TacticsHeal();                    // healer triage over the whole unit
+	bool TryTacticsAssist(Client* leash_owner, float leash_distance);
+	Mob* TacticsRetarget(Mob* tar);
+	void TacticsTankChecks(Mob* tar);
+	void TryDefensiveDiscipline();
+	bool TacticsPullActive() const;        // the player is pulling: hold camp
+	bool TryTacticsResurrect();            // raise a fallen bot after the fight
+	bool TacticsEvacCheck();               // wipe: we were told to evacuate the group
+	bool TacticsEncounterPositioning(Mob* tar); // a raid encounter's front / reach
+
+	// Holding camp after the owner died (docs/BOT_AI_REWORK.md phase 9). The
+	// bot detaches from its dead owner (keeping the character id), stays in
+	// its group / raid slot, fights, heals, resurrects the owner's corpse,
+	// and waits -- until the owner is back in the zone or the time runs out.
+	bool IsHoldingForOwner() const { return m_owner_hold_until_ms != 0; }
+	void BeginOwnerHold();
+	void ResumeFromOwnerHold(Client* owner);
+	void EndOwnerHold();                   // time's up: leave the zone
+	void OwnerHoldAI();
+	bool TryRezOwnerCorpse();
+	// Wipe recovery (phase 24): the owner alive, its corpse here: summon it
+	// over (necro / SK), then resurrect it for the experience
+	bool TryOwnerCorpseCare(Client* owner);
+
+	// Raid mana (phase 26): no nukes on a raid target for healers, nor for
+	// casters under a reserve
+	bool TacticsConserveMana(Mob* tar) const;
+
+	// After the Icewell test (phase 28):
+	// - a healer short of mana, or with someone in its care low, casts
+	//   nothing optional (debuffs, DoTs, nukes, combat buffs)
+	bool TacticsHealerHoldsOptional() const;
+	// - a debuff resisted twice on a mob (a mez three times) is left alone
+	//   for a while: Icewell mobs carry 150+ MR
+	void TacticsNoteResist(uint16 spell_id, Mob* target);
+	bool TacticsResistBackoff(uint16 spell_id, Mob* target) const;
+	// - mez is the plan's call, not a cast-chance roll (the chances table has
+	//   mez at 0 for every class)
+	bool TacticsHasMezWork() const;
+	// - a caster in range of its target without line of sight walks until it
+	//   has it (Skyshrine: every detrimental cast path silently skipped)
+	void TacticsCheckLineOfSight(Mob* tar);
+	// - AE detrimental spells: no AE mez that would catch the tank's mob or a
+	//   held add, no other AE that would wake a mezzed one
+	bool TacticsAoeUnsafe(uint16 spell_id, Mob* tar) const;
+	// - buffs: what matters for that target, situational ones only when the
+	//   situation is on, a few slots kept free, mana kept for heals
+	bool TacticsBuffWanted(uint16 spell_id, Mob* tar) const;
+
+	// Bard songs by situation (phase 25): travel song on the road, mana song
+	// while the group meds; combat songs stay with the bard AI
+	bool TacticsBardSongs(Client* leader);
+	static std::string OwnerHoldBucketKey(uint32 bot_id);
+
+	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
+	bool TacticsStartPull(Mob* target);
+	void TacticsAbortPull();
+	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
+
+	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
+	void TacticsPetChecks();
+
+	// Aggro (phase 13): close to the tank's hate on this mob, hold the damage
+	bool TacticsAggroBackoff(Mob* tar);
+
+	// Situational buffs (phase 14): water breathing for whoever is under
+	// water, the zone's raid resist between fights
+	bool TacticsSituationalBuffs();
+
+	// Incoming damage (phase 19): taking almost none (no CH on a scratch)
+	bool TacticsTargetQuiet(Mob* tar) const;
+
+	// Stuck (phase 18): no progress toward the follow point / camp place for
+	// a few seconds while far from it -> rejoin it. True = we moved.
+	bool TacticsUnstick(const glm::vec3& goal, float dist);
+
+	// Requests by tell (phase 17): "sow", "invis", "rez Tankbot"... from our
+	// owner or a groupmate. False = not a request (small talk for the chat engine).
+	bool TacticsTellRequest(Client* from, const std::string& message);
+
+	// Runners (phase 11)
+	bool TacticsSnareRunner(Mob* tar);       // the main target is going: snare it (one of us)
+	bool TacticsTooFarFromCamp(Mob* tar);    // do not chase it out of camp
+	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
+	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
+	bool TacticsPlayerSlowsFirst(Mob* tar) const;
+	bool TacticsPlayerMezzesFirst(uint16 add_id) const;
+	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
+	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
+
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
 
@@ -972,6 +1109,49 @@ private:
 	bool is_using_item_click;
 	uint32 m_bot_caster_range;
 	BotCastingRoles m_CastingRoles;
+
+	// Move-to-cast state (TryMoveToCast)
+	uint16 m_cast_range_target_id  = 0;
+	uint16 m_cast_range_spell_id   = 0;
+	uint8  m_cast_range_priority   = 0;     // 3 heal, 2 other beneficial, 1 detrimental
+	uint32 m_cast_range_expire_ms  = 0;
+	bool   m_cast_range_moving     = false;
+	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
+
+	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
+
+	// Camp place cache (TacticsCampSlot) and tank turning throttle
+	glm::vec3 m_camp_slot            = glm::vec3(0.0f);
+	glm::vec3 m_camp_slot_camp       = glm::vec3(0.0f);
+	uint32    m_camp_slot_sig        = 0xFFFFFFFF;
+	uint32    m_tank_reposition_ms   = 0;
+	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
+	uint32    m_encounter_reposition_ms = 0;
+	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
+	uint32    m_owner_rez_retry_ms   = 0;
+	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
+	uint32    m_situational_check_ms = 0;
+	BotProgress m_follow_progress;          // walking to the follow point / camp place
+	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
+	uint32    m_catchup_said_ms      = 0;
+	uint16    m_heal_urgent_id       = 0;   // set by TacticsHeal around one AICastSpell
+	uint32    m_corpse_summon_done_ms = 0;  // summoning the owner's corpse: done then
+	uint16    m_corpse_summon_id     = 0;
+	uint16    m_owner_rez_corpse_id  = 0;   // the corpse the offers below are for
+	uint8     m_owner_rez_tries      = 0;
+	uint32    m_bard_song_ms         = 0;
+	uint32    m_mez_log_ms           = 0;
+	uint32    m_los_check_ms         = 0;
+
+	// Resists seen on our own casts (TacticsNoteResist)
+	struct ResistNote {
+		uint16 target_id = 0;
+		uint16 spell_id  = 0;
+		uint8  count     = 0;
+		uint32 first_ms  = 0;
+		uint32 until_ms  = 0;   // backing off until then
+	};
+	std::vector<ResistNote> m_resists;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

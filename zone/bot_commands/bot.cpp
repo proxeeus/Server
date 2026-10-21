@@ -1046,6 +1046,19 @@ void bot_command_spawn(Client *c, const Seperator *sep)
 		return;
 	}
 
+	// Holding camp in another zone since you died: there is only one of it.
+	if (const auto held_in = DataBucket::GetData(Bot::OwnerHoldBucketKey(bot_id)); !held_in.empty()) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"'{}' is holding camp in {} since you died. Go back, or wait for it to give up.",
+				bot_name,
+				held_in
+			).c_str()
+		);
+		return;
+	}
+
 	auto my_bot = Bot::LoadBot(bot_id);
 	if (!my_bot) {
 		c->Message(

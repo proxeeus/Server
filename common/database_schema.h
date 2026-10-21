@@ -412,6 +412,7 @@ namespace DatabaseSchema {
 			"bot_inspect_messages",
 			"bot_inventories",
 			"bot_owner_options",
+			"bot_raid_encounters",
 			"bot_pet_buffs",
 			"bot_pet_inventories",
 			"bot_pets",

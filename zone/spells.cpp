@@ -4522,6 +4522,11 @@ bool Mob::SpellOnTarget(
 			if (spell_effectiveness == 0 || !IsPartialResistableSpell(spell_id)) {
 				LogSpells("Spell [{}] was completely resisted by [{}]", spell_id, spelltar->GetName());
 
+				// A bot counts its resists, to stop re-casting into a wall of MR.
+				if (IsBot()) {
+					CastToBot()->TacticsNoteResist(spell_id, spelltar);
+				}
+
 				if (spells[spell_id].resist_type == RESIST_PHYSICAL){
 					MessageString(Chat::SpellFailure, PHYSICAL_RESIST_FAIL,spells[spell_id].name);
 					spelltar->MessageString(Chat::SpellFailure, YOU_RESIST, spells[spell_id].name);

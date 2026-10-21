@@ -1,4 +1,5 @@
 #include "../bot_command.h"
+#include "../bot_tactics.h"
 #include <unordered_set>
 
 void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
@@ -108,22 +109,6 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		return;
 	}
 
-	// Identify healers and non-healers
-	std::vector<Bot*> healers, non_healers;
-	for (auto* bot : bots) {
-		if (!bot) continue;
-		switch (bot->GetClass()) {
-		case Class::Cleric:
-		case Class::Druid:
-		case Class::Shaman:
-			healers.push_back(bot);
-			break;
-		default:
-			non_healers.push_back(bot);
-			break;
-		}
-	}
-
 	// Create a new raid if one does not exist
 	if (!raid) {
 		raid = new Raid(bot_owner);
@@ -134,54 +119,11 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 		raid->SendMakeLeaderPacketTo(bot_owner->GetName(), bot_owner);
 	}
 
-	// Distribute bots into groups (max 6 per group, up to max_groups)
-	constexpr int MAX_GROUP_SIZE = 6;
-	std::vector<std::vector<Bot*>> groups(max_groups);
-
-	size_t healer_idx = 0, non_healer_idx = 0;
-	for (int g = 0; g < max_groups && (healer_idx < healers.size() || non_healer_idx < non_healers.size()); ++g) {
-		if (healer_idx < healers.size()) {
-			groups[g].push_back(healers[healer_idx++]);
-		}
-		while (groups[g].size() < MAX_GROUP_SIZE && non_healer_idx < non_healers.size()) {
-			groups[g].push_back(non_healer_idx < non_healers.size() ? non_healers[non_healer_idx++] : nullptr);
-		}
-	}
-	for (int g = 0; g < max_groups && healer_idx < healers.size(); ++g) {
-		while (groups[g].size() < MAX_GROUP_SIZE && healer_idx < healers.size()) {
-			groups[g].push_back(healers[healer_idx++]);
-		}
-	}
-	// Avoid lone healers in 1-man groups
-	for (int g = 0; g < max_groups; ++g) {
-		if (groups[g].size() == 1) {
-			Bot* only_bot = groups[g][0];
-			if (only_bot &&
-				(only_bot->GetClass() == Class::Cleric ||
-					only_bot->GetClass() == Class::Druid ||
-					only_bot->GetClass() == Class::Shaman)) {
-				int best_group = -1;
-				size_t min_size = MAX_GROUP_SIZE + 1;
-				for (int gg = 0; gg < max_groups; ++gg) {
-					if (gg == g) continue;
-					if (groups[gg].size() > 1 && groups[gg].size() < MAX_GROUP_SIZE) {
-						if (groups[gg].size() < min_size) {
-							min_size = groups[gg].size();
-							best_group = gg;
-						}
-					}
-				}
-				if (best_group != -1) {
-					groups[best_group].push_back(only_bot);
-					groups[g].clear();
-				}
-			}
-		}
-	}
-	groups.erase(
-		std::remove_if(groups.begin(), groups.end(), [](const std::vector<Bot*>& grp) { return grp.empty(); }),
-		groups.end()
-	);
+	// Roles spread evenly over as few groups as hold everyone: a healer in
+	// every group before any gets two, the tanks spread (the best in group
+	// 1), enchanters / bards, melee and casters likewise (bot_tactics.cpp).
+	// The heals and buffs go own group first, so this decides who covers whom.
+	auto groups = BotTactics::LayoutRaid(bots, static_cast<size_t>(max_groups));
 
 	// Add bots to the raid and their groups (skip if already in raid)
 	for (int g = 0; g < static_cast<int>(groups.size()); ++g) {
@@ -198,7 +140,7 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 	bot_owner->Message(
 		Chat::White,
 		fmt::format(
-			"Bot raid updated with up to {} groups. Missing bots were respawned and added. Groups have been balanced with available healers.",
+			"Bot raid updated with up to {} groups. Missing bots were respawned and added. Groups have been balanced by role (^tactics layout to redo it).",
 			groups.size()
 		).c_str()
 	);

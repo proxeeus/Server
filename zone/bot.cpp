@@ -23,6 +23,7 @@
 #include "quest_parser_collection.h"
 #include "lua_parser.h"
 #include "playerbot_chat.h"
+#include "bot_tactics.h"
 #include "../common/repositories/bot_inventories_repository.h"
 #include "../common/repositories/bot_spell_settings_repository.h"
 #include "../common/repositories/bot_starting_items_repository.h"
@@ -1702,7 +1703,21 @@ bool Bot::Process()
 	}
 
 	if (!GetBotOwner()) {
-		return false;
+		// No owner normally means leave. Holding camp for a dead owner it
+		// means wait: take the owner back the moment it is here again, leave
+		// when the time is up (bot_tactics.cpp).
+		if (!IsHoldingForOwner()) {
+			return false;
+		}
+
+		if (Timer::GetCurrentTime() >= m_owner_hold_until_ms) {
+			EndOwnerHold();
+			return false;
+		}
+
+		if (Client* owner = entity_list.GetClientByCharID(GetBotOwnerCharacterID()); owner && !owner->IsDead()) {
+			ResumeFromOwnerHold(owner);
+		}
 	}
 
 	if (GetDepop()) {
@@ -2130,6 +2145,9 @@ void Bot::AI_Process()
 	Client* bot_owner = (GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr);
 
 	if (!bot_owner) {
+		if (IsHoldingForOwner()) {
+			OwnerHoldAI(); // the owner died: hold camp without it
+		}
 		return;
 	}
 
@@ -2155,6 +2173,10 @@ void Bot::AI_Process()
 		return;
 	}
 
+	// The shared plan of our raid or group (bot_tactics.cpp)
+	RefreshTactics(raid, bot_group);
+	TacticsPetChecks();
+
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 
 	if (!leash_owner) {
@@ -2172,9 +2194,21 @@ void Bot::AI_Process()
 		return;
 	}
 
+	// Wipe: if we were picked to evacuate, that is all we do (bot_tactics.cpp)
+	if (TacticsEvacCheck()) {
+		return;
+	}
+
 	float fm_distance = DistanceSquared(m_Position, follow_mob->GetPosition());
 	float lo_distance = DistanceSquared(m_Position, leash_owner->GetPosition());
 	float leash_distance = RuleR(Bots, LeashDistance);
+
+	// With a camp, our place on it is our follow point: idle casting,
+	// meditating and the out-of-combat cast interrupt all measure from it.
+	glm::vec3 camp_slot;
+	if (TacticsCampSlot(camp_slot)) {
+		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
+	}
 
 // CURRENTLY CASTING CHECKS
 
@@ -2185,6 +2219,24 @@ void Bot::AI_Process()
 // HEAL ROTATION CASTING CHECKS
 
 	HealRotationChecks();
+
+// TACTICS: OUR TURN IN THE CH CHAIN
+
+	if (TacticsChainCheck()) {
+		return;
+	}
+
+// MOVE-TO-CAST (a cast was skipped for range last cycle: go get in range)
+
+	if (TryMoveToCast(leash_owner, leash_distance)) {
+		return;
+	}
+
+// SITUATIONAL BUFFS (water breathing, the zone's raid resist)
+
+	if (TacticsSituationalBuffs()) {
+		return;
+	}
 
 	if (IsFDPulling()) {
 		FDPullerProcess(bot_owner, raid);
@@ -2237,6 +2289,9 @@ void Bot::AI_Process()
 		if (!tar) {
 			return;
 		}
+
+		// Off-tanks hold their add; the rest leave held adds for the main target
+		tar = TacticsRetarget(tar);
 
 // ATTACKING FLAG (HATE VALIDATION)
 
@@ -2308,6 +2363,28 @@ void Bot::AI_Process()
 					return;
 				}
 			}
+
+			// Tanks: taunt only what we hold; defensive discipline when it counts
+			TacticsTankChecks(tar);
+
+			// Main tank at camp: turn the mob's back to the group
+			if (TacticsTankPositioning(tar, p_item, s_item)) {
+				return;
+			}
+
+			// Raid encounter: casters out of its reach, everyone out of its front
+			if (TacticsEncounterPositioning(tar)) {
+				return;
+			}
+
+			// The main target is low or running: one of us snares it
+			if (TacticsSnareRunner(tar)) {
+				return;
+			}
+
+			// In range but behind a pillar: walk until we can see it (the
+			// cast paths only test LOS and give up) -- TryMoveToCast moves us
+			TacticsCheckLineOfSight(tar);
 
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
@@ -2381,6 +2458,11 @@ void Bot::AI_Process()
 			// if (!GetTarget() || GetAppearance() == eaDead) { return false; } call. Due to the chance of the target dying and our pointer
 			// being nullified, we need to test it before dereferencing to avoid crashes
 
+			// Close to the tank's hate: hold the swings until it builds a lead
+			if (TacticsAggroBackoff(tar)) {
+				return;
+			}
+
 			if (IsBotArcher() && TryRangedAttack(tar)) {
 				return;
 			}
@@ -2426,9 +2508,33 @@ void Bot::AI_Process()
 			SetReturningFlag(false);
 		}
 
-// AUTO DEFEND
+// TACTICS: RESURRECT A FALLEN BOT (after the fight, if we were picked)
 
-		if (TryAutoDefend(bot_owner, leash_distance) ) {
+		if (TryTacticsResurrect()) {
+			return;
+		}
+
+// TACTICS: THE OWNER IS BACK BUT ITS CORPSE IS HERE (summon it, raise it)
+
+		if (TryOwnerCorpseCare(bot_owner)) {
+			return;
+		}
+
+// TACTICS: BARD -- travel song on the road, mana song while the group meds
+
+		if (TacticsBardSongs(leash_owner)) {
+			return;
+		}
+
+// TACTICS: ASSIST (join the tank's fight, or hold our add, without ^attack)
+
+		if (TryTacticsAssist(leash_owner, leash_distance)) {
+			return;
+		}
+
+// AUTO DEFEND (not while the player pulls: the camp waits for the mob)
+
+		if (!TacticsPullActive() && TryAutoDefend(bot_owner, leash_distance) ) {
 			return;
 		}
 
@@ -2469,22 +2575,150 @@ bool Bot::TryBardMovementCasts() {// Basically, bard bots get a chance to cast i
 	return false;
 }
 
+bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
+{
+	if (!m_cast_range_target_id) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Pullers, guards and rooted bots keep their place; a cast in progress
+	// means the intent is already served or superseded.
+	if (
+		now > m_cast_range_expire_ms ||
+		IsCasting() ||
+		PULLING_BOT ||
+		IsFDPulling() ||
+		GUARDING ||
+		IsRooted()
+	) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	Mob* tar = entity_list.GetMob(m_cast_range_target_id);
+	if (!tar || tar->IsCorpse() || tar->GetHP() <= 0) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// Never chase past the leash: a target that far off is not ours to serve.
+	if (leash_owner && DistanceSquared(tar->GetPosition(), leash_owner->GetPosition()) > leash_distance) {
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// No spell: walking for line of sight only (TacticsCheckLineOfSight) --
+	// see the target from no further than this.
+	constexpr float kLosWalkRange = 60.0f;
+	const bool      los_only      = !IsValidSpell(m_cast_range_spell_id);
+	const char*     what          = los_only ? "line of sight" : spells[m_cast_range_spell_id].name;
+	const float     range         = los_only ? kLosWalkRange : GetActSpellRange(m_cast_range_spell_id, spells[m_cast_range_spell_id].range);
+	const float want  = range * 0.85f; // a margin, so a step from the target does not put us out again
+	const float dist2 = DistanceSquared(m_Position, tar->GetPosition());
+
+	if (dist2 <= want * want && CheckLosFN(tar)) {
+		if (IsMoving()) {
+			StopMoving(CalculateHeadingToTarget(tar->GetX(), tar->GetY()));
+		}
+
+		if (m_cast_range_moving) {
+			LogInfo(
+				"[BotAI] [{}] in range to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}])",
+				GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2), range
+			);
+		}
+
+		// Stay here long enough for the cast check to fire, rather than being
+		// pulled straight back to the follow point. AIDoSpellCast extends it
+		// over the cast time.
+		m_cast_position_hold_ms = now + 3000;
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// On top of the target and still no line of sight: nothing more walking can fix.
+	if (dist2 <= 10.0f * 10.0f) {
+		LogInfo(
+			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no line of sight at [{:.0f}]",
+			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2)
+		);
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	// Not getting any closer (wall, ledge, water): drop it rather than run
+	// into the scenery; the next cast check finds something else to do.
+	if (m_cast_range_moving && m_cast_progress.Stalled(glm::vec3(m_Position), now, 4000)) {
+		LogInfo(
+			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no way through",
+			GetCleanName(), what, tar->GetCleanName()
+		);
+		m_cast_progress.Reset();
+		ClearCastRangeIntent();
+		return false;
+	}
+
+	if (!m_cast_range_moving) {
+		m_cast_progress.Reset();
+		m_cast_range_moving = true;
+		LogInfo(
+			"[BotAI] [{}] moving to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}] priority [{}])",
+			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2), range, m_cast_range_priority
+		);
+	}
+
+	if (AI_movement_timer->Check()) {
+		if (IsSitting()) {
+			Stand();
+		}
+
+		if (rest_timer.Enabled()) {
+			rest_timer.Disable();
+		}
+
+		RunTo(tar->GetX(), tar->GetY(), tar->GetZ());
+	}
+
+	return true;
+}
+
 bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, glm::vec3& Goal) {// Non-engaged movement checks
 
+	// Walked away to make a cast: don't get pulled back before it lands.
+	if (IsHoldingCastPosition()) {
+		return false;
+	}
+
 	if (AI_movement_timer->Check() && (!IsCasting() || GetClass() == Class::Bard)) {
+		// At camp each bot has its own place on a ring around it; it stands
+		// there rather than trailing the player around (bot_tactics.cpp).
+		glm::vec3 camp_slot;
+		const bool at_camp = !GUARDING && TacticsCampSlot(camp_slot);
+
 		if (GUARDING) {
 			Goal = GetGuardPoint();
+		}
+		else if (at_camp) {
+			Goal = camp_slot;
 		}
 		else {
 			Goal = follow_mob->GetPosition();
 		}
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
+		const float arrive_distance = at_camp ? 9.0f : static_cast<float>(GetFollowDistance()); // a place is 3 units, not follow range
 
-		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > GetFollowDistance())) {
+		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {
 
 			if (!IsRooted()) {
 				if (rest_timer.Enabled()) {
 					rest_timer.Disable();
+				}
+
+				// Getting nowhere (a door, a ramp): rejoin (bot_tactics.cpp)
+				if (TacticsUnstick(Goal, sqrtf(destination_distance))) {
+					return true;
 				}
 
 				RunTo(Goal.x, Goal.y, Goal.z);
@@ -2493,6 +2727,7 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 			}
 		}
 		else {
+			m_follow_progress.Reset();
 
 			if (IsMoving()) {
 
@@ -2509,7 +2744,8 @@ bool Bot::TryIdleChecks(float fm_distance) {
 	if (
 		(
 			(NOT_GUARDING && fm_distance <= GetFollowDistance()) ||
-			(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) <= GetFollowDistance())) &&
+			(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) <= GetFollowDistance()) ||
+			IsHoldingCastPosition()) && // walked away on purpose to make a cast
 			!IsMoving() &&
 			AI_think_timer->Check() &&
 			!spellend_timer.Enabled()
@@ -2604,6 +2840,15 @@ bool Bot::TryMeditate() {
 
 // This code actually gets processed when we are too far away from target and have not engaged yet
 bool Bot::TryPursueTarget(float leash_distance, glm::vec3& Goal) {
+
+	// With a camp, a mob that ran out of it is not chased into the next room
+	// (bot_tactics.cpp); a snare or the next pull deals with it.
+	if (TacticsTooFarFromCamp(GetTarget())) {
+		if (IsMoving()) {
+			StopMoving();
+		}
+		return false;
+	}
 
 	if (AI_movement_timer->Check() && (!spellend_timer.Enabled() || GetClass() == Class::Bard)) {
 		if (GetTarget() && !IsRooted()) {
@@ -3149,6 +3394,13 @@ bool Bot::IsAIProcessValid(const Client* bot_owner, const Group* bot_group, cons
 	}
 
 	if (bot_owner->IsDead()) {
+		// With a shared plan, hold camp for the owner instead of leaving with
+		// it: Process keeps us, AI_Process runs OwnerHoldAI (bot_tactics.cpp).
+		if (m_tactics_key) {
+			BeginOwnerHold();
+			return false;
+		}
+
 		SetTarget(nullptr);
 		SetBotOwner(nullptr);
 		return false;
@@ -3180,8 +3432,9 @@ bool Bot::CheckIfCasting(float fm_distance) {
 			}
 
 			if (
+				!IsHoldingCastPosition() && ( // walked away on purpose to make this cast
 				(NOT_GUARDING && fm_distance > GetFollowDistance()) || // Cancel out-of-combat casting if movement to follow mob is required
-				(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) > GetFollowDistance()) // Cancel out-of-combat casting if movement to guard point is required
+				(GUARDING && DistanceSquared(GetPosition(), GetGuardPoint()) > GetFollowDistance())) // Cancel out-of-combat casting if movement to guard point is required
 			) {
 				InterruptSpell();
 			}
@@ -3369,7 +3622,9 @@ bool Bot::ExecuteFeignDeath() {
 			if (IsFDPulling() && static_cast<uint16>(npc->GetID()) != m_fd_pull_target_id && !npc->IsPet()) {
 				m_fd_pull_add_ids.push_back(static_cast<uint16>(npc->GetID()));
 			}
-			npc->WipeHateList();
+			// Forget us, not everyone: wiping the whole list made a mob that
+			// was on the group drop the tank too.
+			npc->RemoveFromHateList(this);
 		}
 	}
 	WipeHateList();
@@ -3470,7 +3725,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	entity_list.GetNPCList(npc_list);
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
-			npc->WipeHateList();
+			npc->RemoveFromHateList(this); // us only (see ExecuteFeignDeath)
 		}
 	}
 	WipeHateList();
@@ -3532,7 +3787,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			// Never FD immediately — the running distance determines how far adds must walk home
 			// before the monk re-enters their aggro range on the next approach.
 			if (!m_fd_tag_timer.Check()) {
-				RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+				const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
+				RunTo(back.x, back.y, back.z);
 			} else {
 				const bool had_adds = IsBeingChasedByAdds(pull_target);
 				const bool fd_ok = ExecuteFeignDeath();
@@ -3621,7 +3877,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 
-		float owner_dist_sq = DistanceSquared(GetPosition(), bot_owner->GetPosition());
+		const glm::vec3 back          = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
+		float           owner_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
 		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
 			InterruptSpell();
 			WipeHateList();
@@ -3646,7 +3903,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 
-		RunTo(bot_owner->GetX(), bot_owner->GetY(), bot_owner->GetZ());
+		RunTo(back.x, back.y, back.z);
 		break;
 	}
 
@@ -3988,6 +4245,21 @@ void Bot::LoadAndSpawnAllZonedBots(Client* bot_owner) {
 
 			if (!active_bots.empty()) {
 				for (const auto& bot_id : active_bots) {
+					// Still here, holding camp since its owner died: take it
+					// back rather than spawn a second one.
+					if (Mob* held = entity_list.GetMobByBotID(bot_id); held && held->IsBot()) {
+						held->CastToBot()->ResumeFromOwnerHold(bot_owner);
+						spawned_bots_count++;
+						bot_class_spawned_count[held->GetClass() - 1]++;
+						g->UpdatePlayer(held);
+						continue;
+					}
+
+					// Holding camp in another zone: it stays there.
+					if (!DataBucket::GetData(Bot::OwnerHoldBucketKey(bot_id)).empty()) {
+						continue;
+					}
+
 					auto* b = Bot::LoadBot(bot_id);
 					if (!b) {
 						continue;
@@ -5515,6 +5787,9 @@ bool Bot::Death(Mob *killer_mob, int64 damage, uint16 spell_id, EQ::skills::Skil
 	// OnChatDeath: the group has to still hold this bot for the scope to form.
 	playerbot_chat.NotifyGroupDeath(this);
 
+	// Remembered so a groupmate can resurrect us after the fight (bot_tactics.cpp).
+	bot_tactics.NoteFallen(m_tactics_key, this);
+
 	Zone();
 	entity_list.RemoveBot(GetID());
 
@@ -5528,6 +5803,11 @@ void Bot::Damage(Mob *from, int64 damage, uint16 spell_id, EQ::skills::SkillType
 
 	if (spell_id == 0) {
 		spell_id = SPELL_UNKNOWN;
+	}
+
+	// A raid target's spell on us: learn what it does (bot_tactics.cpp)
+	if (IsValidSpell(spell_id) && from->IsNPC()) {
+		bot_tactics.ObserveHostileSpell(m_tactics_key, from, spell_id);
 	}
 
 	//handle EVENT_ATTACK. Resets after we have not been attacked for 12 seconds
@@ -6263,7 +6543,7 @@ bool Bot::IsBotAttackAllowed(Mob* attacker, Mob* target, bool& hasRuleDefined) {
 		if (attacker == target) {
 			hasRuleDefined = true;
 			Result = false;
-		} else if (attacker->IsClient() && target->IsBot() && attacker->CastToClient()->GetPVP() && target->CastToBot()->GetBotOwner()->CastToClient()->GetPVP()) {
+		} else if (attacker->IsClient() && target->IsBot() && attacker->CastToClient()->GetPVP() && target->CastToBot()->GetBotOwner() && target->CastToBot()->GetBotOwner()->CastToClient()->GetPVP()) {
 			hasRuleDefined = true;
 			Result = true;
 		} else if (attacker->IsClient() && target->IsBot()) {
@@ -6334,6 +6614,10 @@ void Bot::ProcessBotOwnerRefDelete(Mob* botOwner) {
 		if (!BotList.empty()) {
 			for (std::list<Bot*>::iterator botListItr = BotList.begin(); botListItr != BotList.end(); ++botListItr) {
 				Bot* tempBot = *botListItr;
+				// Holding camp for this (dead) owner: already detached, stays.
+				if (tempBot && tempBot->IsHoldingForOwner()) {
+					continue;
+				}
 				if (tempBot) {
 					tempBot->SetTarget(nullptr);
 					tempBot->SetBotOwner(nullptr);
@@ -7824,6 +8108,15 @@ void Bot::ProcessClientZoneChange(Client* botOwner) {
 		for (std::list<Bot*>::iterator itr = BotList.begin(); itr != BotList.end(); ++itr) {
 			Bot* tempBot = *itr;
 
+			// The owner died and is off to its bind point: hold camp here
+			// instead of following (bot_tactics.cpp).
+			if (tempBot && !tempBot->IsHoldingForOwner() && botOwner->IsDead() && tempBot->GetTacticsPlan()) {
+				tempBot->BeginOwnerHold();
+			}
+			if (tempBot && tempBot->IsHoldingForOwner()) {
+				continue;
+			}
+
 			if (tempBot) {
 				Raid* raid = entity_list.GetRaidByBotName(tempBot->GetName());
 				if (raid) {
@@ -8007,6 +8300,13 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 	if (iSpellTypes == SpellType_Heal)	{
 		if (botCasterClass == Class::Cleric || botCasterClass == Class::Druid || botCasterClass == Class::Shaman) {
+			// With a shared plan, score the whole unit (tanks from every raid
+			// group included) instead of healing the first slot of our own
+			// group under a threshold. bot_tactics.cpp.
+			if (caster->GetTacticsPlan()) {
+				return caster->TacticsHeal();
+			}
+
 			if (caster->IsRaidGrouped()) {
 				Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 				uint32 gid = raid->GetGroup(caster->GetName());
@@ -8179,6 +8479,11 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 				return false;
 		}
 
+		// With a shared plan: our group, then the rest of the raid (bot_tactics.cpp).
+		if (caster->GetTacticsPlan()) {
+			return caster->TacticsBeneficial(SpellType_Buff, chanceToCast);
+		}
+
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 			uint32 g = raid->GetGroup(caster->GetName());
@@ -8206,6 +8511,11 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 	}
 
 	if (iSpellTypes == SpellType_Cure) {
+		// With a shared plan: our group, then anyone in the raid who needs it.
+		if (caster->GetTacticsPlan()) {
+			return caster->TacticsBeneficial(SpellType_Cure, caster->GetChanceToCastBySpellType(SpellType_Cure));
+		}
+
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
 			uint32 gid = raid->GetGroup(caster->GetName());
@@ -8828,10 +9138,12 @@ bool Bot::HasOrMayGetAggro() {
 		if (topHate == this)
 			mayGetAggro = true;
 		else {
-			uint32 myHateAmt = GetTarget()->GetHateAmount(this);
-			uint32 topHateAmt = GetTarget()->GetHateAmount(topHate);
+			const int64 myHateAmt  = GetTarget()->GetHateAmount(this);
+			const int64 topHateAmt = GetTarget()->GetHateAmount(topHate);
 
-			if (myHateAmt > 0 && topHateAmt > 0 && (uint8)((myHateAmt / topHateAmt) * 100) > 90)
+			// Over 90% of the top. (This was integer division: my / top was 0
+			// until we matched the top, so it only fired once we had aggro.)
+			if (myHateAmt > 0 && topHateAmt > 0 && myHateAmt * 100 > topHateAmt * 90)
 				mayGetAggro = true;
 		}
 	}
