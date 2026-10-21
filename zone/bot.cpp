@@ -2370,6 +2370,11 @@ void Bot::AI_Process()
 				return;
 			}
 
+			// The main target is low or running: one of us snares it
+			if (TacticsSnareRunner(tar)) {
+				return;
+			}
+
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
 			{
@@ -2783,6 +2788,15 @@ bool Bot::TryMeditate() {
 
 // This code actually gets processed when we are too far away from target and have not engaged yet
 bool Bot::TryPursueTarget(float leash_distance, glm::vec3& Goal) {
+
+	// With a camp, a mob that ran out of it is not chased into the next room
+	// (bot_tactics.cpp); a snare or the next pull deals with it.
+	if (TacticsTooFarFromCamp(GetTarget())) {
+		if (IsMoving()) {
+			StopMoving();
+		}
+		return false;
+	}
 
 	if (AI_movement_timer->Check() && (!spellend_timer.Enabled() || GetClass() == Class::Bard)) {
 		if (GetTarget() && !IsRooted()) {

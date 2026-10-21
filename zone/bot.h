@@ -943,6 +943,10 @@ public:
 	bool TacticsStartPull(Mob* target);
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
+
+	// Runners (phase 11)
+	bool TacticsSnareRunner(Mob* tar);       // the main target is going: snare it (one of us)
+	bool TacticsTooFarFromCamp(Mob* tar);    // do not chase it out of camp
 	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
 	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
 	bool TacticsPlayerSlowsFirst(Mob* tar) const;

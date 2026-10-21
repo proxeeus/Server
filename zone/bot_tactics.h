@@ -156,6 +156,10 @@ struct BotTacticsPlan {
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
 
+	// Runners and trains (phase 11)
+	uint16 runner_called_id = 0;   // "Runner!" said for this mob
+	size_t adds_warned      = 0;   // "Too many!" said at this many adds this fight
+
 	// Raid encounter (phase 8): the assist target's bot_raid_encounters row
 	bool             has_encounter    = false;
 	uint16           encounter_mob_id = 0;
@@ -216,7 +220,8 @@ public:
 	// False when another caster has the same debuff (tag) in the air on target.
 	bool ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms);
 	static constexpr uint32 kClaimSlow = 0x10000; // above every spell id
-	static constexpr uint32 kClaimRez  = 0x10001; // a dead owner's corpse
+	static constexpr uint32 kClaimRez   = 0x10001; // a dead owner's corpse
+	static constexpr uint32 kClaimSnare = 0x10002; // one snare in the air per runner
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

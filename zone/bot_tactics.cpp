@@ -84,6 +84,9 @@ constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this cl
 constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
 constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
 constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is called off
+constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
+constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
+constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases past this from it
 
 bool IsAlive(Mob* m)
 {
@@ -902,6 +905,38 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.off_tank_assignment[ot] = add;
 			LogInfo("[BotTactics] unit [{:#x}] off-tank [{}] picks up [{}]", p.key, NameOf(ot), NameOf(add));
 			break;
+		}
+	}
+
+	// ---- runners and trains ----
+
+	if (assist && !old_assist) {
+		p.runner_called_id = 0;
+		p.adds_warned      = 0;
+	}
+
+	if (assist) {
+		Mob* speaker = (mt && mt->IsBot()) ? mt : first_bot;
+
+		// Out past where anyone will chase it, and running.
+		if (
+			p.camp_set &&
+			assist->GetID() != p.runner_called_id &&
+			DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) > kRunnerChaseRadius * kRunnerChaseRadius &&
+			(assist->IsFleeing() || assist->GetHPRatio() < kSnareHPRatio)
+		) {
+			p.runner_called_id = assist->GetID();
+			LogInfo("[BotTactics] unit [{:#x}] runner [{}]", p.key, assist->GetCleanName());
+			Announce(raid, group, speaker, fmt::format("Runner! {} is getting away.", assist->GetCleanName()));
+		}
+
+		// More adds than off-tanks and mezzers can take: say so early,
+		// while there is still time to do something about it.
+		const size_t holdable = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0);
+		if (p.adds.size() > holdable && p.adds.size() > p.adds_warned) {
+			p.adds_warned = p.adds.size();
+			LogInfo("[BotTactics] unit [{:#x}] too many adds: [{}] (can hold [{}])", p.key, p.adds.size(), holdable);
+			Announce(raid, group, speaker, fmt::format("Too many! {} adds.", p.adds.size()));
 		}
 	}
 
@@ -2226,6 +2261,43 @@ void Bot::OwnerHoldAI()
 			BotMeditate(true);
 		}
 	}
+}
+
+// ============================================================
+// Runners
+// ============================================================
+
+bool Bot::TacticsSnareRunner(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || tar->GetID() != p->assist_target_id || !tar->IsNPC()) {
+		return false;
+	}
+
+	// Low enough to run, or running already; and not snared or rooted yet.
+	if ((!tar->IsFleeing() && tar->GetHPRatio() >= kSnareHPRatio) || tar->GetSnaredAmount() != -1 || tar->IsRooted()) {
+		return false;
+	}
+
+	// Only a bot with a snare takes the claim.
+	if (!IsValidSpell(GetFirstBotSpellBySpellType(this, SpellType_Snare).SpellId)) {
+		return false;
+	}
+	if (!bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID(), kSnareClaimMs)) {
+		return false;
+	}
+
+	return AICastSpell(tar, 100, SpellType_Snare);
+}
+
+bool Bot::TacticsTooFarFromCamp(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->camp_set || !tar || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
+		return false;
+	}
+
+	return DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), p->camp) > kRunnerChaseRadius * kRunnerChaseRadius;
 }
 
 // ============================================================
