@@ -100,6 +100,7 @@ constexpr float  kChainFastTtdS      = 10.0f;  // the tank dead in less than thi
 constexpr float  kChainQuietPct      = 0.5f;   // the tank losing less than this %/s: chain slower
 constexpr float  kHealLookaheadS     = 3.0f;   // heal on where health will be this soon
 constexpr float  kHealUrgentTtdS     = 6.0f;   // dead in less than this: the fastest heal
+constexpr float  kLearnMaxRange      = 120.0f; // a learned keep-back distance is never more than this
 
 bool IsAlive(Mob* m)
 {
@@ -681,8 +682,14 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 			const std::string name = enc->name.empty() ? std::string(assist->GetCleanName()) : enc->name;
 			LogInfo("[BotTactics] unit [{:#x}] encounter [{}] (npc_type [{}])", p.key, name, enc->npc_type_id);
-			Announce(raid, group, (mt && mt->IsBot()) ? mt : first_bot, fmt::format("Encounter: {}{}.", name, what));
+			Announce(
+				raid, group, (mt && mt->IsBot()) ? mt : first_bot,
+				fmt::format("{}: {}{}.", enc->learned ? "Learned" : "Encounter", name, what)
+			);
 		}
+	}
+	else if (enc) {
+		p.encounter = *enc; // a learned row grows during the fight
 	}
 
 	// ---- camp ----
@@ -843,6 +850,16 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		if (best) {
 			f.rezzer_id = best->GetID();
 			LogInfo("[BotTactics] unit [{:#x}] [{}] will resurrect [{}]", p.key, best->GetCleanName(), f.name);
+		}
+	}
+
+	// ---- what the bots learned this fight goes in the table ----
+
+	if (calm) {
+		for (auto& o : m_observed) {
+			if (o.second.dirty) {
+				SaveLearned(o.second);
+			}
 		}
 	}
 
@@ -1570,14 +1587,19 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 	m_zone_resists.clear();
 	m_zone_resists_for.clear(); // rebuilt on next use
 
-	// resist_type came later (2026_10_21_..._resist.sql): without it, read
-	// the rest as before.
+	// resist_type and learned came later (2026_10_21_..._resist.sql,
+	// ..._learned.sql): without them, read the rest as before.
 	auto results = database.QueryDatabase(
-		"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, `resist_type` FROM `bot_raid_encounters`"
+		"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, `resist_type`, `learned` FROM `bot_raid_encounters`"
 	);
 	if (!results.Success()) {
 		results = database.QueryDatabase(
-			"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, 0 FROM `bot_raid_encounters`"
+			"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, `resist_type`, 0 FROM `bot_raid_encounters`"
+		);
+	}
+	if (!results.Success()) {
+		results = database.QueryDatabase(
+			"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, 0, 0 FROM `bot_raid_encounters`"
 		);
 	}
 	if (!results.Success()) {
@@ -1595,6 +1617,7 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 		e.assist_hp        = static_cast<uint8>(std::clamp(Strings::ToInt(row[4] ? row[4] : "0"), 0, 100));
 		e.zone             = Strings::ToLower(row[5] ? row[5] : "");
 		e.resist_type      = static_cast<uint8>(std::clamp(Strings::ToInt(row[6] ? row[6] : "0"), 0, 5));
+		e.learned          = Strings::ToInt(row[7] ? row[7] : "0") != 0;
 		if (e.npc_type_id) {
 			m_encounters[e.npc_type_id] = e;
 		}
@@ -1603,6 +1626,134 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 	summary_out = fmt::format("{} raid encounter(s) loaded", m_encounters.size());
 	LogInfo("[BotTactics] {}", summary_out);
 	return true;
+}
+
+BotRaidEncounter BotTactics::LearnedRow(const BotEncounterObservation& o) const
+{
+	BotRaidEncounter e;
+	e.npc_type_id      = o.npc_type_id;
+	e.name             = o.name;
+	e.zone             = zone ? Strings::ToLower(zone->GetShortName()) : "";
+	e.caster_min_range = std::min(o.max_aoe, kLearnMaxRange);
+	e.avoid_front      = o.cone;
+	e.learned          = true;
+
+	uint32 most = 0;
+	for (uint8 r = 1; r <= 5; ++r) {
+		if (o.resists[r] > most) {
+			most          = o.resists[r];
+			e.resist_type = r;
+		}
+	}
+	return e;
+}
+
+void BotTactics::ObserveHostileSpell(uint32 key, Mob* caster, uint16 spell_id)
+{
+	if (!key || !caster || !caster->IsNPC() || !caster->IsRaidTarget() || !IsValidSpell(spell_id)) {
+		return;
+	}
+
+	// A row someone wrote by hand is theirs: never learn over it.
+	const uint32 npc_type = caster->GetNPCTypeID();
+	if (const BotRaidEncounter* e = EncounterFor(npc_type); e && !e->learned) {
+		return;
+	}
+
+	auto& o = m_observed[npc_type];
+	if (!o.npc_type_id) {
+		// What an earlier session learned is the starting point.
+		if (const BotRaidEncounter* e = EncounterFor(npc_type)) {
+			o.max_aoe = e->caster_min_range;
+			o.cone    = e->avoid_front;
+			if (e->resist_type) {
+				o.resists[e->resist_type] = 1;
+			}
+		}
+	}
+	o.npc_type_id = npc_type;
+	o.name        = caster->GetCleanName();
+
+	const BotRaidEncounter before = LearnedRow(o);
+	const auto&            s      = spells[spell_id];
+
+	switch (s.target_type) {
+		case ST_AEClientV1:
+		case ST_AECaster:
+		case ST_AETarget:
+		case ST_TargetAETap:
+		case ST_UndeadAE:
+		case ST_SummonedAE:
+		case ST_AETargetHateList:
+		case ST_AreaClientOnly:
+		case ST_AreaNPCOnly:
+		case ST_AEBard:
+			o.max_aoe = std::max(o.max_aoe, s.aoe_range);
+			break;
+		case ST_Directional:
+		case ST_Beam:
+			o.cone = true;
+			break;
+		default:
+			break;
+	}
+	if (s.resist_type >= 1 && s.resist_type <= 5) {
+		++o.resists[s.resist_type];
+	}
+	o.dirty = true;
+
+	// Something new: apply it now -- the plans read m_encounters every rebuild.
+	const BotRaidEncounter after = LearnedRow(o);
+	if (
+		!EncounterFor(npc_type) ||
+		after.caster_min_range != before.caster_min_range ||
+		after.avoid_front != before.avoid_front ||
+		after.resist_type != before.resist_type
+	) {
+		m_encounters[npc_type] = after;
+		m_zone_resists_for.clear();
+		LogInfo(
+			"[BotTactics] learned [{}] (npc_type [{}]) from [{}]: area [{:.0f}] cone [{}] resist [{}]",
+			after.name, npc_type, s.name, after.caster_min_range, after.avoid_front, after.resist_type
+		);
+	}
+}
+
+void BotTactics::SaveLearned(BotEncounterObservation& o)
+{
+	o.dirty = false;
+	if (!m_learned_column) {
+		return;
+	}
+
+	const BotRaidEncounter row = LearnedRow(o);
+
+	// Only ever a learned row: a hand-made one (learned = 0) keeps its values.
+	const auto q = fmt::format(
+		"INSERT INTO `bot_raid_encounters` "
+		"(`npc_type_id`, `name`, `zone`, `caster_min_range`, `avoid_front`, `assist_hp`, `resist_type`, `learned`, `notes`) "
+		"VALUES ({}, '{}', '{}', {:.0f}, {}, 0, {}, 1, 'learned by the bots') "
+		"ON DUPLICATE KEY UPDATE "
+		"`name` = IF(`learned` = 1, VALUES(`name`), `name`), "
+		"`zone` = IF(`learned` = 1, VALUES(`zone`), `zone`), "
+		"`caster_min_range` = IF(`learned` = 1, VALUES(`caster_min_range`), `caster_min_range`), "
+		"`avoid_front` = IF(`learned` = 1, VALUES(`avoid_front`), `avoid_front`), "
+		"`resist_type` = IF(`learned` = 1, VALUES(`resist_type`), `resist_type`)",
+		row.npc_type_id, Strings::Escape(row.name), Strings::Escape(row.zone),
+		row.caster_min_range, row.avoid_front ? 1 : 0, static_cast<int>(row.resist_type)
+	);
+
+	auto results = database.QueryDatabase(q);
+	if (!results.Success()) {
+		m_learned_column = false;
+		LogInfo("[BotTactics] could not save what was learned about [{}]: run utils/sql/git/bots/optional/2026_10_21_bots_raid_encounters_learned.sql", row.name);
+		return;
+	}
+
+	LogInfo(
+		"[BotTactics] saved learned encounter [{}] (npc_type [{}]): area [{:.0f}] cone [{}] resist [{}]",
+		row.name, row.npc_type_id, row.caster_min_range, row.avoid_front, row.resist_type
+	);
 }
 
 const std::vector<uint8>& BotTactics::ZoneResists()

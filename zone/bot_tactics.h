@@ -66,6 +66,7 @@
  * plan is swept (unused for a minute); bots keep only the key between ticks.
  */
 
+#include <array>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -90,6 +91,18 @@ struct BotRaidEncounter {
 	uint8       assist_hp        = 0;     // damage waits for this health %, 0 = default
 	std::string zone;                     // short name; scopes resist_type
 	uint8       resist_type      = 0;     // 1 magic .. 5 disease: keep it up in that zone
+	bool        learned          = false; // written by the server; a hand-made row (false) is never overwritten
+};
+
+// What a raid target was seen doing to the unit (phase 20), turned into a
+// learned bot_raid_encounters row.
+struct BotEncounterObservation {
+	uint32               npc_type_id = 0;
+	std::string          name;
+	float                max_aoe     = 0.0f;  // largest area radius it hit us with
+	bool                 cone        = false; // a directional (frontal) spell
+	std::array<uint32, 6> resists    {};      // hits per resist type, 1..5
+	bool                 dirty       = false; // not saved yet
 };
 
 struct BotTacticsPlan {
@@ -250,6 +263,11 @@ public:
 	// enchanters / bards, melee, casters. ^createraid and ^tactics layout.
 	static std::vector<std::vector<Bot*>> LayoutRaid(const std::vector<Bot*>& bots, size_t max_groups);
 
+	// Bot::Damage: a spell from `caster` hit a bot of unit `key`. A raid
+	// target with no hand-made row: learn from it (applies at once; saved
+	// when the fight is over).
+	void ObserveHostileSpell(uint32 key, Mob* caster, uint16 spell_id);
+
 	// Resist types (1..5) the encounter rows of this zone ask to keep up.
 	const std::vector<uint8>& ZoneResists();
 	static constexpr uint32 kClaimWater  = 0x10003;
@@ -287,6 +305,11 @@ private:
 	bool                                         m_encounters_loaded = false;
 	std::vector<uint8>                           m_zone_resists;
 	std::string                                  m_zone_resists_for; // zone short name they were built for
+	std::unordered_map<uint32, BotEncounterObservation> m_observed;  // npc_type_id -> what we saw
+	bool                                         m_learned_column = true; // false once a save failed for want of it
+
+	BotRaidEncounter LearnedRow(const BotEncounterObservation& o) const;
+	void SaveLearned(BotEncounterObservation& o);
 	uint32                                     m_last_sweep_ms = 0;
 };
 

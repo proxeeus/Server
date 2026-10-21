@@ -5784,6 +5784,11 @@ void Bot::Damage(Mob *from, int64 damage, uint16 spell_id, EQ::skills::SkillType
 		spell_id = SPELL_UNKNOWN;
 	}
 
+	// A raid target's spell on us: learn what it does (bot_tactics.cpp)
+	if (IsValidSpell(spell_id) && from->IsNPC()) {
+		bot_tactics.ObserveHostileSpell(m_tactics_key, from, spell_id);
+	}
+
 	//handle EVENT_ATTACK. Resets after we have not been attacked for 12 seconds
 	if (attacked_timer.Check()) {
 		if (parse->BotHasQuestSub(EVENT_ATTACK)) {
