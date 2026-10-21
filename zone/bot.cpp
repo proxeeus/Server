@@ -2232,6 +2232,12 @@ void Bot::AI_Process()
 		return;
 	}
 
+// SITUATIONAL BUFFS (water breathing, the zone's raid resist)
+
+	if (TacticsSituationalBuffs()) {
+		return;
+	}
+
 	if (IsFDPulling()) {
 		FDPullerProcess(bot_owner, raid);
 		if (IsFDPulling()) { // still in FD state — skip normal AI this tick

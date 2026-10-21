@@ -89,6 +89,7 @@ constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
 constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases past this from it
 constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the tank's hate...
 constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
+constexpr uint32 kSituationalCheckMs = 2000;   // breath / resist needs looked at this often
 
 bool IsAlive(Mob* m)
 {
@@ -227,6 +228,38 @@ uint16 EvacuateSpellFor(uint8 class_id, uint8 level)
 		});
 	}
 	return BestOnLadder(ladder, class_id, level);
+}
+
+// A lasting buff (single target or group) a class can cast at a level that
+// carries the given effect: resists, water breathing.
+uint16 BuffWithEffectFor(int effect, uint8 class_id, uint8 level)
+{
+	static std::unordered_map<int, SpellLadder> ladders;
+
+	auto it = ladders.find(effect);
+	if (it == ladders.end()) {
+		it = ladders.emplace(effect, SpellLadder{}).first;
+		BuildLadder(it->second, [effect](uint16 id) {
+			const auto t = spells[id].target_type;
+			return IsEffectInSpell(id, effect) &&
+				IsBeneficialSpell(id) &&
+				spells[id].buff_duration > 0 &&
+				(t == ST_Target || t == ST_Group || t == ST_GroupTeleport);
+		});
+	}
+	return BestOnLadder(it->second, class_id, level);
+}
+
+int ResistEffect(uint8 resist_type)
+{
+	switch (resist_type) {
+		case 1: return SE_ResistMagic;
+		case 2: return SE_ResistFire;
+		case 3: return SE_ResistCold;
+		case 4: return SE_ResistPoison;
+		case 5: return SE_ResistDisease;
+		default: return 0;
+	}
 }
 
 bool UsesMana(Mob* m)
@@ -1342,9 +1375,19 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 	m_encounters.clear();
 	m_encounters_loaded = true;
 
+	m_zone_resists.clear();
+	m_zone_resists_for.clear(); // rebuilt on next use
+
+	// resist_type came later (2026_10_21_..._resist.sql): without it, read
+	// the rest as before.
 	auto results = database.QueryDatabase(
-		"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp` FROM `bot_raid_encounters`"
+		"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, `resist_type` FROM `bot_raid_encounters`"
 	);
+	if (!results.Success()) {
+		results = database.QueryDatabase(
+			"SELECT `npc_type_id`, `name`, `caster_min_range`, `avoid_front`, `assist_hp`, `zone`, 0 FROM `bot_raid_encounters`"
+		);
+	}
 	if (!results.Success()) {
 		summary_out = "bot_raid_encounters is not readable; run utils/sql/git/bots/optional/2026_10_20_bots_raid_encounters.sql";
 		LogInfo("[BotTactics] {}", summary_out);
@@ -1358,6 +1401,8 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 		e.caster_min_range = std::max(0.0f, Strings::ToFloat(row[2] ? row[2] : "0"));
 		e.avoid_front      = Strings::ToInt(row[3] ? row[3] : "0") != 0;
 		e.assist_hp        = static_cast<uint8>(std::clamp(Strings::ToInt(row[4] ? row[4] : "0"), 0, 100));
+		e.zone             = Strings::ToLower(row[5] ? row[5] : "");
+		e.resist_type      = static_cast<uint8>(std::clamp(Strings::ToInt(row[6] ? row[6] : "0"), 0, 5));
 		if (e.npc_type_id) {
 			m_encounters[e.npc_type_id] = e;
 		}
@@ -1366,6 +1411,30 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 	summary_out = fmt::format("{} raid encounter(s) loaded", m_encounters.size());
 	LogInfo("[BotTactics] {}", summary_out);
 	return true;
+}
+
+const std::vector<uint8>& BotTactics::ZoneResists()
+{
+	const std::string here = zone ? Strings::ToLower(zone->GetShortName()) : "";
+	if (!m_encounters_loaded) {
+		std::string ignored;
+		ReloadEncounters(ignored);
+	}
+
+	if (here != m_zone_resists_for) {
+		m_zone_resists_for = here;
+		m_zone_resists.clear();
+		for (const auto& e : m_encounters) {
+			if (
+				e.second.resist_type &&
+				e.second.zone == here &&
+				std::find(m_zone_resists.begin(), m_zone_resists.end(), e.second.resist_type) == m_zone_resists.end()
+			) {
+				m_zone_resists.push_back(e.second.resist_type);
+			}
+		}
+	}
+	return m_zone_resists;
 }
 
 const BotRaidEncounter* BotTactics::EncounterFor(uint32 npc_type_id)
@@ -2284,6 +2353,96 @@ void Bot::OwnerHoldAI()
 			BotMeditate(true);
 		}
 	}
+}
+
+// ============================================================
+// Situational buffs
+// ============================================================
+
+bool Bot::TacticsSituationalBuffs()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || IsCasting() || TacticsReservesCasting() || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_situational_check_ms) {
+		return false;
+	}
+	m_situational_check_ms = now + kSituationalCheckMs;
+
+	// Cast `spell_id` on `tar` (or on ourselves for a group spell), if it
+	// needs it and nobody else is already on it.
+	auto try_cast = [&](uint16 spell_id, Mob* tar, int effect, uint32 claim_tag) -> bool {
+		if (!IsValidSpell(spell_id) || !IsAlive(tar) || tar->FindType(effect) || GetMana() < spells[spell_id].mana) {
+			return false;
+		}
+
+		const auto t     = spells[spell_id].target_type;
+		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? this : tar;
+		if (aimed->CanBuffStack(spell_id, GetLevel(), true) < 0) {
+			return false;
+		}
+		if (!bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), claim_tag, GetID(), spells[spell_id].cast_time + 3000)) {
+			return false;
+		}
+		if (aimed != this && !IsValidSpellRange(spell_id, aimed)) {
+			return false; // noted: TryMoveToCast walks us over
+		}
+
+		if (CastSpell(spell_id, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
+			LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[spell_id].name, aimed->GetCleanName());
+			return true;
+		}
+		return false;
+	};
+
+	// Anyone of the unit under water without breath: any time, fight or not.
+	if (zone && zone->watermap) {
+		const uint16 breath = BuffWithEffectFor(SE_WaterBreathing, GetClass(), GetLevel());
+		if (IsValidSpell(breath)) {
+			for (uint16 id : p->members) {
+				Mob* m = entity_list.GetMob(id);
+				if (!m) {
+					continue;
+				}
+				const glm::vec3 head(m->GetX(), m->GetY(), m->GetZ() + 2.0f);
+				if (zone->watermap->InWater(head) && try_cast(breath, m, SE_WaterBreathing, BotTactics::kClaimWater)) {
+					return true;
+				}
+			}
+		}
+	}
+
+	// The zone's raid targets ask for a resist: keep it up between fights,
+	// our raid group first.
+	if (p->assist_target_id) {
+		return false;
+	}
+
+	const bool   in_raid  = !p->raid_group.empty();
+	const uint32 my_group = p->RaidGroupOf(GetID());
+	for (uint8 resist : bot_tactics.ZoneResists()) {
+		const int    effect   = ResistEffect(resist);
+		const uint16 spell_id = BuffWithEffectFor(effect, GetClass(), GetLevel());
+		if (!effect || !IsValidSpell(spell_id)) {
+			continue;
+		}
+
+		for (int pass = 0; pass < (in_raid ? 2 : 1); ++pass) {
+			for (uint16 id : p->members) {
+				if (in_raid && (p->RaidGroupOf(id) == my_group) != (pass == 0)) {
+					continue;
+				}
+				if (try_cast(spell_id, entity_list.GetMob(id), effect, BotTactics::kClaimResist + resist)) {
+					return true;
+				}
+			}
+		}
+	}
+
+	return false;
 }
 
 // ============================================================

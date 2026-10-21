@@ -88,6 +88,8 @@ struct BotRaidEncounter {
 	float       caster_min_range = 0.0f;  // casters and healers keep at least this far
 	bool        avoid_front      = false; // nobody but its tank in its front arc
 	uint8       assist_hp        = 0;     // damage waits for this health %, 0 = default
+	std::string zone;                     // short name; scopes resist_type
+	uint8       resist_type      = 0;     // 1 magic .. 5 disease: keep it up in that zone
 };
 
 struct BotTacticsPlan {
@@ -231,6 +233,11 @@ public:
 	const BotRaidEncounter* EncounterFor(uint32 npc_type_id);
 	bool ReloadEncounters(std::string& summary_out);
 
+	// Resist types (1..5) the encounter rows of this zone ask to keep up.
+	const std::vector<uint8>& ZoneResists();
+	static constexpr uint32 kClaimWater  = 0x10003;
+	static constexpr uint32 kClaimResist = 0x10010; // + resist type
+
 	// ^tactics overrides, per unit. They last as long as the group or raid.
 	void SetEnabled(uint32 key, bool on);
 	bool IsEnabled(uint32 key) const;
@@ -260,6 +267,8 @@ private:
 	std::unordered_map<uint32, Overrides>        m_overrides;
 	std::unordered_map<uint32, BotRaidEncounter> m_encounters;
 	bool                                         m_encounters_loaded = false;
+	std::vector<uint8>                           m_zone_resists;
+	std::string                                  m_zone_resists_for; // zone short name they were built for
 	uint32                                     m_last_sweep_ms = 0;
 };
 
