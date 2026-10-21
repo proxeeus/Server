@@ -1674,7 +1674,8 @@ bool Bot::AI_EngagedCastCheck() {
 
 		uint8 botClass = GetClass();
 		// Also hold the damage when close to the tank's hate (bot_tactics.cpp)
-		bool mayGetAggro = HasOrMayGetAggro() || TacticsAggroBackoff(GetTarget());
+		bool mayGetAggro = HasOrMayGetAggro() || TacticsAggroBackoff(GetTarget()) ||
+			TacticsConserveMana(GetTarget()); // raid targets: healers heal, casters keep a reserve
 
 		// If the target is immune to non-magical melee, the tank cannot build
 		// meaningful hate and mayGetAggro pins every caster's nuke chance to

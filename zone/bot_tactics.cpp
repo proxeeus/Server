@@ -108,6 +108,7 @@ constexpr float  kCorpseNearDist     = 40.0f;  // a corpse farther than this fro
 constexpr uint32 kSummonClaimMs      = 30000;  // one summoner per corpse
 constexpr uint8  kRezMaxTries        = 3;      // resurrect offers per corpse before taking no for an answer
 constexpr uint32 kBardSongCheckMs    = 3000;   // a bard looks at what to sing this often
+constexpr float  kRaidManaReservePct = 30.0f;  // casters stop nuking a raid target under this much mana
 
 bool IsAlive(Mob* m)
 {
@@ -3141,6 +3142,31 @@ bool Bot::TacticsSituationalBuffs()
 	}
 
 	return false;
+}
+
+// ============================================================
+// Raid mana
+// ============================================================
+
+bool Bot::TacticsConserveMana(Mob* tar) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || !tar->IsRaidTarget()) {
+		return false;
+	}
+
+	switch (GetClass()) {
+		case Class::Cleric:
+		case Class::Druid:
+			return true; // a raid healer's mana is for heals
+		case Class::Wizard:
+		case Class::Magician:
+		case Class::Necromancer:
+		case Class::Enchanter:
+			return GetManaRatio() < kRaidManaReservePct; // keep some for the emergency
+		default:
+			return false;
+	}
 }
 
 // ============================================================

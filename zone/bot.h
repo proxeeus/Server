@@ -967,6 +967,10 @@ public:
 	// over (necro / SK), then resurrect it for the experience
 	bool TryOwnerCorpseCare(Client* owner);
 
+	// Raid mana (phase 26): no nukes on a raid target for healers, nor for
+	// casters under a reserve
+	bool TacticsConserveMana(Mob* tar) const;
+
 	// Bard songs by situation (phase 25): travel song on the road, mana song
 	// while the group meds; combat songs stay with the bard AI
 	bool TacticsBardSongs(Client* leader);
