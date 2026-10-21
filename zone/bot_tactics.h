@@ -203,6 +203,7 @@ public:
 	// False when another caster has the same debuff (tag) in the air on target.
 	bool ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms);
 	static constexpr uint32 kClaimSlow = 0x10000; // above every spell id
+	static constexpr uint32 kClaimRez  = 0x10001; // a dead owner's corpse
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

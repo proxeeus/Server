@@ -926,6 +926,18 @@ public:
 	bool TryTacticsResurrect();            // raise a fallen bot after the fight
 	bool TacticsEvacCheck();               // wipe: we were told to evacuate the group
 	bool TacticsEncounterPositioning(Mob* tar); // a raid encounter's front / reach
+
+	// Holding camp after the owner died (docs/BOT_AI_REWORK.md phase 9). The
+	// bot detaches from its dead owner (keeping the character id), stays in
+	// its group / raid slot, fights, heals, resurrects the owner's corpse,
+	// and waits -- until the owner is back in the zone or the time runs out.
+	bool IsHoldingForOwner() const { return m_owner_hold_until_ms != 0; }
+	void BeginOwnerHold();
+	void ResumeFromOwnerHold(Client* owner);
+	void EndOwnerHold();                   // time's up: leave the zone
+	void OwnerHoldAI();
+	bool TryRezOwnerCorpse();
+	static std::string OwnerHoldBucketKey(uint32 bot_id);
 	bool TacticsBeneficial(uint32 spell_type, uint8 chance); // buffs / cures, own group then the raid
 	bool TacticsClaimCast(Mob* tar, uint32 tag, uint16 spell_id); // false: someone else has it in the air
 	bool TacticsPlayerSlowsFirst(Mob* tar) const;
@@ -1027,6 +1039,8 @@ private:
 	uint32    m_tank_reposition_ms   = 0;
 	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
 	uint32    m_encounter_reposition_ms = 0;
+	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
+	uint32    m_owner_rez_retry_ms   = 0;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

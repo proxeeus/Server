@@ -2050,7 +2050,7 @@ std::list<BotSpell> Bot::GetBotSpellsForSpellEffect(Bot* botCaster, int spellEff
 		return result;
 	}
 
-	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner) {
+	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner && !botCaster->IsHoldingForOwner()) { // a bot holding camp for a dead owner still casts
 		return result;
 	}
 
@@ -2085,7 +2085,7 @@ std::list<BotSpell> Bot::GetBotSpellsForSpellEffectAndTargetType(Bot* botCaster,
 		return result;
 	}
 
-	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner) {
+	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner && !botCaster->IsHoldingForOwner()) { // a bot holding camp for a dead owner still casts
 		return result;
 	}
 
@@ -2125,7 +2125,7 @@ std::list<BotSpell> Bot::GetBotSpellsBySpellType(Bot* botCaster, uint32 spellTyp
 		return result;
 	}
 
-	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner) {
+	if (auto bot_owner = botCaster->GetBotOwner(); !bot_owner && !botCaster->IsHoldingForOwner()) { // a bot holding camp for a dead owner still casts
 		return result;
 	}
 

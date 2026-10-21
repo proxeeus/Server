@@ -21,10 +21,13 @@
 
 #include "bot.h"
 #include "bot_tactics.h"
+#include "corpse.h"
+#include "data_bucket.h"
 #include "entity.h"
 #include "groups.h"
 #include "position.h"
 #include "raids.h"
+#include "zone.h"
 
 #include "../common/classes.h"
 #include "../common/strings.h"
@@ -32,6 +35,8 @@
 #include <algorithm>
 #include <array>
 #include <iterator>
+
+extern Zone* zone;
 
 BotTactics bot_tactics;
 
@@ -70,6 +75,9 @@ constexpr uint32 kTankSwapMs       = 5000;  // after a tank swap the main mob st
 constexpr float  kChainRushHPRatio = 25.0f; // tank under this: the next CH now
 constexpr uint32 kChainRushMs      = 2000;  // ...but not more often than this
 constexpr float  kWipeTankHPRatio  = 15.0f; // half the unit down and the tank under this (or gone): evacuate
+constexpr uint32 kOwnerHoldMs      = 10 * 60 * 1000; // bots hold camp this long after their owner dies
+constexpr uint32 kRezRetryMs       = 60000; // the owner's rez request goes out again this often
+constexpr float  kHoldChaseRadius  = 150.0f; // holding bots do not chase further than this from camp
 
 bool IsAlive(Mob* m)
 {
@@ -1770,6 +1778,233 @@ bool Bot::TryTacticsResurrect()
 	}
 
 	return false;
+}
+
+// ============================================================
+// Holding camp for a dead owner
+// ============================================================
+
+std::string Bot::OwnerHoldBucketKey(uint32 bot_id)
+{
+	// Seen by every zone process: the bind zone must not spawn a bot that is
+	// still standing at camp somewhere else.
+	return fmt::format("bot_owner_hold_{}", bot_id);
+}
+
+void Bot::BeginOwnerHold()
+{
+	if (IsHoldingForOwner()) {
+		return;
+	}
+
+	m_owner_hold_until_ms = Timer::GetCurrentTime() + kOwnerHoldMs;
+	m_owner_rez_retry_ms  = 0;
+	DataBucket::SetData(OwnerHoldBucketKey(GetBotID()), zone ? zone->GetShortName() : "", std::to_string(kOwnerHoldMs / 1000));
+
+	// Let go of the owner now, while it is still here: when it zones out,
+	// Group::MemberZoned clears every bot still attached to it.
+	SetBotOwner(nullptr);
+	SetFollowID(0);
+
+	LogInfo("[BotTactics] [{}] holds camp for owner [{}] ({}s)", GetCleanName(), GetBotOwnerCharacterID(), kOwnerHoldMs / 1000);
+}
+
+void Bot::ResumeFromOwnerHold(Client* owner)
+{
+	if (!owner) {
+		return;
+	}
+
+	const bool was_holding = IsHoldingForOwner();
+	m_owner_hold_until_ms  = 0;
+	DataBucket::DeleteData(OwnerHoldBucketKey(GetBotID()));
+
+	SetBotOwner(owner);
+	SetFollowID(owner->GetID());
+
+	if (was_holding) {
+		LogInfo("[BotTactics] [{}] back with [{}]", GetCleanName(), owner->GetCleanName());
+	}
+}
+
+void Bot::EndOwnerHold()
+{
+	LogInfo("[BotTactics] [{}] stops holding camp: owner [{}] did not come back", GetCleanName(), GetBotOwnerCharacterID());
+
+	m_owner_hold_until_ms = 0;
+	DataBucket::DeleteData(OwnerHoldBucketKey(GetBotID()));
+
+	// As Zone(), less Save(): saving needs an owner, and the last save while
+	// owned stands.
+	if (auto raid = entity_list.GetRaidByBotName(GetName())) {
+		raid->MemberZoned(CastToClient());
+	}
+	else if (HasGroup()) {
+		GetGroup()->MemberZoned(this);
+	}
+
+	Depop();
+}
+
+bool Bot::TryRezOwnerCorpse()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if ((p && p->assist_target_id) || IsCasting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_owner_rez_retry_ms) {
+		return false;
+	}
+
+	const uint16 spell_id = ResurrectSpellFor(GetClass(), GetLevel());
+	if (!IsValidSpell(spell_id)) {
+		return false;
+	}
+
+	Corpse* corpse = nullptr;
+	for (const auto& e : entity_list.GetCorpseList()) {
+		Corpse* c = e.second;
+		if (c && c->IsPlayerCorpse() && c->GetCharID() == GetBotOwnerCharacterID() && !c->IsRezzed()) {
+			corpse = c;
+			break;
+		}
+	}
+	if (!corpse) {
+		return false;
+	}
+
+	// One rezzer at a time; the request is sent again a minute later in case
+	// the popup was missed.
+	if (m_tactics_key && !bot_tactics.ClaimCast(m_tactics_key, corpse->GetID(), BotTactics::kClaimRez, GetID(), kRezRetryMs)) {
+		return false;
+	}
+
+	const float range = GetActSpellRange(spell_id, spells[spell_id].range) * 0.8f;
+	if (DistanceSquared(glm::vec3(m_Position), glm::vec3(corpse->GetPosition())) > range * range || !CheckLosFN(corpse)) {
+		if (AI_movement_timer->Check()) {
+			if (IsSitting()) {
+				Stand();
+			}
+			RunTo(corpse->GetX(), corpse->GetY(), corpse->GetZ());
+		}
+		return true;
+	}
+
+	if (IsMoving()) {
+		StopMoving();
+	}
+	if (IsSitting()) {
+		Stand();
+	}
+
+	if (CastSpell(spell_id, corpse->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		m_owner_rez_retry_ms = now + kRezRetryMs;
+		LogInfo("[BotTactics] [{}] resurrects [{}] with [{}]", GetCleanName(), corpse->GetName(), spells[spell_id].name);
+		return true;
+	}
+
+	m_owner_rez_retry_ms = now + 15000; // out of mana, most likely: try again in a bit
+	return false;
+}
+
+void Bot::OwnerHoldAI()
+{
+	// Keep the shared plan alive: heals, assist, camp places all read it.
+	Raid* raid = entity_list.GetRaidByBotName(GetName());
+	RefreshTactics(raid, GetGroup());
+
+	if (CheckIfIncapacitated() || IsCasting()) {
+		return;
+	}
+
+	const BotTacticsPlan* p              = GetTacticsPlan();
+	const float           leash_distance = RuleR(Bots, LeashDistance);
+
+	// Finish the fight that killed the owner, or whatever comes to camp.
+	if (IsEngaged()) {
+		Mob* tar = GetTarget();
+		if (!tar || !tar->IsNPC() || tar->GetHP() <= 0 || tar->IsMezzed()) {
+			tar = GetHateTop();
+			SetTarget(tar);
+		}
+		if (!tar || !tar->IsNPC() || tar->IsMezzed()) {
+			WipeHateList();
+			SetTarget(nullptr);
+			return;
+		}
+
+		// Nobody to follow, so nothing to keep us from chasing into the next
+		// room: the camp is the leash.
+		if (p && p->camp_set && DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), p->camp) > kHoldChaseRadius * kHoldChaseRadius) {
+			RemoveFromHateList(tar);
+			SetTarget(nullptr);
+			return;
+		}
+
+		if (!IsBotNonSpellFighter() && AI_EngagedCastCheck()) {
+			return;
+		}
+
+		const EQ::ItemInstance* p_item = GetBotItem(EQ::invslot::slotPrimary);
+		const EQ::ItemInstance* s_item = GetBotItem(EQ::invslot::slotSecondary);
+		float melee_distance_max = 0.0f;
+		float melee_distance     = 0.0f;
+		CalcMeleeDistances(tar, p_item, s_item, false, false, melee_distance_max, melee_distance);
+
+		const float tar_distance = DistanceSquared(m_Position, tar->GetPosition());
+		const bool  melee        = GetLevel() < GetStopMeleeLevel() && !IsBotArcher();
+		const float reach        = melee ? melee_distance : GetBotCasterMaxRange(melee_distance_max);
+
+		if (reach > 0.0f && tar_distance > reach) {
+			if (AI_movement_timer->Check() && !IsRooted()) {
+				RunTo(tar->GetX(), tar->GetY(), tar->GetZ());
+			}
+			return;
+		}
+
+		if (IsMoving()) {
+			StopMoving(CalculateHeadingToTarget(tar->GetX(), tar->GetY()));
+			return;
+		}
+		if (!IsFacingMob(tar)) {
+			FaceTarget(tar);
+		}
+
+		if (melee && TryClassAttacks(tar) && TryPrimaryWeaponAttacks(tar, p_item)) {
+			TrySecondaryWeaponAttacks(tar, s_item);
+		}
+		return;
+	}
+
+	// Join a fight the plan sees (a groupmate jumped), then raise the owner.
+	if (TryTacticsAssist(nullptr, leash_distance)) {
+		return;
+	}
+	if (TryRezOwnerCorpse()) {
+		return;
+	}
+
+	// Hold our place at camp, and sit.
+	glm::vec3 slot;
+	if (TacticsCampSlot(slot) && DistanceSquared(glm::vec3(m_Position), slot) > 9.0f) {
+		if (AI_movement_timer->Check() && !IsRooted()) {
+			RunTo(slot.x, slot.y, slot.z);
+		}
+		return;
+	}
+
+	if (IsMoving()) {
+		StopMoving();
+		return;
+	}
+
+	if (AI_think_timer->Check() && !spellend_timer.Enabled()) {
+		if (!AI_IdleCastCheck() && !IsCasting() && GetClass() != Class::Bard) {
+			BotMeditate(true);
+		}
+	}
 }
 
 bool Bot::TacticsPullActive() const

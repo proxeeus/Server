@@ -1703,7 +1703,21 @@ bool Bot::Process()
 	}
 
 	if (!GetBotOwner()) {
-		return false;
+		// No owner normally means leave. Holding camp for a dead owner it
+		// means wait: take the owner back the moment it is here again, leave
+		// when the time is up (bot_tactics.cpp).
+		if (!IsHoldingForOwner()) {
+			return false;
+		}
+
+		if (Timer::GetCurrentTime() >= m_owner_hold_until_ms) {
+			EndOwnerHold();
+			return false;
+		}
+
+		if (Client* owner = entity_list.GetClientByCharID(GetBotOwnerCharacterID()); owner && !owner->IsDead()) {
+			ResumeFromOwnerHold(owner);
+		}
 	}
 
 	if (GetDepop()) {
@@ -2131,6 +2145,9 @@ void Bot::AI_Process()
 	Client* bot_owner = (GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr);
 
 	if (!bot_owner) {
+		if (IsHoldingForOwner()) {
+			OwnerHoldAI(); // the owner died: hold camp without it
+		}
 		return;
 	}
 
@@ -3311,6 +3328,13 @@ bool Bot::IsAIProcessValid(const Client* bot_owner, const Group* bot_group, cons
 	}
 
 	if (bot_owner->IsDead()) {
+		// With a shared plan, hold camp for the owner instead of leaving with
+		// it: Process keeps us, AI_Process runs OwnerHoldAI (bot_tactics.cpp).
+		if (m_tactics_key) {
+			BeginOwnerHold();
+			return false;
+		}
+
 		SetTarget(nullptr);
 		SetBotOwner(nullptr);
 		return false;
@@ -4151,6 +4175,21 @@ void Bot::LoadAndSpawnAllZonedBots(Client* bot_owner) {
 
 			if (!active_bots.empty()) {
 				for (const auto& bot_id : active_bots) {
+					// Still here, holding camp since its owner died: take it
+					// back rather than spawn a second one.
+					if (Mob* held = entity_list.GetMobByBotID(bot_id); held && held->IsBot()) {
+						held->CastToBot()->ResumeFromOwnerHold(bot_owner);
+						spawned_bots_count++;
+						bot_class_spawned_count[held->GetClass() - 1]++;
+						g->UpdatePlayer(held);
+						continue;
+					}
+
+					// Holding camp in another zone: it stays there.
+					if (!DataBucket::GetData(Bot::OwnerHoldBucketKey(bot_id)).empty()) {
+						continue;
+					}
+
 					auto* b = Bot::LoadBot(bot_id);
 					if (!b) {
 						continue;
@@ -6429,7 +6468,7 @@ bool Bot::IsBotAttackAllowed(Mob* attacker, Mob* target, bool& hasRuleDefined) {
 		if (attacker == target) {
 			hasRuleDefined = true;
 			Result = false;
-		} else if (attacker->IsClient() && target->IsBot() && attacker->CastToClient()->GetPVP() && target->CastToBot()->GetBotOwner()->CastToClient()->GetPVP()) {
+		} else if (attacker->IsClient() && target->IsBot() && attacker->CastToClient()->GetPVP() && target->CastToBot()->GetBotOwner() && target->CastToBot()->GetBotOwner()->CastToClient()->GetPVP()) {
 			hasRuleDefined = true;
 			Result = true;
 		} else if (attacker->IsClient() && target->IsBot()) {
@@ -6500,6 +6539,10 @@ void Bot::ProcessBotOwnerRefDelete(Mob* botOwner) {
 		if (!BotList.empty()) {
 			for (std::list<Bot*>::iterator botListItr = BotList.begin(); botListItr != BotList.end(); ++botListItr) {
 				Bot* tempBot = *botListItr;
+				// Holding camp for this (dead) owner: already detached, stays.
+				if (tempBot && tempBot->IsHoldingForOwner()) {
+					continue;
+				}
 				if (tempBot) {
 					tempBot->SetTarget(nullptr);
 					tempBot->SetBotOwner(nullptr);
@@ -7989,6 +8032,15 @@ void Bot::ProcessClientZoneChange(Client* botOwner) {
 
 		for (std::list<Bot*>::iterator itr = BotList.begin(); itr != BotList.end(); ++itr) {
 			Bot* tempBot = *itr;
+
+			// The owner died and is off to its bind point: hold camp here
+			// instead of following (bot_tactics.cpp).
+			if (tempBot && !tempBot->IsHoldingForOwner() && botOwner->IsDead() && tempBot->GetTacticsPlan()) {
+				tempBot->BeginOwnerHold();
+			}
+			if (tempBot && tempBot->IsHoldingForOwner()) {
+				continue;
+			}
 
 			if (tempBot) {
 				Raid* raid = entity_list.GetRaidByBotName(tempBot->GetName());
