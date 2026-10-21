@@ -250,6 +250,7 @@ public:
 	static constexpr uint32 kClaimSlow = 0x10000; // above every spell id
 	static constexpr uint32 kClaimRez   = 0x10001; // a dead owner's corpse
 	static constexpr uint32 kClaimSnare = 0x10002; // one snare in the air per runner
+	static constexpr uint32 kClaimSummonCorpse = 0x10004;
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

@@ -2510,6 +2510,12 @@ void Bot::AI_Process()
 			return;
 		}
 
+// TACTICS: THE OWNER IS BACK BUT ITS CORPSE IS HERE (summon it, raise it)
+
+		if (TryOwnerCorpseCare(bot_owner)) {
+			return;
+		}
+
 // TACTICS: ASSIST (join the tank's fight, or hold our add, without ^attack)
 
 		if (TryTacticsAssist(leash_owner, leash_distance)) {

@@ -104,6 +104,9 @@ constexpr float  kLearnMaxRange      = 120.0f; // a learned keep-back distance i
 constexpr int32  kRefreshTics        = 10;     // renew our own buff with a minute (10 tics) or less left...
 constexpr uint32 kRefreshMinTics     = 50;     // ...if it is a long one (5 minutes or more)
 constexpr int32  kPullBuffTics       = 5;      // the auto-puller waits on a bot buff with 30s or less left
+constexpr float  kCorpseNearDist     = 40.0f;  // a corpse farther than this from its owner gets summoned first
+constexpr uint32 kSummonClaimMs      = 30000;  // one summoner per corpse
+constexpr uint8  kRezMaxTries        = 3;      // resurrect offers per corpse before taking no for an answer
 
 bool IsAlive(Mob* m)
 {
@@ -313,6 +316,18 @@ const char* SlotName(int16 slot)
 		"power source", "ammo"
 	};
 	return (slot >= 0 && slot < static_cast<int16>(sizeof(names) / sizeof(names[0]))) ? names[slot] : "gear";
+}
+
+// The best summon corpse (necro, shadowknight) a class can cast at a level.
+uint16 SummonCorpseSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) { return IsEffectInSpell(id, SE_SummonCorpse); });
+	}
+	return BestOnLadder(ladder, class_id, level);
 }
 
 bool UsesMana(Mob* m)
@@ -2761,6 +2776,15 @@ bool Bot::TryRezOwnerCorpse()
 		return false;
 	}
 
+	// Three offers per corpse: after that the player has said no.
+	if (corpse->GetID() != m_owner_rez_corpse_id) {
+		m_owner_rez_corpse_id = corpse->GetID();
+		m_owner_rez_tries     = 0;
+	}
+	if (m_owner_rez_tries >= kRezMaxTries) {
+		return false;
+	}
+
 	// One rezzer at a time; the request is sent again a minute later in case
 	// the popup was missed.
 	if (m_tactics_key && !bot_tactics.ClaimCast(m_tactics_key, corpse->GetID(), BotTactics::kClaimRez, GetID(), kRezRetryMs)) {
@@ -2787,12 +2811,91 @@ bool Bot::TryRezOwnerCorpse()
 
 	if (CastSpell(spell_id, corpse->GetID(), EQ::spells::CastingSlot::Gem2)) {
 		m_owner_rez_retry_ms = now + kRezRetryMs;
+		++m_owner_rez_tries;
 		LogInfo("[BotTactics] [{}] resurrects [{}] with [{}]", GetCleanName(), corpse->GetName(), spells[spell_id].name);
 		return true;
 	}
 
 	m_owner_rez_retry_ms = now + 15000; // out of mana, most likely: try again in a bit
 	return false;
+}
+
+bool Bot::TryOwnerCorpseCare(Client* owner)
+{
+	const uint32 now = Timer::GetCurrentTime();
+
+	// A summon under way: hold still for the cast, then bring it.
+	if (m_corpse_summon_done_ms) {
+		if (now < m_corpse_summon_done_ms) {
+			return true;
+		}
+		m_corpse_summon_done_ms = 0;
+
+		Corpse* corpse = entity_list.GetCorpseByID(m_corpse_summon_id);
+		if (corpse && owner && corpse->IsPlayerCorpse() && corpse->GetCharID() == owner->CharacterID()) {
+			corpse->Summon(owner, true, false);
+			LogInfo("[BotTactics] [{}] summoned [{}] to [{}]", GetCleanName(), corpse->GetName(), owner->GetCleanName());
+		}
+		return true;
+	}
+
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!owner || owner->IsDead() || (p && p->assist_target_id) || IsCasting() || GetPullingFlag() || IsFDPulling()) {
+		return false;
+	}
+
+	Corpse* corpse = nullptr;
+	for (const auto& e : entity_list.GetCorpseList()) {
+		Corpse* c = e.second;
+		if (c && c->IsPlayerCorpse() && c->GetCharID() == owner->CharacterID() && !c->IsRezzed()) {
+			corpse = c;
+			break;
+		}
+	}
+	if (!corpse) {
+		return false;
+	}
+
+	// Far from its owner: a necro or shadowknight brings it over first. (Not
+	// through the spell effect: SE_SummonCorpse reads the *target's* target
+	// and casts the caster to a Client, neither safe for a bot. The cast is
+	// played, Corpse::Summon does the move.)
+	const bool far_off = DistanceSquaredNoZ(glm::vec3(corpse->GetPosition()), glm::vec3(owner->GetPosition())) > kCorpseNearDist * kCorpseNearDist;
+	const uint16 summon = SummonCorpseSpellFor(GetClass(), GetLevel());
+	if (far_off && IsValidSpell(summon) && GetMana() >= spells[summon].mana) {
+		if (m_tactics_key && !bot_tactics.ClaimCast(m_tactics_key, corpse->GetID(), BotTactics::kClaimSummonCorpse, GetID(), kSummonClaimMs)) {
+			return false;
+		}
+
+		if (IsMoving()) {
+			StopMoving();
+		}
+		if (IsSitting()) {
+			Stand();
+		}
+
+		const uint32 cast_ms = std::clamp<uint32>(spells[summon].cast_time, 2000, 15000);
+		SetMana(GetMana() - spells[summon].mana);
+		SendBeginCast(summon, cast_ms);
+		m_corpse_summon_done_ms = now + cast_ms;
+		m_corpse_summon_id      = corpse->GetID();
+		BotGroupSay(this, "Summoning your corpse.");
+		LogInfo("[BotTactics] [{}] summoning [{}] with [{}]", GetCleanName(), corpse->GetName(), spells[summon].name);
+		return true;
+	}
+
+	// Near (or nobody can bring it): resurrect it for the experience. The
+	// same walk-and-cast as for a dead owner.
+	if (far_off && p) {
+		for (uint16 id : p->members) {
+			Mob* m = entity_list.GetMob(id);
+			if (m && m != this && m->IsBot() && IsAlive(m) && IsValidSpell(SummonCorpseSpellFor(m->GetClass(), m->GetLevel()))) {
+				return false; // a summoner of ours brings it first
+			}
+		}
+	}
+
+	return TryRezOwnerCorpse();
 }
 
 void Bot::OwnerHoldAI()

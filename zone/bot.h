@@ -963,6 +963,9 @@ public:
 	void EndOwnerHold();                   // time's up: leave the zone
 	void OwnerHoldAI();
 	bool TryRezOwnerCorpse();
+	// Wipe recovery (phase 24): the owner alive, its corpse here: summon it
+	// over (necro / SK), then resurrect it for the experience
+	bool TryOwnerCorpseCare(Client* owner);
 	static std::string OwnerHoldBucketKey(uint32 bot_id);
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
@@ -1103,6 +1106,10 @@ private:
 	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
 	uint32    m_catchup_said_ms      = 0;
 	uint16    m_heal_urgent_id       = 0;   // set by TacticsHeal around one AICastSpell
+	uint32    m_corpse_summon_done_ms = 0;  // summoning the owner's corpse: done then
+	uint16    m_corpse_summon_id     = 0;
+	uint16    m_owner_rez_corpse_id  = 0;   // the corpse the offers below are for
+	uint8     m_owner_rez_tries      = 0;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 
