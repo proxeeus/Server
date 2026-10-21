@@ -954,6 +954,10 @@ public:
 	// water, the zone's raid resist between fights
 	bool TacticsSituationalBuffs();
 
+	// Requests by tell (phase 17): "sow", "invis", "rez Tankbot"... from our
+	// owner or a groupmate. False = not a request (small talk for the chat engine).
+	bool TacticsTellRequest(Client* from, const std::string& message);
+
 	// Runners (phase 11)
 	bool TacticsSnareRunner(Mob* tar);       // the main target is going: snare it (one of us)
 	bool TacticsTooFarFromCamp(Mob* tar);    // do not chase it out of camp

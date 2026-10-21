@@ -1517,6 +1517,17 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 				target_name[x] = '\0';
 			}
 
+			// A request to one of our bots ("sow", "invis", "rez Tankbot"):
+			// handled here for the same reason as the chat ingress below --
+			// world does not know bots -- and whatever the chat rules say.
+			// Anything that is not a request falls through to the chat engine.
+			if (RuleB(Bots, Enabled) && !is_silent && message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR) {
+				if (Bot* asked = entity_list.GetBotByBotName(target_name); asked && asked->TacticsTellRequest(this, message)) {
+					ChannelMessageSend(GetName(), asked->GetCleanName(), ChatChannel_TellEcho, Language::CommonTongue, Language::MaxValue, "%s", message);
+					return;
+				}
+			}
+
 			// PlayerBot chat ingress -- BEFORE the world relay, and returning
 			// instead of falling through to it.
 			//

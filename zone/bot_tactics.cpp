@@ -34,6 +34,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <iterator>
 
 extern Zone* zone;
@@ -2657,6 +2658,189 @@ bool Bot::TacticsSituationalBuffs()
 	}
 
 	return false;
+}
+
+// ============================================================
+// Requests by tell
+// ============================================================
+
+bool Bot::TacticsTellRequest(Client* from, const std::string& message)
+{
+	if (!from) {
+		return false;
+	}
+
+	// Our owner, or someone of our group / raid.
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (GetBotOwner() != from && !(p && p->IsMember(from->GetID()))) {
+		return false;
+	}
+
+	std::string text = Strings::ToLower(message);
+	Strings::Trim(text);
+	while (!text.empty() && (text.back() == '.' || text.back() == '!' || text.back() == '?')) {
+		text.pop_back();
+	}
+	for (const char* polite : {"please ", "pls ", "plz ", "can you ", "could you "}) {
+		if (text.rfind(polite, 0) == 0) {
+			text = text.substr(strlen(polite));
+		}
+	}
+	for (const char* polite : {" please", " pls", " plz"}) {
+		const size_t at = text.rfind(polite);
+		if (at != std::string::npos && at + strlen(polite) == text.size()) {
+			text = text.substr(0, at);
+		}
+	}
+
+	auto reply = [&](const std::string& what) {
+		from->ChannelMessageSend(GetCleanName(), from->GetName(), ChatChannel_Tell, Language::CommonTongue, Language::MaxValue, "%s", what.c_str());
+	};
+
+	// Word -> the buff effect it asks for.
+	struct Ask {
+		const char* word;
+		int         effect;
+	};
+	static constexpr Ask asks[] = {
+		{"sow", SE_MovementSpeed}, {"run speed", SE_MovementSpeed}, {"speed", SE_MovementSpeed},
+		{"ivu", SE_InvisVsUndead}, {"invis vs undead", SE_InvisVsUndead},
+		{"invis", SE_Invisibility}, {"invisibility", SE_Invisibility},
+		{"see invis", SE_SeeInvis}, {"si", SE_SeeInvis},
+		{"lev", SE_Levitate}, {"levi", SE_Levitate}, {"levitate", SE_Levitate},
+		{"eb", SE_WaterBreathing}, {"breath", SE_WaterBreathing}, {"water breathing", SE_WaterBreathing},
+	};
+
+	if (text == "help" || text == "what can you do") {
+		reply("Ask me for: sow, invis, ivu, see invis, lev, breath, heal, buff, rez (yours, or rez <name>).");
+		return true;
+	}
+
+	for (const auto& a : asks) {
+		if (text != a.word) {
+			continue;
+		}
+
+		const uint16 spell_id = BuffWithEffectFor(a.effect, GetClass(), GetLevel());
+		if (!IsValidSpell(spell_id)) {
+			reply("I can't do that one.");
+			return true;
+		}
+		if (IsEngaged() || IsCasting()) {
+			reply("Busy, ask me again after this.");
+			return true;
+		}
+		if (GetMana() < spells[spell_id].mana) {
+			reply("Not enough mana for that.");
+			return true;
+		}
+
+		const auto t     = spells[spell_id].target_type;
+		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? static_cast<Mob*>(this) : static_cast<Mob*>(from);
+		if (aimed != this && !IsValidSpellRange(spell_id, aimed, false)) {
+			reply("Come closer.");
+			return true;
+		}
+
+		if (IsSitting()) {
+			Stand();
+		}
+		if (CastSpell(spell_id, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
+			reply(fmt::format("{} coming up.", spells[spell_id].name));
+		}
+		else {
+			reply("That didn't work.");
+		}
+		return true;
+	}
+
+	if (text == "heal" || text == "heal me") {
+		if (AICastSpell(from, 100, SpellType_Heal)) {
+			reply("On it.");
+		}
+		else {
+			reply("I can't heal you right now.");
+		}
+		return true;
+	}
+
+	if (text == "buff" || text == "buffs" || text == "buff me") {
+		if (IsEngaged()) {
+			reply("Busy, ask me again after this.");
+		}
+		else if (AICastSpell(from, 100, SpellType_Buff)) {
+			reply("Buffing you.");
+		}
+		else {
+			reply("You have everything I can give.");
+		}
+		return true;
+	}
+
+	if (text == "rez" || text.rfind("rez ", 0) == 0 || text == "res" || text.rfind("res ", 0) == 0) {
+		const uint16 rez = ResurrectSpellFor(GetClass(), GetLevel());
+		if (!IsValidSpell(rez)) {
+			reply("I can't resurrect.");
+			return true;
+		}
+
+		std::string who = text.size() > 4 ? text.substr(4) : "";
+		Strings::Trim(who);
+
+		// A fallen bot of the group: I raise it after the fight.
+		if (!who.empty() && m_tactics_key) {
+			if (BotTacticsPlan* mp = bot_tactics.Find(m_tactics_key)) {
+				for (auto& f : mp->fallen) {
+					if (Strings::ToLower(f.name) == who) {
+						f.rezzer_id   = GetID();
+						f.rez_done_ms = 0;
+						reply(fmt::format("I'll bring {} back once it's quiet.", f.name));
+						return true;
+					}
+				}
+			}
+		}
+
+		// A player's corpse here: theirs if named, else the asker's.
+		Corpse* corpse = nullptr;
+		for (const auto& e : entity_list.GetCorpseList()) {
+			Corpse* c = e.second;
+			if (!c || !c->IsPlayerCorpse() || c->IsRezzed()) {
+				continue;
+			}
+			const bool match = who.empty()
+				? c->GetCharID() == from->CharacterID()
+				: Strings::ToLower(c->GetOwnerName()) == who;
+			if (match) {
+				corpse = c;
+				break;
+			}
+		}
+		if (!corpse) {
+			reply(who.empty() ? "I don't see your corpse here." : fmt::format("I don't see {} here.", who));
+			return true;
+		}
+		if (IsEngaged() || IsCasting()) {
+			reply("Busy, ask me again after this.");
+			return true;
+		}
+		if (!IsValidSpellRange(rez, corpse, false) || !CheckLosFN(corpse)) {
+			reply("Bring me closer to the corpse.");
+			return true;
+		}
+		if (IsSitting()) {
+			Stand();
+		}
+		if (CastSpell(rez, corpse->GetID(), EQ::spells::CastingSlot::Gem2)) {
+			reply("Resurrecting.");
+		}
+		else {
+			reply("That didn't work. Mana, maybe.");
+		}
+		return true;
+	}
+
+	return false; // not a request: small talk for the chat engine
 }
 
 // ============================================================
