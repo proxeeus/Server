@@ -101,6 +101,9 @@ constexpr float  kChainQuietPct      = 0.5f;   // the tank losing less than this
 constexpr float  kHealLookaheadS     = 3.0f;   // heal on where health will be this soon
 constexpr float  kHealUrgentTtdS     = 6.0f;   // dead in less than this: the fastest heal
 constexpr float  kLearnMaxRange      = 120.0f; // a learned keep-back distance is never more than this
+constexpr int32  kRefreshTics        = 10;     // renew our own buff with a minute (10 tics) or less left...
+constexpr uint32 kRefreshMinTics     = 50;     // ...if it is a long one (5 minutes or more)
+constexpr int32  kPullBuffTics       = 5;      // the auto-puller waits on a bot buff with 30s or less left
 
 bool IsAlive(Mob* m)
 {
@@ -1380,6 +1383,29 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	}
 	if (p.readiness < kReadyRatio) {
 		return;
+	}
+
+	// A bot's long buff on one of us about to run out: let it be renewed
+	// before pulling (TacticsSituationalBuffs does it, between fights).
+	for (Mob* m : mobs) {
+		if (!IsAlive(m)) {
+			continue;
+		}
+		Buffs_Struct* buffs = m->GetBuffs();
+		const int     slots = m->GetMaxTotalSlots();
+		for (int i = 0; buffs && i < slots; ++i) {
+			const uint16 sid = buffs[i].spellid;
+			if (
+				IsValidSpell(sid) &&
+				buffs[i].ticsremaining > 0 &&
+				buffs[i].ticsremaining <= kPullBuffTics &&
+				spells[sid].buff_duration >= kRefreshMinTics &&
+				IsBeneficialSpell(sid) &&
+				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
+			) {
+				return;
+			}
+		}
 	}
 
 	// ---- who pulls ----
@@ -2950,6 +2976,47 @@ bool Bot::TacticsSituationalBuffs()
 				if (try_cast(spell_id, entity_list.GetMob(id), effect, BotTactics::kClaimResist + resist)) {
 					return true;
 				}
+			}
+		}
+	}
+
+	// Our own long buffs about to run out: renew them now, between fights,
+	// rather than after they drop in the middle of the next one.
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || (in_raid && p->RaidGroupOf(id) != my_group && p->RaidGroupOf(id) != RAID_GROUPLESS && m != this)) {
+			continue;
+		}
+
+		Buffs_Struct* buffs = m->GetBuffs();
+		const int     slots = m->GetMaxTotalSlots();
+		for (int i = 0; buffs && i < slots; ++i) {
+			const uint16 sid = buffs[i].spellid;
+			if (
+				!IsValidSpell(sid) ||
+				buffs[i].casterid != GetID() ||
+				!IsBeneficialSpell(sid) ||
+				buffs[i].ticsremaining <= 0 ||
+				buffs[i].ticsremaining > kRefreshTics ||
+				spells[sid].buff_duration < kRefreshMinTics || // a short buff is just recast when it drops
+				spells[sid].classes[GetClass() - 1] > GetLevel() ||
+				GetMana() < spells[sid].mana
+			) {
+				continue;
+			}
+
+			const auto t     = spells[sid].target_type;
+			Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? static_cast<Mob*>(this) : m;
+			if (!bot_tactics.ClaimCast(m_tactics_key, m->GetID(), sid, GetID(), spells[sid].cast_time + 3000)) {
+				continue;
+			}
+			if (aimed != this && !IsValidSpellRange(sid, aimed)) {
+				continue;
+			}
+
+			if (CastSpell(sid, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
+				LogInfo("[BotTactics] [{}] renews [{}] on [{}] ({} ticks left)", GetCleanName(), spells[sid].name, m->GetCleanName(), buffs[i].ticsremaining);
+				return true;
 			}
 		}
 	}
