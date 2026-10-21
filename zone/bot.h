@@ -39,6 +39,32 @@
 
 struct BotTacticsPlan; // bot_tactics.h
 
+// Is a bot that is trying to move actually moving? (bot_tactics.cpp) Measured
+// on its own position, not the distance to its goal: following a running
+// player, that distance does not shrink however well the bot runs.
+struct BotProgress {
+	uint32    since_ms = 0;               // 0 = not tracking
+	uint32    last_ms  = 0;               // last time anyone asked
+	glm::vec3 anchor   = glm::vec3(0.0f); // where it was then
+
+	// True once the bot has not got `step` away from where it was for
+	// `window_ms` of continuous trying. A gap in the asking (a cast, a rest)
+	// starts the count over.
+	bool Stalled(const glm::vec3& pos, uint32 now, uint32 window_ms, float step = 3.0f)
+	{
+		const glm::vec3 d     = pos - anchor;
+		const bool      fresh = !since_ms || now - last_ms > 1500;
+		last_ms = now;
+		if (fresh || d.x * d.x + d.y * d.y + d.z * d.z >= step * step) {
+			since_ms = now;
+			anchor   = pos;
+			return false;
+		}
+		return now - since_ms >= window_ms;
+	}
+	void Reset() { since_ms = 0; }
+};
+
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT = 184; // as DSq value (~13.565 units)
 constexpr uint32 BOT_FOLLOW_DISTANCE_DEFAULT_MAX = 2500; // as DSq value (50 units)
 
@@ -954,6 +980,10 @@ public:
 	// water, the zone's raid resist between fights
 	bool TacticsSituationalBuffs();
 
+	// Stuck (phase 18): no progress toward the follow point / camp place for
+	// a few seconds while far from it -> rejoin it. True = we moved.
+	bool TacticsUnstick(const glm::vec3& goal, float dist);
+
 	// Requests by tell (phase 17): "sow", "invis", "rez Tankbot"... from our
 	// owner or a groupmate. False = not a request (small talk for the chat engine).
 	bool TacticsTellRequest(Client* from, const std::string& message);
@@ -1066,6 +1096,9 @@ private:
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
 	uint32    m_situational_check_ms = 0;
+	BotProgress m_follow_progress;          // walking to the follow point / camp place
+	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
+	uint32    m_catchup_said_ms      = 0;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 

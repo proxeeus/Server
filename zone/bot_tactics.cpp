@@ -93,6 +93,9 @@ constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the 
 constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
 constexpr uint32 kSituationalCheckMs = 2000;   // breath / resist needs looked at this often
 constexpr float  kUpgradeMinGain     = 8.0f;   // an item scoring less over what it replaces is a sidegrade
+constexpr uint32 kStuckWindowMs      = 5000;   // moved under 3 units in this long, trying to = stuck
+constexpr float  kStuckMinDist       = 20.0f;  // ...unless already this close
+constexpr uint32 kCatchUpSayMs       = 60000;  // "Catching up." at most this often
 
 bool IsAlive(Mob* m)
 {
@@ -2659,6 +2662,35 @@ bool Bot::TacticsSituationalBuffs()
 	}
 
 	return false;
+}
+
+// ============================================================
+// Stuck
+// ============================================================
+
+bool Bot::TacticsUnstick(const glm::vec3& goal, float dist)
+{
+	const uint32 now = Timer::GetCurrentTime();
+	if (!m_follow_progress.Stalled(glm::vec3(m_Position), now, kStuckWindowMs)) {
+		return false;
+	}
+
+	m_follow_progress.Reset();
+
+	// Stalled but nearly there: that is just standing in a crowd.
+	if (dist < kStuckMinDist || IsRooted()) {
+		return false;
+	}
+
+	// A door, a ramp, a dock: rejoin rather than run into the wall forever.
+	Teleport(glm::vec4(goal, GetHeading()));
+	LogInfo("[BotTactics] [{}] stuck [{:.0f}] from its goal: rejoined", GetCleanName(), dist);
+
+	if (now - m_catchup_said_ms >= kCatchUpSayMs) {
+		m_catchup_said_ms = now;
+		BotGroupSay(this, "Catching up.");
+	}
+	return true;
 }
 
 // ============================================================

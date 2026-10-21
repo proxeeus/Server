@@ -2627,7 +2627,20 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 		return false;
 	}
 
+	// Not getting any closer (wall, ledge, water): drop it rather than run
+	// into the scenery; the next cast check finds something else to do.
+	if (m_cast_range_moving && m_cast_progress.Stalled(glm::vec3(m_Position), now, 4000)) {
+		LogInfo(
+			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no way through",
+			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName()
+		);
+		m_cast_progress.Reset();
+		ClearCastRangeIntent();
+		return false;
+	}
+
 	if (!m_cast_range_moving) {
+		m_cast_progress.Reset();
 		m_cast_range_moving = true;
 		LogInfo(
 			"[BotAI] [{}] moving to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}] priority [{}])",
@@ -2682,12 +2695,18 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 					rest_timer.Disable();
 				}
 
+				// Getting nowhere (a door, a ramp): rejoin (bot_tactics.cpp)
+				if (TacticsUnstick(Goal, sqrtf(destination_distance))) {
+					return true;
+				}
+
 				RunTo(Goal.x, Goal.y, Goal.z);
 
 				return true;
 			}
 		}
 		else {
+			m_follow_progress.Reset();
 
 			if (IsMoving()) {
 
