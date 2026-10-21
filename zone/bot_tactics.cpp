@@ -3297,7 +3297,99 @@ bool Bot::TacticsTellRequest(Client* from, const std::string& message)
 	};
 
 	if (text == "help" || text == "what can you do") {
-		reply("Ask me for: sow, invis, ivu, see invis, lev, breath, heal, buff, rez (yours, or rez <name>).");
+		reply("Ask me for: sow, invis, ivu, see invis, lev, breath, heal, buff, rez (yours, or rez <name>), port <place> (port list).");
+		return true;
+	}
+
+	// Group teleports (druid rings, wizard portals): "port list", "port commonlands".
+	if (text == "port list" || text == "ports" || text.rfind("port ", 0) == 0) {
+		struct Port {
+			uint16      spell;
+			std::string zone;      // short name
+			std::string long_name;
+		};
+
+		std::vector<Port> ports;
+		for (int id = 0; id < SPDAT_RECORDS; ++id) {
+			if (!IsValidSpell(id)) {
+				continue;
+			}
+			const auto& s   = spells[id];
+			const uint8 lvl = s.classes[GetClass() - 1];
+			if (!lvl || lvl == 255 || lvl > GetLevel() || !s.teleport_zone[0]) {
+				continue;
+			}
+			if (!(IsEffectInSpell(id, SE_Teleport) || IsEffectInSpell(id, SE_Teleport2))) {
+				continue;
+			}
+			if (s.target_type != ST_Group && s.target_type != ST_GroupTeleport) {
+				continue; // it has to take the group along
+			}
+
+			const std::string zone_short = Strings::ToLower(s.teleport_zone);
+			const uint32      zone_id    = ZoneID(zone_short);
+			if (zone_id) {
+				ports.push_back({static_cast<uint16>(id), zone_short, ZoneLongName(zone_id)});
+			}
+		}
+
+		if (ports.empty()) {
+			reply("I can't port anyone.");
+			return true;
+		}
+
+		if (text == "port list" || text == "ports") {
+			std::string list;
+			std::vector<std::string> seen;
+			for (const auto& pt : ports) {
+				if (std::find(seen.begin(), seen.end(), pt.zone) != seen.end()) {
+					continue;
+				}
+				seen.push_back(pt.zone);
+				list += (list.empty() ? "" : ", ") + pt.long_name;
+			}
+			reply("I can take the group to: " + list + ".");
+			return true;
+		}
+
+		std::string where = text.substr(5);
+		Strings::Trim(where);
+
+		const Port* hit = nullptr;
+		for (const auto& pt : ports) {
+			if (
+				pt.zone == where ||
+				Strings::ToLower(pt.long_name).find(where) != std::string::npos ||
+				Strings::ToLower(spells[pt.spell].name).find(where) != std::string::npos
+			) {
+				hit = &pt;
+				break;
+			}
+		}
+
+		if (!hit) {
+			reply(fmt::format("I don't know a way to {}. Ask me for port list.", where));
+			return true;
+		}
+		if (IsEngaged() || IsCasting()) {
+			reply("Busy, ask me again after this.");
+			return true;
+		}
+		if (GetMana() < spells[hit->spell].mana) {
+			reply("Not enough mana for that.");
+			return true;
+		}
+
+		if (IsSitting()) {
+			Stand();
+		}
+		if (CastSpell(hit->spell, GetID(), EQ::spells::CastingSlot::Gem2)) {
+			LogInfo("[BotTactics] [{}] ports the group to [{}] with [{}]", GetCleanName(), hit->zone, spells[hit->spell].name);
+			reply(fmt::format("{} it is. Gather round!", hit->long_name));
+		}
+		else {
+			reply("That didn't work.");
+		}
 		return true;
 	}
 
