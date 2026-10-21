@@ -863,6 +863,12 @@ bool Bot::BotCastNuke(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 				stunChance = 50;
 			}
 
+			// A wizard stuns to interrupt a cast, nothing else: Skyshrine, 24
+			// Tishan's Clash (some 1,500 mana) at mobs that were not casting.
+			if (botClass == Class::Wizard && !tar->IsCasting()) {
+				stunChance = 0;
+			}
+
 			if (!tar->GetSpecialAbility(SpecialAbility::StunImmunity) && !tar->IsStunned() && (zone->random.Int(1, 100) <= stunChance)) {
 				botSpell = GetBestBotSpellForStunByTargetType(this, ST_Target);
 			}
@@ -1390,6 +1396,22 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 		return false;
 	}
 
+	// An area mez here would catch the tank's mob: a single-target one
+	// instead (Skyshrine: Mesmerization on an add hit Sentry Dumtew too).
+	if (TacticsAoeUnsafe(botSpell.SpellId, addMob)) {
+		BotSpell single{};
+		for (const auto& s : GetBotSpellsForSpellEffectAndTargetType(this, SE_Mez, ST_Target)) {
+			if (IsValidSpell(s.SpellId) && CheckSpellRecastTimer(s.SpellId) && !addMob->IsImmuneToSpell(s.SpellId, this)) {
+				single = s;
+				break;
+			}
+		}
+		if (!IsValidSpell(single.SpellId)) {
+			return false;
+		}
+		botSpell = single;
+	}
+
 	// The LOS test at the top is against our own target, not the add.
 	if (!CheckLosFN(addMob)) {
 		NoteOutOfRangeCast(botSpell.SpellId, addMob);
@@ -1435,6 +1457,12 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 	// Resisted too often on this mob just now: leave it (TacticsNoteResist).
 	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) &&
 		IsDetrimentalSpell(AIBot_spells[i].spellid) && TacticsResistBackoff(AIBot_spells[i].spellid, tar)) {
+		return false;
+	}
+
+	// An area spell that would catch the tank's mob (a mez) or wake a mezzed
+	// add (anything else): not now (TacticsAoeUnsafe).
+	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) && TacticsAoeUnsafe(AIBot_spells[i].spellid, tar)) {
 		return false;
 	}
 

@@ -120,6 +120,8 @@ constexpr uint32 kMezBackoffMs          = 10000; // ...and a shorter break
 constexpr float  kHealerBuffManaPct     = 60.0f; // healers buff only above this much mana...
 constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
+constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
+constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
 
 bool IsAlive(Mob* m)
 {
@@ -356,6 +358,12 @@ uint16 BardSongWithEffectFor(int effect, uint8 level)
 		});
 	}
 	return BestOnLadder(it->second, Class::Bard, level);
+}
+
+// What a resist is counted under: the spell, or "any mez" for every mez.
+uint16 ResistKey(uint16 spell_id)
+{
+	return IsMesmerizeSpell(spell_id) ? kAnyMezKey : spell_id;
 }
 
 bool UsesMana(Mob* m)
@@ -785,7 +793,8 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			const bool leader_in_camp = DistanceSquaredNoZ(lpos, p.camp) <= kCampRadius * kCampRadius;
 
 			if (!assist) {
-				p.pull_active = false;
+				p.pull_active     = false;
+				p.pull_arrived_id = 0;
 
 				if (leader_in_camp) {
 					p.camp_left_ms = 0;
@@ -806,7 +815,13 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// The leader is out there fighting and the mob is not here
 				// yet: a pull. The camp waits for it.
 				const bool mob_in_camp = DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) <= kCampArriveRadius * kCampArriveRadius;
-				bool       pull        = !leader_in_camp && !mob_in_camp;
+
+				// Once it has reached camp it is the camp's fight, wherever it
+				// is pushed to after (it flickered on the camp's edge).
+				if (mob_in_camp) {
+					p.pull_arrived_id = assist->GetID();
+				}
+				bool pull = !leader_in_camp && !mob_in_camp && assist->GetID() != p.pull_arrived_id;
 
 				if (pull && !p.pull_active) {
 					p.pull_start_ms = now;
@@ -1034,11 +1049,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	// Scanned around the tank, or around a bot when the unit has no tank.
 	p.adds.clear();
+	p.mezzed.clear();
 	Mob* anchor = mt ? mt : first_bot;
 	if (anchor && assist) {
 		for (const auto& e : entity_list.GetCloseMobList(anchor, 0.0f)) {
 			Mob* n = e.second;
-			if (!n || n == assist || !n->IsNPC() || !IsAlive(n) || n->IsMezzed()) {
+			if (!n || n == assist || !n->IsNPC() || !IsAlive(n)) {
 				continue;
 			}
 
@@ -1048,10 +1064,11 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			}
 
 			// Fighting one of us, or one of our pets. (IsPet() is true for a
-			// Bot too -- it has an owner -- so test membership first.)
+			// Bot too -- it has an owner -- so test membership first.) A
+			// mezzed one keeps its hate list: kept apart, so no AE wakes it.
 			Mob* owner = top->GetOwner();
 			if (p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID()))) {
-				p.adds.push_back(n->GetID());
+				(n->IsMezzed() ? p.mezzed : p.adds).push_back(n->GetID());
 			}
 		}
 	}
@@ -3237,16 +3254,20 @@ void Bot::TacticsNoteResist(uint16 spell_id, Mob* target)
 		m_resists.end()
 	);
 
+	// Every mez counts against the add, whichever mez it was: alternating
+	// Entrance and Mesmerization gave one add six tries instead of three.
+	const uint16 key = ResistKey(spell_id);
+
 	auto it = std::find_if(
 		m_resists.begin(), m_resists.end(), [&](const ResistNote& n) {
-			return n.target_id == target->GetID() && n.spell_id == spell_id;
+			return n.target_id == target->GetID() && n.spell_id == key;
 		}
 	);
 	if (it == m_resists.end()) {
 		if (m_resists.size() >= kResistNotesMax) {
 			m_resists.erase(m_resists.begin());
 		}
-		m_resists.push_back({target->GetID(), spell_id, 0, now, 0});
+		m_resists.push_back({target->GetID(), key, 0, now, 0});
 		it = std::prev(m_resists.end());
 	}
 
@@ -3277,8 +3298,98 @@ bool Bot::TacticsResistBackoff(uint16 spell_id, Mob* target) const
 	}
 
 	const uint32 now = Timer::GetCurrentTime();
+	const uint16 key = ResistKey(spell_id);
 	for (const auto& n : m_resists) {
-		if (n.target_id == target->GetID() && n.spell_id == spell_id && now < n.until_ms) {
+		if (n.target_id == target->GetID() && n.spell_id == key && now < n.until_ms) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void Bot::TacticsCheckLineOfSight(Mob* tar)
+{
+	// Casters and healers stand off and cast; melee has the mob in its face.
+	const uint8 c      = GetClass();
+	const bool  caster = GetArchetype() == Archetype::Caster || c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+	if (!tar || !caster || c == Class::Bard || !GetTacticsPlan() || m_cast_range_target_id || IsRooted()) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_los_check_ms) {
+		return;
+	}
+	m_los_check_ms = now + kLosCheckMs;
+
+	// Skyshrine: in range behind a pillar, every nuke / DoT / debuff path
+	// returned on its LOS test without a word, and the caster stood there.
+	if (CheckLosFN(tar)) {
+		return;
+	}
+
+	m_cast_range_target_id = tar->GetID();
+	m_cast_range_spell_id  = 0; // no spell: just get line of sight (TryMoveToCast)
+	m_cast_range_priority  = 1;
+	m_cast_range_expire_ms = now + 4000;
+	m_cast_range_moving    = false;
+	LogInfo("[BotAI] [{}] no line of sight to [{}]: moving", GetCleanName(), tar->GetCleanName());
+}
+
+bool Bot::TacticsAoeUnsafe(uint16 spell_id, Mob* tar) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !IsValidSpell(spell_id) || !IsDetrimentalSpell(spell_id)) {
+		return false;
+	}
+
+	const auto& s = spells[spell_id];
+	if (s.aoe_range <= 0.0f) {
+		return false;
+	}
+
+	// Where the area is centred: on us, or on the target.
+	const Mob* centre = nullptr;
+	switch (s.target_type) {
+		case ST_AECaster:
+		case ST_AEClientV1:
+		case ST_UndeadAE:
+		case ST_SummonedAE:
+		case ST_AreaClientOnly:
+		case ST_AreaNPCOnly:
+			centre = this;
+			break;
+		case ST_AETarget:
+		case ST_TargetAETap:
+		case ST_AETargetHateList:
+			centre = tar;
+			break;
+		default:
+			return false; // single target
+	}
+
+	const float r2        = s.aoe_range * s.aoe_range;
+	auto        in_radius = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		return m && DistanceSquared(m->GetPosition(), centre->GetPosition()) <= r2;
+	};
+
+	// Skyshrine: Mesmerization aimed at an add caught the mob the tank held.
+	if (IsMesmerizeSpell(spell_id)) {
+		if (in_radius(p->assist_target_id)) {
+			return true;
+		}
+		for (const auto& held : p->off_tank_assignment) {
+			if (in_radius(held.second)) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// ...and Bonds of Force went off among the adds being mezzed.
+	for (uint16 id : p->mezzed) {
+		if (id != tar->GetID() && in_radius(id)) {
 			return true;
 		}
 	}

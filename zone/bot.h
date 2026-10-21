@@ -982,6 +982,12 @@ public:
 	// - mez is the plan's call, not a cast-chance roll (the chances table has
 	//   mez at 0 for every class)
 	bool TacticsHasMezWork() const;
+	// - a caster in range of its target without line of sight walks until it
+	//   has it (Skyshrine: every detrimental cast path silently skipped)
+	void TacticsCheckLineOfSight(Mob* tar);
+	// - AE detrimental spells: no AE mez that would catch the tank's mob or a
+	//   held add, no other AE that would wake a mezzed one
+	bool TacticsAoeUnsafe(uint16 spell_id, Mob* tar) const;
 	// - buffs: what matters for that target, situational ones only when the
 	//   situation is on, a few slots kept free, mana kept for heals
 	bool TacticsBuffWanted(uint16 spell_id, Mob* tar) const;
@@ -1135,6 +1141,7 @@ private:
 	uint8     m_owner_rez_tries      = 0;
 	uint32    m_bard_song_ms         = 0;
 	uint32    m_mez_log_ms           = 0;
+	uint32    m_los_check_ms         = 0;
 
 	// Resists seen on our own casts (TacticsNoteResist)
 	struct ResistNote {

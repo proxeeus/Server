@@ -2382,6 +2382,10 @@ void Bot::AI_Process()
 				return;
 			}
 
+			// In range but behind a pillar: walk until we can see it (the
+			// cast paths only test LOS and give up) -- TryMoveToCast moves us
+			TacticsCheckLineOfSight(tar);
+
 			// Proxeeus: Warriors can't do much, but they're the masters of ROAST in my world.
 			if (GetClass() == Class::Warrior && taunt_timer.Check() && tar && tar->IsNPC() && IsTaunting())
 			{
@@ -2605,7 +2609,12 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 		return false;
 	}
 
-	const float range = GetActSpellRange(m_cast_range_spell_id, spells[m_cast_range_spell_id].range);
+	// No spell: walking for line of sight only (TacticsCheckLineOfSight) --
+	// see the target from no further than this.
+	constexpr float kLosWalkRange = 60.0f;
+	const bool      los_only      = !IsValidSpell(m_cast_range_spell_id);
+	const char*     what          = los_only ? "line of sight" : spells[m_cast_range_spell_id].name;
+	const float     range         = los_only ? kLosWalkRange : GetActSpellRange(m_cast_range_spell_id, spells[m_cast_range_spell_id].range);
 	const float want  = range * 0.85f; // a margin, so a step from the target does not put us out again
 	const float dist2 = DistanceSquared(m_Position, tar->GetPosition());
 
@@ -2617,7 +2626,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 		if (m_cast_range_moving) {
 			LogInfo(
 				"[BotAI] [{}] in range to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}])",
-				GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2), range
+				GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2), range
 			);
 		}
 
@@ -2633,7 +2642,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 	if (dist2 <= 10.0f * 10.0f) {
 		LogInfo(
 			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no line of sight at [{:.0f}]",
-			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2)
+			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2)
 		);
 		ClearCastRangeIntent();
 		return false;
@@ -2644,7 +2653,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 	if (m_cast_range_moving && m_cast_progress.Stalled(glm::vec3(m_Position), now, 4000)) {
 		LogInfo(
 			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no way through",
-			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName()
+			GetCleanName(), what, tar->GetCleanName()
 		);
 		m_cast_progress.Reset();
 		ClearCastRangeIntent();
@@ -2656,7 +2665,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 		m_cast_range_moving = true;
 		LogInfo(
 			"[BotAI] [{}] moving to cast [{}] on [{}] (dist [{:.0f}] range [{:.0f}] priority [{}])",
-			GetCleanName(), spells[m_cast_range_spell_id].name, tar->GetCleanName(), sqrtf(dist2), range, m_cast_range_priority
+			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2), range, m_cast_range_priority
 		);
 	}
 

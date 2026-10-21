@@ -119,6 +119,8 @@ struct BotTacticsPlan {
 	uint16              assist_target_id = 0;
 	uint32              assist_since_ms  = 0;
 	std::vector<uint16> adds;                      // other mobs fighting the unit, not mezzed
+	std::vector<uint16> mezzed;                    // ...and the mezzed ones: no AE near them
+	uint16              pull_arrived_id = 0;       // this pulled mob reached camp: not a pull again
 	std::unordered_map<uint16, uint32> add_seen_ms;         // add id -> first seen
 	std::unordered_map<uint16, uint16> off_tank_assignment; // off-tank id -> add id
 	bool                has_mezzer = false;        // an enchanter or bard, bot or human
