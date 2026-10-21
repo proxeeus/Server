@@ -107,6 +107,7 @@ constexpr int32  kPullBuffTics       = 5;      // the auto-puller waits on a bot
 constexpr float  kCorpseNearDist     = 40.0f;  // a corpse farther than this from its owner gets summoned first
 constexpr uint32 kSummonClaimMs      = 30000;  // one summoner per corpse
 constexpr uint8  kRezMaxTries        = 3;      // resurrect offers per corpse before taking no for an answer
+constexpr uint32 kBardSongCheckMs    = 3000;   // a bard looks at what to sing this often
 
 bool IsAlive(Mob* m)
 {
@@ -328,6 +329,21 @@ uint16 SummonCorpseSpellFor(uint8 class_id, uint8 level)
 		BuildLadder(ladder, [](uint16 id) { return IsEffectInSpell(id, SE_SummonCorpse); });
 	}
 	return BestOnLadder(ladder, class_id, level);
+}
+
+// The best bard song with an effect (selo's, mana songs) a bard has at a level.
+uint16 BardSongWithEffectFor(int effect, uint8 level)
+{
+	static std::unordered_map<int, SpellLadder> ladders;
+
+	auto it = ladders.find(effect);
+	if (it == ladders.end()) {
+		it = ladders.emplace(effect, SpellLadder{}).first;
+		BuildLadder(it->second, [effect](uint16 id) {
+			return IsBardSong(id) && IsBeneficialSpell(id) && IsEffectInSpell(id, effect);
+		});
+	}
+	return BestOnLadder(it->second, Class::Bard, level);
 }
 
 bool UsesMana(Mob* m)
@@ -3120,6 +3136,53 @@ bool Bot::TacticsSituationalBuffs()
 			if (CastSpell(sid, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
 				LogInfo("[BotTactics] [{}] renews [{}] on [{}] ({} ticks left)", GetCleanName(), spells[sid].name, m->GetCleanName(), buffs[i].ticsremaining);
 				return true;
+			}
+		}
+	}
+
+	return false;
+}
+
+// ============================================================
+// Bard songs
+// ============================================================
+
+bool Bot::TacticsBardSongs(Client* leader)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (GetClass() != Class::Bard || !p || p->assist_target_id || IsCasting() || GetBotStance() == Stance::Passive) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_bard_song_ms) {
+		return false;
+	}
+	m_bard_song_ms = now + kBardSongCheckMs;
+
+	auto sing = [&](int effect, const char* why) -> bool {
+		const uint16 song = BardSongWithEffectFor(effect, GetLevel());
+		if (!IsValidSpell(song) || FindType(effect)) {
+			return false; // none, or already going (it lands on us too)
+		}
+		if (CastSpell(song, GetID(), EQ::spells::CastingSlot::Gem2)) {
+			LogInfo("[BotTactics] [{}] sings [{}] ({})", GetCleanName(), spells[song].name, why);
+			return true;
+		}
+		return false;
+	};
+
+	// On the road (no camp, the player moving): the travel song.
+	if (!p->camp_set && leader && leader->IsMoving() && !leader->FindType(SE_MovementSpeed)) {
+		return sing(SE_MovementSpeed, "travel");
+	}
+
+	// The group sitting down after a fight: the mana song, while anyone is low.
+	if (p->recovering) {
+		for (uint16 id : p->members) {
+			Mob* m = entity_list.GetMob(id);
+			if (IsAlive(m) && UsesMana(m) && m->GetManaRatio() < kReadyRatio) {
+				return sing(SE_CurrentMana, "medding");
 			}
 		}
 	}

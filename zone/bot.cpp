@@ -2516,6 +2516,12 @@ void Bot::AI_Process()
 			return;
 		}
 
+// TACTICS: BARD -- travel song on the road, mana song while the group meds
+
+		if (TacticsBardSongs(leash_owner)) {
+			return;
+		}
+
 // TACTICS: ASSIST (join the tank's fight, or hold our add, without ^attack)
 
 		if (TryTacticsAssist(leash_owner, leash_distance)) {

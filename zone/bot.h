@@ -966,6 +966,10 @@ public:
 	// Wipe recovery (phase 24): the owner alive, its corpse here: summon it
 	// over (necro / SK), then resurrect it for the experience
 	bool TryOwnerCorpseCare(Client* owner);
+
+	// Bard songs by situation (phase 25): travel song on the road, mana song
+	// while the group meds; combat songs stay with the bard AI
+	bool TacticsBardSongs(Client* leader);
 	static std::string OwnerHoldBucketKey(uint32 bot_id);
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
@@ -1110,6 +1114,7 @@ private:
 	uint16    m_corpse_summon_id     = 0;
 	uint16    m_owner_rez_corpse_id  = 0;   // the corpse the offers below are for
 	uint8     m_owner_rez_tries      = 0;
+	uint32    m_bard_song_ms         = 0;
 
 	std::map<uint16, BotSpellSetting> bot_spell_settings;
 
