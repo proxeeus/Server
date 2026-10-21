@@ -158,6 +158,10 @@ struct BotTacticsPlan {
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
 
+	// Loot (phase 16): what the mobs we fight carry, by entity id. When one
+	// dies (its corpse keeps the id) its items are looked over for upgrades.
+	std::unordered_map<uint16, std::vector<uint32>> fight_loot;
+
 	// Runners and trains (phase 11)
 	uint16 runner_called_id = 0;   // "Runner!" said for this mob
 	size_t adds_warned      = 0;   // "Too many!" said at this many adds this fight
@@ -263,6 +267,7 @@ private:
 	};
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	void AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids);
 
 	void Rebuild(BotTacticsPlan& plan, Raid* raid, Group* group);
 	void Announce(Raid* raid, Group* group, Mob* speaker, const std::string& msg);

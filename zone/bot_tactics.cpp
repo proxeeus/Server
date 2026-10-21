@@ -90,6 +90,7 @@ constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases pas
 constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the tank's hate...
 constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
 constexpr uint32 kSituationalCheckMs = 2000;   // breath / resist needs looked at this often
+constexpr float  kUpgradeMinGain     = 8.0f;   // an item scoring less over what it replaces is a sidegrade
 
 bool IsAlive(Mob* m)
 {
@@ -260,6 +261,45 @@ int ResistEffect(uint8 resist_type)
 		case 5: return SE_ResistDisease;
 		default: return 0;
 	}
+}
+
+// How much an item is worth to this bot in this slot. Rough on purpose: it
+// only has to tell a clear upgrade from a sidegrade.
+float ItemScore(Mob* bot, const EQ::ItemData* it, int16 slot)
+{
+	if (!it) {
+		return 0.0f;
+	}
+
+	const uint8 c      = bot->GetClass();
+	const bool  caster = bot->GetArchetype() == Archetype::Caster;
+	const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+	const bool  mental = caster || healer;
+
+	float score = it->AC * (caster ? 0.5f : 1.0f) + it->HP * 0.5f + it->ASta * 0.3f;
+	if (bot->GetMaxMana() > 0) {
+		score += it->Mana * (mental ? 0.6f : 0.3f);
+	}
+	score += (it->AStr + it->AAgi + it->ADex) * (mental ? 0.1f : 0.6f);
+	score += (it->AInt + it->AWis) * (mental ? 0.6f : 0.05f);
+
+	// A melee weapon: what it hits for over how fast.
+	const bool weapon_slot = slot == EQ::invslot::slotPrimary || slot == EQ::invslot::slotSecondary || slot == EQ::invslot::slotRange;
+	if (weapon_slot && !caster && it->Damage > 0 && it->Delay > 0) {
+		score += static_cast<float>(it->Damage) / static_cast<float>(it->Delay) * 100.0f;
+	}
+
+	return score;
+}
+
+const char* SlotName(int16 slot)
+{
+	static const char* names[] = {
+		"charm", "ear", "head", "face", "ear", "neck", "shoulders", "arms", "back", "wrist", "wrist",
+		"range", "hands", "primary", "secondary", "finger", "finger", "chest", "legs", "feet", "waist",
+		"power source", "ammo"
+	};
+	return (slot >= 0 && slot < static_cast<int16>(sizeof(names) / sizeof(names[0]))) ? names[slot] : "gear";
 }
 
 bool UsesMana(Mob* m)
@@ -954,6 +994,41 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// ---- loot ----
+
+	// Remember what the mobs we fight carry (an NPC's loot list is public, a
+	// corpse's is not); when one is gone, look its items over.
+	auto remember = [&](Mob* n) {
+		if (!n || !n->IsNPC()) {
+			return;
+		}
+		auto& ids = p.fight_loot[n->GetID()];
+		ids.clear();
+		for (const auto* li : n->CastToNPC()->GetLootItems()) {
+			if (li && li->item_id) {
+				ids.push_back(li->item_id);
+			}
+		}
+	};
+	remember(assist);
+	for (uint16 add : p.adds) {
+		remember(entity_list.GetMob(add));
+	}
+
+	for (auto it = p.fight_loot.begin(); it != p.fight_loot.end();) {
+		NPC* npc = entity_list.GetNPCByID(it->first);
+		if (npc && IsAlive(npc)) {
+			++it;
+			continue;
+		}
+
+		Corpse* corpse = entity_list.GetCorpseByID(it->first);
+		if (corpse && corpse->IsNPCCorpse() && !it->second.empty()) {
+			AppraiseLoot(mobs, it->second);
+		}
+		it = p.fight_loot.erase(it);
+	}
+
 	// ---- runners and trains ----
 
 	if (assist && !old_assist) {
@@ -1324,6 +1399,56 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		p.autopull_target_id  = best->GetID();
 		p.autopull_started_ms = now;
 		LogInfo("[BotTactics] unit [{:#x}] auto-pull: [{}] pulls [{}] ({})", p.key, puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain");
+	}
+}
+
+void BotTactics::AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids)
+{
+	for (uint32 item_id : item_ids) {
+		const EQ::ItemData* item = database.GetItem(item_id);
+
+		// Something a player can hand a bot and the bot can wear.
+		if (!item || item->NoDrop == 0 || item->ItemClass != EQ::item::ItemClassCommon || !item->Slots) {
+			continue;
+		}
+
+		Bot*   best_bot  = nullptr;
+		int16  best_slot = -1;
+		float  best_gain = 0.0f;
+
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+
+			Bot* b = m->CastToBot();
+			if (!item->IsEquipable(b->GetBaseRace(), b->GetClass()) || item->ReqLevel > b->GetLevel()) {
+				continue;
+			}
+
+			// The worst of the slots it fits (two ears, two wrists...).
+			for (int16 slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
+				if (!(item->Slots & (1 << slot))) {
+					continue;
+				}
+
+				const EQ::ItemInstance* worn    = b->GetBotItem(slot);
+				const float             current = worn ? ItemScore(b, worn->GetItem(), slot) : 0.0f;
+				const float             gain    = ItemScore(b, item, slot) - current;
+
+				// A clear upgrade: worth something, and 10% over what it replaces.
+				if (gain >= kUpgradeMinGain && gain >= current * 0.1f && gain > best_gain) {
+					best_bot  = b;
+					best_slot = slot;
+					best_gain = gain;
+				}
+			}
+		}
+
+		if (best_bot) {
+			LogInfo("[BotTactics] [{}] upgrade: [{}] ({}) gain [{:.0f}]", best_bot->GetCleanName(), item->Name, SlotName(best_slot), best_gain);
+			Bot::BotGroupSay(best_bot, "That %s would be an upgrade for me (%s).", item->Name, SlotName(best_slot));
+		}
 	}
 }
 
