@@ -141,6 +141,8 @@ namespace DatabaseSchema {
 			"character_skills",
 			"character_spells",
 			"character_stats_record",
+			"character_sunset_batches",
+			"character_sunset_entries",
 			"character_task_timers",
 			"character_tasks",
 			"character_tribute",
