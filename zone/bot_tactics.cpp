@@ -146,6 +146,8 @@ constexpr float  kKillOrderFinishPct    = 50.0f;  // a main target under this is
 constexpr int32  kRemezTics             = 1;      // a mez with this many tics (6s) left is renewed
 constexpr float  kLastingWorthS         = 12.0f;  // a DoT / slow / debuff wants the mob alive this long after landing
 constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this long after landing
+constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to camp keep the fight on
+constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
 
 bool IsAlive(Mob* m)
 {
@@ -746,6 +748,42 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		Mob* top  = prev ? prev->GetHateTop() : nullptr;
 		if (prev && prev->IsNPC() && IsAlive(prev) && !prev->IsMezzed() && top && p.IsMember(top->GetID())) {
 			assist = prev;
+		}
+	}
+
+	// Only mezzed adds left: the fight is not over. (Field of Bone,
+	// 2026-10-22: it was called over with two skeletons asleep at camp, the
+	// group followed the player away, they woke on the tank alone and killed
+	// it.) The one with least health left near camp is the next target; a bot
+	// or pet main tank wakes it (TryTacticsAssist), the rest join once it is
+	// awake. A player tanking makes that call themselves.
+	if (!assist && mt && !mt->IsClient()) {
+		const glm::vec3 near_pt = p.camp_set ? p.camp : glm::vec3(mt->GetPosition());
+		Mob*            best    = nullptr;
+		auto            consider = [&](uint16 id) {
+			Mob* m = id ? entity_list.GetMob(id) : nullptr;
+			if (!IsAlive(m) || !m->IsNPC() || !m->IsMezzed() ||
+				DistanceSquaredNoZ(glm::vec3(m->GetPosition()), near_pt) > kMezzedLeftRadius * kMezzedLeftRadius) {
+				return;
+			}
+			Mob* top   = m->GetHateTop();
+			Mob* owner = top ? top->GetOwner() : nullptr;
+			if (!top || !(p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID())))) {
+				return;
+			}
+			if (!best || m->GetHP() < best->GetHP()) {
+				best = m;
+			}
+		};
+		consider(p.assist_target_id);
+		for (uint16 id : p.mezzed) {
+			consider(id);
+		}
+		if (best) {
+			if (best->GetID() != p.assist_target_id) {
+				LogInfo("[BotTactics] unit [{:#x}] only mezzed adds left: [{}] next", p.key, best->GetCleanName());
+			}
+			assist = best;
 		}
 	}
 
@@ -1514,13 +1552,27 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		const bool busy = puller && (puller->GetPullingFlag() || puller->GetReturningFlag() || puller->IsFDPulling());
 
 		if (!busy) {
-			// Done: the mob is in camp (the fight is on), or the pull fell through.
+			// Done: the mob is in camp (the fight is on), or the pull fell
+			// through -- alive and on none of us (out of sight, out of reach).
+			// Then leave that one a while: Kurn's Tower, 2026-10-22, the same
+			// Burynai was sent for four times in 33s and never came.
+			Mob* t     = entity_list.GetMob(p.autopull_target_id);
+			Mob* top   = IsAlive(t) ? t->GetHateTop() : nullptr;
+			Mob* owner = top ? top->GetOwner() : nullptr;
+			if (IsAlive(t) && !(top && (p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID()))))) {
+				p.pull_failed[p.autopull_target_id] = now + kPullFailedMs;
+				LogInfo(
+					"[BotTactics] unit [{:#x}] pull of [{}] fell through: leaving it [{}]s",
+					p.key, t->GetCleanName(), kPullFailedMs / 1000
+				);
+			}
 			p.autopull_puller_id   = 0;
 			p.autopull_target_id   = 0;
 			p.autopull_last_end_ms = now;
 		}
 		else if (now - p.autopull_started_ms > kAutoPullTimeoutMs && !p.assist_target_id) {
 			LogInfo("[BotTactics] unit [{:#x}] pull by [{}] took too long: called off", p.key, puller->GetCleanName());
+			p.pull_failed[p.autopull_target_id] = now + kPullFailedMs;
 			puller->TacticsAbortPull();
 			p.autopull_puller_id   = 0;
 			p.autopull_target_id   = 0;
@@ -1638,6 +1690,10 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 
 	// ---- what to pull ----
 
+	for (auto it = p.pull_failed.begin(); it != p.pull_failed.end();) {
+		it = now >= it->second ? p.pull_failed.erase(it) : std::next(it);
+	}
+
 	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
 	const uint8  ref_level  = leader->GetLevel();
 	const bool   fd_puller  = puller->GetClass() == Class::Monk && puller->GetSkill(EQ::skills::SkillFeignDeath) > 0;
@@ -1711,6 +1767,17 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 		if (!puller->IsAttackAllowed(n)) {
+			continue;
+		}
+
+		// A pull of it fell through a moment ago: something else first.
+		if (const auto f = p.pull_failed.find(n->GetID()); f != p.pull_failed.end() && now < f->second) {
+			continue;
+		}
+
+		// The pull itself drops a target neither the puller nor the player can
+		// see (IsValidTarget): do not send for one.
+		if (!puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
 			continue;
 		}
 
@@ -2246,6 +2313,15 @@ void BotTactics::NoteFallen(uint32 key, Bot* bot)
 	LogInfo("[BotTactics] unit [{:#x}] [{}] fell at [{:.0f}, {:.0f}, {:.0f}]", key, f.name, f.pos.x, f.pos.y, f.pos.z);
 }
 
+void BotTactics::NoteDeath(uint16 npc_id)
+{
+	for (auto& e : m_plans) {
+		if (const auto it = e.second.fight_mobs.find(npc_id); it != e.second.fight_mobs.end()) {
+			it->second.died = true;
+		}
+	}
+}
+
 bool BotTactics::ClaimMez(uint32 key, uint16 add_id, uint16 caster_id)
 {
 	BotTacticsPlan* p = Find(key);
@@ -2693,7 +2769,7 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 	}
 
 	Mob* t = entity_list.GetMob(want_id);
-	if (!t || !t->IsNPC() || !IsAlive(t) || t->IsMezzed()) {
+	if (!t || !t->IsNPC() || !IsAlive(t) || (t->IsMezzed() && !TacticsWakeMezzed(t))) { // only mezzed left: the tank wakes it
 		return false;
 	}
 
@@ -3708,6 +3784,14 @@ bool Bot::TacticsHasMezWork() const
 		}
 	}
 	return false;
+}
+
+bool Bot::TacticsWakeMezzed(Mob* tar) const
+{
+	// Rebuild makes a mezzed add the assist target only when nothing awake
+	// is left; then the main tank, and nobody else, may break it.
+	const BotTacticsPlan* p = GetTacticsPlan();
+	return p && tar && p->IsMainTank(GetID()) && tar->GetID() == p->assist_target_id;
 }
 
 bool Bot::TacticsRemezDue(Mob* add) const
@@ -5532,6 +5616,7 @@ void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, M
 		if (!f.npc_type) {
 			f.npc_type = m->GetNPCTypeID();
 			f.max_hp   = m->GetMaxHP();
+			f.name     = m->GetCleanName();
 		}
 		if (main && !f.since_ms) {
 			f.since_ms = now;
@@ -5551,14 +5636,17 @@ void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, M
 
 	for (auto it = p.fight_mobs.begin(); it != p.fight_mobs.end();) {
 		Mob* m = entity_list.GetMob(it->first);
-		if (m && !m->IsCorpse() && m->GetHP() > 0) {
+		if (!it->second.died && m && !m->IsCorpse() && m->GetHP() > 0) {
 			// Alive: still ours, or it reset and is forgotten.
 			it = m->IsEngaged() ? std::next(it) : p.fight_mobs.erase(it);
 			continue;
 		}
 
-		// Its corpse keeps its id (phase 16): a kill. Gone without one: not.
-		if (m && m->IsCorpse()) {
+		// NPC::Death told us (NoteDeath), or its corpse is here with its id:
+		// a kill. Gone without either (a despawn, a leash): not. An empty
+		// corpse decays in a second, before a rebuild could see it -- half
+		// the Kurn's Tower kills were missed that way.
+		if (it->second.died || (m && m->IsCorpse())) {
 			const auto& f = it->second;
 			p.fight_kills.push_back(f.npc_type);
 
@@ -5574,7 +5662,7 @@ void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, M
 				}
 				LogInfo(
 					"[BotTactics] unit [{:#x}] killed [{}] in [{:.0f}]s (its kind: [{:.0f}]s over [{}] kills)",
-					p.key, m->GetCleanName(), ttk, c.ttk_s, c.kills
+					p.key, f.name, ttk, c.ttk_s, c.kills
 				);
 			}
 		}

@@ -1344,9 +1344,14 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 			}
 		}
 
+		// No long walks to mez: an add far off (Field of Bone, 2026-10-22: the
+		// enchanter set off alone after one 632 away) is the tanks' business.
+		const float mez_reach = spells[botSpell.SpellId].range + 50.0f;
+
 		for (uint16 id : pool) {
 			Mob* m = entity_list.GetMob(id);
-			if (!m || id == plan->assist_target_id) {
+			if (!m || id == plan->assist_target_id ||
+				DistanceSquared(m_Position, m->GetPosition()) > mez_reach * mez_reach) {
 				continue;
 			}
 			if (m->IsMezzed() && !TacticsRemezDue(m)) {

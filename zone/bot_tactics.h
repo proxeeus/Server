@@ -201,6 +201,8 @@ struct BotTacticsPlan {
 		uint32 npc_type   = 0;
 		uint32 since_ms   = 0;   // main target since then (0 = never was)
 		int64  max_hp     = 0;
+		bool   died       = false; // NPC::Death told us (its corpse may be gone already)
+		std::string name;
 	};
 	std::unordered_map<uint16, FightMob> fight_mobs;   // mob id -> what and since when
 	std::vector<uint32> fight_kills;                   // npc types killed this fight (rest time goes to them)
@@ -212,6 +214,7 @@ struct BotTacticsPlan {
 	float  assist_hp_last    = 0.0f;   // the main target's health %, last rebuild...
 	float  assist_hp_rate    = 0.0f;   // ...and how fast it drops (%/s)
 	uint16 chain_pulled_for  = 0;      // the main target a chain pull already went out during
+	std::unordered_map<uint16, uint32> pull_failed;   // mob id -> not pulled again before then
 
 	// Fight economy and kill order (BOT_AI_SENTIENT.md, 4 and 2): how fast
 	// each mob we fight is going down, and which one dies first.
@@ -301,6 +304,10 @@ public:
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);
+
+	// NPC::Death: a mob some unit was fighting is dead (the XP engine's kill
+	// count; an empty corpse decays before the next rebuild could see it).
+	void NoteDeath(uint16 npc_id);
 
 	// bot_raid_encounters, read on first use and on ^tactics reload. A
 	// missing table reads as empty (logged).

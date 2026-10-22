@@ -2759,8 +2759,14 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 			Goal = follow_mob->GetPosition();
 		}
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
-		// a place is 3 units (a formation slot 4), not follow range
-		const float arrive_distance = at_camp ? 9.0f : in_formation ? 16.0f : static_cast<float>(GetFollowDistance());
+		// a place is 3 units (a formation slot 4), not follow range -- but a
+		// bot sitting to med near it does not get up to shuffle the rest of
+		// the way: Sit() stops the walk and RunTo() stands it, and with the
+		// idle checks sitting it anywhere within follow range that bobbed
+		// bots up and down several times a second (FoB/Kurn logs, 2026-10-22)
+		const bool  settled         = IsSitting() && (at_camp || in_formation);
+		const float arrive_distance = settled ? static_cast<float>(GetFollowDistance()) :
+			at_camp ? 9.0f : in_formation ? 16.0f : static_cast<float>(GetFollowDistance());
 
 		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {
 
@@ -3290,7 +3296,7 @@ bool Bot::IsValidTarget(
 	bool invalid_target_state = false;
 	if (HOLDING ||
 		!tar->IsNPC() ||
-		tar->IsMezzed() ||
+		(tar->IsMezzed() && !TacticsWakeMezzed(tar)) || // only mezzed adds left: the main tank wakes one
 		lo_distance > leash_distance ||
 		tar_distance > leash_distance ||
 		(!GetAttackingFlag() && !CheckLosFN(tar) && !leash_owner->CheckLosFN(tar)) ||

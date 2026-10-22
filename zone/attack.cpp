@@ -39,6 +39,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "playerbot_native.h"
 
 #include "bot.h"
+#include "bot_tactics.h"
 
 extern QueryServ* QServ;
 extern WorldServer worldserver;
@@ -2557,6 +2558,13 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 				return false;
 			}
 		}
+	}
+
+	// Bot tactics: a mob a unit was fighting died. Its corpse may not live
+	// until the next plan rebuild (an empty one decays in a second), so the
+	// kill is noted here, not looked for afterwards.
+	if (IsNPC()) {
+		bot_tactics.NoteDeath(GetID());
 	}
 
 	if (killer_mob && killer_mob->IsOfClientBot() && IsValidSpell(spell) && damage > 0) {

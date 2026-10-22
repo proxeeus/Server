@@ -998,6 +998,9 @@ public:
 	// - a mezzed add whose mez is about to wear off is mezzed again before
 	//   it wakes (BOT_AI_SENTIENT.md, 2)
 	bool TacticsRemezDue(Mob* add) const;
+	// - only mezzed adds left near camp: the fight is not over, and the main
+	//   tank may wake the plan's pick (everyone else still leaves it alone)
+	bool TacticsWakeMezzed(Mob* tar) const;
 	// - fight economy: a spell that will not pay off on a mob this close to
 	//   dying is not cast (BOT_AI_SENTIENT.md, 4)
 	bool TacticsNotWorthIt(uint16 spell_id, Mob* tar);
