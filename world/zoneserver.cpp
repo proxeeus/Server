@@ -51,6 +51,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/repositories/guild_tributes_repository.h"
 #include "../common/skill_caps.h"
 #include "trilogy_world.h"
+#include "character_sunset.h"
 
 extern ClientList client_list;
 extern TrilogyWorldServer* g_trilogy_world;
@@ -1545,6 +1546,14 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 			}
 
 			zoneserver_list.SendPacket(pack);
+			break;
+		}
+		case ServerOP_CharacterSunset: {
+			if (pack->size < sizeof(ServerCharacterSunset_Struct)) {
+				break;
+			}
+
+			CharacterSunset::HandleRequest(reinterpret_cast<ServerCharacterSunset_Struct *>(pack->pBuffer));
 			break;
 		}
 		case ServerOP_RequestTellQueue: {

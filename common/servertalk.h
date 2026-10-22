@@ -406,6 +406,8 @@ enum {	QSG_LFGuild_PlayerMatches = 0, QSG_LFGuild_UpdatePlayerInfo, QSG_LFGuild_
 
 #define ServerOP_Speech			0x5500
 
+#define ServerOP_CharacterSunset	0x5600 // zone -> world: #sunset request (world/character_sunset.cpp)
+
 enum {
 	UserToWorldStatusWorldUnavail = 0,
 	UserToWorldStatusSuccess = 1,
@@ -664,6 +666,28 @@ struct ServerKickPlayer_Struct {
 	int16 adminrank;
 	char name[64];
 	uint32 account_id;
+};
+
+// #sunset — soft-delete characters in bulk.  World does the work because only
+// world knows which of the affected characters are online and must be kicked.
+namespace CharacterSunset {
+	enum Action : uint8 {
+		Preview   = 0, // what "all" would do
+		All       = 1, // every character outside Character:SunsetProtectedAccounts
+		Account   = 2, // every character on one account
+		Character = 3, // one character
+		Batches   = 4, // list recent batches
+		Undo      = 5, // restore a batch (batch_id 0 = latest not yet restored)
+	};
+}
+
+struct ServerCharacterSunset_Struct {
+	char   requester[64];      // character name replies go to
+	uint32 requester_char_id;  // never sunset by its own request
+	int16  requester_admin;
+	uint8  action;             // CharacterSunset::Action
+	uint32 batch_id;           // Undo: 0 = the latest batch not yet restored
+	char   target[64];         // Account / Character name
 };
 
 struct ServerLSInfo_Struct {

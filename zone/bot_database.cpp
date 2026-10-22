@@ -513,7 +513,11 @@ bool BotDatabase::SaveBot(Bot* b)
 
 	e.owner_id               = b->GetBotOwnerCharacterID();
 	e.spells_id              = b->GetBotSpellID();
-	e.name                   = b->GetCleanName();
+	// A bot renamed "<name>-deleted-<ts>" by an owner delete or #sunset while it
+	// was still spawned keeps that name; writing the live name back would undo it.
+	if (e.name.find("-deleted-") == std::string::npos) {
+		e.name = b->GetCleanName();
+	}
 	e.last_name              = b->GetSurname();
 	e.title                  = b->GetTitle();
 	e.suffix                 = b->GetSuffix();

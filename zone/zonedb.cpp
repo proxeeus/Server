@@ -1062,6 +1062,20 @@ bool ZoneDatabase::SaveCharacterData(
 		return false;
 	}
 
+	// Soft-deleted (char select delete or #sunset) while this Client was still
+	// loaded.  Writing pp->name back would undo the "-deleted-" rename and lock
+	// the name forever; ~Client's final Save(2) runs AFTER UpdateWho(2) has
+	// already told world the character is offline, so this is reachable.
+	if (e.deleted_at > 0) {
+		LogInfo(
+			"[Sunset] Skipping character_data save for soft-deleted [{}] ID [{}] (stored as [{}])",
+			c->GetCleanName(),
+			c->CharacterID(),
+			e.name
+		);
+		return true;
+	}
+
 	e.id                      = c->CharacterID();
 	e.account_id              = c->AccountID();
 	e.name                    = pp->name;

@@ -181,6 +181,7 @@ void command_stun(Client *c, const Seperator *sep);
 void command_summon(Client *c, const Seperator *sep);
 void command_summonburiedplayercorpse(Client *c, const Seperator *sep);
 void command_summonitem(Client *c, const Seperator *sep);
+void command_sunset(Client *c, const Seperator *sep);
 void command_suspend(Client *c, const Seperator *sep);
 void command_suspendmulti(Client *c, const Seperator *sep);
 void command_takeplatinum(Client* c, const Seperator* sep);

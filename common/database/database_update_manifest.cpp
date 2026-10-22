@@ -5747,6 +5747,37 @@ ALTER TABLE `inventory`
 ALTER TABLE `inventory_snapshots`
 	ADD COLUMN `guid` BIGINT UNSIGNED NULL DEFAULT '0' AFTER `ornament_hero_model`;
 )"
+	},
+	ManifestEntry{
+		.version     = 9284,
+		.description = "2026_10_22_character_sunset",
+		.check       = "SHOW TABLES LIKE 'character_sunset_batches'",
+		.condition   = "empty",
+		.match       = "",
+		.sql         = R"(
+CREATE TABLE `character_sunset_batches` (
+	`id` int(10) UNSIGNED NOT NULL AUTO_INCREMENT,
+	`created_at` datetime NOT NULL DEFAULT current_timestamp(),
+	`actor` varchar(64) NOT NULL DEFAULT '',
+	`scope` varchar(128) NOT NULL DEFAULT '',
+	`characters` int(10) UNSIGNED NOT NULL DEFAULT 0,
+	`bots` int(10) UNSIGNED NOT NULL DEFAULT 0,
+	`restored_at` datetime NULL DEFAULT NULL,
+	PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE `character_sunset_entries` (
+	`batch_id` int(10) UNSIGNED NOT NULL,
+	`kind` tinyint(3) UNSIGNED NOT NULL COMMENT '0 = character, 1 = bot',
+	`entity_id` int(10) UNSIGNED NOT NULL COMMENT 'character_data.id or bot_data.bot_id',
+	`character_id` int(10) UNSIGNED NOT NULL DEFAULT 0 COMMENT 'the sunset character (a bot''s owner)',
+	`account_id` int(10) UNSIGNED NOT NULL DEFAULT 0,
+	`old_name` varchar(64) NOT NULL DEFAULT '',
+	`new_name` varchar(64) NOT NULL DEFAULT '',
+	`restored` tinyint(3) UNSIGNED NOT NULL DEFAULT 0,
+	PRIMARY KEY (`batch_id`, `kind`, `entity_id`),
+	KEY `character_id` (`character_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+)"
 	}
 // -- template; copy/paste this when you need to create a new entry
 //	ManifestEntry{
