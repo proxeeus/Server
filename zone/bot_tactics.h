@@ -296,6 +296,8 @@ public:
 	static constexpr uint32 kClaimSummonCorpse = 0x10004;
 	static constexpr uint32 kClaimInterrupt    = 0x10005; // one interrupt at a time per casting mob
 	static constexpr uint32 kClaimEmergencyHeal = 0x10006; // one chain cleric per dying groupmate
+	static constexpr uint32 kClaimRescue        = 0x10007; // one tank pulls a mob off a groupmate
+	static constexpr uint32 kClaimDeathSave     = 0x10008; // one death save cast on the main tank
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

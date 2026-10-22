@@ -2184,6 +2184,11 @@ void Bot::AI_Process()
 	TacticsPetChecks();
 	TacticsGestureCheck(); // a wave / cheer / bow that is due, when we are free for it
 
+	// Feigned to lose a mob that was on us: lie still, then get up
+	if (TacticsFeignHold()) {
+		return;
+	}
+
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 
 	if (!leash_owner) {
@@ -2309,6 +2314,11 @@ void Bot::AI_Process()
 		// Off-tanks hold their add; the rest leave held adds for the main target
 		tar = TacticsRetarget(tar);
 
+		// Not a tank, a mob on us and hurting: feign it off (monk, necro, SK)
+		if (TacticsShedAggro()) {
+			return;
+		}
+
 // ATTACKING FLAG (HATE VALIDATION)
 
 		if (GetAttackingFlag() && tar->CheckAggro(this)) {
@@ -2380,6 +2390,11 @@ void Bot::AI_Process()
 				}
 			}
 
+			// Tanks: a mob on a healer or the player comes back to us now
+			if (TacticsRescue()) {
+				return;
+			}
+
 			// Tanks: taunt only what we hold; defensive discipline when it counts
 			TacticsTankChecks(tar);
 
@@ -2403,6 +2418,13 @@ void Bot::AI_Process()
 			if (TacticsInterrupt(tar)) {
 				return;
 			}
+
+			// A named / raid fight: a death save on the main tank (clerics),
+			// offensive disciplines once it is under 60% (melee)
+			if (TacticsDeathSave()) {
+				return;
+			}
+			TacticsBurn(tar);
 
 			// In range but behind a pillar: walk until we can see it (the
 			// cast paths only test LOS and give up) -- TryMoveToCast moves us

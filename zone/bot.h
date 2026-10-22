@@ -988,6 +988,17 @@ public:
 	// - fight economy: a spell that will not pay off on a mob this close to
 	//   dying is not cast (BOT_AI_SENTIENT.md, 4)
 	bool TacticsNotWorthIt(uint16 spell_id, Mob* tar);
+	// - aggro (BOT_AI_SENTIENT.md, 5): a non-tank with a mob on it and
+	//   hurting feigns (monk skill, necro / SK spell); a tank taunts a mob
+	//   off a healer or the player at once; melee burns its offensive
+	//   discipline on a named or raid mob; a cleric keeps a death save on
+	//   the main tank of a raid fight (7)
+	bool TacticsShedAggro();
+	bool TacticsFeignHold();               // lying feigned: true = do nothing else
+	void TacticsApplyFeign();
+	bool TacticsRescue();
+	void TacticsBurn(Mob* tar);
+	bool TacticsDeathSave();
 	// - a caster in range of its target without line of sight walks until it
 	//   has it (Skyshrine: every detrimental cast path silently skipped)
 	void TacticsCheckLineOfSight(Mob* tar);
@@ -1181,6 +1192,12 @@ private:
 	bool      m_formation_ok         = false;
 	uint32    m_fidget_ms            = 0;   // next idle glance
 	uint32    m_worth_log_ms         = 0;   // TacticsNotWorthIt logs at most this often
+	uint32    m_feign_spell_ms       = 0;   // a feign spell of ours lands then (necro / SK)...
+	int64     m_feign_spell_mana     = 0;   // ...our mana when we started it (spent = it landed)
+	uint32    m_feign_stand_ms       = 0;   // feigned to shed aggro: up again then (0 = not ours)
+	uint32    m_rescue_check_ms      = 0;
+	uint32    m_burn_check_ms        = 0;
+	uint32    m_death_save_check_ms  = 0;
 	uint8     m_gesture_anim         = 0;   // one pending gesture (0 = none)...
 	uint32    m_gesture_at_ms        = 0;
 	uint16    m_gesture_face_id      = 0;   // ...made toward this one

@@ -5715,3 +5715,352 @@ bool Bot::TacticsNotWorthIt(uint16 spell_id, Mob* tar)
 	}
 	return skip;
 }
+
+// ---- aggro ----
+
+namespace {
+
+constexpr float  kShedHPPct        = 60.0f;  // a non-tank with a mob on it, under this health...
+constexpr float  kShedDamagePct    = 3.0f;   // ...or losing this much a second, gets out from under it
+constexpr uint32 kShedFeignMs      = 4000;   // lie still this long, then up
+constexpr uint32 kRescueCheckMs    = 250;
+constexpr uint32 kRescueClaimMs    = 2000;
+constexpr uint32 kBurnCheckMs      = 2000;
+constexpr float  kBurnHPPct        = 60.0f;  // a named / raid mob under this: burn
+constexpr uint32 kDeathSaveCheckMs = 3000;
+
+// A self-only feign death spell (necromancer, shadow knight).
+uint16 FeignSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			return IsEffectInSpell(id, SE_FeignDeath) && spells[id].target_type == ST_Self && id != SPELL_LIFEBURN;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// A single-target spell that only adds hate (paladin, shadow knight).
+uint16 HateSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const int idx = GetSpellEffectIndex(id, SE_InstantHate);
+			return idx >= 0 && spells[id].base_value[idx] > 0 && IsDetrimentalSpell(id) &&
+				spells[id].target_type == ST_Target;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// The best offensive discipline of a class (more attack, crits, haste,
+// accuracy, damage) -- not the defensive ones, which the tank keeps.
+uint16 OffensiveDisciplineFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const auto& s = spells[id];
+			if (!(s.is_discipline || s.type_description_id == 27) || s.target_type != ST_Self || !s.good_effect ||
+				s.skill == EQ::skills::SkillDefense) {
+				return false;
+			}
+			for (int e : {SE_ATK, SE_AttackSpeed, SE_CriticalHitChance, SE_DoubleAttackChance, SE_HitChance,
+				SE_DamageModifier, SE_MinDamageModifier, SE_StrikeThrough, SE_SkillDamageAmount}) {
+				if (IsEffectInSpell(id, e)) {
+					return true;
+				}
+			}
+			return false;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+} // namespace
+
+bool Bot::TacticsShedAggro()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (
+		!p || TankWeight(this) || p->IsMainTank(GetID()) || p->IsOffTank(GetID()) ||
+		GetFeigned() || m_feign_spell_ms || IsFDPulling() || GetPullingFlag() || GetReturningFlag() || IsCasting()
+	) {
+		return false;
+	}
+
+	// A mob of the fight on us -- the tank's job, not ours.
+	Mob* on_me = nullptr;
+	auto check = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (!on_me && IsAlive(m) && !m->IsMezzed() && m->GetTarget() == this) {
+			on_me = m;
+		}
+	};
+	check(p->assist_target_id);
+	for (uint16 id : p->adds) {
+		check(id);
+	}
+	if (!on_me) {
+		return false;
+	}
+
+	// Only when it hurts: otherwise the tank gets it back (TacticsRescue).
+	if (GetHPRatio() > kShedHPPct && p->DamagePct(GetID()) < kShedDamagePct) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// A monk drops (the ^fdpull feign: off every hate list, not everyone's).
+	if (GetClass() == Class::Monk && GetSkill(EQ::skills::SkillFeignDeath) > 0) {
+		if (m_fd_reuse_timer.Enabled() && m_fd_reuse_timer.GetRemainingTime() > 0) {
+			return false;
+		}
+		const bool fooled = ExecuteFeignDeath();
+		if (fooled) {
+			m_feign_stand_ms = now + kShedFeignMs;
+		}
+		LogInfo(
+			"[BotTactics] [{}] feigns death to lose [{}] ({})", GetCleanName(), on_me->GetCleanName(), fooled ? "fooled it" : "failed"
+		);
+		return true;
+	}
+
+	// A necromancer or shadow knight casts its feign; it takes when the cast
+	// lands (TacticsFeignHold) -- the spell effect itself only works on clients.
+	const uint16 sid = FeignSpellFor(GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || GetMana() < spells[sid].mana) {
+		return false;
+	}
+	if (IsSitting()) {
+		Stand();
+	}
+	m_feign_spell_mana = GetMana();
+	if (!CastSpell(sid, GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	m_feign_spell_ms = now + spells[sid].cast_time + 250;
+	LogInfo("[BotTactics] [{}] casts [{}] to lose [{}]", GetCleanName(), spells[sid].name, on_me->GetCleanName());
+	return true;
+}
+
+bool Bot::TacticsFeignHold()
+{
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Our feign spell's cast is over. Mana goes only when a cast lands, so a
+	// cast that cost nothing was interrupted: no feign.
+	if (m_feign_spell_ms && now >= m_feign_spell_ms && !IsCasting()) {
+		m_feign_spell_ms = 0;
+		if (GetHP() > 0 && GetMana() < m_feign_spell_mana) {
+			TacticsApplyFeign();
+			m_feign_stand_ms = now + kShedFeignMs;
+			LogInfo("[BotTactics] [{}] lies still", GetCleanName());
+		}
+	}
+
+	if (!m_feign_stand_ms) {
+		return false;
+	}
+	if (!GetFeigned()) {
+		m_feign_stand_ms = 0; // something got us up already
+		return false;
+	}
+	if (now < m_feign_stand_ms) {
+		return true; // lie still
+	}
+
+	m_feign_stand_ms = 0;
+	SetFeigned(false, this);
+	Stand();
+	LogInfo("[BotTactics] [{}] gets back up", GetCleanName());
+	return false;
+}
+
+void Bot::TacticsApplyFeign()
+{
+	// As ExecuteFeignDeath's success: off every hate list (us only), down.
+	std::list<NPC*> npc_list;
+	entity_list.GetNPCList(npc_list);
+	for (auto* npc : npc_list) {
+		if (npc->IsOnHatelist(this)) {
+			npc->RemoveFromHateList(this);
+		}
+	}
+	WipeHateList();
+	if (IsMoving()) {
+		StopMoving();
+	}
+	DoAnim(16);
+	SendAppearancePacket(AppearanceType::Animation, 114, true, false);
+	SetFeigned(true, this);
+}
+
+bool Bot::TacticsRescue()
+{
+	const BotTacticsPlan* p  = GetTacticsPlan();
+	const bool            mt = p && p->IsMainTank(GetID());
+	if (!p || (!mt && !p->IsOffTank(GetID())) || IsCasting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_rescue_check_ms) {
+		return false;
+	}
+	m_rescue_check_ms = now + kRescueCheckMs;
+
+	// A mob that is ours to hold, on a groupmate who cannot take it: the
+	// main tank answers for the main target and the adds nobody holds, an
+	// off-tank for its own add. A fresh add is the mezzer's first.
+	Mob* loose = nullptr;
+	auto check = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (loose || !IsAlive(m) || !m->IsNPC() || m->IsMezzed()) {
+			return;
+		}
+		const bool mine = mt ? (id == p->assist_target_id || !p->IsHeldAdd(id)) : p->AssignedAdd(GetID()) == id;
+		if (!mine) {
+			return;
+		}
+		if (id != p->assist_target_id && p->has_mezzer) {
+			const auto seen = p->add_seen_ms.find(id);
+			if (seen != p->add_seen_ms.end() && now - seen->second < kOffTankWaitMs) {
+				return;
+			}
+		}
+		Mob* t = m->GetTarget();
+		if (!t || t == this || !p->IsMember(t->GetID()) || TankWeight(t) || p->IsMainTank(t->GetID()) || p->IsOffTank(t->GetID())) {
+			return;
+		}
+		loose = m;
+	};
+	check(p->assist_target_id);
+	for (uint16 id : p->adds) {
+		check(id);
+	}
+	if (!loose) {
+		return false;
+	}
+
+	Mob* victim = loose->GetTarget();
+
+	// A taunt from where we stand: instant.
+	if (
+		GetSkill(EQ::skills::SkillTaunt) > 0 && CombatRange(loose) && taunt_timer.Check(false) &&
+		bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), kRescueClaimMs)
+	) {
+		Taunt(loose->CastToNPC(), false);
+		taunt_timer.Start(TauntReuseTime * 1000);
+		LogInfo("[BotTactics] [{}] taunts [{}] off [{}]", GetCleanName(), loose->GetCleanName(), victim ? victim->GetCleanName() : "?");
+		return true;
+	}
+
+	// Else a hate spell, if it reaches.
+	const uint16 sid = HateSpellFor(GetClass(), GetLevel());
+	if (
+		!IsValidSpell(sid) || GetMana() < spells[sid].mana ||
+		DistanceSquared(m_Position, loose->GetPosition()) > spells[sid].range * spells[sid].range || !CheckLosFN(loose) ||
+		!bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), spells[sid].cast_time + 1000)
+	) {
+		return false;
+	}
+	if (!CastSpell(sid, loose->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	LogInfo(
+		"[BotTactics] [{}] casts [{}] to pull [{}] off [{}]",
+		GetCleanName(), spells[sid].name, loose->GetCleanName(), victim ? victim->GetCleanName() : "?"
+	);
+	return true;
+}
+
+void Bot::TacticsBurn(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || tar->GetID() != p->assist_target_id || p->IsMainTank(GetID())) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_burn_check_ms) {
+		return;
+	}
+	m_burn_check_ms = now + kBurnCheckMs;
+
+	// Saved for what deserves it: a named or a raid mob, once the tank has
+	// it well in hand -- and never on the edge of taking its aggro.
+	if (!(tar->IsRaidTarget() || tar->IsRareSpawn()) || tar->GetHPRatio() > kBurnHPPct) {
+		return;
+	}
+	if (m_aggro_backoff || HasOrMayGetAggro()) {
+		return;
+	}
+
+	const uint16 sid = OffensiveDisciplineFor(GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || FindBuff(sid)) {
+		return;
+	}
+	if (spells[sid].recast_time > 0 && !CheckDisciplineReuseTimer(sid)) {
+		return;
+	}
+	if (GetEndurance() <= spells[sid].endurance_cost) {
+		return;
+	}
+
+	if (UseDiscipline(sid, GetID())) {
+		LogInfo("[BotTactics] [{}] burns [{}] on [{}]", GetCleanName(), spells[sid].name, tar->GetCleanName());
+		BotGroupSay(this, "Using %s.", spells[sid].name);
+	}
+}
+
+bool Bot::TacticsDeathSave()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || GetClass() != Class::Cleric || IsCasting() || TacticsReservesCasting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_death_save_check_ms) {
+		return false;
+	}
+	m_death_save_check_ms = now + kDeathSaveCheckMs;
+
+	// A named or raid fight: the main tank wears a death save (Divine
+	// Intervention), cast by a cleric that is not on the CH chain.
+	Mob* fight = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+	Mob* tank  = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
+	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn()) || !IsAlive(tank)) {
+		return false;
+	}
+
+	const uint16 sid = BuffWithEffectFor(SE_DivineSave, GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || tank->FindType(SE_DivineSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+		return false;
+	}
+	if (
+		DistanceSquared(m_Position, tank->GetPosition()) > spells[sid].range * spells[sid].range || !CheckLosFN(tank) ||
+		!bot_tactics.ClaimCast(m_tactics_key, tank->GetID(), BotTactics::kClaimDeathSave, GetID(), spells[sid].cast_time + 6000)
+	) {
+		return false;
+	}
+
+	if (IsSitting()) {
+		Stand();
+	}
+	if (!CastSpell(sid, tank->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[sid].name, tank->GetCleanName());
+	return true;
+}
