@@ -2182,6 +2182,7 @@ void Bot::AI_Process()
 	// The shared plan of our raid or group (bot_tactics.cpp)
 	RefreshTactics(raid, bot_group);
 	TacticsPetChecks();
+	TacticsGestureCheck(); // a wave / cheer / bow that is due, when we are free for it
 
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 
@@ -2211,8 +2212,12 @@ void Bot::AI_Process()
 
 	// With a camp, our place on it is our follow point: idle casting,
 	// meditating and the out-of-combat cast interrupt all measure from it.
+	// Without one, our place in the formation behind the player is.
 	glm::vec3 camp_slot;
 	if (TacticsCampSlot(camp_slot)) {
+		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
+	}
+	else if (NOT_GUARDING && TacticsFormationSlot(follow_mob, camp_slot)) {
 		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
 	}
 
@@ -2573,6 +2578,7 @@ void Bot::AI_Process()
 		if (TryNonCombatMovementChecks(bot_owner, follow_mob, Goal)) {
 			return;
 		}
+		TacticsIdleFidget(leash_owner); // now and then: glance at the player, look around
 		if (TacticsCannibalize()) { // standing still between fights: health for mana
 			return;
 		}
@@ -2716,18 +2722,22 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 		// there rather than trailing the player around (bot_tactics.cpp).
 		glm::vec3 camp_slot;
 		const bool at_camp = !GUARDING && TacticsCampSlot(camp_slot);
+		// Away from camp, a loose formation behind the player instead of a
+		// clump on top of them (bot_tactics.cpp).
+		const bool in_formation = !GUARDING && !at_camp && TacticsFormationSlot(follow_mob, camp_slot);
 
 		if (GUARDING) {
 			Goal = GetGuardPoint();
 		}
-		else if (at_camp) {
+		else if (at_camp || in_formation) {
 			Goal = camp_slot;
 		}
 		else {
 			Goal = follow_mob->GetPosition();
 		}
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
-		const float arrive_distance = at_camp ? 9.0f : static_cast<float>(GetFollowDistance()); // a place is 3 units, not follow range
+		// a place is 3 units (a formation slot 4), not follow range
+		const float arrive_distance = at_camp ? 9.0f : in_formation ? 16.0f : static_cast<float>(GetFollowDistance());
 
 		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {
 
@@ -5711,6 +5721,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 
 	if (accepted_count) {
 		CalcBotStats(client->GetBotOption(Client::booStatsUpdate));
+		TacticsQueueGesture(70, 500, client->GetID()); // a bow of thanks (v29c /bow, eqgame.exe 0x4ccc1b)
 	}
 
 	if (event_trade.size()) {

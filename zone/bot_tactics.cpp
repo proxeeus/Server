@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 
@@ -724,6 +725,9 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			LogInfo("[BotTactics] unit [{:#x}] assist [{}]", p.key, assist->GetCleanName());
 		}
 	}
+
+	// Waves for a newcomer, cheers for a ding or a dead boss
+	BodyLanguage(p, mobs, assist);
 
 	// ---- raid encounter ----
 
@@ -4886,5 +4890,298 @@ bool Bot::TacticsCannibalize()
 		"[BotTactics] [{}] casts [{}] ([{}] health for mana, at [{:.0f}%] mana)",
 		GetCleanName(), spells[sid].name, cost, GetManaRatio()
 	);
+	return true;
+}
+
+// ---- body language ----
+
+namespace {
+
+// Social animations, from v29c's own /cheer, /wave and /bow handlers
+// (eqgame.exe 0x4cc92f: switch over the social index, the id stored at
+// [ebp-4] and played at 0x4ce5aa). Server-side they ride OP_Animation, which
+// TrilogyClient::HandleAnimation re-encodes as 0x9f20, like the bard gestures.
+constexpr uint8  kAnimCheer = 27;
+constexpr uint8  kAnimWave  = 29;
+
+constexpr float  kGestureRadius     = 100.0f; // bots this close to what happened react to it
+constexpr uint32 kGestureStaleMs    = 5000;   // a gesture still blocked this late is dropped
+constexpr float  kFormationBack     = 7.0f;   // the first row stands this far behind the leader...
+constexpr float  kFormationRowStep  = 6.0f;   // ...each next row this much further...
+constexpr float  kFormationSideStep = 5.0f;   // ...bots in a row this far apart
+constexpr uint32 kFormationMaxWidth = 6;
+constexpr uint32 kFidgetMinMs       = 15000;  // an idle bot glances somewhere this often...
+constexpr uint32 kFidgetMaxMs       = 45000;  // ...at most this rarely
+
+} // namespace
+
+void BotTactics::QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count)
+{
+	if (!subject) {
+		return;
+	}
+
+	std::vector<std::pair<float, Bot*>> near;
+	for (Mob* m : mobs) {
+		if (m == subject || !m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		const float d2 = DistanceSquared(m->GetPosition(), subject->GetPosition());
+		if (d2 <= kGestureRadius * kGestureRadius) {
+			near.emplace_back(d2, m->CastToBot());
+		}
+	}
+
+	std::sort(
+		near.begin(), near.end(), [](const std::pair<float, Bot*>& a, const std::pair<float, Bot*>& b) {
+			return a.first < b.first;
+		}
+	);
+	if (count && near.size() > count) {
+		near.resize(count);
+	}
+
+	// A moment apart, nearest first: people do not move as one.
+	uint32 delay = zone->random.Int(300, 900);
+	for (const auto& e : near) {
+		e.second->TacticsQueueGesture(anim, delay, subject->GetID());
+		delay += zone->random.Int(150, 700);
+	}
+}
+
+void BotTactics::BodyLanguage(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist)
+{
+	// Someone new in the unit: a couple of us wave, and a bot that just
+	// joined waves at the nearest player. A player who levelled: everyone
+	// near cheers. (Entity ids are per zone process: a plan is new in each
+	// zone, and its first pass only takes the roll.)
+	std::unordered_map<uint16, uint8> levels;
+	for (Mob* m : mobs) {
+		levels[m->GetID()] = m->GetLevel();
+		if (!p.members_seeded || !IsAlive(m)) {
+			continue;
+		}
+
+		const auto it = p.member_levels.find(m->GetID());
+		if (it == p.member_levels.end()) {
+			QueueGestures(mobs, m, kAnimWave, 2);
+
+			if (m->IsBot()) {
+				Mob*  player = nullptr;
+				float best   = kGestureRadius * kGestureRadius;
+				for (Mob* c : mobs) {
+					const float d2 = c->IsClient() ? DistanceSquared(c->GetPosition(), m->GetPosition()) : best;
+					if (d2 < best) {
+						player = c;
+						best   = d2;
+					}
+				}
+				if (player) {
+					m->CastToBot()->TacticsQueueGesture(kAnimWave, zone->random.Int(600, 1400), player->GetID());
+				}
+			}
+			LogInfo("[BotTactics] unit [{:#x}] waves at [{}]", p.key, m->GetCleanName());
+		}
+		else if (m->IsClient() && m->GetLevel() > it->second) {
+			QueueGestures(mobs, m, kAnimCheer, 0);
+			LogInfo("[BotTactics] unit [{:#x}] cheers [{}]'s level [{}]", p.key, m->GetCleanName(), m->GetLevel());
+		}
+	}
+	p.member_levels.swap(levels);
+	p.members_seeded = true;
+
+	// A boss we fought (a raid target or a rare spawn) is dead: cheers, at
+	// its corpse. One that reset or that we ran from gets nothing.
+	const uint16 assist_id = assist ? assist->GetID() : 0;
+	if (p.boss_id && p.boss_id != assist_id) {
+		Mob* boss = entity_list.GetMob(p.boss_id);
+		if (!boss || boss->IsCorpse() || boss->GetHP() <= 0) {
+			Mob* at = boss;
+			for (size_t i = 0; !at && i < mobs.size(); ++i) {
+				at = mobs[i]->IsClient() ? mobs[i] : nullptr;
+			}
+			QueueGestures(mobs, at, kAnimCheer, 0);
+			LogInfo("[BotTactics] unit [{:#x}] cheers the kill", p.key);
+			p.boss_id = 0;
+		}
+		else if (!boss->IsEngaged()) {
+			p.boss_id = 0;
+		}
+	}
+	if (assist && assist->IsNPC() && (assist->IsRaidTarget() || assist->IsRareSpawn())) {
+		p.boss_id = assist_id;
+	}
+}
+
+void Bot::TacticsQueueGesture(uint8 anim, uint32 delay_ms, uint16 face_id)
+{
+	const uint32 at = Timer::GetCurrentTime() + delay_ms;
+	if (m_gesture_anim && m_gesture_at_ms <= at) {
+		return; // one is already coming, sooner
+	}
+
+	m_gesture_anim    = anim;
+	m_gesture_at_ms   = at;
+	m_gesture_face_id = face_id;
+}
+
+void Bot::TacticsGestureCheck()
+{
+	if (!m_gesture_anim) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_gesture_at_ms) {
+		return;
+	}
+
+	if (IsEngaged() || IsCasting() || IsMoving() || GetAppearance() == eaDead) {
+		if (now - m_gesture_at_ms > kGestureStaleMs) {
+			m_gesture_anim = 0; // the moment has passed
+		}
+		return;
+	}
+
+	const uint8 anim = m_gesture_anim;
+	m_gesture_anim   = 0;
+
+	// Up off the floor for it, as a player would; the next med check sits
+	// us back down.
+	if (IsSitting()) {
+		Stand();
+	}
+
+	Mob* to = m_gesture_face_id ? entity_list.GetMob(m_gesture_face_id) : nullptr;
+	if (to && to != this) {
+		FaceTarget(to);
+	}
+	DoAnim(anim);
+}
+
+void Bot::TacticsSpokenTo(Client* who, const char* message)
+{
+	if (!who || IsEngaged() || IsCasting() || GetAppearance() == eaDead) {
+		return;
+	}
+
+	if (!IsMoving()) {
+		FaceTarget(who);
+	}
+
+	if (message && Strings::BeginsWith(Strings::ToLower(message), "hail")) {
+		TacticsQueueGesture(kAnimWave, zone->random.Int(300, 900), who->GetID());
+	}
+}
+
+bool Bot::TacticsFormationSlot(const Mob* leader, glm::vec3& out)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !leader || !leader->IsClient() || GetFollowID() != leader->GetID()) {
+		return false;
+	}
+
+	// Our place in the rows: every bot of the unit following this player,
+	// by entity id so the order holds still. Ranked once per plan build.
+	if (m_formation_built_ms != p->built_ms) {
+		m_formation_built_ms = p->built_ms;
+
+		std::vector<uint16> followers;
+		for (uint16 id : p->members) {
+			Mob* m = entity_list.GetMob(id);
+			if (m && m->IsBot() && m->GetFollowID() == leader->GetID()) {
+				followers.push_back(id);
+			}
+		}
+		std::sort(followers.begin(), followers.end());
+
+		const auto it = std::find(followers.begin(), followers.end(), GetID());
+		if (it == followers.end()) {
+			m_formation_count = 0;
+			return false;
+		}
+
+		const uint32 rank  = static_cast<uint32>(it - followers.begin());
+		const uint32 count = static_cast<uint32>(followers.size());
+		if (rank != m_formation_rank || count != m_formation_count) {
+			m_formation_rank   = rank;
+			m_formation_count  = count;
+			m_formation_anchor = glm::vec4(0.0f); // re-place
+		}
+	}
+	if (!m_formation_count) {
+		return false;
+	}
+
+	// Rows behind the leader, turning with it. Only re-placed once it has
+	// moved or turned a little: TryMoveAlong traces the zone map.
+	const glm::vec4& here = leader->GetPosition();
+	float            dh   = std::fabs(here.w - m_formation_anchor.w);
+	dh = std::min(dh, 512.0f - dh);
+	if (m_formation_anchor != glm::vec4(0.0f) &&
+		DistanceSquared(glm::vec3(here), glm::vec3(m_formation_anchor)) < 4.0f && dh < 12.0f) {
+		out = m_formation_slot;
+		return m_formation_ok;
+	}
+	m_formation_anchor = here;
+
+	const uint32 width = std::clamp<uint32>(
+		static_cast<uint32>(std::ceil(std::sqrt(static_cast<float>(m_formation_count)))), 2, kFormationMaxWidth
+	);
+	const uint32 row    = m_formation_rank / width;
+	const uint32 col    = m_formation_rank % width;
+	const uint32 in_row = std::min(width, m_formation_count - row * width);
+	const float  side   = (static_cast<float>(col) - (in_row - 1) / 2.0f) * kFormationSideStep;
+	const float  back   = kFormationBack + row * kFormationRowStep;
+
+	// 512 heading units to the turn; 256 is straight behind.
+	const float angle = 256.0f + std::atan2(side, back) * 256.0f / 3.14159265f;
+	const auto  dest  = TryMoveAlong(here, std::sqrt(side * side + back * back), angle);
+
+	// Same ledge guard as the behind-the-mob moves: a slot off a cliff or on
+	// another floor is no slot; follow the leader as before.
+	const float expected_z = here.z - leader->GetZOffset() + GetZOffset();
+	const float dz         = dest.z - expected_z;
+	m_formation_ok   = dz > -15.0f && dz < 15.0f;
+	m_formation_slot = glm::vec3(dest);
+
+	out = m_formation_slot;
+	return m_formation_ok;
+}
+
+bool Bot::TacticsIdleFidget(Mob* leader)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || IsEngaged() || IsMoving() || IsCasting() || IsSitting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (!m_fidget_ms || now >= m_fidget_ms) {
+		const bool first = !m_fidget_ms;
+		m_fidget_ms      = now + zone->random.Int(kFidgetMinMs, kFidgetMaxMs);
+		if (first) {
+			return false; // start out of step with the others
+		}
+	}
+	else {
+		return false;
+	}
+
+	// At camp, watch outward for what comes; otherwise glance at the player,
+	// or just look around.
+	const int roll = zone->random.Int(1, 100);
+	float     heading;
+	if (p->camp_set && roll <= 40) {
+		heading = FixHeading(CalculateHeadingToTarget(p->camp.x, p->camp.y) + 256.0f);
+	}
+	else if (leader && leader != this && roll <= 75) {
+		heading = CalculateHeadingToTarget(leader->GetX(), leader->GetY());
+	}
+	else {
+		heading = FixHeading(GetHeading() + static_cast<float>(zone->random.Int(-80, 80)));
+	}
+
+	RotateToWalking(heading);
 	return true;
 }

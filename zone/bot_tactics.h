@@ -194,6 +194,13 @@ struct BotTacticsPlan {
 	// dies (its corpse keeps the id) its items are looked over for upgrades.
 	std::unordered_map<uint16, std::vector<uint32>> fight_loot;
 
+	// Body language (BOT_AI_SENTIENT.md, E): who was in the unit at what
+	// level, to wave at a newcomer and cheer a ding; the boss being fought,
+	// to cheer its death.
+	std::unordered_map<uint16, uint8> member_levels;
+	bool                              members_seeded = false;
+	uint16                            boss_id        = 0;
+
 	// Runners and trains (phase 11)
 	uint16 runner_called_id = 0;   // "Runner!" said for this mob
 	size_t adds_warned      = 0;   // "Too many!" said at this many adds this fight
@@ -311,6 +318,10 @@ private:
 	};
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	// Up to `count` bots of the unit near `subject` (not it) play `anim` at
+	// it, a moment apart; count 0 = every bot within reach.
+	void QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count);
+	void BodyLanguage(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist);
 	void LoadSettings(uint32 key, uint32 char_id);
 	void AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids);
 

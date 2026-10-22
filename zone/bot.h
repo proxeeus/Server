@@ -1046,6 +1046,14 @@ public:
 	bool TacticsSafeToSit();
 	bool TacticsChainEmergency();
 	bool TacticsCannibalize();
+	// - body language: a loose formation behind the player instead of a
+	//   clump on top of them, glances and look-arounds when idle, facing
+	//   whoever talks to us, a wave / cheer / bow when it fits
+	bool TacticsFormationSlot(const Mob* leader, glm::vec3& out);
+	bool TacticsIdleFidget(Mob* leader);
+	void TacticsSpokenTo(Client* who, const char* message);
+	void TacticsQueueGesture(uint8 anim, uint32 delay_ms, uint16 face_id);
+	void TacticsGestureCheck();
 
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
@@ -1159,6 +1167,16 @@ private:
 	uint32    m_interrupt_check_ms   = 0;
 	uint32    m_canni_check_ms       = 0;
 	uint32    m_pet_reposition_ms    = 0;   // our pet stepped behind an enraged mob then
+	glm::vec3 m_formation_slot       = glm::vec3(0.0f); // TacticsFormationSlot cache...
+	glm::vec4 m_formation_anchor     = glm::vec4(0.0f); // ...the leader's spot it was made for
+	uint32    m_formation_built_ms   = 0;   // ...and the plan build it was ranked in
+	uint32    m_formation_rank       = 0;   // our place in the rows, and how many there are
+	uint32    m_formation_count      = 0;
+	bool      m_formation_ok         = false;
+	uint32    m_fidget_ms            = 0;   // next idle glance
+	uint8     m_gesture_anim         = 0;   // one pending gesture (0 = none)...
+	uint32    m_gesture_at_ms        = 0;
+	uint16    m_gesture_face_id      = 0;   // ...made toward this one
 
 	// Resists seen on our own casts (TacticsNoteResist)
 	struct ResistNote {
