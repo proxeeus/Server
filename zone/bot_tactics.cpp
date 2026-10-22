@@ -2074,7 +2074,12 @@ BotRaidEncounter BotTactics::LearnedRow(const BotEncounterObservation& o) const
 
 void BotTactics::ObserveHostileSpell(uint32 key, Mob* caster, uint16 spell_id)
 {
-	if (!key || !caster || !caster->IsNPC() || !caster->IsRaidTarget() || !IsValidSpell(spell_id)) {
+	// A raid target, or anything the bots fight as a raid. npc_types.raid_target
+	// is 0 for nearly every classic-Velious raid mob in this database (only 8
+	// NPCs carry it, none before Planes of Power: not Wuoshi, Vox, Nagafen or
+	// Trakanon), so the flag alone meant nothing was ever learned.
+	if (!key || !caster || !caster->IsNPC() || !IsValidSpell(spell_id) ||
+		!(caster->IsRaidTarget() || (key & kKeyRaid))) {
 		return;
 	}
 
