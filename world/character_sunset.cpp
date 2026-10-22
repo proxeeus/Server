@@ -34,6 +34,11 @@ struct Target {
 // A live row.  Trilogy's char select and zone-in also treat a zero date as live.
 constexpr const char *kLiveCharacter = "(cd.`deleted_at` IS NULL OR cd.`deleted_at` = '0000-00-00 00:00:00')";
 
+// Trilogy char select: CharacterSelect_Struct has 10 slots and SendCharSelect LIMIT 10s.
+constexpr uint32 kCharacterSlots = 10;
+
+constexpr const char *kNoTables = "No sunset tables: run utils/sql/git/optional/2026_10_22_character_sunset.sql.";
+
 std::string Field(const char *buf, size_t size)
 {
 	return std::string(buf, strnlen(buf, size));
@@ -284,7 +289,7 @@ void DoSunset(const ServerCharacterSunset_Struct *req, const std::string &to, co
 		)
 	);
 	if (!br.Success() || !br.LastInsertedID()) {
-		Reply(to, "Sunset failed: character_sunset_batches is missing (world applies migration 9284 at boot).");
+		Reply(to, kNoTables);
 		return;
 	}
 
@@ -432,7 +437,7 @@ void DoListBatches(const std::string &to)
 		"FROM `character_sunset_batches` ORDER BY `id` DESC LIMIT 10"
 	);
 	if (!r.Success()) {
-		Reply(to, "No sunset tables (world applies migration 9284 at boot).");
+		Reply(to, kNoTables);
 		return;
 	}
 
@@ -460,9 +465,49 @@ void DoListBatches(const std::string &to)
 	}
 }
 
-void DoUndo(const ServerCharacterSunset_Struct *req, const std::string &to)
+// Live characters on the account that owns character_id.
+uint32 LiveCharactersOnAccountOf(uint32 character_id)
+{
+	auto r = database.QueryDatabase(
+		fmt::format(
+			"SELECT COUNT(*) FROM `character_data` cd WHERE {} AND cd.`account_id` = "
+			"(SELECT `account_id` FROM `character_data` WHERE `id` = {})",
+			kLiveCharacter,
+			character_id
+		)
+	);
+	if (!r.Success() || !r.RowCount()) {
+		return 0;
+	}
+
+	auto row = r.begin();
+	return Strings::ToUnsignedInt(row[0]);
+}
+
+// target = an old character name: restore just that character (and its bots).
+// With no batch number, the most recent batch that still holds it is used.
+void DoUndo(const ServerCharacterSunset_Struct *req, const std::string &to, const std::string &target)
 {
 	uint32 batch_id = req->batch_id;
+	if (!batch_id && !target.empty()) {
+		auto r = database.QueryDatabase(
+			fmt::format(
+				"SELECT COALESCE(MAX(`batch_id`), 0) FROM `character_sunset_entries` "
+				"WHERE `kind` = 0 AND `restored` = 0 AND `old_name` = '{}'",
+				Strings::Escape(target)
+			)
+		);
+		if (r.Success() && r.RowCount()) {
+			auto row = r.begin();
+			batch_id = Strings::ToUnsignedInt(row[0]);
+		}
+
+		if (!batch_id) {
+			Reply(to, fmt::format("No sunset character named [{}] left to restore.", target));
+			return;
+		}
+	}
+
 	if (!batch_id) {
 		auto r = database.QueryDatabase(
 			"SELECT COALESCE(MAX(`id`), 0) FROM `character_sunset_batches` WHERE `restored_at` IS NULL"
@@ -491,12 +536,20 @@ void DoUndo(const ServerCharacterSunset_Struct *req, const std::string &to)
 	auto r = database.QueryDatabase(
 		fmt::format(
 			"SELECT `kind`, `entity_id`, `character_id`, `old_name`, `new_name` FROM `character_sunset_entries` "
-			"WHERE `batch_id` = {} AND `restored` = 0 ORDER BY `kind`, `entity_id`",
-			batch_id
+			"WHERE `batch_id` = {} AND `restored` = 0{} ORDER BY `kind`, `entity_id`",
+			batch_id,
+			target.empty() ?
+			"" :
+			fmt::format(
+				" AND `character_id` IN (SELECT `character_id` FROM `character_sunset_entries` "
+				"WHERE `batch_id` = {} AND `kind` = 0 AND `old_name` = '{}')",
+				batch_id,
+				Strings::Escape(target)
+			)
 		)
 	);
 	if (!r.Success()) {
-		Reply(to, "No sunset tables (world applies migration 9284 at boot).");
+		Reply(to, kNoTables);
 		return;
 	}
 
@@ -510,7 +563,12 @@ void DoUndo(const ServerCharacterSunset_Struct *req, const std::string &to)
 	}
 
 	if (by_character.empty()) {
-		Reply(to, fmt::format("Sunset batch #{} has nothing left to restore.", batch_id));
+		Reply(
+			to,
+			target.empty() ?
+			fmt::format("Sunset batch #{} has nothing left to restore.", batch_id) :
+			fmt::format("Sunset batch #{} holds no [{}] left to restore.", batch_id, target)
+		);
 		return;
 	}
 
@@ -538,6 +596,12 @@ void DoUndo(const ServerCharacterSunset_Struct *req, const std::string &to)
 			// The old name may have been taken since (a new test character, say).
 			if (database.IsNameUsed(e.old_name)) {
 				skipped.push_back(fmt::format("{} (name taken)", e.old_name));
+				break;
+			}
+
+			// A character past the last slot exists but never shows at char select.
+			if (LiveCharactersOnAccountOf(e.entity_id) >= kCharacterSlots) {
+				skipped.push_back(fmt::format("{} (account full)", e.old_name));
 				break;
 			}
 
@@ -655,7 +719,7 @@ void CharacterSunset::HandleRequest(const ServerCharacterSunset_Struct *req)
 			DoListBatches(to);
 			break;
 		case Undo:
-			DoUndo(req, to);
+			DoUndo(req, to, target);
 			break;
 		default:
 			break;

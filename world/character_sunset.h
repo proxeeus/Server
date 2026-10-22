@@ -11,7 +11,10 @@
 // "<name>-deleted-<unix ts>" so it can be reused, deleted_at = NOW(), and the
 // character's bots get the same rename.  Nothing is hard-deleted.  Every rename
 // is recorded in character_sunset_batches / character_sunset_entries
-// (migration 9284) so "#sunset undo" can put a whole batch back.
+// (utils/sql/git/optional/2026_10_22_character_sunset.sql, run by hand) so
+// "#sunset undo" can put a batch, or one character, back.  Undo skips a
+// character whose name is taken or whose account already has 10 live
+// characters (Trilogy char select shows 10); it stays restorable.
 //
 // Accounts named in Character:SunsetProtectedAccounts are never touched, nor is
 // the requesting character.  Characters that are online are sunset anyway and

@@ -27,14 +27,24 @@ void command_sunset(Client *c, const Seperator *sep)
 		action = CharacterSunset::Batches;
 	}
 	else if (sub == "undo") {
-		action   = CharacterSunset::Undo;
-		batch_id = sep->argnum >= 2 ? Strings::ToUnsignedInt(sep->arg[2]) : 0;
+		// undo | undo <batch> | undo <name> | undo <batch> <name>
+		action = CharacterSunset::Undo;
+		int name_arg = 2;
+		if (sep->argnum >= 2 && sep->IsNumber(2)) {
+			batch_id = Strings::ToUnsignedInt(sep->arg[2]);
+			name_arg = 3;
+		}
+
+		if (sep->argnum >= name_arg) {
+			target = sep->arg[name_arg];
+		}
 	}
 	else {
 		c->Message(Chat::White, "Usage: #sunset [preview] - who #sunset all would sunset");
 		c->Message(Chat::White, "Usage: #sunset all - soft-delete every character outside Character:SunsetProtectedAccounts");
 		c->Message(Chat::White, "Usage: #sunset account [Account Name] | #sunset char [Character Name]");
-		c->Message(Chat::White, "Usage: #sunset batches - recent batches | #sunset undo [Batch #] - restore one (default: latest)");
+		c->Message(Chat::White, "Usage: #sunset batches - recent batches");
+		c->Message(Chat::White, "Usage: #sunset undo [Batch #] [Character Name] - restore a batch (default: latest), or one character from it");
 		return;
 	}
 
