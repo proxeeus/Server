@@ -7117,6 +7117,36 @@ void TrilogyClient::HandleOutgoingGroupUpdate(const EQApplicationPacket* app)
 	m_tzs->SendToSession(m_session_key, 0x2640,
 	                     reinterpret_cast<const uint8_t*>(&out),
 	                     static_cast<uint32_t>(sizeof(out)));
+
+	// v29c learns it leads a group only from an OP_GroupFollow naming it as the
+	// leader: the echo a player invitee's accept produces (Handle_OP_GroupFollow2).
+	// NEW_LEADER on 0x2640 does not do it. A bot never accepts, and every
+	// server-side path that adds one only sends this join:
+	//   - ^party and /invite on a bot (Bot::ProcessBotGroupInvite);
+	//   - the zone-in group restore.
+	// The client then takes a bot for the leader: "Only a leader can invite
+	// more members", and no disband. So follow each bot join into a group we
+	// lead with that echo, in the order a player accept produces (join, then
+	// follow). This used to be forged only in HandleIncomingGroupInvite2, which
+	// ^party never reaches.
+	if (emu_action == groupActJoin) {
+		Mob   *joined = entity_list.GetMob(other_member);
+		Group *g      = GetGroup();
+
+		// No group in the entity list yet means ProcessBotGroupInvite is
+		// forming one around us: new Group(c) makes c the leader, and
+		// entity_list.AddGroup only comes after the first AddBotToGroup.
+		if (joined && joined->IsBot() && (!g || g->IsLeader(this))) {
+			Trilogy::structs::GroupFollow_Struct follow{};
+			CopyTrilogyName(follow.leader, sizeof(follow.leader), GetName());
+			CopyTrilogyName(follow.invited, sizeof(follow.invited), joined->GetName());
+			LogInfo("[Trilogy][Group] -> OP_GroupFollow (0x4220) forged bot-accept leader=[{}] invited=[{}]",
+			        follow.leader, follow.invited);
+			m_tzs->SendToSession(m_session_key, 0x4220,
+			                     reinterpret_cast<const uint8_t*>(&follow),
+			                     static_cast<uint32_t>(sizeof(follow)));
+		}
+	}
 }
 
 // ============================================================
@@ -7171,31 +7201,11 @@ void TrilogyClient::HandleIncomingGroupInvite2(const uint8_t* data, uint32_t len
 	LogInfo("[Trilogy][Group] <- OP_GroupInvite2 (0x4020) invitee=[{}] inviter=[{}]",
 	         gi->invitee_name, gi->inviter_name);
 
-	// Pre-check whether the invitee is a Bot.  For player-to-player invites,
-	// the invitee's client will reply with OP_GroupFollow (0x4220) and the
-	// EQEmu engine then echoes that OP_GroupFollow back to the inviter — that
-	// echo is how the v29c client learns it is the new group's leader
-	// (without it, the client's local "am I the leader?" check fails and
-	// the next OP_GroupInvite2 is blocked with "Only a leader can invite
-	// more members").  Bot::ProcessBotGroupInvite skips the Follow step
-	// entirely and just appends the bot to the group server-side, so the
-	// inviter never receives an OP_GroupFollow.  Forge one here so v29c sees
-	// the same wire sequence it would for a player invite that auto-accepted.
-	Mob* invitee_mob = entity_list.GetMob(gi->invitee_name);
-	const bool invitee_is_bot = invitee_mob && invitee_mob->IsBot();
-
+	// A bot invitee never accepts, so the OP_GroupFollow echo that tells the
+	// inviter it leads the group is forged when the bot's join goes out
+	// (HandleOutgoingGroupUpdate), which also covers ^party and the zone-in
+	// restore.
 	Handle_OP_GroupInvite2(&pkt);
-
-	if (invitee_is_bot) {
-		Trilogy::structs::GroupFollow_Struct out{};
-		CopyTrilogyName(out.leader,  sizeof(out.leader),  gi->inviter_name);
-		CopyTrilogyName(out.invited, sizeof(out.invited), gi->invitee_name);
-		LogInfo("[Trilogy][Group] -> OP_GroupFollow (0x4220) forged bot-accept leader=[{}] invited=[{}] size={} bytes=[{}]",
-		        out.leader, out.invited, sizeof(out), HexDumpBytes(&out, sizeof(out)));
-		m_tzs->SendToSession(m_session_key, 0x4220,
-		                     reinterpret_cast<const uint8_t*>(&out),
-		                     static_cast<uint32_t>(sizeof(out)));
-	}
 }
 
 void TrilogyClient::HandleIncomingGroupFollow(const uint8_t* data, uint32_t len)
