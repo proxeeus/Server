@@ -8317,16 +8317,33 @@ void TrilogyZoneServer::HandleZoneEntryResend(const std::string& addr, int port,
 	// The client refers to itself by the synthetic player_spawn_id.
 	if (spawn_id == s.player_spawn_id) return;
 
-	// Backstop only.  One second is far longer than the client's own retry
-	// cadence (the observed sweep repeated within ~1s), so a request we answer
-	// correctly is never throttled -- only one we keep failing to satisfy.
-	static constexpr uint64_t kResendCooldownMs = 1000;
+	// Still zoning in: every spawn is on its way. The answer would only be
+	// buffered with it (m_deferred_spawns / m_deferred_player_spawns) and so
+	// sent twice when OnClientReady flushes. Whatever is still missing after
+	// that, the client asks for again and gets.
+	if (tc->IsZoning()) {
+		return;
+	}
+
+	// The client re-asks about every second until the spawn arrives. Idle,
+	// an answer lands well inside that, so it never re-asks; under a reliable
+	// backlog the answer is still queued, and every re-ask cost another full
+	// multi-packet spawn. A 71-bot raid's zone-in made 1085 asks in 18 s, the
+	// zone pushed 191 pps, and the client went linkdead. So wait as long as
+	// the unacked queue says the last answer may still be in flight.
+	static constexpr uint64_t kResendCooldownMs        = 1000;
+	static constexpr uint64_t kResendCooldownPerUnacked = 250;
+	static constexpr uint64_t kResendCooldownMaxMs     = 10000;
+	const uint64_t cooldown_ms = std::min<uint64_t>(
+		kResendCooldownMaxMs,
+		kResendCooldownMs + kResendCooldownPerUnacked * s.resend_queue.size()
+	);
 	const uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
 	auto it = s.last_resend_ms.find(spawn_id);
-	if (it != s.last_resend_ms.end() && now_ms - it->second < kResendCooldownMs) {
+	if (it != s.last_resend_ms.end() && now_ms - it->second < cooldown_ms) {
 		return;
 	}
 	s.last_resend_ms[spawn_id] = now_ms;
