@@ -123,6 +123,19 @@ enum BotCastingChanceConditional : uint8
 	cntHSND = 16
 };
 
+// A short walk around a mob -- to its back, turning it, out of its front --
+// walked rather than teleported (bot_tactics.cpp, BOT_AI_SENTIENT.md E2).
+// One for the bot, one for its pet.
+struct BotStep {
+	uint16    target_id = 0;
+	glm::vec3 via       = glm::vec3(0.0f); // round its flank first...
+	glm::vec3 goal      = glm::vec3(0.0f); // ...then here
+	bool      has_via   = false;
+	glm::vec3 anchor    = glm::vec3(0.0f); // where the mob stood when we set off
+	uint32    until_ms  = 0;               // walking, until then at most (0 = not walking)
+	uint32    react_ms  = 0;               // seen in its front: move at this time
+	uint32    rest_ms   = 0;               // no new walk before this
+};
 
 class Bot : public NPC {
 	friend class Mob;
@@ -982,6 +995,26 @@ public:
 	// - mez is the plan's call, not a cast-chance roll (the chances table has
 	//   mez at 0 for every class)
 	bool TacticsHasMezWork() const;
+	// - a mezzed add whose mez is about to wear off is mezzed again before
+	//   it wakes (BOT_AI_SENTIENT.md, 2)
+	bool TacticsRemezDue(Mob* add) const;
+	// - only mezzed adds left near camp: the fight is not over, and the main
+	//   tank may wake the plan's pick (everyone else still leaves it alone)
+	bool TacticsWakeMezzed(Mob* tar) const;
+	// - fight economy: a spell that will not pay off on a mob this close to
+	//   dying is not cast (BOT_AI_SENTIENT.md, 4)
+	bool TacticsNotWorthIt(uint16 spell_id, Mob* tar);
+	// - aggro (BOT_AI_SENTIENT.md, 5): a non-tank with a mob on it and
+	//   hurting feigns (monk skill, necro / SK spell); a tank taunts a mob
+	//   off a healer or the player at once; melee burns its offensive
+	//   discipline on a named or raid mob; a cleric keeps a death save on
+	//   the main tank of a raid fight (7)
+	bool TacticsShedAggro();
+	bool TacticsFeignHold();               // lying feigned: true = do nothing else
+	void TacticsApplyFeign();
+	bool TacticsRescue();
+	void TacticsBurn(Mob* tar);
+	bool TacticsDeathSave();
 	// - a caster in range of its target without line of sight walks until it
 	//   has it (Skyshrine: every detrimental cast path silently skipped)
 	void TacticsCheckLineOfSight(Mob* tar);
@@ -1032,6 +1065,39 @@ public:
 	bool TacticsPlayerMezzesFirst(uint16 add_id) const;
 	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
 	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
+
+	// Sentient combat (docs/BOT_AI_SENTIENT.md):
+	// - read the mob: a mob casting something that matters (a gate, a heal,
+	//   an AE, a charm...) is bashed, kicked or stunned by one of us
+	bool TacticsInterrupt(Mob* tar);
+	bool TacticsInterruptStrike(Mob* caster); // bash / warrior kick, now
+	// - healers: cancel a heal that would mostly overheal (mana is only
+	//   spent when a cast lands), heal with what fits, sit between heals,
+	//   chain clerics catch a dying groupmate, shamans cannibalize
+	bool TacticsDuckHeal();
+	bool TacticsPickHeal(Mob* tar, BotSpell& out);
+	bool TacticsSafeToSit();
+	bool TacticsChainEmergency();
+	bool TacticsCannibalize();
+	// - body language: a loose formation behind the player instead of a
+	//   clump on top of them, glances and look-arounds when idle, facing
+	//   whoever talks to us, a wave / cheer / bow when it fits
+	bool TacticsFormationSlot(const Mob* leader, glm::vec3& out);
+	bool TacticsIdleFidget(Mob* leader);
+	void TacticsSpokenTo(Client* who, const char* message);
+	void TacticsQueueGesture(uint8 anim, uint32 delay_ms, uint16 face_id);
+	void TacticsGestureCheck();
+	// - repositioning around a mob is walked, not teleported: a fighter in
+	//   its front half goes round its flank to the nearest spot behind, after
+	//   a human moment; no swings on the way (also the tank turning the mob,
+	//   raid front / reach moves, and bot pets via mob_ai.cpp)
+	bool TacticsStepping(Mob* tar);                   // walking: true = nothing else this tick
+	bool TacticsStepBehind(Mob* tar, float dist);     // true = set off
+	bool TacticsPetStepping(Mob* pet, Mob* tar);
+	bool TacticsPetStepBehind(Mob* pet, Mob* tar, float dist);
+	static bool StepBegin(Mob* mover, BotStep& s, Mob* tar, const glm::vec3& goal);
+	static bool StepContinue(Mob* mover, BotStep& s, Mob* tar);
+	static bool StepBehind(Mob* mover, BotStep& s, Mob* tar, float dist);
 
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
@@ -1142,6 +1208,27 @@ private:
 	uint32    m_bard_song_ms         = 0;
 	uint32    m_mez_log_ms           = 0;
 	uint32    m_los_check_ms         = 0;
+	uint32    m_interrupt_check_ms   = 0;
+	uint32    m_canni_check_ms       = 0;
+	BotStep   m_step;                       // our walk around a mob (TacticsStepping)
+	BotStep   m_pet_step;                   // our pet's (TacticsPetStepping)
+	glm::vec3 m_formation_slot       = glm::vec3(0.0f); // TacticsFormationSlot cache...
+	glm::vec4 m_formation_anchor     = glm::vec4(0.0f); // ...the leader's spot it was made for
+	uint32    m_formation_built_ms   = 0;   // ...and the plan build it was ranked in
+	uint32    m_formation_rank       = 0;   // our place in the rows, and how many there are
+	uint32    m_formation_count      = 0;
+	bool      m_formation_ok         = false;
+	uint32    m_fidget_ms            = 0;   // next idle glance
+	uint32    m_worth_log_ms         = 0;   // TacticsNotWorthIt logs at most this often
+	uint32    m_feign_spell_ms       = 0;   // a feign spell of ours lands then (necro / SK)...
+	int64     m_feign_spell_mana     = 0;   // ...our mana when we started it (spent = it landed)
+	uint32    m_feign_stand_ms       = 0;   // feigned to shed aggro: up again then (0 = not ours)
+	uint32    m_rescue_check_ms      = 0;
+	uint32    m_burn_check_ms        = 0;
+	uint32    m_death_save_check_ms  = 0;
+	uint8     m_gesture_anim         = 0;   // one pending gesture (0 = none)...
+	uint32    m_gesture_at_ms        = 0;
+	uint16    m_gesture_face_id      = 0;   // ...made toward this one
 
 	// Resists seen on our own casts (TacticsNoteResist)
 	struct ResistNote {

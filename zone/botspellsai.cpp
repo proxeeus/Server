@@ -1118,6 +1118,16 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 			if (m_heal_urgent_id && tar->GetID() == m_heal_urgent_id &&
 				IsValidSpell((botSpell = GetBestBotSpellForFastHeal(this)).SpellId)) {
 			}
+			// With a plan: the cheapest heal that covers what will be missing
+			// when it lands, heals already on the way counted (bot_tactics.cpp).
+			// Several hurt at once is still the group heal's job below.
+			else if (
+				IsEngaged() &&
+				(botClass == Class::Cleric || botClass == Class::Druid || botClass == Class::Shaman || botClass == Class::Paladin) &&
+				GetNumberNeedingHealedInGroup(70, false, raid) < 3 &&
+				TacticsPickHeal(tar, botSpell)
+			) {
+			}
 			// Evaluate the situation
 			else if ((IsEngaged()) && ((botClass == Class::Cleric) || (botClass == Class::Druid) || (botClass == Class::Shaman) || (botClass == Class::Paladin))) {
 				if (tar->GetTarget() && tar->GetTarget()->GetHateTop() && tar->GetTarget()->GetHateTop() == tar) {
@@ -1325,12 +1335,26 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 		// Why each add was passed over, for the log below.
 		int skipped_mezzed = 0, skipped_player = 0, skipped_immune = 0, skipped_stack = 0, skipped_claim = 0, skipped_resists = 0;
 
-		for (uint16 id : plan->adds) {
+		// The awake adds, then the mezzed ones about to wake (a mez renewed
+		// before it breaks, not after the add is on the cleric).
+		std::vector<uint16> pool = plan->adds;
+		for (uint16 id : plan->mezzed) {
+			if (TacticsRemezDue(entity_list.GetMob(id))) {
+				pool.push_back(id);
+			}
+		}
+
+		// No long walks to mez: an add far off (Field of Bone, 2026-10-22: the
+		// enchanter set off alone after one 632 away) is the tanks' business.
+		const float mez_reach = spells[botSpell.SpellId].range + 50.0f;
+
+		for (uint16 id : pool) {
 			Mob* m = entity_list.GetMob(id);
-			if (!m || id == plan->assist_target_id) {
+			if (!m || id == plan->assist_target_id ||
+				DistanceSquared(m_Position, m->GetPosition()) > mez_reach * mez_reach) {
 				continue;
 			}
-			if (m->IsMezzed()) {
+			if (m->IsMezzed() && !TacticsRemezDue(m)) {
 				++skipped_mezzed;
 				continue;
 			}
@@ -1463,6 +1487,12 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 	// An area spell that would catch the tank's mob (a mez) or wake a mezzed
 	// add (anything else): not now (TacticsAoeUnsafe).
 	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) && TacticsAoeUnsafe(AIBot_spells[i].spellid, tar)) {
+		return false;
+	}
+
+	// A mob about to die: no DoT that will not tick out, no slow or debuff
+	// for its last seconds, no nuke that lands on a corpse (TacticsNotWorthIt).
+	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) && TacticsNotWorthIt(AIBot_spells[i].spellid, tar)) {
 		return false;
 	}
 

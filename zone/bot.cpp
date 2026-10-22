@@ -1873,7 +1873,13 @@ void Bot::SpellProcess() {
 
 void Bot::BotMeditate(bool isSitting) {
 	if (isSitting) {
-		const float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
+		float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
+
+		// Mid-fight with a plan: med between heals whenever nothing can reach
+		// us, as a real healer does; never with a mob on us (sitting takes crits).
+		if (IsEngaged() && GetTacticsPlan()) {
+			mana_sit_threshold = TacticsSafeToSit() ? 98.0f : 0.0f;
+		}
 		const bool hp_sit_condition   = !IsEngaged() && GetHPRatio() < 99.0f;
 		if (GetManaRatio() < mana_sit_threshold || hp_sit_condition) {
 			if (!IsSitting()) {
@@ -2176,6 +2182,12 @@ void Bot::AI_Process()
 	// The shared plan of our raid or group (bot_tactics.cpp)
 	RefreshTactics(raid, bot_group);
 	TacticsPetChecks();
+	TacticsGestureCheck(); // a wave / cheer / bow that is due, when we are free for it
+
+	// Feigned to lose a mob that was on us: lie still, then get up
+	if (TacticsFeignHold()) {
+		return;
+	}
 
 	auto leash_owner = SetLeashOwner(bot_owner, bot_group, raid, r_group);
 
@@ -2205,8 +2217,12 @@ void Bot::AI_Process()
 
 	// With a camp, our place on it is our follow point: idle casting,
 	// meditating and the out-of-combat cast interrupt all measure from it.
+	// Without one, our place in the formation behind the player is.
 	glm::vec3 camp_slot;
 	if (TacticsCampSlot(camp_slot)) {
+		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
+	}
+	else if (NOT_GUARDING && TacticsFormationSlot(follow_mob, camp_slot)) {
 		fm_distance = DistanceSquared(glm::vec3(m_Position), camp_slot);
 	}
 
@@ -2223,6 +2239,11 @@ void Bot::AI_Process()
 // TACTICS: OUR TURN IN THE CH CHAIN
 
 	if (TacticsChainCheck()) {
+		return;
+	}
+
+	// ...and, well clear of our turn, a quick heal on a groupmate going down
+	if (TacticsChainEmergency()) {
 		return;
 	}
 
@@ -2293,6 +2314,11 @@ void Bot::AI_Process()
 		// Off-tanks hold their add; the rest leave held adds for the main target
 		tar = TacticsRetarget(tar);
 
+		// Not a tank, a mob on us and hurting: feign it off (monk, necro, SK)
+		if (TacticsShedAggro()) {
+			return;
+		}
+
 // ATTACKING FLAG (HATE VALIDATION)
 
 		if (GetAttackingFlag() && tar->CheckAggro(this)) {
@@ -2343,6 +2369,12 @@ void Bot::AI_Process()
 		const EQ::ItemInstance* s_item;
 		CheckCombatRange(tar, tar_distance, atCombatRange, p_item, s_item);
 
+		// Walking round the mob (to its back, turning it, out of its front):
+		// keep at it, no swings on the way (bot_tactics.cpp, TacticsStepping)
+		if (TacticsStepping(tar)) {
+			return;
+		}
+
 // ENGAGED AT COMBAT RANGE
 
 		// We can fight
@@ -2364,6 +2396,11 @@ void Bot::AI_Process()
 				}
 			}
 
+			// Tanks: a mob on a healer or the player comes back to us now
+			if (TacticsRescue()) {
+				return;
+			}
+
 			// Tanks: taunt only what we hold; defensive discipline when it counts
 			TacticsTankChecks(tar);
 
@@ -2381,6 +2418,19 @@ void Bot::AI_Process()
 			if (TacticsSnareRunner(tar)) {
 				return;
 			}
+
+			// A mob casting something that matters (a gate, a heal, an AE):
+			// one of us bashes, kicks or stuns it
+			if (TacticsInterrupt(tar)) {
+				return;
+			}
+
+			// A named / raid fight: a death save on the main tank (clerics),
+			// offensive disciplines once it is under 60% (melee)
+			if (TacticsDeathSave()) {
+				return;
+			}
+			TacticsBurn(tar);
 
 			// In range but behind a pillar: walk until we can see it (the
 			// cast paths only test LOS and give up) -- TryMoveToCast moves us
@@ -2411,8 +2461,8 @@ void Bot::AI_Process()
 					const auto dest = TryMoveAlong(tar->GetPosition(), 2.0f, 0.0f);
 					const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
 					const float dz = dest.z - expected_z;
-					if (dz > -15.0f && dz < 15.0f) {
-						Teleport(dest);
+					if (dz > -15.0f && dz < 15.0f && Timer::GetCurrentTime() >= m_step.rest_ms) {
+						StepBegin(this, m_step, tar, glm::vec3(dest)); // walked in, not teleported
 						return;
 					}
 				}
@@ -2421,10 +2471,6 @@ void Bot::AI_Process()
 			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == Class::Rogue || GetClass() == Class::Ranger || GetClass() == Class::Monk ||
 				GetClass() == Class::Bard || GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight || GetClass() == Class::Warrior) && ( this != tar->GetHateTop()))
 			{
-				// Spread bots across a ±60° arc behind the target so they don't stack.
-				// Five slots: straight behind, ±30°, ±60° (512 heading units = 360°).
-				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
-
 				// Perma-rooted mobs target the closest entity on the hate list (not highest hate).
 				// DPS bots must stay at max melee range so the tank (ultra-close) remains the
 				// closest entity and the mob stays facing it.
@@ -2437,17 +2483,12 @@ void Bot::AI_Process()
 						reposition_dist = 5.0f;
 				}
 
-				const auto dest = TryMoveAlong(tar->GetPosition(), reposition_dist, behind_angles[GetID() % 5]);
-				// When FindDestGroundZ fails (bridge gap, ledge edge), GetFixedZ returns the
-				// uncorrected start Z — roughly tar->GetPosition().z. Guard against that by
-				// checking the result is within 15 units of the expected terrain level.
-				const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
-				const float dz = dest.z - expected_z;
-				if (dz > -15.0f && dz < 15.0f) {
-					Teleport(dest);
+				// Walk round its flank to the nearest spot of its back half, after a
+				// moment to notice; no swings on the way (bot_tactics.cpp). Waiting
+				// to react, or a ledge either way: fight from here.
+				if (TacticsStepBehind(tar, reposition_dist)) {
 					return;
 				}
-				// Can't safely reposition (e.g., narrow bridge) — fight from current position.
 			}
 
 			if (!IsBotNonSpellFighter() && AI_EngagedCastCheck()) {
@@ -2499,6 +2540,10 @@ void Bot::AI_Process()
 		}
 	}
 	else { // Out-of-combat behavior
+
+		// A walk round a mob ends with the fight
+		m_step     = BotStep{};
+		m_pet_step = BotStep{};
 
 		SetAttackFlag(false);
 		SetAttackingFlag(false);
@@ -2554,6 +2599,10 @@ void Bot::AI_Process()
 
 		// Ok to idle
 		if (TryNonCombatMovementChecks(bot_owner, follow_mob, Goal)) {
+			return;
+		}
+		TacticsIdleFidget(leash_owner); // now and then: glance at the player, look around
+		if (TacticsCannibalize()) { // standing still between fights: health for mana
 			return;
 		}
 		if (TryIdleChecks(fm_distance)) {
@@ -2696,18 +2745,28 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 		// there rather than trailing the player around (bot_tactics.cpp).
 		glm::vec3 camp_slot;
 		const bool at_camp = !GUARDING && TacticsCampSlot(camp_slot);
+		// Away from camp, a loose formation behind the player instead of a
+		// clump on top of them (bot_tactics.cpp).
+		const bool in_formation = !GUARDING && !at_camp && TacticsFormationSlot(follow_mob, camp_slot);
 
 		if (GUARDING) {
 			Goal = GetGuardPoint();
 		}
-		else if (at_camp) {
+		else if (at_camp || in_formation) {
 			Goal = camp_slot;
 		}
 		else {
 			Goal = follow_mob->GetPosition();
 		}
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
-		const float arrive_distance = at_camp ? 9.0f : static_cast<float>(GetFollowDistance()); // a place is 3 units, not follow range
+		// a place is 3 units (a formation slot 4), not follow range -- but a
+		// bot sitting to med near it does not get up to shuffle the rest of
+		// the way: Sit() stops the walk and RunTo() stands it, and with the
+		// idle checks sitting it anywhere within follow range that bobbed
+		// bots up and down several times a second (FoB/Kurn logs, 2026-10-22)
+		const bool  settled         = IsSitting() && (at_camp || in_formation);
+		const float arrive_distance = settled ? static_cast<float>(GetFollowDistance()) :
+			at_camp ? 9.0f : in_formation ? 16.0f : static_cast<float>(GetFollowDistance());
 
 		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {
 
@@ -2826,6 +2885,8 @@ bool Bot::TryMeditate() {
 	if (!IsMoving() && !spellend_timer.Enabled()) {
 		if (GetTarget() && AI_EngagedCastCheck()) {
 			BotMeditate(false);
+		} else if (TacticsCannibalize()) {
+			// health for mana while nothing needs us
 		} else if (GetArchetype() == Archetype::Caster) {
 			BotMeditate(true);
 		}
@@ -3235,7 +3296,7 @@ bool Bot::IsValidTarget(
 	bool invalid_target_state = false;
 	if (HOLDING ||
 		!tar->IsNPC() ||
-		tar->IsMezzed() ||
+		(tar->IsMezzed() && !TacticsWakeMezzed(tar)) || // only mezzed adds left: the main tank wakes one
 		lo_distance > leash_distance ||
 		tar_distance > leash_distance ||
 		(!GetAttackingFlag() && !CheckLosFN(tar) && !leash_owner->CheckLosFN(tar)) ||
@@ -3428,6 +3489,7 @@ bool Bot::CheckIfCasting(float fm_distance) {
 		else if (GetClass() != Class::Bard) {
 
 			if (IsEngaged()) {
+				TacticsDuckHeal(); // a heal nobody needs any more: cancel it, keep the mana
 				return true;
 			}
 
@@ -5688,6 +5750,7 @@ void Bot::PerformTradeWithClient(int16 begin_slot_id, int16 end_slot_id, Client*
 
 	if (accepted_count) {
 		CalcBotStats(client->GetBotOption(Client::booStatsUpdate));
+		TacticsQueueGesture(70, 500, client->GetID()); // a bow of thanks (v29c /bow, eqgame.exe 0x4ccc1b)
 	}
 
 	if (event_trade.size()) {
@@ -6347,6 +6410,9 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	bool did_attack = false;
 	switch (GetClass()) {
 		case Class::Warrior:
+			// Used to fall through to the ranger case below, which overwrote
+			// the choice: warrior bots never bashed.
+			skill_to_use = EQ::skills::SkillKick;
 			if (bot_level >= RuleI(Combat, NPCBashKickLevel)) {
 				bool canBash = false;
 				if ((GetRace() == OGRE || GetRace() == TROLL || GetRace() == BARBARIAN) || (m_inv.GetItem(EQ::invslot::slotSecondary) && m_inv.GetItem(EQ::invslot::slotSecondary)->GetItem()->ItemType == EQ::item::ItemTypeShield) || (m_inv.GetItem(EQ::invslot::slotPrimary) && m_inv.GetItem(EQ::invslot::slotPrimary)->GetItem()->IsType2HWeapon() && GetAA(aa2HandBash) >= 1))
@@ -6357,6 +6423,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 				else
 					skill_to_use = EQ::skills::SkillBash;
 			}
+			break;
 		case Class::Ranger:
 		case Class::Beastlord:
 			skill_to_use = EQ::skills::SkillKick;

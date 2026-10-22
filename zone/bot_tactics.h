@@ -182,9 +182,53 @@ struct BotTacticsPlan {
 	float DamagePct(uint16 id) const;                // % per second
 	float SecondsToDeath(uint16 id, float hp_ratio) const;
 
+	// Heals being cast on a member right now, by anyone in the unit (players
+	// too), as % of its health -- so a second healer does not start another.
+	// Only heals that land before it would die at its rate count, and only
+	// those landing within `before_ms` (a ducking healer counts the heals
+	// that beat its own, never the ones behind it: two healers must not both
+	// cancel because of each other).
+	float IncomingHealPct(uint16 target_id, uint16 except_caster_id = 0, uint32 before_ms = 0xFFFFFFFF) const;
+
 	// Loot (phase 16): what the mobs we fight carry, by entity id. When one
 	// dies (its corpse keeps the id) its items are looked over for upgrades.
 	std::unordered_map<uint16, std::vector<uint32>> fight_loot;
+
+	// The XP engine (BOT_AI_SENTIENT.md, 6): what each fight cost, so the
+	// puller picks the mob worth the most experience per second of the whole
+	// cycle (walk, kill, rest), and how bold the last fights let it be.
+	struct FightMob {
+		uint32 npc_type   = 0;
+		uint32 since_ms   = 0;   // main target since then (0 = never was)
+		int64  max_hp     = 0;
+		bool   died       = false; // NPC::Death told us (its corpse may be gone already)
+		std::string name;
+	};
+	std::unordered_map<uint16, FightMob> fight_mobs;   // mob id -> what and since when
+	std::vector<uint32> fight_kills;                   // npc types killed this fight (rest time goes to them)
+	uint32 fight_end_ms      = 0;      // the last fight ended then, the unit not yet rested
+	float  fight_min_tank_hp = 100.0f;
+	size_t fight_deaths      = 0;
+	float  confidence        = 1.0f;   // 0 singles only .. 2 doubles and chain pulls
+	float  hp_per_s          = 0.0f;   // mob health the unit takes off per second (smoothed)
+	float  assist_hp_last    = 0.0f;   // the main target's health %, last rebuild...
+	float  assist_hp_rate    = 0.0f;   // ...and how fast it drops (%/s)
+	uint16 chain_pulled_for  = 0;      // the main target a chain pull already went out during
+	std::unordered_map<uint16, uint32> pull_failed;   // mob id -> not pulled again before then
+
+	// Fight economy and kill order (BOT_AI_SENTIENT.md, 4 and 2): how fast
+	// each mob we fight is going down, and which one dies first.
+	std::unordered_map<uint16, float> mob_hp_last;
+	std::unordered_map<uint16, float> mob_hp_rate;    // health % lost per second, smoothed
+	uint16 kill_target_id = 0;                        // the main tank should be on this one
+	float  MobSecondsToDeath(uint16 id) const;        // 1e6 when not measurably dropping
+
+	// Body language (BOT_AI_SENTIENT.md, E): who was in the unit at what
+	// level, to wave at a newcomer and cheer a ding; the boss being fought,
+	// to cheer its death.
+	std::unordered_map<uint16, uint8> member_levels;
+	bool                              members_seeded = false;
+	uint16                            boss_id        = 0;
 
 	// Runners and trains (phase 11)
 	uint16 runner_called_id = 0;   // "Runner!" said for this mob
@@ -253,9 +297,17 @@ public:
 	static constexpr uint32 kClaimRez   = 0x10001; // a dead owner's corpse
 	static constexpr uint32 kClaimSnare = 0x10002; // one snare in the air per runner
 	static constexpr uint32 kClaimSummonCorpse = 0x10004;
+	static constexpr uint32 kClaimInterrupt    = 0x10005; // one interrupt at a time per casting mob
+	static constexpr uint32 kClaimEmergencyHeal = 0x10006; // one chain cleric per dying groupmate
+	static constexpr uint32 kClaimRescue        = 0x10007; // one tank pulls a mob off a groupmate
+	static constexpr uint32 kClaimDeathSave     = 0x10008; // one death save cast on the main tank
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);
+
+	// NPC::Death: a mob some unit was fighting is dead (the XP engine's kill
+	// count; an empty corpse decays before the next rebuild could see it).
+	void NoteDeath(uint16 npc_id);
 
 	// bot_raid_encounters, read on first use and on ^tactics reload. A
 	// missing table reads as empty (logged).
@@ -301,6 +353,14 @@ private:
 	};
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	// Up to `count` bots of the unit near `subject` (not it) play `anim` at
+	// it, a moment apart; count 0 = every bot within reach.
+	void QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count);
+	// What fights cost: kill time and rest time per npc type, deaths, and
+	// the unit's confidence after each fight (the XP engine).
+	void FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist, uint16 old_assist, Mob* tank);
+	bool ChainPullReady(const BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* puller) const;
+	void BodyLanguage(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist);
 	void LoadSettings(uint32 key, uint32 char_id);
 	void AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids);
 
@@ -316,6 +376,16 @@ private:
 	std::string                                  m_zone_resists_for; // zone short name they were built for
 	std::unordered_map<uint32, BotEncounterObservation> m_observed;  // npc_type_id -> what we saw
 	bool                                         m_learned_column = true; // false once a save failed for want of it
+
+	// Learned this session, per npc type, across units (the XP engine)
+	struct MobCost {
+		float  ttk_s      = 0.0f; // seconds to kill, as main target (smoothed)
+		float  downtime_s = 0.0f; // seconds of rest after a fight with it
+		float  deaths     = 0.0f; // deaths per fight with it (smoothed)
+		uint16 kills      = 0;
+		uint16 rests      = 0;
+	};
+	std::unordered_map<uint32, MobCost> m_mob_costs;
 
 	BotRaidEncounter LearnedRow(const BotEncounterObservation& o) const;
 	void SaveLearned(BotEncounterObservation& o);

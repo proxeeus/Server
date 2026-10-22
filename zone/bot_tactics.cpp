@@ -31,10 +31,12 @@
 #include "zone.h"
 
 #include "../common/classes.h"
+#include "../common/features.h"
 #include "../common/strings.h"
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstring>
 #include <iterator>
 
@@ -122,6 +124,30 @@ constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
+
+// The XP engine (BOT_AI_SENTIENT.md, 6)
+constexpr float  kLowConfidence         = 0.5f;   // under this: singles only, rest to 95%
+constexpr float  kHighConfidence        = 1.5f;   // from this: one more social is fine
+constexpr float  kMaxConfidence         = 2.0f;
+constexpr float  kCautiousReadyRatio    = 95.0f;
+constexpr float  kChainPullConfidence   = 1.0f;   // chain pulls only after easy fights
+constexpr float  kChainPullHPPct        = 35.0f;  // the main target under this...
+constexpr float  kChainPullTtdS         = 15.0f;  // ...and dead within this at its rate...
+constexpr float  kChainPullReadyPct     = 60.0f;  // ...and every bot over this health and mana
+constexpr float  kEasyFightTankPct      = 50.0f;  // the tank never under this, nobody died: easy
+constexpr float  kHardFightTankPct      = 25.0f;  // under this, or a death: hard
+constexpr float  kRoamerJoinDist        = 60.0f;  // a hostile roamer this close to a pull comes too
+constexpr float  kRoamerNearCamp        = 150.0f; // a lone roamer this close to camp goes first
+constexpr float  kPullTravelSpeed       = 25.0f;  // units a second, there and back (rough)
+constexpr float  kDefaultTtkS           = 30.0f;  // a kill we know nothing about
+
+// Fight economy and kill order (BOT_AI_SENTIENT.md, 4 and 2)
+constexpr float  kKillOrderFinishPct    = 50.0f;  // a main target under this is finished first
+constexpr int32  kRemezTics             = 1;      // a mez with this many tics (6s) left is renewed
+constexpr float  kLastingWorthS         = 12.0f;  // a DoT / slow / debuff wants the mob alive this long after landing
+constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this long after landing
+constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to camp keep the fight on
+constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
 
 bool IsAlive(Mob* m)
 {
@@ -425,6 +451,16 @@ float BotTacticsPlan::SecondsToDeath(uint16 id, float hp_ratio) const
 	return rate > 0.05f ? hp_ratio / rate : 1.0e6f;
 }
 
+float BotTacticsPlan::MobSecondsToDeath(uint16 id) const
+{
+	const auto rate = mob_hp_rate.find(id);
+	const auto hp   = mob_hp_last.find(id);
+	if (rate == mob_hp_rate.end() || hp == mob_hp_last.end() || rate->second < 0.05f) {
+		return 1.0e6f;
+	}
+	return hp->second / rate->second;
+}
+
 uint32 BotTacticsPlan::RaidGroupOf(uint16 id) const
 {
 	const auto it = raid_group.find(id);
@@ -715,6 +751,42 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// Only mezzed adds left: the fight is not over. (Field of Bone,
+	// 2026-10-22: it was called over with two skeletons asleep at camp, the
+	// group followed the player away, they woke on the tank alone and killed
+	// it.) The one with least health left near camp is the next target; a bot
+	// or pet main tank wakes it (TryTacticsAssist), the rest join once it is
+	// awake. A player tanking makes that call themselves.
+	if (!assist && mt && !mt->IsClient()) {
+		const glm::vec3 near_pt = p.camp_set ? p.camp : glm::vec3(mt->GetPosition());
+		Mob*            best    = nullptr;
+		auto            consider = [&](uint16 id) {
+			Mob* m = id ? entity_list.GetMob(id) : nullptr;
+			if (!IsAlive(m) || !m->IsNPC() || !m->IsMezzed() ||
+				DistanceSquaredNoZ(glm::vec3(m->GetPosition()), near_pt) > kMezzedLeftRadius * kMezzedLeftRadius) {
+				return;
+			}
+			Mob* top   = m->GetHateTop();
+			Mob* owner = top ? top->GetOwner() : nullptr;
+			if (!top || !(p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID())))) {
+				return;
+			}
+			if (!best || m->GetHP() < best->GetHP()) {
+				best = m;
+			}
+		};
+		consider(p.assist_target_id);
+		for (uint16 id : p.mezzed) {
+			consider(id);
+		}
+		if (best) {
+			if (best->GetID() != p.assist_target_id) {
+				LogInfo("[BotTactics] unit [{:#x}] only mezzed adds left: [{}] next", p.key, best->GetCleanName());
+			}
+			assist = best;
+		}
+	}
+
 	const uint16 old_assist = p.assist_target_id;
 	p.assist_target_id = assist ? assist->GetID() : 0;
 	if (p.assist_target_id != old_assist) {
@@ -723,6 +795,9 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			LogInfo("[BotTactics] unit [{:#x}] assist [{}]", p.key, assist->GetCleanName());
 		}
 	}
+
+	// Waves for a newcomer, cheers for a ding or a dead boss
+	BodyLanguage(p, mobs, assist);
 
 	// ---- raid encounter ----
 
@@ -983,6 +1058,10 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// ---- what fights cost (kill and rest time per kind, confidence) ----
+
+	FightLedger(p, mobs, assist, old_assist, mt);
+
 	// ---- auto-pull (opt-in) ----
 
 	AutoPull(p, raid, mobs, leader, ov);
@@ -1136,6 +1215,87 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.off_tank_assignment[ot] = add;
 			LogInfo("[BotTactics] unit [{:#x}] off-tank [{}] picks up [{}]", p.key, NameOf(ot), NameOf(add));
 			break;
+		}
+	}
+
+	// ---- how fast each mob goes down (fight economy, kill order) ----
+
+	{
+		const float dt = p.built_ms && now > p.built_ms ? (now - p.built_ms) / 1000.0f : 0.0f;
+		std::unordered_map<uint16, float> last;
+		std::unordered_map<uint16, float> rate;
+		auto sample = [&](uint16 id) {
+			Mob* m = id ? entity_list.GetMob(id) : nullptr;
+			if (!IsAlive(m)) {
+				return;
+			}
+			const float hp = m->GetHPRatio();
+			float       r  = 0.0f;
+			if (const auto it = p.mob_hp_last.find(id); it != p.mob_hp_last.end() && dt > 0.2f) {
+				const auto old = p.mob_hp_rate.find(id);
+				r = (old != p.mob_hp_rate.end() ? old->second : 0.0f) * 0.5f + std::max(0.0f, (it->second - hp) / dt) * 0.5f;
+			}
+			last[id] = hp;
+			rate[id] = r;
+		};
+		sample(p.assist_target_id);
+		for (uint16 id : p.adds) {
+			sample(id);
+		}
+		p.mob_hp_last.swap(last);
+		p.mob_hp_rate.swap(rate);
+	}
+
+	// ---- kill order ----
+
+	// With several mobs on a bot main tank: their healers first, then their
+	// casters, then whichever has the least health left -- but a main target
+	// already under half stays (finish what is started). Only among what the
+	// tank holds itself: an off-tank's add or a mezzed one waits its turn.
+	{
+		const uint16 before = p.kill_target_id;
+		p.kill_target_id    = 0;
+
+		auto rank = [](Mob* m) {
+			switch (m->GetClass()) {
+				case Class::Cleric:
+				case Class::Shaman:
+				case Class::Druid:
+					return 3;
+				case Class::Necromancer:
+				case Class::Wizard:
+				case Class::Magician:
+				case Class::Enchanter:
+					return 2;
+				default:
+					return 1;
+			}
+		};
+
+		if (assist && mt && mt->IsBot() && !p.adds.empty() && assist->GetHPRatio() >= kKillOrderFinishPct) {
+			Mob*  best      = assist;
+			int   best_rank = rank(assist);
+			int64 best_hp   = assist->GetHP();
+			for (uint16 id : p.adds) {
+				Mob* m = entity_list.GetMob(id);
+				if (!IsAlive(m) || !m->IsNPC() || m->IsMezzed() || p.IsHeldAdd(id) || m->GetHateTop() != mt) {
+					continue;
+				}
+				const int r = rank(m);
+				if (r > best_rank || (r == best_rank && m->GetHP() < best_hp)) {
+					best      = m;
+					best_rank = r;
+					best_hp   = m->GetHP();
+				}
+			}
+			if (best != assist) {
+				p.kill_target_id = best->GetID();
+				if (p.kill_target_id != before) {
+					LogInfo(
+						"[BotTactics] unit [{:#x}] kill order: [{}] before [{}]", p.key, best->GetCleanName(), assist->GetCleanName()
+					);
+				}
+			}
 		}
 	}
 
@@ -1392,13 +1552,27 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		const bool busy = puller && (puller->GetPullingFlag() || puller->GetReturningFlag() || puller->IsFDPulling());
 
 		if (!busy) {
-			// Done: the mob is in camp (the fight is on), or the pull fell through.
+			// Done: the mob is in camp (the fight is on), or the pull fell
+			// through -- alive and on none of us (out of sight, out of reach).
+			// Then leave that one a while: Kurn's Tower, 2026-10-22, the same
+			// Burynai was sent for four times in 33s and never came.
+			Mob* t     = entity_list.GetMob(p.autopull_target_id);
+			Mob* top   = IsAlive(t) ? t->GetHateTop() : nullptr;
+			Mob* owner = top ? top->GetOwner() : nullptr;
+			if (IsAlive(t) && !(top && (p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID()))))) {
+				p.pull_failed[p.autopull_target_id] = now + kPullFailedMs;
+				LogInfo(
+					"[BotTactics] unit [{:#x}] pull of [{}] fell through: leaving it [{}]s",
+					p.key, t->GetCleanName(), kPullFailedMs / 1000
+				);
+			}
 			p.autopull_puller_id   = 0;
 			p.autopull_target_id   = 0;
 			p.autopull_last_end_ms = now;
 		}
 		else if (now - p.autopull_started_ms > kAutoPullTimeoutMs && !p.assist_target_id) {
 			LogInfo("[BotTactics] unit [{:#x}] pull by [{}] took too long: called off", p.key, puller->GetCleanName());
+			p.pull_failed[p.autopull_target_id] = now + kPullFailedMs;
 			puller->TacticsAbortPull();
 			p.autopull_puller_id   = 0;
 			p.autopull_target_id   = 0;
@@ -1411,61 +1585,11 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	// ---- is the camp ready for the next one? ----
-
 	if (
-		p.assist_target_id ||
-		now - p.assist_since_ms < kCalmMs ||
-		now - p.autopull_last_end_ms < kAutoPullGapMs ||
 		now - p.autopull_last_try_ms < kAutoPullTryMs ||
-		!p.fallen.empty() ||
-		p.pull_active ||
 		DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius
 	) {
 		return;
-	}
-	p.autopull_last_try_ms = now;
-
-	// Everyone up (the same bar as "Ready."), nobody pulling already.
-	p.readiness = 100.0f;
-	for (Mob* m : mobs) {
-		if (!m->IsBot() || !IsAlive(m)) {
-			continue;
-		}
-		Bot* b = m->CastToBot();
-		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
-			return;
-		}
-		p.readiness = std::min(p.readiness, m->GetHPRatio());
-		if (UsesMana(m)) {
-			p.readiness = std::min(p.readiness, m->GetManaRatio());
-		}
-	}
-	if (p.readiness < kReadyRatio) {
-		return;
-	}
-
-	// A bot's long buff on one of us about to run out: let it be renewed
-	// before pulling (TacticsSituationalBuffs does it, between fights).
-	for (Mob* m : mobs) {
-		if (!IsAlive(m)) {
-			continue;
-		}
-		Buffs_Struct* buffs = m->GetBuffs();
-		const int     slots = m->GetMaxTotalSlots();
-		for (int i = 0; buffs && i < slots; ++i) {
-			const uint16 sid = buffs[i].spellid;
-			if (
-				IsValidSpell(sid) &&
-				buffs[i].ticsremaining > 0 &&
-				buffs[i].ticsremaining <= kPullBuffTics &&
-				spells[sid].buff_duration >= kRefreshMinTics &&
-				IsBeneficialSpell(sid) &&
-				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
-			) {
-				return;
-			}
-		}
 	}
 
 	// ---- who pulls ----
@@ -1501,16 +1625,114 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
+	// ---- is the camp ready for the next one? ----
+
+	// A chain pull: the fight is all but won and the unit can take the next
+	// one straight away -- it goes out now and arrives as this one dies.
+	const bool chain = ChainPullReady(p, mobs, puller);
+
+	if (
+		!chain && (
+			p.assist_target_id ||
+			now - p.assist_since_ms < kCalmMs ||
+			now - p.autopull_last_end_ms < kAutoPullGapMs ||
+			!p.fallen.empty() ||
+			p.pull_active
+		)
+	) {
+		return;
+	}
+	p.autopull_last_try_ms = now;
+
+	// Everyone up (the same bar as "Ready.", higher after a bad fight),
+	// nobody pulling already. A chain pull has checked its own bar.
+	const float ready_bar = p.confidence < kLowConfidence ? kCautiousReadyRatio : kReadyRatio;
+	p.readiness = 100.0f;
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
+			return;
+		}
+		p.readiness = std::min(p.readiness, m->GetHPRatio());
+		if (UsesMana(m)) {
+			p.readiness = std::min(p.readiness, m->GetManaRatio());
+		}
+	}
+	if (!chain && p.readiness < ready_bar) {
+		return;
+	}
+
+	// A bot's long buff on one of us about to run out: let it be renewed
+	// before pulling (TacticsSituationalBuffs does it, between fights).
+	for (Mob* m : mobs) {
+		if (chain || !IsAlive(m)) {
+			continue;
+		}
+		Buffs_Struct* buffs = m->GetBuffs();
+		const int     slots = m->GetMaxTotalSlots();
+		for (int i = 0; buffs && i < slots; ++i) {
+			const uint16 sid = buffs[i].spellid;
+			if (
+				IsValidSpell(sid) &&
+				buffs[i].ticsremaining > 0 &&
+				buffs[i].ticsremaining <= kPullBuffTics &&
+				spells[sid].buff_duration >= kRefreshMinTics &&
+				IsBeneficialSpell(sid) &&
+				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
+			) {
+				return;
+			}
+		}
+	}
+
 	// ---- what to pull ----
+
+	for (auto it = p.pull_failed.begin(); it != p.pull_failed.end();) {
+		it = now >= it->second ? p.pull_failed.erase(it) : std::next(it);
+	}
 
 	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
 	const uint8  ref_level  = leader->GetLevel();
 	const bool   fd_puller  = puller->GetClass() == Class::Monk && puller->GetSkill(EQ::skills::SkillFeignDeath) > 0;
-	const size_t holdable   = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0) + (fd_puller ? 3 : 0);
 	const auto&  npcs       = entity_list.GetNPCList();
+
+	// How many come along that we can take: one per off-tank, two more with a
+	// mezzer, three more for a feign-death split. After a bad fight singles
+	// only (an FD puller still splits); after a run of easy ones, one more.
+	size_t holdable = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0) + (fd_puller ? 3 : 0);
+	if (p.confidence < kLowConfidence) {
+		holdable = fd_puller ? 3 : 0;
+	}
+	else if (p.confidence >= kHighConfidence) {
+		++holdable;
+	}
+	if (chain) {
+		holdable = 0; // the next one comes alone: the fight is still on
+	}
+
+	// Who can stop a caster (a bash, a kick, a stun): their healers matter less.
+	const bool can_interrupt = std::any_of(mobs.begin(), mobs.end(), [](Mob* m) {
+		switch (m->IsBot() && IsAlive(m) ? m->GetClass() : 0) {
+			case Class::Warrior:
+			case Class::Paladin:
+			case Class::ShadowKnight:
+			case Class::Cleric:
+			case Class::Enchanter:
+			case Class::Wizard:
+				return true;
+			default:
+				return false;
+		}
+	});
 
 	Mob*  best       = nullptr;
 	float best_score = 0.0f;
+	float best_ttk   = 0.0f;
+	float best_rest  = 0.0f;
+	size_t best_socials = 0;
 
 	for (const auto& e : npcs) {
 		NPC* n = e.second;
@@ -1548,28 +1770,108 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		// Linked mobs that would come along: same faction, close, idle.
+		// A pull of it fell through a moment ago: something else first.
+		if (const auto f = p.pull_failed.find(n->GetID()); f != p.pull_failed.end() && now < f->second) {
+			continue;
+		}
+
+		// The pull itself drops a target neither the puller nor the player can
+		// see (IsValidTarget): do not send for one.
+		if (!puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
+			continue;
+		}
+
+		// Linked mobs that would come along: same faction, close, idle. A
+		// hostile roamer walking past it comes along too, faction or not.
 		size_t socials = 0;
-		if (n->GetPrimaryFaction()) {
-			for (const auto& o : npcs) {
-				NPC* s = o.second;
-				if (
-					s && s != n && IsAlive(s) && !s->IsEngaged() && !s->GetOwnerID() &&
-					s->GetPrimaryFaction() == n->GetPrimaryFaction() &&
-					DistanceSquared(glm::vec3(s->GetPosition()), npos) <= kAutoPullSocialDist * kAutoPullSocialDist
-				) {
-					++socials;
-				}
+		for (const auto& o : npcs) {
+			NPC* s = o.second;
+			if (!s || s == n || !IsAlive(s) || s->IsEngaged() || s->GetOwnerID()) {
+				continue;
+			}
+			const float d2      = DistanceSquared(glm::vec3(s->GetPosition()), npos);
+			const bool  linked  = n->GetPrimaryFaction() && s->GetPrimaryFaction() == n->GetPrimaryFaction() &&
+				d2 <= kAutoPullSocialDist * kAutoPullSocialDist;
+			const bool  roaming = (s->IsRoamer() || s->GetGrid() > 0) && d2 <= kRoamerJoinDist * kRoamerJoinDist &&
+				s->GetReverseFactionCon(leader) >= FACTION_THREATENINGLY;
+			if (linked || roaming) {
+				++socials;
 			}
 		}
 		if (socials > holdable) {
 			continue;
 		}
 
-		const float score = sqrtf(DistanceSquaredNoZ(npos, p.camp)) + socials * 100.0f;
-		if (!best || score < best_score) {
-			best       = n;
-			best_score = score;
+		// ---- what it is worth: experience per second of the whole cycle ----
+
+		// Experience goes with the mob's level (squared, as EQ's formula), for
+		// each that comes.
+		const float  count = 1.0f + socials;
+		const float  xp    = static_cast<float>(n->GetLevel()) * n->GetLevel() * count;
+
+		// Time: walking there and back, killing it, resting after -- what the
+		// bots learned of this kind, else what their kill rate and its con say.
+		const MobCost* c    = nullptr;
+		if (const auto it = m_mob_costs.find(n->GetNPCTypeID()); it != m_mob_costs.end()) {
+			c = &it->second;
+		}
+		const float travel = 2.0f * sqrtf(DistanceSquaredNoZ(npos, p.camp)) / kPullTravelSpeed;
+		const float ttk    = c && c->kills ? c->ttk_s :
+			p.hp_per_s > 0.0f ? static_cast<float>(n->GetMaxHP()) / p.hp_per_s : kDefaultTtkS;
+		float rest = c && c->rests ? c->downtime_s : 0.0f;
+		if (!c || !c->rests) {
+			switch (con) {
+				case ConsiderColor::Green:     rest = 5.0f;  break;
+				case ConsiderColor::LightBlue: rest = 10.0f; break;
+				case ConsiderColor::DarkBlue:  rest = 20.0f; break;
+				case ConsiderColor::White:     rest = 30.0f; break;
+				default:                       rest = 45.0f; break; // yellow
+			}
+		}
+		const float seconds = travel + (ttk + rest) * count;
+
+		// Risk: socials, a hard con, casters (healers most, less when we can
+		// stop them), and what this kind has cost us in deaths.
+		float risk = 1.0f + 0.15f * socials;
+		if (con == ConsiderColor::Yellow) {
+			risk += 0.3f;
+		}
+		else if (con == ConsiderColor::White) {
+			risk += 0.1f;
+		}
+		switch (n->GetClass()) {
+			case Class::Cleric:
+			case Class::Shaman:
+			case Class::Druid:
+				risk += can_interrupt ? 0.15f : 0.35f; // heals itself, gates
+				break;
+			case Class::Necromancer:
+			case Class::Wizard:
+			case Class::Magician:
+			case Class::Enchanter:
+				risk += can_interrupt ? 0.1f : 0.2f;
+				break;
+			default:
+				break;
+		}
+		if (c) {
+			risk += c->deaths * 1.5f;
+		}
+
+		float score = xp / std::max(seconds, 1.0f) / risk;
+
+		// A roamer on its own near camp: take it before it walks into a fight.
+		if ((n->IsRoamer() || n->GetGrid() > 0) && !socials &&
+			DistanceSquaredNoZ(npos, p.camp) <= kRoamerNearCamp * kRoamerNearCamp) {
+			score *= 1.25f;
+		}
+
+		if (!best || score > best_score) {
+			best         = n;
+			best_score   = score;
+			best_ttk     = ttk;
+			best_rest    = rest;
+			best_socials = socials;
 		}
 	}
 
@@ -1581,7 +1883,14 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		p.autopull_puller_id  = puller->GetID();
 		p.autopull_target_id  = best->GetID();
 		p.autopull_started_ms = now;
-		LogInfo("[BotTactics] unit [{:#x}] auto-pull: [{}] pulls [{}] ({})", p.key, puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain");
+		if (chain) {
+			p.chain_pulled_for = p.assist_target_id;
+		}
+		LogInfo(
+			"[BotTactics] unit [{:#x}] auto-pull{}: [{}] pulls [{}] ({}, socials [{}], kill ~[{:.0f}]s, rest ~[{:.0f}]s, score [{:.2f}], confidence [{:.2f}])",
+			p.key, chain ? " (chain)" : "", puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain",
+			best_socials, best_ttk, best_rest, best_score, p.confidence
+		);
 	}
 }
 
@@ -1997,7 +2306,20 @@ void BotTactics::NoteFallen(uint32 key, Bot* bot)
 	f.died_ms       = Timer::GetCurrentTime();
 	p->fallen.push_back(f);
 
+	if (p->assist_target_id) {
+		++p->fight_deaths; // the XP engine: a hard fight
+	}
+
 	LogInfo("[BotTactics] unit [{:#x}] [{}] fell at [{:.0f}, {:.0f}, {:.0f}]", key, f.name, f.pos.x, f.pos.y, f.pos.z);
+}
+
+void BotTactics::NoteDeath(uint16 npc_id)
+{
+	for (auto& e : m_plans) {
+		if (const auto it = e.second.fight_mobs.find(npc_id); it != e.second.fight_mobs.end()) {
+			it->second.died = true;
+		}
+	}
 }
 
 bool BotTactics::ClaimMez(uint32 key, uint16 add_id, uint16 caster_id)
@@ -2193,6 +2515,42 @@ std::vector<std::string> BotTactics::Describe(uint32 key)
 		);
 	}
 
+	// The XP engine: how bold the puller is, and what it learned.
+	const char* mood = p->confidence < kLowConfidence ? "careful: singles, full rest" :
+		p->confidence >= kHighConfidence ? "bold: doubles and chain pulls" :
+		p->confidence >= kChainPullConfidence ? "steady: chain pulls when a fight is won" : "steady";
+	out.emplace_back(
+		fmt::format(
+			"Pulling mood: {:.2f} ({}). Kill rate: {}.", p->confidence, mood,
+			p->hp_per_s > 0.0f ? fmt::format("{:.0f} health a second", p->hp_per_s) : "not measured yet"
+		)
+	);
+	if (!m_mob_costs.empty()) {
+		std::vector<std::pair<uint32, const MobCost*>> kinds;
+		for (const auto& e : m_mob_costs) {
+			if (e.second.kills) {
+				kinds.emplace_back(e.first, &e.second);
+			}
+		}
+		std::sort(
+			kinds.begin(), kinds.end(), [](const auto& a, const auto& b) {
+				return a.second->kills > b.second->kills;
+			}
+		);
+		std::string learned;
+		for (size_t i = 0; i < kinds.size() && i < 5; ++i) {
+			const NPCType* t    = content_db.LoadNPCTypesData(kinds[i].first);
+			const auto*    c    = kinds[i].second;
+			learned += fmt::format(
+				"{}{} {:.0f}s + rest {:.0f}s ({}x)", learned.empty() ? "" : "; ",
+				t ? t->name : std::to_string(kinds[i].first), c->ttk_s, c->downtime_s, c->kills
+			);
+		}
+		if (!learned.empty()) {
+			out.emplace_back("Learned: " + learned + ".");
+		}
+	}
+
 	return out;
 }
 
@@ -2308,9 +2666,12 @@ bool Bot::TacticsHeal()
 		}
 
 		// Where its health will be a few seconds from now, at the rate it is
-		// going: heal before the line, not after.
+		// going: heal before the line, not after. Heals someone else lands on
+		// it within that window count: two healers, one heal. (A CH eight
+		// seconds out does not: the tank still has to live until then.)
 		const float hp   = m->GetHPRatio();
-		const float soon = hp - p->DamagePct(id) * kHealLookaheadS;
+		const float soon = hp - p->DamagePct(id) * kHealLookaheadS +
+			p->IncomingHealPct(id, GetID(), static_cast<uint32>(kHealLookaheadS * 1000.0f));
 		if (soon >= threshold) {
 			return;
 		}
@@ -2408,7 +2769,7 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 	}
 
 	Mob* t = entity_list.GetMob(want_id);
-	if (!t || !t->IsNPC() || !IsAlive(t) || t->IsMezzed()) {
+	if (!t || !t->IsNPC() || !IsAlive(t) || (t->IsMezzed() && !TacticsWakeMezzed(t))) { // only mezzed left: the tank wakes it
 		return false;
 	}
 
@@ -2464,6 +2825,12 @@ Mob* Bot::TacticsRetarget(Mob* tar)
 		tar->GetID() != p->assist_target_id
 	) {
 		want_id = p->assist_target_id;
+	}
+
+	// The main tank takes the kill order's pick (healers, casters, the
+	// weakest first); the assist target follows it at the next rebuild.
+	if (!want_id && p->IsMainTank(GetID()) && p->kill_target_id && tar->GetID() != p->kill_target_id) {
+		want_id = p->kill_target_id;
 	}
 
 	if (
@@ -3409,7 +3776,39 @@ bool Bot::TacticsHasMezWork() const
 			return true;
 		}
 	}
+
+	// ...or one about to wake up: renew it before it does.
+	for (uint16 id : p->mezzed) {
+		if (id != p->assist_target_id && TacticsRemezDue(entity_list.GetMob(id))) {
+			return true;
+		}
+	}
 	return false;
+}
+
+bool Bot::TacticsWakeMezzed(Mob* tar) const
+{
+	// Rebuild makes a mezzed add the assist target only when nothing awake
+	// is left; then the main tank, and nobody else, may break it.
+	const BotTacticsPlan* p = GetTacticsPlan();
+	return p && tar && p->IsMainTank(GetID()) && tar->GetID() == p->assist_target_id;
+}
+
+bool Bot::TacticsRemezDue(Mob* add) const
+{
+	if (!add || !add->IsMezzed()) {
+		return false;
+	}
+
+	Buffs_Struct* buffs = add->GetBuffs();
+	const int     slots = add->GetMaxTotalSlots();
+	int32         left  = -1;
+	for (int i = 0; buffs && i < slots; ++i) {
+		if (IsValidSpell(buffs[i].spellid) && IsMesmerizeSpell(buffs[i].spellid)) {
+			left = std::max(left, buffs[i].ticsremaining);
+		}
+	}
+	return left >= 0 && left <= kRemezTics;
 }
 
 bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
@@ -3927,7 +4326,8 @@ void Bot::TacticsPetChecks()
 	}
 
 	// Never a mezzed mob, nor an add someone else is dealing with: back to
-	// the main target.
+	// the main target. (Getting behind it -- enraged or not -- is the pet's
+	// own AI, mob_ai.cpp, walked through TacticsPetStepBehind.)
 	Mob* t = pet->GetTarget();
 	if (!t || !t->IsNPC() || t->GetID() == p->assist_target_id) {
 		return;
@@ -4150,8 +4550,8 @@ bool Bot::TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const
 		return false;
 	}
 
-	dest.w = to_camp; // from out there, the mob lies toward camp: face it
-	Teleport(dest);
+	// Walked round it, as a player tanking does; the mob turns to follow us.
+	StepBegin(this, m_step, tar, glm::vec3(dest));
 	LogInfo("[BotTactics] [{}] turns [{}] away from camp", GetCleanName(), tar->GetCleanName());
 	return true;
 }
@@ -4223,8 +4623,7 @@ bool Bot::TacticsEncounterPositioning(Mob* tar)
 		return false;
 	}
 
-	dest.w = FixHeading(heading + 256.0f); // facing the mob
-	Teleport(dest);
+	StepBegin(this, m_step, tar, glm::vec3(dest)); // walked; facing it on arrival
 	LogInfo(
 		"[BotTactics] [{}] repositions for [{}] ({})", GetCleanName(), tar->GetCleanName(),
 		in_front ? "out of its front" : "out of its reach"
@@ -4251,4 +4650,1684 @@ void Bot::TryDefensiveDiscipline()
 		LogInfo("[BotTactics] [{}] uses [{}]", GetCleanName(), spells[spell_id].name);
 		BotGroupSay(this, "Using %s.", spells[spell_id].name);
 	}
+}
+
+// ============================================================
+// Sentient combat (docs/BOT_AI_SENTIENT.md)
+// ============================================================
+
+namespace {
+
+constexpr uint32 kInterruptCheckMs       = 250;   // casting mobs looked at this often
+constexpr uint32 kInterruptMinLeftMs     = 300;   // less than this left on its cast: too late
+constexpr int    kInterruptStrikeWorth   = 40;    // a bash / kick is free: most casts are worth one
+constexpr int    kInterruptSpellWorth    = 60;    // a stun costs mana: damage and worse
+constexpr uint32 kInterruptStrikeClaimMs = 600;   // a bash that did not stun: the next one tries
+constexpr uint32 kDuckWindowMs           = 1000;  // a heal is weighed this close to landing...
+constexpr float  kDuckOverhealShare      = 0.25f; // ...and cancelled when less than this share of it is needed
+constexpr float  kPickHealCover          = 0.9f;  // a heal this close to the need covers it
+constexpr float  kChainEmergencyTtdS     = 4.0f;  // a groupmate dead sooner than this: a chain cleric steps in
+constexpr float  kChainEmergencyHPPct    = 20.0f; // ...or one under this
+constexpr float  kChainEmergencyManaPct  = 30.0f; // ...if the cleric can spare the mana
+constexpr uint32 kChainEmergencySlackMs  = 1500;  // and its own CH turn is this far beyond the heal
+constexpr uint32 kCanniCheckMs           = 2000;
+constexpr float  kCanniManaPct           = 85.0f; // under this mana a shaman cannibalizes...
+constexpr float  kCanniMinHPPct          = 60.0f; // ...keeping at least this much health
+
+// Share of `tar`'s health a direct heal from `caster` gives back. A complete
+// heal is everything; heal-over-time is not counted (too slow to matter for
+// the next few seconds).
+float HealPct(Mob* caster, uint16 spell_id, Mob* tar)
+{
+	if (!caster || !tar || !IsValidSpell(spell_id) || tar->GetMaxHP() <= 0) {
+		return 0.0f;
+	}
+	if (IsCompleteHealSpell(spell_id)) {
+		return 100.0f;
+	}
+	if (spells[spell_id].buff_duration > 0) {
+		return 0.0f;
+	}
+
+	int64 total = 0;
+	for (int i = 0; i < EFFECT_COUNT; ++i) {
+		if (spells[spell_id].effect_id[i] == SE_CurrentHP) {
+			const int64 v = caster->CalcSpellEffectValue(spell_id, i, caster->GetLevel());
+			if (v > 0) {
+				total += v;
+			}
+		}
+	}
+	return std::min(100.0f, static_cast<float>(total) * 100.0f / static_cast<float>(tar->GetMaxHP()));
+}
+
+bool IsDirectHeal(uint16 spell_id)
+{
+	return IsValidSpell(spell_id) && IsBeneficialSpell(spell_id) &&
+		(IsCompleteHealSpell(spell_id) || (IsEffectInSpell(spell_id, SE_CurrentHP) && spells[spell_id].buff_duration == 0));
+}
+
+// How much a mob's cast in progress matters: 0 = let it go, 100 = stop it at
+// any cost. A gate loses the mob and the fight's experience, a heal undoes
+// the fight, an AE or a charm hurts everyone.
+int InterruptWorth(Mob* m)
+{
+	const uint16 sid = m->CastingSpellID();
+	if (!IsValidSpell(sid) || spells[sid].uninterruptable) {
+		return 0;
+	}
+
+	if (IsGateSpell(sid) || IsSuccorSpell(sid) || IsTeleportSpell(sid)) {
+		return 100;
+	}
+
+	if (IsBeneficialSpell(sid)) {
+		if (IsDirectHeal(sid) || IsEffectInSpell(sid, SE_CurrentHP)) {
+			Mob*        t  = entity_list.GetMob(m->CastingSpellTargetID());
+			const float hp = (t ? t : m)->GetHPRatio();
+			return hp < 80.0f ? 90 : 50;
+		}
+		return 0; // a buff: not worth a stun
+	}
+
+	if (IsCharmSpell(sid) || IsMesmerizeSpell(sid) || IsFearSpell(sid)) {
+		return 85;
+	}
+
+	switch (spells[sid].target_type) {
+		case ST_AECaster:
+		case ST_AETarget:
+		case ST_AEClientV1:
+		case ST_AETargetHateList:
+		case ST_AreaClientOnly:
+		case ST_TargetAETap:
+			if (spells[sid].aoe_range > 0.0f) {
+				return 80;
+			}
+			break;
+		default:
+			break;
+	}
+
+	if (IsDamageSpell(sid) || IsLifetapSpell(sid)) {
+		return 60;
+	}
+	return 45; // slows, debuffs, DoTs
+}
+
+// Single-target stuns of a class, from the spell table: (level, spell id).
+const std::vector<std::pair<uint8, uint16>>& StunLadder(uint8 class_id)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			return IsEffectInSpell(id, SE_Stun) && IsDetrimentalSpell(id) && spells[id].target_type == ST_Target;
+		});
+	}
+
+	static const std::vector<std::pair<uint8, uint16>> none;
+	return class_id >= 1 && class_id <= Class::PLAYER_CLASS_COUNT ? ladder[class_id] : none;
+}
+
+// Health for mana, on yourself, at once: Cannibalize (shaman), and whatever
+// else the spell table has of the kind for the class.
+uint16 CannibalizeSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const auto& s = spells[id];
+			if (s.target_type != ST_Self || s.buff_duration > 0) {
+				return false;
+			}
+			bool gives_mana = false;
+			bool costs_hp   = false;
+			for (int i = 0; i < EFFECT_COUNT; ++i) {
+				gives_mana |= s.effect_id[i] == SE_CurrentMana && s.base_value[i] > 0;
+				costs_hp   |= s.effect_id[i] == SE_CurrentHP && s.base_value[i] < 0;
+			}
+			return gives_mana && costs_hp;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+} // namespace
+
+float BotTacticsPlan::IncomingHealPct(uint16 target_id, uint16 except_caster_id, uint32 before_ms) const
+{
+	Mob* tar = target_id ? entity_list.GetMob(target_id) : nullptr;
+	if (!IsAlive(tar)) {
+		return 0.0f;
+	}
+
+	// A heal that lands after it is dead does not count.
+	const float ttd_ms = SecondsToDeath(target_id, tar->GetHPRatio()) * 1000.0f;
+	float       pct    = 0.0f;
+	for (uint16 id : members) {
+		if (id == except_caster_id) {
+			continue;
+		}
+
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || !m->IsCasting() || m->CastingSpellTargetID() != target_id) {
+			continue;
+		}
+
+		const uint16 sid = m->CastingSpellID();
+		if (!IsDirectHeal(sid) || IsGroupSpell(sid)) {
+			continue;
+		}
+
+		const uint32 left = m->CastRemainingMs();
+		if (left >= before_ms || static_cast<float>(left) >= ttd_ms) {
+			continue;
+		}
+		pct += HealPct(m, sid, tar);
+	}
+	return std::min(pct, 100.0f);
+}
+
+// ---- reading the mob: interrupts ----
+
+bool Bot::TacticsInterrupt(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || IsCasting() || GetBotStance() == Stance::Passive || GetPullingFlag() || GetReturningFlag()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_interrupt_check_ms) {
+		return false;
+	}
+	m_interrupt_check_ms = now + kInterruptCheckMs;
+
+	// The cast that matters most among the main target and the adds. A
+	// mezzed add is asleep: waking it costs more than its spell.
+	Mob* caster = nullptr;
+	int  worth  = 0;
+	auto look   = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (!IsAlive(m) || !m->IsNPC() || !m->IsCasting() || m->IsMezzed() ||
+			m->CastRemainingMs() < kInterruptMinLeftMs) {
+			return;
+		}
+		const int w = InterruptWorth(m);
+		if (w > worth) {
+			caster = m;
+			worth  = w;
+		}
+	};
+	look(p->assist_target_id);
+	for (uint16 id : p->adds) {
+		look(id);
+	}
+	if (!caster || worth < kInterruptStrikeWorth) {
+		return false;
+	}
+
+	const uint16 their_spell = caster->CastingSpellID();
+	const uint32 left        = caster->CastRemainingMs();
+
+	// A bash, or a warrior's kick, from where we stand: free and instant.
+	if (TacticsInterruptStrike(caster)) {
+		LogInfo(
+			"[BotTactics] [{}] strikes [{}] to interrupt [{}] (worth [{}], [{}] ms left)",
+			GetCleanName(), caster->GetCleanName(), spells[their_spell].name, worth, left
+		);
+		return true;
+	}
+
+	// A stun spell that lands before their cast does. It costs mana, so only
+	// for what is worth it, and a healer with work to do keeps its mana.
+	if (worth < kInterruptSpellWorth || caster->GetSpecialAbility(SpecialAbility::StunImmunity) ||
+		caster->IsStunned() || TacticsHealerHoldsOptional()) {
+		return false;
+	}
+
+	const float dist2      = DistanceSquared(m_Position, caster->GetPosition());
+	uint16      stun       = 0;
+	uint8       stun_level = 0;
+	for (const auto& e : StunLadder(GetClass())) {
+		const uint16 id = e.second;
+		const auto&  s  = spells[id];
+		if (e.first > GetLevel() || e.first < stun_level ||
+			s.cast_time + kInterruptMinLeftMs > left || s.mana > GetMana() || dist2 > s.range * s.range) {
+			continue;
+		}
+
+		// Stuns stop working above a level (the effect's max, else the rule).
+		const int idx       = GetSpellEffectIndex(id, SE_Stun);
+		int       max_level = idx >= 0 ? s.max_value[idx] : 0;
+		if (!max_level) {
+			max_level = RuleI(Spells, BaseImmunityLevel);
+		}
+		if (caster->GetLevel() > max_level) {
+			continue;
+		}
+
+		stun       = id;
+		stun_level = e.first;
+	}
+
+	if (!stun || !CheckLosFN(caster) ||
+		!bot_tactics.ClaimCast(m_tactics_key, caster->GetID(), BotTactics::kClaimInterrupt, GetID(), spells[stun].cast_time + 500)) {
+		return false;
+	}
+
+	if (IsSitting()) {
+		Stand();
+	}
+	if (!CastSpell(stun, caster->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+
+	LogInfo(
+		"[BotTactics] [{}] casts [{}] at [{}] to interrupt [{}] (worth [{}], [{}] ms left)",
+		GetCleanName(), spells[stun].name, caster->GetCleanName(), spells[their_spell].name, worth, left
+	);
+	return true;
+}
+
+bool Bot::TacticsInterruptStrike(Mob* caster)
+{
+	if (!caster || spellend_timer.Enabled() || !classattack_timer.Check(false) ||
+		IsFeared() || IsStunned() || IsMezzed() || DivineAura() ||
+		GetLevel() < RuleI(Combat, NPCBashKickLevel) || !CombatRange(caster) || !IsAttackAllowed(caster)) {
+		return false;
+	}
+
+	// Same test as DoClassAttacks.
+	const auto* secondary = m_inv.GetItem(EQ::invslot::slotSecondary);
+	const auto* primary   = m_inv.GetItem(EQ::invslot::slotPrimary);
+	const bool  can_bash  =
+		GetRace() == OGRE || GetRace() == TROLL || GetRace() == BARBARIAN ||
+		(secondary && secondary->GetItem()->ItemType == EQ::item::ItemTypeShield) ||
+		(primary && primary->GetItem()->IsType2HWeapon() && GetAA(aa2HandBash) >= 1);
+
+	EQ::skills::SkillType skill;
+	switch (GetClass()) {
+		case Class::Warrior:
+			skill = can_bash ? EQ::skills::SkillBash : EQ::skills::SkillKick; // a warrior's kick stuns too
+			break;
+		case Class::Paladin:
+		case Class::ShadowKnight:
+		case Class::Cleric:
+			if (!can_bash) {
+				return false;
+			}
+			skill = EQ::skills::SkillBash;
+			break;
+		default:
+			return false;
+	}
+
+	if (!bot_tactics.ClaimCast(m_tactics_key, caster->GetID(), BotTactics::kClaimInterrupt, GetID(), kInterruptStrikeClaimMs)) {
+		return false;
+	}
+
+	const int reuse = TauntReuseTime * 1000; // bash and kick share it
+	int       dmg   = GetBaseSkillDamage(skill, caster);
+	if (skill == EQ::skills::SkillBash) {
+		DoAnim(animTailRake);
+		if (GetWeaponDamage(caster, GetBotItem(EQ::invslot::slotSecondary)) <= 0 &&
+			GetWeaponDamage(caster, GetBotItem(EQ::invslot::slotShoulders)) <= 0) {
+			dmg = DMG_INVULNERABLE;
+		}
+	}
+	else {
+		DoAnim(animKick);
+		if (GetWeaponDamage(caster, GetBotItem(EQ::invslot::slotFeet)) <= 0) {
+			dmg = DMG_INVULNERABLE;
+		}
+	}
+
+	DoSpecialAttackDamage(caster, skill, dmg, 0, -1, reuse);
+	classattack_timer.Start(reuse / (GetHaste() * 0.01f));
+	return true;
+}
+
+// ---- healers ----
+
+bool Bot::TacticsDuckHeal()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !IsCasting() || GetClass() == Class::Bard || IsHealRotationMember()) {
+		return false;
+	}
+
+	const uint16 sid = CastingSpellID();
+	if (!IsDirectHeal(sid) || IsGroupSpell(sid)) {
+		return false;
+	}
+
+	// The CH chain casts ahead of the damage on purpose: never ducked.
+	if (p->InChain(GetID()) && IsCompleteHealSpell(sid)) {
+		return false;
+	}
+
+	// Decided at the end of the cast, when the most is known.
+	const uint32 left = CastRemainingMs();
+	if (!left || left > kDuckWindowMs) {
+		return false;
+	}
+
+	Mob*        tar = entity_list.GetMob(CastingSpellTargetID());
+	std::string why;
+	if (!IsAlive(tar)) {
+		why = "its target is gone";
+	}
+	else {
+		// Health a second after it lands, counting the heals that beat ours.
+		const float heal    = HealPct(this, sid, tar);
+		const float at_land = tar->GetHPRatio() - p->DamagePct(tar->GetID()) * (left / 1000.0f + 1.0f) +
+			p->IncomingHealPct(tar->GetID(), GetID(), left);
+		const float missing = std::max(0.0f, 100.0f - at_land);
+		if (heal > 0.0f && missing < heal * kDuckOverhealShare) {
+			why = fmt::format("{:.0f}% missing for a {:.0f}% heal", missing, heal);
+		}
+	}
+
+	if (why.empty()) {
+		return false;
+	}
+
+	// Mana is only spent when a cast lands: cancelling it costs nothing.
+	InterruptSpell(sid);
+	LogInfo(
+		"[BotTactics] [{}] ducks [{}] on [{}]: {}, [{}] mana kept",
+		GetCleanName(), spells[sid].name, tar ? tar->GetCleanName() : "nobody", why, spells[sid].mana
+	);
+	return true;
+}
+
+bool Bot::TacticsPickHeal(Mob* tar, BotSpell& out)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !IsEngaged()) {
+		return false;
+	}
+
+	const uint16 id       = tar->GetID();
+	const float  hp       = tar->GetHPRatio();
+	const float  rate     = p->DamagePct(id);
+	const float  incoming = p->IncomingHealPct(id, GetID());
+	const float  ttd_s    = p->SecondsToDeath(id, hp);
+
+	struct Option {
+		BotSpell s;
+		float    pct;
+		uint32   cast_ms;
+		int32    mana;
+	};
+	std::vector<Option> options;
+	for (const auto& b : GetBotSpellsForSpellEffect(this, SE_CurrentHP)) {
+		const uint16 sid = b.SpellId;
+		if (!IsDirectHeal(sid) || IsGroupSpell(sid) || !CheckSpellRecastTimer(sid) || spells[sid].mana > GetMana()) {
+			continue;
+		}
+		if (!IsRegularSingleTargetHealSpell(sid) && !IsFastHealSpell(sid) && !IsVeryFastHealSpell(sid) &&
+			!IsCompleteHealSpell(sid)) {
+			continue;
+		}
+
+		const float pct = HealPct(this, sid, tar);
+		if (pct > 0.0f) {
+			options.push_back({b, pct, spells[sid].cast_time, spells[sid].mana});
+		}
+	}
+	if (options.empty()) {
+		return false;
+	}
+
+	// It must land while they still stand (a breath to spare)...
+	auto lands = [&](const Option& o) {
+		return o.cast_ms / 1000.0f + 0.5f < ttd_s;
+	};
+	// ...and be about what will be missing by then.
+	auto need = [&](const Option& o) {
+		return std::max(0.0f, 100.0f - hp + rate * (o.cast_ms / 1000.0f) - incoming);
+	};
+
+	// The cheapest heal that covers it; none does: the biggest that lands in
+	// time; none lands in time: the fastest.
+	const Option* pick = nullptr;
+	for (const auto& o : options) {
+		if (lands(o) && o.pct >= need(o) * kPickHealCover &&
+			(!pick || o.mana < pick->mana || (o.mana == pick->mana && o.cast_ms < pick->cast_ms))) {
+			pick = &o;
+		}
+	}
+	if (!pick) {
+		for (const auto& o : options) {
+			if (lands(o) && (!pick || o.pct > pick->pct)) {
+				pick = &o;
+			}
+		}
+	}
+	if (!pick) {
+		for (const auto& o : options) {
+			if (!pick || o.cast_ms < pick->cast_ms) {
+				pick = &o;
+			}
+		}
+	}
+
+	out = pick->s;
+	return true;
+}
+
+bool Bot::TacticsSafeToSit()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || GetArchetype() != Archetype::Caster || GetHPRatio() < 50.0f) {
+		return false;
+	}
+
+	// Nothing on us, and nothing loose that could turn on us: an add that
+	// is not asleep must be on a tank.
+	Mob* main_target = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+	if (IsAlive(main_target) && !main_target->IsMezzed() && main_target->GetTarget() == this) {
+		return false;
+	}
+
+	for (uint16 id : p->adds) {
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || m->IsMezzed()) {
+			continue;
+		}
+
+		Mob* t = m->GetTarget();
+		if (!t || t == this || (!p->IsMainTank(t->GetID()) && !p->IsOffTank(t->GetID()))) {
+			return false;
+		}
+	}
+	return true;
+}
+
+bool Bot::TacticsChainEmergency()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->chain_active || !p->InChain(GetID()) || IsCasting() || GetManaRatio() < kChainEmergencyManaPct) {
+		return false;
+	}
+
+	const BotSpell fast = GetBestBotSpellForFastHeal(this);
+	if (!IsValidSpell(fast.SpellId)) {
+		return false;
+	}
+	const uint32 cast_ms = spells[fast.SpellId].cast_time;
+
+	// The chain must never wait on us: our turn has to be well clear of it.
+	const size_t n    = p->chain.size();
+	size_t       mine = 0;
+	while (mine < n && p->chain[mine] != GetID()) {
+		++mine;
+	}
+	if (mine == n) {
+		return false;
+	}
+
+	const size_t ahead   = (mine + n - p->chain_next % n) % n;
+	const uint32 now     = Timer::GetCurrentTime();
+	const uint32 turn_ms = p->chain_next_ms + static_cast<uint32>(ahead) * p->chain_interval_ms;
+	if (turn_ms <= now || turn_ms - now < cast_ms + kChainEmergencySlackMs) {
+		return false;
+	}
+
+	// Someone other than the chain's tank about to die.
+	const float range2    = spells[fast.SpellId].range * spells[fast.SpellId].range;
+	Mob*        worst     = nullptr;
+	float       worst_ttd = kChainEmergencyTtdS;
+	for (uint16 id : p->members) {
+		if (id == p->chain_target_id) {
+			continue;
+		}
+
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || DistanceSquared(m_Position, m->GetPosition()) > range2) {
+			continue;
+		}
+
+		const float hp  = std::min(100.0f, m->GetHPRatio() + p->IncomingHealPct(id));
+		const float ttd = hp < kChainEmergencyHPPct ? 0.0f : p->SecondsToDeath(id, hp);
+		if (ttd < worst_ttd) {
+			worst     = m;
+			worst_ttd = ttd;
+		}
+	}
+
+	if (!worst || !CheckLosFN(worst) ||
+		!bot_tactics.ClaimCast(m_tactics_key, worst->GetID(), BotTactics::kClaimEmergencyHeal, GetID(), cast_ms + 1000)) {
+		return false;
+	}
+
+	if (!AIDoSpellCast(fast.SpellIndex, worst, fast.ManaCost)) {
+		return false;
+	}
+
+	LogInfo(
+		"[BotTactics] [{}] steps off the chain: [{}] on [{}] at [{:.0f}%], turn in [{}] ms",
+		GetCleanName(), spells[fast.SpellId].name, worst->GetCleanName(), worst->GetHPRatio(), turn_ms - now
+	);
+	return true;
+}
+
+bool Bot::TacticsCannibalize()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || IsCasting() || IsMoving() || GetManaRatio() >= kCanniManaPct) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_canni_check_ms) {
+		return false;
+	}
+	m_canni_check_ms = now + kCanniCheckMs;
+
+	const uint16 sid = CannibalizeSpellFor(GetClass(), GetLevel());
+	if (!IsValidSpell(sid)) {
+		return false;
+	}
+
+	// What it costs, and what is left after.
+	int64 cost = 0;
+	for (int i = 0; i < EFFECT_COUNT; ++i) {
+		if (spells[sid].effect_id[i] == SE_CurrentHP) {
+			const int64 v = CalcSpellEffectValue(sid, i, GetLevel());
+			if (v < 0) {
+				cost -= v;
+			}
+		}
+	}
+	if (GetHP() - cost < GetMaxHP() * kCanniMinHPPct / 100.0f) {
+		return false;
+	}
+
+	// In a fight only with nothing on us: health is armour then.
+	if (IsEngaged() && !TacticsSafeToSit()) {
+		return false;
+	}
+
+	if (!CastSpell(sid, GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+
+	LogInfo(
+		"[BotTactics] [{}] casts [{}] ([{}] health for mana, at [{:.0f}%] mana)",
+		GetCleanName(), spells[sid].name, cost, GetManaRatio()
+	);
+	return true;
+}
+
+// ---- body language ----
+
+namespace {
+
+// Social animations, from v29c's own /cheer, /wave and /bow handlers
+// (eqgame.exe 0x4cc92f: switch over the social index, the id stored at
+// [ebp-4] and played at 0x4ce5aa). Server-side they ride OP_Animation, which
+// TrilogyClient::HandleAnimation re-encodes as 0x9f20, like the bard gestures.
+constexpr uint8  kAnimCheer = 27;
+constexpr uint8  kAnimWave  = 29;
+
+constexpr float  kGestureRadius     = 100.0f; // bots this close to what happened react to it
+constexpr uint32 kGestureStaleMs    = 5000;   // a gesture still blocked this late is dropped
+constexpr float  kFormationBack     = 7.0f;   // the first row stands this far behind the leader...
+constexpr float  kFormationRowStep  = 6.0f;   // ...each next row this much further...
+constexpr float  kFormationSideStep = 5.0f;   // ...bots in a row this far apart
+constexpr uint32 kFormationMaxWidth = 6;
+constexpr uint32 kFidgetMinMs       = 15000;  // an idle bot glances somewhere this often...
+constexpr uint32 kFidgetMaxMs       = 45000;  // ...at most this rarely
+
+} // namespace
+
+void BotTactics::QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count)
+{
+	if (!subject) {
+		return;
+	}
+
+	std::vector<std::pair<float, Bot*>> nearby;
+	for (Mob* m : mobs) {
+		if (m == subject || !m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		const float d2 = DistanceSquared(m->GetPosition(), subject->GetPosition());
+		if (d2 <= kGestureRadius * kGestureRadius) {
+			nearby.emplace_back(d2, m->CastToBot());
+		}
+	}
+
+	std::sort(
+		nearby.begin(), nearby.end(), [](const std::pair<float, Bot*>& a, const std::pair<float, Bot*>& b) {
+			return a.first < b.first;
+		}
+	);
+	if (count && nearby.size() > count) {
+		nearby.resize(count);
+	}
+
+	// A moment apart, nearest first: people do not move as one.
+	uint32 delay = zone->random.Int(300, 900);
+	for (const auto& e : nearby) {
+		e.second->TacticsQueueGesture(anim, delay, subject->GetID());
+		delay += zone->random.Int(150, 700);
+	}
+}
+
+void BotTactics::BodyLanguage(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist)
+{
+	// Someone new in the unit: a couple of us wave, and a bot that just
+	// joined waves at the nearest player. A player who levelled: everyone
+	// near cheers. (Entity ids are per zone process: a plan is new in each
+	// zone, and its first pass only takes the roll.)
+	std::unordered_map<uint16, uint8> levels;
+	for (Mob* m : mobs) {
+		levels[m->GetID()] = m->GetLevel();
+		if (!p.members_seeded || !IsAlive(m)) {
+			continue;
+		}
+
+		const auto it = p.member_levels.find(m->GetID());
+		if (it == p.member_levels.end()) {
+			QueueGestures(mobs, m, kAnimWave, 2);
+
+			if (m->IsBot()) {
+				Mob*  player = nullptr;
+				float best   = kGestureRadius * kGestureRadius;
+				for (Mob* c : mobs) {
+					const float d2 = c->IsClient() ? DistanceSquared(c->GetPosition(), m->GetPosition()) : best;
+					if (d2 < best) {
+						player = c;
+						best   = d2;
+					}
+				}
+				if (player) {
+					m->CastToBot()->TacticsQueueGesture(kAnimWave, zone->random.Int(600, 1400), player->GetID());
+				}
+			}
+			LogInfo("[BotTactics] unit [{:#x}] waves at [{}]", p.key, m->GetCleanName());
+		}
+		else if (m->IsClient() && m->GetLevel() > it->second) {
+			QueueGestures(mobs, m, kAnimCheer, 0);
+			LogInfo("[BotTactics] unit [{:#x}] cheers [{}]'s level [{}]", p.key, m->GetCleanName(), m->GetLevel());
+		}
+	}
+	p.member_levels.swap(levels);
+	p.members_seeded = true;
+
+	// A boss we fought (a raid target or a rare spawn) is dead: cheers, at
+	// its corpse. One that reset or that we ran from gets nothing.
+	const uint16 assist_id = assist ? assist->GetID() : 0;
+	if (p.boss_id && p.boss_id != assist_id) {
+		Mob* boss = entity_list.GetMob(p.boss_id);
+		if (!boss || boss->IsCorpse() || boss->GetHP() <= 0) {
+			Mob* at = boss;
+			for (size_t i = 0; !at && i < mobs.size(); ++i) {
+				at = mobs[i]->IsClient() ? mobs[i] : nullptr;
+			}
+			QueueGestures(mobs, at, kAnimCheer, 0);
+			LogInfo("[BotTactics] unit [{:#x}] cheers the kill", p.key);
+			p.boss_id = 0;
+		}
+		else if (!boss->IsEngaged()) {
+			p.boss_id = 0;
+		}
+	}
+	if (assist && assist->IsNPC() && (assist->IsRaidTarget() || assist->IsRareSpawn())) {
+		p.boss_id = assist_id;
+	}
+}
+
+void Bot::TacticsQueueGesture(uint8 anim, uint32 delay_ms, uint16 face_id)
+{
+	const uint32 at = Timer::GetCurrentTime() + delay_ms;
+	if (m_gesture_anim && m_gesture_at_ms <= at) {
+		return; // one is already coming, sooner
+	}
+
+	m_gesture_anim    = anim;
+	m_gesture_at_ms   = at;
+	m_gesture_face_id = face_id;
+}
+
+void Bot::TacticsGestureCheck()
+{
+	if (!m_gesture_anim) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_gesture_at_ms) {
+		return;
+	}
+
+	if (IsEngaged() || IsCasting() || IsMoving() || GetAppearance() == eaDead) {
+		if (now - m_gesture_at_ms > kGestureStaleMs) {
+			m_gesture_anim = 0; // the moment has passed
+		}
+		return;
+	}
+
+	const uint8 anim = m_gesture_anim;
+	m_gesture_anim   = 0;
+
+	// Up off the floor for it, as a player would; the next med check sits
+	// us back down.
+	if (IsSitting()) {
+		Stand();
+	}
+
+	Mob* to = m_gesture_face_id ? entity_list.GetMob(m_gesture_face_id) : nullptr;
+	if (to && to != this) {
+		FaceTarget(to);
+	}
+	DoAnim(anim);
+}
+
+void Bot::TacticsSpokenTo(Client* who, const char* message)
+{
+	if (!who || IsEngaged() || IsCasting() || GetAppearance() == eaDead) {
+		return;
+	}
+
+	if (!IsMoving()) {
+		FaceTarget(who);
+	}
+
+	if (message && Strings::BeginsWith(Strings::ToLower(message), "hail")) {
+		TacticsQueueGesture(kAnimWave, zone->random.Int(300, 900), who->GetID());
+	}
+}
+
+bool Bot::TacticsFormationSlot(const Mob* leader, glm::vec3& out)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !leader || !leader->IsClient() || GetFollowID() != leader->GetID()) {
+		return false;
+	}
+
+	// Our place in the rows: every bot of the unit following this player,
+	// by entity id so the order holds still. Ranked once per plan build.
+	if (m_formation_built_ms != p->built_ms) {
+		m_formation_built_ms = p->built_ms;
+
+		std::vector<uint16> followers;
+		for (uint16 id : p->members) {
+			Mob* m = entity_list.GetMob(id);
+			if (m && m->IsBot() && m->GetFollowID() == leader->GetID()) {
+				followers.push_back(id);
+			}
+		}
+		std::sort(followers.begin(), followers.end());
+
+		const auto it = std::find(followers.begin(), followers.end(), GetID());
+		if (it == followers.end()) {
+			m_formation_count = 0;
+			return false;
+		}
+
+		const uint32 rank  = static_cast<uint32>(it - followers.begin());
+		const uint32 count = static_cast<uint32>(followers.size());
+		if (rank != m_formation_rank || count != m_formation_count) {
+			m_formation_rank   = rank;
+			m_formation_count  = count;
+			m_formation_anchor = glm::vec4(0.0f); // re-place
+		}
+	}
+	if (!m_formation_count) {
+		return false;
+	}
+
+	// Rows behind the leader, turning with it. Only re-placed once it has
+	// moved or turned a little: TryMoveAlong traces the zone map.
+	const glm::vec4& here = leader->GetPosition();
+	float            dh   = std::fabs(here.w - m_formation_anchor.w);
+	dh = std::min(dh, 512.0f - dh);
+	if (m_formation_anchor != glm::vec4(0.0f) &&
+		DistanceSquared(glm::vec3(here), glm::vec3(m_formation_anchor)) < 4.0f && dh < 12.0f) {
+		out = m_formation_slot;
+		return m_formation_ok;
+	}
+	m_formation_anchor = here;
+
+	const uint32 width = std::clamp<uint32>(
+		static_cast<uint32>(std::ceil(std::sqrt(static_cast<float>(m_formation_count)))), 2, kFormationMaxWidth
+	);
+	const uint32 row    = m_formation_rank / width;
+	const uint32 col    = m_formation_rank % width;
+	const uint32 in_row = std::min(width, m_formation_count - row * width);
+	const float  side   = (static_cast<float>(col) - (in_row - 1) / 2.0f) * kFormationSideStep;
+	const float  back   = kFormationBack + row * kFormationRowStep;
+
+	// 512 heading units to the turn; 256 is straight behind.
+	const float angle = 256.0f + std::atan2(side, back) * 256.0f / 3.14159265f;
+	const auto  dest  = TryMoveAlong(here, std::sqrt(side * side + back * back), angle);
+
+	// Same ledge guard as the behind-the-mob moves: a slot off a cliff or on
+	// another floor is no slot; follow the leader as before.
+	const float expected_z = here.z - leader->GetZOffset() + GetZOffset();
+	const float dz         = dest.z - expected_z;
+	m_formation_ok   = dz > -15.0f && dz < 15.0f;
+	m_formation_slot = glm::vec3(dest);
+
+	out = m_formation_slot;
+	return m_formation_ok;
+}
+
+bool Bot::TacticsIdleFidget(Mob* leader)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || IsEngaged() || IsMoving() || IsCasting() || IsSitting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (!m_fidget_ms || now >= m_fidget_ms) {
+		const bool first = !m_fidget_ms;
+		m_fidget_ms      = now + zone->random.Int(kFidgetMinMs, kFidgetMaxMs);
+		if (first) {
+			return false; // start out of step with the others
+		}
+	}
+	else {
+		return false;
+	}
+
+	// At camp, watch outward for what comes; otherwise glance at the player,
+	// or just look around.
+	const int roll = zone->random.Int(1, 100);
+	float     heading;
+	if (p->camp_set && roll <= 40) {
+		heading = FixHeading(CalculateHeadingToTarget(p->camp.x, p->camp.y) + 256.0f);
+	}
+	else if (leader && leader != this && roll <= 75) {
+		heading = CalculateHeadingToTarget(leader->GetX(), leader->GetY());
+	}
+	else {
+		heading = FixHeading(GetHeading() + static_cast<float>(zone->random.Int(-80, 80)));
+	}
+
+	RotateToWalking(heading);
+	return true;
+}
+
+// ---- the XP engine: what fights cost ----
+
+void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist, uint16 old_assist, Mob* tank)
+{
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Rest after a fight goes to what it killed, a share each. A fight that
+	// starts before the unit is rested cuts it short: that was the rest.
+	auto close_rest = [&]() {
+		if (!p.fight_end_ms) {
+			return;
+		}
+		if (!p.fight_kills.empty()) {
+			const float share = (now - p.fight_end_ms) / 1000.0f / p.fight_kills.size();
+			for (uint32 t : p.fight_kills) {
+				MobCost& c   = m_mob_costs[t];
+				c.downtime_s = c.rests ? c.downtime_s * 0.7f + share * 0.3f : share;
+				c.rests      = std::min<uint16>(c.rests + 1, 60000);
+			}
+		}
+		p.fight_kills.clear();
+		p.fight_end_ms = 0;
+	};
+
+	// ---- how fast the main target goes down (chain pulls time on it) ----
+
+	if (assist) {
+		const float hp = assist->GetHPRatio();
+		if (assist->GetID() == old_assist && p.built_ms && now > p.built_ms) {
+			const float dt = (now - p.built_ms) / 1000.0f;
+			p.assist_hp_rate = p.assist_hp_rate * 0.5f + std::max(0.0f, (p.assist_hp_last - hp) / dt) * 0.5f;
+		}
+		else {
+			p.assist_hp_rate = 0.0f;
+		}
+		p.assist_hp_last = hp;
+	}
+
+	// ---- a fight starts ----
+
+	if (assist && !old_assist) {
+		close_rest();
+		p.fight_min_tank_hp = 100.0f;
+		p.fight_deaths      = 0;
+	}
+
+	// ---- the mobs we fight, and the ones that died ----
+
+	auto note = [&](uint16 id, bool main) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (!m || !m->IsNPC() || !IsAlive(m)) {
+			return;
+		}
+		auto& f = p.fight_mobs[id];
+		if (!f.npc_type) {
+			f.npc_type = m->GetNPCTypeID();
+			f.max_hp   = m->GetMaxHP();
+			f.name     = m->GetCleanName();
+		}
+		if (main && !f.since_ms) {
+			f.since_ms = now;
+		}
+	};
+	note(assist ? assist->GetID() : 0, true);
+	for (uint16 id : p.adds) {
+		note(id, false);
+	}
+	for (uint16 id : p.mezzed) {
+		note(id, false);
+	}
+
+	if (assist && IsAlive(tank)) {
+		p.fight_min_tank_hp = std::min(p.fight_min_tank_hp, tank->GetHPRatio());
+	}
+
+	for (auto it = p.fight_mobs.begin(); it != p.fight_mobs.end();) {
+		Mob* m = entity_list.GetMob(it->first);
+		if (!it->second.died && m && !m->IsCorpse() && m->GetHP() > 0) {
+			// Alive: still ours, or it reset and is forgotten.
+			it = m->IsEngaged() ? std::next(it) : p.fight_mobs.erase(it);
+			continue;
+		}
+
+		// NPC::Death told us (NoteDeath), or its corpse is here with its id:
+		// a kill. Gone without either (a despawn, a leash): not. An empty
+		// corpse decays in a second, before a rebuild could see it -- half
+		// the Kurn's Tower kills were missed that way.
+		if (it->second.died || (m && m->IsCorpse())) {
+			const auto& f = it->second;
+			p.fight_kills.push_back(f.npc_type);
+
+			if (f.since_ms) {
+				const float ttk = (now - f.since_ms) / 1000.0f;
+				MobCost&    c   = m_mob_costs[f.npc_type];
+				c.ttk_s = c.kills ? c.ttk_s * 0.7f + ttk * 0.3f : ttk;
+				c.kills = std::min<uint16>(c.kills + 1, 60000);
+
+				if (ttk > 1.0f && f.max_hp > 0) {
+					const float rate = static_cast<float>(f.max_hp) / ttk;
+					p.hp_per_s = p.hp_per_s > 0.0f ? p.hp_per_s * 0.7f + rate * 0.3f : rate;
+				}
+				LogInfo(
+					"[BotTactics] unit [{:#x}] killed [{}] in [{:.0f}]s (its kind: [{:.0f}]s over [{}] kills)",
+					p.key, f.name, ttk, c.ttk_s, c.kills
+				);
+			}
+		}
+		it = p.fight_mobs.erase(it);
+	}
+
+	// ---- a fight ends: how did it go ----
+
+	if (!assist && old_assist) {
+		const bool  hard   = p.fight_deaths > 0 || p.fight_min_tank_hp < kHardFightTankPct;
+		const bool  easy   = !p.fight_deaths && p.fight_min_tank_hp >= kEasyFightTankPct;
+		const float before = p.confidence;
+		if (hard) {
+			p.confidence = std::max(0.0f, p.confidence - 1.0f);
+		}
+		else if (easy) {
+			p.confidence = std::min(kMaxConfidence, p.confidence + 0.25f);
+		}
+
+		std::vector<uint32> kinds = p.fight_kills;
+		std::sort(kinds.begin(), kinds.end());
+		kinds.erase(std::unique(kinds.begin(), kinds.end()), kinds.end());
+		for (uint32 t : kinds) {
+			MobCost& c = m_mob_costs[t];
+			c.deaths   = c.deaths * 0.7f + p.fight_deaths * 0.3f;
+		}
+
+		p.fight_end_ms = now;
+		LogInfo(
+			"[BotTactics] unit [{:#x}] fight over: [{}] killed, tank low [{:.0f}%], deaths [{}], confidence [{:.2f}] -> [{:.2f}]",
+			p.key, p.fight_kills.size(), p.fight_min_tank_hp, p.fight_deaths, before, p.confidence
+		);
+	}
+
+	// ---- rested: the rest time goes to what was killed ----
+
+	if (!assist && p.fight_end_ms && p.fallen.empty()) {
+		float readiness = 100.0f;
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+			readiness = std::min(readiness, m->GetHPRatio());
+			if (UsesMana(m)) {
+				readiness = std::min(readiness, m->GetManaRatio());
+			}
+		}
+		if (readiness >= kReadyRatio) {
+			close_rest();
+		}
+	}
+}
+
+bool BotTactics::ChainPullReady(const BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* puller) const
+{
+	if (
+		p.confidence < kChainPullConfidence ||
+		!p.assist_target_id ||
+		p.chain_pulled_for == p.assist_target_id ||
+		!p.adds.empty() || !p.mezzed.empty() || !p.fallen.empty() || p.pull_active ||
+		!puller || puller->GetID() == p.main_tank_id
+	) {
+		return false;
+	}
+
+	// The main target is low and going fast...
+	Mob* t = entity_list.GetMob(p.assist_target_id);
+	if (!IsAlive(t) || t->GetHPRatio() > kChainPullHPPct || p.assist_hp_rate < 0.1f ||
+		t->GetHPRatio() / p.assist_hp_rate > kChainPullTtdS) {
+		return false;
+	}
+
+	// ...and the unit can take the next one without a rest.
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		if (m->GetHPRatio() < kChainPullReadyPct || (UsesMana(m) && m->GetManaRatio() < kChainPullReadyPct)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// ---- fight economy ----
+
+bool Bot::TacticsNotWorthIt(uint16 spell_id, Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || !IsValidSpell(spell_id) || !IsDetrimentalSpell(spell_id)) {
+		return false;
+	}
+
+	// Control is always worth it: a mez, a stun, a root or a snare, a fear,
+	// a charm.
+	if (
+		IsMesmerizeSpell(spell_id) || IsStunSpell(spell_id) || IsCharmSpell(spell_id) || IsFearSpell(spell_id) ||
+		IsEffectInSpell(spell_id, SE_Root) || IsEffectInSpell(spell_id, SE_MovementSpeed)
+	) {
+		return false;
+	}
+
+	// Measured on the main target and the adds; anything else: no opinion.
+	const float ttd = p->MobSecondsToDeath(tar->GetID());
+	if (ttd >= 1.0e5f) {
+		return false;
+	}
+
+	const auto& s      = spells[spell_id];
+	const float cast_s = s.cast_time / 1000.0f;
+	const bool  skip   = s.buff_duration > 0 ?
+		ttd < cast_s + kLastingWorthS : // a DoT, a slow, a debuff: needs time to pay off
+		ttd < cast_s + kLandWorthS;     // a nuke: must land on something alive
+
+	if (skip && Timer::GetCurrentTime() >= m_worth_log_ms) {
+		m_worth_log_ms = Timer::GetCurrentTime() + 5000;
+		LogInfo(
+			"[BotTactics] [{}] holds [{}]: [{}] dies in ~[{:.0f}]s", GetCleanName(), s.name, tar->GetCleanName(), ttd
+		);
+	}
+	return skip;
+}
+
+// ---- aggro ----
+
+namespace {
+
+constexpr float  kShedHPPct        = 60.0f;  // a non-tank with a mob on it, under this health...
+constexpr float  kShedDamagePct    = 3.0f;   // ...or losing this much a second, gets out from under it
+constexpr uint32 kShedFeignMs      = 4000;   // lie still this long, then up
+constexpr uint32 kRescueCheckMs    = 250;
+constexpr uint32 kRescueClaimMs    = 2000;
+constexpr uint32 kBurnCheckMs      = 2000;
+constexpr float  kBurnHPPct        = 60.0f;  // a named / raid mob under this: burn
+constexpr uint32 kDeathSaveCheckMs = 3000;
+
+// A self-only feign death spell (necromancer, shadow knight).
+uint16 FeignSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			return IsEffectInSpell(id, SE_FeignDeath) && spells[id].target_type == ST_Self && id != SPELL_LIFEBURN;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// A single-target spell that only adds hate (paladin, shadow knight).
+uint16 HateSpellFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const int idx = GetSpellEffectIndex(id, SE_InstantHate);
+			return idx >= 0 && spells[id].base_value[idx] > 0 && IsDetrimentalSpell(id) &&
+				spells[id].target_type == ST_Target;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+// The best offensive discipline of a class (more attack, crits, haste,
+// accuracy, damage) -- not the defensive ones, which the tank keeps.
+uint16 OffensiveDisciplineFor(uint8 class_id, uint8 level)
+{
+	static SpellLadder ladder;
+	static bool        built = false;
+	if (!built) {
+		built = true;
+		BuildLadder(ladder, [](uint16 id) {
+			const auto& s = spells[id];
+			if (!(s.is_discipline || s.type_description_id == 27) || s.target_type != ST_Self || !s.good_effect ||
+				s.skill == EQ::skills::SkillDefense) {
+				return false;
+			}
+			for (int e : {SE_ATK, SE_AttackSpeed, SE_CriticalHitChance, SE_DoubleAttackChance, SE_HitChance,
+				SE_DamageModifier, SE_MinDamageModifier, SE_StrikeThrough, SE_SkillDamageAmount}) {
+				if (IsEffectInSpell(id, e)) {
+					return true;
+				}
+			}
+			return false;
+		});
+	}
+	return BestOnLadder(ladder, class_id, level);
+}
+
+} // namespace
+
+bool Bot::TacticsShedAggro()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (
+		!p || (TankWeight(this) && GetClass() != Class::ShadowKnight) || p->IsMainTank(GetID()) || p->IsOffTank(GetID()) ||
+		GetFeigned() || m_feign_spell_ms || IsFDPulling() || GetPullingFlag() || GetReturningFlag() || IsCasting()
+	) {
+		return false;
+	}
+
+	// A mob of the fight on us -- the tank's job, not ours.
+	Mob* on_me = nullptr;
+	auto check = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (!on_me && IsAlive(m) && !m->IsMezzed() && m->GetTarget() == this) {
+			on_me = m;
+		}
+	};
+	check(p->assist_target_id);
+	for (uint16 id : p->adds) {
+		check(id);
+	}
+	if (!on_me) {
+		return false;
+	}
+
+	// Only when it hurts: otherwise the tank gets it back (TacticsRescue).
+	if (GetHPRatio() > kShedHPPct && p->DamagePct(GetID()) < kShedDamagePct) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// A monk drops (the ^fdpull feign: off every hate list, not everyone's).
+	if (GetClass() == Class::Monk && GetSkill(EQ::skills::SkillFeignDeath) > 0) {
+		if (m_fd_reuse_timer.Enabled() && m_fd_reuse_timer.GetRemainingTime() > 0) {
+			return false;
+		}
+		const bool fooled = ExecuteFeignDeath();
+		if (fooled) {
+			m_feign_stand_ms = now + kShedFeignMs;
+		}
+		LogInfo(
+			"[BotTactics] [{}] feigns death to lose [{}] ({})", GetCleanName(), on_me->GetCleanName(), fooled ? "fooled it" : "failed"
+		);
+		return true;
+	}
+
+	// A necromancer or shadow knight casts its feign; it takes when the cast
+	// lands (TacticsFeignHold) -- the spell effect itself only works on clients.
+	const uint16 sid = FeignSpellFor(GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || GetMana() < spells[sid].mana) {
+		return false;
+	}
+	if (IsSitting()) {
+		Stand();
+	}
+	m_feign_spell_mana = GetMana();
+	if (!CastSpell(sid, GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	m_feign_spell_ms = now + spells[sid].cast_time + 250;
+	LogInfo("[BotTactics] [{}] casts [{}] to lose [{}]", GetCleanName(), spells[sid].name, on_me->GetCleanName());
+	return true;
+}
+
+bool Bot::TacticsFeignHold()
+{
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Our feign spell's cast is over. Mana goes only when a cast lands, so a
+	// cast that cost nothing was interrupted: no feign.
+	if (m_feign_spell_ms && now >= m_feign_spell_ms && !IsCasting()) {
+		m_feign_spell_ms = 0;
+		if (GetHP() > 0 && GetMana() < m_feign_spell_mana) {
+			TacticsApplyFeign();
+			m_feign_stand_ms = now + kShedFeignMs;
+			LogInfo("[BotTactics] [{}] lies still", GetCleanName());
+		}
+	}
+
+	if (!m_feign_stand_ms) {
+		return false;
+	}
+	if (!GetFeigned()) {
+		m_feign_stand_ms = 0; // something got us up already
+		return false;
+	}
+	if (now < m_feign_stand_ms) {
+		return true; // lie still
+	}
+
+	m_feign_stand_ms = 0;
+	SetFeigned(false, this);
+	Stand();
+	LogInfo("[BotTactics] [{}] gets back up", GetCleanName());
+	return false;
+}
+
+void Bot::TacticsApplyFeign()
+{
+	// As ExecuteFeignDeath's success: off every hate list (us only), down.
+	std::list<NPC*> npc_list;
+	entity_list.GetNPCList(npc_list);
+	for (auto* npc : npc_list) {
+		if (npc->IsOnHatelist(this)) {
+			npc->RemoveFromHateList(this);
+		}
+	}
+	WipeHateList();
+	if (IsMoving()) {
+		StopMoving();
+	}
+	DoAnim(16);
+	SendAppearancePacket(AppearanceType::Animation, 114, true, false);
+	SetFeigned(true, this);
+}
+
+bool Bot::TacticsRescue()
+{
+	const BotTacticsPlan* p  = GetTacticsPlan();
+	const bool            mt = p && p->IsMainTank(GetID());
+	if (!p || (!mt && !p->IsOffTank(GetID())) || IsCasting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_rescue_check_ms) {
+		return false;
+	}
+	m_rescue_check_ms = now + kRescueCheckMs;
+
+	// A mob that is ours to hold, on a groupmate who cannot take it: the
+	// main tank answers for the main target and the adds nobody holds, an
+	// off-tank for its own add. A fresh add is the mezzer's first.
+	Mob* loose = nullptr;
+	auto check = [&](uint16 id) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (loose || !IsAlive(m) || !m->IsNPC() || m->IsMezzed()) {
+			return;
+		}
+		const bool mine = mt ? (id == p->assist_target_id || !p->IsHeldAdd(id)) : p->AssignedAdd(GetID()) == id;
+		if (!mine) {
+			return;
+		}
+		if (id != p->assist_target_id && p->has_mezzer) {
+			const auto seen = p->add_seen_ms.find(id);
+			if (seen != p->add_seen_ms.end() && now - seen->second < kOffTankWaitMs) {
+				return;
+			}
+		}
+		Mob* t = m->GetTarget();
+		if (!t || t == this || !p->IsMember(t->GetID()) || TankWeight(t) || p->IsMainTank(t->GetID()) || p->IsOffTank(t->GetID())) {
+			return;
+		}
+		loose = m;
+	};
+	check(p->assist_target_id);
+	for (uint16 id : p->adds) {
+		check(id);
+	}
+	if (!loose) {
+		return false;
+	}
+
+	Mob* victim = loose->GetTarget();
+
+	// A taunt from where we stand: instant.
+	if (
+		GetSkill(EQ::skills::SkillTaunt) > 0 && CombatRange(loose) && taunt_timer.Check(false) &&
+		bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), kRescueClaimMs)
+	) {
+		Taunt(loose->CastToNPC(), false);
+		taunt_timer.Start(TauntReuseTime * 1000);
+		LogInfo("[BotTactics] [{}] taunts [{}] off [{}]", GetCleanName(), loose->GetCleanName(), victim ? victim->GetCleanName() : "?");
+		return true;
+	}
+
+	// Else a hate spell, if it reaches.
+	const uint16 sid = HateSpellFor(GetClass(), GetLevel());
+	if (
+		!IsValidSpell(sid) || GetMana() < spells[sid].mana ||
+		DistanceSquared(m_Position, loose->GetPosition()) > spells[sid].range * spells[sid].range || !CheckLosFN(loose) ||
+		!bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), spells[sid].cast_time + 1000)
+	) {
+		return false;
+	}
+	if (!CastSpell(sid, loose->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	LogInfo(
+		"[BotTactics] [{}] casts [{}] to pull [{}] off [{}]",
+		GetCleanName(), spells[sid].name, loose->GetCleanName(), victim ? victim->GetCleanName() : "?"
+	);
+	return true;
+}
+
+void Bot::TacticsBurn(Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || tar->GetID() != p->assist_target_id || p->IsMainTank(GetID())) {
+		return;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_burn_check_ms) {
+		return;
+	}
+	m_burn_check_ms = now + kBurnCheckMs;
+
+	// Saved for what deserves it: a named or a raid mob, once the tank has
+	// it well in hand -- and never on the edge of taking its aggro.
+	if (!(tar->IsRaidTarget() || tar->IsRareSpawn()) || tar->GetHPRatio() > kBurnHPPct) {
+		return;
+	}
+	if (m_aggro_backoff || HasOrMayGetAggro()) {
+		return;
+	}
+
+	const uint16 sid = OffensiveDisciplineFor(GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || FindBuff(sid)) {
+		return;
+	}
+	if (spells[sid].recast_time > 0 && !CheckDisciplineReuseTimer(sid)) {
+		return;
+	}
+	if (GetEndurance() <= spells[sid].endurance_cost) {
+		return;
+	}
+
+	if (UseDiscipline(sid, GetID())) {
+		LogInfo("[BotTactics] [{}] burns [{}] on [{}]", GetCleanName(), spells[sid].name, tar->GetCleanName());
+		BotGroupSay(this, "Using %s.", spells[sid].name);
+	}
+}
+
+bool Bot::TacticsDeathSave()
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || GetClass() != Class::Cleric || IsCasting() || TacticsReservesCasting()) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	if (now < m_death_save_check_ms) {
+		return false;
+	}
+	m_death_save_check_ms = now + kDeathSaveCheckMs;
+
+	// A named or raid fight: the main tank wears a death save (Divine
+	// Intervention), cast by a cleric that is not on the CH chain.
+	Mob* fight = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+	Mob* tank  = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
+	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn()) || !IsAlive(tank)) {
+		return false;
+	}
+
+	const uint16 sid = BuffWithEffectFor(SE_DivineSave, GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || tank->FindType(SE_DivineSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+		return false;
+	}
+	if (
+		DistanceSquared(m_Position, tank->GetPosition()) > spells[sid].range * spells[sid].range || !CheckLosFN(tank) ||
+		!bot_tactics.ClaimCast(m_tactics_key, tank->GetID(), BotTactics::kClaimDeathSave, GetID(), spells[sid].cast_time + 6000)
+	) {
+		return false;
+	}
+
+	if (IsSitting()) {
+		Stand();
+	}
+	if (!CastSpell(sid, tank->GetID(), EQ::spells::CastingSlot::Gem2)) {
+		return false;
+	}
+	LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[sid].name, tank->GetCleanName());
+	return true;
+}
+
+// ---- walking round a mob ----
+
+namespace {
+
+constexpr float  kStepArrive       = 3.0f;   // this close to a point: there
+constexpr float  kStepArriveIdle   = 5.0f;   // ...or stopped this close (the mover settled short)
+constexpr float  kStepFrontDeg     = 80.0f;  // a walk starts this close to its nose (riposte zone: 90)
+constexpr uint32 kStepReactMinMs   = 300;    // a moment to notice, per bot...
+constexpr uint32 kStepReactMaxMs   = 1000;
+constexpr uint32 kStepRestMs       = 1500;   // after arriving, no new walk for this long
+constexpr uint32 kStepGiveUpRestMs = 4000;   // after giving up, fight from where we are this long
+constexpr float  kStepMobMoved     = 8.0f;   // the mob moved this far since we set off: look again
+constexpr float  kStepAroundCos    = -0.17f; // goal more than ~100 degrees round the mob: via its flank
+constexpr float  kStepLedge        = 15.0f;  // same ledge / bridge guard as the old teleports
+
+} // namespace
+
+bool Bot::StepBegin(Mob* mover, BotStep& s, Mob* tar, const glm::vec3& goal)
+{
+	if (!mover || !tar) {
+		return false;
+	}
+
+	const glm::vec3 me(mover->GetPosition());
+	const glm::vec3 at(tar->GetPosition());
+
+	// Far round the mob from where we stand: go by its flank on our side, not
+	// through it.
+	const float ax = me.x - at.x;
+	const float ay = me.y - at.y;
+	const float bx = goal.x - at.x;
+	const float by = goal.y - at.y;
+	const float la = std::sqrt(ax * ax + ay * ay);
+	const float lb = std::sqrt(bx * bx + by * by);
+
+	s.has_via = false;
+	if (la > 0.5f && lb > 0.5f && (ax * bx + ay * by) / (la * lb) < kStepAroundCos) {
+		const glm::vec3 left(mover->TryMoveAlong(tar->GetPosition(), lb, 128.0f));
+		const glm::vec3 right(mover->TryMoveAlong(tar->GetPosition(), lb, 384.0f));
+		s.via     = DistanceSquaredNoZ(left, me) <= DistanceSquaredNoZ(right, me) ? left : right;
+		s.has_via = true;
+	}
+
+	s.target_id = tar->GetID();
+	s.goal      = goal;
+	s.anchor    = at;
+
+	// Long enough to walk it, with slack; then we give up (TacticsStepping).
+	const float walk = s.has_via ?
+		std::sqrt(DistanceSquaredNoZ(me, s.via)) + std::sqrt(DistanceSquaredNoZ(s.via, goal)) :
+		std::sqrt(DistanceSquaredNoZ(me, goal));
+	s.until_ms = Timer::GetCurrentTime() + 1500 + static_cast<uint32>(walk * 150.0f);
+
+	const glm::vec3& first = s.has_via ? s.via : s.goal;
+	mover->RunTo(first.x, first.y, first.z);
+	return true;
+}
+
+bool Bot::StepContinue(Mob* mover, BotStep& s, Mob* tar)
+{
+	if (!mover || !s.until_ms) {
+		return false;
+	}
+
+	const uint32 now  = Timer::GetCurrentTime();
+	auto         stop = [&](uint32 rest) {
+		s.until_ms = 0;
+		s.rest_ms  = now + rest;
+		if (mover->IsMoving()) {
+			mover->StopMoving();
+		}
+	};
+
+	// A new target, or the mob walked off: what we were heading for means
+	// nothing now. Look again.
+	if (!tar || tar->GetID() != s.target_id || !IsAlive(tar) ||
+		DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), s.anchor) > kStepMobMoved * kStepMobMoved) {
+		stop(0);
+		return false;
+	}
+
+	// A pillar, a wall, a mob that keeps turning: fight from here a while.
+	if (now > s.until_ms) {
+		stop(kStepGiveUpRestMs);
+		LogInfo("[BotTactics] [{}] cannot get round [{}]: fights from where it stands", mover->GetCleanName(), tar->GetCleanName());
+		return false;
+	}
+
+	const glm::vec3 me(mover->GetPosition());
+	auto arrived = [&](const glm::vec3& p) {
+		const float d2 = DistanceSquaredNoZ(me, p);
+		return d2 <= kStepArrive * kStepArrive || (!mover->IsMoving() && d2 <= kStepArriveIdle * kStepArriveIdle);
+	};
+
+	if (s.has_via) {
+		if (arrived(s.via)) {
+			s.has_via = false;
+			mover->RunTo(s.goal.x, s.goal.y, s.goal.z);
+		}
+		else if (!mover->IsMoving()) {
+			mover->RunTo(s.via.x, s.via.y, s.via.z);
+		}
+		return true;
+	}
+
+	if (arrived(s.goal)) {
+		stop(kStepRestMs);
+		mover->FaceTarget(tar);
+		return false; // there: back to fighting this very tick
+	}
+
+	if (!mover->IsMoving()) {
+		mover->RunTo(s.goal.x, s.goal.y, s.goal.z);
+	}
+	return true;
+}
+
+bool Bot::StepBehind(Mob* mover, BotStep& s, Mob* tar, float dist)
+{
+	if (!mover || !tar) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Anywhere in its back half is safe from ripostes (attack.cpp: in front
+	// = not BehindMob, i.e. within 90 degrees of its nose).
+	if (mover->BehindMob(tar, mover->GetX(), mover->GetY())) {
+		s.react_ms = 0;
+		return false;
+	}
+
+	// Well into its front, not on the shoulder (a mob turning a little must
+	// not send everyone round it again), and not right after a walk.
+	if (now < s.rest_ms || mover->MobAngle(tar, mover->GetX(), mover->GetY()) > kStepFrontDeg) {
+		return false;
+	}
+
+	// A moment to notice, different for each: nobody moves in step.
+	if (!s.react_ms) {
+		s.react_ms = now + zone->random.Int(kStepReactMinMs, kStepReactMaxMs);
+		return false;
+	}
+	if (now < s.react_ms) {
+		return false;
+	}
+	s.react_ms = 0;
+
+	// The nearest spot of its back half on our side: 130 to 160 degrees off
+	// its nose (spread by id, so a few melee do not stack), our melee reach
+	// out. Both sides are worked out; the nearer one wins, and the other if
+	// the nearer is off a ledge.
+	const float     off = 185.0f + static_cast<float>(mover->GetID() % 4) * 14.0f;
+	const glm::vec4 a   = mover->TryMoveAlong(tar->GetPosition(), dist, off);
+	const glm::vec4 b   = mover->TryMoveAlong(tar->GetPosition(), dist, 512.0f - off);
+	const glm::vec3 me(mover->GetPosition());
+
+	const float expected_z = tar->GetPosition().z - tar->GetZOffset() + mover->GetZOffset();
+	auto        level      = [&](const glm::vec4& d) {
+		const float dz = d.z - expected_z;
+		return dz > -kStepLedge && dz < kStepLedge;
+	};
+
+	const bool       a_nearer = DistanceSquaredNoZ(glm::vec3(a), me) <= DistanceSquaredNoZ(glm::vec3(b), me);
+	const glm::vec4& nearer   = a_nearer ? a : b;
+	const glm::vec4& farther  = a_nearer ? b : a;
+	if (level(nearer)) {
+		return StepBegin(mover, s, tar, glm::vec3(nearer));
+	}
+	if (level(farther)) {
+		return StepBegin(mover, s, tar, glm::vec3(farther));
+	}
+
+	s.rest_ms = now + kStepGiveUpRestMs; // a ledge either way: fight from here
+	return false;
+}
+
+bool Bot::TacticsStepping(Mob* tar)
+{
+	return StepContinue(this, m_step, tar);
+}
+
+bool Bot::TacticsStepBehind(Mob* tar, float dist)
+{
+	return StepBehind(this, m_step, tar, dist);
+}
+
+bool Bot::TacticsPetStepping(Mob* pet, Mob* tar)
+{
+	return pet && pet == GetPet() && StepContinue(pet, m_pet_step, tar);
+}
+
+bool Bot::TacticsPetStepBehind(Mob* pet, Mob* tar, float dist)
+{
+	return pet && pet == GetPet() && StepBehind(pet, m_pet_step, tar, dist);
 }

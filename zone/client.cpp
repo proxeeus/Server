@@ -1683,6 +1683,16 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			break;
 		}
 
+		// A bot spoken to turns to the speaker, and waves back at a hail
+		// (bot_tactics.cpp). Bots are not NPCs: the hail path below skips them.
+		if (
+			GetTarget() &&
+			GetTarget()->IsBot() &&
+			DistanceNoZ(m_Position, GetTarget()->GetPosition()) <= RuleI(Range, Say)
+		) {
+			GetTarget()->CastToBot()->TacticsSpokenTo(this, message);
+		}
+
 		if (quest_manager.ProximitySayInUse()) {
 			entity_list.ProcessProximitySay(message, this, language);
 		}
