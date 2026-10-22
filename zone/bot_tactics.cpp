@@ -62,6 +62,31 @@ constexpr uint32 kKeyGroup         = 0x80000000;
 constexpr uint32 kKeyIdMask        = 0x3FFFFFFF;
 constexpr uint32 kAssistDelayMs    = 3000;  // let the tank get a hold before piling in
 constexpr float  kAssistHPRatio    = 97.0f; // ...unless it is already being hurt
+
+// A raid's damage joins once the tank has held its target this long, or the
+// target is under the health %, or after twice the delay. Three seconds
+// was not a lead: Derakor went to a bard, an enchanter and a wizard in the
+// first 7 s, and a taunt over 10 levels lands about one time in five.
+constexpr uint32 kRaidAssistDelayMs = 8000;
+constexpr float  kRaidAssistHPRatio = 95.0f;
+
+// The v29c client's spdat.eff holds spell ids 1..2010; anything past that is
+// Luclin and later here (Vah Shir songs, Torrent of Pain, Berate) and renders
+// on the client with no name, icon or visual. Disciplines are the exception:
+// the classic ones are 4498+ and the bots use them server-side.
+constexpr uint16 kEraMaxSpellId = 2010;
+
+// A CH chain turn that cannot cast passes the turn on after this, and a whole
+// round that cannot waits one interval: it used to pass at once, every AI
+// tick, up to 79 log lines a second with nobody able to cast.
+constexpr uint32 kChainSkipMs = 250;
+
+// After a kill, bots keep off its corpse this long, so the player's click
+// lands on the corpse: on Derakor every click hit a bot (13 were rezzed and
+// sat down to med where they died, on top of it).
+constexpr uint32 kLootSpotMs     = 60000;
+constexpr float  kLootSpotRadius = 10.0f;
+constexpr float  kLootSpotClear  = 14.0f;
 constexpr uint32 kOffTankWaitMs    = 5000;  // a fresh add is the mezzer's first
 constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
@@ -214,7 +239,7 @@ template <typename Pred>
 void BuildLadder(SpellLadder& ladder, Pred pred)
 {
 	for (int id = 0; id < SPDAT_RECORDS; ++id) {
-		if (!IsValidSpell(id) || !pred(static_cast<uint16>(id))) {
+		if (!IsValidSpell(id) || (id > kEraMaxSpellId && !spells[id].is_discipline) || !pred(static_cast<uint16>(id))) {
 			continue;
 		}
 
@@ -1443,9 +1468,19 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		chain.clear();
 	}
 
-	const bool chain_changed = chain != p.chain;
+	const bool   chain_changed = chain != p.chain;
+	const uint16 prev_target   = p.chain_target_id;
 	p.chain.swap(chain);
 	p.chain_target_id = p.main_tank_id;
+
+	// The tank died and another took over: its first CH starts now, not at
+	// the dead tank's next slot. On Derakor each new tank lived 11-12 s, about
+	// one 10 s CH, and nothing landed on any of them for 44 s.
+	if (p.chain_active && prev_target && p.chain_target_id && prev_target != p.chain_target_id) {
+		p.chain_next_ms = now;
+		p.chain_skips   = 0;
+		LogInfo("[BotTactics] unit [{:#x}] CH chain moves to the new tank [{}]", p.key, NameOf(p.chain_target_id));
+	}
 
 	const uint32 n = static_cast<uint32>(p.chain.size());
 	if (ov && ov->chain_interval_ms) {
@@ -1970,6 +2005,7 @@ void BotTactics::ChainCast(uint32 key, uint16 caster_id)
 	p->chain_next      = (p->chain_next + 1) % p->chain.size();
 	p->chain_next_ms   = Timer::GetCurrentTime() + p->chain_interval_ms;
 	p->chain_called_id = 0;
+	p->chain_skips     = 0;
 }
 
 void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
@@ -1979,10 +2015,20 @@ void BotTactics::ChainSkip(uint32 key, uint16 caster_id, const char* why)
 		return;
 	}
 
-	LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: {}", key, NameOf(caster_id), why);
 	p->chain_next      = (p->chain_next + 1) % p->chain.size();
-	p->chain_next_ms   = Timer::GetCurrentTime();
 	p->chain_called_id = 0;
+
+	// Pass the turn on after a beat; after a whole round of nobody able to
+	// cast, wait one interval and say so once.
+	if (++p->chain_skips >= p->chain.size()) {
+		p->chain_skips   = 0;
+		p->chain_next_ms = Timer::GetCurrentTime() + std::max<uint32>(p->chain_interval_ms, 1000);
+		LogInfo("[BotTactics] unit [{:#x}] CH chain: nobody can cast ({} last), waiting [{}] ms", key, why, p->chain_next_ms - Timer::GetCurrentTime());
+		return;
+	}
+
+	LogInfo("[BotTactics] unit [{:#x}] CH chain skips [{}]: {}", key, NameOf(caster_id), why);
+	p->chain_next_ms = Timer::GetCurrentTime() + kChainSkipMs;
 }
 
 bool BotTactics::ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms)
@@ -2624,12 +2670,25 @@ bool Bot::TacticsChainCheck()
 		return false;
 	}
 
+	// A 10 s cast started on the move is interrupted by the move: the turn
+	// waits for us to stand (still skipped if that takes too long).
+	if (IsMoving()) {
+		return false;
+	}
+
 	if (AIDoSpellCast(s.SpellIndex, tar, s.ManaCost)) {
 		bot_tactics.ChainCast(m_tactics_key, GetID());
 		return true;
 	}
 
-	bot_tactics.ChainSkip(m_tactics_key, GetID(), GetManaRatio() < 10.0f ? "out of mana" : "cast failed");
+	const char* why =
+		IsCasting() ? "still casting" :
+		(IsStunned() || IsMezzed() || IsFeared()) ? "stunned, mezzed or feared" :
+		IsSilenced() ? "silenced" :
+		GetMana() < s.ManaCost ? "out of mana" :
+		!CheckSpellRecastTimer(s.SpellId) ? "recast not ready" :
+		"cast failed";
+	bot_tactics.ChainSkip(m_tactics_key, GetID(), why);
 	return false;
 }
 
@@ -2802,8 +2861,23 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 	// waits for the health % a raid encounter asks for.
 	const bool tanking = p->IsMainTank(GetID()) || add == want_id;
 	if (!tanking) {
+		const bool raid_unit = (p->key & kKeyRaid) != 0;
+
 		if (p->has_encounter && p->encounter_mob_id == want_id && p->encounter.assist_hp) {
 			if (t->GetHPRatio() > p->encounter.assist_hp) {
+				return false;
+			}
+		}
+		else if (raid_unit && want_id == p->assist_target_id) {
+			// The raid's target: the tank builds its lead first. Join once it
+			// has held the mob that long, or the mob is already hurt, or --
+			// never stall a raid on a tank that cannot get it -- twice that.
+			Mob*         tank   = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
+			const uint32 since  = Timer::GetCurrentTime() - p->assist_since_ms;
+			const bool   holds  = IsAlive(tank) && t->GetHateTop() == tank;
+			const bool   joined = (holds && since >= kRaidAssistDelayMs) ||
+				t->GetHPRatio() <= kRaidAssistHPRatio || since >= 2 * kRaidAssistDelayMs;
+			if (!joined) {
 				return false;
 			}
 		}
@@ -3435,8 +3509,12 @@ void Bot::OwnerHoldAI()
 
 bool Bot::TacticsSituationalBuffs()
 {
+	// Not on the move either: walking to the camp slot interrupted the cast,
+	// and 2 s later the same buff started again. After Derakor that was 401
+	// cast starts in 30 s, 56 landed, the same resist on the same bot ~14
+	// times, and a sit/stand per try.
 	const BotTacticsPlan* p = GetTacticsPlan();
-	if (!p || IsCasting() || TacticsReservesCasting() || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
+	if (!p || IsCasting() || IsMoving() || TacticsReservesCasting() || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
 		return false;
 	}
 
@@ -4287,12 +4365,27 @@ bool Bot::TacticsAggroBackoff(Mob* tar)
 		return false;
 	}
 
-	// Only while the tank is the one holding it: if it is on someone else
-	// already, backing off saves nothing.
 	Mob* tank = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
-	if (!tank || tar->GetHateTop() != tank) {
+	if (!tank) {
 		m_aggro_backoff = false;
 		return false;
+	}
+
+	// We pulled it off the tank: stop adding to the lead the tank has to
+	// overtake. Everyone else kept the old rule below and stopped backing
+	// off once the mob was on someone else -- so on Derakor the holder (a
+	// rogue, then an enchanter) kept building hate while four warriors died
+	// trying to get it back.
+	if (Mob* top = tar->GetHateTop(); top != tank) {
+		const bool was  = m_aggro_backoff;
+		m_aggro_backoff = top == this;
+		if (m_aggro_backoff != was) {
+			LogInfo(
+				"[BotTactics] [{}] {} on [{}]: {}", GetCleanName(), m_aggro_backoff ? "backs off" : "resumes",
+				tar->GetCleanName(), m_aggro_backoff ? "has it over the tank" : "no longer has it"
+			);
+		}
+		return m_aggro_backoff;
 	}
 
 	const int64 mine   = tar->GetHateAmount(this);
@@ -4483,6 +4576,43 @@ bool Bot::TacticsPullActive() const
 {
 	const BotTacticsPlan* p = GetTacticsPlan();
 	return p && p->pull_active;
+}
+
+bool Bot::TacticsKeepOffLootSpot(glm::vec3& goal) const
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->loot_spot_until_ms || Timer::GetCurrentTime() > p->loot_spot_until_ms) {
+		return false;
+	}
+
+	const glm::vec3& spot = p->loot_spot;
+
+	// Out to the ring along the way from the spot to `from`; from right on
+	// top, a direction of our own so a crowd spreads instead of stacking.
+	auto push_out = [&](const glm::vec3& from) {
+		float dx = from.x - spot.x;
+		float dy = from.y - spot.y;
+		float d  = std::sqrt(dx * dx + dy * dy);
+		if (d < 0.5f) {
+			const float a = static_cast<float>(GetID()) * 2.39996f; // golden angle
+			dx = std::cos(a);
+			dy = std::sin(a);
+			d  = 1.0f;
+		}
+		return glm::vec3(spot.x + dx / d * kLootSpotClear, spot.y + dy / d * kLootSpotClear, from.z);
+	};
+
+	const float r2 = kLootSpotRadius * kLootSpotRadius;
+	if (DistanceSquaredNoZ(goal, spot) < r2) {
+		goal = push_out(goal);
+	}
+
+	const bool on_it = DistanceSquaredNoZ(glm::vec3(m_Position), spot) < r2;
+	if (on_it && DistanceSquaredNoZ(goal, spot) < r2) {
+		goal = push_out(glm::vec3(m_Position));
+	}
+
+	return on_it;
 }
 
 bool Bot::TacticsCampSlot(glm::vec3& out)
@@ -5671,6 +5801,12 @@ void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, M
 			const auto& f = it->second;
 			p.fight_kills.push_back(f.npc_type);
 
+			// The corpse keeps the NPC's id: keep it clear to loot.
+			if (m && m->IsCorpse()) {
+				p.loot_spot          = glm::vec3(m->GetPosition());
+				p.loot_spot_until_ms = now + kLootSpotMs;
+			}
+
 			if (f.since_ms) {
 				const float ttk = (now - f.since_ms) / 1000.0f;
 				MobCost&    c   = m_mob_costs[f.npc_type];
@@ -5841,9 +5977,13 @@ uint16 HateSpellFor(uint8 class_id, uint8 level)
 	static bool        built = false;
 	if (!built) {
 		built = true;
+		// Spells only: Berate (4682) is flagged a discipline and so passes the
+		// ladder's era filter, but it is a Luclin+ warrior ability. Pre-Luclin
+		// this leaves the shadow knights' Terrors and nothing for a warrior,
+		// who rescues by Taunt alone.
 		BuildLadder(ladder, [](uint16 id) {
 			const int idx = GetSpellEffectIndex(id, SE_InstantHate);
-			return idx >= 0 && spells[id].base_value[idx] > 0 && IsDetrimentalSpell(id) &&
+			return id <= kEraMaxSpellId && idx >= 0 && spells[id].base_value[idx] > 0 && IsDetrimentalSpell(id) &&
 				spells[id].target_type == ST_Target;
 		});
 	}
@@ -6057,9 +6197,12 @@ bool Bot::TacticsRescue()
 	}
 
 	// Else a hate spell, if it reaches.
+	// The rescue check runs every kRescueCheckMs and casts directly, past
+	// AIDoSpellCast, so it has to honour the spell's recast itself: without
+	// it a warrior cast Berate (30 s recast) 61 times in one Derakor fight.
 	const uint16 sid = HateSpellFor(GetClass(), GetLevel());
 	if (
-		!IsValidSpell(sid) || GetMana() < spells[sid].mana ||
+		!IsValidSpell(sid) || GetMana() < spells[sid].mana || !CheckSpellRecastTimer(sid) ||
 		DistanceSquared(m_Position, loose->GetPosition()) > spells[sid].range * spells[sid].range || !CheckLosFN(loose) ||
 		!bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), spells[sid].cast_time + 1000)
 	) {
@@ -6067,6 +6210,9 @@ bool Bot::TacticsRescue()
 	}
 	if (!CastSpell(sid, loose->GetID(), EQ::spells::CastingSlot::Gem2)) {
 		return false;
+	}
+	if (spells[sid].recast_time > 0) {
+		SetSpellRecastTimer(sid);
 	}
 	LogInfo(
 		"[BotTactics] [{}] casts [{}] to pull [{}] off [{}]",

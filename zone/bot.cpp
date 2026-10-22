@@ -2769,6 +2769,10 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 		else {
 			Goal = follow_mob->GetPosition();
 		}
+
+		// Off the corpse the unit just killed, so the player can click it.
+		const bool on_loot_spot = !GUARDING && TacticsKeepOffLootSpot(Goal);
+
 		float destination_distance = DistanceSquared(GetPosition(), Goal);
 		// a place is 3 units (a formation slot 4), not follow range -- but a
 		// bot sitting to med near it does not get up to shuffle the rest of
@@ -2776,7 +2780,7 @@ bool Bot::TryNonCombatMovementChecks(Client* bot_owner, const Mob* follow_mob, g
 		// idle checks sitting it anywhere within follow range that bobbed
 		// bots up and down several times a second (FoB/Kurn logs, 2026-10-22)
 		const bool  settled         = IsSitting() && (at_camp || in_formation);
-		const float arrive_distance = settled ? static_cast<float>(GetFollowDistance()) :
+		const float arrive_distance = on_loot_spot ? 1.0f : settled ? static_cast<float>(GetFollowDistance()) :
 			at_camp ? 9.0f : in_formation ? 16.0f : static_cast<float>(GetFollowDistance());
 
 		if ((!bot_owner->GetBotPulling() || PULLING_BOT) && (destination_distance > arrive_distance)) {

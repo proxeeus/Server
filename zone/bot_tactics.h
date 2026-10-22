@@ -135,6 +135,11 @@ struct BotTacticsPlan {
 	// Walking out without a fight breaks camp: bots follow again.
 	bool                camp_set       = false;
 	glm::vec3           camp           = glm::vec3(0.0f);
+
+	// Where the unit's last kill lies, kept clear for a while so the player
+	// can click the corpse (Bot::TacticsKeepOffLootSpot).
+	glm::vec3           loot_spot          = glm::vec3(0.0f);
+	uint32              loot_spot_until_ms = 0;
 	uint16              camp_leader_id = 0;      // the player the camp follows
 	uint32              camp_left_ms   = 0;      // leader walked out of camp, 0 = in camp
 	bool                pull_active    = false;  // leader fighting out there, mob not here yet
@@ -254,6 +259,7 @@ struct BotTacticsPlan {
 	uint32              chain_next_ms     = 0;     // when chain[chain_next] should start
 	bool                chain_active      = false;
 	uint16              chain_called_id   = 0;     // the player told "Your CH" this turn
+	size_t              chain_skips       = 0;     // turns passed in a row without a cast
 
 	// Fitting around the player (phase 6): a player who slows, or mezzes,
 	// gets the first go at it; bots cover when they have not.

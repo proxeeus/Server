@@ -3327,6 +3327,12 @@ uint8 Bot::GetChanceToCastBySpellType(uint32 spellType)
 	return database.botdb.GetSpellCastingChance(spell_type_index, class_index, stance_index, type_index);
 }
 
+// bot_spells_entries reaches past the era: 129 of its entries up to level 60
+// are ids above 2010 (Luclin+ Vah Shir songs, Torrent of Pain, Fufil's Dirge
+// ...). The v29c client's spdat.eff stops at 2010, so those casts render with
+// no name, icon or visual, and they are out of era anyway.
+constexpr uint32 kBotEraMaxSpellId = 2010;
+
 bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	// ok, this function should load the list, and the parent list then shove them into the struct and sort
 	npc_spells_id = bot_spell_id;
@@ -3406,7 +3412,7 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 		_idle_beneficial_chance = parentlist->idle_beneficial_chance;
 		for (auto& e : parentlist->entries) {
 			if (
-				EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) &&
+				EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid <= kBotEraMaxSpellId &&
 				e.spellid &&
 				!IsSpellInBotList(spell_list, e.spellid)
 				) {
@@ -3517,7 +3523,7 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	}
 
 	for (auto& e : spell_list->entries) {
-		if (EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid) {
+		if (EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid && e.spellid <= kBotEraMaxSpellId) {
 			if (!e.bucket_name.empty() && !e.bucket_value.empty()) {
 				if (!CheckDataBucket(e.bucket_name, e.bucket_value, e.bucket_comparison)) {
 					continue;
@@ -3885,8 +3891,14 @@ bool Bot::IsValidSpellRange(uint16 spell_id, Mob const* tar, bool note_out_of_ra
 
 void Bot::NoteOutOfRangeCast(uint16 spell_id, const Mob* tar)
 {
-	// Bards sing on the move and their heals ignore range anyway.
-	if (!tar || tar == this || GetClass() == Class::Bard || !IsValidSpell(spell_id)) {
+	// Bards sing on the move and their heals ignore range anyway. A self-only
+	// spell never reaches someone else from any distance: walking to them
+	// loops ("moving to cast [Quivering Veil of Xarn] on [own pet]", then
+	// "gave up: no line of sight at [9]", 223 times in one fight).
+	if (
+		!tar || tar == this || GetClass() == Class::Bard || !IsValidSpell(spell_id) ||
+		spells[spell_id].target_type == ST_Self
+	) {
 		return;
 	}
 
