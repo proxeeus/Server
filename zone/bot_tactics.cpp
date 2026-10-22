@@ -5228,29 +5228,29 @@ void BotTactics::QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint
 		return;
 	}
 
-	std::vector<std::pair<float, Bot*>> near;
+	std::vector<std::pair<float, Bot*>> nearby;
 	for (Mob* m : mobs) {
 		if (m == subject || !m->IsBot() || !IsAlive(m)) {
 			continue;
 		}
 		const float d2 = DistanceSquared(m->GetPosition(), subject->GetPosition());
 		if (d2 <= kGestureRadius * kGestureRadius) {
-			near.emplace_back(d2, m->CastToBot());
+			nearby.emplace_back(d2, m->CastToBot());
 		}
 	}
 
 	std::sort(
-		near.begin(), near.end(), [](const std::pair<float, Bot*>& a, const std::pair<float, Bot*>& b) {
+		nearby.begin(), nearby.end(), [](const std::pair<float, Bot*>& a, const std::pair<float, Bot*>& b) {
 			return a.first < b.first;
 		}
 	);
-	if (count && near.size() > count) {
-		near.resize(count);
+	if (count && nearby.size() > count) {
+		nearby.resize(count);
 	}
 
 	// A moment apart, nearest first: people do not move as one.
 	uint32 delay = zone->random.Int(300, 900);
-	for (const auto& e : near) {
+	for (const auto& e : nearby) {
 		e.second->TacticsQueueGesture(anim, delay, subject->GetID());
 		delay += zone->random.Int(150, 700);
 	}
@@ -5791,7 +5791,7 @@ bool Bot::TacticsShedAggro()
 {
 	const BotTacticsPlan* p = GetTacticsPlan();
 	if (
-		!p || TankWeight(this) || p->IsMainTank(GetID()) || p->IsOffTank(GetID()) ||
+		!p || (TankWeight(this) && GetClass() != Class::ShadowKnight) || p->IsMainTank(GetID()) || p->IsOffTank(GetID()) ||
 		GetFeigned() || m_feign_spell_ms || IsFDPulling() || GetPullingFlag() || GetReturningFlag() || IsCasting()
 	) {
 		return false;
