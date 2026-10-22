@@ -1873,7 +1873,13 @@ void Bot::SpellProcess() {
 
 void Bot::BotMeditate(bool isSitting) {
 	if (isSitting) {
-		const float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
+		float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
+
+		// Mid-fight with a plan: med between heals whenever nothing can reach
+		// us, as a real healer does; never with a mob on us (sitting takes crits).
+		if (IsEngaged() && GetTacticsPlan()) {
+			mana_sit_threshold = TacticsSafeToSit() ? 98.0f : 0.0f;
+		}
 		const bool hp_sit_condition   = !IsEngaged() && GetHPRatio() < 99.0f;
 		if (GetManaRatio() < mana_sit_threshold || hp_sit_condition) {
 			if (!IsSitting()) {
@@ -2226,6 +2232,11 @@ void Bot::AI_Process()
 		return;
 	}
 
+	// ...and, well clear of our turn, a quick heal on a groupmate going down
+	if (TacticsChainEmergency()) {
+		return;
+	}
+
 // MOVE-TO-CAST (a cast was skipped for range last cycle: go get in range)
 
 	if (TryMoveToCast(leash_owner, leash_distance)) {
@@ -2379,6 +2390,12 @@ void Bot::AI_Process()
 
 			// The main target is low or running: one of us snares it
 			if (TacticsSnareRunner(tar)) {
+				return;
+			}
+
+			// A mob casting something that matters (a gate, a heal, an AE):
+			// one of us bashes, kicks or stuns it
+			if (TacticsInterrupt(tar)) {
 				return;
 			}
 
@@ -2554,6 +2571,9 @@ void Bot::AI_Process()
 
 		// Ok to idle
 		if (TryNonCombatMovementChecks(bot_owner, follow_mob, Goal)) {
+			return;
+		}
+		if (TacticsCannibalize()) { // standing still between fights: health for mana
 			return;
 		}
 		if (TryIdleChecks(fm_distance)) {
@@ -2826,6 +2846,8 @@ bool Bot::TryMeditate() {
 	if (!IsMoving() && !spellend_timer.Enabled()) {
 		if (GetTarget() && AI_EngagedCastCheck()) {
 			BotMeditate(false);
+		} else if (TacticsCannibalize()) {
+			// health for mana while nothing needs us
 		} else if (GetArchetype() == Archetype::Caster) {
 			BotMeditate(true);
 		}
@@ -3428,6 +3450,7 @@ bool Bot::CheckIfCasting(float fm_distance) {
 		else if (GetClass() != Class::Bard) {
 
 			if (IsEngaged()) {
+				TacticsDuckHeal(); // a heal nobody needs any more: cancel it, keep the mana
 				return true;
 			}
 
@@ -6347,6 +6370,9 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 	bool did_attack = false;
 	switch (GetClass()) {
 		case Class::Warrior:
+			// Used to fall through to the ranger case below, which overwrote
+			// the choice: warrior bots never bashed.
+			skill_to_use = EQ::skills::SkillKick;
 			if (bot_level >= RuleI(Combat, NPCBashKickLevel)) {
 				bool canBash = false;
 				if ((GetRace() == OGRE || GetRace() == TROLL || GetRace() == BARBARIAN) || (m_inv.GetItem(EQ::invslot::slotSecondary) && m_inv.GetItem(EQ::invslot::slotSecondary)->GetItem()->ItemType == EQ::item::ItemTypeShield) || (m_inv.GetItem(EQ::invslot::slotPrimary) && m_inv.GetItem(EQ::invslot::slotPrimary)->GetItem()->IsType2HWeapon() && GetAA(aa2HandBash) >= 1))
@@ -6357,6 +6383,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 				else
 					skill_to_use = EQ::skills::SkillBash;
 			}
+			break;
 		case Class::Ranger:
 		case Class::Beastlord:
 			skill_to_use = EQ::skills::SkillKick;

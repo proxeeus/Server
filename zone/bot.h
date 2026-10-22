@@ -1033,6 +1033,20 @@ public:
 	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
 	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
 
+	// Sentient combat (docs/BOT_AI_SENTIENT.md):
+	// - read the mob: a mob casting something that matters (a gate, a heal,
+	//   an AE, a charm...) is bashed, kicked or stunned by one of us
+	bool TacticsInterrupt(Mob* tar);
+	bool TacticsInterruptStrike(Mob* caster); // bash / warrior kick, now
+	// - healers: cancel a heal that would mostly overheal (mana is only
+	//   spent when a cast lands), heal with what fits, sit between heals,
+	//   chain clerics catch a dying groupmate, shamans cannibalize
+	bool TacticsDuckHeal();
+	bool TacticsPickHeal(Mob* tar, BotSpell& out);
+	bool TacticsSafeToSit();
+	bool TacticsChainEmergency();
+	bool TacticsCannibalize();
+
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
 
@@ -1142,6 +1156,9 @@ private:
 	uint32    m_bard_song_ms         = 0;
 	uint32    m_mez_log_ms           = 0;
 	uint32    m_los_check_ms         = 0;
+	uint32    m_interrupt_check_ms   = 0;
+	uint32    m_canni_check_ms       = 0;
+	uint32    m_pet_reposition_ms    = 0;   // our pet stepped behind an enraged mob then
 
 	// Resists seen on our own casts (TacticsNoteResist)
 	struct ResistNote {

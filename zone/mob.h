@@ -408,6 +408,9 @@ public:
 	void StopCastSpell(int32 spell_id, bool send_spellbar_enable);
 	inline bool IsCasting() const { return((casting_spell_id != 0)); }
 	uint16 CastingSpellID() const { return casting_spell_id; }
+	uint16 CastingSpellTargetID() const { return casting_spell_targetid; }
+	// Time left on the cast in progress; 0 = not casting (bot interrupts, ducked heals)
+	uint32 CastRemainingMs() { return casting_spell_id && spellend_timer.Enabled() ? spellend_timer.GetRemainingTime() : 0; }
 	bool TryDispel(uint8 caster_level, uint8 buff_level, int level_modifier);
 	bool TrySpellProjectile(Mob* spell_target,  uint16 spell_id, float speed = 1.5f);
 	void ResourceTap(int64 damage, uint16 spell_id);

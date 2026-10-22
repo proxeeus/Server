@@ -182,6 +182,14 @@ struct BotTacticsPlan {
 	float DamagePct(uint16 id) const;                // % per second
 	float SecondsToDeath(uint16 id, float hp_ratio) const;
 
+	// Heals being cast on a member right now, by anyone in the unit (players
+	// too), as % of its health -- so a second healer does not start another.
+	// Only heals that land before it would die at its rate count, and only
+	// those landing within `before_ms` (a ducking healer counts the heals
+	// that beat its own, never the ones behind it: two healers must not both
+	// cancel because of each other).
+	float IncomingHealPct(uint16 target_id, uint16 except_caster_id = 0, uint32 before_ms = 0xFFFFFFFF) const;
+
 	// Loot (phase 16): what the mobs we fight carry, by entity id. When one
 	// dies (its corpse keeps the id) its items are looked over for upgrades.
 	std::unordered_map<uint16, std::vector<uint32>> fight_loot;
@@ -253,6 +261,8 @@ public:
 	static constexpr uint32 kClaimRez   = 0x10001; // a dead owner's corpse
 	static constexpr uint32 kClaimSnare = 0x10002; // one snare in the air per runner
 	static constexpr uint32 kClaimSummonCorpse = 0x10004;
+	static constexpr uint32 kClaimInterrupt    = 0x10005; // one interrupt at a time per casting mob
+	static constexpr uint32 kClaimEmergencyHeal = 0x10006; // one chain cleric per dying groupmate
 
 	// Bot::Death, before the bot leaves the zone.
 	void NoteFallen(uint32 key, Bot* bot);

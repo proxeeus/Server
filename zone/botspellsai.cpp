@@ -1118,6 +1118,16 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 			if (m_heal_urgent_id && tar->GetID() == m_heal_urgent_id &&
 				IsValidSpell((botSpell = GetBestBotSpellForFastHeal(this)).SpellId)) {
 			}
+			// With a plan: the cheapest heal that covers what will be missing
+			// when it lands, heals already on the way counted (bot_tactics.cpp).
+			// Several hurt at once is still the group heal's job below.
+			else if (
+				IsEngaged() &&
+				(botClass == Class::Cleric || botClass == Class::Druid || botClass == Class::Shaman || botClass == Class::Paladin) &&
+				GetNumberNeedingHealedInGroup(70, false, raid) < 3 &&
+				TacticsPickHeal(tar, botSpell)
+			) {
+			}
 			// Evaluate the situation
 			else if ((IsEngaged()) && ((botClass == Class::Cleric) || (botClass == Class::Druid) || (botClass == Class::Shaman) || (botClass == Class::Paladin))) {
 				if (tar->GetTarget() && tar->GetTarget()->GetHateTop() && tar->GetTarget()->GetHateTop() == tar) {
