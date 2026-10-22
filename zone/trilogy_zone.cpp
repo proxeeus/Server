@@ -14794,9 +14794,10 @@ void TrilogyZoneServer::Tick()
 			double   secs      = static_cast<double>(elapsed_ms) / 1000.0;
 			double   kbps      = (secs > 0.0) ? (static_cast<double>(s.bw_bytes_sent) / 1024.0) / secs : 0.0;
 			double   pps       = (secs > 0.0) ? (static_cast<double>(s.bw_packets_sent)) / secs : 0.0;
-			LogInfo("[TrilogyDiag] BW char='{}' window={:.1f}s tx_bytes={} tx_packets={} kbps={:.2f} pps={:.1f}",
+			LogInfo("[TrilogyDiag] BW char='{}' window={:.1f}s tx_bytes={} tx_packets={} kbps={:.2f} pps={:.1f}{}",
 			        s.char_name, secs,
-			        s.bw_bytes_sent, s.bw_packets_sent, kbps, pps);
+			        s.bw_bytes_sent, s.bw_packets_sent, kbps, pps,
+			        s.trilogy_client ? s.trilogy_client->TakeCombatStats() : std::string());
 			s.bw_window_start_ms = now_ms;
 			s.bw_bytes_sent      = 0;
 			s.bw_packets_sent    = 0;

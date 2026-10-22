@@ -703,11 +703,15 @@ void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, ui
 	// OP_SpecialMesg (0x8021) chat: each line may carry different text —
 	// never dedup.
 
+	const bool reliable = CombatPacketReliable(opcode, data, size);
+
 	if (supersedes && source_id != 0) {
 		for (auto& p : m_pending_combat_q) {
 			if (p.opcode == opcode && p.source_id == source_id) {
 				p.payload.assign(data, data + size);
 				p.enqueued_ms = now_ms;
+				p.reliable    = reliable;
+				++m_combat_superseded;
 				return;
 			}
 		}
@@ -718,6 +722,7 @@ void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, ui
 		// budget for many seconds; losing leading chatter is the least-bad
 		// option to keep latency bounded.
 		m_pending_combat_q.pop_front();
+		++m_combat_capped;
 	}
 	PendingCombatPacket p;
 	p.opcode      = opcode;
@@ -725,7 +730,64 @@ void TrilogyClient::EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, ui
 	p.enqueued_ms = now_ms;
 	p.source_id   = source_id;
 	p.supersedes  = supersedes;
+	p.reliable    = reliable;
 	m_pending_combat_q.push_back(std::move(p));
+}
+
+bool TrilogyClient::IsBystanderEvent(uint32_t source_id, uint32_t target_id) const
+{
+	// Wire payloads carry this client as m_player_spawn_id (TranslateId); an
+	// untranslated EQEmu id would be GetID().
+	auto mine = [this](uint32_t id) {
+		return id != 0 && (id == m_player_spawn_id || id == static_cast<uint32_t>(GetID()));
+	};
+
+	return !mine(source_id) && !mine(target_id);
+}
+
+bool TrilogyClient::CombatPacketReliable(uint16_t opcode, const uint8_t* data, uint32_t size) const
+{
+	if (!RuleB(Zone, TrilogyBystanderCombatUnreliable)) {
+		return true;
+	}
+
+	// Same layouts as EnqueueCombatPacket. An OP_Attack names only its
+	// attacker: a swing AT us is an animation, its damage comes as OP_Action.
+	if (opcode == 0x9f20 && size >= 4) {
+		return !IsBystanderEvent(*reinterpret_cast<const uint32_t*>(data), 0);
+	}
+	if (opcode == 0x5820 && size >= 8) {
+		return !IsBystanderEvent(
+			*reinterpret_cast<const uint32_t*>(data + 4), // source
+			*reinterpret_cast<const uint32_t*>(data)      // target
+		);
+	}
+
+	return true; // OP_SpecialMesg text and anything else
+}
+
+std::string TrilogyClient::TakeCombatStats()
+{
+	const auto s = fmt::format(
+		" combat rel={} unrel={} superseded={} stale={} capped={} cast rel={} unrel={}",
+		m_combat_sent_reliable,
+		m_combat_sent_unreliable,
+		m_combat_superseded,
+		m_combat_stale,
+		m_combat_capped,
+		m_cast_sent_reliable,
+		m_cast_sent_unreliable
+	);
+
+	m_combat_sent_reliable   = 0;
+	m_combat_sent_unreliable = 0;
+	m_combat_superseded      = 0;
+	m_combat_stale           = 0;
+	m_combat_capped          = 0;
+	m_cast_sent_reliable     = 0;
+	m_cast_sent_unreliable   = 0;
+
+	return s;
 }
 
 void TrilogyClient::QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32_t size)
@@ -733,7 +795,9 @@ void TrilogyClient::QueueTextPacket(uint16_t opcode, const uint8_t* data, uint32
 	// Fast path: nothing queued AND token available → send immediately so
 	// short bursts (combat hit, brief chat) don't get artificial latency.
 	if (m_pending_combat_q.empty() && TryAcquireCombatToken()) {
-		m_tzs->SendToSession(m_session_key, opcode, data, size);
+		const bool reliable = CombatPacketReliable(opcode, data, size);
+		m_tzs->SendToSession(m_session_key, opcode, data, size, reliable);
+		++(reliable ? m_combat_sent_reliable : m_combat_sent_unreliable);
 		return;
 	}
 	// Else queue — DrainPendingText() will send it as soon as a token is
@@ -759,6 +823,7 @@ void TrilogyClient::DrainPendingText()
 	while (!m_pending_combat_q.empty() &&
 	       now_ms - m_pending_combat_q.front().enqueued_ms > kMaxCombatQueueAgeMs) {
 		m_pending_combat_q.pop_front();
+		++m_combat_stale;
 	}
 
 	// Refill + spend tokens against remaining queued combat events.
@@ -767,7 +832,9 @@ void TrilogyClient::DrainPendingText()
 		auto& p = m_pending_combat_q.front();
 		m_tzs->SendToSession(m_session_key, p.opcode,
 		                     p.payload.data(),
-		                     static_cast<uint32_t>(p.payload.size()));
+		                     static_cast<uint32_t>(p.payload.size()),
+		                     p.reliable);
+		++(p.reliable ? m_combat_sent_reliable : m_combat_sent_unreliable);
 		m_pending_combat_q.pop_front();
 	}
 }
@@ -5088,9 +5155,15 @@ void TrilogyClient::HandleBeginCast(const EQApplicationPacket* app)
 		        out.caster_id, out.spell_id, out.cast_time);
 	}
 
+	// Someone else's cast start is the casting animation only; ours (the
+	// casting bar, the client's own recast handling) stays reliable.
+	const bool reliable = !RuleB(Zone, TrilogyBystanderCombatUnreliable) ||
+		!IsBystanderEvent(static_cast<uint32_t>(out.caster_id), 0);
 	m_tzs->SendToSession(m_session_key, 0xa920,
 	                     reinterpret_cast<const uint8_t*>(&out),
-	                     static_cast<uint32_t>(sizeof(out)));
+	                     static_cast<uint32_t>(sizeof(out)),
+	                     reliable);
+	++(reliable ? m_cast_sent_reliable : m_cast_sent_unreliable);
 }
 
 // ============================================================
@@ -5199,9 +5272,19 @@ void TrilogyClient::FlushPendingCastOn(bool spell_landed)
 	        m_pending_caston_data.source_id, m_pending_caston_data.target_id,
 	        m_pending_caston_data.spell_id, spell_landed ? 1 : 0);
 
+	// A landing on us puts the icon on our buff bar (unknown2[1] = 0x04) and
+	// one we cast is ours: both stay reliable. A landing between others is
+	// the visual and the emote only.
+	const bool caston_reliable = !RuleB(Zone, TrilogyBystanderCombatUnreliable) ||
+		!IsBystanderEvent(
+			static_cast<uint32_t>(m_pending_caston_data.source_id),
+			static_cast<uint32_t>(m_pending_caston_data.target_id)
+		);
 	m_tzs->SendToSession(m_session_key, 0x4620,
 	                     reinterpret_cast<const uint8_t*>(&m_pending_caston_data),
-	                     static_cast<uint32_t>(sizeof(m_pending_caston_data)));
+	                     static_cast<uint32_t>(sizeof(m_pending_caston_data)),
+	                     caston_reliable);
+	++(caston_reliable ? m_cast_sent_reliable : m_cast_sent_unreliable);
 	// Track whether this was a self-cast resist for duplicate-message suppression.
 	m_last_caston_was_self_resist = !spell_landed &&
 		m_pending_caston_data.target_id == m_pending_caston_data.source_id &&

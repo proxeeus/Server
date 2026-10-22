@@ -292,6 +292,16 @@ public:
 	// iteration.  See m_pending_text_q comment in the header for why.
 	void DrainPendingText();
 
+	// " combat rel=.. unrel=.. superseded=.. stale=.. capped=.. cast rel=.. unrel=.."
+	// for the BW diag line; resets the counters.
+	std::string TakeCombatStats();
+
+	// True when this combat/cast packet involves neither this client as source
+	// nor as target: a bot, pet or mob event it only watches. Those go out
+	// without ARQ (Zone:TrilogyBystanderCombatUnreliable) -- cosmetic, and the
+	// reliable channel is what a 70-bot raid saturates.
+	bool IsBystanderEvent(uint32_t source_id, uint32_t target_id) const;
+
 	// Depth of the paced text/combat queue.  Read by
 	// PlayerBotChatEngine::ZoneTextPressureHigh() so bot chat is not GENERATED
 	// into a session that is already backed up -- skipping generation preserves
@@ -1116,8 +1126,19 @@ private:
 		uint64_t              enqueued_ms;  // wall time; used for stale-drop
 		uint32_t              source_id;    // extracted from payload; 0 = unknown / not classified
 		bool                  supersedes;   // true → eligible for per-source dedup replacement
+		bool                  reliable;     // false → a bystander event, sent without ARQ
 	};
 	std::deque<PendingCombatPacket> m_pending_combat_q;
+
+	// Per-window combat send counters, printed with the BW diag line
+	// (TakeCombatStats) so reliable/unreliable and the drops can be compared.
+	uint32_t m_combat_sent_reliable   = 0;
+	uint32_t m_combat_sent_unreliable = 0;
+	uint32_t m_combat_superseded      = 0;
+	uint32_t m_combat_stale           = 0;
+	uint32_t m_combat_capped          = 0;
+	uint32_t m_cast_sent_reliable     = 0;
+	uint32_t m_cast_sent_unreliable   = 0;
 	double                          m_combat_tokens          = static_cast<double>(kCombatBucketCapacity);
 	uint64_t                        m_combat_tokens_last_ms  = 0;
 
@@ -1128,6 +1149,10 @@ private:
 	// Enqueue a combat packet to be drained by DrainPendingText() when a
 	// token becomes available.
 	void EnqueueCombatPacket(uint16_t opcode, const uint8_t* data, uint32_t size);
+
+	// False only for a bystander OP_Attack / OP_Action (IsBystanderEvent) while
+	// Zone:TrilogyBystanderCombatUnreliable is on; chat text is always reliable.
+	bool CombatPacketReliable(uint16_t opcode, const uint8_t* data, uint32_t size) const;
 
 	// Public caller entry point for combat opcodes (0x8021, 0x9F20, 0x5820).
 	// Fast path sends immediately when a token is free and the queue is
