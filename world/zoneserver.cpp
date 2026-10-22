@@ -52,6 +52,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 #include "../common/skill_caps.h"
 #include "trilogy_world.h"
 #include "character_sunset.h"
+#include "test_character_factory.h"
 
 extern ClientList client_list;
 extern TrilogyWorldServer* g_trilogy_world;
@@ -1554,6 +1555,14 @@ void ZoneServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p) {
 			}
 
 			CharacterSunset::HandleRequest(reinterpret_cast<ServerCharacterSunset_Struct *>(pack->pBuffer));
+			break;
+		}
+		case ServerOP_TestCharacter: {
+			if (pack->size < sizeof(ServerTestCharacter_Struct)) {
+				break;
+			}
+
+			TestCharacterFactory::HandleRequest(reinterpret_cast<ServerTestCharacter_Struct *>(pack->pBuffer));
 			break;
 		}
 		case ServerOP_RequestTellQueue: {

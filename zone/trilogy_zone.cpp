@@ -27,6 +27,7 @@
 #include "npc.h"
 #include "mob_movement_manager.h"
 #include "bot.h"
+#include "bot_command.h"
 #include "groups.h"
 #include "corpse.h"
 #include "../common/crc32.h"
@@ -5260,6 +5261,10 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// runs, so clear it here — otherwise every later zone-in would fire the
 		// first-login events again.
 		database.SetFirstLogon(tc->CharacterID(), 0);
+
+		// #testchar new ... bots=: the bots were left as a request on the character
+		// (they need their owner online); build them now that it is in the zone.
+		bot_raidkit_on_zone_in(tc);
 
 		// Guild appearance on zone-in.
 		//

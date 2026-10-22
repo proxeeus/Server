@@ -87,6 +87,7 @@ SET(common_sources
     skills.cpp
     skill_caps.cpp
     spdat.cpp
+    test_character_kit.cpp
     strings.cpp
     struct_strategy.cpp
     textures.cpp
@@ -624,6 +625,7 @@ SET(common_headers
     skills.h
     skill_caps.h
     spdat.h
+    test_character_kit.h
     strings.h
     struct_strategy.h
     tasks.h

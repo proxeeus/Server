@@ -71,6 +71,11 @@ public:
 	// table edits reach each zone process at its next boot.
 	void OnZoneBoot();
 
+	// #testchar: a free, filter-clean player name for a race/gender -- the v29c
+	// client's own Random Name generator when it knows the race, else one of the
+	// race's name sets. "" when neither can produce one.
+	std::string GenerateCharacterName(uint16 race, bool female);
+
 	// #pbnative reload. False + reason when the content cannot be read.
 	bool Reload(std::string &summary_out);
 	std::string Status();

@@ -165,3 +165,121 @@ void bot_command_removefromroster(Client* c, const Seperator* sep) {
 	if (database.botdb.RemoveBotFromRaidRoster(c->CharacterID(), bot_id))
 		c->Message(Chat::White, fmt::format("{} removed from your raid roster.", bot_name).c_str());
 }
+
+// ^disbandraid [keep] -- leave your bot raid and end it.
+//
+// v29c has no raid window, so a Trilogy player had no way out of a raid:
+// SpawnRaidBotsOnConnect rebuilds it at every login from raid_members, and
+// ^botcamp only despawns the bots. This takes you out the way the client's
+// own disband does for a bot owner (Handle_OP_RaidCommand RaidCommandDisband):
+// your bots, spawned or camped, leave with you, and the raid ends when no
+// player is left in it. Then your spawned bots are camped, so ^party can
+// build a group from scratch; "keep" leaves them up instead.
+void bot_command_disband_raid(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	Raid* raid = c->GetRaid();
+	if (!raid) {
+		c->Message(Chat::White, "You are not in a raid.");
+		return;
+	}
+
+	const bool keep = Strings::ToLower(sep->arg[1]) == "keep";
+
+	raid->VerifyRaid();
+	const uint32 group = raid->GetGroup(c->GetName());
+	const uint32 index = raid->GetPlayerIndex(c->GetName());
+
+	raid->RemoveRaidDelegates(c->GetName());
+	raid->SendRemoveAllRaidXTargets(c->GetName());
+	raid->SetNewRaidLeader(index);
+	raid->HandleBotGroupDisband(c->CharacterID());
+	raid->HandleOfflineBots(c->CharacterID());
+	raid->RemoveMember(c->GetName());
+	raid->SendGroupDisband(c);
+	raid->GroupUpdate(group);
+	if (!raid->RaidCount()) {
+		raid->DisbandRaid(); // `raid` may be gone after this
+	}
+
+	LogInfo("[BotRaid] [{}] disbanded their raid (keep bots up: {})", c->GetCleanName(), keep);
+
+	if (!keep) {
+		bot_command_real_dispatch(c, "^botcamp spawned");
+	}
+
+	c->Message(
+		Chat::White,
+		keep ?
+		"You left the raid; your bots are still up. ^party groups them." :
+		"You left the raid and your bots camped. ^party builds a group, ^createraid a new raid."
+	);
+}
+
+// ^recall [name|all] -- call back bots holding camp for you since you died.
+//
+// When the owner dies, its bots hold camp where it fell for 10 minutes
+// (Bot::BeginOwnerHold), and the hold bucket keeps every other zone from
+// spawning a second copy meanwhile. That is right for a corpse run, but it
+// left no way to get, say, a wizard to the bind to port you back. This marks
+// the hold "recalled"; the holding zone sees it within a second, leaves camp
+// (EndOwnerHold), and the bot can then be spawned here. The short expiry
+// covers a camp zone that is already gone.
+void bot_command_recall(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	const std::string want = Strings::ToLower(sep->arg[1]);
+
+	std::list<BotsAvailableList> bots_list;
+	if (!database.botdb.LoadBotsList(c->CharacterID(), bots_list)) {
+		c->Message(Chat::White, "Failed to load your bots.");
+		return;
+	}
+
+	std::vector<std::string> recalled;
+	for (const auto& b : bots_list) {
+		if (!want.empty() && want != "all" && Strings::ToLower(b.bot_name) != want) {
+			continue;
+		}
+
+		const auto key  = Bot::OwnerHoldBucketKey(b.bot_id);
+		const auto held = DataBucket::GetData(key);
+		if (held.empty() || held == Bot::OWNER_HOLD_RECALLED) {
+			continue;
+		}
+
+		DataBucket::SetData(key, Bot::OWNER_HOLD_RECALLED, "30");
+		recalled.emplace_back(b.bot_name);
+	}
+
+	if (recalled.empty()) {
+		c->Message(
+			Chat::White,
+			(want.empty() || want == "all") ?
+			"None of your bots is holding camp." :
+			fmt::format("{} is not holding camp.", sep->arg[1]).c_str()
+		);
+		return;
+	}
+
+	LogInfo("[BotTactics] [{}] recalled [{}] bots from camp", c->GetCleanName(), recalled.size());
+
+	constexpr size_t kShown = 8;
+	std::vector<std::string> shown(recalled.begin(), recalled.begin() + std::min(recalled.size(), kShown));
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Recalled {} bot{} from camp: {}{}. In a moment: ^spawn <name>, ^party or ^createraid.",
+			recalled.size(),
+			recalled.size() == 1 ? "" : "s",
+			Strings::Join(shown, ", "),
+			recalled.size() > kShown ? fmt::format(", +{} more", recalled.size() - kShown) : ""
+		).c_str()
+	);
+}

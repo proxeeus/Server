@@ -407,6 +407,7 @@ enum {	QSG_LFGuild_PlayerMatches = 0, QSG_LFGuild_UpdatePlayerInfo, QSG_LFGuild_
 #define ServerOP_Speech			0x5500
 
 #define ServerOP_CharacterSunset	0x5600 // zone -> world: #sunset request (world/character_sunset.cpp)
+#define ServerOP_TestCharacter		0x5601 // zone -> world: #testchar request (world/test_character_factory.cpp)
 
 enum {
 	UserToWorldStatusWorldUnavail = 0,
@@ -688,6 +689,24 @@ struct ServerCharacterSunset_Struct {
 	uint8  action;             // CharacterSunset::Action
 	uint32 batch_id;           // Undo: 0 = the latest batch not yet restored
 	char   target[64];         // Account / Character name
+};
+
+// #testchar new - build a finished character offline (world/test_character_factory.cpp).
+// Zone parses the command and picks race, gender and name (the name generator lives
+// in zone); world validates everything again and writes the rows.
+struct ServerTestCharacter_Struct {
+	char   requester[64];         // character name replies go to
+	uint32 requester_account_id;  // default account for the new character
+	int16  requester_admin;
+	uint8  class_id;
+	uint16 race_id;
+	uint8  gender;                // 0 male, 1 female
+	uint8  level;
+	char   tier[32];              // gear tier: "group", "none"
+	char   name[64];
+	char   account[32];           // empty = the requester's account
+	char   password[32];          // only used when the account is created
+	char   bots[16];              // "", "group", "raid" or "raid:N": built at first zone-in
 };
 
 struct ServerLSInfo_Struct {

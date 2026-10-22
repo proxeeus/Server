@@ -4,6 +4,7 @@ SET(world_sources
     adventure.cpp
     adventure_manager.cpp
     character_sunset.cpp
+    test_character_factory.cpp
     client.cpp
     cliententry.cpp
     clientlist.cpp
@@ -43,6 +44,7 @@ SET(world_headers
     adventure_manager.h
     adventure_template.h
     character_sunset.h
+    test_character_factory.h
     client.h
     cliententry.h
     clientlist.h

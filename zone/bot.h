@@ -1029,6 +1029,9 @@ public:
 	// while the group meds; combat songs stay with the bard AI
 	bool TacticsBardSongs(Client* leader);
 	static std::string OwnerHoldBucketKey(uint32 bot_id);
+	// OwnerHoldBucketKey holds the camp zone; ^recall writes this instead, and
+	// the holding zone then ends the hold (Bot::Process) so it can spawn elsewhere.
+	static constexpr const char *OWNER_HOLD_RECALLED = "recalled";
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
 	bool TacticsStartPull(Mob* target);
@@ -1194,6 +1197,7 @@ private:
 	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
 	uint32    m_encounter_reposition_ms = 0;
 	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
+	uint32    m_owner_hold_check_ms  = 0;   // next look at the hold bucket for a ^recall
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
 	uint32    m_situational_check_ms = 0;
