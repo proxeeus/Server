@@ -1152,6 +1152,7 @@ int bot_command_init(void)
 		bot_command_add("raidshow", "Prints the current raid roster and group composition to chat (text-only; primarily for Trilogy clients with no raid UI).", 0, bot_command_raid_show) ||
 		bot_command_add("rosterlist", "Prints your current raid roster (bots pre-selected for ^createraid) to chat.", 0, bot_command_roster_list) ||
 		bot_command_add("party", "Fills your group with the roles it is missing (tank, cleric, slower, crowd control, damage) from your bots. ^party raid builds a raid.", AccountStatus::Player, bot_command_party) ||
+		bot_command_add("raidkit", "GM: makes a ready test group or raid of bots at your level, equipped. ^raidkit group|raid[:N] [tier]", AccountStatus::GMImpossible, bot_command_raidkit) ||
 		bot_command_add("tactics","Shows your group or raid's automatic plan (main tank, off-tanks, CH chain). Overrides: mt <name|auto>, chain <seconds|auto>, on|off.", AccountStatus::Player, bot_command_tactics) ||
 		bot_command_add("spellshow", "Text-only mirror of ^spells for clients without saylinks (Trilogy). Args: [min_level] [name-filter].", AccountStatus::Player, bot_command_spell_show) ||
 		bot_command_add("ssshow", "Text-only mirror of ^spellsettings; numbers each setting for use with ^sstoggle / ^ssdel.", AccountStatus::Player, bot_command_ss_show) ||
@@ -1398,7 +1399,7 @@ void helper_bot_appearance_form_update(Bot *my_bot)
 	);
 }
 
-uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_class, uint16 bot_race, uint8 bot_gender)
+uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_class, uint16 bot_race, uint8 bot_gender, bool announce)
 {
 	uint32 bot_id = 0;
 	if (!bot_owner) {
@@ -1570,16 +1571,18 @@ uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_clas
 		return bot_id;
 	}
 
-	bot_owner->Message(
-		Chat::White,
-		fmt::format(
-			"Bot Created | Name: {} ID: {} Race: {} Class: {}",
-			my_bot->GetCleanName(),
-			my_bot->GetBotID(),
-			GetRaceIDName(my_bot->GetRace()),
-			GetClassIDName(my_bot->GetClass())
-		).c_str()
-	);
+	if (announce) {
+		bot_owner->Message(
+			Chat::White,
+			fmt::format(
+				"Bot Created | Name: {} ID: {} Race: {} Class: {}",
+				my_bot->GetCleanName(),
+				my_bot->GetBotID(),
+				GetRaceIDName(my_bot->GetRace()),
+				GetClassIDName(my_bot->GetClass())
+			).c_str()
+		);
+	}
 
 	bot_id = my_bot->GetBotID();
 	if (parse->PlayerHasQuestSub(EVENT_BOT_CREATE)) {
@@ -1996,4 +1999,5 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/raid_show.cpp"
 #include "bot_commands/tactics.cpp"
 #include "bot_commands/party.cpp"
+#include "bot_commands/raidkit.cpp"
 #include "bot_commands/spell_show.cpp"

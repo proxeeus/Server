@@ -11,12 +11,13 @@ namespace {
 
 void TestCharUsage(Client *c)
 {
-	c->Message(Chat::White, "Usage: #testchar new [class] [level] [tier] [race=..] [gender=m|f] [name=..] [account=.. [password=..]]");
+	c->Message(Chat::White, "Usage: #testchar new [class] [level] [tier] [race=..] [gender=m|f] [name=..] [account=.. [password=..]] [bots=..]");
 	c->Message(Chat::White, "  class: war clr pal rng shd dru mnk brd rog shm nec wiz mag enc (or full names)");
 	c->Message(Chat::White, "  tier: group (default: best group gear from the PlayerBot pools) | none");
 	c->Message(Chat::White, "  race: hum bar eru elf hie def hef dwf trl ogr hfl gnm iks - a legal one is picked if omitted");
 	c->Message(Chat::White, "  account: defaults to yours; created if missing (then password= is required)");
-	c->Message(Chat::White, "  Example: #testchar new clr 55 group account=testa password=test");
+	c->Message(Chat::White, "  bots: group (5 for the open roles) | raid (12 groups) | raid:N - built, equipped, at its first login");
+	c->Message(Chat::White, "  Example: #testchar new clr 55 group account=testa password=test bots=raid");
 }
 
 uint8 TestCharClass(const std::string &s)
@@ -139,6 +140,7 @@ void command_testchar(Client *c, const Seperator *sep)
 	std::string name;
 	std::string account;
 	std::string password;
+	std::string bots;
 
 	for (int i = 4; i <= sep->argnum; ++i) {
 		const std::string arg = sep->arg[i];
@@ -170,6 +172,15 @@ void command_testchar(Client *c, const Seperator *sep)
 		}
 		else if (key == "password") {
 			password = value;
+		}
+		else if (key == "bots") {
+			bots = Strings::ToLower(value);
+			const bool raid_n = bots.rfind("raid:", 0) == 0 && Strings::IsNumber(bots.substr(5)) &&
+				Strings::ToInt(bots.substr(5)) >= 2 && Strings::ToInt(bots.substr(5)) <= 12;
+			if (bots != "group" && bots != "raid" && !raid_n) {
+				c->Message(Chat::White, "bots= is group, raid (12 groups) or raid:N (N = 2..12).");
+				return;
+			}
 		}
 		else {
 			c->Message(Chat::White, fmt::format("Unknown option [{}].", key).c_str());
@@ -233,6 +244,7 @@ void command_testchar(Client *c, const Seperator *sep)
 	strn0cpy(s->name, name.c_str(), sizeof(s->name));
 	strn0cpy(s->account, account.c_str(), sizeof(s->account));
 	strn0cpy(s->password, password.c_str(), sizeof(s->password));
+	strn0cpy(s->bots, bots.c_str(), sizeof(s->bots));
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
 

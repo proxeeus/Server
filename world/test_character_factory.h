@@ -27,6 +27,8 @@
 //                tier "none": nothing
 //   kit          8 Hand Made Backpacks, rations, water, platinum
 //   account      created when missing (login_accounts scrypt + account row)
+//   bots         bots=group|raid[:N] is left as data bucket testchar_pending_bots;
+//                zone builds them at the first zone-in (zone/bot_commands/raidkit.cpp)
 //
 // No new tables: test characters go on a test account, and
 // "#sunset account <name>" clears it.

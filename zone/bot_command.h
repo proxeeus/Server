@@ -1760,7 +1760,9 @@ void bot_command_portal(Client *c, const Seperator *sep);
 bool helper_bot_appearance_fail(Client *bot_owner, Bot *my_bot, BCEnum::AFType fail_type, const char* type_desc);
 void helper_bot_appearance_form_final(Client *bot_owner, Bot *my_bot);
 void helper_bot_appearance_form_update(Bot *my_bot);
-uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_class, uint16 bot_race, uint8 bot_gender);
+// announce = false: no "Bot Created" line (^raidkit makes up to 71 at once, and a chat
+// burst is a known Trilogy disconnect trigger). Failures are always reported.
+uint32 helper_bot_create(Client *bot_owner, std::string bot_name, uint8 bot_class, uint16 bot_race, uint8 bot_gender, bool announce = true);
 void helper_bot_out_of_combat(Client *bot_owner, Bot *my_bot);
 int helper_bot_follow_option_chain(Client *bot_owner);
 bool helper_cast_standard_spell(Bot* casting_bot, Mob* target_mob, int spell_id, bool annouce_cast = true, uint32* dont_root_before = nullptr);
@@ -1800,6 +1802,11 @@ void bot_command_raid_show(Client* c, const Seperator* sep);
 void bot_command_roster_list(Client* c, const Seperator* sep);
 void bot_command_tactics(Client* c, const Seperator* sep);
 void bot_command_party(Client* c, const Seperator* sep);
+void bot_command_raidkit(Client *c, const Seperator *sep);
+
+// ^raidkit and #testchar bots=: build a test group or raid (bot_commands/raidkit.cpp).
+void bot_raidkit_build(Client *c, const std::string &mode, const std::string &tier);
+void bot_raidkit_on_zone_in(Client *c);
 void bot_command_spell_show(Client* c, const Seperator* sep);
 void bot_command_ss_show(Client* c, const Seperator* sep);
 void bot_command_ss_toggle(Client* c, const Seperator* sep);

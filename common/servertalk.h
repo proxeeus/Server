@@ -706,6 +706,7 @@ struct ServerTestCharacter_Struct {
 	char   name[64];
 	char   account[32];           // empty = the requester's account
 	char   password[32];          // only used when the account is created
+	char   bots[16];              // "", "group", "raid" or "raid:N": built at first zone-in
 };
 
 struct ServerLSInfo_Struct {
