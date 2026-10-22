@@ -893,10 +893,26 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 				// Once it has reached camp it is the camp's fight, wherever it
 				// is pushed to after (it flickered on the camp's edge).
-				if (mob_in_camp) {
+				//
+				// The same holds once one of the unit's bots has its aggro: a
+				// pull is the mob chasing the puller, and a mob on the tank is
+				// being fought where it stands. Without this, a mob that never
+				// walks to camp (Wuoshi, any rooted raid target) read as an
+				// endless pull: every time the leader stepped out of camp to
+				// fight it, or was feared out, the bots went back to camp to
+				// wait for it.
+				Mob* const on        = assist->GetTarget();
+				const bool bot_holds = on && on != leader && on->IsBot() &&
+					std::find(mobs.begin(), mobs.end(), on) != mobs.end();
+				if (mob_in_camp || bot_holds) {
 					p.pull_arrived_id = assist->GetID();
 				}
-				bool pull = !leader_in_camp && !mob_in_camp && assist->GetID() != p.pull_arrived_id;
+
+				// A feared, stunned or mezzed leader is not pulling anything.
+				const bool leader_helpless = leader->IsFeared() || leader->IsStunned() || leader->IsMezzed();
+
+				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless &&
+					assist->GetID() != p.pull_arrived_id;
 
 				if (pull && !p.pull_active) {
 					p.pull_start_ms = now;

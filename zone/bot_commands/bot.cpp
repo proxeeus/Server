@@ -1050,10 +1050,15 @@ void bot_command_spawn(Client *c, const Seperator *sep)
 	if (const auto held_in = DataBucket::GetData(Bot::OwnerHoldBucketKey(bot_id)); !held_in.empty()) {
 		c->Message(
 			Chat::White,
-			fmt::format(
-				"'{}' is holding camp in {} since you died. Go back, or wait for it to give up.",
-				bot_name,
-				held_in
+			(
+				held_in == Bot::OWNER_HOLD_RECALLED ?
+				fmt::format("'{}' is leaving its camp; try again in a moment.", bot_name) :
+				fmt::format(
+					"'{}' is holding camp in {} since you died. Go back, wait for it to give up, or ^recall {}.",
+					bot_name,
+					held_in,
+					bot_name
+				)
 			).c_str()
 		);
 		return;

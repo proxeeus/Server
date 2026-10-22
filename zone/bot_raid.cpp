@@ -21,6 +21,7 @@
 #include "client.h"
 #include "object.h"
 #include "raids.h"
+#include "data_bucket.h"
 #include "doors.h"
 #include "quest_parser_collection.h"
 #include "../common/data_verification.h"
@@ -308,12 +309,24 @@ void Client::SpawnRaidBotsOnConnect(Raid* raid) {
 		return;
 	}
 
+	// Bots holding camp for us elsewhere since we died stay there: say so once,
+	// rather than one ^spawn refusal per bot (up to 71 lines at once, and a
+	// chat burst is a known Trilogy disconnect trigger).
+	std::string held_in;
+	int         held = 0;
+
 	std::vector<RaidMember> r_members = raid->GetMembers();
 	for (const auto& m: r_members) {
 		if (strlen(m.member_name) != 0) {
 
 			for (const auto& b: bots_list) {
 				if (strcmp(m.member_name, b.bot_name) == 0) {
+					if (const auto zone_name = DataBucket::GetData(Bot::OwnerHoldBucketKey(b.bot_id)); !zone_name.empty()) {
+						held_in = zone_name;
+						++held;
+						continue;
+					}
+
 					std::string buffer = "^spawn ";
 					buffer.append(m.member_name);
 					bot_command_real_dispatch(this, buffer.c_str());
@@ -326,6 +339,17 @@ void Client::SpawnRaidBotsOnConnect(Raid* raid) {
 				}
 			}
 		}
+	}
+
+	if (held) {
+		Message(
+			Chat::White,
+			fmt::format(
+				"{} of your raid's bots are holding camp{} since you died. ^recall calls them here.",
+				held,
+				held_in == Bot::OWNER_HOLD_RECALLED ? "" : fmt::format(" in {}", held_in)
+			).c_str()
+		);
 	}
 }
 

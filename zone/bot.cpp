@@ -1715,6 +1715,17 @@ bool Bot::Process()
 			return false;
 		}
 
+		// ^recall from another zone: the owner wants this bot there now. Leave
+		// the camp, so it can be spawned without a second copy standing here.
+		if (Timer::GetCurrentTime() >= m_owner_hold_check_ms) {
+			m_owner_hold_check_ms = Timer::GetCurrentTime() + 1000;
+			if (DataBucket::GetData(OwnerHoldBucketKey(GetBotID())) == OWNER_HOLD_RECALLED) {
+				LogInfo("[BotTactics] [{}] recalled by its owner: leaving camp", GetCleanName());
+				EndOwnerHold();
+				return false;
+			}
+		}
+
 		if (Client* owner = entity_list.GetClientByCharID(GetBotOwnerCharacterID()); owner && !owner->IsDead()) {
 			ResumeFromOwnerHold(owner);
 		}

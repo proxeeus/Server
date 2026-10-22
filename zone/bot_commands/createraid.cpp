@@ -218,3 +218,68 @@ void bot_command_disband_raid(Client* c, const Seperator* sep)
 		"You left the raid and your bots camped. ^party builds a group, ^createraid a new raid."
 	);
 }
+
+// ^recall [name|all] -- call back bots holding camp for you since you died.
+//
+// When the owner dies, its bots hold camp where it fell for 10 minutes
+// (Bot::BeginOwnerHold), and the hold bucket keeps every other zone from
+// spawning a second copy meanwhile. That is right for a corpse run, but it
+// left no way to get, say, a wizard to the bind to port you back. This marks
+// the hold "recalled"; the holding zone sees it within a second, leaves camp
+// (EndOwnerHold), and the bot can then be spawned here. The short expiry
+// covers a camp zone that is already gone.
+void bot_command_recall(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	const std::string want = Strings::ToLower(sep->arg[1]);
+
+	std::list<BotsAvailableList> bots_list;
+	if (!database.botdb.LoadBotsList(c->CharacterID(), bots_list)) {
+		c->Message(Chat::White, "Failed to load your bots.");
+		return;
+	}
+
+	std::vector<std::string> recalled;
+	for (const auto& b : bots_list) {
+		if (!want.empty() && want != "all" && Strings::ToLower(b.bot_name) != want) {
+			continue;
+		}
+
+		const auto key  = Bot::OwnerHoldBucketKey(b.bot_id);
+		const auto held = DataBucket::GetData(key);
+		if (held.empty() || held == Bot::OWNER_HOLD_RECALLED) {
+			continue;
+		}
+
+		DataBucket::SetData(key, Bot::OWNER_HOLD_RECALLED, "30");
+		recalled.emplace_back(b.bot_name);
+	}
+
+	if (recalled.empty()) {
+		c->Message(
+			Chat::White,
+			(want.empty() || want == "all") ?
+			"None of your bots is holding camp." :
+			fmt::format("{} is not holding camp.", sep->arg[1]).c_str()
+		);
+		return;
+	}
+
+	LogInfo("[BotTactics] [{}] recalled [{}] bots from camp", c->GetCleanName(), recalled.size());
+
+	constexpr size_t kShown = 8;
+	std::vector<std::string> shown(recalled.begin(), recalled.begin() + std::min(recalled.size(), kShown));
+	c->Message(
+		Chat::White,
+		fmt::format(
+			"Recalled {} bot{} from camp: {}{}. In a moment: ^spawn <name>, ^party or ^createraid.",
+			recalled.size(),
+			recalled.size() == 1 ? "" : "s",
+			Strings::Join(shown, ", "),
+			recalled.size() > kShown ? fmt::format(", +{} more", recalled.size() - kShown) : ""
+		).c_str()
+	);
+}
