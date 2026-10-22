@@ -289,6 +289,20 @@ public:
 		...
 	);
 
+	// What OutF (every LogInfo/LogError/... alias) calls: `message` is already
+	// formatted, so it goes out as-is. Out() would run it through printf again,
+	// turning any '%' in the logged CONTENT (a heal "24% missing", a player's
+	// chat line) into a directive that reads garbage varargs -- "%s"/"%n" from
+	// a chat line could crash the process.
+	void OutFormatted(
+		Logs::DebugLevel debug_level,
+		uint16 log_category,
+		const char *file,
+		const char *func,
+		int line,
+		const std::string &message
+	);
+
 	/**
 	 * Used in file logs to prepend a timestamp entry for logs
 	 * @param time_stamp
@@ -392,6 +406,16 @@ public:
 
 private:
 
+	// The output half of Out/OutFormatted: console, gmsay, file, discord.
+	void Emit(
+		const LogEnabled &l,
+		uint16 log_category,
+		const char *file,
+		const char *func,
+		int line,
+		const std::string &message
+	);
+
 	// reference to database
 	Database                                                                        *m_database;
 	std::function<void(uint16 log_category, const char *func, const std::string &)> m_on_log_gmsay_hook;
@@ -436,7 +460,7 @@ void OutF(
 
 #define OutF(ls, debug_level, log_category, file, func, line, formatStr, ...) \
 do { \
-    ls.Out(debug_level, log_category, file, func, line, fmt::format(formatStr, ##__VA_ARGS__).c_str()); \
+    ls.OutFormatted(debug_level, log_category, file, func, line, fmt::format(formatStr, ##__VA_ARGS__)); \
 } while(0)
 
 #endif
