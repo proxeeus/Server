@@ -123,6 +123,19 @@ enum BotCastingChanceConditional : uint8
 	cntHSND = 16
 };
 
+// A short walk around a mob -- to its back, turning it, out of its front --
+// walked rather than teleported (bot_tactics.cpp, BOT_AI_SENTIENT.md E2).
+// One for the bot, one for its pet.
+struct BotStep {
+	uint16    target_id = 0;
+	glm::vec3 via       = glm::vec3(0.0f); // round its flank first...
+	glm::vec3 goal      = glm::vec3(0.0f); // ...then here
+	bool      has_via   = false;
+	glm::vec3 anchor    = glm::vec3(0.0f); // where the mob stood when we set off
+	uint32    until_ms  = 0;               // walking, until then at most (0 = not walking)
+	uint32    react_ms  = 0;               // seen in its front: move at this time
+	uint32    rest_ms   = 0;               // no new walk before this
+};
 
 class Bot : public NPC {
 	friend class Mob;
@@ -1071,6 +1084,17 @@ public:
 	void TacticsSpokenTo(Client* who, const char* message);
 	void TacticsQueueGesture(uint8 anim, uint32 delay_ms, uint16 face_id);
 	void TacticsGestureCheck();
+	// - repositioning around a mob is walked, not teleported: a fighter in
+	//   its front half goes round its flank to the nearest spot behind, after
+	//   a human moment; no swings on the way (also the tank turning the mob,
+	//   raid front / reach moves, and bot pets via mob_ai.cpp)
+	bool TacticsStepping(Mob* tar);                   // walking: true = nothing else this tick
+	bool TacticsStepBehind(Mob* tar, float dist);     // true = set off
+	bool TacticsPetStepping(Mob* pet, Mob* tar);
+	bool TacticsPetStepBehind(Mob* pet, Mob* tar, float dist);
+	static bool StepBegin(Mob* mover, BotStep& s, Mob* tar, const glm::vec3& goal);
+	static bool StepContinue(Mob* mover, BotStep& s, Mob* tar);
+	static bool StepBehind(Mob* mover, BotStep& s, Mob* tar, float dist);
 
 	// Public "Refactor" Methods
 	static bool CheckSpawnConditions(Client* c);
@@ -1183,7 +1207,8 @@ private:
 	uint32    m_los_check_ms         = 0;
 	uint32    m_interrupt_check_ms   = 0;
 	uint32    m_canni_check_ms       = 0;
-	uint32    m_pet_reposition_ms    = 0;   // our pet stepped behind an enraged mob then
+	BotStep   m_step;                       // our walk around a mob (TacticsStepping)
+	BotStep   m_pet_step;                   // our pet's (TacticsPetStepping)
 	glm::vec3 m_formation_slot       = glm::vec3(0.0f); // TacticsFormationSlot cache...
 	glm::vec4 m_formation_anchor     = glm::vec4(0.0f); // ...the leader's spot it was made for
 	uint32    m_formation_built_ms   = 0;   // ...and the plan build it was ranked in

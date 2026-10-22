@@ -4241,27 +4241,10 @@ void Bot::TacticsPetChecks()
 		return; // the tank picks its own fights
 	}
 
-	Mob* t = pet->GetTarget();
-
-	// Enraged, it ripostes everything in front of it (attack.cpp): a pet
-	// that is not tanking goes behind it, as the melee bots do. Mage and
-	// beastlord pets died to this at every enrage.
-	if (t && t->IsNPC() && IsAlive(t) && t->IsEnraged() && !pet->BehindMob(t, pet->GetX(), pet->GetY()) &&
-		Timer::GetCurrentTime() >= m_pet_reposition_ms) {
-		m_pet_reposition_ms = Timer::GetCurrentTime() + kTankRepositionMs;
-
-		auto        dest       = pet->TryMoveAlong(t->GetPosition(), 8.0f, 256.0f);
-		const float expected_z = t->GetPosition().z - t->GetZOffset() + pet->GetZOffset();
-		const float dz         = dest.z - expected_z;
-		if (dz > -15.0f && dz < 15.0f) { // same ledge guard as the bots
-			dest.w = t->GetHeading();    // facing its back
-			pet->Teleport(dest);
-			LogInfo("[BotTactics] [{}]'s pet goes behind enraged [{}]", GetCleanName(), t->GetCleanName());
-		}
-	}
-
 	// Never a mezzed mob, nor an add someone else is dealing with: back to
-	// the main target.
+	// the main target. (Getting behind it -- enraged or not -- is the pet's
+	// own AI, mob_ai.cpp, walked through TacticsPetStepBehind.)
+	Mob* t = pet->GetTarget();
 	if (!t || !t->IsNPC() || t->GetID() == p->assist_target_id) {
 		return;
 	}
@@ -4483,8 +4466,8 @@ bool Bot::TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const
 		return false;
 	}
 
-	dest.w = to_camp; // from out there, the mob lies toward camp: face it
-	Teleport(dest);
+	// Walked round it, as a player tanking does; the mob turns to follow us.
+	StepBegin(this, m_step, tar, glm::vec3(dest));
 	LogInfo("[BotTactics] [{}] turns [{}] away from camp", GetCleanName(), tar->GetCleanName());
 	return true;
 }
@@ -4556,8 +4539,7 @@ bool Bot::TacticsEncounterPositioning(Mob* tar)
 		return false;
 	}
 
-	dest.w = FixHeading(heading + 256.0f); // facing the mob
-	Teleport(dest);
+	StepBegin(this, m_step, tar, glm::vec3(dest)); // walked; facing it on arrival
 	LogInfo(
 		"[BotTactics] [{}] repositions for [{}] ({})", GetCleanName(), tar->GetCleanName(),
 		in_front ? "out of its front" : "out of its reach"
@@ -6063,4 +6045,201 @@ bool Bot::TacticsDeathSave()
 	}
 	LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[sid].name, tank->GetCleanName());
 	return true;
+}
+
+// ---- walking round a mob ----
+
+namespace {
+
+constexpr float  kStepArrive       = 3.0f;   // this close to a point: there
+constexpr float  kStepArriveIdle   = 5.0f;   // ...or stopped this close (the mover settled short)
+constexpr float  kStepFrontDeg     = 80.0f;  // a walk starts this close to its nose (riposte zone: 90)
+constexpr uint32 kStepReactMinMs   = 300;    // a moment to notice, per bot...
+constexpr uint32 kStepReactMaxMs   = 1000;
+constexpr uint32 kStepRestMs       = 1500;   // after arriving, no new walk for this long
+constexpr uint32 kStepGiveUpRestMs = 4000;   // after giving up, fight from where we are this long
+constexpr float  kStepMobMoved     = 8.0f;   // the mob moved this far since we set off: look again
+constexpr float  kStepAroundCos    = -0.17f; // goal more than ~100 degrees round the mob: via its flank
+constexpr float  kStepLedge        = 15.0f;  // same ledge / bridge guard as the old teleports
+
+} // namespace
+
+bool Bot::StepBegin(Mob* mover, BotStep& s, Mob* tar, const glm::vec3& goal)
+{
+	if (!mover || !tar) {
+		return false;
+	}
+
+	const glm::vec3 me(mover->GetPosition());
+	const glm::vec3 at(tar->GetPosition());
+
+	// Far round the mob from where we stand: go by its flank on our side, not
+	// through it.
+	const float ax = me.x - at.x;
+	const float ay = me.y - at.y;
+	const float bx = goal.x - at.x;
+	const float by = goal.y - at.y;
+	const float la = std::sqrt(ax * ax + ay * ay);
+	const float lb = std::sqrt(bx * bx + by * by);
+
+	s.has_via = false;
+	if (la > 0.5f && lb > 0.5f && (ax * bx + ay * by) / (la * lb) < kStepAroundCos) {
+		const glm::vec3 left(mover->TryMoveAlong(tar->GetPosition(), lb, 128.0f));
+		const glm::vec3 right(mover->TryMoveAlong(tar->GetPosition(), lb, 384.0f));
+		s.via     = DistanceSquaredNoZ(left, me) <= DistanceSquaredNoZ(right, me) ? left : right;
+		s.has_via = true;
+	}
+
+	s.target_id = tar->GetID();
+	s.goal      = goal;
+	s.anchor    = at;
+
+	// Long enough to walk it, with slack; then we give up (TacticsStepping).
+	const float walk = s.has_via ?
+		std::sqrt(DistanceSquaredNoZ(me, s.via)) + std::sqrt(DistanceSquaredNoZ(s.via, goal)) :
+		std::sqrt(DistanceSquaredNoZ(me, goal));
+	s.until_ms = Timer::GetCurrentTime() + 1500 + static_cast<uint32>(walk * 150.0f);
+
+	const glm::vec3& first = s.has_via ? s.via : s.goal;
+	mover->RunTo(first.x, first.y, first.z);
+	return true;
+}
+
+bool Bot::StepContinue(Mob* mover, BotStep& s, Mob* tar)
+{
+	if (!mover || !s.until_ms) {
+		return false;
+	}
+
+	const uint32 now  = Timer::GetCurrentTime();
+	auto         stop = [&](uint32 rest) {
+		s.until_ms = 0;
+		s.rest_ms  = now + rest;
+		if (mover->IsMoving()) {
+			mover->StopMoving();
+		}
+	};
+
+	// A new target, or the mob walked off: what we were heading for means
+	// nothing now. Look again.
+	if (!tar || tar->GetID() != s.target_id || !IsAlive(tar) ||
+		DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), s.anchor) > kStepMobMoved * kStepMobMoved) {
+		stop(0);
+		return false;
+	}
+
+	// A pillar, a wall, a mob that keeps turning: fight from here a while.
+	if (now > s.until_ms) {
+		stop(kStepGiveUpRestMs);
+		LogInfo("[BotTactics] [{}] cannot get round [{}]: fights from where it stands", mover->GetCleanName(), tar->GetCleanName());
+		return false;
+	}
+
+	const glm::vec3 me(mover->GetPosition());
+	auto arrived = [&](const glm::vec3& p) {
+		const float d2 = DistanceSquaredNoZ(me, p);
+		return d2 <= kStepArrive * kStepArrive || (!mover->IsMoving() && d2 <= kStepArriveIdle * kStepArriveIdle);
+	};
+
+	if (s.has_via) {
+		if (arrived(s.via)) {
+			s.has_via = false;
+			mover->RunTo(s.goal.x, s.goal.y, s.goal.z);
+		}
+		else if (!mover->IsMoving()) {
+			mover->RunTo(s.via.x, s.via.y, s.via.z);
+		}
+		return true;
+	}
+
+	if (arrived(s.goal)) {
+		stop(kStepRestMs);
+		mover->FaceTarget(tar);
+		return false; // there: back to fighting this very tick
+	}
+
+	if (!mover->IsMoving()) {
+		mover->RunTo(s.goal.x, s.goal.y, s.goal.z);
+	}
+	return true;
+}
+
+bool Bot::StepBehind(Mob* mover, BotStep& s, Mob* tar, float dist)
+{
+	if (!mover || !tar) {
+		return false;
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Anywhere in its back half is safe from ripostes (attack.cpp: in front
+	// = not BehindMob, i.e. within 90 degrees of its nose).
+	if (mover->BehindMob(tar, mover->GetX(), mover->GetY())) {
+		s.react_ms = 0;
+		return false;
+	}
+
+	// Well into its front, not on the shoulder (a mob turning a little must
+	// not send everyone round it again), and not right after a walk.
+	if (now < s.rest_ms || mover->MobAngle(tar, mover->GetX(), mover->GetY()) > kStepFrontDeg) {
+		return false;
+	}
+
+	// A moment to notice, different for each: nobody moves in step.
+	if (!s.react_ms) {
+		s.react_ms = now + zone->random.Int(kStepReactMinMs, kStepReactMaxMs);
+		return false;
+	}
+	if (now < s.react_ms) {
+		return false;
+	}
+	s.react_ms = 0;
+
+	// The nearest spot of its back half on our side: 130 to 160 degrees off
+	// its nose (spread by id, so a few melee do not stack), our melee reach
+	// out. Both sides are worked out; the nearer one wins, and the other if
+	// the nearer is off a ledge.
+	const float     off = 185.0f + static_cast<float>(mover->GetID() % 4) * 14.0f;
+	const glm::vec4 a   = mover->TryMoveAlong(tar->GetPosition(), dist, off);
+	const glm::vec4 b   = mover->TryMoveAlong(tar->GetPosition(), dist, 512.0f - off);
+	const glm::vec3 me(mover->GetPosition());
+
+	const float expected_z = tar->GetPosition().z - tar->GetZOffset() + mover->GetZOffset();
+	auto        level      = [&](const glm::vec4& d) {
+		const float dz = d.z - expected_z;
+		return dz > -kStepLedge && dz < kStepLedge;
+	};
+
+	const bool       a_nearer = DistanceSquaredNoZ(glm::vec3(a), me) <= DistanceSquaredNoZ(glm::vec3(b), me);
+	const glm::vec4& nearer   = a_nearer ? a : b;
+	const glm::vec4& farther  = a_nearer ? b : a;
+	if (level(nearer)) {
+		return StepBegin(mover, s, tar, glm::vec3(nearer));
+	}
+	if (level(farther)) {
+		return StepBegin(mover, s, tar, glm::vec3(farther));
+	}
+
+	s.rest_ms = now + kStepGiveUpRestMs; // a ledge either way: fight from here
+	return false;
+}
+
+bool Bot::TacticsStepping(Mob* tar)
+{
+	return StepContinue(this, m_step, tar);
+}
+
+bool Bot::TacticsStepBehind(Mob* tar, float dist)
+{
+	return StepBehind(this, m_step, tar, dist);
+}
+
+bool Bot::TacticsPetStepping(Mob* pet, Mob* tar)
+{
+	return pet && pet == GetPet() && StepContinue(pet, m_pet_step, tar);
+}
+
+bool Bot::TacticsPetStepBehind(Mob* pet, Mob* tar, float dist)
+{
+	return pet && pet == GetPet() && StepBehind(pet, m_pet_step, tar, dist);
 }

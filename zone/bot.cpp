@@ -2369,6 +2369,12 @@ void Bot::AI_Process()
 		const EQ::ItemInstance* s_item;
 		CheckCombatRange(tar, tar_distance, atCombatRange, p_item, s_item);
 
+		// Walking round the mob (to its back, turning it, out of its front):
+		// keep at it, no swings on the way (bot_tactics.cpp, TacticsStepping)
+		if (TacticsStepping(tar)) {
+			return;
+		}
+
 // ENGAGED AT COMBAT RANGE
 
 		// We can fight
@@ -2455,8 +2461,8 @@ void Bot::AI_Process()
 					const auto dest = TryMoveAlong(tar->GetPosition(), 2.0f, 0.0f);
 					const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
 					const float dz = dest.z - expected_z;
-					if (dz > -15.0f && dz < 15.0f) {
-						Teleport(dest);
+					if (dz > -15.0f && dz < 15.0f && Timer::GetCurrentTime() >= m_step.rest_ms) {
+						StepBegin(this, m_step, tar, glm::vec3(dest)); // walked in, not teleported
 						return;
 					}
 				}
@@ -2465,10 +2471,6 @@ void Bot::AI_Process()
 			if (!BehindMob(tar, GetX(), GetY()) && (GetClass() == Class::Rogue || GetClass() == Class::Ranger || GetClass() == Class::Monk ||
 				GetClass() == Class::Bard || GetClass() == Class::Paladin || GetClass() == Class::ShadowKnight || GetClass() == Class::Warrior) && ( this != tar->GetHateTop()))
 			{
-				// Spread bots across a ±60° arc behind the target so they don't stack.
-				// Five slots: straight behind, ±30°, ±60° (512 heading units = 360°).
-				static constexpr float behind_angles[] = { 256.0f, 214.0f, 298.0f, 171.0f, 341.0f };
-
 				// Perma-rooted mobs target the closest entity on the hate list (not highest hate).
 				// DPS bots must stay at max melee range so the tank (ultra-close) remains the
 				// closest entity and the mob stays facing it.
@@ -2481,17 +2483,12 @@ void Bot::AI_Process()
 						reposition_dist = 5.0f;
 				}
 
-				const auto dest = TryMoveAlong(tar->GetPosition(), reposition_dist, behind_angles[GetID() % 5]);
-				// When FindDestGroundZ fails (bridge gap, ledge edge), GetFixedZ returns the
-				// uncorrected start Z — roughly tar->GetPosition().z. Guard against that by
-				// checking the result is within 15 units of the expected terrain level.
-				const float expected_z = tar->GetPosition().z - tar->GetZOffset() + GetZOffset();
-				const float dz = dest.z - expected_z;
-				if (dz > -15.0f && dz < 15.0f) {
-					Teleport(dest);
+				// Walk round its flank to the nearest spot of its back half, after a
+				// moment to notice; no swings on the way (bot_tactics.cpp). Waiting
+				// to react, or a ledge either way: fight from here.
+				if (TacticsStepBehind(tar, reposition_dist)) {
 					return;
 				}
-				// Can't safely reposition (e.g., narrow bridge) — fight from current position.
 			}
 
 			if (!IsBotNonSpellFighter() && AI_EngagedCastCheck()) {
@@ -2543,6 +2540,10 @@ void Bot::AI_Process()
 		}
 	}
 	else { // Out-of-combat behavior
+
+		// A walk round a mob ends with the fight
+		m_step     = BotStep{};
+		m_pet_step = BotStep{};
 
 		SetAttackFlag(false);
 		SetAttackingFlag(false);
