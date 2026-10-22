@@ -1,6 +1,7 @@
 #include "playerbot_native.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdlib>
 
 #include "../common/eq_constants.h"
@@ -583,6 +584,47 @@ bool PlayerBotNative::RollProfile(NPC *npc, Profile &p)
 	}
 
 	return !p.name.empty();
+}
+
+std::string PlayerBotNative::GenerateCharacterName(uint16 race, bool female)
+{
+	if (!EnsureLoaded()) {
+		return "";
+	}
+
+	const auto race_it = m_races.find(race);
+
+	for (int attempt = 0; attempt < 25; ++attempt) {
+		std::string name;
+		if (m_client_names.HasRace(race)) {
+			name = m_client_names.Generate(race, female);
+		}
+
+		if (name.empty() && race_it != m_races.end()) {
+			const auto &sets = female ? race_it->second.female_sets : race_it->second.male_sets;
+			if (!sets.empty()) {
+				name = m_names.Generate(sets[static_cast<size_t>(RandInt(0, static_cast<int>(sets.size()) - 1))]);
+			}
+		}
+
+		if (name.empty()) {
+			return "";
+		}
+
+		// A player name is one capitalised word of letters.
+		if (!std::all_of(name.begin(), name.end(), [](unsigned char ch) { return std::isalpha(ch); })) {
+			continue;
+		}
+
+		name = Strings::ToLower(name);
+		name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
+
+		if (database.CheckNameFilter(name) && !database.IsNameUsed(name)) {
+			return name;
+		}
+	}
+
+	return "";
 }
 
 uint8 PlayerBotNative::RollLevel(const ZoneRow &z, bool is_static)
