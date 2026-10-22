@@ -125,6 +125,22 @@ constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots lef
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
 
+// The XP engine (BOT_AI_SENTIENT.md, 6)
+constexpr float  kLowConfidence         = 0.5f;   // under this: singles only, rest to 95%
+constexpr float  kHighConfidence        = 1.5f;   // from this: one more social is fine
+constexpr float  kMaxConfidence         = 2.0f;
+constexpr float  kCautiousReadyRatio    = 95.0f;
+constexpr float  kChainPullConfidence   = 1.0f;   // chain pulls only after easy fights
+constexpr float  kChainPullHPPct        = 35.0f;  // the main target under this...
+constexpr float  kChainPullTtdS         = 15.0f;  // ...and dead within this at its rate...
+constexpr float  kChainPullReadyPct     = 60.0f;  // ...and every bot over this health and mana
+constexpr float  kEasyFightTankPct      = 50.0f;  // the tank never under this, nobody died: easy
+constexpr float  kHardFightTankPct      = 25.0f;  // under this, or a death: hard
+constexpr float  kRoamerJoinDist        = 60.0f;  // a hostile roamer this close to a pull comes too
+constexpr float  kRoamerNearCamp        = 150.0f; // a lone roamer this close to camp goes first
+constexpr float  kPullTravelSpeed       = 25.0f;  // units a second, there and back (rough)
+constexpr float  kDefaultTtkS           = 30.0f;  // a kill we know nothing about
+
 bool IsAlive(Mob* m)
 {
 	return m && !m->IsCorpse() && m->GetHP() > 0 && m->GetAppearance() != eaDead;
@@ -988,6 +1004,10 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// ---- what fights cost (kill and rest time per kind, confidence) ----
+
+	FightLedger(p, mobs, assist, old_assist, mt);
+
 	// ---- auto-pull (opt-in) ----
 
 	AutoPull(p, raid, mobs, leader, ov);
@@ -1416,61 +1436,11 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	// ---- is the camp ready for the next one? ----
-
 	if (
-		p.assist_target_id ||
-		now - p.assist_since_ms < kCalmMs ||
-		now - p.autopull_last_end_ms < kAutoPullGapMs ||
 		now - p.autopull_last_try_ms < kAutoPullTryMs ||
-		!p.fallen.empty() ||
-		p.pull_active ||
 		DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius
 	) {
 		return;
-	}
-	p.autopull_last_try_ms = now;
-
-	// Everyone up (the same bar as "Ready."), nobody pulling already.
-	p.readiness = 100.0f;
-	for (Mob* m : mobs) {
-		if (!m->IsBot() || !IsAlive(m)) {
-			continue;
-		}
-		Bot* b = m->CastToBot();
-		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
-			return;
-		}
-		p.readiness = std::min(p.readiness, m->GetHPRatio());
-		if (UsesMana(m)) {
-			p.readiness = std::min(p.readiness, m->GetManaRatio());
-		}
-	}
-	if (p.readiness < kReadyRatio) {
-		return;
-	}
-
-	// A bot's long buff on one of us about to run out: let it be renewed
-	// before pulling (TacticsSituationalBuffs does it, between fights).
-	for (Mob* m : mobs) {
-		if (!IsAlive(m)) {
-			continue;
-		}
-		Buffs_Struct* buffs = m->GetBuffs();
-		const int     slots = m->GetMaxTotalSlots();
-		for (int i = 0; buffs && i < slots; ++i) {
-			const uint16 sid = buffs[i].spellid;
-			if (
-				IsValidSpell(sid) &&
-				buffs[i].ticsremaining > 0 &&
-				buffs[i].ticsremaining <= kPullBuffTics &&
-				spells[sid].buff_duration >= kRefreshMinTics &&
-				IsBeneficialSpell(sid) &&
-				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
-			) {
-				return;
-			}
-		}
 	}
 
 	// ---- who pulls ----
@@ -1506,16 +1476,110 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
+	// ---- is the camp ready for the next one? ----
+
+	// A chain pull: the fight is all but won and the unit can take the next
+	// one straight away -- it goes out now and arrives as this one dies.
+	const bool chain = ChainPullReady(p, mobs, puller);
+
+	if (
+		!chain && (
+			p.assist_target_id ||
+			now - p.assist_since_ms < kCalmMs ||
+			now - p.autopull_last_end_ms < kAutoPullGapMs ||
+			!p.fallen.empty() ||
+			p.pull_active
+		)
+	) {
+		return;
+	}
+	p.autopull_last_try_ms = now;
+
+	// Everyone up (the same bar as "Ready.", higher after a bad fight),
+	// nobody pulling already. A chain pull has checked its own bar.
+	const float ready_bar = p.confidence < kLowConfidence ? kCautiousReadyRatio : kReadyRatio;
+	p.readiness = 100.0f;
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
+			return;
+		}
+		p.readiness = std::min(p.readiness, m->GetHPRatio());
+		if (UsesMana(m)) {
+			p.readiness = std::min(p.readiness, m->GetManaRatio());
+		}
+	}
+	if (!chain && p.readiness < ready_bar) {
+		return;
+	}
+
+	// A bot's long buff on one of us about to run out: let it be renewed
+	// before pulling (TacticsSituationalBuffs does it, between fights).
+	for (Mob* m : mobs) {
+		if (chain || !IsAlive(m)) {
+			continue;
+		}
+		Buffs_Struct* buffs = m->GetBuffs();
+		const int     slots = m->GetMaxTotalSlots();
+		for (int i = 0; buffs && i < slots; ++i) {
+			const uint16 sid = buffs[i].spellid;
+			if (
+				IsValidSpell(sid) &&
+				buffs[i].ticsremaining > 0 &&
+				buffs[i].ticsremaining <= kPullBuffTics &&
+				spells[sid].buff_duration >= kRefreshMinTics &&
+				IsBeneficialSpell(sid) &&
+				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
+			) {
+				return;
+			}
+		}
+	}
+
 	// ---- what to pull ----
 
 	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
 	const uint8  ref_level  = leader->GetLevel();
 	const bool   fd_puller  = puller->GetClass() == Class::Monk && puller->GetSkill(EQ::skills::SkillFeignDeath) > 0;
-	const size_t holdable   = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0) + (fd_puller ? 3 : 0);
 	const auto&  npcs       = entity_list.GetNPCList();
+
+	// How many come along that we can take: one per off-tank, two more with a
+	// mezzer, three more for a feign-death split. After a bad fight singles
+	// only (an FD puller still splits); after a run of easy ones, one more.
+	size_t holdable = p.off_tank_ids.size() + (p.has_mezzer ? 2 : 0) + (fd_puller ? 3 : 0);
+	if (p.confidence < kLowConfidence) {
+		holdable = fd_puller ? 3 : 0;
+	}
+	else if (p.confidence >= kHighConfidence) {
+		++holdable;
+	}
+	if (chain) {
+		holdable = 0; // the next one comes alone: the fight is still on
+	}
+
+	// Who can stop a caster (a bash, a kick, a stun): their healers matter less.
+	const bool can_interrupt = std::any_of(mobs.begin(), mobs.end(), [](Mob* m) {
+		switch (m->IsBot() && IsAlive(m) ? m->GetClass() : 0) {
+			case Class::Warrior:
+			case Class::Paladin:
+			case Class::ShadowKnight:
+			case Class::Cleric:
+			case Class::Enchanter:
+			case Class::Wizard:
+				return true;
+			default:
+				return false;
+		}
+	});
 
 	Mob*  best       = nullptr;
 	float best_score = 0.0f;
+	float best_ttk   = 0.0f;
+	float best_rest  = 0.0f;
+	size_t best_socials = 0;
 
 	for (const auto& e : npcs) {
 		NPC* n = e.second;
@@ -1553,28 +1617,97 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		// Linked mobs that would come along: same faction, close, idle.
+		// Linked mobs that would come along: same faction, close, idle. A
+		// hostile roamer walking past it comes along too, faction or not.
 		size_t socials = 0;
-		if (n->GetPrimaryFaction()) {
-			for (const auto& o : npcs) {
-				NPC* s = o.second;
-				if (
-					s && s != n && IsAlive(s) && !s->IsEngaged() && !s->GetOwnerID() &&
-					s->GetPrimaryFaction() == n->GetPrimaryFaction() &&
-					DistanceSquared(glm::vec3(s->GetPosition()), npos) <= kAutoPullSocialDist * kAutoPullSocialDist
-				) {
-					++socials;
-				}
+		for (const auto& o : npcs) {
+			NPC* s = o.second;
+			if (!s || s == n || !IsAlive(s) || s->IsEngaged() || s->GetOwnerID()) {
+				continue;
+			}
+			const float d2      = DistanceSquared(glm::vec3(s->GetPosition()), npos);
+			const bool  linked  = n->GetPrimaryFaction() && s->GetPrimaryFaction() == n->GetPrimaryFaction() &&
+				d2 <= kAutoPullSocialDist * kAutoPullSocialDist;
+			const bool  roaming = (s->IsRoamer() || s->GetGrid() > 0) && d2 <= kRoamerJoinDist * kRoamerJoinDist &&
+				s->GetReverseFactionCon(leader) >= FACTION_THREATENINGLY;
+			if (linked || roaming) {
+				++socials;
 			}
 		}
 		if (socials > holdable) {
 			continue;
 		}
 
-		const float score = sqrtf(DistanceSquaredNoZ(npos, p.camp)) + socials * 100.0f;
-		if (!best || score < best_score) {
-			best       = n;
-			best_score = score;
+		// ---- what it is worth: experience per second of the whole cycle ----
+
+		// Experience goes with the mob's level (squared, as EQ's formula), for
+		// each that comes.
+		const float  count = 1.0f + socials;
+		const float  xp    = static_cast<float>(n->GetLevel()) * n->GetLevel() * count;
+
+		// Time: walking there and back, killing it, resting after -- what the
+		// bots learned of this kind, else what their kill rate and its con say.
+		const MobCost* c    = nullptr;
+		if (const auto it = m_mob_costs.find(n->GetNPCTypeID()); it != m_mob_costs.end()) {
+			c = &it->second;
+		}
+		const float travel = 2.0f * sqrtf(DistanceSquaredNoZ(npos, p.camp)) / kPullTravelSpeed;
+		const float ttk    = c && c->kills ? c->ttk_s :
+			p.hp_per_s > 0.0f ? static_cast<float>(n->GetMaxHP()) / p.hp_per_s : kDefaultTtkS;
+		float rest = c && c->rests ? c->downtime_s : 0.0f;
+		if (!c || !c->rests) {
+			switch (con) {
+				case ConsiderColor::Green:     rest = 5.0f;  break;
+				case ConsiderColor::LightBlue: rest = 10.0f; break;
+				case ConsiderColor::DarkBlue:  rest = 20.0f; break;
+				case ConsiderColor::White:     rest = 30.0f; break;
+				default:                       rest = 45.0f; break; // yellow
+			}
+		}
+		const float seconds = travel + (ttk + rest) * count;
+
+		// Risk: socials, a hard con, casters (healers most, less when we can
+		// stop them), and what this kind has cost us in deaths.
+		float risk = 1.0f + 0.15f * socials;
+		if (con == ConsiderColor::Yellow) {
+			risk += 0.3f;
+		}
+		else if (con == ConsiderColor::White) {
+			risk += 0.1f;
+		}
+		switch (n->GetClass()) {
+			case Class::Cleric:
+			case Class::Shaman:
+			case Class::Druid:
+				risk += can_interrupt ? 0.15f : 0.35f; // heals itself, gates
+				break;
+			case Class::Necromancer:
+			case Class::Wizard:
+			case Class::Magician:
+			case Class::Enchanter:
+				risk += can_interrupt ? 0.1f : 0.2f;
+				break;
+			default:
+				break;
+		}
+		if (c) {
+			risk += c->deaths * 1.5f;
+		}
+
+		float score = xp / std::max(seconds, 1.0f) / risk;
+
+		// A roamer on its own near camp: take it before it walks into a fight.
+		if ((n->IsRoamer() || n->GetGrid() > 0) && !socials &&
+			DistanceSquaredNoZ(npos, p.camp) <= kRoamerNearCamp * kRoamerNearCamp) {
+			score *= 1.25f;
+		}
+
+		if (!best || score > best_score) {
+			best         = n;
+			best_score   = score;
+			best_ttk     = ttk;
+			best_rest    = rest;
+			best_socials = socials;
 		}
 	}
 
@@ -1586,7 +1719,14 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		p.autopull_puller_id  = puller->GetID();
 		p.autopull_target_id  = best->GetID();
 		p.autopull_started_ms = now;
-		LogInfo("[BotTactics] unit [{:#x}] auto-pull: [{}] pulls [{}] ({})", p.key, puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain");
+		if (chain) {
+			p.chain_pulled_for = p.assist_target_id;
+		}
+		LogInfo(
+			"[BotTactics] unit [{:#x}] auto-pull{}: [{}] pulls [{}] ({}, socials [{}], kill ~[{:.0f}]s, rest ~[{:.0f}]s, score [{:.2f}], confidence [{:.2f}])",
+			p.key, chain ? " (chain)" : "", puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain",
+			best_socials, best_ttk, best_rest, best_score, p.confidence
+		);
 	}
 }
 
@@ -2002,6 +2142,10 @@ void BotTactics::NoteFallen(uint32 key, Bot* bot)
 	f.died_ms       = Timer::GetCurrentTime();
 	p->fallen.push_back(f);
 
+	if (p->assist_target_id) {
+		++p->fight_deaths; // the XP engine: a hard fight
+	}
+
 	LogInfo("[BotTactics] unit [{:#x}] [{}] fell at [{:.0f}, {:.0f}, {:.0f}]", key, f.name, f.pos.x, f.pos.y, f.pos.z);
 }
 
@@ -2196,6 +2340,42 @@ std::vector<std::string> BotTactics::Describe(uint32 key)
 				p->chain_active ? "Running, next: " + NameOf(p->ChainCurrent()) + "." : "Starts with the next fight."
 			)
 		);
+	}
+
+	// The XP engine: how bold the puller is, and what it learned.
+	const char* mood = p->confidence < kLowConfidence ? "careful: singles, full rest" :
+		p->confidence >= kHighConfidence ? "bold: doubles and chain pulls" :
+		p->confidence >= kChainPullConfidence ? "steady: chain pulls when a fight is won" : "steady";
+	out.emplace_back(
+		fmt::format(
+			"Pulling mood: {:.2f} ({}). Kill rate: {}.", p->confidence, mood,
+			p->hp_per_s > 0.0f ? fmt::format("{:.0f} health a second", p->hp_per_s) : "not measured yet"
+		)
+	);
+	if (!m_mob_costs.empty()) {
+		std::vector<std::pair<uint32, const MobCost*>> kinds;
+		for (const auto& e : m_mob_costs) {
+			if (e.second.kills) {
+				kinds.emplace_back(e.first, &e.second);
+			}
+		}
+		std::sort(
+			kinds.begin(), kinds.end(), [](const auto& a, const auto& b) {
+				return a.second->kills > b.second->kills;
+			}
+		);
+		std::string learned;
+		for (size_t i = 0; i < kinds.size() && i < 5; ++i) {
+			const NPCType* t    = content_db.LoadNPCTypesData(kinds[i].first);
+			const auto*    c    = kinds[i].second;
+			learned += fmt::format(
+				"{}{} {:.0f}s + rest {:.0f}s ({}x)", learned.empty() ? "" : "; ",
+				t ? t->name : std::to_string(kinds[i].first), c->ttk_s, c->downtime_s, c->kills
+			);
+		}
+		if (!learned.empty()) {
+			out.emplace_back("Learned: " + learned + ".");
+		}
 	}
 
 	return out;
@@ -5183,5 +5363,189 @@ bool Bot::TacticsIdleFidget(Mob* leader)
 	}
 
 	RotateToWalking(heading);
+	return true;
+}
+
+// ---- the XP engine: what fights cost ----
+
+void BotTactics::FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist, uint16 old_assist, Mob* tank)
+{
+	const uint32 now = Timer::GetCurrentTime();
+
+	// Rest after a fight goes to what it killed, a share each. A fight that
+	// starts before the unit is rested cuts it short: that was the rest.
+	auto close_rest = [&]() {
+		if (!p.fight_end_ms) {
+			return;
+		}
+		if (!p.fight_kills.empty()) {
+			const float share = (now - p.fight_end_ms) / 1000.0f / p.fight_kills.size();
+			for (uint32 t : p.fight_kills) {
+				MobCost& c   = m_mob_costs[t];
+				c.downtime_s = c.rests ? c.downtime_s * 0.7f + share * 0.3f : share;
+				c.rests      = std::min<uint16>(c.rests + 1, 60000);
+			}
+		}
+		p.fight_kills.clear();
+		p.fight_end_ms = 0;
+	};
+
+	// ---- how fast the main target goes down (chain pulls time on it) ----
+
+	if (assist) {
+		const float hp = assist->GetHPRatio();
+		if (assist->GetID() == old_assist && p.built_ms && now > p.built_ms) {
+			const float dt = (now - p.built_ms) / 1000.0f;
+			p.assist_hp_rate = p.assist_hp_rate * 0.5f + std::max(0.0f, (p.assist_hp_last - hp) / dt) * 0.5f;
+		}
+		else {
+			p.assist_hp_rate = 0.0f;
+		}
+		p.assist_hp_last = hp;
+	}
+
+	// ---- a fight starts ----
+
+	if (assist && !old_assist) {
+		close_rest();
+		p.fight_min_tank_hp = 100.0f;
+		p.fight_deaths      = 0;
+	}
+
+	// ---- the mobs we fight, and the ones that died ----
+
+	auto note = [&](uint16 id, bool main) {
+		Mob* m = id ? entity_list.GetMob(id) : nullptr;
+		if (!m || !m->IsNPC() || !IsAlive(m)) {
+			return;
+		}
+		auto& f = p.fight_mobs[id];
+		if (!f.npc_type) {
+			f.npc_type = m->GetNPCTypeID();
+			f.max_hp   = m->GetMaxHP();
+		}
+		if (main && !f.since_ms) {
+			f.since_ms = now;
+		}
+	};
+	note(assist ? assist->GetID() : 0, true);
+	for (uint16 id : p.adds) {
+		note(id, false);
+	}
+	for (uint16 id : p.mezzed) {
+		note(id, false);
+	}
+
+	if (assist && IsAlive(tank)) {
+		p.fight_min_tank_hp = std::min(p.fight_min_tank_hp, tank->GetHPRatio());
+	}
+
+	for (auto it = p.fight_mobs.begin(); it != p.fight_mobs.end();) {
+		Mob* m = entity_list.GetMob(it->first);
+		if (m && !m->IsCorpse() && m->GetHP() > 0) {
+			// Alive: still ours, or it reset and is forgotten.
+			it = m->IsEngaged() ? std::next(it) : p.fight_mobs.erase(it);
+			continue;
+		}
+
+		// Its corpse keeps its id (phase 16): a kill. Gone without one: not.
+		if (m && m->IsCorpse()) {
+			const auto& f = it->second;
+			p.fight_kills.push_back(f.npc_type);
+
+			if (f.since_ms) {
+				const float ttk = (now - f.since_ms) / 1000.0f;
+				MobCost&    c   = m_mob_costs[f.npc_type];
+				c.ttk_s = c.kills ? c.ttk_s * 0.7f + ttk * 0.3f : ttk;
+				c.kills = std::min<uint16>(c.kills + 1, 60000);
+
+				if (ttk > 1.0f && f.max_hp > 0) {
+					const float rate = static_cast<float>(f.max_hp) / ttk;
+					p.hp_per_s = p.hp_per_s > 0.0f ? p.hp_per_s * 0.7f + rate * 0.3f : rate;
+				}
+				LogInfo(
+					"[BotTactics] unit [{:#x}] killed [{}] in [{:.0f}]s (its kind: [{:.0f}]s over [{}] kills)",
+					p.key, m->GetCleanName(), ttk, c.ttk_s, c.kills
+				);
+			}
+		}
+		it = p.fight_mobs.erase(it);
+	}
+
+	// ---- a fight ends: how did it go ----
+
+	if (!assist && old_assist) {
+		const bool  hard   = p.fight_deaths > 0 || p.fight_min_tank_hp < kHardFightTankPct;
+		const bool  easy   = !p.fight_deaths && p.fight_min_tank_hp >= kEasyFightTankPct;
+		const float before = p.confidence;
+		if (hard) {
+			p.confidence = std::max(0.0f, p.confidence - 1.0f);
+		}
+		else if (easy) {
+			p.confidence = std::min(kMaxConfidence, p.confidence + 0.25f);
+		}
+
+		std::vector<uint32> kinds = p.fight_kills;
+		std::sort(kinds.begin(), kinds.end());
+		kinds.erase(std::unique(kinds.begin(), kinds.end()), kinds.end());
+		for (uint32 t : kinds) {
+			MobCost& c = m_mob_costs[t];
+			c.deaths   = c.deaths * 0.7f + p.fight_deaths * 0.3f;
+		}
+
+		p.fight_end_ms = now;
+		LogInfo(
+			"[BotTactics] unit [{:#x}] fight over: [{}] killed, tank low [{:.0f}%], deaths [{}], confidence [{:.2f}] -> [{:.2f}]",
+			p.key, p.fight_kills.size(), p.fight_min_tank_hp, p.fight_deaths, before, p.confidence
+		);
+	}
+
+	// ---- rested: the rest time goes to what was killed ----
+
+	if (!assist && p.fight_end_ms && p.fallen.empty()) {
+		float readiness = 100.0f;
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+			readiness = std::min(readiness, m->GetHPRatio());
+			if (UsesMana(m)) {
+				readiness = std::min(readiness, m->GetManaRatio());
+			}
+		}
+		if (readiness >= kReadyRatio) {
+			close_rest();
+		}
+	}
+}
+
+bool BotTactics::ChainPullReady(const BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* puller) const
+{
+	if (
+		p.confidence < kChainPullConfidence ||
+		!p.assist_target_id ||
+		p.chain_pulled_for == p.assist_target_id ||
+		!p.adds.empty() || !p.mezzed.empty() || !p.fallen.empty() || p.pull_active ||
+		!puller || puller->GetID() == p.main_tank_id
+	) {
+		return false;
+	}
+
+	// The main target is low and going fast...
+	Mob* t = entity_list.GetMob(p.assist_target_id);
+	if (!IsAlive(t) || t->GetHPRatio() > kChainPullHPPct || p.assist_hp_rate < 0.1f ||
+		t->GetHPRatio() / p.assist_hp_rate > kChainPullTtdS) {
+		return false;
+	}
+
+	// ...and the unit can take the next one without a rest.
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m)) {
+			continue;
+		}
+		if (m->GetHPRatio() < kChainPullReadyPct || (UsesMana(m) && m->GetManaRatio() < kChainPullReadyPct)) {
+			return false;
+		}
+	}
 	return true;
 }

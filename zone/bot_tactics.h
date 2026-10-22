@@ -194,6 +194,25 @@ struct BotTacticsPlan {
 	// dies (its corpse keeps the id) its items are looked over for upgrades.
 	std::unordered_map<uint16, std::vector<uint32>> fight_loot;
 
+	// The XP engine (BOT_AI_SENTIENT.md, 6): what each fight cost, so the
+	// puller picks the mob worth the most experience per second of the whole
+	// cycle (walk, kill, rest), and how bold the last fights let it be.
+	struct FightMob {
+		uint32 npc_type   = 0;
+		uint32 since_ms   = 0;   // main target since then (0 = never was)
+		int64  max_hp     = 0;
+	};
+	std::unordered_map<uint16, FightMob> fight_mobs;   // mob id -> what and since when
+	std::vector<uint32> fight_kills;                   // npc types killed this fight (rest time goes to them)
+	uint32 fight_end_ms      = 0;      // the last fight ended then, the unit not yet rested
+	float  fight_min_tank_hp = 100.0f;
+	size_t fight_deaths      = 0;
+	float  confidence        = 1.0f;   // 0 singles only .. 2 doubles and chain pulls
+	float  hp_per_s          = 0.0f;   // mob health the unit takes off per second (smoothed)
+	float  assist_hp_last    = 0.0f;   // the main target's health %, last rebuild...
+	float  assist_hp_rate    = 0.0f;   // ...and how fast it drops (%/s)
+	uint16 chain_pulled_for  = 0;      // the main target a chain pull already went out during
+
 	// Body language (BOT_AI_SENTIENT.md, E): who was in the unit at what
 	// level, to wave at a newcomer and cheer a ding; the boss being fought,
 	// to cheer its death.
@@ -321,6 +340,10 @@ private:
 	// Up to `count` bots of the unit near `subject` (not it) play `anim` at
 	// it, a moment apart; count 0 = every bot within reach.
 	void QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count);
+	// What fights cost: kill time and rest time per npc type, deaths, and
+	// the unit's confidence after each fight (the XP engine).
+	void FightLedger(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist, uint16 old_assist, Mob* tank);
+	bool ChainPullReady(const BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* puller) const;
 	void BodyLanguage(BotTacticsPlan& p, const std::vector<Mob*>& mobs, Mob* assist);
 	void LoadSettings(uint32 key, uint32 char_id);
 	void AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<uint32>& item_ids);
@@ -337,6 +360,16 @@ private:
 	std::string                                  m_zone_resists_for; // zone short name they were built for
 	std::unordered_map<uint32, BotEncounterObservation> m_observed;  // npc_type_id -> what we saw
 	bool                                         m_learned_column = true; // false once a save failed for want of it
+
+	// Learned this session, per npc type, across units (the XP engine)
+	struct MobCost {
+		float  ttk_s      = 0.0f; // seconds to kill, as main target (smoothed)
+		float  downtime_s = 0.0f; // seconds of rest after a fight with it
+		float  deaths     = 0.0f; // deaths per fight with it (smoothed)
+		uint16 kills      = 0;
+		uint16 rests      = 0;
+	};
+	std::unordered_map<uint32, MobCost> m_mob_costs;
 
 	BotRaidEncounter LearnedRow(const BotEncounterObservation& o) const;
 	void SaveLearned(BotEncounterObservation& o);
