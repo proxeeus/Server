@@ -165,3 +165,56 @@ void bot_command_removefromroster(Client* c, const Seperator* sep) {
 	if (database.botdb.RemoveBotFromRaidRoster(c->CharacterID(), bot_id))
 		c->Message(Chat::White, fmt::format("{} removed from your raid roster.", bot_name).c_str());
 }
+
+// ^disbandraid [keep] -- leave your bot raid and end it.
+//
+// v29c has no raid window, so a Trilogy player had no way out of a raid:
+// SpawnRaidBotsOnConnect rebuilds it at every login from raid_members, and
+// ^botcamp only despawns the bots. This takes you out the way the client's
+// own disband does for a bot owner (Handle_OP_RaidCommand RaidCommandDisband):
+// your bots, spawned or camped, leave with you, and the raid ends when no
+// player is left in it. Then your spawned bots are camped, so ^party can
+// build a group from scratch; "keep" leaves them up instead.
+void bot_command_disband_raid(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	Raid* raid = c->GetRaid();
+	if (!raid) {
+		c->Message(Chat::White, "You are not in a raid.");
+		return;
+	}
+
+	const bool keep = Strings::ToLower(sep->arg[1]) == "keep";
+
+	raid->VerifyRaid();
+	const uint32 group = raid->GetGroup(c->GetName());
+	const uint32 index = raid->GetPlayerIndex(c->GetName());
+
+	raid->RemoveRaidDelegates(c->GetName());
+	raid->SendRemoveAllRaidXTargets(c->GetName());
+	raid->SetNewRaidLeader(index);
+	raid->HandleBotGroupDisband(c->CharacterID());
+	raid->HandleOfflineBots(c->CharacterID());
+	raid->RemoveMember(c->GetName());
+	raid->SendGroupDisband(c);
+	raid->GroupUpdate(group);
+	if (!raid->RaidCount()) {
+		raid->DisbandRaid(); // `raid` may be gone after this
+	}
+
+	LogInfo("[BotRaid] [{}] disbanded their raid (keep bots up: {})", c->GetCleanName(), keep);
+
+	if (!keep) {
+		bot_command_real_dispatch(c, "^botcamp spawned");
+	}
+
+	c->Message(
+		Chat::White,
+		keep ?
+		"You left the raid; your bots are still up. ^party groups them." :
+		"You left the raid and your bots camped. ^party builds a group, ^createraid a new raid."
+	);
+}
