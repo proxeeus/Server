@@ -55,6 +55,11 @@ class NPC;
 // don't need per-instance illusion face randomization — they share model
 // defaults).
 //
+// Either way the result is at most 28 characters: v29c shows "NameTooLong"
+// for any spawn name of 29+ (eqgame.exe 0x4a3bb2). Longer names keep their
+// corpse suffix and MakeNameUnique digits and lose the end of the base name
+// ("Derakor the Vindicator`s corpse" -> "Derakor the Vindica`s corpse").
+//
 // KILL SWITCH (one-line revert): replace the body in trilogy_zone.cpp
 // with `return m ? m->GetCleanName() : "";` and every call site falls
 // back to the legacy cleaned-name behavior.

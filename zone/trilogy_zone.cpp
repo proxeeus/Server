@@ -1302,7 +1302,57 @@ static void TrilogyWireNameToEntityName(const char* wire, char* out, size_t out_
 const char* TrilogyWireName(Mob* m)
 {
 	if (!m) return "";
-	return IsPlayerRace(m->GetRace()) ? m->GetName() : m->GetCleanName();
+	const char* name = IsPlayerRace(m->GetRace()) ? m->GetName() : m->GetCleanName();
+
+	// v29c keeps a spawn name only up to 28 characters. Its spawn copy
+	// (eqgame.exe 0x4a3bb2) does `strlen(name) >= 0x1d ? "NameTooLong" : name`,
+	// and every NPC corpse adds "`s corpse": "Derakor the Vindicator`s corpse"
+	// is 31, "a frost giant berserker`s corpse" 32. Shorten the base name and
+	// keep what the client and the illusion lookup need: the corpse suffix and
+	// the MakeNameUnique digits. Every spawn and illusion path calls this, so
+	// they stay identical to each other.
+	static constexpr size_t kMaxWireName = 28;
+	const size_t len = strlen(name);
+	if (len <= kMaxWireName) {
+		return name;
+	}
+
+	// Callers copy the result right away (strncpy / memcpy); a small ring
+	// keeps two calls in one expression apart.
+	static thread_local char ring[8][kMaxWireName + 1];
+	static thread_local size_t next = 0;
+	char* out = ring[next++ % 8];
+
+	std::string base(name, len);
+
+	std::string digits;
+	while (!base.empty() && std::isdigit(static_cast<unsigned char>(base.back()))) {
+		digits.insert(digits.begin(), base.back());
+		base.pop_back();
+	}
+
+	std::string suffix;
+	for (const char* s : {"`s corpse", "`s_corpse", "'s corpse", "'s_corpse"}) {
+		const size_t n = strlen(s);
+		if (base.size() > n && base.compare(base.size() - n, n, s) == 0) {
+			suffix = base.substr(base.size() - n);
+			base.resize(base.size() - n);
+			break;
+		}
+	}
+
+	const size_t keep = kMaxWireName > suffix.size() + digits.size() ?
+		kMaxWireName - suffix.size() - digits.size() : 0;
+	if (base.size() > keep) {
+		base.resize(keep);
+	}
+	while (!base.empty() && (base.back() == ' ' || base.back() == '_')) {
+		base.pop_back();
+	}
+
+	const std::string shortened = (base + suffix + digits).substr(0, kMaxWireName);
+	strn0cpy(out, shortened.c_str(), kMaxWireName + 1);
+	return out;
 }
 
 static void FillIllusionBuf(uint8_t* buf, const char* name,
