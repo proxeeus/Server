@@ -141,6 +141,12 @@ constexpr float  kRoamerNearCamp        = 150.0f; // a lone roamer this close to
 constexpr float  kPullTravelSpeed       = 25.0f;  // units a second, there and back (rough)
 constexpr float  kDefaultTtkS           = 30.0f;  // a kill we know nothing about
 
+// Fight economy and kill order (BOT_AI_SENTIENT.md, 4 and 2)
+constexpr float  kKillOrderFinishPct    = 50.0f;  // a main target under this is finished first
+constexpr int32  kRemezTics             = 1;      // a mez with this many tics (6s) left is renewed
+constexpr float  kLastingWorthS         = 12.0f;  // a DoT / slow / debuff wants the mob alive this long after landing
+constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this long after landing
+
 bool IsAlive(Mob* m)
 {
 	return m && !m->IsCorpse() && m->GetHP() > 0 && m->GetAppearance() != eaDead;
@@ -441,6 +447,16 @@ float BotTacticsPlan::SecondsToDeath(uint16 id, float hp_ratio) const
 {
 	const float rate = DamagePct(id);
 	return rate > 0.05f ? hp_ratio / rate : 1.0e6f;
+}
+
+float BotTacticsPlan::MobSecondsToDeath(uint16 id) const
+{
+	const auto rate = mob_hp_rate.find(id);
+	const auto hp   = mob_hp_last.find(id);
+	if (rate == mob_hp_rate.end() || hp == mob_hp_last.end() || rate->second < 0.05f) {
+		return 1.0e6f;
+	}
+	return hp->second / rate->second;
 }
 
 uint32 BotTacticsPlan::RaidGroupOf(uint16 id) const
@@ -1161,6 +1177,87 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.off_tank_assignment[ot] = add;
 			LogInfo("[BotTactics] unit [{:#x}] off-tank [{}] picks up [{}]", p.key, NameOf(ot), NameOf(add));
 			break;
+		}
+	}
+
+	// ---- how fast each mob goes down (fight economy, kill order) ----
+
+	{
+		const float dt = p.built_ms && now > p.built_ms ? (now - p.built_ms) / 1000.0f : 0.0f;
+		std::unordered_map<uint16, float> last;
+		std::unordered_map<uint16, float> rate;
+		auto sample = [&](uint16 id) {
+			Mob* m = id ? entity_list.GetMob(id) : nullptr;
+			if (!IsAlive(m)) {
+				return;
+			}
+			const float hp = m->GetHPRatio();
+			float       r  = 0.0f;
+			if (const auto it = p.mob_hp_last.find(id); it != p.mob_hp_last.end() && dt > 0.2f) {
+				const auto old = p.mob_hp_rate.find(id);
+				r = (old != p.mob_hp_rate.end() ? old->second : 0.0f) * 0.5f + std::max(0.0f, (it->second - hp) / dt) * 0.5f;
+			}
+			last[id] = hp;
+			rate[id] = r;
+		};
+		sample(p.assist_target_id);
+		for (uint16 id : p.adds) {
+			sample(id);
+		}
+		p.mob_hp_last.swap(last);
+		p.mob_hp_rate.swap(rate);
+	}
+
+	// ---- kill order ----
+
+	// With several mobs on a bot main tank: their healers first, then their
+	// casters, then whichever has the least health left -- but a main target
+	// already under half stays (finish what is started). Only among what the
+	// tank holds itself: an off-tank's add or a mezzed one waits its turn.
+	{
+		const uint16 before = p.kill_target_id;
+		p.kill_target_id    = 0;
+
+		auto rank = [](Mob* m) {
+			switch (m->GetClass()) {
+				case Class::Cleric:
+				case Class::Shaman:
+				case Class::Druid:
+					return 3;
+				case Class::Necromancer:
+				case Class::Wizard:
+				case Class::Magician:
+				case Class::Enchanter:
+					return 2;
+				default:
+					return 1;
+			}
+		};
+
+		if (assist && mt && mt->IsBot() && !p.adds.empty() && assist->GetHPRatio() >= kKillOrderFinishPct) {
+			Mob*  best      = assist;
+			int   best_rank = rank(assist);
+			int64 best_hp   = assist->GetHP();
+			for (uint16 id : p.adds) {
+				Mob* m = entity_list.GetMob(id);
+				if (!IsAlive(m) || !m->IsNPC() || m->IsMezzed() || p.IsHeldAdd(id) || m->GetHateTop() != mt) {
+					continue;
+				}
+				const int r = rank(m);
+				if (r > best_rank || (r == best_rank && m->GetHP() < best_hp)) {
+					best      = m;
+					best_rank = r;
+					best_hp   = m->GetHP();
+				}
+			}
+			if (best != assist) {
+				p.kill_target_id = best->GetID();
+				if (p.kill_target_id != before) {
+					LogInfo(
+						"[BotTactics] unit [{:#x}] kill order: [{}] before [{}]", p.key, best->GetCleanName(), assist->GetCleanName()
+					);
+				}
+			}
 		}
 	}
 
@@ -2654,6 +2751,12 @@ Mob* Bot::TacticsRetarget(Mob* tar)
 		want_id = p->assist_target_id;
 	}
 
+	// The main tank takes the kill order's pick (healers, casters, the
+	// weakest first); the assist target follows it at the next rebuild.
+	if (!want_id && p->IsMainTank(GetID()) && p->kill_target_id && tar->GetID() != p->kill_target_id) {
+		want_id = p->kill_target_id;
+	}
+
 	if (
 		!want_id &&
 		!p->IsMainTank(GetID()) &&
@@ -3597,7 +3700,31 @@ bool Bot::TacticsHasMezWork() const
 			return true;
 		}
 	}
+
+	// ...or one about to wake up: renew it before it does.
+	for (uint16 id : p->mezzed) {
+		if (id != p->assist_target_id && TacticsRemezDue(entity_list.GetMob(id))) {
+			return true;
+		}
+	}
 	return false;
+}
+
+bool Bot::TacticsRemezDue(Mob* add) const
+{
+	if (!add || !add->IsMezzed()) {
+		return false;
+	}
+
+	Buffs_Struct* buffs = add->GetBuffs();
+	const int     slots = add->GetMaxTotalSlots();
+	int32         left  = -1;
+	for (int i = 0; buffs && i < slots; ++i) {
+		if (IsValidSpell(buffs[i].spellid) && IsMesmerizeSpell(buffs[i].spellid)) {
+			left = std::max(left, buffs[i].ticsremaining);
+		}
+	}
+	return left >= 0 && left <= kRemezTics;
 }
 
 bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
@@ -5548,4 +5675,43 @@ bool BotTactics::ChainPullReady(const BotTacticsPlan& p, const std::vector<Mob*>
 		}
 	}
 	return true;
+}
+
+// ---- fight economy ----
+
+bool Bot::TacticsNotWorthIt(uint16 spell_id, Mob* tar)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !tar || !tar->IsNPC() || !IsValidSpell(spell_id) || !IsDetrimentalSpell(spell_id)) {
+		return false;
+	}
+
+	// Control is always worth it: a mez, a stun, a root or a snare, a fear,
+	// a charm.
+	if (
+		IsMesmerizeSpell(spell_id) || IsStunSpell(spell_id) || IsCharmSpell(spell_id) || IsFearSpell(spell_id) ||
+		IsEffectInSpell(spell_id, SE_Root) || IsEffectInSpell(spell_id, SE_MovementSpeed)
+	) {
+		return false;
+	}
+
+	// Measured on the main target and the adds; anything else: no opinion.
+	const float ttd = p->MobSecondsToDeath(tar->GetID());
+	if (ttd >= 1.0e5f) {
+		return false;
+	}
+
+	const auto& s      = spells[spell_id];
+	const float cast_s = s.cast_time / 1000.0f;
+	const bool  skip   = s.buff_duration > 0 ?
+		ttd < cast_s + kLastingWorthS : // a DoT, a slow, a debuff: needs time to pay off
+		ttd < cast_s + kLandWorthS;     // a nuke: must land on something alive
+
+	if (skip && Timer::GetCurrentTime() >= m_worth_log_ms) {
+		m_worth_log_ms = Timer::GetCurrentTime() + 5000;
+		LogInfo(
+			"[BotTactics] [{}] holds [{}]: [{}] dies in ~[{:.0f}]s", GetCleanName(), s.name, tar->GetCleanName(), ttd
+		);
+	}
+	return skip;
 }

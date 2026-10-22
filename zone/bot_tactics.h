@@ -213,6 +213,13 @@ struct BotTacticsPlan {
 	float  assist_hp_rate    = 0.0f;   // ...and how fast it drops (%/s)
 	uint16 chain_pulled_for  = 0;      // the main target a chain pull already went out during
 
+	// Fight economy and kill order (BOT_AI_SENTIENT.md, 4 and 2): how fast
+	// each mob we fight is going down, and which one dies first.
+	std::unordered_map<uint16, float> mob_hp_last;
+	std::unordered_map<uint16, float> mob_hp_rate;    // health % lost per second, smoothed
+	uint16 kill_target_id = 0;                        // the main tank should be on this one
+	float  MobSecondsToDeath(uint16 id) const;        // 1e6 when not measurably dropping
+
 	// Body language (BOT_AI_SENTIENT.md, E): who was in the unit at what
 	// level, to wave at a newcomer and cheer a ding; the boss being fought,
 	// to cheer its death.

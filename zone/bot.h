@@ -982,6 +982,12 @@ public:
 	// - mez is the plan's call, not a cast-chance roll (the chances table has
 	//   mez at 0 for every class)
 	bool TacticsHasMezWork() const;
+	// - a mezzed add whose mez is about to wear off is mezzed again before
+	//   it wakes (BOT_AI_SENTIENT.md, 2)
+	bool TacticsRemezDue(Mob* add) const;
+	// - fight economy: a spell that will not pay off on a mob this close to
+	//   dying is not cast (BOT_AI_SENTIENT.md, 4)
+	bool TacticsNotWorthIt(uint16 spell_id, Mob* tar);
 	// - a caster in range of its target without line of sight walks until it
 	//   has it (Skyshrine: every detrimental cast path silently skipped)
 	void TacticsCheckLineOfSight(Mob* tar);
@@ -1174,6 +1180,7 @@ private:
 	uint32    m_formation_count      = 0;
 	bool      m_formation_ok         = false;
 	uint32    m_fidget_ms            = 0;   // next idle glance
+	uint32    m_worth_log_ms         = 0;   // TacticsNotWorthIt logs at most this often
 	uint8     m_gesture_anim         = 0;   // one pending gesture (0 = none)...
 	uint32    m_gesture_at_ms        = 0;
 	uint16    m_gesture_face_id      = 0;   // ...made toward this one
