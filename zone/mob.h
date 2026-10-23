@@ -399,6 +399,8 @@ public:
 	bool DoCastingChecksZoneRestrictions(bool check_on_casting, int32 spell_id);
 	bool DoCastingChecksOnTarget(bool check_on_casting, int32 spell_id, Mob* spell_target);
 	virtual bool CheckFizzle(uint16 spell_id);
+	bool EraCheckFizzle(uint16 spell_id);		// Spells:EraFizzle - v29c 0x41f0e7; true = no fizzle
+	bool EraChannelCheck(uint16 spell_id);		// Spells:EraChanneling - v29c 0x4241ae; true = concentration held
 	virtual bool CheckSpellLevelRestriction(Mob *caster, uint16 spell_id);
 	virtual bool IsImmuneToSpell(uint16 spell_id, Mob *caster);
 	virtual float GetAOERange(uint16 spell_id);

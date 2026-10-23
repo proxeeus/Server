@@ -7037,7 +7037,10 @@ bool Bot::CastSpell(
 			return false;
 		}
 
-		if (slot < EQ::spells::CastingSlot::MaxGems && !CheckFizzle(spell_id)) {
+		// Under Spells:EraFizzle the roll (and its era mana cost) happens once,
+		// in Mob::DoCastSpell, which every bot cast reaches through
+		// Mob::CastSpell.  Rolling here as well would fizzle bots twice.
+		if (!RuleB(Spells, EraFizzle) && slot < EQ::spells::CastingSlot::MaxGems && !CheckFizzle(spell_id)) {
 			int fizzle_msg = IsBardSong(spell_id) ? MISS_NOTE : SPELL_FIZZLE;
 			InterruptSpell(fizzle_msg, 0x121, spell_id);
 
