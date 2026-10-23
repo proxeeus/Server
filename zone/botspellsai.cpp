@@ -1109,7 +1109,10 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 				return false;
 			}
 
-			if (tar->GetClass() == Class::Shaman && hpr >= 80) {
+			// Out of a fight a shaman cannibalizes down to 60% on purpose
+			// (bot_tactics.cpp kCanniMinHPPct): healing that back burns the
+			// mana it just bought.
+			if (tar->GetClass() == Class::Shaman && (hpr >= 80 || (!tar->IsEngaged() && hpr >= 55))) {
 				return false;
 			}
 

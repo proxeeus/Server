@@ -2827,6 +2827,13 @@ bool Bot::TacticsHeal()
 		else if (m->GetClass() == Class::Enchanter) {
 			threshold = 80.0f;
 		}
+		else if (m->GetClass() == Class::Shaman && !p->assist_target_id) {
+			// Between fights a shaman cannibalizes down to kCanniMinHPPct on
+			// purpose; healing it back up just burns the mana it bought
+			// (Qeynos 2026-10-23: canni, canni, self-heal, net -146 mana a
+			// cycle, with no rest regen to cover it).
+			threshold = kCanniMinHPPct - 5.0f;
+		}
 		else {
 			threshold = 70.0f;
 		}
