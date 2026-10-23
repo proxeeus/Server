@@ -92,7 +92,10 @@ constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
 constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
 constexpr uint32 kCampGraceMs      = 10000; // out of camp this long, no fight = moving on
-constexpr uint32 kPullRescueMs     = 20000; // a pull this long has gone wrong
+constexpr uint32 kPullRescueMs     = 8000;  // a pull this long has gone wrong
+constexpr float  kPullRescueHPRatio   = 80.0f; // ...or the puller is under this
+constexpr float  kPullRescueDamagePct = 1.0f;  // ...or losing over this % of health a second
+constexpr float  kLeaderMeleeRadius   = 30.0f; // a leader swinging at a mob this close is fighting it, not pulling
 constexpr uint32 kTankRepositionMs = 3000;  // tank turns the mob at most this often
 constexpr uint32 kFallenMaxMs      = 30 * 60 * 1000; // a fallen bot not raised by then is left to ^botspawn
 constexpr float  kRezReachDist     = 15.0f; // the rezzer casts from this close to where it fell
@@ -112,6 +115,12 @@ constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor
 constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this close come along
 constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
 constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
+constexpr uint32 kAutoPullWaitLogMs  = 30000;  // "auto-pull waits: ..." at most this often
+constexpr uint32 kFallenPullBlockMs  = 120000; // a fallen bot holds the next pull this long at most
+constexpr float  kEraReadyHP           = 80.0f; // ready to pull under Character:TrilogyEraRegen...
+constexpr float  kEraReadyMana         = 75.0f;
+constexpr float  kEraReadyHPCautious   = 90.0f; // ...and after a bad fight
+constexpr float  kEraReadyManaCautious = 85.0f;
 constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is called off
 constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
 constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
@@ -887,6 +896,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.camp_left_ms = 0;
 			p.pull_active  = false;
 			LogInfo("[BotTactics] unit [{:#x}] camp made at [{:.0f}, {:.0f}, {:.0f}]", p.key, lpos.x, lpos.y, lpos.z);
+
+			// Auto-pull is opt-in and nothing said so: tell the player once.
+			if (!p.camp_hint_given && !(ov && ov->auto_pull) && leader->IsClient()) {
+				p.camp_hint_given = true;
+				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Type ^tactics pull on to let them pull for you.");
+			}
 		}
 
 		if (p.camp_set) {
@@ -936,7 +951,24 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// A feared, stunned or mezzed leader is not pulling anything.
 				const bool leader_helpless = leader->IsFeared() || leader->IsStunned() || leader->IsMezzed();
 
-				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless &&
+				// Nor is one standing there swinging at it: a puller brings the
+				// mob home, a leader in melee with it is fighting where they
+				// met. That fight is the camp now. Before this, a player who
+				// roamed and engaged anything out of the old camp froze the
+				// whole unit -- main tank included -- at the old spot, and only
+				// the pets went (Kael 2026-10-23: 13 "holding camp", 9 fights
+				// the tank never touched).
+				const bool leader_fighting =
+					leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() &&
+					DistanceSquaredNoZ(lpos, glm::vec3(assist->GetPosition())) <= kLeaderMeleeRadius * kLeaderMeleeRadius;
+				if (leader_fighting && !leader_in_camp && !mob_in_camp) {
+					p.camp            = lpos;
+					p.pull_arrived_id = assist->GetID();
+					LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
+						p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+				}
+
+				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless && !leader_fighting &&
 					assist->GetID() != p.pull_arrived_id;
 
 				if (pull && !p.pull_active) {
@@ -946,12 +978,25 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 				// A pull gone wrong (taking too long, or the puller is hurt):
 				// go help, and fight wherever this is.
-				if (pull && p.pull_active && (now - p.pull_start_ms > kPullRescueMs || leader->GetHPRatio() < 50.0f)) {
+				// Gone wrong also as soon as the puller is losing health to it:
+				// nobody waits for the player to drop to half.
+				if (
+					pull && p.pull_active && (
+						now - p.pull_start_ms > kPullRescueMs ||
+						leader->GetHPRatio() < kPullRescueHPRatio ||
+						p.DamagePct(leader->GetID()) > kPullRescueDamagePct
+					)
+				) {
 					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help, camp broken", p.key, assist->GetCleanName());
 					pull       = false;
 					p.camp_set = false;
 				}
 				else if (!pull && p.pull_active) {
+					// Arrived: this mob is the camp's fight from now on. Without
+					// marking it, the leader stepping back out of camp made it a
+					// pull again (hold / arrived / hold, four times in 27s, and
+					// every new hold restarted the rescue clock).
+					p.pull_arrived_id = assist->GetID();
 					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] arrived", p.key, assist->GetCleanName());
 				}
 
@@ -1636,10 +1681,21 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	if (
-		now - p.autopull_last_try_ms < kAutoPullTryMs ||
-		DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius
-	) {
+	// Why the camp is not pulling, at most every 30s: the gates below fail
+	// silently otherwise, and "the bots never pull" had no way to be told
+	// apart from "the bots are waiting for X".
+	auto waits = [&](const std::string& why) {
+		if (now - p.autopull_wait_log_ms >= kAutoPullWaitLogMs) {
+			p.autopull_wait_log_ms = now;
+			LogInfo("[BotTactics] unit [{:#x}] auto-pull waits: {}", p.key, why);
+		}
+	};
+
+	if (now - p.autopull_last_try_ms < kAutoPullTryMs) {
+		return;
+	}
+	if (DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius) {
+		waits(fmt::format("[{}] is away from camp", leader->GetCleanName()));
 		return;
 	}
 
@@ -1673,6 +1729,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		puller = find_bot(p.main_tank_id);
 	}
 	if (!puller) {
+		waits("no bot can pull (passive, held, guarding, or no tank bot)");
 		return;
 	}
 
@@ -1682,22 +1739,42 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	// one straight away -- it goes out now and arrives as this one dies.
 	const bool chain = ChainPullReady(p, mobs, puller);
 
+	// A fallen bot waiting for its rez holds the next pull only a while: a
+	// wipe used to block auto-pull for kFallenMaxMs (30 min).
+	const bool fallen_recent = std::any_of(p.fallen.begin(), p.fallen.end(), [&](const BotTacticsPlan::Fallen& f) {
+		return now - f.died_ms < kFallenPullBlockMs;
+	});
+
 	if (
 		!chain && (
 			p.assist_target_id ||
 			now - p.assist_since_ms < kCalmMs ||
 			now - p.autopull_last_end_ms < kAutoPullGapMs ||
-			!p.fallen.empty() ||
+			fallen_recent ||
 			p.pull_active
 		)
 	) {
+		if (fallen_recent && !p.assist_target_id) {
+			waits("a fallen bot is waiting for its rez");
+		}
 		return;
 	}
 	p.autopull_last_try_ms = now;
 
-	// Everyone up (the same bar as "Ready.", higher after a bad fight),
-	// nobody pulling already. A chain pull has checked its own bar.
-	const float ready_bar = p.confidence < kLowConfidence ? kCautiousReadyRatio : kReadyRatio;
+	// Ready: the bots the next pull rests on -- the puller, the main tank and
+	// the healers -- not every one of a 71-bot raid, which with 2001 regen
+	// (no rest regen, Character:TrilogyEraRegen) was never all at 90% at
+	// once. Under era regen the bars are lower, and a shaman's health is not
+	// counted (it cannibalizes down to 60% on purpose). The bar is higher
+	// after a bad fight. Nobody pulling already. A chain pull has checked its
+	// own bar.
+	const bool  era_regen  = RuleB(Character, TrilogyEraRegen);
+	const bool  cautious   = p.confidence < kLowConfidence;
+	const float hp_bar     = era_regen ? (cautious ? kEraReadyHPCautious : kEraReadyHP) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	const float mana_bar   = era_regen ? (cautious ? kEraReadyManaCautious : kEraReadyMana) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	Mob*        not_ready  = nullptr;
+	float       not_ready_pct = 100.0f;
+	const char* not_ready_what = "";
 	p.readiness = 100.0f;
 	for (Mob* m : mobs) {
 		if (!m->IsBot() || !IsAlive(m)) {
@@ -1707,12 +1784,29 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
 			return;
 		}
-		p.readiness = std::min(p.readiness, m->GetHPRatio());
+
+		const uint8 c      = m->GetClass();
+		const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+		if (m != puller && !p.IsMainTank(m->GetID()) && !healer) {
+			continue;
+		}
+
+		if (c != Class::Shaman) {
+			p.readiness = std::min(p.readiness, m->GetHPRatio());
+			if (!not_ready && m->GetHPRatio() < hp_bar) {
+				not_ready = m; not_ready_pct = m->GetHPRatio(); not_ready_what = "health";
+			}
+		}
 		if (UsesMana(m)) {
 			p.readiness = std::min(p.readiness, m->GetManaRatio());
+			if (!not_ready && m->GetManaRatio() < mana_bar) {
+				not_ready = m; not_ready_pct = m->GetManaRatio(); not_ready_what = "mana";
+			}
 		}
 	}
-	if (!chain && p.readiness < ready_bar) {
+	if (!chain && not_ready) {
+		waits(fmt::format("[{}] at [{:.0f}%] {}, needs [{:.0f}%]", not_ready->GetCleanName(), not_ready_pct, not_ready_what,
+			std::string(not_ready_what) == "mana" ? mana_bar : hp_bar));
 		return;
 	}
 
@@ -1734,6 +1828,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 				IsBeneficialSpell(sid) &&
 				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
 			) {
+				waits(fmt::format("[{}] on [{}] is about to be renewed", spells[sid].name, m->GetCleanName()));
 				return;
 			}
 		}
@@ -1927,6 +2022,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	}
 
 	if (!best) {
+		waits(fmt::format("nothing to pull within [{:.0f}] of camp (cons, faction, line of sight, links, recent failures)", radius));
 		return;
 	}
 
@@ -2860,7 +2956,15 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 	// Tanks go straight in; everyone else gives the tank a moment first, or
 	// waits for the health % a raid encounter asks for.
 	const bool tanking = p->IsMainTank(GetID()) || add == want_id;
-	if (!tanking) {
+
+	// The mob is on a player of ours: defend now. The tank's head start is
+	// for a mob the tank holds; one beating on the player gets everybody
+	// (the tank's taunt takes it, and the aggro back-off keeps the casters
+	// honest).
+	Mob* const victim   = t->GetTarget();
+	const bool defending = victim && victim->IsClient() && p->IsMember(victim->GetID());
+
+	if (!tanking && !defending) {
 		const bool raid_unit = (p->key & kKeyRaid) != 0;
 
 		if (p->has_encounter && p->encounter_mob_id == want_id && p->encounter.assist_hp) {
@@ -4439,10 +4543,19 @@ void Bot::TacticsPetChecks()
 		return; // the tank picks its own fights
 	}
 
+	// Held where its bot is held: while the player brings a mob home, and
+	// after a runner past the camp leash. Pets had no leash at all, so on
+	// every pull they ran out alone while the bots waited at camp.
+	Mob* t = pet->GetTarget();
+	if (t && t->IsNPC() && (p->pull_active || TacticsTooFarFromCamp(t))) {
+		pet->WipeHateList();
+		pet->SetTarget(nullptr);
+		return;
+	}
+
 	// Never a mezzed mob, nor an add someone else is dealing with: back to
 	// the main target. (Getting behind it -- enraged or not -- is the pet's
 	// own AI, mob_ai.cpp, walked through TacticsPetStepBehind.)
-	Mob* t = pet->GetTarget();
 	if (!t || !t->IsNPC() || t->GetID() == p->assist_target_id) {
 		return;
 	}
@@ -4498,6 +4611,17 @@ bool Bot::TacticsTooFarFromCamp(Mob* tar)
 	const BotTacticsPlan* p = GetTacticsPlan();
 	if (!p || !p->camp_set || !tar || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
 		return false;
+	}
+
+	// The leash is for runners. A mob that is hitting one of us -- the
+	// player, a bot, or a pet of either -- is fought wherever it stands.
+	if (!tar->IsFleeing()) {
+		if (Mob* on = tar->GetTarget()) {
+			Mob* on_owner = on->GetOwner();
+			if (p->IsMember(on->GetID()) || (on_owner && p->IsMember(on_owner->GetID()))) {
+				return false;
+			}
+		}
 	}
 
 	return DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), p->camp) > kRunnerChaseRadius * kRunnerChaseRadius;

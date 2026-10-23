@@ -178,6 +178,8 @@ struct BotTacticsPlan {
 	uint32 autopull_started_ms  = 0;
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
+	uint32 autopull_wait_log_ms = 0;        // "auto-pull waits: ..." at most every 30s
+	bool   camp_hint_given      = false;    // told the player once that auto-pull is off
 
 	// Incoming damage (phase 19): health % lost per second, smoothed, per
 	// member and member's pet (net of heals: what the healers see).
