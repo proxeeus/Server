@@ -879,7 +879,7 @@ bool Bot::BotCastNuke(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 		}
 
 		if (!IsValidSpell(botSpell.SpellId)) {
-			botSpell = GetBestBotSpellForNukeByTargetType(this, ST_Target);
+			botSpell = GetBestBotSpellForNukeByTargetType(this, ST_Target, tar);
 		}
 		if (!IsValidSpell(botSpell.SpellId)) {
 			return casted_spell;
@@ -2267,7 +2267,13 @@ std::list<BotSpell> Bot::GetBotSpellsForSpellEffectAndTargetType(Bot* botCaster,
 					IsEffectInSpell(botSpellList[i].spellid, spellEffect) ||
 					GetSpellTriggerSpellID(botSpellList[i].spellid, spellEffect)
 					) &&
-				spells[botSpellList[i].spellid].target_type == targetType
+				(
+					spells[botSpellList[i].spellid].target_type == targetType ||
+					// A single-target ask takes the "target optional" spells
+					// too: every magician bolt (Flame Bolt .. Seeking Flame of
+					// Seukor, targettype 1) was never cast.
+					(targetType == ST_Target && spells[botSpellList[i].spellid].target_type == ST_TargetOptional)
+				)
 				) {
 				BotSpell botSpell;
 				botSpell.SpellId = botSpellList[i].spellid;
@@ -2870,7 +2876,7 @@ std::string Bot::GetBotMagicianPetType(Bot* botCaster) {
 	return result;
 }
 
-BotSpell Bot::GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType) {
+BotSpell Bot::GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType, Mob* tar) {
 	BotSpell result;
 
 	result.SpellId = 0;
@@ -2881,6 +2887,19 @@ BotSpell Bot::GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType
 		std::list<BotSpell> botSpellList = GetBotSpellsForSpellEffectAndTargetType(botCaster, SE_CurrentHP, targetType);
 
 		for (std::list<BotSpell>::iterator botSpellListItr = botSpellList.begin(); botSpellListItr != botSpellList.end(); ++botSpellListItr) {
+			// With a target: pass over a nuke it would refuse anyway -- one in
+			// resist back-off on it, one it is immune to, one that cannot
+			// stack -- and take the next. Returning the first and giving up
+			// left a magician one nuke (Wrath) that, resisted twice, shut the
+			// whole nuke path for 30 s (Derakor, Kael 2026-10-23).
+			if (tar && (
+				botCaster->TacticsResistBackoff(botSpellListItr->SpellId, tar) ||
+				tar->IsImmuneToSpell(botSpellListItr->SpellId, botCaster) ||
+				tar->CanBuffStack(botSpellListItr->SpellId, botCaster->GetLevel(), true) < 0
+			)) {
+				continue;
+			}
+
 			// Assuming all the spells have been loaded into this list by level and in descending order
 			if ((IsPureNukeSpell(botSpellListItr->SpellId) || IsDamageSpell(botSpellListItr->SpellId)) && botCaster->CheckSpellRecastTimer(botSpellListItr->SpellId)) {
 				result.SpellId = botSpellListItr->SpellId;
@@ -3005,6 +3024,14 @@ BotSpell Bot::GetDebuffBotSpell(Bot* botCaster, Mob* tar) {
 	if (!tar || !botCaster)
 		return result;
 
+	// A spell that only takes summoned (or only undead) targets is no debuff
+	// for anything else: Banishment (1531, targettype 11) was picked against
+	// Derakor and a Protector of Zek (giants) and failed in SpellFinished
+	// after a 4 s cast.
+	const auto body        = tar->GetBodyType();
+	const bool is_summoned = body == BodyType::Summoned || body == BodyType::Summoned2 || body == BodyType::Summoned3;
+	const bool is_undead   = body == BodyType::Undead || body == BodyType::SummonedUndead || body == BodyType::Vampire;
+
 	if (botCaster->AI_HasSpells()) {
 		std::vector<BotSpells_Struct> botSpellList = botCaster->AIBot_spells;
 
@@ -3012,6 +3039,11 @@ BotSpell Bot::GetDebuffBotSpell(Bot* botCaster, Mob* tar) {
 			if (!IsValidSpell(botSpellList[i].spellid)) {
 				// this is both to quit early to save cpu and to avoid casting bad spells
 				// Bad info from database can trigger this incorrectly, but that should be fixed in DB, not here
+				continue;
+			}
+
+			const auto tt = spells[botSpellList[i].spellid].target_type;
+			if ((tt == ST_Summoned && !is_summoned) || (tt == ST_Undead && !is_undead)) {
 				continue;
 			}
 

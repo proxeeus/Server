@@ -521,7 +521,7 @@ public:
 	static BotSpell GetBestBotSpellForMez(Bot* botCaster);
 	static BotSpell GetBestBotMagicianPetSpell(Bot* botCaster);
 	static std::string GetBotMagicianPetType(Bot* botCaster);
-	static BotSpell GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType);
+	static BotSpell GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType, Mob* tar = nullptr);
 	static BotSpell GetBestBotSpellForStunByTargetType(Bot* botCaster, SpellTargetType targetType);
 	static BotSpell GetBestBotWizardNukeSpellByTargetResists(Bot* botCaster, Mob* target);
 	static BotSpell GetDebuffBotSpell(Bot* botCaster, Mob* target);
