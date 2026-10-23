@@ -116,8 +116,15 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 			return;
 		}
 
-		const auto groups = BotTactics::LayoutRaid(bots, MAX_RAID_GROUPS);
-		size_t     moved  = 0;
+		auto   groups = BotTactics::LayoutRaid(bots, MAX_RAID_GROUPS);
+		size_t moved  = 0;
+
+		// Keep the player's place: their group, or the best one if they had
+		// none (^createraid left players raid-groupless).
+		const uint32 player_group = raid->GetGroup(c->GetName());
+		const int    keep         = BotTactics::ReservePlayerSlot(
+			groups, MAX_RAID_GROUPS, player_group == RAID_GROUPLESS ? -1 : static_cast<int>(player_group)
+		);
 		for (size_t g = 0; g < groups.size(); ++g) {
 			for (size_t i = 0; i < groups[g].size(); ++i) {
 				Bot* b = groups[g][i];
@@ -134,7 +141,18 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 			}
 		}
 
+		if (keep >= 0 && player_group != static_cast<uint32>(keep)) {
+			raid->MoveMember(c->GetName(), static_cast<uint32>(keep));
+			raid->SetGroupLeader(c->GetName(), false);
+		}
+
 		c->Message(Chat::White, "Raid laid out by role into %u groups (%u bots moved). ^raidshow to see it.", static_cast<uint32>(groups.size()), static_cast<uint32>(moved));
+		if (keep >= 0) {
+			c->Message(Chat::White, "You are in group %d (^raidgroup 1-12 to change).", keep + 1);
+		}
+		else {
+			c->Message(Chat::White, "Every group is full: you are in no group.");
+		}
 		return;
 	}
 

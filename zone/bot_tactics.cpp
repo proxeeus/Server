@@ -2580,6 +2580,185 @@ std::vector<std::vector<Bot*>> BotTactics::LayoutRaid(const std::vector<Bot*>& b
 	return groups;
 }
 
+namespace {
+
+constexpr size_t kRaidGroupSize = 6;
+
+// A bot a group can give up to make room for the player: not its bard,
+// shaman or healer (what the player is there for), not its first (leader),
+// a caster or melee before a tank. -1 if there is none.
+int DonorIndex(const std::vector<Bot*>& g)
+{
+	int best = -1, best_rank = 99;
+	for (int i = static_cast<int>(g.size()) - 1; i >= 1; --i) {
+		const uint8 c = g[i]->GetClass();
+		if (c == Class::Bard || c == Class::Shaman || c == Class::Cleric || c == Class::Druid) {
+			continue;
+		}
+		const int rank = (c == Class::Warrior || c == Class::Paladin || c == Class::ShadowKnight) ? 2 :
+			(c == Class::Enchanter) ? 1 : 0;
+		if (rank < best_rank) {
+			best      = i;
+			best_rank = rank;
+		}
+	}
+	return best;
+}
+
+} // namespace
+
+int BotTactics::ReservePlayerSlot(std::vector<std::vector<Bot*>>& groups, size_t max_groups, int preferred)
+{
+	max_groups = std::min<size_t>(max_groups, MAX_RAID_GROUPS);
+
+	int pick = (preferred >= 0 && static_cast<size_t>(preferred) < max_groups) ? preferred : -1;
+	if (pick < 0) {
+		// Where an era rogue (or anyone) wanted to be: songs first, then a
+		// shaman's haste and slow, then a healer; a fuller group last.
+		int best_score = -1;
+		for (size_t g = 0; g < groups.size(); ++g) {
+			int score = 0;
+			for (Bot* b : groups[g]) {
+				const uint8 c = b->GetClass();
+				score += c == Class::Bard ? 300 : c == Class::Shaman ? 200 : (c == Class::Cleric || c == Class::Druid) ? 100 : 0;
+			}
+			score -= static_cast<int>(groups[g].size());
+			if (score > best_score) {
+				best_score = score;
+				pick       = static_cast<int>(g);
+			}
+		}
+		if (pick < 0) {
+			pick = 0;
+		}
+	}
+
+	while (groups.size() <= static_cast<size_t>(pick)) {
+		groups.emplace_back();
+	}
+	if (groups[pick].size() < kRaidGroupSize) {
+		return pick;
+	}
+
+	// Full: one bot moves to a group with room (or a new group, if allowed).
+	int to = -1;
+	for (size_t g = 0; g < groups.size(); ++g) {
+		if (static_cast<int>(g) != pick && groups[g].size() < kRaidGroupSize) {
+			to = static_cast<int>(g);
+			break;
+		}
+	}
+	if (to < 0 && groups.size() < max_groups) {
+		groups.emplace_back();
+		to = static_cast<int>(groups.size()) - 1;
+	}
+	const int donor = DonorIndex(groups[pick]);
+	if (to < 0 || donor < 0) {
+		return -1;
+	}
+
+	groups[to].push_back(groups[pick][donor]);
+	groups[pick].erase(groups[pick].begin() + donor);
+	return pick;
+}
+
+uint32 BotTactics::BestPlayerGroup(Raid* raid)
+{
+	if (!raid) {
+		return 0;
+	}
+
+	std::array<int, MAX_RAID_GROUPS> score{};
+	std::array<int, MAX_RAID_GROUPS> size{};
+	for (const auto& m : raid->GetMembers()) {
+		if (!m.member_name[0] || m.group_number >= MAX_RAID_GROUPS) {
+			continue;
+		}
+		++size[m.group_number];
+		const uint8 c = m._class;
+		score[m.group_number] += c == Class::Bard ? 300 : c == Class::Shaman ? 200 : (c == Class::Cleric || c == Class::Druid) ? 100 : 0;
+	}
+
+	uint32 best       = 0;
+	int    best_score = -1;
+	for (uint32 g = 0; g < MAX_RAID_GROUPS; ++g) {
+		if (!size[g]) {
+			continue;
+		}
+		const int s = score[g] - size[g];
+		if (s > best_score) {
+			best_score = s;
+			best       = g;
+		}
+	}
+	return best;
+}
+
+bool BotTactics::MovePlayerToGroup(Raid* raid, Client* c, uint32 gid, std::string& msg)
+{
+	if (!raid || !c || gid >= MAX_RAID_GROUPS) {
+		msg = "No such raid group.";
+		return false;
+	}
+
+	raid->VerifyRaid();
+	const uint32 from = raid->GetGroup(c->GetName());
+	if (from == gid) {
+		msg = fmt::format("You are already in group {}.", gid + 1);
+		return false;
+	}
+
+	std::string swapped;
+	if (raid->GroupCount(gid) >= kRaidGroupSize) {
+		// Room for us: the group's donor bot takes our old place, or a group
+		// with room when we had none.
+		std::vector<Bot*> members;
+		for (const auto& m : raid->GetMembers()) {
+			if (m.member_name[0] && m.is_bot && m.group_number == gid) {
+				if (Bot* b = entity_list.GetBotByBotName(m.member_name)) {
+					// keep the leader first, as the layout has it
+					if (raid->IsGroupLeader(m.member_name)) {
+						members.insert(members.begin(), b);
+					}
+					else {
+						members.push_back(b);
+					}
+				}
+			}
+		}
+		const int donor = DonorIndex(members);
+		if (donor < 0) {
+			msg = fmt::format("Group {} is full and has nobody to swap out.", gid + 1);
+			return false;
+		}
+
+		uint32 to = from;
+		if (to == RAID_GROUPLESS) {
+			for (uint32 g = 0; g < MAX_RAID_GROUPS; ++g) {
+				if (g != gid && raid->GroupCount(g) < kRaidGroupSize) {
+					to = g;
+					break;
+				}
+			}
+		}
+
+		Bot* out = members[donor];
+		swapped  = out->GetCleanName();
+		raid->SetGroupLeader(out->GetCleanName(), false);
+		raid->MoveMember(out->GetCleanName(), to);
+		swapped += to == RAID_GROUPLESS ? " (now in no group: the raid is full)" : fmt::format(" to group {}", to + 1);
+	}
+
+	raid->MoveMember(c->GetName(), gid);
+	raid->SetGroupLeader(c->GetName(), false);
+
+	msg = fmt::format("You are in group {} now.", gid + 1);
+	if (!swapped.empty()) {
+		msg += fmt::format(" Moved {} to make room.", swapped);
+	}
+	return true;
+}
+
 void BotTactics::NoteFallen(uint32 key, Bot* bot)
 {
 	BotTacticsPlan* p = Find(key);

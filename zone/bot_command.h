@@ -1797,6 +1797,7 @@ void bot_command_memblur(Client* c, const Seperator* sep);
 void bot_command_rdefensive(Client* c, const Seperator* sep);
 void bot_command_create_raid(Client* c, const Seperator* sep);
 void bot_command_disband_raid(Client* c, const Seperator* sep);
+void bot_command_raid_group(Client* c, const Seperator* sep);
 void bot_command_recall(Client* c, const Seperator* sep);
 void bot_command_addtoroster(Client* c, const Seperator* sep);
 void bot_command_removefromroster(Client* c, const Seperator* sep);

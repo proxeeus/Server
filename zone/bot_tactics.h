@@ -338,6 +338,21 @@ public:
 	// enchanters / bards, melee, casters. ^createraid and ^tactics layout.
 	static std::vector<std::vector<Bot*>> LayoutRaid(const std::vector<Bot*>& bots, size_t max_groups);
 
+	// The player's place in a bot raid: ^createraid left the player
+	// raid-groupless, so no group spell (songs, Call of the Predator, Heroic
+	// Bond) ever reached them. Picks a group (`preferred` if >= 0, else the
+	// one with a bard, then a shaman, then a healer) and makes room in it by
+	// moving one bot that is none of those to a group with space. Returns
+	// the 0-based group, or -1 when every group is full.
+	static int ReservePlayerSlot(std::vector<std::vector<Bot*>>& groups, size_t max_groups, int preferred = -1);
+
+	// ^raidgroup: move the player into raid group `gid` (0-based) of an
+	// existing raid, swapping out a bot if it is full. `msg` says what moved.
+	static bool MovePlayerToGroup(Raid* raid, Client* c, uint32 gid, std::string& msg);
+
+	// The live raid group a player is best placed in (bard, shaman, healer).
+	static uint32 BestPlayerGroup(Raid* raid);
+
 	// Bot::Damage: a spell from `caster` hit a bot of unit `key`. A raid
 	// target with no hand-made row: learn from it (applies at once; saved
 	// when the fight is over).

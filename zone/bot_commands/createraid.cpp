@@ -144,6 +144,19 @@ void bot_command_create_raid(Client* bot_owner, const Seperator* sep)
 			groups.size()
 		).c_str()
 	);
+
+	// The player joined raid-groupless and no group spell (songs, Call of
+	// the Predator, Heroic Bond) ever reached them. Into the group with the
+	// bard / shaman / healer; ^raidgroup N moves you elsewhere.
+	if (raid->GetGroup(bot_owner->GetName()) == RAID_GROUPLESS) {
+		std::string msg;
+		if (BotTactics::MovePlayerToGroup(raid, bot_owner, BotTactics::BestPlayerGroup(raid), msg)) {
+			bot_owner->Message(Chat::White, "%s ^raidgroup 1-12 to change.", msg.c_str());
+		}
+		else {
+			bot_owner->Message(Chat::White, "You stay in no group: %s", msg.c_str());
+		}
+	}
 }
 
 void bot_command_addtoroster(Client* c, const Seperator* sep) {
@@ -282,4 +295,44 @@ void bot_command_recall(Client* c, const Seperator* sep)
 			recalled.size() > kShown ? fmt::format(", +{} more", recalled.size() - kShown) : ""
 		).c_str()
 	);
+}
+
+// ^raidgroup N -- move yourself into raid group N (1-12).
+//
+// v29c has no raid window, and ^createraid used to leave the player in no
+// group, where no group spell (bard songs, Call of the Predator, Heroic Bond,
+// Gift of Pure Thought) reaches. A full group gives up one bot that is not
+// its bard, shaman or healer (BotTactics::MovePlayerToGroup).
+void bot_command_raid_group(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	Raid* raid = c->GetRaid();
+	if (!raid) {
+		c->Message(Chat::White, "You are not in a raid.");
+		return;
+	}
+
+	if (!sep->IsNumber(1)) {
+		const uint32 g = raid->GetGroup(c->GetName());
+		if (g == RAID_GROUPLESS) {
+			c->Message(Chat::White, "You are in no raid group. usage: ^raidgroup 1-12");
+		}
+		else {
+			c->Message(Chat::White, "You are in raid group %u. usage: ^raidgroup 1-12", g + 1);
+		}
+		return;
+	}
+
+	const int n = Strings::ToInt(sep->arg[1]);
+	if (n < 1 || n > MAX_RAID_GROUPS) {
+		c->Message(Chat::White, "usage: ^raidgroup 1-12");
+		return;
+	}
+
+	std::string msg;
+	BotTactics::MovePlayerToGroup(raid, c, static_cast<uint32>(n - 1), msg);
+	c->Message(Chat::White, "%s", msg.c_str());
 }
