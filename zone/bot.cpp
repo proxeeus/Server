@@ -775,12 +775,78 @@ void Bot::GenerateBaseStats()
 	uint32 Intelligence = _baseINT;
 	uint32 Charisma = _baseCHA;
 	uint32 Attack = _baseATK;
-	int32 MagicResist = _baseMR;
-	int32 FireResist = _baseFR;
-	int32 DiseaseResist = _baseDR;
-	int32 PoisonResist = _basePR;
-	int32 ColdResist = _baseCR;
 	int32 CorruptionResist = _baseCorrup;
+
+	// Racial base resists: the values of Client::CalcMR/FR/CR/DR/PR
+	// (client_mods.cpp), which match the v29c client. 25/25/25/15/15, except
+	// Barbarian CR 35, Erudite MR 30 DR 10, Dwarf MR 30 PR 20, Troll FR 5,
+	// Halfling DR 20 PR 20, Iksar FR 30 CR 15. Keyed on the base race, as the
+	// client is, so an illusion does not change them. The class and level
+	// parts are added in Bot::Calc*R, also as the client does.
+	int32 MagicResist   = 25;
+	int32 FireResist    = 25;
+	int32 ColdResist    = 25;
+	int32 DiseaseResist = 15;
+	int32 PoisonResist  = 15;
+	switch (GetBaseRace()) {
+		case HUMAN:
+		case WOOD_ELF:
+		case HIGH_ELF:
+		case DARK_ELF:
+		case HALF_ELF:
+		case OGRE:
+		case GNOME:
+		case VAHSHIR:
+			break;
+		case BARBARIAN:
+			ColdResist = 35;
+			break;
+		case ERUDITE:
+			MagicResist   = 30;
+			DiseaseResist = 10;
+			break;
+		case DWARF:
+			MagicResist  = 30;
+			PoisonResist = 20;
+			break;
+		case TROLL:
+			FireResist = 5;
+			break;
+		case HALFLING:
+			DiseaseResist = 20;
+			PoisonResist  = 20;
+			break;
+		case IKSAR:
+			FireResist = 30;
+			ColdResist = 15;
+			break;
+		case FROGLOK:
+			MagicResist  = 30;
+			PoisonResist = 30;
+			break;
+		case DRAKKIN:
+			switch (GetDrakkinHeritage()) {
+				case 0: FireResist    += 10; break;
+				case 1: DiseaseResist += 10; break;
+				case 2: MagicResist   += 10; break;
+				case 3: PoisonResist  += 10; break;
+				case 4: ColdResist    += 10; break;
+				case 5:
+					MagicResist   += 2;
+					FireResist    += 2;
+					ColdResist    += 2;
+					DiseaseResist += 2;
+					PoisonResist  += 2;
+					break;
+				default:
+					break;
+			}
+			break;
+		default:
+			MagicResist = 20;
+			FireResist  = 20;
+			break;
+	}
 
 	// pulling fixed values from an auto-increment field is dangerous...
 	switch (GetClass()) {
@@ -922,7 +988,6 @@ void Bot::GenerateBaseStats()
 			Intelligence -= 10;
 			Charisma -= 20;
 			BotSize = 7.0;
-			ColdResist += 10;
 			break;
 		case ERUDITE:
 			Strength -= 15;
@@ -932,8 +997,6 @@ void Bot::GenerateBaseStats()
 			Wisdom += 8;
 			Intelligence += 32;
 			Charisma -= 5;
-			MagicResist += 5;
-			DiseaseResist -= 5;
 			break;
 		case WOOD_ELF:
 			Strength -= 10;
@@ -978,8 +1041,6 @@ void Bot::GenerateBaseStats()
 			Intelligence -= 15;
 			Charisma -= 30;
 			BotSize = 4.0;
-			MagicResist -= 5;
-			PoisonResist += 5;
 			break;
 		case TROLL:
 			Strength += 33;
@@ -989,7 +1050,6 @@ void Bot::GenerateBaseStats()
 			Intelligence -= 23;
 			Charisma -= 35;
 			BotSize = 8.0;
-			FireResist -= 20;
 			break;
 		case OGRE:
 			Strength += 55;
@@ -1009,8 +1069,6 @@ void Bot::GenerateBaseStats()
 			Intelligence -= 8;
 			Charisma -= 25;
 			BotSize = 3.5;
-			PoisonResist += 5;
-			DiseaseResist += 5;
 			break;
 		case GNOME:
 			Strength -= 15;
@@ -1029,8 +1087,6 @@ void Bot::GenerateBaseStats()
 			Dexterity += 10;
 			Wisdom += 5;
 			Charisma -= 20;
-			MagicResist -= 5;
-			FireResist -= 5;
 			break;
 		case VAHSHIR:
 			Strength += 15;
@@ -1040,8 +1096,6 @@ void Bot::GenerateBaseStats()
 			Intelligence -= 10;
 			Charisma -= 10;
 			BotSize = 7.0;
-			MagicResist -= 5;
-			FireResist -= 5;
 			break;
 		case FROGLOK:
 			Strength -= 5;
@@ -1050,8 +1104,6 @@ void Bot::GenerateBaseStats()
 			Dexterity += 25;
 			Charisma -= 25;
 			BotSize = 5.0;
-			MagicResist -= 5;
-			FireResist -= 5;
 			break;
 		case DRAKKIN:
 			Strength -= 5;
@@ -1060,11 +1112,6 @@ void Bot::GenerateBaseStats()
 			Intelligence += 10;
 			Wisdom += 5;
 			BotSize = 5.0;
-			PoisonResist += 2;
-			DiseaseResist += 2;
-			MagicResist += 2;
-			FireResist += 2;
-			ColdResist += 2;
 			break;
 		default:
 			break;
@@ -2990,23 +3037,30 @@ bool Bot::TrySecondaryWeaponAttacks(Mob* tar, const EQ::ItemInstance* s_item) {
 
 			if (use_fist || !s_itemdata->IsType2HWeapon()) {
 
-				float DualWieldProbability = 0.0f;
+				// v29c 0x41d55b: rand(1, 375) <= Dual Wield + level, the same
+				// as Client::CheckDualWield (attack.cpp). Bots rolled /400.
+				int dw_chance = GetSkill(EQ::skills::SkillDualWield) + GetLevel();
+				dw_chance += aabonuses.Ambidexterity + spellbonuses.Ambidexterity + itembonuses.Ambidexterity;
+				int dw_per_inc = spellbonuses.DualWieldChance + aabonuses.DualWieldChance + itembonuses.DualWieldChance;
+				if (dw_per_inc) {
+					dw_chance += dw_chance * dw_per_inc / 100;
+				}
 
-				int32 Ambidexterity = (aabonuses.Ambidexterity + spellbonuses.Ambidexterity + itembonuses.Ambidexterity);
-				DualWieldProbability = ((GetSkill(EQ::skills::SkillDualWield) + GetLevel() + Ambidexterity) / 400.0f); // 78.0 max chance
-
-				int32 DWBonus = (spellbonuses.DualWieldChance + itembonuses.DualWieldChance);
-				DualWieldProbability += (DualWieldProbability * float(DWBonus) / 100.0f);
-
-				float random = zone->random.Real(0, 1);
-				if (random < DualWieldProbability) { // Max 78% for DW chance
+				if (zone->random.Int(1, 375) <= dw_chance) {
 					Attack(tar, EQ::invslot::slotSecondary);	// Single attack with offhand
 
 					if (GetAppearance() == eaDead) { return false; }
 					TryCombatProcs(s_item, tar, EQ::invslot::slotSecondary);
 
+					// v29c 0x4b3625: no offhand double attack unless Double
+					// Attack > 149 (cmp byte, 0x95; jbe skips). Client::DoAttackRounds
+					// has the same gate, or any GiveDoubleAttack bonus.
+					const bool offhand_can_double =
+						GetSkill(EQ::skills::SkillDoubleAttack) > 149 ||
+						(aabonuses.GiveDoubleAttack + spellbonuses.GiveDoubleAttack + itembonuses.GiveDoubleAttack) > 0;
+
 					if (GetAppearance() == eaDead) { return false; }
-					if (CanThisClassDoubleAttack() && CheckBotDoubleAttack() && tar->GetHP() > -10) {
+					if (CanThisClassDoubleAttack() && offhand_can_double && CheckBotDoubleAttack() && tar->GetHP() > -10) {
 						Attack(tar, EQ::invslot::slotSecondary);	// Single attack with offhand
 					}
 				}
@@ -6350,7 +6404,11 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 			}
 			else
 				Taunt(target->CastToNPC(), false);
-			taunt_timer.Start(TauntReuseTime * 1000);
+
+			// The warrior roast above keeps its 5 s timer; any other class's
+			// taunt uses the v29c 6 s (Bots:EraAbilityReuse)
+			const uint32 taunt_era_ms = (GetClass() == Class::Warrior) ? 0 : GetEraAbilityReuseMs(EQ::skills::SkillTaunt);
+			taunt_timer.Start(taunt_era_ms ? taunt_era_ms : TauntReuseTime * 1000);
 		}
 	}
 
@@ -6403,8 +6461,12 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 					}
 				}
 
-				float HasteModifier = (GetHaste() * 0.01f);
-				monkattack_timer.Start((reuse * 1000) / HasteModifier);
+				if (const uint32 era_ms = GetEraAbilityReuseMs(EQ::skills::SkillTigerClaw)) {
+					monkattack_timer.Start(era_ms);
+				} else {
+					float HasteModifier = (GetHaste() * 0.01f);
+					monkattack_timer.Start((reuse * 1000) / HasteModifier);
+				}
 
 				break;
 			}
@@ -6581,7 +6643,57 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 
 		TryBackstab(target,reuse);
 	}
-	classattack_timer.Start(reuse / HasteModifier);
+
+	// The v29c reuse of the ability that fired, unhasted (Bots:EraAbilityReuse).
+	// A pass that fired nothing, Frenzy (no v29c value) and the riposte
+	// backstab (reuse 0) keep the legacy timer.
+	uint32 era_ms = 0;
+	if (did_attack && !(IsRiposte && skill_to_use == EQ::skills::SkillBackstab)) {
+		era_ms = GetEraAbilityReuseMs(static_cast<EQ::skills::SkillType>(skill_to_use));
+	}
+
+	if (era_ms) {
+		classattack_timer.Start(era_ms);
+	} else {
+		classattack_timer.Start(reuse / HasteModifier);
+	}
+}
+
+// eqgame.exe 0x4825b5 builds the skill records; field +0x20 is each skill's
+// reuse in ms, which the client runs itself for a player and does not
+// shorten with haste. Bots run server-side, so they get the same numbers
+// here. Slam is not a v29c skill: an ogre, troll or barbarian slam is a
+// bash. Frenzy (a Berserker skill, past v29c) has no entry.
+uint32 Bot::GetEraAbilityReuseMs(EQ::skills::SkillType skill)
+{
+	if (!RuleB(Bots, EraAbilityReuse)) {
+		return 0;
+	}
+
+	switch (skill) {
+		case EQ::skills::SkillKick:
+		case EQ::skills::SkillBash:
+			return 8000;
+		case EQ::skills::SkillRoundKick:
+		case EQ::skills::SkillFlyingKick:
+			return 8500;
+		case EQ::skills::SkillTigerClaw:
+			return 5500;
+		case EQ::skills::SkillEagleStrike:
+			return 6000;
+		case EQ::skills::SkillDragonPunch:
+			return 6200;
+		case EQ::skills::SkillBackstab:
+		case EQ::skills::SkillDisarm:
+		case EQ::skills::SkillIntimidation:
+			return 10000;
+		case EQ::skills::SkillBerserking:
+			return 7500;
+		case EQ::skills::SkillTaunt:
+			return 6000;
+		default:
+			return 0;
+	}
 }
 
 void Bot::MakePet(uint16 spell_id, const char* pettype, const char *petname) {
@@ -7150,20 +7262,24 @@ int32 Bot::GenerateBaseManaPoints()
 }
 
 void Bot::GenerateSpecialAttacks() {
+	bool can_triple = false;
 	if (RuleB(Bots, BotsUseOldTripleAttack))
 	{
-		if( (GetClass() == Class::Monk || GetLevel() >= RuleI(Combat, MonkOldTripleAttackLevel))
-			||
-			(GetClass() == Class::Warrior || GetLevel() >= RuleI(Combat, WarriorOldTripleAttackLevel)))
-			
-			SetSpecialAbility(SpecialAbility::TripleAttack, 1);
-		
+		// Monks and warriors only, from their level, as Mob::CanThisClassTripleAttack
+		// does for players. The test used || inside each half, so every bot
+		// reaching level 60 got triple attack.
+		can_triple =
+			(GetClass() == Class::Monk && GetLevel() >= RuleI(Combat, MonkOldTripleAttackLevel)) ||
+			(GetClass() == Class::Warrior && GetLevel() >= RuleI(Combat, WarriorOldTripleAttackLevel));
 	}
 	else
 	{
-		if (((GetClass() == Class::Monk) || (GetClass() == Class::Warrior) || (GetClass() == Class::Ranger) || (GetClass() == Class::Berserker)) && (GetLevel() >= 60))
-			SetSpecialAbility(SpecialAbility::TripleAttack, 1);
+		can_triple = ((GetClass() == Class::Monk) || (GetClass() == Class::Warrior) || (GetClass() == Class::Ranger) || (GetClass() == Class::Berserker)) && (GetLevel() >= 60);
 	}
+
+	// Set or clear: this runs on every CalcBotStats, so a bot that no longer
+	// qualifies (de-levelled, or flagged by the old test) loses it.
+	SetSpecialAbility(SpecialAbility::TripleAttack, can_triple ? 1 : 0);
 }
 
 bool Bot::DoFinishedSpellSingleTarget(uint16 spell_id, Mob* spellTarget, EQ::spells::CastingSlot slot, bool& stopLogic) {
@@ -7512,7 +7628,9 @@ int32 Bot::CalcCHA() {
 
 int32 Bot::CalcMR() {
 	MR += (itembonuses.MR + spellbonuses.MR + aabonuses.MR);
-	if (GetClass() == Class::Warrior)
+	// Class parts as Client::CalcMR (and v29c): warrior +level/2 (the
+	// client code gives berserkers the same)
+	if (GetClass() == Class::Warrior || GetClass() == Class::Berserker)
 		MR += (GetLevel() / 2);
 
 	if (MR < 1)
@@ -7525,9 +7643,17 @@ int32 Bot::CalcMR() {
 }
 
 int32 Bot::CalcFR() {
+	// Class parts as Client::CalcFR (and v29c): ranger +4, monk +8, each
+	// +(level - 49) above 49
 	int c = GetClass();
 	if (c == Class::Ranger) {
 		FR += 4;
+		int l = GetLevel();
+		if (l > 49)
+			FR += (l - 49);
+	}
+	if (c == Class::Monk) {
+		FR += 8;
 		int l = GetLevel();
 		if (l > 49)
 			FR += (l - 49);
@@ -7545,13 +7671,20 @@ int32 Bot::CalcFR() {
 }
 
 int32 Bot::CalcDR() {
+	// Class parts as Client::CalcDR (and v29c): monk +(level - 50) above 50;
+	// paladin +8, shadow knight and beastlord +4, each +(level - 49) above 49
 	int c = GetClass();
+	if (c == Class::Monk) {
+		int l = GetLevel();
+		if (l > 50)
+			DR += (l - 50);
+	}
 	if (c == Class::Paladin) {
 		DR += 8;
 		int l = GetLevel();
 		if (l > 49)
 			DR += (l - 49);
-	} else if (c == Class::ShadowKnight) {
+	} else if (c == Class::ShadowKnight || c == Class::Beastlord) {
 		DR += 4;
 		int l = GetLevel();
 		if (l > 49)
@@ -7569,7 +7702,14 @@ int32 Bot::CalcDR() {
 }
 
 int32 Bot::CalcPR() {
+	// Class parts as Client::CalcPR (and v29c): monk +(level - 50) above 50;
+	// rogue +8, shadow knight +4, each +(level - 49) above 49
 	int c = GetClass();
+	if (c == Class::Monk) {
+		int l = GetLevel();
+		if (l > 50)
+			PR += (l - 50);
+	}
 	if (c == Class::Rogue) {
 		PR += 8;
 		int l = GetLevel();
@@ -7594,8 +7734,10 @@ int32 Bot::CalcPR() {
 }
 
 int32 Bot::CalcCR() {
+	// Class parts as Client::CalcCR (and v29c): ranger and beastlord +4,
+	// +(level - 49) above 49
 	int c = GetClass();
-	if (c == Class::Ranger) {
+	if (c == Class::Ranger || c == Class::Beastlord) {
 		CR += 4;
 		int l = GetLevel();
 		if (l > 49)

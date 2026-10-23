@@ -240,6 +240,9 @@ public:
 	void RogueBackstab(Mob* other, bool min_damage = false, int ReuseTime = 10) override;
 	void RogueAssassinate(Mob* other) override;
 	void DoClassAttacks(Mob *target, bool IsRiposte=false);
+	// The v29c client's reuse for a combat ability, in ms, when
+	// Bots:EraAbilityReuse is on; 0 = use the legacy timer.
+	static uint32 GetEraAbilityReuseMs(EQ::skills::SkillType skill);
 	void CalcBonuses() override;
 
 	void MakePet(uint16 spell_id, const char* pettype, const char *petname = nullptr) override;

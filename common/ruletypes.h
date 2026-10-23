@@ -782,6 +782,7 @@ RULE_BOOL(Bots, RestrictApplyPotionToRogue, true, "Restricts the bot command 'ap
 RULE_BOOL(Bots, HealOnSpawn, false,"Completely heals a bot when ^spawned")	
 RULE_BOOL(Bots, RoguesCanTripleBackstab, true, "Can Rogue-bots triple Backstab ?") 
 RULE_BOOL(Bots, BotsUseOldTripleAttack, false, "Only a few select Bot classes can Triple attack") 
+RULE_BOOL(Bots, EraAbilityReuse, true, "Bot kick, bash, monk specials, backstab and taunt use the v29c client's per-skill reuse, not shortened by haste (the warrior taunt keeps its own timer). False: the older, shorter hasted timers")
 RULE_BOOL(Bots, OldRaceRezEffects, false, "Older clients had ID 757 for races with high starting STR, but it doesn't seem used anymore")
 RULE_BOOL(Bots, ResurrectionSickness, true, "Use Resurrection Sickness based on Resurrection spell cast, set to false to disable Resurrection Sickness.")
 RULE_INT(Bots, OldResurrectionSicknessSpell, 757, "757 is Default Old Resurrection Sickness Spell")

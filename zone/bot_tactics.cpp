@@ -5139,7 +5139,13 @@ bool Bot::TacticsInterruptStrike(Mob* caster)
 	}
 
 	DoSpecialAttackDamage(caster, skill, dmg, 0, -1, reuse);
-	classattack_timer.Start(reuse / (GetHaste() * 0.01f));
+
+	// The v29c bash/kick reuse, unhasted (Bots:EraAbilityReuse)
+	if (const uint32 era_ms = GetEraAbilityReuseMs(skill)) {
+		classattack_timer.Start(era_ms);
+	} else {
+		classattack_timer.Start(reuse / (GetHaste() * 0.01f));
+	}
 	return true;
 }
 
@@ -6191,7 +6197,10 @@ bool Bot::TacticsRescue()
 		bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), kRescueClaimMs)
 	) {
 		Taunt(loose->CastToNPC(), false);
-		taunt_timer.Start(TauntReuseTime * 1000);
+		// The v29c 6 s (Bots:EraAbilityReuse); a warrior keeps the 5 s its
+		// roast taunt runs on, since they share taunt_timer
+		const uint32 taunt_era_ms = (GetClass() == Class::Warrior) ? 0 : GetEraAbilityReuseMs(EQ::skills::SkillTaunt);
+		taunt_timer.Start(taunt_era_ms ? taunt_era_ms : TauntReuseTime * 1000);
 		LogInfo("[BotTactics] [{}] taunts [{}] off [{}]", GetCleanName(), loose->GetCleanName(), victim ? victim->GetCleanName() : "?");
 		return true;
 	}
