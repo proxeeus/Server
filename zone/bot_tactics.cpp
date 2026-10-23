@@ -160,6 +160,7 @@ constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this 
 constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
 constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
 constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
+constexpr uint32 kBuffingWindowMs        = 60000; // buffs cast in this window = "still buffing"
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
@@ -2436,6 +2437,52 @@ const std::vector<uint8>& BotTactics::ZoneResists()
 	return m_zone_resists;
 }
 
+// The zone's learned resists apply to every mob in it, so in Kael (learned
+// from five caster trash mobs: magic, fire, cold) all three went on all 71
+// bots before Derakor too, who casts nothing (~190 casts, ~10k healer
+// mana in one rest). Narrowed to the fight you are in, or about to start --
+// the mob the leader has targeted -- when that mob is known:
+//   a learned row with a resist      -> that resist
+//   no spell list at all (melee mob) -> none
+//   anything else (unknown caster)   -> the zone's, as before
+// With no target in view nothing changes, so a raid never goes into an
+// unknown caster's fight with less than it had.
+std::vector<uint8> BotTactics::ResistsWanted(const BotTacticsPlan& p)
+{
+	Mob* focus = p.assist_target_id ? entity_list.GetMob(p.assist_target_id) : nullptr;
+	if (!focus || !focus->IsNPC()) {
+		Mob* leader = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+		Mob* t      = leader ? leader->GetTarget() : nullptr;
+		focus       = (t && t->IsNPC() && IsAlive(t)) ? t : nullptr;
+	}
+
+	if (focus) {
+		if (const BotRaidEncounter* e = EncounterFor(focus->GetNPCTypeID()); e && e->resist_type) {
+			return {e->resist_type};
+		}
+		if (focus->CastToNPC()->GetNPCSpellsID() == 0) {
+			return {};
+		}
+	}
+
+	return ZoneResists();
+}
+
+void BotTactics::NoteBuffCast(uint32 key)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p || p->assist_target_id) {
+		return; // a fight's buffs are not "still buffing"
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	p->buff_cast_ms.push_back(now);
+	p->buff_cast_ms.erase(
+		std::remove_if(p->buff_cast_ms.begin(), p->buff_cast_ms.end(), [&](uint32 t) { return now - t > kBuffingWindowMs; }),
+		p->buff_cast_ms.end()
+	);
+}
+
 const BotRaidEncounter* BotTactics::EncounterFor(uint32 npc_type_id)
 {
 	if (!m_encounters_loaded) {
@@ -2747,9 +2794,17 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 		*lowest_healer = lowest;
 	}
 
-	std::string line = fmt::format(
-		"{} -- healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
-		ready ? "GO" : "WAIT", healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
+	// Buffs still going out: the reason mana is not climbing yet, said first.
+	const uint32 now     = Timer::GetCurrentTime();
+	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
+
+	std::string line = fmt::format("{} -- ", ready ? "GO" : "WAIT");
+	if (buffing) {
+		line += fmt::format("still buffing ({} buffs in the last minute); ", buffing);
+	}
+	line += fmt::format(
+		"healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
+		healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
 	);
 	if (lowest && lowest_pct < kPullReadyHealerManaPct) {
 		line += fmt::format(", lowest {} {:.0f}%", lowest->GetCleanName(), lowest_pct);
@@ -3365,6 +3420,22 @@ bool Bot::TacticsBeneficial(uint32 spell_type, uint8 chance)
 		return false;
 	}
 
+	// ...then the tanks of other groups, before anyone else: if a buffer's
+	// mana runs out partway through the raid, the people being hit already
+	// have theirs...
+	if (!cure) {
+		std::vector<uint16> tanks;
+		if (p->main_tank_id) {
+			tanks.push_back(p->main_tank_id);
+		}
+		tanks.insert(tanks.end(), p->off_tank_ids.begin(), p->off_tank_ids.end());
+		for (uint16 id : tanks) {
+			if (p->RaidGroupOf(id) != my_group && try_member(entity_list.GetMob(id))) {
+				return true;
+			}
+		}
+	}
+
 	// ...then the rest of the raid: everyone for cures, a few in turn for
 	// buffs, so thirty buffers do not each walk seventy members every check.
 	const size_t n      = p->members.size();
@@ -3841,6 +3912,9 @@ bool Bot::TacticsSituationalBuffs()
 
 		const auto t     = spells[spell_id].target_type;
 		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? this : tar;
+		if (aimed != tar && !TacticsInMyGroup(tar)) {
+			return false; // a group spell never reaches another group: the cast would only loop
+		}
 		if (aimed->CanBuffStack(spell_id, GetLevel(), true) < 0) {
 			return false;
 		}
@@ -3853,6 +3927,7 @@ bool Bot::TacticsSituationalBuffs()
 
 		if (CastSpell(spell_id, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
 			LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[spell_id].name, aimed->GetCleanName());
+			bot_tactics.NoteBuffCast(m_tactics_key);
 			return true;
 		}
 		return false;
@@ -3889,8 +3964,7 @@ bool Bot::TacticsSituationalBuffs()
 	// in twelve minutes and walked into Derakor at 0-20% (Kael 2026-10-23).
 	const bool  healer     = GetClass() == Class::Cleric || GetClass() == Class::Druid || GetClass() == Class::Shaman;
 	const float resist_bar = healer ? kResistBuffHealerManaPct : kResistBuffManaPct;
-	static const std::vector<uint8> kNoResists;
-	const std::vector<uint8>&       resists = GetManaRatio() >= resist_bar ? bot_tactics.ZoneResists() : kNoResists;
+	const std::vector<uint8> resists = GetManaRatio() >= resist_bar ? bot_tactics.ResistsWanted(*p) : std::vector<uint8>{};
 	for (uint8 resist : resists) {
 		const int    effect   = ResistEffect(resist);
 		const uint16 spell_id = BuffWithEffectFor(effect, GetClass(), GetLevel());
@@ -4070,6 +4144,39 @@ void Bot::TacticsNoteResist(uint16 spell_id, Mob* target)
 	}
 	else {
 		LogInfo("[BotAI] [{}] [{}] resisted by [{}] ({} of {})", GetCleanName(), spells[spell_id].name, target->GetCleanName(), it->count, threshold);
+	}
+}
+
+bool Bot::TacticsInMyGroup(Mob* tar)
+{
+	if (!tar) {
+		return false;
+	}
+
+	Mob* who = tar->GetOwner() ? tar->GetOwner() : tar; // a pet rides with its owner
+	if (who == this) {
+		return true;
+	}
+
+	// In a raid a group spell covers the caster's raid group (a raid-
+	// groupless caster: itself only).
+	if (IsRaidGrouped()) {
+		Raid* raid = entity_list.GetRaidByBotName(GetName());
+		if (!raid) {
+			return false;
+		}
+		const uint32 mine = raid->GetGroup(GetName());
+		return mine != RAID_GROUPLESS && raid->GetGroup(who->GetName()) == mine;
+	}
+
+	Group* g = GetGroup();
+	return g && g->IsGroupMember(who);
+}
+
+void Bot::TacticsNoteBuffCast()
+{
+	if (m_tactics_key) {
+		bot_tactics.NoteBuffCast(m_tactics_key);
 	}
 }
 
@@ -4288,13 +4395,10 @@ bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
 			return !p->camp_set; // on the road, not at camp
 		}
 		if (resist) {
-			// Only resists the zone's raid targets ask for.
-			for (uint8 r : bot_tactics.ZoneResists()) {
-				const int e = ResistEffect(r);
-				if (e && has(e)) {
-					return true;
-				}
-			}
+			// A resist-only buff is TacticsSituationalBuffs' alone: it knows
+			// which resist the coming fight wants (ResistsWanted) and keeps
+			// healer mana for heals. Here too it went on everybody twice
+			// over (~190 resist casts in one Kael rest).
 			return false;
 		}
 	}
@@ -4571,6 +4675,10 @@ bool Bot::TacticsTellRequest(Client* from, const std::string& message)
 
 		const auto t     = spells[spell_id].target_type;
 		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? static_cast<Mob*>(this) : static_cast<Mob*>(from);
+		if (aimed == this && !TacticsInMyGroup(from)) {
+			reply(fmt::format("{} only reaches my own group.", spells[spell_id].name));
+			return true;
+		}
 		if (aimed != this && !IsValidSpellRange(spell_id, aimed, false)) {
 			reply("Come closer.");
 			return true;

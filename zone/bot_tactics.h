@@ -184,6 +184,7 @@ struct BotTacticsPlan {
 	// (BotTactics::Readiness; ^tactics ready asks for it any time).
 	uint32 readiness_report_ms  = 0;
 	bool   pull_ready_announced = false;
+	std::vector<uint32> buff_cast_ms; // out-of-fight buff casts, the last minute's (^ready: "buffing")
 	bool   camp_hint_given      = false;    // told the player once that auto-pull is off
 
 	// Incoming damage (phase 19): health % lost per second, smoothed, per
@@ -299,6 +300,11 @@ public:
 
 	// The cleric whose turn it is started its heal / cannot take its turn.
 	void ChainCast(uint32 key, uint16 caster_id);
+	void NoteBuffCast(uint32 key);                 // a buff went out between fights (^ready)
+
+	// The resists worth buffing now: the fight's (or the leader's target's)
+	// learned resist, none for a target that casts nothing, else the zone's.
+	std::vector<uint8> ResistsWanted(const BotTacticsPlan& p);
 	void ChainSkip(uint32 key, uint16 caster_id, const char* why);
 
 	// False when another caster claimed this add within the last few seconds.

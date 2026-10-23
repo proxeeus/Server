@@ -997,6 +997,11 @@ public:
 	//   for a while: Icewell mobs carry 150+ MR
 	void TacticsNoteResist(uint16 spell_id, Mob* target);
 	bool TacticsResistBackoff(uint16 spell_id, Mob* target) const;
+	// Would a group spell of ours land on `tar`? (our raid group, our group,
+	// ourselves; a pet counts as its owner)
+	bool TacticsInMyGroup(Mob* tar);
+	// A buff went out: the unit's "buffing" count for ^ready
+	void TacticsNoteBuffCast();
 	// - mez is the plan's call, not a cast-chance roll (the chances table has
 	//   mez at 0 for every class)
 	bool TacticsHasMezWork() const;
