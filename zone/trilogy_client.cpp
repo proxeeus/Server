@@ -6114,23 +6114,43 @@ void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
 // HandleMoneyOnCorpse — OP_MoneyOnCorpse (server → Trilogy client).
 //
 // EQEmu moneyOnCorpseStruct and Trilogy MoneyOnCorpse_Struct are
-// byte-for-byte identical (20 bytes) — pass through directly.
+// byte-for-byte identical (20 bytes) — pass through directly, except
+// for the response byte (below).
 // ============================================================
 
 void TrilogyClient::HandleMoneyOnCorpse(const EQApplicationPacket* app)
 {
 	if (!app || app->size < sizeof(::moneyOnCorpseStruct)) return;
 
-	// Response 1 or 3 opens the loot window (eqgame.exe 0x464ee8); 0 and 2
-	// are refusals.  Tracked for InputHoldActive.
-	const uint8_t response = app->pBuffer[0];
+	uint8_t buf[sizeof(::moneyOnCorpseStruct)];
+	std::memcpy(buf, app->pBuffer, sizeof(buf));
+
+	// v29c knows four responses (eqgame.exe 0x464e5b): 1 and 3 open the loot
+	// window, 0 ("Someone is already looting that corpse.") and 2 ("You may
+	// not loot this corpse at this time.") refuse.  Anything else is skipped
+	// WITHOUT clearing the pending loot corpse (ds:0x6e4dc0), so the client
+	// stops sending loot requests until it zones: every later right-click on
+	// a corpse falls through to /consider, "It is futile to consider the
+	// dead...".  EQEmu's TooFar (5), Hostiles (4) and LootAll (6) are those
+	// unknown values: send them as 2, and say why for TooFar.
+	uint8_t response = buf[0];
+	if (response != 0 && response != 1 && response != 2 && response != 3) {
+		LogInfo("[TRILOGY-LOOT] MoneyOnCorpse response [{}] unknown to v29c, sent as 2", response);
+		if (response == static_cast<uint8_t>(LootResponse::TooFar)) {
+			Message(Chat::White, "You are too far away to loot that corpse.");
+		}
+		response = 2;
+		buf[0]   = response;
+	}
+
+	// Tracked for InputHoldActive.
 	if (response == 1 || response == 3) {
 		m_loot_window_open = true;
 		m_loot_corpse_id   = 0;
 	}
 
-	m_tzs->SendToSession(m_session_key, 0x5020, app->pBuffer,
-	                     static_cast<uint32_t>(sizeof(::moneyOnCorpseStruct)));
+	m_tzs->SendToSession(m_session_key, 0x5020, buf,
+	                     static_cast<uint32_t>(sizeof(buf)));
 }
 
 bool TrilogyClient::InputHoldActive() const

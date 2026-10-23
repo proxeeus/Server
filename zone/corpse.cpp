@@ -1172,7 +1172,14 @@ void Corpse::MakeLootRequestPackets(Client *c, const EQApplicationPacket *app)
 		m_being_looted_by_entity_id = 0xFFFFFFFF;
 	}
 
-	if (DistanceSquaredNoZ(c->GetPosition(), m_Position) > 625) {
+	// Trilogy (v29c) checks loot reach itself before it asks: 3D distance (z
+	// divided by 1.2) against the corpse's collision radius * 1.6 + 14
+	// (eqgame.exe 0x4dd4a7), so a giant's corpse is lootable from well past
+	// 25 units, and our copy of a running player's position trails the
+	// client's. EQClassic has no server range check at all. Keep a loose
+	// bound only: a refusal here used to wedge v29c's loot state.
+	const float loot_range = c->IsTrilogyClient() ? 100.0f : 25.0f;
+	if (DistanceSquaredNoZ(c->GetPosition(), m_Position) > loot_range * loot_range) {
 		SendLootReqErrorPacket(c, LootResponse::TooFar);
 		return;
 	}
