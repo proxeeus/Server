@@ -232,6 +232,7 @@ RULE_BOOL(Character, PlayerTradingLoreFeedback, true, "If enabled, during a play
 RULE_INT(Character, MendAlwaysSucceedValue, 199, "Value at which mend will always succeed its skill check. Default: 199")
 RULE_BOOL(Character, SneakAlwaysSucceedOver100, false, "When sneak skill is over 100, always succeed sneak/hide. Default: false")
 RULE_INT(Character, BandolierSwapDelay, 0, "Bandolier swap delay in milliseconds, default is 0")
+RULE_BOOL(Character, TrilogyEraRegen, true, "Trilogy: HP and mana regen for v29c players and for all bots follow the 2001 client's own 6 s prediction (eqgame.exe 0x426ee4): era tables, sit bonus after 60 s seated, no sit-time ramp, no rest/fast regen, no AA/item-stat regen or regen multipliers. Off = previous behaviour (stock HP regen, EQClassic mana formula for Trilogy, stock bot regen)")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Mercs)

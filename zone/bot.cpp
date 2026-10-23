@@ -1799,6 +1799,17 @@ bool Bot::Process()
 
 	SpellProcess();
 
+	// Era regen: note when the current sit began, for the "seated more than
+	// 60 s" HP bonus (Mob::CalcEraHPRegen).  A player's client stamps this on
+	// the sit transition itself; a bot has no packet for it, so sample here.
+	{
+		const bool sitting_now = IsSitting();
+		if (sitting_now && !m_era_was_sitting) {
+			m_era_sit_start_ms = Timer::GetCurrentTime();
+		}
+		m_era_was_sitting = sitting_now;
+	}
+
 	if (tic_timer.Check()) {
 
 		// 6 seconds, or whatever the rule is set to has passed, send this position to everyone to avoid ghosting
@@ -1813,12 +1824,15 @@ bool Bot::Process()
 			ProcessFlee();
 		}
 
+		// Era regen has no rest/fast regen: 2001 had none (see CalcHPRegen).
+		const bool era_regen = RuleB(Character, TrilogyEraRegen);
+
 		if (GetHP() < GetMaxHP()) {
-			SetHP(GetHP() + CalcHPRegen() + RestRegenHP);
+			SetHP(GetHP() + CalcHPRegen() + (era_regen ? 0 : RestRegenHP));
 		}
 
 		if (GetMana() < GetMaxMana()) {
-			SetMana(GetMana() + CalcManaRegen() + RestRegenMana);
+			SetMana(GetMana() + CalcManaRegen() + (era_regen ? 0 : RestRegenMana));
 		}
 
 		CalcATK();
@@ -7843,6 +7857,15 @@ int32 Bot::LevelRegen() {
 }
 
 int64 Bot::CalcHPRegen() {
+	// Era regen (Character:TrilogyEraRegen): the same 2001 numbers a v29c
+	// player gets (Mob::CalcEraHPRegen, client_mods.cpp).  Bots carry no food
+	// or water, so they count as fed; the sit clock is Bot::Process's.
+	if (RuleB(Character, TrilogyEraRegen)) {
+		const bool   sitting = IsSitting();
+		const uint32 sat_ms  = sitting ? Timer::GetCurrentTime() - m_era_sit_start_ms : 0;
+		return CalcEraHPRegen(sitting, sat_ms, true);
+	}
+
 	int32 regen = (LevelRegen() + itembonuses.HPRegen + spellbonuses.HPRegen);
 	regen += itembonuses.heroic_hp_regen;
 	regen += (aabonuses.HPRegen + GroupLeadershipAAHealthRegeneration());
@@ -7852,6 +7875,18 @@ int64 Bot::CalcHPRegen() {
 }
 
 int64 Bot::CalcManaRegen() {
+	// Era regen (Character:TrilogyEraRegen): the v29c player's mana tick
+	// (Mob::CalcEraManaRegen) with no ManaRegenMultiplier or Bots:ManaRegen.
+	// A seated bot is treated as a player sitting to meditate — spell book
+	// open — so casters below 35 med the way a player would; fed as above.
+	if (RuleB(Character, TrilogyEraRegen)) {
+		const bool sitting = IsSitting();
+		if (sitting) {
+			BuffFadeBySitModifier();   // kept from the stock path below
+		}
+		return CalcEraManaRegen(sitting, sitting, GetSkill(EQ::skills::SkillMeditate), true);
+	}
+
 	uint8 level = GetLevel();
 	uint8 botclass = GetClass();
 	int32 regen = 0;

@@ -439,7 +439,43 @@ bool TrilogyClient::CanMeditate()
 }
 
 // ============================================================
-// CalcManaRegen — classic 1999 EQ formula (override)
+// CalcHPRegen — 2001 era regen (override, Character:TrilogyEraRegen)
+//
+// v29c runs its own HP tick every 6000 ms (0x426ee4) and only takes the
+// server's number when an HP update arrives, so anything the stock formula
+// adds that the client does not (base_data's 8/tick at 60 where v29c has 4,
+// the post-2004 ramp to 15x after nine minutes seated, the out-of-combat
+// fast regen) shows up as the bar jumping.  Mob::CalcEraHPRegen is the
+// client's formula; this supplies its inputs.
+//
+// "Seated for more than 60 s": v29c stamps actor+0x70 with its clock every
+// time its stand state turns to 0x6e (0x4b47b5) and sends that same
+// transition as SpawnAppearance 0xf520, which Handle_OP_SpawnAppearance
+// turns into tmSitting = now.  Both clocks therefore start on the same sit;
+// standing stops the bonus on both sides because `sitting` gates it.
+// ============================================================
+
+int64 TrilogyClient::CalcHPRegen(bool bCombat)
+{
+	if (!RuleB(Character, TrilogyEraRegen)) {
+		return Client::CalcHPRegen(bCombat);
+	}
+
+	const bool   sitting = IsSitting();
+	const uint32 sat_ms  = sitting ? Timer::GetCurrentTime() - tmSitting : 0;
+	return CalcEraHPRegen(sitting, sat_ms, IsEraFed());
+}
+
+// ============================================================
+// CalcManaRegen — 2001 era regen / classic 1999 EQ formula (override)
+//
+// With Character:TrilogyEraRegen on, the client's own mana tick
+// (Mob::CalcEraManaRegen, 0x42721f-0x427332 plus the buff tick's SE15 at
+// 0x425366).  At level 60 with Meditate 235, seated with the book open, that
+// is 4 + 235/15 = 19 a tick where the formula below gave about 70 — the bar
+// crept up 19 at a time and jumped on every server update.  It also
+// finally counts Clarity-style SE15 buffs, which the formula below ignored.
+// With the rule off, the classic formula:
 //
 // EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:
 //   if (sitting && level > 0) medding = true;       // always true for live players
@@ -472,6 +508,18 @@ bool TrilogyClient::CanMeditate()
 
 int64 TrilogyClient::CalcManaRegen(bool bCombat)
 {
+	if (RuleB(Character, TrilogyEraRegen)) {
+		// The client reads Meditate through 0x4246a9 → 0x41a3e9: the raw PP
+		// skill byte (char+0x9c8), but at least 1 once the class may have the
+		// skill at this level (skill table +0x68 / +0x28) — so a level-35+
+		// caster who never raised Meditate still gets the meditating tick.
+		uint16 meditate = static_cast<uint16>(GetRawSkill(EQ::skills::SkillMeditate));
+		if (meditate == 0 && MaxSkill(EQ::skills::SkillMeditate) > 0) {
+			meditate = 1;
+		}
+		return CalcEraManaRegen(IsSitting(), IsMedding(), meditate, IsEraFed());
+	}
+
 	if (IsStarved()) return 0;
 	if (GetClass() == Class::Bard) return 0;
 

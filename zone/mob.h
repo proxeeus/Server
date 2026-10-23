@@ -663,6 +663,15 @@ public:
 	virtual int64 CalcHPRegenCap() { return 0; }
 	inline int64 GetMaxMana() const { return max_mana; }
 	virtual int64 CalcManaRegenCap() { return 0; }
+	// ==== 2001 (v29c) era regen — client_mods.cpp, rule Character:TrilogyEraRegen ====
+	// Per-tick HP / mana exactly as eqgame.exe predicts them every 6 s, minus the
+	// buff terms DoBuffTic already applies.  Callers supply the state the client
+	// reads: seated, ms since the current sit began, food AND water non-zero,
+	// spell book open, and the Meditate skill as the client sees it.
+	int64 CalcEraHPRegen(bool sitting, uint32 sat_ms, bool fed);
+	int64 CalcEraManaRegen(bool sitting, bool book_open, uint16 meditate, bool fed);
+	bool  HasEraInnateRegen() const;
+	int64 GetEraWornEffectValue(uint16 effect_id, bool largest_only);
 	inline int64 GetMana() const { return current_mana; }
 	virtual int64 GetEndurance() const { return 0; }
 	virtual int64 GetMaxEndurance() const { return 0; }

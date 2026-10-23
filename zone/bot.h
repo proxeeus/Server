@@ -1207,6 +1207,8 @@ private:
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
 	uint32    m_situational_check_ms = 0;
+	uint32    m_era_sit_start_ms     = 0;     // when the current sit began (era regen's 60 s bonus)
+	bool      m_era_was_sitting      = false;
 	BotProgress m_follow_progress;          // walking to the follow point / camp place
 	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
 	uint32    m_catchup_said_ms      = 0;
