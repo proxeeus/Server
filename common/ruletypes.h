@@ -531,7 +531,7 @@ RULE_INT(Spells, HealAmountMessageFilterThreshold, 100, "Lifetaps below this thr
 RULE_BOOL(Spells, SnareOverridesSpeedBonuses, false, "Enabling will allow snares to override any speed bonuses the entity may have. Default: False")
 RULE_BOOL(Spells, EraFizzle, true, "Players and bots fizzle by the v29c (Aug 2001) client formula at 0x41f0e7, and a fizzle costs min(mana*4/10, max mana/8). False = the modern fizzle code (bots never fizzle).")
 RULE_BOOL(Spells, EraChanneling, true, "Players and bots keep concentration by the v29c client check at 0x423edb/0x4241ae (one rand(1,390) roll per 3/4 hit, moving more than 1 unit interrupts). False = the modern single channel roll.")
-RULE_BOOL(Spells, EraResistModel, true, "Spells on NPCs use EQClassic's resist model (save = 3x level is a 20% resist); spells on players and bots use the v29c level modifier 0x41a6d6 (clamp 10, no ResistFalloff). False = the modern model.")
+RULE_BOOL(Spells, EraResistModel, true, "Spells on NPCs use EQClassic's resist roll (save = 3x level is a 20% resist), with the v29c client's level modifier 0x41a6d6 in place of EQClassic's; spells on players and bots use the same modifier (clamp 10, no ResistFalloff). False = the modern model.")
 RULE_CATEGORY_END()
 
 RULE_CATEGORY(Combat)

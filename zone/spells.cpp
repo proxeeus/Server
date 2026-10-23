@@ -5781,16 +5781,21 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 	// Zone/Source/spells.cpp:907, partial damage at SpellEffects.cpp:67.  Its
 	// baseline is the NPC data itself: a save of exactly 3 x level is a 20%
 	// resist, and 3,273 of our 7,968 L50-70 NPCs carry exactly that.
-	//   save   = resist + level adjustment + spell resist modifier, where the
-	//            adjustment is (victimL - casterL) * 6 above the caster and
-	//            * 3 at or below it
-	//   bonus  = 5% per level the victim is above the caster, max 20%, unless
-	//            the spell's modifier is -100 or lower
+	//   save   = resist + level modifier + spell resist modifier.  The level
+	//            modifier is the v29c client's own (eqgame.exe 0x41a6d6, NPC
+	//            resister): d = victimL - casterL, floored at -9, then
+	//            sign(d) * d*d/2.  EQClassic's own adjustment ((victimL -
+	//            casterL) * 6 above the caster, * 3 below, plus a flat +5% per
+	//            level up to +20%) was its guess, and it made a 3 x level NPC
+	//            ten levels up resist everything; the client's formula is used
+	//            instead.
 	//   chance = 20% * 1.1^((save - 3*victimL)/3), or * 0.9^ below the baseline
 	//            (integer /3); clamped to [3, 100], [1, 100] for -100 spells
-	//   resisted when rand()%100 + 1 < chance + bonus
-	//   a resisted pure nuke at chance + bonus <= 50 has a 20% chance to land
-	//   as a partial instead: damage / 2 * (10..99)%
+	//   resisted when rand()%100 + 1 < chance
+	//   a resisted pure nuke at chance <= 50 has a 20% chance to land as a
+	//   partial instead: damage / 2 * (10..99)%
+	// L60 caster, unadjusted spell: NPC L60 resist 180 lands 81%, L65 resist
+	// 195 lands 72%, L70 resist 210 (Derakor) lands 10%.
 	// EQClassic notes the model is for spells on NPCs only ("PC on NPC / NPC
 	// on NPC"); spells on players and bots keep the server model above with
 	// the v29c level modifier.  Charm/root break ticks keep the server model
@@ -5807,15 +5812,16 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 		!IsRoot &&
 		resist_type != RESIST_PHYSICAL
 	) {
-		const int level_gap       = level - caster_level;
-		const int save_adjustment = level_gap > 0 ? level_gap * 6 : level_gap * 3;
-		const int save            = target_resist + save_adjustment + resist_modifier;
-		const int save_difference = save - level * 3;
-
-		int bonus_resistance = 0;
-		if (level_gap > 0 && era_spell_resist_mod > -100) {
-			bonus_resistance = std::min(level_gap * 5, 20);
+		// 0x41a6d6 for an NPC resister: floor -9, sign(d) * d*d/2 (the
+		// cdq/sub/sar idiom, so /2 truncates toward zero as C++ does).
+		const int level_gap   = std::max(static_cast<int>(level) - static_cast<int>(caster_level), -9);
+		int       level_saves = level_gap * level_gap / 2;
+		if (level_gap < 0) {
+			level_saves = -level_saves;
 		}
+
+		const int save            = target_resist + level_saves + resist_modifier;
+		const int save_difference = save - level * 3;
 
 		float resist_pct = 20.0f;
 		if (save_difference > 0) {
@@ -5826,7 +5832,7 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 
 		resist_pct = std::clamp(resist_pct, era_spell_resist_mod > -100 ? 3.0f : 1.0f, 100.0f);
 
-		const int resist_value = static_cast<int>(resist_pct) + bonus_resistance;
+		const int resist_value = static_cast<int>(resist_pct);
 		const int roll         = zone->random.Int(1, 100);
 
 		LogSpells("Era resist [{}] spell [{}] caster [{}] L[{}] vs L[{}] resist [{}] mod [{}] save_diff [{}] chance [{}] roll [{}]",
