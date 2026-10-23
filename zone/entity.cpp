@@ -2311,19 +2311,14 @@ Raid* EntityList::GetRaidByBotName(const char* name)
 
 Raid* EntityList::GetRaidByBot(const Bot* bot)
 {
-	std::list<RaidMember> rm;
-	auto GetMembersWhoAreBots = [&rm](Raid* r) -> std::list<RaidMember> {
-		for (auto const& m : r->members) {
-			if (m.is_bot) {
-				rm.push_back(m);
-			}
-		}
-		return rm;
-	};
-
+	// By name, in place: m.member can be null (zoned) or stale, and the old
+	// helper also appended every bot member of every raid to one list per call.
+	if (!bot) {
+		return nullptr;
+	}
 	for (const auto& r : raid_list) {
-		for (const auto& m : GetMembersWhoAreBots(r)) {
-			if (m.member->CastToBot() == bot) {
+		for (const auto& m : r->members) {
+			if (m.is_bot && m.member_name[0] && strcmp(m.member_name, bot->GetName()) == 0) {
 				return r;
 			}
 		}
