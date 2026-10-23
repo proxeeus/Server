@@ -156,6 +156,10 @@ constexpr uint32 kMezBackoffMs          = 10000; // ...and a shorter break
 constexpr float  kHealerBuffManaPct     = 60.0f; // healers buff only above this much mana...
 constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
 constexpr float  kRaidHealerBuffManaPct = 90.0f; // ...a raid's healers above this: their mana is the fight's CHs
+constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this much mana...
+constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
+constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
+constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
@@ -1255,6 +1259,40 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			LogInfo("[BotTactics] unit [{:#x}] ready", p.key);
 			p.recovering = false;
 		}
+	}
+
+	// ---- readiness to pull (between fights, also after a zone-in) ----
+
+	// "Ready." above only follows a fight, and only to 90%. Resting before a
+	// raid target the player had nothing to go on but ^mana from 70 bots:
+	// once a minute the healers' line, and "Ready to pull" when they are up.
+	// Raids only: a group's "Medding" / "Ready." after each pull is enough,
+	// and a line a minute between trash pulls would be noise.
+	if (calm && (p.key & kKeyRaid)) {
+		bool        go      = false;
+		Mob*        lowest  = nullptr;
+		const auto  line    = Readiness(p, go, &lowest);
+		Mob*        speaker = lowest ? lowest : first_bot;
+
+		if (go) {
+			if (!p.pull_ready_announced) {
+				p.pull_ready_announced = true;
+				Announce(raid, group, speaker, "Ready to pull: " + line);
+				LogInfo("[BotTactics] unit [{:#x}] ready to pull: {}", p.key, line);
+			}
+		}
+		else {
+			p.pull_ready_announced = false;
+			if (now - p.readiness_report_ms >= kReadinessReportMs) {
+				p.readiness_report_ms = now;
+				Announce(raid, group, speaker, "Resting: " + line);
+			}
+		}
+	}
+	else {
+		// In a fight: the first resting line a minute after it, not at once.
+		p.readiness_report_ms  = now;
+		p.pull_ready_announced = false;
 	}
 
 	// ---- adds, and who holds them ----
@@ -2638,6 +2676,98 @@ void BotTactics::SetChainIntervalOverride(uint32 key, uint32 ms)
 	if (BotTacticsPlan* p = Find(key)) {
 		p->built_ms = 0;
 	}
+}
+
+// ============================================================
+// Readiness: one line to pull on
+// ============================================================
+
+// With 70 bots, ^mana scrolls a screen of chat and nothing says when the
+// healers are full. This is the line to read: the healers (the CH chain is
+// what a raid fight spends), the main tank, anyone fallen, and how long the
+// slowest healer needs seated to reach the bar.
+std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lowest_healer)
+{
+	const bool era_regen = RuleB(Character, TrilogyEraRegen);
+
+	int    healers      = 0;
+	int    healers_full = 0;
+	float  mana_sum     = 0.0f;
+	Mob*   lowest       = nullptr;
+	float  lowest_pct   = 101.0f;
+	uint32 eta_s        = 0;
+	int    casters_low  = 0;
+
+	for (uint16 id : p.members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || !m->IsBot() || !UsesMana(m)) {
+			continue;
+		}
+
+		const uint8 c      = m->GetClass();
+		const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+		const float pct    = m->GetManaRatio();
+
+		if (!healer) {
+			if (pct < kPullReadyCasterManaPct) {
+				++casters_low;
+			}
+			continue;
+		}
+
+		++healers;
+		mana_sum += pct;
+		if (pct >= kPullReadyHealerManaPct) {
+			++healers_full;
+		}
+		if (pct < lowest_pct) {
+			lowest     = m;
+			lowest_pct = pct;
+		}
+
+		// Seated, book open (a bot meds as a player with the book open).
+		const int64 want = static_cast<int64>(m->GetMaxMana() * kPullReadyHealerManaPct / 100.0f) - m->GetMana();
+		if (want > 0) {
+			const int64 per_tick = era_regen ?
+				m->CalcEraManaRegen(true, true, m->GetSkill(EQ::skills::SkillMeditate), true) :
+				m->CastToBot()->CalcManaRegen();
+			if (per_tick > 0) {
+				eta_s = std::max<uint32>(eta_s, static_cast<uint32>((want + per_tick - 1) / per_tick) * 6);
+			}
+		}
+	}
+
+	Mob*  tank    = p.main_tank_id ? entity_list.GetMob(p.main_tank_id) : nullptr;
+	const float tank_hp = IsAlive(tank) ? tank->GetHPRatio() : 0.0f;
+	const size_t fallen = p.fallen.size();
+
+	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0;
+
+	if (lowest_healer) {
+		*lowest_healer = lowest;
+	}
+
+	std::string line = fmt::format(
+		"{} -- healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
+		ready ? "GO" : "WAIT", healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
+	);
+	if (lowest && lowest_pct < kPullReadyHealerManaPct) {
+		line += fmt::format(", lowest {} {:.0f}%", lowest->GetCleanName(), lowest_pct);
+	}
+	line += ")";
+	if (!ready && eta_s > 0) {
+		line += eta_s >= 120 ? fmt::format(", about {} min seated", (eta_s + 59) / 60) : fmt::format(", about {} s seated", eta_s);
+	}
+	if (tank) {
+		line += fmt::format("; tank {} {:.0f}%", tank->GetCleanName(), tank_hp);
+	}
+	if (fallen) {
+		line += fmt::format("; {} fallen", fallen);
+	}
+	if (casters_low) {
+		line += fmt::format("; {} other casters under {:.0f}%", casters_low, kPullReadyCasterManaPct);
+	}
+	return line + ".";
 }
 
 std::vector<std::string> BotTactics::Describe(uint32 key)
