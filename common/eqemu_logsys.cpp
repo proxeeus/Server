@@ -440,11 +440,6 @@ void EQEmuLogSys::Out(
 		return;
 	}
 
-	std::string prefix;
-	if (RuleB(Logging, PrintFileFunctionAndLine)) {
-		prefix = fmt::format("[{0}::{1}:{2}] ", std::filesystem::path(file).filename().string(), func, line);
-	}
-
 	// remove this when we remove all legacy logs
 	bool ignore_log_legacy_format = (
 		log_category == Logs::Netcode ||
@@ -462,6 +457,40 @@ void EQEmuLogSys::Out(
 		va_start(args, message);
 		output_message = vStringFormat(message, args);
 		va_end(args);
+	}
+
+	Emit(l, log_category, file, func, line, output_message);
+}
+
+void EQEmuLogSys::OutFormatted(
+	Logs::DebugLevel debug_level,
+	uint16 log_category,
+	const char *file,
+	const char *func,
+	int line,
+	const std::string &message
+)
+{
+	auto l = GetLogsEnabled(debug_level, log_category);
+	if (!l.log_enabled) {
+		return;
+	}
+
+	Emit(l, log_category, file, func, line, message);
+}
+
+void EQEmuLogSys::Emit(
+	const LogEnabled &l,
+	uint16 log_category,
+	const char *file,
+	const char *func,
+	int line,
+	const std::string &output_message
+)
+{
+	std::string prefix;
+	if (RuleB(Logging, PrintFileFunctionAndLine)) {
+		prefix = fmt::format("[{0}::{1}:{2}] ", std::filesystem::path(file).filename().string(), func, line);
 	}
 
 	if (l.log_to_console_enabled) {

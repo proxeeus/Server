@@ -1067,6 +1067,9 @@ public:
 	bool TacticsPlayerSlowsFirst(Mob* tar) const;
 	bool TacticsPlayerMezzesFirst(uint16 add_id) const;
 	bool TacticsCampSlot(glm::vec3& out);  // our place at camp, false = no camp: follow
+	// Pushes `goal` off the unit's fresh kill if it lies on it; true when we
+	// stand on it ourselves (then move even if sitting).
+	bool TacticsKeepOffLootSpot(glm::vec3& goal) const;
 	bool TacticsTankPositioning(Mob* tar, const EQ::ItemInstance* p_item, const EQ::ItemInstance* s_item);
 
 	// Sentient combat (docs/BOT_AI_SENTIENT.md):

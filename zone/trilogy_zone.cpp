@@ -1302,7 +1302,57 @@ static void TrilogyWireNameToEntityName(const char* wire, char* out, size_t out_
 const char* TrilogyWireName(Mob* m)
 {
 	if (!m) return "";
-	return IsPlayerRace(m->GetRace()) ? m->GetName() : m->GetCleanName();
+	const char* name = IsPlayerRace(m->GetRace()) ? m->GetName() : m->GetCleanName();
+
+	// v29c keeps a spawn name only up to 28 characters. Its spawn copy
+	// (eqgame.exe 0x4a3bb2) does `strlen(name) >= 0x1d ? "NameTooLong" : name`,
+	// and every NPC corpse adds "`s corpse": "Derakor the Vindicator`s corpse"
+	// is 31, "a frost giant berserker`s corpse" 32. Shorten the base name and
+	// keep what the client and the illusion lookup need: the corpse suffix and
+	// the MakeNameUnique digits. Every spawn and illusion path calls this, so
+	// they stay identical to each other.
+	static constexpr size_t kMaxWireName = 28;
+	const size_t len = strlen(name);
+	if (len <= kMaxWireName) {
+		return name;
+	}
+
+	// Callers copy the result right away (strncpy / memcpy); a small ring
+	// keeps two calls in one expression apart.
+	static thread_local char ring[8][kMaxWireName + 1];
+	static thread_local size_t next = 0;
+	char* out = ring[next++ % 8];
+
+	std::string base(name, len);
+
+	std::string digits;
+	while (!base.empty() && std::isdigit(static_cast<unsigned char>(base.back()))) {
+		digits.insert(digits.begin(), base.back());
+		base.pop_back();
+	}
+
+	std::string suffix;
+	for (const char* s : {"`s corpse", "`s_corpse", "'s corpse", "'s_corpse"}) {
+		const size_t n = strlen(s);
+		if (base.size() > n && base.compare(base.size() - n, n, s) == 0) {
+			suffix = base.substr(base.size() - n);
+			base.resize(base.size() - n);
+			break;
+		}
+	}
+
+	const size_t keep = kMaxWireName > suffix.size() + digits.size() ?
+		kMaxWireName - suffix.size() - digits.size() : 0;
+	if (base.size() > keep) {
+		base.resize(keep);
+	}
+	while (!base.empty() && (base.back() == ' ' || base.back() == '_')) {
+		base.pop_back();
+	}
+
+	const std::string shortened = (base + suffix + digits).substr(0, kMaxWireName);
+	strn0cpy(out, shortened.c_str(), kMaxWireName + 1);
+	return out;
 }
 
 static void FillIllusionBuf(uint8_t* buf, const char* name,
@@ -8317,16 +8367,33 @@ void TrilogyZoneServer::HandleZoneEntryResend(const std::string& addr, int port,
 	// The client refers to itself by the synthetic player_spawn_id.
 	if (spawn_id == s.player_spawn_id) return;
 
-	// Backstop only.  One second is far longer than the client's own retry
-	// cadence (the observed sweep repeated within ~1s), so a request we answer
-	// correctly is never throttled -- only one we keep failing to satisfy.
-	static constexpr uint64_t kResendCooldownMs = 1000;
+	// Still zoning in: every spawn is on its way. The answer would only be
+	// buffered with it (m_deferred_spawns / m_deferred_player_spawns) and so
+	// sent twice when OnClientReady flushes. Whatever is still missing after
+	// that, the client asks for again and gets.
+	if (tc->IsZoning()) {
+		return;
+	}
+
+	// The client re-asks about every second until the spawn arrives. Idle,
+	// an answer lands well inside that, so it never re-asks; under a reliable
+	// backlog the answer is still queued, and every re-ask cost another full
+	// multi-packet spawn. A 71-bot raid's zone-in made 1085 asks in 18 s, the
+	// zone pushed 191 pps, and the client went linkdead. So wait as long as
+	// the unacked queue says the last answer may still be in flight.
+	static constexpr uint64_t kResendCooldownMs        = 1000;
+	static constexpr uint64_t kResendCooldownPerUnacked = 250;
+	static constexpr uint64_t kResendCooldownMaxMs     = 10000;
+	const uint64_t cooldown_ms = std::min<uint64_t>(
+		kResendCooldownMaxMs,
+		kResendCooldownMs + kResendCooldownPerUnacked * s.resend_queue.size()
+	);
 	const uint64_t now_ms = static_cast<uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::steady_clock::now().time_since_epoch()).count());
 
 	auto it = s.last_resend_ms.find(spawn_id);
-	if (it != s.last_resend_ms.end() && now_ms - it->second < kResendCooldownMs) {
+	if (it != s.last_resend_ms.end() && now_ms - it->second < cooldown_ms) {
 		return;
 	}
 	s.last_resend_ms[spawn_id] = now_ms;
@@ -14794,9 +14861,10 @@ void TrilogyZoneServer::Tick()
 			double   secs      = static_cast<double>(elapsed_ms) / 1000.0;
 			double   kbps      = (secs > 0.0) ? (static_cast<double>(s.bw_bytes_sent) / 1024.0) / secs : 0.0;
 			double   pps       = (secs > 0.0) ? (static_cast<double>(s.bw_packets_sent)) / secs : 0.0;
-			LogInfo("[TrilogyDiag] BW char='{}' window={:.1f}s tx_bytes={} tx_packets={} kbps={:.2f} pps={:.1f}",
+			LogInfo("[TrilogyDiag] BW char='{}' window={:.1f}s tx_bytes={} tx_packets={} kbps={:.2f} pps={:.1f}{}",
 			        s.char_name, secs,
-			        s.bw_bytes_sent, s.bw_packets_sent, kbps, pps);
+			        s.bw_bytes_sent, s.bw_packets_sent, kbps, pps,
+			        s.trilogy_client ? s.trilogy_client->TakeCombatStats() : std::string());
 			s.bw_window_start_ms = now_ms;
 			s.bw_bytes_sent      = 0;
 			s.bw_packets_sent    = 0;
