@@ -1952,6 +1952,14 @@ void Bot::SpellProcess() {
 }
 
 void Bot::BotMeditate(bool isSitting) {
+	// Mid-walk (a step around or away from a mob): Sit() would stop the walk
+	// and the step would stand us again to finish it, several times a second
+	// (Kael 2026-10-23: 31 sit/stand packets a second from twelve healers
+	// walking out of Derakor's reach). Sit once we are there.
+	if (isSitting && m_step.until_ms && Timer::GetCurrentTime() < m_step.until_ms) {
+		return;
+	}
+
 	if (isSitting) {
 		float mana_sit_threshold = IsEngaged() ? 50.0f : 99.0f;
 

@@ -184,14 +184,20 @@ constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to c
 constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
 constexpr float  kRampageReachMargin    = 10.0f;  // casters stand this far past a rampager's reach
 constexpr float  kCanniMinHPPct         = 60.0f;  // a shaman cannibalizes down to this much health, no lower
+constexpr float  kResistBuffHealerManaPct = 70.0f; // a healer puts up the zone's resist buffs only above this mana...
+constexpr float  kResistBuffManaPct       = 40.0f; // ...anyone else above this
 
 bool IsAlive(Mob* m)
 {
 	return m && !m->IsCorpse() && m->GetHP() > 0 && m->GetAppearance() != eaDead;
 }
 
-// How far a rampage reaches: Mob::CombatRange (aggro.cpp) for this mob
-// against a player-sized target (size under 6 counts as 8), not fleeing.
+// How far an AREA rampage reaches: Mob::CombatRange (aggro.cpp) with
+// aeRampage for this mob against a player-sized target (size under 6
+// counts as 8), not fleeing -- the melee reach scaled by
+// Combat:AERampageMaxDistance (70%). (A single rampage cannot be stood off:
+// with Combat:RampageHitsTarget off it falls through to the last mob on its
+// rampage list wherever that one stands, mob_ai.cpp.)
 float RampageReach(Mob* m)
 {
 	float size = m->GetSize();
@@ -207,6 +213,9 @@ float RampageReach(Mob* m)
 	if (reach_sq > 10000.0f) {
 		reach_sq /= 7.0f;
 	}
+
+	const float ae_pct = RuleR(Combat, AERampageMaxDistance);
+	reach_sq *= ae_pct > 0.0f ? ae_pct / 100.0f : 0.90f;
 	return sqrtf(reach_sq);
 }
 
@@ -859,16 +868,14 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	const BotRaidEncounter* enc     = assist && assist->IsNPC() ? EncounterFor(assist->GetNPCTypeID()) : nullptr;
 
-	// No row, but it rampages: casters and healers stand outside the reach
-	// of its (area) rampage, which hits whoever on its hate list is in melee
-	// range. Rows are learned from spells only, so a melee raid boss never
-	// got one (Derakor, Kael 2026-10-23: fifteen casters dead in two seconds
-	// under it).
+	// No row, but it area-rampages: casters and healers stand outside the
+	// reach of it, which hits whoever on its hate list is that close. Rows
+	// are learned from spells only, so a melee raid boss never got one
+	// (Derakor, Kael 2026-10-23: fifteen casters dead in two seconds under
+	// it). A plain rampage has no safe distance (RampageReach), so it gets
+	// no row.
 	BotRaidEncounter rampage_enc;
-	if (
-		!enc && assist && assist->IsNPC() &&
-		(assist->GetSpecialAbility(SpecialAbility::AreaRampage) || assist->GetSpecialAbility(SpecialAbility::Rampage))
-	) {
+	if (!enc && assist && assist->IsNPC() && assist->GetSpecialAbility(SpecialAbility::AreaRampage)) {
 		rampage_enc.npc_type_id      = assist->GetNPCTypeID();
 		rampage_enc.name             = assist->GetCleanName();
 		rampage_enc.caster_min_range = RampageReach(assist) + kRampageReachMargin;
@@ -3736,7 +3743,15 @@ bool Bot::TacticsSituationalBuffs()
 
 	const bool   in_raid  = !p->raid_group.empty();
 	const uint32 my_group = p->RaidGroupOf(GetID());
-	for (uint8 resist : bot_tactics.ZoneResists()) {
+
+	// Only from spare mana: the healers' is the next fight's heals. With 2001
+	// regen the six chain clerics spent ~1.6k mana each on 137 resist buffs
+	// in twelve minutes and walked into Derakor at 0-20% (Kael 2026-10-23).
+	const bool  healer     = GetClass() == Class::Cleric || GetClass() == Class::Druid || GetClass() == Class::Shaman;
+	const float resist_bar = healer ? kResistBuffHealerManaPct : kResistBuffManaPct;
+	static const std::vector<uint8> kNoResists;
+	const std::vector<uint8>&       resists = GetManaRatio() >= resist_bar ? bot_tactics.ZoneResists() : kNoResists;
+	for (uint8 resist : resists) {
 		const int    effect   = ResistEffect(resist);
 		const uint16 spell_id = BuffWithEffectFor(effect, GetClass(), GetLevel());
 		if (!effect || !IsValidSpell(spell_id)) {
@@ -4915,29 +4930,38 @@ bool Bot::TacticsEncounterPositioning(Mob* tar)
 		facing = 512.0f - facing;
 	}
 
-	const bool  in_front  = p->encounter.avoid_front && facing < 96.0f; // within ~67 degrees of its nose
-	const float min_range = caster ? p->encounter.caster_min_range : 0.0f;
-	const bool  too_close = min_range > 0.0f && dist < min_range;
-	if (!in_front && !too_close) {
-		return false;
-	}
-
-	m_encounter_reposition_ms = now + kTankRepositionMs;
+	const bool in_front = p->encounter.avoid_front && facing < 96.0f; // within ~67 degrees of its nose
 
 	// Far enough (casters), but not past where we can still cast at it, or
-	// TryPursueTarget would walk us straight back in.
-	float want_dist = too_close ? min_range + 5.0f : dist;
-	if (caster) {
+	// TryPursueTarget would walk us straight back in. When the class's cast
+	// distance is shorter than the encounter wants (a cleric's 34 against
+	// Derakor's 35-40), the edge of that distance IS the place: wanting the
+	// unreachable sent twelve healers walking every 3 s for the whole fight.
+	float min_range = caster ? p->encounter.caster_min_range : 0.0f;
+	float cap       = 0.0f;
+	if (caster && min_range > 0.0f) {
 		float melee_distance_max = 0.0f;
 		float melee_distance     = 0.0f;
 		CalcMeleeDistances(
 			tar, GetBotItem(EQ::invslot::slotPrimary), GetBotItem(EQ::invslot::slotSecondary),
 			false, false, melee_distance_max, melee_distance
 		);
-		const float cap = sqrtf(GetBotCasterMaxRange(melee_distance_max));
-		if (cap > 0.0f) {
-			want_dist = std::min(want_dist, cap * 0.95f);
+		cap = sqrtf(GetBotCasterMaxRange(melee_distance_max)) * 0.95f;
+		if (cap > 0.0f && min_range + 5.0f > cap) {
+			min_range = std::max(0.0f, cap - 5.0f); // stand at the edge; arrive within 5 of it
 		}
+	}
+
+	const bool too_close = min_range > 0.0f && dist < min_range;
+	if (!in_front && !too_close) {
+		return false;
+	}
+
+	m_encounter_reposition_ms = now + kTankRepositionMs;
+
+	float want_dist = too_close ? min_range + 5.0f : dist;
+	if (cap > 0.0f) {
+		want_dist = std::min(want_dist, cap);
 	}
 
 	// Out of the front: behind it, spread over a 160 degree arc. Only too
