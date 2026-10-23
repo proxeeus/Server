@@ -183,6 +183,7 @@ constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this 
 constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to camp keep the fight on
 constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
 constexpr float  kRampageReachMargin    = 10.0f;  // casters stand this far past a rampager's reach
+constexpr float  kCanniMinHPPct         = 60.0f;  // a shaman cannibalizes down to this much health, no lower
 
 bool IsAlive(Mob* m)
 {
@@ -5003,7 +5004,7 @@ constexpr float  kChainEmergencyManaPct  = 30.0f; // ...if the cleric can spare 
 constexpr uint32 kChainEmergencySlackMs  = 1500;  // and its own CH turn is this far beyond the heal
 constexpr uint32 kCanniCheckMs           = 2000;
 constexpr float  kCanniManaPct           = 85.0f; // under this mana a shaman cannibalizes...
-constexpr float  kCanniMinHPPct          = 60.0f; // ...keeping at least this much health
+// ...keeping at least kCanniMinHPPct health (defined at the top: TacticsHeal uses it too)
 
 // Share of `tar`'s health a direct heal from `caster` gives back. A complete
 // heal is everything; heal-over-time is not counted (too slow to matter for
