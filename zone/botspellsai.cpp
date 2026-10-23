@@ -2394,6 +2394,14 @@ BotSpell Bot::GetBestBotSpellForFastHeal(Bot* botCaster) {
 
 		for (auto botSpellListItr : botSpellList) {
 			// Assuming all the spells have been loaded into this list by level and in descending order
+			// Not a self-only spell, nor one that wraps the caster in divine
+			// aura: Divine Barrier (130, SE_CurrentHP 1 in slot 4, 2 s) passed
+			// as a fast heal, and three chain clerics put themselves out of
+			// casting for ~18 s each in the middle of Derakor (Kael 2026-10-23).
+			const auto& fs = spells[botSpellListItr.SpellId];
+			if (fs.target_type == ST_Self || IsEffectInSpell(botSpellListItr.SpellId, SE_DivineAura)) {
+				continue;
+			}
 			if (IsFastHealSpell(botSpellListItr.SpellId) && botCaster->CheckSpellRecastTimer(botSpellListItr.SpellId)) {
 				result.SpellId = botSpellListItr.SpellId;
 				result.SpellIndex = botSpellListItr.SpellIndex;

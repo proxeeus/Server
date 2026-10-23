@@ -155,6 +155,7 @@ constexpr uint8  kMezResistTries        = 3;     // a mez gets more tries...
 constexpr uint32 kMezBackoffMs          = 10000; // ...and a shorter break
 constexpr float  kHealerBuffManaPct     = 60.0f; // healers buff only above this much mana...
 constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
+constexpr float  kRaidHealerBuffManaPct = 90.0f; // ...a raid's healers above this: their mana is the fight's CHs
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
@@ -2818,6 +2819,15 @@ bool Bot::TacticsChainCheck()
 		return false;
 	}
 
+	// Our own last cast is still finishing (CastSpell refuses while delaytimer
+	// or spellend_timer is up, spells.cpp ~179, though IsCasting() already
+	// reads false): the turn waits a tick rather than being skipped as "cast
+	// failed". Skips compress the rotation, so a cleric's next turn often
+	// fell exactly as its previous CH finished.
+	if (IsCasting() || delaytimer || spellend_timer.Enabled()) {
+		return false;
+	}
+
 	// The spell list stores -1 for "the spell's own cost" (bot_spells_entries
 	// manacost; AIDoSpellCast resolves it the same way). Compared raw it was
 	// never more than our mana, so an empty cleric took its turn, the cast
@@ -4096,11 +4106,19 @@ bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
 	// Mana is for heals (healers) and for mez / emergencies (casters).
 	const uint8 c      = GetClass();
 	const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
-	if (GetManaRatio() < (healer ? kHealerBuffManaPct : kCasterBuffManaPct)) {
+	if (GetManaRatio() < (healer ? ((p->key & kKeyRaid) ? kRaidHealerBuffManaPct : kHealerBuffManaPct) : kCasterBuffManaPct)) {
 		return false;
 	}
 
 	auto has = [&](int effect) { return IsEffectInSpell(spell_id, effect); };
+
+	// A death save (Divine Intervention, Death Pact) is the main tank's, put
+	// up by TacticsDeathSave in a raid fight. Spread as a buff it went on
+	// pets, a ranger and a monk: 10 DI and 19 Death Pact in one rest
+	// (~6.9k cleric mana, Kael 2026-10-23).
+	if (has(SE_DeathSave)) {
+		return false;
+	}
 
 	// What it does. (SE_CHA is a spacer in old spells: it means nothing.)
 	const bool core     = has(SE_TotalHP) || has(SE_ArmorClass) || has(SE_Rune) || has(SE_ATK) ||
@@ -6505,12 +6523,18 @@ bool Bot::TacticsDeathSave()
 	// Intervention), cast by a cleric that is not on the CH chain.
 	Mob* fight = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
 	Mob* tank  = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
-	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn()) || !IsAlive(tank)) {
+	// A raid unit's fight counts as one: npc_types.raid_target is 0 for
+	// nearly every classic raid mob here (Derakor included), as noted in
+	// ObserveHostileSpell.
+	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn() || (p->key & kKeyRaid)) || !IsAlive(tank)) {
 		return false;
 	}
 
-	const uint16 sid = BuffWithEffectFor(SE_DivineSave, GetClass(), GetLevel());
-	if (!IsValidSpell(sid) || tank->FindType(SE_DivineSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+	// Divine Intervention and Death Pact are SE_DeathSave (150). This looked
+	// for SE_DivineSave (232, a later AA-style effect no 2001 spell has), so
+	// it never found a spell: zero DI on any main tank in three Derakor logs.
+	const uint16 sid = BuffWithEffectFor(SE_DeathSave, GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || tank->FindType(SE_DeathSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
 		return false;
 	}
 	if (
