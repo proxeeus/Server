@@ -8571,7 +8571,7 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 			if (caster->IsRaidGrouped()) {
 				Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
-				uint32 gid = raid->GetGroup(caster->GetName());
+				uint32 gid = raid ? raid->GetGroup(caster->GetName()) : RAID_GROUPLESS; // raid can be gone (removed from another zone)
 				if (gid < MAX_RAID_GROUPS) {
 					std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(gid);
 					for (std::vector<RaidMember>::iterator iter = raid_group_members.begin(); iter != raid_group_members.end(); ++iter) {
@@ -8748,7 +8748,7 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
-			uint32 g = raid->GetGroup(caster->GetName());
+			uint32 g = raid ? raid->GetGroup(caster->GetName()) : RAID_GROUPLESS; // raid can be gone (removed from another zone)
 			if (g < MAX_RAID_GROUPS) {
 				std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(g);
 				for (std::vector<RaidMember>::iterator iter = raid_group_members.begin(); iter != raid_group_members.end(); ++iter) {
@@ -8780,7 +8780,7 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
-			uint32 gid = raid->GetGroup(caster->GetName());
+			uint32 gid = raid ? raid->GetGroup(caster->GetName()) : RAID_GROUPLESS; // raid can be gone (removed from another zone)
 			if (gid < MAX_RAID_GROUPS) {
 				std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(gid);
 				for (std::vector<RaidMember>::iterator iter = raid_group_members.begin(); iter != raid_group_members.end(); ++iter) {
@@ -8825,7 +8825,7 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
-			uint32 gid = raid->GetGroup(caster->GetName());
+			uint32 gid = raid ? raid->GetGroup(caster->GetName()) : RAID_GROUPLESS; // raid can be gone (removed from another zone)
 			if (gid < MAX_RAID_GROUPS) {
 				std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(gid);
 				for (std::vector<RaidMember>::iterator iter = raid_group_members.begin(); iter != raid_group_members.end(); ++iter) {
@@ -8856,7 +8856,7 @@ bool EntityList::Bot_AICheckCloseBeneficialSpells(Bot* caster, uint8 iChance, fl
 		//added raid check
 		if (caster->IsRaidGrouped()) {
 			Raid* raid = entity_list.GetRaidByBotName(caster->GetName());
-			uint32 g = raid->GetGroup(caster->GetName());
+			uint32 g = raid ? raid->GetGroup(caster->GetName()) : RAID_GROUPLESS; // raid can be gone (removed from another zone)
 			if (g < MAX_RAID_GROUPS) {
 				std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(g);
 				for (std::vector<RaidMember>::iterator iter = raid_group_members.begin(); iter != raid_group_members.end(); ++iter) {

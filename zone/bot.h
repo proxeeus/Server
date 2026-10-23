@@ -974,6 +974,8 @@ public:
 	// its group / raid slot, fights, heals, resurrects the owner's corpse,
 	// and waits -- until the owner is back in the zone or the time runs out.
 	bool IsHoldingForOwner() const { return m_owner_hold_until_ms != 0; }
+	// The hold runs out on the next Bot::Process tick (raid gone from another zone)
+	void ExpireOwnerHold() { if (m_owner_hold_until_ms != 0) { m_owner_hold_until_ms = 1; } }
 	void BeginOwnerHold();
 	void ResumeFromOwnerHold(Client* owner);
 	void EndOwnerHold();                   // time's up: leave the zone

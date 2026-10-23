@@ -290,7 +290,7 @@ bool Bot::BotCastCure(Mob* tar, uint8 botClass, BotSpell& botSpell, Raid* raid) 
 						}
 					}
 				}
-				else if (IsRaidGrouped()) {
+				else if (IsRaidGrouped() && raid) { // raid can be gone (removed from another zone)
 					uint32 r_group = raid->GetGroup(GetName());
 					if (r_group) {
 						std::vector<RaidMember> raid_group_members = raid->GetRaidGroupMembers(r_group);
@@ -1275,7 +1275,7 @@ bool Bot::BotCastHeal(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 								}
 							}
 						}
-						else if (IsRaidGrouped()) {
+						else if (IsRaidGrouped() && raid) { // raid can be gone (removed from another zone)
 							uint32 r_group = raid->GetGroup(GetName());
 							const auto msg = fmt::format("Casting {}.", spells[botSpell.SpellId].name);
 							raid->RaidGroupSay(msg.c_str(), GetCleanName(), Language::CommonTongue, Language::MaxValue);

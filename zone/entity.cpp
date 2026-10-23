@@ -2293,18 +2293,15 @@ Raid* EntityList::GetRaidByClient(Client* client)
 }
 Raid* EntityList::GetRaidByBotName(const char* name)
 {
-	std::list<RaidMember> rm;
-	auto GetMembersWithNames = [&rm](Raid const* r) -> std::list<RaidMember> {
-		for (const auto& m : r->members) {
-			if (strlen(m.member_name) > 0)
-				rm.push_back(m);
-		}
-		return rm;
-	};
+	if (!name || !name[0]) {
+		return nullptr;
+	}
 
+	// Scan the members in place: the old helper copied every named member of
+	// every raid into one list it never cleared, per call.
 	for (const auto& r : raid_list) {
-		for (const auto& m : GetMembersWithNames(r)) {
-			if (strcmp(m.member_name, name) == 0) {
+		for (const auto& m : r->members) {
+			if (m.member_name[0] && strcmp(m.member_name, name) == 0) {
 				return r;
 			}
 		}

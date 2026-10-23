@@ -181,6 +181,7 @@ public:
 	void	GetRaidDetails();
 	void	SaveRaidMOTD();
 	bool	LearnMembers();
+	void	DropStaleLocalBots();	// clears local bots another zone removed from this raid
 	void	VerifyRaid();
 	void	MemberZoned(Client *c);
 	void	SendHPManaEndPacketsTo(Client *c);
