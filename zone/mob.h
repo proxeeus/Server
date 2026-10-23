@@ -684,6 +684,9 @@ public:
 		((static_cast<float>(current_mana) / max_mana) * 100); }
 	virtual int64 CalcMaxMana();
 	uint32 GetNPCTypeID() const { return npctype_id; }
+	// An NPC spawned from the PlayerBot npc_types row (PlayerBots:PlayerBotId).
+	// Never a bot: a bot's npctype_id is its bot_id, and bot 679 is Ballador.
+	bool IsPlayerBotNPC() const;
 	void SetNPCTypeID(uint32 npctypeid) { npctype_id = npctypeid; }
 	inline const glm::vec4& GetPosition() const { return m_Position; }
 	inline void SetPosition(const float x, const float y, const float z) { m_Position.x = x; m_Position.y = y; m_Position.z = z; }

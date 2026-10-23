@@ -491,6 +491,7 @@ Bot::~Bot() {
 	}
 
 	entity_list.RemoveBot(GetID());
+	entity_list.RemoveBotPointer(this); // an id zeroed in death would leave us listed, freed
 
 	if (GetGroup()) {
 		GetGroup()->MemberZoned(this);
@@ -6427,7 +6428,7 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 
 	if (taunting && target->IsNPC() && taunt_time) {
 		if (GetTarget() && GetTarget()->GetHateTop() && GetTarget()->GetHateTop() != this) {
-			if (GetTarget()->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId)) {
+			if (GetTarget()->IsPlayerBotNPC()) {
 				BotGroupSay(this, "Taunting %s", target->playerbot_temp_name);
 			}
 			else {

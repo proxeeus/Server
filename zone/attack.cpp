@@ -3063,7 +3063,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		(killer_mob->IsNPC() && killer_mob->CastToNPC()->GetSwarmInfo() && killer_mob->CastToNPC()->GetSwarmInfo()->GetOwner() && killer_mob->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
 		|| (killer_mob && is_ldon_treasure))
 		// Special check to see if an NPC killed a player bot
-		|| (killer_mob != 0 && killer_mob->IsNPC() && (this->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))))
+		|| (killer_mob != 0 && killer_mob->IsNPC() && (this->IsPlayerBotNPC())))
 	{
 		if (killer_mob != 0) {
 			if (killer_mob->GetOwner() != 0 && killer_mob->GetOwner()->IsClient())
@@ -4330,10 +4330,10 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
-				if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+				if (attacker->IsPlayerBotNPC()) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
 				}
-				else if (attacker->GetTarget() && attacker->GetTarget()->npctype_id == RuleI(PlayerBots, PlayerBotId))
+				else if (attacker->GetTarget() && attacker->GetTarget()->IsPlayerBotNPC())
 				{
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Emote, "%s beams a smile at %s", this->GetCleanName(), attacker->playerbot_temp_name);
 				}
@@ -4344,7 +4344,7 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 					attacker->Message(Chat::Say, "You say 'Ahhh, I feel much better now...'");
 					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), Chat::Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
 				}
-				else if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+				else if (attacker->IsPlayerBotNPC()) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Say, "%s says 'Ahhh, I feel much better now...'", attacker->playerbot_temp_name);
 				}
 				else

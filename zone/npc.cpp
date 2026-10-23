@@ -636,7 +636,7 @@ bool NPC::Process()
 		}
 
 		// Playerbot check to avoid ghosting
-		if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+		if (IsPlayerBotNPC()) {
 			FixZ();
 			if (!IsMoving() || !IsEngaged()) {
 				SentPositionPacket(0.0f, 0.0f, 0.0f, 0.0f, 0);
@@ -2189,7 +2189,7 @@ void NPC::FillSpawnStruct(NewSpawn_Struct* ns, Mob* ForWho)
 		ns->spawn.is_npc = 0;
 	else
 		ns->spawn.is_npc = 1;
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		ns->spawn.is_npc = 0;
 		ns->spawn.NPC = 0;
 		if (RuleB(PlayerBots, PlayerBotsCanBeGuilded)) {

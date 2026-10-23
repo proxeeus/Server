@@ -15,7 +15,7 @@ void bot_command_invite(Client* bot_owner, const Seperator* sep)
 	}
 
 	// Put all Player Bot IDs checks here, will probably need to end in #defines somewhere
-	if (bot_owner->GetTarget()->GetNPCTypeID() != RuleI(PlayerBots, PlayerBotId))
+	if (!bot_owner->GetTarget()->IsPlayerBotNPC())
 	{
 		bot_owner->Message(Chat::White, "Target needs to be a Player Bot.");
 		return;

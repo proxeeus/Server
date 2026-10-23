@@ -1577,7 +1577,7 @@ void Mob::InterruptSpell(uint16 message, uint16 color, uint16 spellid)
 		default:
 			message_other = INTERRUPT_SPELL_OTHER;
 	}
-	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId)) 
+	if (this->IsPlayerBotNPC()) 
 		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(this->playerbot_temp_name) + 1);
 	else
 		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(GetCleanName()) + 1);
@@ -1585,7 +1585,7 @@ void Mob::InterruptSpell(uint16 message, uint16 color, uint16 spellid)
 	InterruptCast_Struct* ic = (InterruptCast_Struct*)outapp->pBuffer;
 	ic->messageid = message_other;
 	ic->spawnid = GetID();
-	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId))
+	if (this->IsPlayerBotNPC())
 		strcpy(ic->message, this->playerbot_temp_name);
 	else
 		strcpy(ic->message, GetCleanName());
@@ -1854,7 +1854,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			// if we got here, we regained concentration
 			regain_conc = true;
 			MessageString(Chat::Spells,REGAIN_AND_CONTINUE);
-			if (this->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+			if (this->IsPlayerBotNPC()) {
 				entity_list.MessageCloseString(this, true, RuleI(Range, SpellMessages), Chat::Spells, OTHER_REGAIN_CAST, this->playerbot_temp_name);
 			}
 			else

@@ -820,7 +820,7 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 			}
 			else if(_NPC(mob2))				// client vs npc
 			{
-				if (mob2->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))	// client vs Player Bot
+				if (mob2->IsPlayerBotNPC())	// client vs Player Bot
 				{
 					if (RuleB(PlayerBots, CanClientsAggroPlayerBots))
 						return true;
