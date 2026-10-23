@@ -160,6 +160,7 @@ constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this 
 constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
 constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
 constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
+constexpr uint32 kBuffingWindowMs        = 60000; // buffs cast in this window = "still buffing"
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
@@ -2436,6 +2437,52 @@ const std::vector<uint8>& BotTactics::ZoneResists()
 	return m_zone_resists;
 }
 
+// The zone's learned resists apply to every mob in it, so in Kael (learned
+// from five caster trash mobs: magic, fire, cold) all three went on all 71
+// bots before Derakor too, who casts nothing (~190 casts, ~10k healer
+// mana in one rest). Narrowed to the fight you are in, or about to start --
+// the mob the leader has targeted -- when that mob is known:
+//   a learned row with a resist      -> that resist
+//   no spell list at all (melee mob) -> none
+//   anything else (unknown caster)   -> the zone's, as before
+// With no target in view nothing changes, so a raid never goes into an
+// unknown caster's fight with less than it had.
+std::vector<uint8> BotTactics::ResistsWanted(const BotTacticsPlan& p)
+{
+	Mob* focus = p.assist_target_id ? entity_list.GetMob(p.assist_target_id) : nullptr;
+	if (!focus || !focus->IsNPC()) {
+		Mob* leader = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+		Mob* t      = leader ? leader->GetTarget() : nullptr;
+		focus       = (t && t->IsNPC() && IsAlive(t)) ? t : nullptr;
+	}
+
+	if (focus) {
+		if (const BotRaidEncounter* e = EncounterFor(focus->GetNPCTypeID()); e && e->resist_type) {
+			return {e->resist_type};
+		}
+		if (focus->CastToNPC()->GetNPCSpellsID() == 0) {
+			return {};
+		}
+	}
+
+	return ZoneResists();
+}
+
+void BotTactics::NoteBuffCast(uint32 key)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p || p->assist_target_id) {
+		return; // a fight's buffs are not "still buffing"
+	}
+
+	const uint32 now = Timer::GetCurrentTime();
+	p->buff_cast_ms.push_back(now);
+	p->buff_cast_ms.erase(
+		std::remove_if(p->buff_cast_ms.begin(), p->buff_cast_ms.end(), [&](uint32 t) { return now - t > kBuffingWindowMs; }),
+		p->buff_cast_ms.end()
+	);
+}
+
 const BotRaidEncounter* BotTactics::EncounterFor(uint32 npc_type_id)
 {
 	if (!m_encounters_loaded) {
@@ -2531,6 +2578,185 @@ std::vector<std::vector<Bot*>> BotTactics::LayoutRaid(const std::vector<Bot*>& b
 	}
 
 	return groups;
+}
+
+namespace {
+
+constexpr size_t kRaidGroupSize = 6;
+
+// A bot a group can give up to make room for the player: not its bard,
+// shaman or healer (what the player is there for), not its first (leader),
+// a caster or melee before a tank. -1 if there is none.
+int DonorIndex(const std::vector<Bot*>& g)
+{
+	int best = -1, best_rank = 99;
+	for (int i = static_cast<int>(g.size()) - 1; i >= 1; --i) {
+		const uint8 c = g[i]->GetClass();
+		if (c == Class::Bard || c == Class::Shaman || c == Class::Cleric || c == Class::Druid) {
+			continue;
+		}
+		const int rank = (c == Class::Warrior || c == Class::Paladin || c == Class::ShadowKnight) ? 2 :
+			(c == Class::Enchanter) ? 1 : 0;
+		if (rank < best_rank) {
+			best      = i;
+			best_rank = rank;
+		}
+	}
+	return best;
+}
+
+} // namespace
+
+int BotTactics::ReservePlayerSlot(std::vector<std::vector<Bot*>>& groups, size_t max_groups, int preferred)
+{
+	max_groups = std::min<size_t>(max_groups, MAX_RAID_GROUPS);
+
+	int pick = (preferred >= 0 && static_cast<size_t>(preferred) < max_groups) ? preferred : -1;
+	if (pick < 0) {
+		// Where an era rogue (or anyone) wanted to be: songs first, then a
+		// shaman's haste and slow, then a healer; a fuller group last.
+		int best_score = -1;
+		for (size_t g = 0; g < groups.size(); ++g) {
+			int score = 0;
+			for (Bot* b : groups[g]) {
+				const uint8 c = b->GetClass();
+				score += c == Class::Bard ? 300 : c == Class::Shaman ? 200 : (c == Class::Cleric || c == Class::Druid) ? 100 : 0;
+			}
+			score -= static_cast<int>(groups[g].size());
+			if (score > best_score) {
+				best_score = score;
+				pick       = static_cast<int>(g);
+			}
+		}
+		if (pick < 0) {
+			pick = 0;
+		}
+	}
+
+	while (groups.size() <= static_cast<size_t>(pick)) {
+		groups.emplace_back();
+	}
+	if (groups[pick].size() < kRaidGroupSize) {
+		return pick;
+	}
+
+	// Full: one bot moves to a group with room (or a new group, if allowed).
+	int to = -1;
+	for (size_t g = 0; g < groups.size(); ++g) {
+		if (static_cast<int>(g) != pick && groups[g].size() < kRaidGroupSize) {
+			to = static_cast<int>(g);
+			break;
+		}
+	}
+	if (to < 0 && groups.size() < max_groups) {
+		groups.emplace_back();
+		to = static_cast<int>(groups.size()) - 1;
+	}
+	const int donor = DonorIndex(groups[pick]);
+	if (to < 0 || donor < 0) {
+		return -1;
+	}
+
+	groups[to].push_back(groups[pick][donor]);
+	groups[pick].erase(groups[pick].begin() + donor);
+	return pick;
+}
+
+uint32 BotTactics::BestPlayerGroup(Raid* raid)
+{
+	if (!raid) {
+		return 0;
+	}
+
+	std::array<int, MAX_RAID_GROUPS> score{};
+	std::array<int, MAX_RAID_GROUPS> size{};
+	for (const auto& m : raid->GetMembers()) {
+		if (!m.member_name[0] || m.group_number >= MAX_RAID_GROUPS) {
+			continue;
+		}
+		++size[m.group_number];
+		const uint8 c = m._class;
+		score[m.group_number] += c == Class::Bard ? 300 : c == Class::Shaman ? 200 : (c == Class::Cleric || c == Class::Druid) ? 100 : 0;
+	}
+
+	uint32 best       = 0;
+	int    best_score = -1;
+	for (uint32 g = 0; g < MAX_RAID_GROUPS; ++g) {
+		if (!size[g]) {
+			continue;
+		}
+		const int s = score[g] - size[g];
+		if (s > best_score) {
+			best_score = s;
+			best       = g;
+		}
+	}
+	return best;
+}
+
+bool BotTactics::MovePlayerToGroup(Raid* raid, Client* c, uint32 gid, std::string& msg)
+{
+	if (!raid || !c || gid >= MAX_RAID_GROUPS) {
+		msg = "No such raid group.";
+		return false;
+	}
+
+	raid->VerifyRaid();
+	const uint32 from = raid->GetGroup(c->GetName());
+	if (from == gid) {
+		msg = fmt::format("You are already in group {}.", gid + 1);
+		return false;
+	}
+
+	std::string swapped;
+	if (raid->GroupCount(gid) >= kRaidGroupSize) {
+		// Room for us: the group's donor bot takes our old place, or a group
+		// with room when we had none.
+		std::vector<Bot*> members;
+		for (const auto& m : raid->GetMembers()) {
+			if (m.member_name[0] && m.is_bot && m.group_number == gid) {
+				if (Bot* b = entity_list.GetBotByBotName(m.member_name)) {
+					// keep the leader first, as the layout has it
+					if (raid->IsGroupLeader(m.member_name)) {
+						members.insert(members.begin(), b);
+					}
+					else {
+						members.push_back(b);
+					}
+				}
+			}
+		}
+		const int donor = DonorIndex(members);
+		if (donor < 0) {
+			msg = fmt::format("Group {} is full and has nobody to swap out.", gid + 1);
+			return false;
+		}
+
+		uint32 to = from;
+		if (to == RAID_GROUPLESS) {
+			for (uint32 g = 0; g < MAX_RAID_GROUPS; ++g) {
+				if (g != gid && raid->GroupCount(g) < kRaidGroupSize) {
+					to = g;
+					break;
+				}
+			}
+		}
+
+		Bot* out = members[donor];
+		swapped  = out->GetCleanName();
+		raid->SetGroupLeader(out->GetCleanName(), false);
+		raid->MoveMember(out->GetCleanName(), to);
+		swapped += to == RAID_GROUPLESS ? " (now in no group: the raid is full)" : fmt::format(" to group {}", to + 1);
+	}
+
+	raid->MoveMember(c->GetName(), gid);
+	raid->SetGroupLeader(c->GetName(), false);
+
+	msg = fmt::format("You are in group {} now.", gid + 1);
+	if (!swapped.empty()) {
+		msg += fmt::format(" Moved {} to make room.", swapped);
+	}
+	return true;
 }
 
 void BotTactics::NoteFallen(uint32 key, Bot* bot)
@@ -2747,9 +2973,17 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 		*lowest_healer = lowest;
 	}
 
-	std::string line = fmt::format(
-		"{} -- healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
-		ready ? "GO" : "WAIT", healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
+	// Buffs still going out: the reason mana is not climbing yet, said first.
+	const uint32 now     = Timer::GetCurrentTime();
+	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
+
+	std::string line = fmt::format("{} -- ", ready ? "GO" : "WAIT");
+	if (buffing) {
+		line += fmt::format("still buffing ({} buffs in the last minute); ", buffing);
+	}
+	line += fmt::format(
+		"healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
+		healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
 	);
 	if (lowest && lowest_pct < kPullReadyHealerManaPct) {
 		line += fmt::format(", lowest {} {:.0f}%", lowest->GetCleanName(), lowest_pct);
@@ -3365,6 +3599,22 @@ bool Bot::TacticsBeneficial(uint32 spell_type, uint8 chance)
 		return false;
 	}
 
+	// ...then the tanks of other groups, before anyone else: if a buffer's
+	// mana runs out partway through the raid, the people being hit already
+	// have theirs...
+	if (!cure) {
+		std::vector<uint16> tanks;
+		if (p->main_tank_id) {
+			tanks.push_back(p->main_tank_id);
+		}
+		tanks.insert(tanks.end(), p->off_tank_ids.begin(), p->off_tank_ids.end());
+		for (uint16 id : tanks) {
+			if (p->RaidGroupOf(id) != my_group && try_member(entity_list.GetMob(id))) {
+				return true;
+			}
+		}
+	}
+
 	// ...then the rest of the raid: everyone for cures, a few in turn for
 	// buffs, so thirty buffers do not each walk seventy members every check.
 	const size_t n      = p->members.size();
@@ -3841,6 +4091,9 @@ bool Bot::TacticsSituationalBuffs()
 
 		const auto t     = spells[spell_id].target_type;
 		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? this : tar;
+		if (aimed != tar && !TacticsInMyGroup(tar)) {
+			return false; // a group spell never reaches another group: the cast would only loop
+		}
 		if (aimed->CanBuffStack(spell_id, GetLevel(), true) < 0) {
 			return false;
 		}
@@ -3853,6 +4106,7 @@ bool Bot::TacticsSituationalBuffs()
 
 		if (CastSpell(spell_id, aimed->GetID(), EQ::spells::CastingSlot::Gem2)) {
 			LogInfo("[BotTactics] [{}] casts [{}] on [{}]", GetCleanName(), spells[spell_id].name, aimed->GetCleanName());
+			bot_tactics.NoteBuffCast(m_tactics_key);
 			return true;
 		}
 		return false;
@@ -3889,8 +4143,7 @@ bool Bot::TacticsSituationalBuffs()
 	// in twelve minutes and walked into Derakor at 0-20% (Kael 2026-10-23).
 	const bool  healer     = GetClass() == Class::Cleric || GetClass() == Class::Druid || GetClass() == Class::Shaman;
 	const float resist_bar = healer ? kResistBuffHealerManaPct : kResistBuffManaPct;
-	static const std::vector<uint8> kNoResists;
-	const std::vector<uint8>&       resists = GetManaRatio() >= resist_bar ? bot_tactics.ZoneResists() : kNoResists;
+	const std::vector<uint8> resists = GetManaRatio() >= resist_bar ? bot_tactics.ResistsWanted(*p) : std::vector<uint8>{};
 	for (uint8 resist : resists) {
 		const int    effect   = ResistEffect(resist);
 		const uint16 spell_id = BuffWithEffectFor(effect, GetClass(), GetLevel());
@@ -4070,6 +4323,39 @@ void Bot::TacticsNoteResist(uint16 spell_id, Mob* target)
 	}
 	else {
 		LogInfo("[BotAI] [{}] [{}] resisted by [{}] ({} of {})", GetCleanName(), spells[spell_id].name, target->GetCleanName(), it->count, threshold);
+	}
+}
+
+bool Bot::TacticsInMyGroup(Mob* tar)
+{
+	if (!tar) {
+		return false;
+	}
+
+	Mob* who = tar->GetOwner() ? tar->GetOwner() : tar; // a pet rides with its owner
+	if (who == this) {
+		return true;
+	}
+
+	// In a raid a group spell covers the caster's raid group (a raid-
+	// groupless caster: itself only).
+	if (IsRaidGrouped()) {
+		Raid* raid = entity_list.GetRaidByBotName(GetName());
+		if (!raid) {
+			return false;
+		}
+		const uint32 mine = raid->GetGroup(GetName());
+		return mine != RAID_GROUPLESS && raid->GetGroup(who->GetName()) == mine;
+	}
+
+	Group* g = GetGroup();
+	return g && g->IsGroupMember(who);
+}
+
+void Bot::TacticsNoteBuffCast()
+{
+	if (m_tactics_key) {
+		bot_tactics.NoteBuffCast(m_tactics_key);
 	}
 }
 
@@ -4288,13 +4574,10 @@ bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
 			return !p->camp_set; // on the road, not at camp
 		}
 		if (resist) {
-			// Only resists the zone's raid targets ask for.
-			for (uint8 r : bot_tactics.ZoneResists()) {
-				const int e = ResistEffect(r);
-				if (e && has(e)) {
-					return true;
-				}
-			}
+			// A resist-only buff is TacticsSituationalBuffs' alone: it knows
+			// which resist the coming fight wants (ResistsWanted) and keeps
+			// healer mana for heals. Here too it went on everybody twice
+			// over (~190 resist casts in one Kael rest).
 			return false;
 		}
 	}
@@ -4571,6 +4854,10 @@ bool Bot::TacticsTellRequest(Client* from, const std::string& message)
 
 		const auto t     = spells[spell_id].target_type;
 		Mob*       aimed = (t == ST_Group || t == ST_GroupTeleport) ? static_cast<Mob*>(this) : static_cast<Mob*>(from);
+		if (aimed == this && !TacticsInMyGroup(from)) {
+			reply(fmt::format("{} only reaches my own group.", spells[spell_id].name));
+			return true;
+		}
 		if (aimed != this && !IsValidSpellRange(spell_id, aimed, false)) {
 			reply("Come closer.");
 			return true;

@@ -612,6 +612,16 @@ bool Bot::BotCastCombatBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 				continue;
 			}
 
+			// A group spell lands on OUR group, whoever it was cast for: for
+			// anyone else it is a cast that gives them nothing. Asked for a
+			// member of another raid group (or the player, raid-groupless
+			// after ^createraid), a ranger refreshed its own group with Call
+			// of the Predator every minute for the whole rest (Kael
+			// 2026-10-23: 20 casts; Gift of Pure Thought 46, ~16k mana).
+			if (IsGroupSpell(s.SpellId) && !TacticsInMyGroup(tar)) {
+				continue;
+			}
+
 			//Conversion Spells
 			if (
 				IsSelfConversionSpell(s.SpellId) &&
@@ -960,6 +970,16 @@ bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 				continue;
 			}
 
+			// A group spell lands on OUR group, whoever it was cast for: for
+			// anyone else it is a cast that gives them nothing. Asked for a
+			// member of another raid group (or the player, raid-groupless
+			// after ^createraid), a ranger refreshed its own group with Call
+			// of the Predator every minute for the whole rest (Kael
+			// 2026-10-23: 20 casts; Gift of Pure Thought 46, ~16k mana).
+			if (IsGroupSpell(s.SpellId) && !TacticsInMyGroup(tar)) {
+				continue;
+			}
+
 			// Not every buff it has on everyone it can: what matters for this
 			// target, situational ones only when on, room left in the window,
 			// mana kept for heals (bot_tactics.cpp).
@@ -1055,6 +1075,10 @@ bool Bot::BotCastBuff(Mob* tar, uint8 botLevel, uint8 botClass) {
 
 				if (TempDontBuffMeBefore != tar->DontBuffMeBefore()) {
 					tar->SetDontBuffMeBefore(TempDontBuffMeBefore);
+				}
+
+				if (casted_spell) {
+					TacticsNoteBuffCast(); // ^ready: "buffing" while buffs are still going out
 				}
 			}
 		}

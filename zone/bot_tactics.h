@@ -184,6 +184,7 @@ struct BotTacticsPlan {
 	// (BotTactics::Readiness; ^tactics ready asks for it any time).
 	uint32 readiness_report_ms  = 0;
 	bool   pull_ready_announced = false;
+	std::vector<uint32> buff_cast_ms; // out-of-fight buff casts, the last minute's (^ready: "buffing")
 	bool   camp_hint_given      = false;    // told the player once that auto-pull is off
 
 	// Incoming damage (phase 19): health % lost per second, smoothed, per
@@ -299,6 +300,11 @@ public:
 
 	// The cleric whose turn it is started its heal / cannot take its turn.
 	void ChainCast(uint32 key, uint16 caster_id);
+	void NoteBuffCast(uint32 key);                 // a buff went out between fights (^ready)
+
+	// The resists worth buffing now: the fight's (or the leader's target's)
+	// learned resist, none for a target that casts nothing, else the zone's.
+	std::vector<uint8> ResistsWanted(const BotTacticsPlan& p);
 	void ChainSkip(uint32 key, uint16 caster_id, const char* why);
 
 	// False when another caster claimed this add within the last few seconds.
@@ -331,6 +337,21 @@ public:
 	// one per group before any gets two, tanks (best into group 1), then
 	// enchanters / bards, melee, casters. ^createraid and ^tactics layout.
 	static std::vector<std::vector<Bot*>> LayoutRaid(const std::vector<Bot*>& bots, size_t max_groups);
+
+	// The player's place in a bot raid: ^createraid left the player
+	// raid-groupless, so no group spell (songs, Call of the Predator, Heroic
+	// Bond) ever reached them. Picks a group (`preferred` if >= 0, else the
+	// one with a bard, then a shaman, then a healer) and makes room in it by
+	// moving one bot that is none of those to a group with space. Returns
+	// the 0-based group, or -1 when every group is full.
+	static int ReservePlayerSlot(std::vector<std::vector<Bot*>>& groups, size_t max_groups, int preferred = -1);
+
+	// ^raidgroup: move the player into raid group `gid` (0-based) of an
+	// existing raid, swapping out a bot if it is full. `msg` says what moved.
+	static bool MovePlayerToGroup(Raid* raid, Client* c, uint32 gid, std::string& msg);
+
+	// The live raid group a player is best placed in (bard, shaman, healer).
+	static uint32 BestPlayerGroup(Raid* raid);
 
 	// Bot::Damage: a spell from `caster` hit a bot of unit `key`. A raid
 	// target with no hand-made row: learn from it (applies at once; saved
