@@ -92,7 +92,10 @@ constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
 constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
 constexpr uint32 kCampGraceMs      = 10000; // out of camp this long, no fight = moving on
-constexpr uint32 kPullRescueMs     = 20000; // a pull this long has gone wrong
+constexpr uint32 kPullRescueMs     = 8000;  // a pull this long has gone wrong
+constexpr float  kPullRescueHPRatio   = 80.0f; // ...or the puller is under this
+constexpr float  kPullRescueDamagePct = 1.0f;  // ...or losing over this % of health a second
+constexpr float  kLeaderMeleeRadius   = 30.0f; // a leader swinging at a mob this close is fighting it, not pulling
 constexpr uint32 kTankRepositionMs = 3000;  // tank turns the mob at most this often
 constexpr uint32 kFallenMaxMs      = 30 * 60 * 1000; // a fallen bot not raised by then is left to ^botspawn
 constexpr float  kRezReachDist     = 15.0f; // the rezzer casts from this close to where it fell
@@ -112,6 +115,12 @@ constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor
 constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this close come along
 constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
 constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
+constexpr uint32 kAutoPullWaitLogMs  = 30000;  // "auto-pull waits: ..." at most this often
+constexpr uint32 kFallenPullBlockMs  = 120000; // a fallen bot holds the next pull this long at most
+constexpr float  kEraReadyHP           = 80.0f; // ready to pull under Character:TrilogyEraRegen...
+constexpr float  kEraReadyMana         = 75.0f;
+constexpr float  kEraReadyHPCautious   = 90.0f; // ...and after a bad fight
+constexpr float  kEraReadyManaCautious = 85.0f;
 constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is called off
 constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
 constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
@@ -146,6 +155,11 @@ constexpr uint8  kMezResistTries        = 3;     // a mez gets more tries...
 constexpr uint32 kMezBackoffMs          = 10000; // ...and a shorter break
 constexpr float  kHealerBuffManaPct     = 60.0f; // healers buff only above this much mana...
 constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
+constexpr float  kRaidHealerBuffManaPct = 90.0f; // ...a raid's healers above this: their mana is the fight's CHs
+constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this much mana...
+constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
+constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
+constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
 constexpr uint16 kAnyMezKey             = 0xFFFF; // resist notes: every mez spell counts as one
 constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target checked this often
@@ -173,10 +187,41 @@ constexpr float  kLastingWorthS         = 12.0f;  // a DoT / slow / debuff wants
 constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this long after landing
 constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to camp keep the fight on
 constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
+constexpr float  kRampageReachMargin    = 10.0f;  // casters stand this far past a rampager's reach
+constexpr float  kCanniMinHPPct         = 60.0f;  // a shaman cannibalizes down to this much health, no lower
+constexpr float  kResistBuffHealerManaPct = 70.0f; // a healer puts up the zone's resist buffs only above this mana...
+constexpr float  kResistBuffManaPct       = 40.0f; // ...anyone else above this
 
 bool IsAlive(Mob* m)
 {
 	return m && !m->IsCorpse() && m->GetHP() > 0 && m->GetAppearance() != eaDead;
+}
+
+// How far an AREA rampage reaches: Mob::CombatRange (aggro.cpp) with
+// aeRampage for this mob against a player-sized target (size under 6
+// counts as 8), not fleeing -- the melee reach scaled by
+// Combat:AERampageMaxDistance (70%). (A single rampage cannot be stood off:
+// with Combat:RampageHitsTarget off it falls through to the last mob on its
+// rampage list wherever that one stands, mob_ai.cpp.)
+float RampageReach(Mob* m)
+{
+	float size = m->GetSize();
+	if (m->GetRace() == Race::LavaDragon || m->GetRace() == Race::Wurm || m->GetRace() == Race::GhostDragon) {
+		size = 60.0f;
+	}
+	else if (size < 8.0f) {
+		size = 8.0f;
+	}
+
+	float reach_sq = size > 29.0f ? size * size : size > 19.0f ? size * size * 2.0f : size * size * 4.0f;
+	reach_sq *= RuleR(Combat, HitBoxMod);
+	if (reach_sq > 10000.0f) {
+		reach_sq /= 7.0f;
+	}
+
+	const float ae_pct = RuleR(Combat, AERampageMaxDistance);
+	reach_sq *= ae_pct > 0.0f ? ae_pct / 100.0f : 0.90f;
+	return sqrtf(reach_sq);
 }
 
 int TankWeight(Mob* m)
@@ -827,6 +872,21 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// ---- raid encounter ----
 
 	const BotRaidEncounter* enc     = assist && assist->IsNPC() ? EncounterFor(assist->GetNPCTypeID()) : nullptr;
+
+	// No row, but it area-rampages: casters and healers stand outside the
+	// reach of it, which hits whoever on its hate list is that close. Rows
+	// are learned from spells only, so a melee raid boss never got one
+	// (Derakor, Kael 2026-10-23: fifteen casters dead in two seconds under
+	// it). A plain rampage has no safe distance (RampageReach), so it gets
+	// no row.
+	BotRaidEncounter rampage_enc;
+	if (!enc && assist && assist->IsNPC() && assist->GetSpecialAbility(SpecialAbility::AreaRampage)) {
+		rampage_enc.npc_type_id      = assist->GetNPCTypeID();
+		rampage_enc.name             = assist->GetCleanName();
+		rampage_enc.caster_min_range = RampageReach(assist) + kRampageReachMargin;
+		enc = &rampage_enc;
+	}
+
 	const uint16            enc_mob = enc ? assist->GetID() : 0;
 	if (enc_mob != p.encounter_mob_id) {
 		p.encounter_mob_id = enc_mob;
@@ -887,6 +947,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.camp_left_ms = 0;
 			p.pull_active  = false;
 			LogInfo("[BotTactics] unit [{:#x}] camp made at [{:.0f}, {:.0f}, {:.0f}]", p.key, lpos.x, lpos.y, lpos.z);
+
+			// Auto-pull is opt-in and nothing said so: tell the player once.
+			if (!p.camp_hint_given && !(ov && ov->auto_pull) && leader->IsClient()) {
+				p.camp_hint_given = true;
+				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Type ^tactics pull on to let them pull for you.");
+			}
 		}
 
 		if (p.camp_set) {
@@ -936,7 +1002,24 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// A feared, stunned or mezzed leader is not pulling anything.
 				const bool leader_helpless = leader->IsFeared() || leader->IsStunned() || leader->IsMezzed();
 
-				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless &&
+				// Nor is one standing there swinging at it: a puller brings the
+				// mob home, a leader in melee with it is fighting where they
+				// met. That fight is the camp now. Before this, a player who
+				// roamed and engaged anything out of the old camp froze the
+				// whole unit -- main tank included -- at the old spot, and only
+				// the pets went (Kael 2026-10-23: 13 "holding camp", 9 fights
+				// the tank never touched).
+				const bool leader_fighting =
+					leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() &&
+					DistanceSquaredNoZ(lpos, glm::vec3(assist->GetPosition())) <= kLeaderMeleeRadius * kLeaderMeleeRadius;
+				if (leader_fighting && !leader_in_camp && !mob_in_camp) {
+					p.camp            = lpos;
+					p.pull_arrived_id = assist->GetID();
+					LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
+						p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+				}
+
+				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless && !leader_fighting &&
 					assist->GetID() != p.pull_arrived_id;
 
 				if (pull && !p.pull_active) {
@@ -946,12 +1029,25 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 				// A pull gone wrong (taking too long, or the puller is hurt):
 				// go help, and fight wherever this is.
-				if (pull && p.pull_active && (now - p.pull_start_ms > kPullRescueMs || leader->GetHPRatio() < 50.0f)) {
+				// Gone wrong also as soon as the puller is losing health to it:
+				// nobody waits for the player to drop to half.
+				if (
+					pull && p.pull_active && (
+						now - p.pull_start_ms > kPullRescueMs ||
+						leader->GetHPRatio() < kPullRescueHPRatio ||
+						p.DamagePct(leader->GetID()) > kPullRescueDamagePct
+					)
+				) {
 					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help, camp broken", p.key, assist->GetCleanName());
 					pull       = false;
 					p.camp_set = false;
 				}
 				else if (!pull && p.pull_active) {
+					// Arrived: this mob is the camp's fight from now on. Without
+					// marking it, the leader stepping back out of camp made it a
+					// pull again (hold / arrived / hold, four times in 27s, and
+					// every new hold restarted the rescue clock).
+					p.pull_arrived_id = assist->GetID();
 					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] arrived", p.key, assist->GetCleanName());
 				}
 
@@ -1163,6 +1259,40 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			LogInfo("[BotTactics] unit [{:#x}] ready", p.key);
 			p.recovering = false;
 		}
+	}
+
+	// ---- readiness to pull (between fights, also after a zone-in) ----
+
+	// "Ready." above only follows a fight, and only to 90%. Resting before a
+	// raid target the player had nothing to go on but ^mana from 70 bots:
+	// once a minute the healers' line, and "Ready to pull" when they are up.
+	// Raids only: a group's "Medding" / "Ready." after each pull is enough,
+	// and a line a minute between trash pulls would be noise.
+	if (calm && (p.key & kKeyRaid)) {
+		bool        go      = false;
+		Mob*        lowest  = nullptr;
+		const auto  line    = Readiness(p, go, &lowest);
+		Mob*        speaker = lowest ? lowest : first_bot;
+
+		if (go) {
+			if (!p.pull_ready_announced) {
+				p.pull_ready_announced = true;
+				Announce(raid, group, speaker, "Ready to pull: " + line);
+				LogInfo("[BotTactics] unit [{:#x}] ready to pull: {}", p.key, line);
+			}
+		}
+		else {
+			p.pull_ready_announced = false;
+			if (now - p.readiness_report_ms >= kReadinessReportMs) {
+				p.readiness_report_ms = now;
+				Announce(raid, group, speaker, "Resting: " + line);
+			}
+		}
+	}
+	else {
+		// In a fight: the first resting line a minute after it, not at once.
+		p.readiness_report_ms  = now;
+		p.pull_ready_announced = false;
 	}
 
 	// ---- adds, and who holds them ----
@@ -1636,10 +1766,21 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	if (
-		now - p.autopull_last_try_ms < kAutoPullTryMs ||
-		DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius
-	) {
+	// Why the camp is not pulling, at most every 30s: the gates below fail
+	// silently otherwise, and "the bots never pull" had no way to be told
+	// apart from "the bots are waiting for X".
+	auto waits = [&](const std::string& why) {
+		if (now - p.autopull_wait_log_ms >= kAutoPullWaitLogMs) {
+			p.autopull_wait_log_ms = now;
+			LogInfo("[BotTactics] unit [{:#x}] auto-pull waits: {}", p.key, why);
+		}
+	};
+
+	if (now - p.autopull_last_try_ms < kAutoPullTryMs) {
+		return;
+	}
+	if (DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius) {
+		waits(fmt::format("[{}] is away from camp", leader->GetCleanName()));
 		return;
 	}
 
@@ -1673,6 +1814,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		puller = find_bot(p.main_tank_id);
 	}
 	if (!puller) {
+		waits("no bot can pull (passive, held, guarding, or no tank bot)");
 		return;
 	}
 
@@ -1682,22 +1824,42 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	// one straight away -- it goes out now and arrives as this one dies.
 	const bool chain = ChainPullReady(p, mobs, puller);
 
+	// A fallen bot waiting for its rez holds the next pull only a while: a
+	// wipe used to block auto-pull for kFallenMaxMs (30 min).
+	const bool fallen_recent = std::any_of(p.fallen.begin(), p.fallen.end(), [&](const BotTacticsPlan::Fallen& f) {
+		return now - f.died_ms < kFallenPullBlockMs;
+	});
+
 	if (
 		!chain && (
 			p.assist_target_id ||
 			now - p.assist_since_ms < kCalmMs ||
 			now - p.autopull_last_end_ms < kAutoPullGapMs ||
-			!p.fallen.empty() ||
+			fallen_recent ||
 			p.pull_active
 		)
 	) {
+		if (fallen_recent && !p.assist_target_id) {
+			waits("a fallen bot is waiting for its rez");
+		}
 		return;
 	}
 	p.autopull_last_try_ms = now;
 
-	// Everyone up (the same bar as "Ready.", higher after a bad fight),
-	// nobody pulling already. A chain pull has checked its own bar.
-	const float ready_bar = p.confidence < kLowConfidence ? kCautiousReadyRatio : kReadyRatio;
+	// Ready: the bots the next pull rests on -- the puller, the main tank and
+	// the healers -- not every one of a 71-bot raid, which with 2001 regen
+	// (no rest regen, Character:TrilogyEraRegen) was never all at 90% at
+	// once. Under era regen the bars are lower, and a shaman's health is not
+	// counted (it cannibalizes down to 60% on purpose). The bar is higher
+	// after a bad fight. Nobody pulling already. A chain pull has checked its
+	// own bar.
+	const bool  era_regen  = RuleB(Character, TrilogyEraRegen);
+	const bool  cautious   = p.confidence < kLowConfidence;
+	const float hp_bar     = era_regen ? (cautious ? kEraReadyHPCautious : kEraReadyHP) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	const float mana_bar   = era_regen ? (cautious ? kEraReadyManaCautious : kEraReadyMana) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	Mob*        not_ready  = nullptr;
+	float       not_ready_pct = 100.0f;
+	const char* not_ready_what = "";
 	p.readiness = 100.0f;
 	for (Mob* m : mobs) {
 		if (!m->IsBot() || !IsAlive(m)) {
@@ -1707,12 +1869,29 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		if (b->GetPullingFlag() || b->GetReturningFlag() || b->IsFDPulling()) {
 			return;
 		}
-		p.readiness = std::min(p.readiness, m->GetHPRatio());
+
+		const uint8 c      = m->GetClass();
+		const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+		if (m != puller && !p.IsMainTank(m->GetID()) && !healer) {
+			continue;
+		}
+
+		if (c != Class::Shaman) {
+			p.readiness = std::min(p.readiness, m->GetHPRatio());
+			if (!not_ready && m->GetHPRatio() < hp_bar) {
+				not_ready = m; not_ready_pct = m->GetHPRatio(); not_ready_what = "health";
+			}
+		}
 		if (UsesMana(m)) {
 			p.readiness = std::min(p.readiness, m->GetManaRatio());
+			if (!not_ready && m->GetManaRatio() < mana_bar) {
+				not_ready = m; not_ready_pct = m->GetManaRatio(); not_ready_what = "mana";
+			}
 		}
 	}
-	if (!chain && p.readiness < ready_bar) {
+	if (!chain && not_ready) {
+		waits(fmt::format("[{}] at [{:.0f}%] {}, needs [{:.0f}%]", not_ready->GetCleanName(), not_ready_pct, not_ready_what,
+			std::string(not_ready_what) == "mana" ? mana_bar : hp_bar));
 		return;
 	}
 
@@ -1734,6 +1913,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 				IsBeneficialSpell(sid) &&
 				std::any_of(mobs.begin(), mobs.end(), [&](Mob* b) { return b->IsBot() && b->GetID() == buffs[i].casterid; })
 			) {
+				waits(fmt::format("[{}] on [{}] is about to be renewed", spells[sid].name, m->GetCleanName()));
 				return;
 			}
 		}
@@ -1927,6 +2107,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	}
 
 	if (!best) {
+		waits(fmt::format("nothing to pull within [{:.0f}] of camp (cons, faction, line of sight, links, recent failures)", radius));
 		return;
 	}
 
@@ -2497,6 +2678,98 @@ void BotTactics::SetChainIntervalOverride(uint32 key, uint32 ms)
 	}
 }
 
+// ============================================================
+// Readiness: one line to pull on
+// ============================================================
+
+// With 70 bots, ^mana scrolls a screen of chat and nothing says when the
+// healers are full. This is the line to read: the healers (the CH chain is
+// what a raid fight spends), the main tank, anyone fallen, and how long the
+// slowest healer needs seated to reach the bar.
+std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lowest_healer)
+{
+	const bool era_regen = RuleB(Character, TrilogyEraRegen);
+
+	int    healers      = 0;
+	int    healers_full = 0;
+	float  mana_sum     = 0.0f;
+	Mob*   lowest       = nullptr;
+	float  lowest_pct   = 101.0f;
+	uint32 eta_s        = 0;
+	int    casters_low  = 0;
+
+	for (uint16 id : p.members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!IsAlive(m) || !m->IsBot() || !UsesMana(m)) {
+			continue;
+		}
+
+		const uint8 c      = m->GetClass();
+		const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+		const float pct    = m->GetManaRatio();
+
+		if (!healer) {
+			if (pct < kPullReadyCasterManaPct) {
+				++casters_low;
+			}
+			continue;
+		}
+
+		++healers;
+		mana_sum += pct;
+		if (pct >= kPullReadyHealerManaPct) {
+			++healers_full;
+		}
+		if (pct < lowest_pct) {
+			lowest     = m;
+			lowest_pct = pct;
+		}
+
+		// Seated, book open (a bot meds as a player with the book open).
+		const int64 want = static_cast<int64>(m->GetMaxMana() * kPullReadyHealerManaPct / 100.0f) - m->GetMana();
+		if (want > 0) {
+			const int64 per_tick = era_regen ?
+				m->CalcEraManaRegen(true, true, m->GetSkill(EQ::skills::SkillMeditate), true) :
+				m->CastToBot()->CalcManaRegen();
+			if (per_tick > 0) {
+				eta_s = std::max<uint32>(eta_s, static_cast<uint32>((want + per_tick - 1) / per_tick) * 6);
+			}
+		}
+	}
+
+	Mob*  tank    = p.main_tank_id ? entity_list.GetMob(p.main_tank_id) : nullptr;
+	const float tank_hp = IsAlive(tank) ? tank->GetHPRatio() : 0.0f;
+	const size_t fallen = p.fallen.size();
+
+	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0;
+
+	if (lowest_healer) {
+		*lowest_healer = lowest;
+	}
+
+	std::string line = fmt::format(
+		"{} -- healers {}/{} at {:.0f}%+ mana (average {:.0f}%",
+		ready ? "GO" : "WAIT", healers_full, healers, kPullReadyHealerManaPct, healers ? mana_sum / healers : 0.0f
+	);
+	if (lowest && lowest_pct < kPullReadyHealerManaPct) {
+		line += fmt::format(", lowest {} {:.0f}%", lowest->GetCleanName(), lowest_pct);
+	}
+	line += ")";
+	if (!ready && eta_s > 0) {
+		line += eta_s >= 120 ? fmt::format(", about {} min seated", (eta_s + 59) / 60) : fmt::format(", about {} s seated", eta_s);
+	}
+	if (tank) {
+		line += fmt::format("; tank {} {:.0f}%", tank->GetCleanName(), tank_hp);
+	}
+	if (fallen) {
+		line += fmt::format("; {} fallen", fallen);
+	}
+	if (casters_low) {
+		line += fmt::format("; {} other casters under {:.0f}%", casters_low, kPullReadyCasterManaPct);
+	}
+	return line + ".";
+}
+
 std::vector<std::string> BotTactics::Describe(uint32 key)
 {
 	std::vector<std::string> out;
@@ -2676,6 +2949,26 @@ bool Bot::TacticsChainCheck()
 		return false;
 	}
 
+	// Our own last cast is still finishing (CastSpell refuses while delaytimer
+	// or spellend_timer is up, spells.cpp ~179, though IsCasting() already
+	// reads false): the turn waits a tick rather than being skipped as "cast
+	// failed". Skips compress the rotation, so a cleric's next turn often
+	// fell exactly as its previous CH finished.
+	if (IsCasting() || delaytimer || spellend_timer.Enabled()) {
+		return false;
+	}
+
+	// The spell list stores -1 for "the spell's own cost" (bot_spells_entries
+	// manacost; AIDoSpellCast resolves it the same way). Compared raw it was
+	// never more than our mana, so an empty cleric took its turn, the cast
+	// was refused for mana, and the skip said "cast failed" (166 of them in
+	// Kael 2026-10-23, 946 the day before).
+	const int64 ch_cost = s.ManaCost == -1 ? spells[s.SpellId].mana : (s.ManaCost == -2 ? 0 : s.ManaCost);
+	if (GetMana() < ch_cost) {
+		bot_tactics.ChainSkip(m_tactics_key, GetID(), "out of mana");
+		return false;
+	}
+
 	if (AIDoSpellCast(s.SpellIndex, tar, s.ManaCost)) {
 		bot_tactics.ChainCast(m_tactics_key, GetID());
 		return true;
@@ -2685,7 +2978,7 @@ bool Bot::TacticsChainCheck()
 		IsCasting() ? "still casting" :
 		(IsStunned() || IsMezzed() || IsFeared()) ? "stunned, mezzed or feared" :
 		IsSilenced() ? "silenced" :
-		GetMana() < s.ManaCost ? "out of mana" :
+		GetMana() < ch_cost ? "out of mana" :
 		!CheckSpellRecastTimer(s.SpellId) ? "recast not ready" :
 		"cast failed";
 	bot_tactics.ChainSkip(m_tactics_key, GetID(), why);
@@ -2730,6 +3023,13 @@ bool Bot::TacticsHeal()
 		}
 		else if (m->GetClass() == Class::Enchanter) {
 			threshold = 80.0f;
+		}
+		else if (m->GetClass() == Class::Shaman && !p->assist_target_id) {
+			// Between fights a shaman cannibalizes down to kCanniMinHPPct on
+			// purpose; healing it back up just burns the mana it bought
+			// (Qeynos 2026-10-23: canni, canni, self-heal, net -146 mana a
+			// cycle, with no rest regen to cover it).
+			threshold = kCanniMinHPPct - 5.0f;
 		}
 		else {
 			threshold = 70.0f;
@@ -2860,7 +3160,15 @@ bool Bot::TryTacticsAssist(Client* leash_owner, float leash_distance)
 	// Tanks go straight in; everyone else gives the tank a moment first, or
 	// waits for the health % a raid encounter asks for.
 	const bool tanking = p->IsMainTank(GetID()) || add == want_id;
-	if (!tanking) {
+
+	// The mob is on a player of ours: defend now. The tank's head start is
+	// for a mob the tank holds; one beating on the player gets everybody
+	// (the tank's taunt takes it, and the aggro back-off keeps the casters
+	// honest).
+	Mob* const victim   = t->GetTarget();
+	const bool defending = victim && victim->IsClient() && p->IsMember(victim->GetID());
+
+	if (!tanking && !defending) {
 		const bool raid_unit = (p->key & kKeyRaid) != 0;
 
 		if (p->has_encounter && p->encounter_mob_id == want_id && p->encounter.assist_hp) {
@@ -3575,7 +3883,15 @@ bool Bot::TacticsSituationalBuffs()
 
 	const bool   in_raid  = !p->raid_group.empty();
 	const uint32 my_group = p->RaidGroupOf(GetID());
-	for (uint8 resist : bot_tactics.ZoneResists()) {
+
+	// Only from spare mana: the healers' is the next fight's heals. With 2001
+	// regen the six chain clerics spent ~1.6k mana each on 137 resist buffs
+	// in twelve minutes and walked into Derakor at 0-20% (Kael 2026-10-23).
+	const bool  healer     = GetClass() == Class::Cleric || GetClass() == Class::Druid || GetClass() == Class::Shaman;
+	const float resist_bar = healer ? kResistBuffHealerManaPct : kResistBuffManaPct;
+	static const std::vector<uint8> kNoResists;
+	const std::vector<uint8>&       resists = GetManaRatio() >= resist_bar ? bot_tactics.ZoneResists() : kNoResists;
+	for (uint8 resist : resists) {
 		const int    effect   = ResistEffect(resist);
 		const uint16 spell_id = BuffWithEffectFor(effect, GetClass(), GetLevel());
 		if (!effect || !IsValidSpell(spell_id)) {
@@ -3920,11 +4236,19 @@ bool Bot::TacticsBuffWanted(uint16 spell_id, Mob* tar) const
 	// Mana is for heals (healers) and for mez / emergencies (casters).
 	const uint8 c      = GetClass();
 	const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
-	if (GetManaRatio() < (healer ? kHealerBuffManaPct : kCasterBuffManaPct)) {
+	if (GetManaRatio() < (healer ? ((p->key & kKeyRaid) ? kRaidHealerBuffManaPct : kHealerBuffManaPct) : kCasterBuffManaPct)) {
 		return false;
 	}
 
 	auto has = [&](int effect) { return IsEffectInSpell(spell_id, effect); };
+
+	// A death save (Divine Intervention, Death Pact) is the main tank's, put
+	// up by TacticsDeathSave in a raid fight. Spread as a buff it went on
+	// pets, a ranger and a monk: 10 DI and 19 Death Pact in one rest
+	// (~6.9k cleric mana, Kael 2026-10-23).
+	if (has(SE_DeathSave)) {
+		return false;
+	}
 
 	// What it does. (SE_CHA is a spacer in old spells: it means nothing.)
 	const bool core     = has(SE_TotalHP) || has(SE_ArmorClass) || has(SE_Rune) || has(SE_ATK) ||
@@ -4439,10 +4763,19 @@ void Bot::TacticsPetChecks()
 		return; // the tank picks its own fights
 	}
 
+	// Held where its bot is held: while the player brings a mob home, and
+	// after a runner past the camp leash. Pets had no leash at all, so on
+	// every pull they ran out alone while the bots waited at camp.
+	Mob* t = pet->GetTarget();
+	if (t && t->IsNPC() && (p->pull_active || TacticsTooFarFromCamp(t))) {
+		pet->WipeHateList();
+		pet->SetTarget(nullptr);
+		return;
+	}
+
 	// Never a mezzed mob, nor an add someone else is dealing with: back to
 	// the main target. (Getting behind it -- enraged or not -- is the pet's
 	// own AI, mob_ai.cpp, walked through TacticsPetStepBehind.)
-	Mob* t = pet->GetTarget();
 	if (!t || !t->IsNPC() || t->GetID() == p->assist_target_id) {
 		return;
 	}
@@ -4498,6 +4831,17 @@ bool Bot::TacticsTooFarFromCamp(Mob* tar)
 	const BotTacticsPlan* p = GetTacticsPlan();
 	if (!p || !p->camp_set || !tar || GetPullingFlag() || GetReturningFlag() || IsFDPulling()) {
 		return false;
+	}
+
+	// The leash is for runners. A mob that is hitting one of us -- the
+	// player, a bot, or a pet of either -- is fought wherever it stands.
+	if (!tar->IsFleeing()) {
+		if (Mob* on = tar->GetTarget()) {
+			Mob* on_owner = on->GetOwner();
+			if (p->IsMember(on->GetID()) || (on_owner && p->IsMember(on_owner->GetID()))) {
+				return false;
+			}
+		}
 	}
 
 	return DistanceSquaredNoZ(glm::vec3(tar->GetPosition()), p->camp) > kRunnerChaseRadius * kRunnerChaseRadius;
@@ -4734,29 +5078,38 @@ bool Bot::TacticsEncounterPositioning(Mob* tar)
 		facing = 512.0f - facing;
 	}
 
-	const bool  in_front  = p->encounter.avoid_front && facing < 96.0f; // within ~67 degrees of its nose
-	const float min_range = caster ? p->encounter.caster_min_range : 0.0f;
-	const bool  too_close = min_range > 0.0f && dist < min_range;
-	if (!in_front && !too_close) {
-		return false;
-	}
-
-	m_encounter_reposition_ms = now + kTankRepositionMs;
+	const bool in_front = p->encounter.avoid_front && facing < 96.0f; // within ~67 degrees of its nose
 
 	// Far enough (casters), but not past where we can still cast at it, or
-	// TryPursueTarget would walk us straight back in.
-	float want_dist = too_close ? min_range + 5.0f : dist;
-	if (caster) {
+	// TryPursueTarget would walk us straight back in. When the class's cast
+	// distance is shorter than the encounter wants (a cleric's 34 against
+	// Derakor's 35-40), the edge of that distance IS the place: wanting the
+	// unreachable sent twelve healers walking every 3 s for the whole fight.
+	float min_range = caster ? p->encounter.caster_min_range : 0.0f;
+	float cap       = 0.0f;
+	if (caster && min_range > 0.0f) {
 		float melee_distance_max = 0.0f;
 		float melee_distance     = 0.0f;
 		CalcMeleeDistances(
 			tar, GetBotItem(EQ::invslot::slotPrimary), GetBotItem(EQ::invslot::slotSecondary),
 			false, false, melee_distance_max, melee_distance
 		);
-		const float cap = sqrtf(GetBotCasterMaxRange(melee_distance_max));
-		if (cap > 0.0f) {
-			want_dist = std::min(want_dist, cap * 0.95f);
+		cap = sqrtf(GetBotCasterMaxRange(melee_distance_max)) * 0.95f;
+		if (cap > 0.0f && min_range + 5.0f > cap) {
+			min_range = std::max(0.0f, cap - 5.0f); // stand at the edge; arrive within 5 of it
 		}
+	}
+
+	const bool too_close = min_range > 0.0f && dist < min_range;
+	if (!in_front && !too_close) {
+		return false;
+	}
+
+	m_encounter_reposition_ms = now + kTankRepositionMs;
+
+	float want_dist = too_close ? min_range + 5.0f : dist;
+	if (cap > 0.0f) {
+		want_dist = std::min(want_dist, cap);
 	}
 
 	// Out of the front: behind it, spread over a 160 degree arc. Only too
@@ -4823,7 +5176,7 @@ constexpr float  kChainEmergencyManaPct  = 30.0f; // ...if the cleric can spare 
 constexpr uint32 kChainEmergencySlackMs  = 1500;  // and its own CH turn is this far beyond the heal
 constexpr uint32 kCanniCheckMs           = 2000;
 constexpr float  kCanniManaPct           = 85.0f; // under this mana a shaman cannibalizes...
-constexpr float  kCanniMinHPPct          = 60.0f; // ...keeping at least this much health
+// ...keeping at least kCanniMinHPPct health (defined at the top: TacticsHeal uses it too)
 
 // Share of `tar`'s health a direct heal from `caster` gives back. A complete
 // heal is everything; heal-over-time is not counted (too slow to matter for
@@ -5139,7 +5492,13 @@ bool Bot::TacticsInterruptStrike(Mob* caster)
 	}
 
 	DoSpecialAttackDamage(caster, skill, dmg, 0, -1, reuse);
-	classattack_timer.Start(reuse / (GetHaste() * 0.01f));
+
+	// The v29c bash/kick reuse, unhasted (Bots:EraAbilityReuse)
+	if (const uint32 era_ms = GetEraAbilityReuseMs(skill)) {
+		classattack_timer.Start(era_ms);
+	} else {
+		classattack_timer.Start(reuse / (GetHaste() * 0.01f));
+	}
 	return true;
 }
 
@@ -5287,10 +5646,24 @@ bool Bot::TacticsSafeToSit()
 		return false;
 	}
 
+	// Nor within reach of anything awake that we are fighting: a rampage or
+	// an area rampage hits whoever on its hate list is in melee range
+	// (HateList::AreaRampage, CombatRange with aeRampage), and a sitting
+	// target is always hit, for double (attack.cpp CheckHitChance /
+	// RollD20). Kael 2026-10-23: six casters sat to med under Derakor and
+	// fifteen died in two seconds.
+	if (IsAlive(main_target) && !main_target->IsMezzed() && main_target->CombatRange(this, 1.0f, true)) {
+		return false;
+	}
+
 	for (uint16 id : p->adds) {
 		Mob* m = entity_list.GetMob(id);
 		if (!IsAlive(m) || m->IsMezzed()) {
 			continue;
+		}
+
+		if (m->CombatRange(this, 1.0f, true)) {
+			return false;
 		}
 
 		Mob* t = m->GetTarget();
@@ -6191,7 +6564,10 @@ bool Bot::TacticsRescue()
 		bot_tactics.ClaimCast(m_tactics_key, loose->GetID(), BotTactics::kClaimRescue, GetID(), kRescueClaimMs)
 	) {
 		Taunt(loose->CastToNPC(), false);
-		taunt_timer.Start(TauntReuseTime * 1000);
+		// The v29c 6 s (Bots:EraAbilityReuse); a warrior keeps the 5 s its
+		// roast taunt runs on, since they share taunt_timer
+		const uint32 taunt_era_ms = (GetClass() == Class::Warrior) ? 0 : GetEraAbilityReuseMs(EQ::skills::SkillTaunt);
+		taunt_timer.Start(taunt_era_ms ? taunt_era_ms : TauntReuseTime * 1000);
 		LogInfo("[BotTactics] [{}] taunts [{}] off [{}]", GetCleanName(), loose->GetCleanName(), victim ? victim->GetCleanName() : "?");
 		return true;
 	}
@@ -6277,12 +6653,18 @@ bool Bot::TacticsDeathSave()
 	// Intervention), cast by a cleric that is not on the CH chain.
 	Mob* fight = p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
 	Mob* tank  = p->main_tank_id ? entity_list.GetMob(p->main_tank_id) : nullptr;
-	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn()) || !IsAlive(tank)) {
+	// A raid unit's fight counts as one: npc_types.raid_target is 0 for
+	// nearly every classic raid mob here (Derakor included), as noted in
+	// ObserveHostileSpell.
+	if (!fight || !fight->IsNPC() || !(fight->IsRaidTarget() || fight->IsRareSpawn() || (p->key & kKeyRaid)) || !IsAlive(tank)) {
 		return false;
 	}
 
-	const uint16 sid = BuffWithEffectFor(SE_DivineSave, GetClass(), GetLevel());
-	if (!IsValidSpell(sid) || tank->FindType(SE_DivineSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+	// Divine Intervention and Death Pact are SE_DeathSave (150). This looked
+	// for SE_DivineSave (232, a later AA-style effect no 2001 spell has), so
+	// it never found a spell: zero DI on any main tank in three Derakor logs.
+	const uint16 sid = BuffWithEffectFor(SE_DeathSave, GetClass(), GetLevel());
+	if (!IsValidSpell(sid) || tank->FindType(SE_DeathSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
 		return false;
 	}
 	if (

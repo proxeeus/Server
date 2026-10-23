@@ -2410,6 +2410,36 @@ uint32 Mob::GetLevelCon(uint8 mylevel, uint8 iOtherLevel) {
 
 	uint32 conlevel = 0;
 
+	// ==== Trilogy: v29c con bands (Character:EraConColors) ====
+	// The v29c client colours a /con itself (eqgame.exe 0x4c8aba, PvE
+	// ruleset branch 0x4c8c9a-0x4c8cdc), with d = target - me:
+	//   green  if target < (3 * me) / 4 and d <= -4
+	//   blue   if d < 0, white if d == 0, yellow if d is 1..2, red if d >= 3
+	// There is no light blue and no grey. Client green is the 2001 "no
+	// experience" con, so it maps to Gray here: XP, no-aggro, flee, skill-up
+	// and NPC-assist checks all key on Gray. Blue is DarkBlue.
+	if (RuleB(Character, EraConColors)) {
+		const int diff = static_cast<int>(iOtherLevel) - static_cast<int>(mylevel);
+
+		if (diff >= 3) {
+			return ConsiderColor::Red;
+		}
+
+		if (diff > 0) {
+			return ConsiderColor::Yellow;
+		}
+
+		if (diff == 0) {
+			return ConsiderColor::White;
+		}
+
+		if (iOtherLevel < (3 * mylevel) / 4 && diff <= -4) {
+			return ConsiderColor::Gray;
+		}
+
+		return ConsiderColor::DarkBlue;
+	}
+
 	if (RuleB(Character, UseOldConSystem))
 	{
 		int16 diff = iOtherLevel - mylevel;

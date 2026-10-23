@@ -399,6 +399,8 @@ public:
 	bool DoCastingChecksZoneRestrictions(bool check_on_casting, int32 spell_id);
 	bool DoCastingChecksOnTarget(bool check_on_casting, int32 spell_id, Mob* spell_target);
 	virtual bool CheckFizzle(uint16 spell_id);
+	bool EraCheckFizzle(uint16 spell_id);		// Spells:EraFizzle - v29c 0x41f0e7; true = no fizzle
+	bool EraChannelCheck(uint16 spell_id);		// Spells:EraChanneling - v29c 0x4241ae; true = concentration held
 	virtual bool CheckSpellLevelRestriction(Mob *caster, uint16 spell_id);
 	virtual bool IsImmuneToSpell(uint16 spell_id, Mob *caster);
 	virtual float GetAOERange(uint16 spell_id);
@@ -661,6 +663,15 @@ public:
 	virtual int64 CalcHPRegenCap() { return 0; }
 	inline int64 GetMaxMana() const { return max_mana; }
 	virtual int64 CalcManaRegenCap() { return 0; }
+	// ==== 2001 (v29c) era regen — client_mods.cpp, rule Character:TrilogyEraRegen ====
+	// Per-tick HP / mana exactly as eqgame.exe predicts them every 6 s, minus the
+	// buff terms DoBuffTic already applies.  Callers supply the state the client
+	// reads: seated, ms since the current sit began, food AND water non-zero,
+	// spell book open, and the Meditate skill as the client sees it.
+	int64 CalcEraHPRegen(bool sitting, uint32 sat_ms, bool fed);
+	int64 CalcEraManaRegen(bool sitting, bool book_open, uint16 meditate, bool fed);
+	bool  HasEraInnateRegen() const;
+	int64 GetEraWornEffectValue(uint16 effect_id, bool largest_only);
 	inline int64 GetMana() const { return current_mana; }
 	virtual int64 GetEndurance() const { return 0; }
 	virtual int64 GetMaxEndurance() const { return 0; }
@@ -673,6 +684,9 @@ public:
 		((static_cast<float>(current_mana) / max_mana) * 100); }
 	virtual int64 CalcMaxMana();
 	uint32 GetNPCTypeID() const { return npctype_id; }
+	// An NPC spawned from the PlayerBot npc_types row (PlayerBots:PlayerBotId).
+	// Never a bot: a bot's npctype_id is its bot_id, and bot 679 is Ballador.
+	bool IsPlayerBotNPC() const;
 	void SetNPCTypeID(uint32 npctypeid) { npctype_id = npctypeid; }
 	inline const glm::vec4& GetPosition() const { return m_Position; }
 	inline void SetPosition(const float x, const float y, const float z) { m_Position.x = x; m_Position.y = y; m_Position.z = z; }

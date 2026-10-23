@@ -314,6 +314,238 @@ int64 Client::CalcHPRegenCap()
 	return (cap * RuleI(Character, HPRegenMultiplier) / 100);
 }
 
+// ============================================================
+// 2001 (v29c) era regen — rule Character:TrilogyEraRegen
+//
+// The v29c client predicts its own HP and mana every 6000 ms (eqgame.exe
+// 0x426ee4: `cmp ecx,0x1770` against the last-tick stamp at actor+0x5c) and
+// the bar snaps whenever the server's number disagrees.  These helpers return
+// the server-side per-tick delta that makes the two agree, for Trilogy
+// players (TrilogyClient::CalcHPRegen / CalcManaRegen) and for bots
+// (Bot::CalcHPRegen / CalcManaRegen), which play by the same 2001 rules.
+//
+// What the client adds in one tick, in its own order:
+//   HP   1. buff + worn SE100 heal-over-time         0x426f95 → 0x4238a2(100)
+//        2. +1 while any buff carries SE101          0x426fb1 (0x42381b(101))
+//        3. buff + worn SE0, signed (regen and DoT)  0x426fc0 → 0x4238a2(0)
+//        4. the regen block, only while HP < max     0x427090 .. 0x4271ca
+//   Mana 5. the regen block, only while mana < max   0x42721f .. 0x427332
+//        6. each buff's SE15, non-bards              buff tick 0x425366
+//
+// Buff SE100 and negative buff SE0 (DoTs) are already applied server-side by
+// DoBuffTic (SE_HealOverTime → HealDamage, SE_CurrentHP < 0 → Damage), so
+// they are NOT returned here; they only feed the gates the client evaluates
+// after applying them.  Positive buff SE0 is spellbonuses.HPRegen (bonuses.cpp
+// "regens") and buff SE15 is spellbonuses.ManaRegen — DoBuffTic leaves both to
+// the regen pass, and CalcSpellBonuses already zeroes ManaRegen for bards,
+// which is exactly the client's `cmp [char+0x36],8` skip at 0x425366.  The
+// worn halves are computed here (GetEraWornEffectValue) and returned: the
+// server's itembonuses.HPRegen / ManaRegen also carry the item Regen /
+// ManaRegen stats, which v29c knows nothing about, so they are not used.
+//
+// Deliberately absent, because the client has no way to predict them: the
+// base_data table and the 2004 sit-time ramp, rest/fast regen, AreaHPRegen /
+// AreaManaRegen, item Regen / ManaRegen stats and heroic stats (no such fields
+// in the v29c item), AAs, group leadership, Character:HPRegenMultiplier /
+// ManaRegenMultiplier and Bots:ManaRegen.
+// ============================================================
+
+bool Mob::HasEraInnateRegen() const
+{
+	// 0x41d17f fills the innate table at char+0xa2c with 0xFF and then clears
+	// entries per race.  Slot 10 (+0xa36) — the one the regen tick tests at
+	// 0x42710b — is cleared for Troll 9 (0x41d2a3 → 0x41d432), for the Grobb
+	// troll model 92 (0x41d3b7 → 0x41d432) and for Iksar 128 (0x41d48c →
+	// 0x41d4e6).  Two of its three callers (0x42513e, 0x4bcd9a) pass the
+	// spawn's CURRENT race from spawn+0x9a, so an illusion moves the bonus with
+	// it: GetRace(), not GetBaseRace().
+	const uint16 r = GetRace();
+	return r == Race::Troll || r == Race::Iksar || r == Race::GrobbCitizen;
+}
+
+int64 Mob::GetEraWornEffectValue(uint16 effect_id, bool largest_only)
+{
+	// The worn half of 0x4238a2 (from 0x423a6a: sum) and 0x425c48 (mana:
+	// largest).  Both walk 21 item pointers starting at char+0xe4 = PP
+	// inventoryitemPointers[1..21] = wire slots 1..21 = ear1..waist + ammo
+	// (v29c has no charm slot; wire 21 is ammo, TrilogyWireSlotToEmuSlot).
+	// An item counts when itemclass (+0x81) is 0, effecttype1 (+0xc0) is 2 =
+	// worn, the spell id at +0xce is 1..2999 and the spell's duration formula
+	// (+0x1bc, cf. 0x4245a1) is non-zero.  Value = 0x42351a at the item's
+	// effect level (+0xc4), i.e. CalcSpellEffectValue at Worn.Level, the same
+	// call bonuses.cpp makes for worn effects.
+	//
+	// The client only knows the ONE effect the item encoder sends, and both
+	// encoders (BuildClassicItemFromInst, trilogy_zone.cpp) put a click effect
+	// ahead of the worn one; an item that also carries a click, scroll or proc
+	// is therefore left out rather than guessed at.
+	auto in_client_range = [](int32 id) { return id > 0 && id < 3000; };
+
+	int64 total = 0;
+	int64 best  = 0;   // 0x425c51: the running maximum starts at 0
+
+	auto& inv = GetInv();
+	for (int16 slot = EQ::invslot::slotEar1; slot <= EQ::invslot::slotAmmo; ++slot) {
+		if (slot == EQ::invslot::slotPowerSource) {
+			continue;
+		}
+
+		const EQ::ItemInstance* inst = inv.GetItem(slot);
+		if (!inst || !inst->IsClassCommon()) {
+			continue;
+		}
+
+		const EQ::ItemData* item = inst->GetItem();
+		if (!item ||
+		    item->Worn.Type != EQ::item::ItemEffectWorn ||
+		    !in_client_range(item->Worn.Effect) ||
+		    in_client_range(item->Click.Effect) ||
+		    in_client_range(item->Scroll.Effect) ||
+		    in_client_range(item->Proc.Effect)) {
+			continue;
+		}
+
+		const uint16 spell_id = static_cast<uint16>(item->Worn.Effect);
+		if (!IsValidSpell(spell_id) || spells[spell_id].buff_duration_formula == 0) {
+			continue;
+		}
+
+		for (int i = 0; i < EFFECT_COUNT; ++i) {
+			if (spells[spell_id].effect_id[i] != effect_id) {
+				continue;
+			}
+
+			const int64 v = CalcSpellEffectValue(spell_id, i, item->Worn.Level);
+			total += v;
+			best   = std::max(best, v);
+		}
+	}
+
+	return largest_only ? best : total;
+}
+
+int64 Mob::CalcEraHPRegen(bool sitting, uint32 sat_ms, bool fed)
+{
+	const int  level  = GetLevel();
+	const bool innate = HasEraInnateRegen();
+
+	// Signed buff sums for SE0 and SE100, valued the way ApplySpellsBonuses
+	// values them.  Used only for the client's gates below — the amounts
+	// themselves are DoBuffTic's (DoT, HoT) or spellbonuses.HPRegen (regen).
+	int64 buff_se0   = 0;
+	int64 buff_se100 = 0;
+	const int buff_count = GetMaxTotalSlots();
+	for (int slot = 0; slot < buff_count; ++slot) {
+		const uint16 spell_id = buffs[slot].spellid;
+		if (!IsValidSpell(spell_id)) {
+			continue;
+		}
+		for (int i = 0; i < EFFECT_COUNT; ++i) {
+			const int e = spells[spell_id].effect_id[i];
+			if (e != SE_CurrentHP && e != SE_HealOverTime) {
+				continue;
+			}
+			const int64 v = CalcSpellEffectValue(
+				spell_id, i, buffs[slot].casterlevel, buffs[slot].instrument_mod,
+				nullptr, buffs[slot].ticsremaining, buffs[slot].casterid
+			);
+			if (e == SE_CurrentHP) {
+				buff_se0 += v;
+			} else {
+				buff_se100 += v;
+			}
+		}
+	}
+
+	const int64 worn_se0   = GetEraWornEffectValue(SE_CurrentHP, false);
+	const int64 worn_se100 = GetEraWornEffectValue(SE_HealOverTime, false);
+	const int64 se101      = (GetBuffSlotFromType(SE_CompleteHeal) >= 0) ? 1 : 0;  // 0x426fb1
+	const int64 se0        = buff_se0 + worn_se0;                                  // 0x426fc9 ebx
+
+	// The regen block re-reads HP (0x427074) after terms 1-3 are applied.
+	const int64 hp = GetHP() + buff_se100 + worn_se100 + se101 + se0;
+
+	int64 b = 0;
+	if (hp < GetMaxHP()) {                                         // 0x427090
+		b = sitting ? 2 : 1;                                       // 0x42709a: standstate 0x6e
+		if (GetClass() == Class::Monk && level > 50 && GetFeigned()) {
+			b = 2;                                                 // 0x4270a5
+		}
+		if (!fed) {
+			b = 0;                                                 // 0x4270d0: PP 2812 / 2816
+		}
+
+		// 0x4270e4: PP 2788 (discplineAvailable) is non-zero — we always ship
+		// 7 (SendPlayerProfile) — so the level-51/56/60 steps always apply.
+		if (level > 50) { ++b; }
+		if (level > 55) { ++b; }
+		if (level > 59) { ++b; }
+
+		if (innate) {                                              // 0x42710b
+			if (level > 50) { ++b; }
+			if (level > 55) { ++b; }
+			b *= 2;
+		}
+
+		// 0x427123: unconscious (char+0x76 == 3, set at 0x4b3e5d; modelled as
+		// HP <= 0, the server's IsUnconscious) bleeds 1 a tick below -5 HP or
+		// when nothing else is left.  Below -10 the client reports its own
+		// death (0x427552 → OP_Death 0x4a20, handled in trilogy_zone.cpp).
+		if (GetHP() <= 0 && (hp < -5 || b < 1)) {
+			b = -1;
+		}
+
+		// 0x42715d: seated for more than 60 s (actor+0x70, stamped at 0x4b47b5
+		// each time the stand state turns to sitting), from level 20.
+		if (sitting && level > 19 && sat_ms > 60000) {
+			++b;
+			if (level > 49) { ++b; }
+			if (innate) {
+				++b;
+				if (level > 49) { ++b; }
+			}
+		}
+
+		// 0x4271a2: with nothing coming in at all, 0 HP or less loses one more.
+		if (b + se0 == 0 && hp <= 0) {
+			--b;
+		}
+	}
+
+	return b + spellbonuses.HPRegen + worn_se0 + worn_se100 + se101;
+}
+
+int64 Mob::CalcEraManaRegen(bool sitting, bool book_open, uint16 meditate, bool fed)
+{
+	const bool bard = GetClass() == Class::Bard;
+
+	int64 m = 0;
+	if (GetMana() < GetMaxMana()) {                                // 0x42721f
+		m = fed ? 1 : 0;                                           // 0x42723b
+		if (sitting && fed) {
+			m = 2;                                                 // 0x42725f: spawn+0xa1 == 0x6e
+		}
+
+		// 0x427278: non-bard, seated and fed, with the spell book open
+		// (0x6e4e44 → +0xfe4) or, from level 35, any Meditate skill at all.
+		if (!bard && sitting && fed && (book_open || (GetLevel() > 34 && meditate > 0))) {
+			m = (meditate > 1) ? 4 : 3;                            // 0x4272df
+			if (meditate > 14) {
+				m += meditate / 15;                                // 0x4272ea
+			}
+		}
+
+		if (!bard) {
+			if (GetBuffSlotFromType(SE_CompleteHeal) >= 0) {
+				++m;                                               // 0x42730f
+			}
+			m += GetEraWornEffectValue(SE_CurrentMana, true);      // 0x42731c → 0x425c48
+		}
+	}
+
+	return m + spellbonuses.ManaRegen;
+}
+
 int64 Client::CalcMaxHP()
 {
 	float nd = 10000;

@@ -726,7 +726,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 						for (int i = 0; i < 6; ++i)
 							if (group->members[i])
 								group->members[i]->aa_timers[aaTimerWarcry].Start(time);
-					} else if (caster->IsRaidGrouped()) {
+					} else if (caster->IsRaidGrouped() && caster->GetRaid()) {
 						auto raid = caster->GetRaid();
 						uint32 gid = raid->GetGroup(caster->CastToClient());
 						if (gid < 12)
@@ -1870,7 +1870,7 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 							}
 						}
 					} else if (caster) {
-						if (caster->IsRaidGrouped()) {
+						if (caster->IsRaidGrouped() && caster->GetRaid()) {
 							Raid *raid = caster->GetRaid();
 							uint32 group_id = raid->GetGroup(caster->GetName());
 							if (group_id > 0 && group_id < MAX_RAID_GROUPS) {

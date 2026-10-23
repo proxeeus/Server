@@ -233,8 +233,9 @@ void Raid::AddBot(Bot* b, uint32 group, bool raid_leader, bool group_leader, boo
 
 	if (group < MAX_RAID_GROUPS) {
 		GroupUpdate(group);
-	} else { // get raid AAs, GroupUpdate will handle it otherwise
-		SendGroupLeadershipAA(b->GetOwner()->CastToClient(), RAID_GROUPLESS);
+	} else if (b->GetBotOwner() && b->GetBotOwner()->IsClient()) { // get raid AAs, GroupUpdate will handle it otherwise
+		// A bot holding camp for a dead owner has none (Bot::BeginOwnerHold)
+		SendGroupLeadershipAA(b->GetBotOwner()->CastToClient(), RAID_GROUPLESS);
 	}
 
 	SendRaidAddAll(b->GetName());
@@ -264,7 +265,8 @@ void Raid::RemoveMember(const char *character_name)
 
 	if (RuleB(Bots, Enabled) && b) {
 		b = entity_list.GetBotByBotName(character_name);
-		b->SetFollowID(b->GetOwner()->CastToClient()->GetID());
+		// A bot holding camp for a dead owner has none (Bot::BeginOwnerHold)
+		b->SetFollowID(b->GetBotOwner() ? b->GetBotOwner()->GetID() : 0);
 		b->SetTarget(nullptr);
 		b->SetRaidGrouped(false);
 	}
@@ -1711,6 +1713,7 @@ bool Raid::LearnMembers()
 
 	if (raid_members.empty()) {
 		disbandCheck = true;
+		DropStaleLocalBots();
 		return false;
 	}
 
@@ -1744,7 +1747,61 @@ bool Raid::LearnMembers()
 		members[i].is_bot          = e.bot_id > 0;
 		++i;
 	}
+
+	DropStaleLocalBots();
 	return true;
+}
+
+// A raid change made in another zone reaches this one as ServerOP_RaidRemove /
+// ServerOP_RaidDisband, which only re-reads raid_members (LearnMembers). Bots
+// standing here that the new list no longer names were never told: nothing
+// here called SetRaidGrouped(false) for them, so IsRaidGrouped() stayed true
+// while GetRaidByBotName() returned null, and the next raid-heal lookup
+// dereferenced it (Kael 2026-10-23 19:23:07: the owner died, 47 bots held
+// camp, and ^disbandraid at the bind removed them all).
+void Raid::DropStaleLocalBots()
+{
+	if (!RuleB(Bots, Enabled)) {
+		return;
+	}
+
+	for (Bot* b : entity_list.GetBotList()) {
+		if (!b || !b->IsRaidGrouped()) {
+			continue;
+		}
+
+		// Only bots that belonged to THIS raid, or whose raid is unknown and
+		// that no raid in the zone lists any more.
+		if (b->p_raid_instance && b->p_raid_instance != this) {
+			continue;
+		}
+
+		bool listed = false;
+		if (b->p_raid_instance == this) {
+			for (const auto& m : members) {
+				if (m.member_name[0] && strcmp(m.member_name, b->GetName()) == 0) {
+					listed = true;
+					break;
+				}
+			}
+		} else {
+			listed = entity_list.GetRaidByBotName(b->GetName()) != nullptr;
+		}
+
+		if (listed) {
+			continue;
+		}
+
+		b->SetRaidGrouped(false);
+		b->p_raid_instance = nullptr;
+
+		// ^disbandraid means "your bots camp": one holding camp for a dead
+		// owner stops holding on its next tick (Bot::Process -> EndOwnerHold)
+		// rather than standing raidless for the rest of the hold.
+		b->ExpireOwnerHold();
+
+		LogInfo("[BotRaid] [{}] is no longer in raid [{}] (changed from another zone)", b->GetCleanName(), GetID());
+	}
 }
 
 void Raid::VerifyRaid()

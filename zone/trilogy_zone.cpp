@@ -213,6 +213,10 @@ static constexpr uint16_t ZN_OP_Track       = 0x8421; // OP_Track       -> OP_Tr
 static constexpr uint16_t ZN_OP_Fishing     = 0x8f21; // OP_Fishing     -> OP_Fishing
 static constexpr uint16_t ZN_OP_SenseTraps  = 0x8821; // OP_SenseTraps  -> OP_SenseTraps
 static constexpr uint16_t ZN_OP_DisarmTraps = 0xf321; // OP_DisarmTraps -> OP_DisarmTraps
+// Sense Heading: the client rolls the skill itself and sends this, empty, only
+// when the roll succeeds (eqgame.exe 0x41dcaa roll, 0x41dd93 send).  It is the
+// server's only cue to roll the skill-up.
+static constexpr uint16_t ZN_OP_SenseHeading = 0x8721; // OP_SenseHeading -> OP_SenseHeading
 
 // Payload-bearing skill opcodes (client -> zone, bespoke struct each).
 // Source: EQClassic/Common/Include/eq_opcodes.h + EQClassic Zone/Source
@@ -639,6 +643,12 @@ static constexpr uint16_t ZN_OP_Feedback            = 0x3c21;
 static constexpr uint16_t ZN_OP_Buff          = 0x3221; // bidirectional: Buff_Struct (20 bytes)
 static constexpr uint16_t ZN_OP_CastSpell     = 0x7e21; // client -> zone: CastSpell_Struct (16 bytes)
 static constexpr uint16_t ZN_OP_MemorizeSpell = 0x8221; // client -> zone: MemorizeSpell_Struct (12 bytes)
+// 0x7f21 is OP_ManaChange outbound (mana bar).  Inbound it is always EMPTY:
+// /stopsong and a cancelled cast go through eqgame.exe 0x4279b4(0), which stops
+// the song or cast on the client and sends 0x7f21 with no payload (0x427a79).
+// An interrupt the server sent reaches 0x4279b4 with 3 (0x49ada7), which sends
+// nothing, so this cannot echo back and forth.
+static constexpr uint16_t ZN_OP_ManaChange    = 0x7f21; // bidirectional; inbound = stop song / cancel cast
 
 // 0xe621 OP_UseDiscipline — `/discipline <name>`, client -> zone, 4 bytes.
 //
@@ -1430,8 +1440,9 @@ static int TranslateTrilogySkillId(uint8_t classic_skill)
 	// SAFE_FALL is marked passive here because the OP_SafeFallSuccess
 	// opcode (0xab21) is a status notification, not a "use" — the
 	// client does the absorb itself and tells the server so it can roll
-	// the skill-up (handled on its own, see ZN_OP_SafeFallSuccess).  Same for SENSE_HEADING — OP_SenseHeading (0x8721) is a
-	// "client asks for heading text" ping, not a combat ability.
+	// the skill-up (handled on its own, see ZN_OP_SafeFallSuccess).  Same for SENSE_HEADING — the client rolls it and
+	// prints the heading itself, then sends OP_SenseHeading (0x8721) on success so the server can roll the skill-up
+	// (handled on its own, see ZN_OP_SenseHeading).
 	if (classic_skill > 73) {
 		return -1;
 	}
@@ -3253,6 +3264,18 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		}
 		else if (opcode == ZN_OP_CastSpell && s.trilogy_client)
 			HandleCastSpell(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_ManaChange && s.trilogy_client) {
+			// /stopsong or a cancelled cast.  Unrouted, the client stopped
+			// while the server kept the song pulsing or finished the cast.
+			// Client::Handle_OP_ManaChange treats a zero-length packet as
+			// exactly this: SONG_ENDS for a song, INTERRUPT_SPELL otherwise.
+			// It only acts on size 0, so the packet is forwarded empty.
+			LogInfo("[TrilogyStopCast] char=[{}] plen={} casting_spell={} bardsong={}",
+			        s.char_name, plen, s.trilogy_client->CastingSpellID(),
+			        s.trilogy_client->HasActiveSong() ? 1 : 0);
+			EQApplicationPacket pkt(OP_ManaChange, 0);
+			s.trilogy_client->Handle_OP_ManaChange(&pkt);
+		}
 		else if (opcode == ZN_OP_MemorizeSpell && s.trilogy_client)
 			HandleMemorizeSpell(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_SwapSpell && s.trilogy_client)
@@ -3599,7 +3622,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 		         (opcode == ZN_OP_Forage      || opcode == ZN_OP_Hide       ||
 		          opcode == ZN_OP_Sneak       || opcode == ZN_OP_Mend       ||
 		          opcode == ZN_OP_Track       || opcode == ZN_OP_Fishing    ||
-		          opcode == ZN_OP_SenseTraps  || opcode == ZN_OP_DisarmTraps))
+		          opcode == ZN_OP_SenseTraps  || opcode == ZN_OP_DisarmTraps ||
+		          opcode == ZN_OP_SenseHeading))
 		{
 			// Empty-payload skill notifications.  The v29c client sends a
 			// header-only packet on button press; the modern EQEmu Handle_OP_*
@@ -3651,6 +3675,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				case ZN_OP_DisarmTraps: {
 					EQApplicationPacket pkt(OP_DisarmTraps, 0);
 					s.trilogy_client->Handle_OP_DisarmTraps(&pkt);
+					break;
+				}
+				case ZN_OP_SenseHeading: {
+					// Payload unused; the handler rolls the skill-up when
+					// Skills:TrainSenseHeading is on (true in our rules).
+					EQApplicationPacket pkt(OP_SenseHeading, 0);
+					s.trilogy_client->Handle_OP_SenseHeading(&pkt);
 					break;
 				}
 				default: break;
@@ -4669,7 +4700,9 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 		" it.bagtype, it.bagslots, it.bagsize, it.bagwr,"
 		" it.book, it.booktype, it.filename,"
 		// Lore-marker source columns — see comment in the loop where ci.lore is filled.
-		" it.loregroup, it.summonedflag, it.artifactflag, it.pendingloreflag"
+		" it.loregroup, it.summonedflag, it.artifactflag, it.pendingloreflag,"
+		// row[84]: the click's required level — see the effect slots below.
+		" it.clicklevel2"
 		" FROM `inventory` inv"
 		" INNER JOIN `items` it ON inv.itemid = it.id"
 		" WHERE inv.charid = {} AND (inv.slotid BETWEEN 0 AND 30 OR inv.slotid BETWEEN 251 AND 330"
@@ -4852,7 +4885,8 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			ci.common.range_   = static_cast<uint8>(Strings::ToInt(row[34]));
 			ci.common.itemtype = static_cast<uint8>(Strings::ToInt(row[35]));
 			ci.common.magic    = static_cast<int8>(Strings::ToInt(row[36]));
-			int32 clicklevel   = Strings::ToInt(row[37]);
+			// row[37] it.clicklevel is the casting level; the wire wants the
+			// required level, clicklevel2 at row[84] (effect slots below).
 			ci.common.material = static_cast<uint8>(Strings::ToInt(row[38]));
 			// items.color for legacy leather/chain/plate gear carries the sentinel
 			// 0xFF000000 (alpha=FF, RGB=0). v29c stores this per-item and echoes
@@ -4876,9 +4910,13 @@ void TrilogyZoneServer::SendInventoryItems(const std::string& addr, int port, Se
 			int8   eff_level = 0;
 
 			if (clickeff > 0 && clickeff < 3000) {
+				// The level the server requires (clicklevel2, or none), not the
+				// casting level — see BuildClassicItemFromInst in
+				// trilogy_client.cpp for the client reads (0x41f6a0, 0x41ba72).
+				const int32 clicklevel2 = row[84] ? Strings::ToInt(row[84]) : 0;
 				eff_id    = static_cast<uint16>(clickeff);
 				eff_type  = static_cast<int8>(clicktype);
-				eff_level = static_cast<int8>(clicklevel);
+				eff_level = static_cast<int8>(clicklevel2 > 0 ? clicklevel2 : 0);
 			} else if (scrolleff > 0 && scrolleff < 3000) {
 				eff_id    = static_cast<uint16>(scrolleff);
 				eff_type  = static_cast<int8>(scrolltype);
@@ -5529,11 +5567,22 @@ void TrilogyZoneServer::HandleZoneInComplete(const std::string& addr, int port, 
 		// the EQ servers for HP and position updates among other things."
 		// Loss is harmless because the next HP change (combat/regen) re-sends.
 		// See [[project-trilogy-unreliable-a120-wire-format]] for wire layout.
+		//
+		// Item HP excluded, as in Mob::SendHPUpdate's self update (cur and max
+		// minus itembonuses.HP).  For our own spawn the client stores cur_hp as
+		// its BASE HP (0xb220 handlers 0x49e1d7 / 0x4954f6) and adds the item HP
+		// of its worn slots itself when it shows the bar (0x4199c0), so the full
+		// figure counted the gear twice until the next HP change.  itembonuses
+		// is current here: InitTrilogyFields loads the inventory and the
+		// TrilogyClient constructor runs CalcBonuses before this point.
+		const int32_t item_hp = s.trilogy_client->GetItemBonusesPtr()->HP;
+		int64_t base_cur = static_cast<int64_t>(s.trilogy_client->GetHP()) - item_hp;
+		if (s.trilogy_client->GetHP() > 0 && base_cur < 1) base_cur = 1;
 		Trilogy::structs::SpawnHPUpdate_Struct hpu{};
 		memset(&hpu, 0, sizeof(hpu));
 		hpu.spawn_id = static_cast<int32_t>(s.player_spawn_id);
-		hpu.cur_hp   = static_cast<int32_t>(s.trilogy_client->GetHP());
-		hpu.max_hp   = static_cast<int32_t>(s.trilogy_client->GetMaxHP());
+		hpu.cur_hp   = static_cast<int32_t>(base_cur);
+		hpu.max_hp   = static_cast<int32_t>(s.trilogy_client->GetMaxHP() - item_hp);
 		SendApp(addr, port, s, 0xb220,
 		        reinterpret_cast<const uint8_t*>(&hpu), sizeof(hpu),
 		        /*ack_req=*/false);
@@ -5956,6 +6005,46 @@ static int8_t TrilogyUntrainedSkillByte(uint8 class_id, uint16 race, EQ::skills:
 	return 0;
 }
 
+// Item HP the server would put in itembonuses.HP for a character, read from the
+// inventory table.  SendPlayerProfile runs before the TrilogyClient exists, so
+// there is no itembonuses to read; this repeats the HP part of
+// Mob::AddItemBonuses for the slots CalcItemBonuses counts (charm through
+// power source; the ammo slot adds no stats): skipped unless common and usable
+// by race and class (food and drink count anyway), skipped below the required
+// level, scaled below the recommended level (CalcRecommendedLevelBonus).
+// Augments are not read — the era has none.
+static int32 TrilogyItemHPFromDB(uint32 char_id, uint16 race, uint8 class_id, uint8 level)
+{
+	int32 total = 0;
+	auto r = database.QueryDatabase(fmt::format(
+		"SELECT `itemid` FROM `inventory` WHERE `charid` = {} AND `slotid` BETWEEN {} AND {}",
+		char_id, EQ::invslot::BONUS_BEGIN, EQ::invslot::BONUS_STAT_END));
+	if (!r.Success()) {
+		return 0;
+	}
+	for (auto row = r.begin(); row != r.end(); ++row) {
+		const EQ::ItemData* item = database.GetItem(Strings::ToUnsignedInt(row[0]));
+		if (!item || !item->IsClassCommon() || item->HP == 0) {
+			continue;
+		}
+		if (!(item->Slots && item->IsEquipable(race, class_id)) &&
+		    item->ItemType != EQ::item::ItemTypeFood && item->ItemType != EQ::item::ItemTypeDrink) {
+			continue;
+		}
+		if (level < item->ReqLevel) {
+			continue;
+		}
+		if (item->RecLevel == 0 || level >= item->RecLevel) {
+			total += item->HP;
+		} else {
+			int32 scaled = (level * 10000 / item->RecLevel) * item->HP;
+			scaled += scaled < 0 ? -5000 : 5000;
+			total += scaled / 10000;
+		}
+	}
+	return total;
+}
+
 // ============================================================
 // SendPlayerProfile — build Trilogy PP from DB, compress,
 //   encrypt, and send as OP_PlayerProfile (0x2d20)
@@ -6185,7 +6274,25 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.exp             = static_cast<int32_t>(Strings::ToInt(row[7]));
 		pp.mana            = static_cast<int16_t>(Strings::ToInt(row[8]));
 		pp.face            = static_cast<int8_t>(Strings::ToInt(row[9]));
-		pp.cur_hp          = static_cast<int16_t>(Strings::ToInt(row[10]));
+		// cur_hp is the client's BASE HP — item HP excluded; the client adds its
+		// worn items' HP itself when it shows the bar (eqgame.exe 0x4199c0, the
+		// same field the self 0xb220 writes).  character_data.cur_hp is the
+		// full GetHP(), so take the item HP back off, as Mob::SendHPUpdate does
+		// with itembonuses.HP.  At a normal zone-in the TrilogyClient does not
+		// exist yet (it is made at CONNECTED), so the item HP comes from the
+		// inventory table; a client object, when there is one, is used as is.
+		{
+			int64_t hp = Strings::ToInt(row[10]);
+			if (hp > 0) {
+				const int32 item_hp = s.trilogy_client
+					? s.trilogy_client->GetItemBonusesPtr()->HP
+					: TrilogyItemHPFromDB(s.char_id, static_cast<uint16>(pp.race),
+					                      static_cast<uint8>(pp.class_),
+					                      static_cast<uint8>(pp.level));
+				hp = std::max<int64_t>(1, hp - item_hp);
+			}
+			pp.cur_hp = static_cast<int16_t>(std::min<int64_t>(hp, 32767));
+		}
 		pp.STR             = static_cast<int8_t>(Strings::ToInt(row[11]));
 		pp.STA             = static_cast<int8_t>(Strings::ToInt(row[12]));
 		pp.CHA             = static_cast<int8_t>(Strings::ToInt(row[13]));
@@ -6792,6 +6899,36 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		pp.abilityCooldown = remaining_ms;
 		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, abilityCooldown) == 4216,
 		              "abilityCooldown must be at PP byte 4216");
+	}
+
+	// ---- Mend reuse timer ----
+	// PP byte 2752: milliseconds left on Mend.  At zone-in v29c sets its Mend
+	// ready time to now + this value (eqgame.exe 0x4b0b2b); left at zero, the
+	// button came back ready after every zone while the server still refused
+	// the Mend until pTimerMend ran out.  Same sources as the LoH/HT cooldown
+	// above: p_timers when the client object exists, else the timers table.
+	{
+		uint32_t mend_rem_s = 0;
+		if (s.trilogy_client) {
+			mend_rem_s = s.trilogy_client->GetPTimers().GetRemainingTime(pTimerMend);
+		} else {
+			auto tr = database.QueryDatabase(fmt::format(
+				"SELECT `start`, `duration` FROM `timers` "
+				"WHERE `char_id`={} AND `type`={} LIMIT 1",
+				s.char_id, static_cast<uint32_t>(pTimerMend)));
+			if (tr.Success() && tr.RowCount() > 0) {
+				auto row = tr.begin();
+				const uint32_t start    = Strings::ToUnsignedInt(row[0]);
+				const uint32_t duration = Strings::ToUnsignedInt(row[1]);
+				const uint32_t now      = static_cast<uint32_t>(time(nullptr));
+				if (start + duration > now)
+					mend_rem_s = (start + duration) - now;
+			}
+		}
+		if (mend_rem_s > 0 && mend_rem_s <= static_cast<uint32_t>(MendReuseTime))
+			pp.mend_timer_ms = mend_rem_s * 1000;
+		static_assert(offsetof(Trilogy::structs::PlayerProfile_Struct, mend_timer_ms) == 2752,
+		              "mend_timer_ms must be at PP byte 2752");
 	}
 
 	// ---- CRC, compress, encrypt, send ----
@@ -11926,10 +12063,21 @@ void TrilogyZoneServer::HandleShopPlayerSell(const std::string& addr, int port, 
 
 	float rate = s.trilogy_client->GetMerchantRate();
 	if (rate < 0.0001f) rate = 1.0f;
-	// Sell-back price = base * qty / pricemultiplier — matches the client's
-	// displayed offer (item.price / pricemultiplier) and EQEmu's sell formula.
-	uint64 price = static_cast<uint64>(std::llround(
-	    static_cast<double>(item->Price) * static_cast<double>(qty) / static_cast<double>(rate)));
+	// Sell price = round(price / pricemultiplier) per unit, times qty — the
+	// client's own sum.  The sell reply handler (eqgame.exe 0x492d9b) does not
+	// read itemcost from our reply: it credits its coin display with 0x4385a7,
+	// which is trunc(price / multiplier + 0.5) * qty (float divide, +0.5f,
+	// truncate, then the integer multiply).  Rounding the whole stack at once,
+	// as we used to, could differ from that by a copper per unit, and the
+	// difference stayed on screen until the next zone-in.  The client holds the
+	// price as the int32 we sent (ci.price) and sells a negative one for
+	// nothing, so the same here.
+	const int32 wire_price = static_cast<int32>(item->Price);
+	const double unit_d = (wire_price > 0)
+	    ? static_cast<double>(wire_price) / static_cast<double>(rate) + 0.5
+	    : 0.0;
+	const uint64 unit_price = static_cast<uint64>(unit_d);
+	uint64 price = unit_price * static_cast<uint64>(qty);
 	if (price > 0)
 		s.trilogy_client->AddMoneyToPP(price, false);
 
@@ -12839,13 +12987,46 @@ void TrilogyZoneServer::HandlePickupCoin(const std::string& addr, int port, Sess
 //      (0x4021, ClassSkillChange_Struct, 12B: npcid, skill_type, skill_id).
 //      skill_type 0 = regular skill, 1 = language.
 //   4. Server validates (range, class, skill cap, player has training points,
-//      can afford the cubic cost), increments the skill via SetSkill() (which
-//      auto-emits OP_SkillUpdate → translated to 0x8921 by TrilogyClient),
-//      decrements m_pp.points, deducts money.  The PC's local training-points
-//      counter is decremented client-side; we just keep the PP in sync.
+//      can afford the client's cost — see TrilogyTrainCostCopper), increments
+//      the skill via SetSkill() (which auto-emits OP_SkillUpdate → translated
+//      to 0x8921 by TrilogyClient), decrements m_pp.points, deducts money.  The
+//      PC's local training-points counter and coin are decremented client-side;
+//      we just keep the PP in sync.
 //   5. On window close, client sends OP_ClassEndTraining (0x9d20, 4B).  Server
 //      emits the farewell line and that's it — no state change.
 // ============================================================
+
+// Trainer "greed" float, sent at ClassTrain_Struct offset 108 (see the reply in
+// HandleClassTraining): 0x3F8A8734 ≈ 1.0822511f.  The client prices every
+// train with it, so the server charge reads the same bytes.
+static constexpr uint8_t kTrilogyTrainerGreedBytes[4] = { 0x34, 0x87, 0x8A, 0x3F };
+
+// The copper v29c charges for one train, computed the way the client does it:
+// eqgame.exe 0x4a09a4(profile, is_language, greed, index) takes s = the skill's
+// (or language's) value BEFORE the train minus 10, floored at 0, and returns
+// trunc(float(s*s*s) * greed * 0.01f) (fild, fmul greed, fmul ds:0x535224 =
+// 0.01f, then the truncating ftol at 0x4ef0cf).  For a skill the client uses
+// s = 0 when its effective-skill read (0x41a3e9) is zero, as for a skill not
+// trained yet.  A skill with points in it reads non-zero from the level the
+// class gets it, and an untrained one is 0 on the server, so the value alone
+// gives the same answer.  A language takes the raw PP byte.  The train handler
+// (0x464468) refuses when this is more than the coin carried, otherwise debits
+// its own coin (0x4a406d) BEFORE it sends 0x4021, so the server must take
+// exactly this much.
+// Double and single precision give the same truncated result for every s from
+// 0 to 245 with this greed (checked), so the FPU's precision mode at the time
+// cannot make the two sides differ.
+static uint64 TrilogyTrainCostCopper(uint32 value_before_train)
+{
+	float greed = 0.0f;
+	std::memcpy(&greed, kTrilogyTrainerGreedBytes, sizeof(greed));
+
+	const int64 s = std::max<int64>(0, static_cast<int64>(value_before_train) - 10);
+	const double cost = static_cast<double>(s * s * s) *
+	                    static_cast<double>(greed) *
+	                    static_cast<double>(0.01f);
+	return static_cast<uint64>(cost);
+}
 
 void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, Session& s,
                                             const uint8_t* payload, uint32_t plen)
@@ -13005,10 +13186,9 @@ void TrilogyZoneServer::HandleClassTraining(const std::string& addr, int port, S
 	// 0x3F8A8734 has no zero bytes, so it satisfies the non-zero-byte
 	// heuristic while giving the client a valid ~1.0 multiplier.
 	{
-		static constexpr uint8_t kGreedBytes[4] = { 0x34, 0x87, 0x8A, 0x3F };
 		auto* raw = reinterpret_cast<uint8_t*>(&reply);
 		static_assert(sizeof(reply) >= 40, "ClassTrain_Struct too small for greed placement");
-		std::memcpy(raw + (sizeof(reply) - 40), kGreedBytes, sizeof(kGreedBytes));
+		std::memcpy(raw + (sizeof(reply) - 40), kTrilogyTrainerGreedBytes, sizeof(kTrilogyTrainerGreedBytes));
 	}
 
 	SendApp(addr, port, s, ZN_OP_ClassTraining,
@@ -13136,19 +13316,37 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 	if (DistanceSquared(s.trilogy_client->GetPosition(), m->GetPosition()) > USE_NPC_RANGE2)
 		return;
 
-	// Cost formula: EQEmu's cubic ((skill-10)^3 / 100) copper, gated by the
-	// Skills:TrainerCostsEnabled rule.  Velious-era EQ trained skills for free;
-	// the cubic ramp is a later-era addition that can hit 6+pp per click at
-	// skill 200 (effectively gating high-end training behind cash that a fresh
-	// #level test character won't have).
-	auto compute_cost = [](uint32 cur) -> uint64 {
-		if (!RuleB(Skills, TrainerCostsEnabled)) return 0;
-		const int adj = static_cast<int>(cur) - 10;
-		if (adj <= 0) return 0;
-		return static_cast<uint64>(adj) * adj * adj / 100;
-	};
-
+	// Cost: exactly what the client charged itself — TrilogyTrainCostCopper.
+	// v29c debits its own coin before it sends this packet, whatever our rules
+	// say, so Skills:TrainerCostsEnabled does not apply to this client: with it
+	// off (as here) the coin left the client's display and stayed in the
+	// profile, and came back at the next zone-in.  The server takes the same
+	// amount from carried coin; when it cannot, the train is refused.
 	uint64 cost = 0;
+	auto charge_train = [&](uint32 value_before) -> bool {
+		cost = TrilogyTrainCostCopper(value_before);
+		if (cost == 0) {
+			return true;
+		}
+		if (!s.trilogy_client->TakeMoneyFromPP(cost, true)) {
+			LogInfo("[TrilogyTrainCost] REFUSED char={} type={} id={} value={} cost={}cp — not enough carried coin",
+			        s.char_name, req->skill_type, req->skill_id, value_before, cost);
+			s.trilogy_client->Message(Chat::Red,
+			    "You cannot afford that — training this would cost %llu copper.",
+			    static_cast<unsigned long long>(cost));
+			return false;
+		}
+		// TakeMoneyFromPP makes change, so a denomination can go UP; move
+		// Tick()'s baseline or it would relay that as a coin gain the client
+		// never had (same as the merchant buy).
+		const auto& pp = s.trilogy_client->GetPP();
+		s.last_copper = pp.copper; s.last_silver = pp.silver;
+		s.last_gold   = pp.gold;   s.last_platinum = pp.platinum;
+		s.money_synced = true;
+		LogInfo("[TrilogyTrainCost] char={} type={} id={} value={} cost={}cp",
+		        s.char_name, req->skill_type, req->skill_id, value_before, cost);
+		return true;
+	};
 
 	if (req->skill_type == 1) {
 		// Language training.
@@ -13169,11 +13367,7 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 			s.trilogy_client->MessageString(Chat::Red, MORE_SKILLED_THAN_I, m->GetCleanName());
 			return;
 		}
-		cost = compute_cost(cur);
-		if (cost > 0 && !s.trilogy_client->TakeMoneyFromPP(cost, true)) {
-			s.trilogy_client->Message(Chat::Red,
-			    "You cannot afford that — training this would cost %llu copper.",
-			    static_cast<unsigned long long>(cost));
+		if (!charge_train(cur)) {
 			return;
 		}
 		// SetLanguageSkill updates m_pp.languages + saves to DB.  v29c has no
@@ -13269,11 +13463,7 @@ void TrilogyZoneServer::HandleClassTrainSkill(const std::string& addr, int port,
 				}
 			}
 
-			cost = compute_cost(skilllevel);
-			if (cost > 0 && !s.trilogy_client->TakeMoneyFromPP(cost, true)) {
-				s.trilogy_client->Message(Chat::Red,
-				    "You cannot afford that — training this would cost %llu copper.",
-				    static_cast<unsigned long long>(cost));
+			if (!charge_train(skilllevel)) {
 				return;
 			}
 			s.trilogy_client->SetSkill(skill, skilllevel + 1);

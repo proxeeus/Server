@@ -253,6 +253,34 @@ int Mob::GetTotalToHit(EQ::skills::SkillType skill, int chance_mod)
 	return accuracy;
 }
 
+// ==== Trilogy: v29c AGI avoidance term (Combat:EraAGIAvoidance) ====
+// eqgame.exe 0x41a1a8, called by the client's compute_defense 0x41a26b.
+// Integer maths throughout (idiv truncates toward zero, as C++ does):
+//   AGI <  40 : (AGI - 40) * 25 / 40                  (-25 at AGI 0)
+//   AGI 40..60: 0
+//   AGI 61..74: (28 - (200 - AGI) / 5) * 2 / 3          (0..2)
+//   AGI >= 75 : (base - max(200 - AGI, 0) / 5) * 2 / 3, base 35 below
+//               level 7, 55 below 20, 70 below 40, else 80
+// L60: AGI 75 -> 36, 100 -> 40, 150 -> 46, 200+ -> 53. The modern term
+// 8000 * (AGI - 40) / 36000 gives +7 at 75 and +35 at 200.
+static int EraAGIAvoidanceBonus(int agi, int level)
+{
+	if (agi < 40) {
+		return (agi - 40) * 25 / 40;
+	}
+
+	if (agi <= 60) {
+		return 0;
+	}
+
+	int base = 28;
+	if (agi >= 75) {
+		base = level < 7 ? 35 : level < 20 ? 55 : level < 40 ? 70 : 80;
+	}
+
+	return (base - std::max(200 - agi, 0) / 5) * 2 / 3;
+}
+
 // based on dev quotes
 // the AGI bonus has actually drastically changed from classic
 //SYNC WITH: tune.cpp, mob.h Tunecompute_defense
@@ -260,10 +288,21 @@ int Mob::compute_defense()
 {
 	int defense = GetSkill(EQ::skills::SkillDefense) * 400 / 225;
 
+	// Trilogy: players and bots take the v29c AGI term (0x41a26b: defense
+	// skill * 400 / 225 + 0x41a1a8). NPC avoidance is left as it was.
+	const bool era_agi = RuleB(Combat, EraAGIAvoidance) && IsOfClientBot();
+
 	// In new code, AGI becomes a large contributor to avoidance at low levels, since AGI isn't capped by Level but Defense is
 	// A scale factor is implemented for PCs to reduce the effect of AGI at low levels.  This isn't applied to NPCs since they can be
 	// easily controlled via the Database.
-	if (RuleB(Combat, LegacyComputeDefense)) {
+	if (era_agi) {
+		defense += EraAGIAvoidanceBonus(GetAGI(), GetLevel());
+
+		// Item avoidance (mod2) and heroic AGI are post-2001 and zero on
+		// era items; kept so custom items still work.
+		defense += itembonuses.heroic_agi_avoidance;
+		defense += itembonuses.AvoidMeleeChance;
+	} else if (RuleB(Combat, LegacyComputeDefense)) {
 		int agi_scale_factor = 1000;
 
 		if (IsOfClientBot()) {
@@ -299,7 +338,8 @@ int Mob::compute_defense()
 	}
 
 	if (IsClient()) {
-		double reduction = CastToClient()->GetIntoxication() / 2.0;
+		// v29c 0x41a2c9 halves intoxication as an integer before the > 20 test
+		double reduction = era_agi ? static_cast<double>(CastToClient()->GetIntoxication() / 2) : CastToClient()->GetIntoxication() / 2.0;
 		if (reduction > 20.0) {
 			reduction = std::min((110 - reduction) / 100.0, 1.0);
 			defense = reduction * static_cast<double>(defense);
@@ -867,7 +907,12 @@ int Mob::GetClassRaceACBonus()
 		}
 	}
 
-	if (GetClass() == Class::Rogue) {
+	// Trilogy (Combat:EraACSum): v29c 0x419f0e gives the rogue bonus only when
+	// AGI > 75 and level > 29, and 0x419f6d the beastlord bonus only above
+	// level 10. Without the gates the rogue term is negative below level 26.
+	const bool era_ac = RuleB(Combat, EraACSum) && IsOfClientBot();
+
+	if (GetClass() == Class::Rogue && (!era_ac || (GetAGI() > 75 && level > 29))) {
 		int level_scaler = level - 26;
 		if (GetAGI() < 80)
 			ac_bonus = level_scaler / 4;
@@ -883,7 +928,7 @@ int Mob::GetClassRaceACBonus()
 			ac_bonus = 12;
 	}
 
-	if (GetClass() == Class::Beastlord) {
+	if (GetClass() == Class::Beastlord && (!era_ac || level > 10)) {
 		int level_scaler = level - 6;
 		if (GetAGI() < 80)
 			ac_bonus = level_scaler / 5;
@@ -907,6 +952,89 @@ int Mob::GetClassRaceACBonus()
 //SYNC WITH: tune.cpp, mob.h TuneACSum
 int Mob::ACSum(bool skip_caps)
 {
+	// ==== Trilogy: v29c mitigation AC (Combat:EraACSum) ====
+	// eqgame.exe 0x419d0f, the client's ACSum; arg apply_caps = !skip_caps.
+	// Players and bots only (the client caps only when the spawn is a PC,
+	// 0x419d69 / 0x41a055); NPCs keep the code below.
+	//   item AC (0x419d1c: AC byte +0xba of each non-container item in slots
+	//   1..20, ear1..waist; 0 is the cursor, 21 ammo). itembonuses.AC here,
+	//   which skips ammo; it also counts the charm slot, which v29c lacks.
+	//   x4/3 unless INT caster (0x419d4a; 0x419cf5 = class 11..14)
+	//   min(item AC, 6*level + 25) at every level, after the x4/3 (0x419d64)
+	//   + monk weight bonus, floored at 0 together with item AC (0x419e8b),
+	//     - monk weight penalty, + rogue, beastlord, iksar
+	//     (GetClassRaceACBonus, with the era gates)
+	//   + Defense / 2 (INT casters) or / 3 (0x419fdc)
+	//   + AGI / 20 when AGI > 70 (0x41a006)
+	//   + spell AC / 3 (INT casters) or / 4 (0x41a025), total floored at 0
+	//   hard cap (0x41a068): 350; above level 50 WAR 430, PAL/SK/BRD 403,
+	//   RNG/MNK/ROG/BST 375. Over the cap is lost: no softcap returns.
+	if (RuleB(Combat, EraACSum) && IsOfClientBot()) {
+		const int  level      = GetLevel();
+		const bool int_caster = EQ::ValueWithin(static_cast<int>(GetClass()), Class::Necromancer, Class::Enchanter);
+
+		int ac = itembonuses.AC;
+		if (!int_caster) {
+			ac = ac * 4 / 3;
+		}
+
+		if (!skip_caps) {
+			ac = std::min(ac, 6 * level + 25);
+		}
+
+		// The client floors item AC + the monk's weight bonus at 0, then
+		// subtracts the weight penalty and adds the rest without a floor.
+		const int iksar      = GetRace() == IKSAR ? EQ::Clamp(level, 10, 35) : 0;
+		const int class_part = GetClassRaceACBonus() - iksar;
+		if (GetClass() == Class::Monk && class_part > 0) {
+			ac = std::max(0, ac + class_part);
+		} else {
+			ac = std::max(0, ac) + class_part;
+		}
+		ac += iksar;
+
+		const int spell_aa_ac = aabonuses.AC + spellbonuses.AC;
+		if (int_caster) {
+			ac += GetSkill(EQ::skills::SkillDefense) / 2 + spell_aa_ac / 3;
+		} else {
+			ac += GetSkill(EQ::skills::SkillDefense) / 3 + spell_aa_ac / 4;
+		}
+
+		if (GetAGI() > 70) {
+			ac += GetAGI() / 20;
+		}
+
+		ac = std::max(0, ac);
+
+		if (!skip_caps) {
+			int cap = 350;
+			if (level > 50) {
+				switch (GetClass()) {
+					case Class::Warrior:
+						cap = 430;
+						break;
+					case Class::Paladin:
+					case Class::ShadowKnight:
+					case Class::Bard:
+						cap = 403;
+						break;
+					case Class::Ranger:
+					case Class::Monk:
+					case Class::Rogue:
+					case Class::Beastlord:
+						cap = 375;
+						break;
+					default:
+						break;
+				}
+			}
+
+			ac = std::min(ac, cap);
+		}
+
+		return ac;
+	}
+
 	int ac = 0; // this should be base AC whenever shrouds come around
 	ac += itembonuses.AC; // items + food + tribute
 	int shield_ac = 0;
@@ -2935,7 +3063,7 @@ bool NPC::Death(Mob* killer_mob, int64 damage, uint16 spell, EQ::skills::SkillTy
 		(killer_mob->IsNPC() && killer_mob->CastToNPC()->GetSwarmInfo() && killer_mob->CastToNPC()->GetSwarmInfo()->GetOwner() && killer_mob->CastToNPC()->GetSwarmInfo()->GetOwner()->IsClient())))
 		|| (killer_mob && is_ldon_treasure))
 		// Special check to see if an NPC killed a player bot
-		|| (killer_mob != 0 && killer_mob->IsNPC() && (this->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))))
+		|| (killer_mob != 0 && killer_mob->IsNPC() && (this->IsPlayerBotNPC())))
 	{
 		if (killer_mob != 0) {
 			if (killer_mob->GetOwner() != 0 && killer_mob->GetOwner()->IsClient())
@@ -3684,7 +3812,7 @@ int Mob::GetHandToHandDelay(void)
 		36, 36, 36, 36, 36, 36, 36, 36, 36, 35, // 21-30
 		35, 35, 35, 35, 34, 34, 34, 34, 34, 33, // 31-40
 		33, 33, 33, 33, 32, 32, 32, 32, 32, 31, // 41-50
-		31, 31, 30, 30, 30, 29, 29, 29, 38, 27, // 51-60
+		31, 31, 30, 30, 30, 29, 29, 29, 28, 27, // 51-60 (59 was a typo'd 38)
 		25, 23 };                                // 61-62
 	static uint8 bst_delay[] = { 99,
 		35, 35, 35, 35, 35, 35, 35, 35, 35, 35, // 1-10
@@ -4202,10 +4330,10 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 
 				//we used to do a message to the client, but its gone now.
 				// emote goes with every one ... even npcs
-				if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+				if (attacker->IsPlayerBotNPC()) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Emote, "%s beams a smile at %s", attacker->playerbot_temp_name, this->GetCleanName());
 				}
-				else if (attacker->GetTarget() && attacker->GetTarget()->npctype_id == RuleI(PlayerBots, PlayerBotId))
+				else if (attacker->GetTarget() && attacker->GetTarget()->IsPlayerBotNPC())
 				{
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Emote, "%s beams a smile at %s", this->GetCleanName(), attacker->playerbot_temp_name);
 				}
@@ -4216,7 +4344,7 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 					attacker->Message(Chat::Say, "You say 'Ahhh, I feel much better now...'");
 					entity_list.MessageClose(attacker, true, RuleI(Range, SpellMessages), Chat::Say, "%s says 'Ahhh, I feel much better now...'", attacker->GetCleanName());
 				}
-				else if (attacker->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+				else if (attacker->IsPlayerBotNPC()) {
 					entity_list.MessageClose(this, true, RuleI(Range, SpellMessages), Chat::Say, "%s says 'Ahhh, I feel much better now...'", attacker->playerbot_temp_name);
 				}
 				else

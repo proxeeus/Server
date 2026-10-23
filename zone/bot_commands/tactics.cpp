@@ -13,6 +13,7 @@
 //   ^tactics reload               reread bot_raid_encounters (this zone process)
 //   ^tactics pull on|off|<radius> a bot pulls whenever the camp is ready
 //   ^tactics layout               regroup the raid's bots by role
+//   ^tactics ready                one line: ready to pull? (also ^ready)
 //
 // Text only, no saylinks or brackets: Trilogy clients read it as plain chat.
 void bot_command_tactics(Client* c, const Seperator* sep)
@@ -35,6 +36,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		c->Message(Chat::White, "usage: ^tactics reload -- reread the bot_raid_encounters table");
 		c->Message(Chat::White, "usage: ^tactics pull on / off / radius -- a bot pulls whenever the camp is ready");
 		c->Message(Chat::White, "usage: ^tactics layout -- regroup the raid's bots by role (^createraid does it too)");
+		c->Message(Chat::White, "usage: ^tactics ready (or ^ready) -- one line: healer mana, time to full, main tank, fallen bots, GO or WAIT");
 		return;
 	}
 
@@ -48,6 +50,11 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 	if (!key) {
 		c->Message(Chat::White, "Tactics plan for a group or a raid; you are in neither.");
+		return;
+	}
+
+	if (arg == "ready") {
+		bot_command_ready(c, sep);
 		return;
 	}
 
@@ -177,4 +184,28 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 	}
 
 	c->Message(Chat::White, "Unknown option '%s'. ^tactics help for usage.", arg.c_str());
+}
+
+// bot_command_ready -- ^ready (and ^tactics ready): one line on whether the
+// unit is ready to pull. With 70 bots ^mana scrolls a screen of chat and
+// nothing says when the healers are full (BotTactics::Readiness).
+void bot_command_ready(Client* c, const Seperator* sep)
+{
+	if (!c) {
+		return;
+	}
+
+	Raid*        raid  = c->GetRaid();
+	Group*       group = raid ? nullptr : c->GetGroup();
+	const uint32 key   = BotTactics::KeyFor(raid, group);
+
+	const BotTacticsPlan* p = key ? bot_tactics.Find(key) : nullptr;
+	if (!p) {
+		c->Message(Chat::White, "No group or raid of bots to check (or its plan is not built yet: try again in a second).");
+		return;
+	}
+
+	bool ready = false;
+	const std::string line = bot_tactics.Readiness(*p, ready);
+	c->Message(ready ? Chat::Green : Chat::Yellow, "%s", line.c_str());
 }

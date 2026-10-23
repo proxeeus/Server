@@ -171,15 +171,24 @@ public:
 	// every caller (loot, summon, forage, the buy path, …) sees the real state.
 	bool CheckLoreConflict(const EQ::ItemData* item) override;
 
-	// Mana regen (override) — restore the classic 1999 EQ formula instead of the
-	// modern EQEmu one. The modern CalcManaRegen tops out at ~15/tic at high Mediate;
-	// Trilogy-era EQ gave ~5x more (e.g. skill 200 / level 50 ≈ 61/tic), which is
-	// what these clients were balanced for. See EQClassic LS/zone/client_process.cpp
-	// L6643-6669 for the reference. Mirrors the structure exactly:
+	// HP / mana regen (overrides).  With Character:TrilogyEraRegen on (default)
+	// both return exactly what v29c predicts for its own bar every 6 s
+	// (eqgame.exe 0x426ee4) — Mob::CalcEraHPRegen / CalcEraManaRegen in
+	// client_mods.cpp — so the bar no longer snaps on every server update.
+	// With the rule off: stock Client::CalcHPRegen, and for mana the classic
+	// EQClassic formula (LS/zone/client_process.cpp L6643-6669):
 	//   standing → +2
 	//   sitting + below 50% mana → +(MEDITATE/10) + (Level - Level/4) + 4
 	//   sitting + at/above 50% mana → +(Level + 6)
+	int64 CalcHPRegen(bool bCombat = false) override;
 	int64 CalcManaRegen(bool bCombat = false) override;
+
+	// Food AND water non-zero, as the client sees them: the ZN_OP_Stamina
+	// refresh ships m_pp.hunger_level / thirst_level clamped to 0..6000, and the
+	// regen tick zeroes the base HP and base mana ticks when either is
+	// 0 (0x4270d0, 0x42723b) whatever Character:EnableHungerPenalties says —
+	// which is why this is not IsStarved().
+	bool IsEraFed() const { return m_pp.hunger_level > 0 && m_pp.thirst_level > 0; }
 
 	// Meditation gate (override) — pre-Luclin, meditating IS having the spell
 	// book open, and the book only stops being required at level 35.  Below that

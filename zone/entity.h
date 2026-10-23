@@ -624,6 +624,7 @@ private:
 	public:
 		void AddBot(Bot* new_bot, bool send_spawn_packet = true, bool dont_queue = false);
 		bool RemoveBot(uint16 entityID);
+		void RemoveBotPointer(const Bot* bot) { bot_list.remove(const_cast<Bot*>(bot)); } // whatever its entity id is now
 		Mob* GetMobByBotID(uint32 botID);
 		Bot* GetBotByBotID(uint32 botID);
 		Bot* GetBotByBotName(std::string_view botName);

@@ -1920,7 +1920,7 @@ private:
 	int32 CalcCorrup();
 	int64 CalcMaxHP();
 	int64 CalcBaseHP();
-	int64 CalcHPRegen(bool bCombat = false);
+	virtual int64 CalcHPRegen(bool bCombat = false);
 	virtual int64 CalcManaRegen(bool bCombat = false);
 	int64 CalcBaseManaRegen();
 	void DoHPRegen();

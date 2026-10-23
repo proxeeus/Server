@@ -178,6 +178,13 @@ struct BotTacticsPlan {
 	uint32 autopull_started_ms  = 0;
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
+	uint32 autopull_wait_log_ms = 0;        // "auto-pull waits: ..." at most every 30s
+
+	// Between fights: a resting line once a minute, "Ready to pull" once
+	// (BotTactics::Readiness; ^tactics ready asks for it any time).
+	uint32 readiness_report_ms  = 0;
+	bool   pull_ready_announced = false;
+	bool   camp_hint_given      = false;    // told the player once that auto-pull is off
 
 	// Incoming damage (phase 19): health % lost per second, smoothed, per
 	// member and member's pet (net of heals: what the healers see).
@@ -348,6 +355,10 @@ public:
 
 	// Multi-line summary for ^tactics.
 	std::vector<std::string> Describe(uint32 key);
+
+	// One line: healers' mana (lowest, average, time to the pull bar), the
+	// main tank's health, fallen bots, and GO / WAIT. `ready` says which.
+	std::string Readiness(const BotTacticsPlan& p, bool& ready, Mob** lowest_healer = nullptr);
 
 private:
 	struct Overrides {

@@ -79,6 +79,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 #include "../common/events/player_event_logs.h"
 #include "../common/repositories/character_corpses_repository.h"
 #include "../common/repositories/spell_buckets_repository.h"
+#include "../common/skill_caps.h"
 
 #include "data_bucket.h"
 #include "quest_parser_collection.h"
@@ -89,6 +90,7 @@ Copyright (C) 2001-2002 EQEMu Development Team (http://eqemu.org)
 
 #include <assert.h>
 #include <algorithm>
+#include <cmath>
 
 #ifndef WIN32
 	#include <stdlib.h>
@@ -360,10 +362,19 @@ bool Mob::DoCastSpell(uint16 spell_id, uint16 target_id, CastingSlot slot,
 	if (slot < CastingSlot::MaxGems && !CheckFizzle(spell_id)) {
 		int fizzle_msg = IsBardSong(spell_id) ? MISS_NOTE : SPELL_FIZZLE;
 
+		// fizzle 1/4 the mana away
 		uint32 use_mana = ((spells[spell_id].mana) / 4);
+
+		// Spells:EraFizzle - v29c 0x41f2f4..0x41f31f: a fizzle costs
+		// min(mana * 4 / 10, max_mana / 8), floored at zero mana.
+		if (RuleB(Spells, EraFizzle) && IsOfClientBot()) {
+			const int64 cost_part = std::max<int64>(0, static_cast<int64>(spells[spell_id].mana) * 4 / 10);
+			const int64 max_part  = std::max<int64>(0, GetMaxMana() / 8);
+			use_mana = static_cast<uint32>(std::min(cost_part, max_part));
+		}
+
 		LogSpells("Spell casting canceled: fizzled. [{}] mana has been consumed", use_mana);
 
-		// fizzle 1/4 the mana away
 		Mob::SetMana(GetMana() - use_mana); // We send StopCasting which will update mana
 		StopCasting();
 
@@ -1096,7 +1107,191 @@ TODO: Add aa skills, item mods, reduced the chance to fizzle
 */
 bool Mob::CheckFizzle(uint16 spell_id)
 {
+	// Bots have no CheckFizzle of their own and used to land here, so they
+	// never fizzled.  Under Spells:EraFizzle they roll the v29c formula like
+	// the player they stand in for.  NPCs still never fizzle.
+	if (IsBot() && RuleB(Spells, EraFizzle)) {
+		return EraCheckFizzle(spell_id);
+	}
+
 	return(true);
+}
+
+// ==== Spells:EraFizzle - the v29c fizzle roll =================================
+//
+// eqgame.exe 0x41f0e7 (spell gem cast; called only while the offline flag
+// ds:0x6b63f8 is set, so on a live server this decision is ours).  Every term
+// below was read back out of the disassembly:
+//
+//   0x41f105  only a PC spawn (spawn+0x98 == 0) can fizzle
+//   0x41f118  gem slot > 7 never fizzles: item clicks, the ability button and
+//             disciplines are not spell-gem casts
+//   0x41f124  spell base difficulty (spell+0x22f) == 0 -> chance = 95, skip
+//             straight to the specialization bonus (0x41f28c)
+//   0x41f12a  spell == spells[9] (Superior Healing) and class != Cleric -> diff 0
+//   0x41f140  class level (the spell's level for the caster's class,
+//             spell+0x234+class) >= 56 -> diff 0
+//   0x41f14e  class switch: Clr/Dru/Shm/Bst WIS (0x41b88a); Pal/Rng WIS and
+//             SK INT (0x41b5cc) with class level > 40 -> diff 0 (0x41f17e);
+//             Nec/Wiz/Mag/Enc INT; Bard (DEX 0x41b48f + CHA 0x41b38f) / 2 with
+//             diff capped at 15 (0x41f1b4); War/Mnk/Rog (and anything else)
+//             chance 0 (0x41f1d1).  A stat <= 0 also leaves chance 0 (0x41f1ec).
+//   0x41f1f5  lvl = min(class level - 1, 50)
+//   0x41f218  skill = HasSkill(spell skill) ? GetSkill(spell skill) : 0
+//   0x41f23c  chance = stat/10 + 5*(18 - lvl) - diff + skill - rand(0,10)
+//   0x41f26e  clamp [5, 95]; a Bard's floor is 1
+//   0x41f29a  specialization 0x4197cd: Abjuration 4->43, Alteration 5->44,
+//             Conjuration 14->45, Divination 18->46, Evocation 24->47;
+//             if 0 < spec < 252: chance += spec/10 + 1, capped at 98
+//   0x41f2cd  roll 1..100 (0x4a473e); Silence (SE 96 via 0x42381b) forces
+//             roll = chance + 1; roll > chance is a fizzle
+// ==============================================================================
+bool Mob::EraCheckFizzle(uint16 spell_id)
+{
+	if (!IsValidSpell(spell_id)) {
+		return true;
+	}
+
+	// 0x41f118: gems 0..7 only.  DoCastSpell already filtered on MaxGems; the
+	// v29c bar has eight gems.
+	if (static_cast<int>(casting_spell_slot) > 7) {
+		return true;
+	}
+
+	const auto &spell = spells[spell_id];
+	const uint8 class_id = GetClass();
+	if (class_id < Class::Warrior || class_id > Class::PLAYER_CLASS_COUNT) {
+		return true;
+	}
+
+	constexpr uint16 SUPERIOR_HEALING = 9; // ds:0x5fe9c4 = spell table 0x5fe9a0 + 9*4
+
+	const int class_level = spell.classes[class_id - 1];
+	int diff   = std::clamp(spell.base_difficulty, 0, 255); // byte at spell+0x22f
+	int chance = 0;
+
+	if (diff == 0) {
+		chance = 95;
+	} else {
+		if (spell_id == SUPERIOR_HEALING && class_id != Class::Cleric) {
+			diff = 0;
+		}
+		if (class_level >= 56) {
+			diff = 0;
+		}
+
+		auto stat_byte = [](int64 v) { return static_cast<int>(std::clamp<int64>(v, 0, 255)); };
+
+		int stat = 0;
+		switch (class_id) {
+			case Class::Cleric:
+			case Class::Druid:
+			case Class::Shaman:
+			case Class::Beastlord:
+				stat = stat_byte(GetWIS());
+				break;
+			case Class::Paladin:
+			case Class::Ranger:
+				stat = stat_byte(GetWIS());
+				if (class_level > 40) {
+					diff = 0;
+				}
+				break;
+			case Class::ShadowKnight:
+				stat = stat_byte(GetINT());
+				if (class_level > 40) {
+					diff = 0;
+				}
+				break;
+			case Class::Necromancer:
+			case Class::Wizard:
+			case Class::Magician:
+			case Class::Enchanter:
+				stat = stat_byte(GetINT());
+				break;
+			case Class::Bard:
+				stat = (stat_byte(GetDEX()) + stat_byte(GetCHA())) / 2;
+				diff = std::min(diff, 15);
+				break;
+			default: // Warrior, Monk, Rogue, Berserker
+				stat = 0;
+				break;
+		}
+
+		if (stat > 0) {
+			const int lvl   = std::min(class_level - 1, 50);
+			const int skill = GetSkill(spell.skill);
+			chance = stat / 10 + 5 * (18 - lvl) - diff + skill - zone->random.Int(0, 10);
+			chance = std::clamp(chance, class_id == Class::Bard ? 1 : 5, 95);
+		}
+	}
+
+	// 0x41f28f: specialization bonus (also applies to the diff == 0 path).
+	const int spec = GetSpecializeSkillValue(spell_id);
+	if (spec > 0 && spec < 252) {
+		chance = std::min(chance + spec / 10 + 1, 98);
+	}
+
+	int roll = zone->random.Int(1, 100);
+	if (IsSilenced()) {
+		roll = chance + 1;
+	}
+
+	LogSpells("Era fizzle [{}] spell [{}] class_level [{}] chance [{}] roll [{}]",
+		GetCleanName(), spell_id, class_level, chance, roll);
+
+	return roll <= chance;
+}
+
+// ==== Spells:EraChanneling - the v29c channel rolls ===========================
+//
+// eqgame.exe 0x4241ae, reached from 0x423edb once a check is due:
+//   0x4241ae  checks = max(1, 3*hits/4 + 1)          (hits = obj+0xaa0)
+//   0x4241c8  HasSkill(Channeling 13) via 0x4246a9/0x41a3e9.  0 interrupts
+//             (0x4241d8).  The value it returns IS the channel term: the skill
+//             byte, or 1 for a skill the class has at this level but has not
+//             raised yet.  A class/level with no Channeling cap is the 0 case.
+//   0x4241ec  each check r = rand(1, 390)
+//   0x424210  bonus = 3*(L - spellL) + 35 when L > spellL + 5, else 0
+//             (L = caster level obj+0x38; spellL = spell+0x234+class).  The
+//             tail is `cdq; sub eax,edx; sar eax,1` - the signed /2 idiom, cdq
+//             having overwritten edx - so 6*(L-spellL)/2 = 3*(L-spellL).  The
+//             other decode, ((L-spellL)*6 - (spellL+5))/2 + 35, read edx as
+//             still holding spellL+5; it does not.
+//   0x42422a  target = min(channel + L + bonus, 370)
+//   0x42423c  r <= target passes; r < 39 always passes; any failure interrupts
+// ==============================================================================
+bool Mob::EraChannelCheck(uint16 spell_id)
+{
+	if (!IsValidSpell(spell_id)) {
+		return true;
+	}
+
+	int channel = GetSkill(EQ::skills::SkillChanneling);
+	if (channel <= 0) {
+		if (skill_caps.GetSkillCap(GetClass(), EQ::skills::SkillChanneling, GetLevel()).cap == 0) {
+			return false;
+		}
+		channel = 1;
+	}
+	channel = std::min(channel, 255);
+
+	const uint8 class_id    = GetClass();
+	const int   level       = GetLevel();
+	const int   spell_level = (class_id >= Class::Warrior && class_id <= Class::PLAYER_CLASS_COUNT)
+		? spells[spell_id].classes[class_id - 1] : 255;
+	const int   bonus       = (level > spell_level + 5) ? 3 * (level - spell_level) + 35 : 0;
+	const int   target      = std::min(channel + level + bonus, 370);
+	const int   checks      = std::max(1, 3 * attacked_count / 4 + 1);
+
+	for (int i = 0; i < checks; ++i) {
+		const int r = zone->random.Int(1, 390);
+		if (r > target && r >= 39) {
+			return false;
+		}
+	}
+
+	return true;
 }
 
 bool Client::CheckFizzle(uint16 spell_id)
@@ -1105,6 +1300,10 @@ bool Client::CheckFizzle(uint16 spell_id)
 	if (GetGM()) {
 		Message(Chat::White, "Your GM flag prevents you from fizzling.");
 		return true;
+	}
+
+	if (RuleB(Spells, EraFizzle)) {
+		return EraCheckFizzle(spell_id);
 	}
 
 	uint8 no_fizzle_level = 0;
@@ -1378,7 +1577,7 @@ void Mob::InterruptSpell(uint16 message, uint16 color, uint16 spellid)
 		default:
 			message_other = INTERRUPT_SPELL_OTHER;
 	}
-	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId)) 
+	if (this->IsPlayerBotNPC()) 
 		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(this->playerbot_temp_name) + 1);
 	else
 		outapp = new EQApplicationPacket(OP_InterruptCast, sizeof(InterruptCast_Struct) + strlen(GetCleanName()) + 1);
@@ -1386,7 +1585,7 @@ void Mob::InterruptSpell(uint16 message, uint16 color, uint16 spellid)
 	InterruptCast_Struct* ic = (InterruptCast_Struct*)outapp->pBuffer;
 	ic->messageid = message_other;
 	ic->spawnid = GetID();
-	if (this->npctype_id == RuleI(PlayerBots, PlayerBotId))
+	if (this->IsPlayerBotNPC())
 		strcpy(ic->message, this->playerbot_temp_name);
 	else
 		strcpy(ic->message, GetCleanName());
@@ -1551,6 +1750,45 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			}
 		}
 	}
+	else if (RuleB(Spells, EraChanneling) && IsOfClientBot()) // not bard: v29c concentration check
+	{
+		// ==== Spells:EraChanneling - v29c 0x423edb ==========================
+		// The client runs this once, when the cast timer expires (0x42760d
+		// compares now against the cast end time before calling 0x423edb), with
+		// the hits it counted since the cast began.  CastedSpellFinished is that
+		// same moment, and attacked_count is the same count (melee damage taken
+		// while casting, attack.cpp CommonDamage), so this is the whole check.
+		//   0x424127  per-axis drift from the cast start: |dx| or |dy| > 0.1
+		//             (double 0x535288), or any hit, means a check is due
+		//   0x424168  non-zero vertical velocity interrupts (the server has no
+		//             velocity; not modelled)
+		//   0x42417f  |dx| or |dy| > 1.0 (double 0x535290) interrupts outright
+		//   0x4241ae  otherwise the channel rolls in EraChannelCheck
+		const float d_x = std::abs(GetX() - GetSpellX());
+		const float d_y = std::abs(GetY() - GetSpellY());
+
+		if (attacked_count > 0 || d_x > 0.1f || d_y > 0.1f) {
+			bool held = true;
+			if (!spells[spell_id].uninterruptable) {
+				held = (d_x <= 1.0f && d_y <= 1.0f) && EraChannelCheck(spell_id);
+			}
+
+			LogSpells("Era channel check [{}] spell [{}] hits [{}] dx [{}] dy [{}] channel [{}] held [{}]",
+				GetCleanName(), spell_id, attacked_count, d_x, d_y,
+				GetSkill(EQ::skills::SkillChanneling), held);
+
+			if (!held) {
+				LogSpells("Casting of [{}] canceled: interrupted", spell_id);
+				InterruptSpell();
+				return;
+			}
+
+			// 0x424253: "You regain your concentration and continue your casting."
+			regain_conc = true;
+			MessageString(Chat::Spells, REGAIN_AND_CONTINUE);
+			entity_list.MessageCloseString(this, true, RuleI(Range, SpellMessages), Chat::Spells, OTHER_REGAIN_CAST, GetCleanName());
+		}
+	}
 	else // not bard, check movement
 	{
 		// if has been attacked, or moved while casting
@@ -1616,7 +1854,7 @@ void Mob::CastedSpellFinished(uint16 spell_id, uint32 target_id, CastingSlot slo
 			// if we got here, we regained concentration
 			regain_conc = true;
 			MessageString(Chat::Spells,REGAIN_AND_CONTINUE);
-			if (this->npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+			if (this->IsPlayerBotNPC()) {
 				entity_list.MessageCloseString(this, true, RuleI(Range, SpellMessages), Chat::Spells, OTHER_REGAIN_CAST, this->playerbot_temp_name);
 			}
 			else
@@ -5344,6 +5582,10 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 
 	resist_modifier -= focus_incoming_resist;
 
+	// The spell's own adjustment as cast, before any charisma term: EQClassic
+	// keys its ">-100 = a normal spell" tests on this (Spells:EraResistModel).
+	const int era_spell_resist_mod = resist_modifier;
+
 	//Check for fear resist
 	bool IsFear = false;
 	if(IsFearSpell(spell_id))
@@ -5407,6 +5649,38 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 	//Physical Resists are calclated using their own formula derived from extensive parsing.
 	if (resist_type == RESIST_PHYSICAL) {
 		level_mod = ResistPhysical(temp_level_diff, caster_level);
+	}
+
+	else if (RuleB(Spells, EraResistModel)) {
+		// ==== Spells:EraResistModel - v29c level modifier 0x41a6d6 ============
+		// d = resister level - caster level (this = resister, arg = caster):
+		//   0x41a6eb  PC resister, caster level > 20, d > 10 -> d = 10
+		//   0x41a708  NPC resister, d < -9 -> d = -9
+		//   0x41a74a  mod = sign(d) * d*d/2  (cdq/sub/sar: /2 toward zero)
+		// No ResistFalloff: the client helper has no level ceiling.  Bots are
+		// PCs to the client.  The ruleset-4 (PvP server) branch is not used.
+		// NPC resisters only reach this on the paths EQClassic's model below
+		// does not cover (charm/root break ticks, spell id 0).
+		if (IsOfClientBot()) {
+			if (caster_level > 20 && temp_level_diff > 10) {
+				temp_level_diff = 10;
+			}
+		} else if (IsNPC() && temp_level_diff < -9) {
+			temp_level_diff = -9;
+		}
+
+		level_mod = temp_level_diff * temp_level_diff / 2;
+		if (temp_level_diff < 0) {
+			level_mod = -level_mod;
+		}
+
+		if (IsNPC() && (caster_level - level) < -20) {
+			level_mod = 1000;
+		}
+
+		if (IsNPC() && IsDamageSpell(spell_id) && level >= 17) {
+			level_mod += 2 * (level - caster_level);
+		}
 	}
 
 	else {
@@ -5500,6 +5774,80 @@ float Mob::ResistSpell(uint8 resist_type, uint16 spell_id, Mob *caster, bool use
 				resist_modifier += ((75 - charisma)/10) * 6; //Increase Resist Chance
 		}
 
+	}
+
+	// ==== Spells:EraResistModel - EQClassic's resist check on NPCs ===========
+	// EQClassic Zone/Source/SpellsHandler.cpp:453 CalcResistValue, rolled at
+	// Zone/Source/spells.cpp:907, partial damage at SpellEffects.cpp:67.  Its
+	// baseline is the NPC data itself: a save of exactly 3 x level is a 20%
+	// resist, and 3,273 of our 7,968 L50-70 NPCs carry exactly that.
+	//   save   = resist + level modifier + spell resist modifier.  The level
+	//            modifier is the v29c client's own (eqgame.exe 0x41a6d6, NPC
+	//            resister): d = victimL - casterL, floored at -9, then
+	//            sign(d) * d*d/2.  EQClassic's own adjustment ((victimL -
+	//            casterL) * 6 above the caster, * 3 below, plus a flat +5% per
+	//            level up to +20%) was its guess, and it made a 3 x level NPC
+	//            ten levels up resist everything; the client's formula is used
+	//            instead.
+	//   chance = 20% * 1.1^((save - 3*victimL)/3), or * 0.9^ below the baseline
+	//            (integer /3); clamped to [3, 100], [1, 100] for -100 spells
+	//   resisted when rand()%100 + 1 < chance
+	//   a resisted pure nuke at chance <= 50 has a 20% chance to land as a
+	//   partial instead: damage / 2 * (10..99)%
+	// L60 caster, unadjusted spell: NPC L60 resist 180 lands 81%, L65 resist
+	// 195 lands 72%, L70 resist 210 (Derakor) lands 10%.
+	// EQClassic notes the model is for spells on NPCs only ("PC on NPC / NPC
+	// on NPC"); spells on players and bots keep the server model above with
+	// the v29c level modifier.  Charm/root break ticks keep the server model
+	// too (their minimum break chances are built on its 0..200 scale), and so
+	// do physical resists (post-era) and spell id 0 (weapon elemental damage).
+	// The charisma term above is kept: it is folded into the modifier as save
+	// points.  EQClassic's own NPC immunity checks are the server's special
+	// abilities; its dragon "belly caster" rule is not part of this.
+	if (
+		RuleB(Spells, EraResistModel) &&
+		IsNPC() &&
+		spell_id != 0 &&
+		!CharmTick &&
+		!IsRoot &&
+		resist_type != RESIST_PHYSICAL
+	) {
+		// 0x41a6d6 for an NPC resister: floor -9, sign(d) * d*d/2 (the
+		// cdq/sub/sar idiom, so /2 truncates toward zero as C++ does).
+		const int level_gap   = std::max(static_cast<int>(level) - static_cast<int>(caster_level), -9);
+		int       level_saves = level_gap * level_gap / 2;
+		if (level_gap < 0) {
+			level_saves = -level_saves;
+		}
+
+		const int save            = target_resist + level_saves + resist_modifier;
+		const int save_difference = save - level * 3;
+
+		float resist_pct = 20.0f;
+		if (save_difference > 0) {
+			resist_pct = static_cast<float>(20.0f * std::pow(1.10f, save_difference / 3));
+		} else if (save_difference < 0) {
+			resist_pct = static_cast<float>(20.0f * std::pow(0.90f, (-save_difference) / 3));
+		}
+
+		resist_pct = std::clamp(resist_pct, era_spell_resist_mod > -100 ? 3.0f : 1.0f, 100.0f);
+
+		const int resist_value = static_cast<int>(resist_pct);
+		const int roll         = zone->random.Int(1, 100);
+
+		LogSpells("Era resist [{}] spell [{}] caster [{}] L[{}] vs L[{}] resist [{}] mod [{}] save_diff [{}] chance [{}] roll [{}]",
+			GetCleanName(), spell_id, caster->GetCleanName(), caster_level, level, target_resist,
+			resist_modifier, save_difference, resist_value, roll);
+
+		if (roll >= resist_value) {
+			return 100;
+		}
+
+		if (resist_value <= 50 && IsPureNukeSpell(spell_id) && zone->random.Int(0, 99) < 20) {
+			return 50.0f * static_cast<float>(zone->random.Int(10, 99)) / 100.0f;
+		}
+
+		return 0;
 	}
 
 

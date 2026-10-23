@@ -31,10 +31,27 @@ std::vector<RaidMember> Raid::GetRaidGroupMembers(uint32 gid)
 	std::vector<RaidMember> raid_group_members;
 	raid_group_members.clear();
 
-	for (const auto& m : members)
+	// Each member is looked up again by name rather than trusted from
+	// members[].member, a raw pointer that only VerifyRaid refreshes and only
+	// MemberZoned clears. Kael 2026-10-23 20:18:23: a raid heal count read a
+	// freed bot through it right after Ballador fell (a virtual call into
+	// address 0x67D, Bot::GetNumberNeedingHealedInRaidGroup). Only what the
+	// zone's own lists hold comes back; the stored pointer is refreshed too.
+	for (auto& m : members)
 	{
-		if (m.member && m.group_number == gid)
-		{
+		if (!m.member_name[0] || m.group_number != gid) {
+			continue;
+		}
+
+		Client* live = entity_list.GetClientByName(m.member_name);
+		if (!live && RuleB(Bots, Enabled)) {
+			if (Bot* b = entity_list.GetBotByBotName(m.member_name)) {
+				live = b->CastToClient(); // the raid's bot convention, as in VerifyRaid
+			}
+		}
+
+		m.member = live;
+		if (live) {
 			raid_group_members.push_back(m);
 		}
 	}

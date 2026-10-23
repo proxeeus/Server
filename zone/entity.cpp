@@ -2293,18 +2293,15 @@ Raid* EntityList::GetRaidByClient(Client* client)
 }
 Raid* EntityList::GetRaidByBotName(const char* name)
 {
-	std::list<RaidMember> rm;
-	auto GetMembersWithNames = [&rm](Raid const* r) -> std::list<RaidMember> {
-		for (const auto& m : r->members) {
-			if (strlen(m.member_name) > 0)
-				rm.push_back(m);
-		}
-		return rm;
-	};
+	if (!name || !name[0]) {
+		return nullptr;
+	}
 
+	// Scan the members in place: the old helper copied every named member of
+	// every raid into one list it never cleared, per call.
 	for (const auto& r : raid_list) {
-		for (const auto& m : GetMembersWithNames(r)) {
-			if (strcmp(m.member_name, name) == 0) {
+		for (const auto& m : r->members) {
+			if (m.member_name[0] && strcmp(m.member_name, name) == 0) {
 				return r;
 			}
 		}
@@ -2314,19 +2311,14 @@ Raid* EntityList::GetRaidByBotName(const char* name)
 
 Raid* EntityList::GetRaidByBot(const Bot* bot)
 {
-	std::list<RaidMember> rm;
-	auto GetMembersWhoAreBots = [&rm](Raid* r) -> std::list<RaidMember> {
-		for (auto const& m : r->members) {
-			if (m.is_bot) {
-				rm.push_back(m);
-			}
-		}
-		return rm;
-	};
-
+	// By name, in place: m.member can be null (zoned) or stale, and the old
+	// helper also appended every bot member of every raid to one list per call.
+	if (!bot) {
+		return nullptr;
+	}
 	for (const auto& r : raid_list) {
-		for (const auto& m : GetMembersWhoAreBots(r)) {
-			if (m.member->CastToBot() == bot) {
+		for (const auto& m : r->members) {
+			if (m.is_bot && m.member_name[0] && strcmp(m.member_name, bot->GetName()) == 0) {
 				return r;
 			}
 		}

@@ -3741,7 +3741,7 @@ void Mob::SendIllusionPacket(const AppearanceStruct& a)
 		new_texture          = UINT8_MAX;
 	}
 	// Special check to avoid Plate Chest texture upon PlayerBot spawn
-	if (IsNPC() && CastToNPC()->GetNPCTypeID() == RuleI(PlayerBots, PlayerBotId))
+	if (IsNPC() && CastToNPC()->IsPlayerBotNPC())
 	{
 		new_texture = 0;
 	}
@@ -5104,7 +5104,7 @@ void Mob::Say(const char *format, ...)
 		// This branch runs first while saylinks are on (the compiled default),
 		// so the PlayerBot branch below never did: a PlayerBot spoke under
 		// GetCleanName(), which strips the ' and - its generated name may have.
-		const char *speaker = (npctype_id == RuleI(PlayerBots, PlayerBotId) && playerbot_temp_name[0] != '\0')
+		const char *speaker = (IsPlayerBotNPC() && playerbot_temp_name[0] != '\0')
 			? playerbot_temp_name
 			: GetCleanName();
 
@@ -5115,7 +5115,7 @@ void Mob::Say(const char *format, ...)
 		);
 	}
 	// If playerbot, use the lua-generated playerbot
-	else if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	else if (IsPlayerBotNPC()) {
 			entity_list.MessageCloseString(talker, false, 200, 10,
 				GENERIC_SAY, playerbot_temp_name, buf);
 	}
@@ -5137,7 +5137,7 @@ void Mob::SayString(uint32 string_id, const char *message3, const char *message4
 	snprintf(string_id_str, 10, "%d", string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		entity_list.MessageCloseString(this, false, 200, 10,
 			GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str, message3, message4, message5,
 			message6, message7, message8, message9
@@ -5159,7 +5159,7 @@ void Mob::SayString(uint32 type, uint32 string_id, const char *message3, const c
 	snprintf(string_id_str, 10, "%d", string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		entity_list.MessageCloseString(this, false, 200, type,
 			GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str, message3, message4, message5,
 			message6, message7, message8, message9
@@ -5182,7 +5182,7 @@ void Mob::SayString(Client *to, uint32 string_id, const char *message3, const ch
 	auto string_id_str = std::to_string(string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		to->MessageString(Chat::NPCQuestSay, GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
 	}
 	else
@@ -5199,7 +5199,7 @@ void Mob::SayString(Client *to, uint32 type, uint32 string_id, const char *messa
 	auto string_id_str = std::to_string(string_id);
 
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		to->MessageString(type, GENERIC_STRINGID_SAY, playerbot_temp_name, string_id_str.c_str(), message3, message4, message5, message6, message7, message8, message9);
 	}
 	else
@@ -5217,7 +5217,7 @@ void Mob::Shout(const char *format, ...)
 	vsnprintf(buf, 1000, format, ap);
 	va_end(ap);
 	// If playerbot, use the lua-generated playerbot
-	if (npctype_id == RuleI(PlayerBots, PlayerBotId)) {
+	if (IsPlayerBotNPC()) {
 		entity_list.MessageString(this, false, Chat::Shout,
 			GENERIC_SHOUT, playerbot_temp_name, buf);
 	}
@@ -8753,4 +8753,16 @@ int Mob::GetActiveBuffCount() const {
 	}
 
 	return activeBuffCount;
+}
+
+// PlayerBots are NPCs spawned from one npc_types row (PlayerBots:PlayerBotId).
+// A bot is not one, whatever its npctype_id: a bot's npctype_id is its bot_id,
+// and bot 679 (Ballador) equals the rule. Before this every check compared the
+// id alone, so NPC::Death took Ballador for a PlayerBot, gave his entity id to
+// a corpse and zeroed his own: Bot::Death's RemoveBot(0) then left the freed
+// bot on the bot list, and the raid read it back (two zone crashes in Kael,
+// 2026-10-23, each right after Ballador fell).
+bool Mob::IsPlayerBotNPC() const
+{
+	return IsNPC() && npctype_id == static_cast<uint32>(RuleI(PlayerBots, PlayerBotId));
 }

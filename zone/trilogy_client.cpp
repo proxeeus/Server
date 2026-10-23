@@ -439,7 +439,43 @@ bool TrilogyClient::CanMeditate()
 }
 
 // ============================================================
-// CalcManaRegen — classic 1999 EQ formula (override)
+// CalcHPRegen — 2001 era regen (override, Character:TrilogyEraRegen)
+//
+// v29c runs its own HP tick every 6000 ms (0x426ee4) and only takes the
+// server's number when an HP update arrives, so anything the stock formula
+// adds that the client does not (base_data's 8/tick at 60 where v29c has 4,
+// the post-2004 ramp to 15x after nine minutes seated, the out-of-combat
+// fast regen) shows up as the bar jumping.  Mob::CalcEraHPRegen is the
+// client's formula; this supplies its inputs.
+//
+// "Seated for more than 60 s": v29c stamps actor+0x70 with its clock every
+// time its stand state turns to 0x6e (0x4b47b5) and sends that same
+// transition as SpawnAppearance 0xf520, which Handle_OP_SpawnAppearance
+// turns into tmSitting = now.  Both clocks therefore start on the same sit;
+// standing stops the bonus on both sides because `sitting` gates it.
+// ============================================================
+
+int64 TrilogyClient::CalcHPRegen(bool bCombat)
+{
+	if (!RuleB(Character, TrilogyEraRegen)) {
+		return Client::CalcHPRegen(bCombat);
+	}
+
+	const bool   sitting = IsSitting();
+	const uint32 sat_ms  = sitting ? Timer::GetCurrentTime() - tmSitting : 0;
+	return CalcEraHPRegen(sitting, sat_ms, IsEraFed());
+}
+
+// ============================================================
+// CalcManaRegen — 2001 era regen / classic 1999 EQ formula (override)
+//
+// With Character:TrilogyEraRegen on, the client's own mana tick
+// (Mob::CalcEraManaRegen, 0x42721f-0x427332 plus the buff tick's SE15 at
+// 0x425366).  At level 60 with Meditate 235, seated with the book open, that
+// is 4 + 235/15 = 19 a tick where the formula below gave about 70 — the bar
+// crept up 19 at a time and jumped on every server update.  It also
+// finally counts Clarity-style SE15 buffs, which the formula below ignored.
+// With the rule off, the classic formula:
 //
 // EQClassic LS/zone/client_process.cpp L6643-6669 is authoritative:
 //   if (sitting && level > 0) medding = true;       // always true for live players
@@ -472,6 +508,18 @@ bool TrilogyClient::CanMeditate()
 
 int64 TrilogyClient::CalcManaRegen(bool bCombat)
 {
+	if (RuleB(Character, TrilogyEraRegen)) {
+		// The client reads Meditate through 0x4246a9 → 0x41a3e9: the raw PP
+		// skill byte (char+0x9c8), but at least 1 once the class may have the
+		// skill at this level (skill table +0x68 / +0x28) — so a level-35+
+		// caster who never raised Meditate still gets the meditating tick.
+		uint16 meditate = static_cast<uint16>(GetRawSkill(EQ::skills::SkillMeditate));
+		if (meditate == 0 && MaxSkill(EQ::skills::SkillMeditate) > 0) {
+			meditate = 1;
+		}
+		return CalcEraManaRegen(IsSitting(), IsMedding(), meditate, IsEraFed());
+	}
+
 	if (IsStarved()) return 0;
 	if (GetClass() == Class::Bard) return 0;
 
@@ -5364,6 +5412,18 @@ void TrilogyClient::HandleAction(const EQApplicationPacket* app)
 		caston.source_id        = static_cast<int32_t>(TranslateId(emu->source));
 		caston.source_level     = static_cast<int8_t>(emu->level);
 		caston.unknown1[1]      = static_cast<int8_t>(0x41);
+		// Bard instrument modifier (CastOn +0x0C).  v29c computes the values of
+		// a bard song's effects itself, Selo's run speed included, and scales
+		// them by this field / 10 when the caster is a Bard (eqgame.exe
+		// 0x4220e9).  Left at zero, every song landed at its unmodified value
+		// on the client.  EQEmu's Action carries the caster's
+		// GetInstrumentMod(spell) on the same scale (10 = 1.0x; spells.cpp sets
+		// it on every cast).  The client takes 1..30 and ignores anything
+		// else, so a server mod above 30 (the spell's song cap or
+		// Character:BaseInstrumentSoftCap can allow more) is sent as 30 rather
+		// than dropped back to 1.0x.  Non-bards carry 10 (or a SPA 413 focus),
+		// which the client ignores for them.
+		caston.instrument_mod   = static_cast<int32_t>(std::min<uint32>(emu->instrument_mod, 30));
 		// Spell knockback direction.  This field (CastOn offset 20) is the
 		// ONLY thing v29c needs from us to apply spell push — pushback/pushup
 		// come from the client's OWN spell table, not from the wire.  There is
@@ -6000,19 +6060,34 @@ void TrilogyClient::HandleExpUpdate(const EQApplicationPacket* app)
 // ============================================================
 // HandleLevelUpdate — OP_LevelUpdate (server → Trilogy client).
 //
-// EQEmu LevelUpdate_Struct: { uint32 level, level_old, exp } = 12 bytes.
-// Trilogy LevelUpdate_Struct: { int8 level, can_delevel } = 2 bytes.
+// EQEmu LevelUpdate_Struct:   { uint32 level, level_old, exp } = 12 bytes.
+// Trilogy LevelUpdate_Struct: { uint32 level, level_old, exp } = 12 bytes.
 //
-// can_delevel is misleadingly named — per the EQClassic LS struct doc, "if
-// not equal to zero, the client allows the character to de-level.  If it is
-// equal to zero, the client does NOT change the level of the played char."
-// So 0 means "ignore this packet's level change entirely", and 1 means
-// "apply the new level (including down-leveling)".  Always send 1, matching
-// EQClassic\Zone\Source\client.cpp:721 (SendLevelUpdate sets it unconditionally).
-// Earlier we set it to 0 on level-ups, which made v29c IGNORE the new level —
-// the client kept its stale level, the XP-bar denominator stayed at the old
-// level's exp range, and as soon as cumulative exp passed that range the bar
-// clipped to 100% and refused to move on subsequent ExpUpdate packets.
+// The v29c handler (eqgame.exe 0x49494e) reads three dwords: the new level,
+// the old level and the cumulative exp.  It ignores the packet unless the new
+// level is greater than the current one (signed dword compare), gives +5
+// training points when new > old, stores the low byte as the level, and
+// writes the exp dword into the profile.  We used to send EQClassic's 2-byte
+// { level, can_delevel = 1 }, so the client read 0x0100 | level plus whatever
+// followed in the buffer: the level always applied, but the old-level and exp
+// dwords were stray bytes — +5 training points or not depending on them, and
+// a garbage exp until the next OP_ExpUpdate.
+//
+// exp is the cumulative value, the same as OP_ExpUpdate (see HandleExpUpdate
+// and PP offset 64).  On a level gained or lost through SetEXP it is still the
+// previous total here — Client::SetEXP calls SetLevel before it stores the new
+// exp — and the OP_ExpUpdate it sends right after carries the new one.
+//
+// De-level (new < old): the client drops a plain update, since the new level
+// is not above the current one.  For that case alone we keep what the 2-byte
+// packet did by accident: dword0 = 0x100 | level is above any level byte, so
+// it applies and the low byte becomes the level, and dword1 = dword0 means no
+// training points.  Side effect, as before: the client's highest-level byte
+// (PP 4172, read by 0x41a3e9) is set to the new, lower level.  EQEmu's "old"
+// is the highest level reached (m_pp.level2, see Client::SetLevel), so this
+// branch also takes re-gaining a level lost earlier; that update would apply
+// either way, and SetLevel grants no points below level2, so neither does
+// the client.
 // ============================================================
 
 void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
@@ -6021,8 +6096,14 @@ void TrilogyClient::HandleLevelUpdate(const EQApplicationPacket* app)
 	const auto* emu = reinterpret_cast<const ::LevelUpdate_Struct*>(app->pBuffer);
 
 	Trilogy::structs::LevelUpdate_Struct out{};
-	out.level       = static_cast<int8_t>(emu->level);
-	out.can_delevel = 1;
+	if (emu->level >= emu->level_old) {
+		out.level     = emu->level;
+		out.level_old = emu->level_old;
+	} else {
+		out.level     = (emu->level & 0xFF) | 0x100;
+		out.level_old = out.level;
+	}
+	out.exp = GetEXP();
 
 	m_tzs->SendToSession(m_session_key, 0x9821,
 	                     reinterpret_cast<const uint8_t*>(&out),
@@ -7693,7 +7774,23 @@ bool BuildClassicItemFromInst(const EQ::ItemInstance* inst,
 		if (has_click) {
 			eff_id    = static_cast<uint16>(it->Click.Effect);
 			eff_type  = static_cast<int8>(it->Click.Type);
-			eff_level = static_cast<int8>(it->Click.Level);
+			// For a click effect, effectlevel1 is the level needed to use the
+			// item, not the effect's power.  The click gate (eqgame.exe
+			// 0x41f6a0, effect types 4 and 5) refuses "You are not sufficient
+			// level to use this item." when it is above the player's level, and
+			// CanUseItem (0x41ba72) — which also decides whether the item can be
+			// equipped (0x47e5c4, 0x4a23ba) — fails when it is 51..127 and above
+			// the player's level.  The only reads that use it as a caster level
+			// are the worn-effect sums (0x423b0e, 0x425cf3), for effect type 2
+			// alone, which is never a click.  So send the level the server
+			// enforces: Client::Handle_OP_CastSpell requires Click.Level2 when it
+			// is non-zero and nothing otherwise.  Click.Level is EQEmu's casting
+			// level, mostly 0, and sending it let the two disagree on 733 of the
+			// 1033 type 4/5 clickies v29c can show (616 must-equip, 117 class
+			// clicks): usually the client allowed a click the server refused.
+			// Consequence of the CanUseItem rule: a clicky with Level2 51+ now
+			// cannot be equipped on this client below that level (113 items).
+			eff_level = static_cast<int8>(it->Click.Level2 > 0 ? it->Click.Level2 : 0);
 		} else if (has_scroll) {
 			eff_id    = static_cast<uint16>(it->Scroll.Effect);
 			eff_type  = static_cast<int8>(it->Scroll.Type);
@@ -7925,6 +8022,19 @@ void TrilogyClient::HandleItemPacket(const EQApplicationPacket* app)
 		mci.price = static_cast<int32_t>(shown > INT32_MAX ? INT32_MAX : shown);
 
 		const EQ::ItemData* mit = inst->GetItem();
+
+		// Sell rate is already in the price.  The client's buy price, eqgame.exe
+		// 0x438550, is round(qty * price * pricemultiplier * (itemclass == 0 &&
+		// sellrate > 1.0 ? sellrate : 1)), with price and sellrate read from
+		// this item (+0x8c, +0xe4).  inst->GetPrice() is Price * SellRate
+		// (BulkSendMerchantInventory), so the item's own sellrate would apply
+		// a second time: the window showed a sellrate-2 scroll at twice our
+		// price, and the affordability check before the buy request (0x463a0e)
+		// refused it when the player could pay ours.  Merchant copies only;
+		// every other item packet keeps the real sellrate.
+		if (mit && mit->ItemClass == 0 /* common (has .common union) */) {
+			mci.common.sellrate = 1.0f;
+		}
 
 		// Finite player-sold/unique stock: surface the stocked quantity in the
 		// charges field so the client shows (and lets you buy back) more than one.

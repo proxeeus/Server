@@ -188,7 +188,7 @@ void Mob::MakePoweredPet(uint16 spell_id, const char* pettype, int16 petpower,
 	} else if (record.petnaming == 3 && IsClient()) {
 		GetRandPetName(npc_type->name);
 	}
-	else if (record.petnaming == 3 && ((npctype_id == RuleI(PlayerBots, PlayerBotId)))) {
+	else if (record.petnaming == 3 && ((IsPlayerBotNPC()))) {
 		GetRandPetName(npc_type->name);
 	}
 	else if (record.petnaming == 3 && IsBot()) {

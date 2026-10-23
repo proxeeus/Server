@@ -240,6 +240,9 @@ public:
 	void RogueBackstab(Mob* other, bool min_damage = false, int ReuseTime = 10) override;
 	void RogueAssassinate(Mob* other) override;
 	void DoClassAttacks(Mob *target, bool IsRiposte=false);
+	// The v29c client's reuse for a combat ability, in ms, when
+	// Bots:EraAbilityReuse is on; 0 = use the legacy timer.
+	static uint32 GetEraAbilityReuseMs(EQ::skills::SkillType skill);
 	void CalcBonuses() override;
 
 	void MakePet(uint16 spell_id, const char* pettype, const char *petname = nullptr) override;
@@ -518,7 +521,7 @@ public:
 	static BotSpell GetBestBotSpellForMez(Bot* botCaster);
 	static BotSpell GetBestBotMagicianPetSpell(Bot* botCaster);
 	static std::string GetBotMagicianPetType(Bot* botCaster);
-	static BotSpell GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType);
+	static BotSpell GetBestBotSpellForNukeByTargetType(Bot* botCaster, SpellTargetType targetType, Mob* tar = nullptr);
 	static BotSpell GetBestBotSpellForStunByTargetType(Bot* botCaster, SpellTargetType targetType);
 	static BotSpell GetBestBotWizardNukeSpellByTargetResists(Bot* botCaster, Mob* target);
 	static BotSpell GetDebuffBotSpell(Bot* botCaster, Mob* target);
@@ -971,6 +974,8 @@ public:
 	// its group / raid slot, fights, heals, resurrects the owner's corpse,
 	// and waits -- until the owner is back in the zone or the time runs out.
 	bool IsHoldingForOwner() const { return m_owner_hold_until_ms != 0; }
+	// The hold runs out on the next Bot::Process tick (raid gone from another zone)
+	void ExpireOwnerHold() { if (m_owner_hold_until_ms != 0) { m_owner_hold_until_ms = 1; } }
 	void BeginOwnerHold();
 	void ResumeFromOwnerHold(Client* owner);
 	void EndOwnerHold();                   // time's up: leave the zone
@@ -1204,6 +1209,8 @@ private:
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
 	uint32    m_situational_check_ms = 0;
+	uint32    m_era_sit_start_ms     = 0;     // when the current sit began (era regen's 60 s bonus)
+	bool      m_era_was_sitting      = false;
 	BotProgress m_follow_progress;          // walking to the follow point / camp place
 	BotProgress m_cast_progress;            // walking to cast (TryMoveToCast)
 	uint32    m_catchup_said_ms      = 0;
