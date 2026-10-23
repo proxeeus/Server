@@ -46,6 +46,8 @@
 
 #include <fmt/format.h>
 #include <algorithm>
+#include <ctime>
+#include <limits>
 
 
 bool BotDatabase::LoadBotCommandSettings(std::map<std::string, std::pair<uint8, std::vector<std::string>>> &bot_command_settings)
@@ -341,9 +343,25 @@ bool BotDatabase::LoadBot(const uint32 bot_id, Bot*& loaded_bot)
 		return false;
 	}
 
-	const auto& e = BotDataRepository::FindOne(database, bot_id);
+	auto e = BotDataRepository::FindOne(database, bot_id);
 	if (!e.bot_id) {
 		return false;
+	}
+
+	// Zone:EnableLoggedOffReplenishments for bots, as for their owner: a bot
+	// saved long enough ago comes back full. Bots spawned with whatever they
+	// were saved with, and with 2001 regen (Character:TrilogyEraRegen, no
+	// rest regen) a raid spawned on yesterday's leftovers never recovered
+	// (Kael 2026-10-23: 107 health / 148 mana on spawn, wiped). A dead bot
+	// keeps its resurrection sickness (Bot::Bot, hp <= 0). The constructor
+	// clamps both to the maximum once stats are known.
+	if (
+		RuleB(Zone, EnableLoggedOffReplenishments) && e.hp > 0 && e.last_spawn > 0 &&
+		std::time(nullptr) - static_cast<time_t>(e.last_spawn) >= RuleI(Zone, MinOfflineTimeToReplenishments)
+	) {
+		LogInfo("[BotSpawn] [{}] logged-off replenish (offline [{}]s)", e.name, std::time(nullptr) - static_cast<time_t>(e.last_spawn));
+		e.hp   = std::numeric_limits<int32>::max();
+		e.mana = std::numeric_limits<int32>::max();
 	}
 
 	auto d = Bot::CreateDefaultNPCTypeStructForBot(

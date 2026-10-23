@@ -182,10 +182,31 @@ constexpr float  kLastingWorthS         = 12.0f;  // a DoT / slow / debuff wants
 constexpr float  kLandWorthS            = 0.5f;   // a nuke wants it alive this long after landing
 constexpr float  kMezzedLeftRadius      = 200.0f; // mezzed adds this close to camp keep the fight on
 constexpr uint32 kPullFailedMs          = 60000;  // a pull that fell through: leave that mob this long
+constexpr float  kRampageReachMargin    = 10.0f;  // casters stand this far past a rampager's reach
 
 bool IsAlive(Mob* m)
 {
 	return m && !m->IsCorpse() && m->GetHP() > 0 && m->GetAppearance() != eaDead;
+}
+
+// How far a rampage reaches: Mob::CombatRange (aggro.cpp) for this mob
+// against a player-sized target (size under 6 counts as 8), not fleeing.
+float RampageReach(Mob* m)
+{
+	float size = m->GetSize();
+	if (m->GetRace() == Race::LavaDragon || m->GetRace() == Race::Wurm || m->GetRace() == Race::GhostDragon) {
+		size = 60.0f;
+	}
+	else if (size < 8.0f) {
+		size = 8.0f;
+	}
+
+	float reach_sq = size > 29.0f ? size * size : size > 19.0f ? size * size * 2.0f : size * size * 4.0f;
+	reach_sq *= RuleR(Combat, HitBoxMod);
+	if (reach_sq > 10000.0f) {
+		reach_sq /= 7.0f;
+	}
+	return sqrtf(reach_sq);
 }
 
 int TankWeight(Mob* m)
@@ -836,6 +857,23 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// ---- raid encounter ----
 
 	const BotRaidEncounter* enc     = assist && assist->IsNPC() ? EncounterFor(assist->GetNPCTypeID()) : nullptr;
+
+	// No row, but it rampages: casters and healers stand outside the reach
+	// of its (area) rampage, which hits whoever on its hate list is in melee
+	// range. Rows are learned from spells only, so a melee raid boss never
+	// got one (Derakor, Kael 2026-10-23: fifteen casters dead in two seconds
+	// under it).
+	BotRaidEncounter rampage_enc;
+	if (
+		!enc && assist && assist->IsNPC() &&
+		(assist->GetSpecialAbility(SpecialAbility::AreaRampage) || assist->GetSpecialAbility(SpecialAbility::Rampage))
+	) {
+		rampage_enc.npc_type_id      = assist->GetNPCTypeID();
+		rampage_enc.name             = assist->GetCleanName();
+		rampage_enc.caster_min_range = RampageReach(assist) + kRampageReachMargin;
+		enc = &rampage_enc;
+	}
+
 	const uint16            enc_mob = enc ? assist->GetID() : 0;
 	if (enc_mob != p.encounter_mob_id) {
 		p.encounter_mob_id = enc_mob;
@@ -2772,6 +2810,17 @@ bool Bot::TacticsChainCheck()
 		return false;
 	}
 
+	// The spell list stores -1 for "the spell's own cost" (bot_spells_entries
+	// manacost; AIDoSpellCast resolves it the same way). Compared raw it was
+	// never more than our mana, so an empty cleric took its turn, the cast
+	// was refused for mana, and the skip said "cast failed" (166 of them in
+	// Kael 2026-10-23, 946 the day before).
+	const int64 ch_cost = s.ManaCost == -1 ? spells[s.SpellId].mana : (s.ManaCost == -2 ? 0 : s.ManaCost);
+	if (GetMana() < ch_cost) {
+		bot_tactics.ChainSkip(m_tactics_key, GetID(), "out of mana");
+		return false;
+	}
+
 	if (AIDoSpellCast(s.SpellIndex, tar, s.ManaCost)) {
 		bot_tactics.ChainCast(m_tactics_key, GetID());
 		return true;
@@ -2781,7 +2830,7 @@ bool Bot::TacticsChainCheck()
 		IsCasting() ? "still casting" :
 		(IsStunned() || IsMezzed() || IsFeared()) ? "stunned, mezzed or feared" :
 		IsSilenced() ? "silenced" :
-		GetMana() < s.ManaCost ? "out of mana" :
+		GetMana() < ch_cost ? "out of mana" :
 		!CheckSpellRecastTimer(s.SpellId) ? "recast not ready" :
 		"cast failed";
 	bot_tactics.ChainSkip(m_tactics_key, GetID(), why);
@@ -5424,10 +5473,24 @@ bool Bot::TacticsSafeToSit()
 		return false;
 	}
 
+	// Nor within reach of anything awake that we are fighting: a rampage or
+	// an area rampage hits whoever on its hate list is in melee range
+	// (HateList::AreaRampage, CombatRange with aeRampage), and a sitting
+	// target is always hit, for double (attack.cpp CheckHitChance /
+	// RollD20). Kael 2026-10-23: six casters sat to med under Derakor and
+	// fifteen died in two seconds.
+	if (IsAlive(main_target) && !main_target->IsMezzed() && main_target->CombatRange(this, 1.0f, true)) {
+		return false;
+	}
+
 	for (uint16 id : p->adds) {
 		Mob* m = entity_list.GetMob(id);
 		if (!IsAlive(m) || m->IsMezzed()) {
 			continue;
+		}
+
+		if (m->CombatRange(this, 1.0f, true)) {
+			return false;
 		}
 
 		Mob* t = m->GetTarget();

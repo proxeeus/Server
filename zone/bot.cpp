@@ -476,6 +476,14 @@ Bot::Bot(
 Bot::~Bot() {
 	AI_Stop();
 	LeaveHealRotationMemberPool();
+
+	// Still holding camp for a dead owner as it goes (its zone went to sleep
+	// or shut down): nothing holds it any more, so drop the hold that tells
+	// every other zone "not here". Left for its 600s, it made ^spawn refuse
+	// the bot (qeynos 2026-10-23: ^spawn malbik typed 31 times).
+	if (IsHoldingForOwner()) {
+		DataBucket::DeleteData(OwnerHoldBucketKey(GetBotID()));
+	}
 	DataBucket::DeleteCachedBuckets(DataBucketLoadType::Bot, GetBotID());
 
 	if (HasPet()) {
@@ -2960,7 +2968,14 @@ bool Bot::TryMeditate() {
 
 	if (!IsMoving() && !spellend_timer.Enabled()) {
 		if (GetTarget() && AI_EngagedCastCheck()) {
-			BotMeditate(false);
+			// Stand only for a cast that started. The check also answers true
+			// for a decision to hold ("holds X: dies in ~Ns"), and standing
+			// then, to sit again next tick, was up to ten sit/stand packets a
+			// bot a second -- 54% of all reliable traffic to the v29c client
+			// in Kael 2026-10-23.
+			if (IsCasting()) {
+				BotMeditate(false);
+			}
 		} else if (TacticsCannibalize()) {
 			// health for mana while nothing needs us
 		} else if (GetArchetype() == Archetype::Caster) {
