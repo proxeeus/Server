@@ -944,7 +944,9 @@ struct PlayerProfile_Struct
 /*2744*/	int8	autosplit;
 /*2745*/	int8	unknown2745[3];
 /*2748*/	int8	pk_acknowledge;				// NOT the PVP flag, despite EQClassic naming it `pvpEnabled`.  This is the byte the CLIENT writes when it answers the "ARE YOU SURE you wish to be player kill (Pkill)..." dialog (EQClassic PlayerProfile.h:113: "Harakiri Client sets this bit when sending OP_PKAcknowledge back with 1, player name does not go red tho").  Writing it server-side changes nothing the client renders or gates on; the live flag is `pvp` at 4171.
-/*2749*/	int8	unknown2749[15];
+/*2749*/	int8	unknown2749[3];
+/*2752*/	uint32	mend_timer_ms;				// Milliseconds left on the Mend reuse timer.  At zone-in eqgame.exe 0x4b0b2b reads profile-object +0xabc (= PP 2752; object offsets run 4 behind) and sets the Mend ready time ds:0x6e106c = now + this — the same global the Mend button sets on use (0x41d87a, skill 32) and compares with the clock to light the button up again (0x4266ea).  Zero means ready, which is why Mend always came back ready after a zone.
+/*2756*/	int8	unknown2756[8];
 /*2764*/	int8	gm;
 /*2765*/	int8	unknown2765[23];
 /*2788*/	int8	discplineAvailable;			// Discipline / expansion-feature BITFIELD, not a boolean.  EQClassic (PlayerProfile.h:117) only records "needs to be 1 or the client wont sent opcode"; eqgame.exe has three separate accessors over this byte and they gate different classes.  Bit 0 (`0x4197a7`, `& 1`): base tier — the /discipline handler's very first test is `cmp DWORD PTR [player+0xae0],0` (0x4a5993, i.e. struct 2788 read as a dword, so the three pad bytes must stay zero) and it returns silently when clear, which is why warrior/monk/rogue disciplines were inert.  Bit 1 (`0x4197b2`, `& 2`): hybrid tier — Paladin/Ranger/Shadowknight/Bard route through `0x4a31a5`, which needs `[player+0xae0] >= 2` (or one of two client expansion globals set).  Bit 2 (`0x4197bf`, `& 4`): Beastlord tier, checked at 0x4a59ca.  Side effect worth knowing: any non-zero value also raises the client's own level cap from 50 to 60 (`0x4a22c0`: `push 0x32` default, `push 0x3c` when this field is set) and feeds a 51/56/60 counter at 0x4270e4.  We ship 7 (all three tiers) — see SendPlayerProfile.
@@ -1162,8 +1164,9 @@ struct CastOn_Struct
 /*000*/	int32	target_id;
 /*004*/	int32	source_id;
 /*008*/	int8	source_level;
-/*009*/	int8	unknown1[4];
-/*013*/	int8	unknown_zero1[7];
+/*009*/	int8	unknown1[3];
+/*012*/	int32	instrument_mod;	// Bard instrument modifier, tenths (10 = 1.0x).  eqgame.exe 0x4220e9 (in the spell-effect applier 0x420505, reached from 0x4b3ccd with this struct): when the caster's class is Bard (spawn +0x99 == 8) and the value is 1..30, each effect value the client applies itself (effect 58, illusion, excepted) is multiplied by value * 0.1f (ds:0x5351c4) and truncated; 0 or 31+ leaves it unmodified.
+/*016*/	int8	unknown_zero1[4];
 /*020*/	float	heading;
 /*024*/	int8	unknown_zero2[4];
 /*028*/	int32	action;
@@ -1703,14 +1706,24 @@ struct ExpUpdate_Struct
 ** LevelUpdate_Struct
 ** Opcode:  OP_LevelUpdate = 0x9821
 ** Direction: zone server -> client
-** Source:  EQClassic Common/Include/eq_packet_structs.h :: LevelUpdate_Struct
-** Size:    2 bytes
+** Source:  eqgame.exe 0x49494e (the 0x9821 handler).  EQClassic's 2-byte
+**          { int8 level; int8 can_delevel } is not what the client reads.
+** Size:    12 bytes
+**
+** The handler reads three dwords:
+**   +0 level      applied only if it is greater than the current level
+**                 (signed dword compare against the PP level byte); the low
+**                 byte becomes the level, and it also raises the PP byte at
+**                 4172 (highest level reached) when greater.
+**   +4 level_old  +5 training points when level > level_old.
+**   +8 exp        cumulative experience, written to PP exp (offset 64).
 */
 struct LevelUpdate_Struct
 {
-/*000*/	int8	level;
-/*001*/	int8	can_delevel;	// 0=no delevel, non-zero=allow delevel
-/*002*/
+/*000*/	uint32	level;
+/*004*/	uint32	level_old;
+/*008*/	uint32	exp;
+/*012*/
 };
 
 /*
@@ -2234,6 +2247,16 @@ static_assert(sizeof(PlayerProfile_Struct)    == 8104,
 
 static_assert(sizeof(ClassTrain_Struct)       == 148,
 	"Trilogy ClassTrain_Struct must be 148 bytes");
+
+static_assert(sizeof(LevelUpdate_Struct)      == 12,
+	"Trilogy LevelUpdate_Struct must be 12 bytes (eqgame.exe 0x49494e reads three dwords)");
+
+static_assert(sizeof(CastOn_Struct)           == 36,
+	"Trilogy CastOn_Struct must be 36 bytes");
+static_assert(offsetof(CastOn_Struct, instrument_mod) == 12,
+	"CastOn instrument_mod is read at +0x0C (eqgame.exe 0x4220e9)");
+static_assert(offsetof(CastOn_Struct, heading) == 20,
+	"CastOn heading is read at +0x14 (eqgame.exe 0x4207ed)");
 
 static_assert(sizeof(ZoneServerInfo_Struct)   == 130,
 	"Trilogy ZoneServerInfo_Struct must be 130 bytes");
