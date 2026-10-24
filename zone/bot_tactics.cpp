@@ -93,6 +93,7 @@ constexpr uint32 kOffTankWaitMs    = 5000;  // a fresh add is the mezzer's first
 constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
 constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
+constexpr float  kCampHoldRadius   = 100.0f; // with a camp, the raid fights nothing further out (Rebuild, out_of_camp)
 constexpr uint32 kCampGraceMs      = 60000; // still walking, far off (kCampLeaveRadius) this long, no fight = travelling: no camp
 constexpr float  kCampLeaveRadius  = 300.0f; // ...that far from camp
 constexpr uint32 kCampAwayMs       = 180000; // or out of camp at all this long, no fight
@@ -927,9 +928,23 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		return incoming_home && ChasesOurPuller(p, t) &&
 			DistanceSquaredNoZ(glm::vec3(t->GetPosition()), incoming_at) > kCampArriveRadius * kCampArriveRadius;
 	};
+	// With a camp, the raid fights at camp, nowhere else. A mob further out is
+	// not its fight -- whoever of ours it has on its list -- unless the player
+	// is swinging at it out there (then the camp goes to that fight, below).
+	// The player's target is what they ^pull, and a bot of theirs taken by
+	// it anywhere puts the player on its list (Mob::AddToHateList adds a
+	// bot's owner): "Ralban is fighting it", and the whole raid ran out to
+	// every pack a monk was working (Kael 2026-10-24, the Protectors of Zek
+	// and the Vallon Zek pack, 3 s after each feign).
+	auto out_of_camp = [&](Mob* t, Mob* m) {
+		if (!p.camp_set || !t || DistanceSquaredNoZ(glm::vec3(t->GetPosition()), p.camp) <= kCampHoldRadius * kCampHoldRadius) {
+			return false;
+		}
+		return !(m->IsClient() && m->CastToClient()->AutoAttackEnabled() && t->GetTarget() == m);
+	};
 	auto fighting = [&](Mob* m) -> Mob* {
 		Mob* t = FightingTarget(m);
-		return is_incoming(t) ? nullptr : t;
+		return is_incoming(t) || out_of_camp(t, m) ? nullptr : t;
 	};
 
 	Mob* assist = mt ? fighting(mt) : nullptr;
@@ -1047,7 +1062,14 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	if (p.assist_target_id != old_assist) {
 		p.assist_since_ms = now;
 		if (assist) {
-			LogInfo("[BotTactics] unit [{:#x}] assist [{}]", p.key, assist->GetCleanName());
+			Mob* top = assist->GetHateTop();
+			LogInfo(
+				"[BotTactics] unit [{:#x}] assist [{}] at [{:.0f}, {:.0f}], [{:.0f}] from camp, on [{}] at [{:.0f}] from camp",
+				p.key, assist->GetCleanName(), assist->GetX(), assist->GetY(),
+				p.camp_set ? std::sqrt(DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp)) : -1.0f,
+				top ? top->GetCleanName() : "nobody",
+				top && p.camp_set ? std::sqrt(DistanceSquaredNoZ(glm::vec3(top->GetPosition()), p.camp)) : -1.0f
+			);
 		}
 	}
 
@@ -1143,6 +1165,17 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		if (p.camp_set) {
 			const bool leader_in_camp = DistanceSquaredNoZ(lpos, p.camp) <= kCampRadius * kCampRadius;
 
+			// A pull out there: the camp stays where the puller is bringing it.
+			// It moved with the player mid-pull, and the raid walked off while a
+			// monk had the Protectors of Zek on it (Kael 2026-10-24).
+			bool pull_out = !p.pull_queue.empty();
+			for (Mob* m : mobs) {
+				if (m->IsBot() && IsAlive(m)) {
+					Bot* b = m->CastToBot();
+					pull_out = pull_out || b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag();
+				}
+			}
+
 			if (!assist) {
 				p.pull_active     = false;
 				p.pull_arrived_id = 0;
@@ -1161,7 +1194,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				if (leader_in_camp) {
 					p.camp_left_ms = 0;
 				}
-				else if (stopped && !p.camp_fixed && DistanceSquaredNoZ(lpos, p.camp) > kCampFollowRadius * kCampFollowRadius) {
+				else if (stopped && !p.camp_fixed && !pull_out && DistanceSquaredNoZ(lpos, p.camp) > kCampFollowRadius * kCampFollowRadius) {
 					p.camp         = lpos;
 					p.camp_left_ms = 0;
 					p.walk_from_camp.clear();
@@ -6405,6 +6438,19 @@ bool Bot::TacticsIsIncoming(Mob* m)
 		return false; // here: the camp's fight
 	}
 	return PullerOf(*p, m->GetID()) != nullptr || ChasesOurPuller(*p, m); // the pulled mob, or an add after the puller
+}
+
+// The raid fights at camp only (Rebuild's out_of_camp, for auto-defend): a
+// mob further out than kCampHoldRadius is not ours to go to, unless the
+// player is swinging at it there.
+bool Bot::TacticsOutOfCamp(Mob* m)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->camp_set || !m || DistanceSquaredNoZ(glm::vec3(m->GetPosition()), p->camp) <= kCampHoldRadius * kCampHoldRadius) {
+		return false;
+	}
+	Mob* leader = p->camp_leader_id ? entity_list.GetMob(p->camp_leader_id) : nullptr;
+	return !(leader && leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() && m->GetTarget() == leader);
 }
 
 // Anyone of the unit -- player, bot, or a pet of theirs -- within `radius` of

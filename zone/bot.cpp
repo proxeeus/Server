@@ -3085,10 +3085,16 @@ bool Bot::TryAutoDefend(Client* bot_owner, float leash_distance) {
 					// A mob one of ours is pulling has us on its list from the
 					// tag on (Bot::TacticsIsIncoming): it is not attacking anyone,
 					// it is being brought in. Leave it until it is at camp.
-					if (hater && TacticsIsIncoming(hater)) {
+					// ...and with a camp, anything out of camp: the raid fights at
+					// camp only. A pack member a monk had just feigned off took a
+					// bot on its way home, the player went on its list with it,
+					// and every bot went for it out there (Kael 2026-10-24).
+					const bool pulled = hater && TacticsIsIncoming(hater);
+					if (hater && (pulled || TacticsOutOfCamp(hater))) {
 						if (m_auto_defend_held_id != hater->GetID()) {
 							m_auto_defend_held_id = hater->GetID();
-							LogInfo("[BotAI] [{}] auto-defend holds: [{}] is being pulled", GetCleanName(), hater->GetCleanName());
+							LogInfo("[BotAI] [{}] auto-defend holds: [{}] is {}", GetCleanName(), hater->GetCleanName(),
+								pulled ? "being pulled" : "out of camp");
 						}
 						continue;
 					}

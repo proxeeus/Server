@@ -91,7 +91,7 @@ constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds 
 constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
 constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
 constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the monk runs this far sideways (not toward camp) before feigning
-constexpr uint8  FD_ESCAPE_MAX_RUNS      = 4;               // ...and on that far again, at most this often, while ours are within the pack's reach
+constexpr uint8  FD_ESCAPE_MAX_RUNS      = 12;              // ...and on that far again, at most this often, while ours are within the pack's reach
 constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
 constexpr float  FD_CATCH_REACH          = 200.0f;          // the catcher goes for one of the pack walked clear of the rest within this
 constexpr float  FD_PEEL_READY_DIST      = 250.0f;          // the tagger goes in again once the catcher is catching within this (anywhere round the pack)
@@ -1100,6 +1100,7 @@ public:
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
 	bool TacticsIsIncoming(Mob* m);               // one of ours is bringing it in and it is not at camp yet: nobody goes for it
+	bool TacticsOutOfCamp(Mob* m);                // with a camp: further out than the raid fights (kCampHoldRadius), and the player not swinging at it
 
 	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
 	void TacticsPetChecks();
