@@ -4308,7 +4308,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	// raid was not enough: the Vallon Zek pack, 104 from the player, walked
 	// home past the raid and all three came in (Kael 2026-10-24;
 	// fdpull_sim.pl 3/30 runs without this, 30/30 with it).
-	auto walk_home_clear = [&]() {
+	auto ours_list = [&]() {
 		const BotTacticsPlan* p = GetTacticsPlan();
 		std::vector<Mob*>     ours;
 		if (p) {
@@ -4325,8 +4325,10 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		else if (bot_owner) {
 			ours.push_back(bot_owner);
 		}
-
-		const glm::vec3 me(GetPosition());
+		return ours;
+	};
+	auto walk_home_clear = [&](const glm::vec3& me) {
+		const std::vector<Mob*> ours = ours_list();
 		std::list<NPC*> npc_list;
 		entity_list.GetNPCList(npc_list);
 		for (auto* npc : npc_list) {
@@ -4351,6 +4353,39 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 		}
 		return true;
+	};
+
+	// Where to run on to. Straight sideways ran into Kael's buildings:
+	// TryMoveAlong cut every run short at the wall, and after four of them the
+	// monk feigned 51 from the raid (fdpull_sim.pl on kael.map). Of eight
+	// headings -- not straight at camp -- each cut at the first wall, the spot
+	// clear of ours whose walk home is clear too; failing that, the one
+	// furthest from ours.
+	auto pick_escape = [&](float reach) {
+		const std::vector<Mob*> ours    = ours_list();
+		const glm::vec3         back    = PullReturnPoint(bot_owner);
+		const float             to_home = CalculateHeadingToTarget(back.x, back.y);
+		const glm::vec4         from(GetX(), GetY(), GetZ(), 0.0f);
+		float                   best    = -1.0f;
+		for (int k = 1; k <= 7; ++k) {
+			const float     heading = FixHeading(to_home + 64.0f * k);
+			const glm::vec4 to      = TryMoveAlong(from, FD_ESCAPE_DIST, heading);
+			if (DistanceSquaredNoZ(glm::vec3(to), glm::vec3(from)) < 30.0f * 30.0f || std::fabs(to.z - from.z) >= 20.0f) {
+				continue;
+			}
+			const glm::vec3 at(to);
+			float           nearest = 1e9f;
+			for (Mob* o : ours) {
+				nearest = std::min(nearest, std::sqrt(DistanceSquaredNoZ(glm::vec3(o->GetPosition()), at)));
+			}
+			const float score = (nearest > reach && walk_home_clear(at) ? 1e6f : 0.0f) + nearest;
+			if (score > best) {
+				best                = score;
+				m_fd_escape         = at;
+				m_fd_escape_heading = heading;
+			}
+		}
+		return best >= 0.0f;
 	};
 
 	// Tag it, and run with it (see set_escape).
@@ -4475,13 +4510,15 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				// walk home and wait to be tagged again). Kite it in.
 				m_fd_pull_state = FDPullState::RetagKiting;
 				say(fmt::format("{} came alone — bringing it in.", pull_target->GetCleanName()));
-			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && (TacticsOursNear(glm::vec3(GetPosition()), chaser_reach()) || !walk_home_clear())) {
+			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && (TacticsOursNear(glm::vec3(GetPosition()), chaser_reach()) || !walk_home_clear(glm::vec3(GetPosition())))) {
 				// Not here: the pack would stop on top of us, or walk home past
-				// ours, and take them once it lost us. On, the same way.
+				// ours, and take them once it lost us. On, somewhere clear.
 				++m_fd_escape_runs;
-				const glm::vec4 to   = TryMoveAlong(glm::vec4(GetX(), GetY(), GetZ(), 0.0f), FD_ESCAPE_DIST, m_fd_escape_heading);
-				if (std::fabs(to.z - GetZ()) < 20.0f) {
-					m_fd_escape = glm::vec3(to);
+				if (!pick_escape(chaser_reach())) {
+					const glm::vec4 to = TryMoveAlong(glm::vec4(GetX(), GetY(), GetZ(), 0.0f), FD_ESCAPE_DIST, m_fd_escape_heading);
+					if (std::fabs(to.z - GetZ()) < 20.0f) {
+						m_fd_escape = glm::vec3(to);
+					}
 				}
 				m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 				LogInfo("[FDPull] [{}] ours within reach of the pack: running on before feigning", GetCleanName());
@@ -4740,7 +4777,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			float add_d = 0.0f;
 			for (auto& close : entity_list.GetCloseMobList(this)) {
 				Mob* m = close.second;
-				if (!m || !m->IsNPC() || m->IsPet() || m == pull_target || m->GetHP() <= 0 || !m->CastToNPC()->IsOnHatelist(mate)) {
+				// Not the one that started the fight: it calls for help again
+				// every 3 s (NPC::assist_timer, primary aggro only), and peeled
+				// off it called the rest back onto us (fdpull_sim.pl).
+				if (!m || !m->IsNPC() || m->IsPet() || m == pull_target || m->GetHP() <= 0 || !m->CastToNPC()->IsOnHatelist(mate) ||
+					m->HasPrimaryAggro()) {
 					continue;
 				}
 				const float d = DistanceSquared(glm::vec3(m->GetPosition()), glm::vec3(GetPosition()));
@@ -4800,8 +4841,19 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 		}
 		else if (ms == FDPullState::Tagging || ms == FDPullState::Retagging) {
-			if (DistanceSquared(glm::vec3(mate->GetPosition()), glm::vec3(GetPosition())) > 25.0f * 25.0f) {
-				RunTo(mate->GetX(), mate->GetY(), mate->GetZ());
+			// Off the target's aggro, on our side of it. Following the tagger
+			// in, the catcher took the target itself and both of us ended up on
+			// it; and after a feign the tagger may be anywhere round the pack,
+			// the way to it through the pack (fdpull_sim.pl on kael.map).
+			const float d = std::sqrt(dist_sq);
+			if (d < wait_dist - 5.0f) {
+				const glm::vec3 back = PullReturnPoint(bot_owner);
+				RunTo(back.x, back.y, back.z);
+			}
+			else if (d > wait_dist + 20.0f) {
+				const glm::vec3 t(pull_target->GetPosition());
+				const glm::vec3 goal = t + (glm::vec3(GetPosition()) - t) * (wait_dist / d);
+				RunTo(goal.x, goal.y, goal.z);
 			}
 			else {
 				hold_still(pull_target);

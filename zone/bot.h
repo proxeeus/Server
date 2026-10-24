@@ -94,7 +94,7 @@ constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the m
 constexpr uint8  FD_ESCAPE_MAX_RUNS      = 4;               // ...and on that far again, at most this often, while ours are within the pack's reach
 constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
 constexpr float  FD_CATCH_REACH          = 200.0f;          // the catcher goes for one of the pack walked clear of the rest within this
-constexpr float  FD_PEEL_READY_DIST      = 40.0f;           // the tagger goes in again once the catcher is back this close
+constexpr float  FD_PEEL_READY_DIST      = 250.0f;          // the tagger goes in again once the catcher is catching within this (anywhere round the pack)
 constexpr uint32 FD_PEEL_GIVE_UP_MS      = 45000;           // a peeled add not at camp after this is let go
 
 // nHSND	negative Healer/Slower/Nuker/Doter
