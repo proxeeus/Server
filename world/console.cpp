@@ -20,6 +20,7 @@
 
 #include "console.h"
 #include "clientlist.h"
+#include "cliententry.h"
 #include "login_server.h"
 #include "login_server_list.h"
 #include "world_config.h"
