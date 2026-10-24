@@ -1239,6 +1239,8 @@ public:
 	inline void StartFleeing() { flee_mode = true; CalculateNewFearpoint(); }
 	void StopFleeing();
 	inline bool IsFleeing() { return flee_mode; }
+	inline bool IsRunningFromFear() const { return currently_fleeing; } // fleeing or feared, and walking fear points
+	void FearPathStuck(); // the movement manager could not walk to m_FearWalkTarget
 	void ProcessFlee();
 	void CheckFlee();
 	void FleeInfo(Mob* client);
@@ -1868,6 +1870,9 @@ protected:
 	int patrol;
 	glm::vec3 m_FearWalkTarget;
 	bool currently_fleeing;
+	uint8 m_fear_stuck_count;  // unwalkable fear points in the current window (FearPathStuck)
+	Timer m_fear_stuck_window;
+	Timer m_fear_hold_timer;   // out of walkable fear points: stand until it expires
 
 	bool pause_timer_complete;
 	bool DistractedFromGrid;

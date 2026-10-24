@@ -30,6 +30,13 @@ extern Zone* zone;
 
 #define FEAR_PATHING_DEBUG
 
+namespace {
+	constexpr int    kFearPointAttempts = 5;     // navmesh points tried before the non-pathed fallback
+	constexpr uint8  kFearStuckRerolls  = 5;     // unwalkable points in a row before the mob holds
+	constexpr uint32 kFearStuckWindowMs = 10000; // the re-rolls above are counted inside this window
+	constexpr uint32 kFearStuckHoldMs   = 3000;  // how long it holds before it tries again
+}
+
 int Mob::GetFleeRatio(Mob* other)
 {
 	int flee_ratio = GetSpecialAbility(SpecialAbility::FleePercent); // if a special SpecialAbility::FleePercent exists
@@ -258,8 +265,58 @@ void Mob::ProcessFlee()
 	StopFleeing();
 }
 
+void Mob::FearPathStuck()
+{
+	// Counted per burst: a mob that has walked fine for a while starts again from zero.
+	if (!m_fear_stuck_window.Enabled() || m_fear_stuck_window.Check(false)) {
+		m_fear_stuck_count = 0;
+		m_fear_stuck_window.Start(kFearStuckWindowMs);
+	}
+
+	if (++m_fear_stuck_count <= kFearStuckRerolls) {
+		LogInfo(
+			"[FearPath] [{}] cannot walk to fear point ({:.1f}, {:.1f}, {:.1f}) from ({:.1f}, {:.1f}, {:.1f}): new point [{}/{}]",
+			GetCleanName(),
+			m_FearWalkTarget.x,
+			m_FearWalkTarget.y,
+			m_FearWalkTarget.z,
+			GetX(),
+			GetY(),
+			GetZ(),
+			m_fear_stuck_count,
+			kFearStuckRerolls
+		);
+		CalculateNewFearpoint();
+		return;
+	}
+
+	LogInfo(
+		"[FearPath] [{}] no fear point it can walk to: holds at ({:.1f}, {:.1f}, {:.1f}) for [{}] ms",
+		GetCleanName(),
+		GetX(),
+		GetY(),
+		GetZ(),
+		kFearStuckHoldMs
+	);
+	m_FearWalkTarget = glm::vec3(GetPosition());
+	m_fear_hold_timer.Start(kFearStuckHoldMs);
+	m_fear_stuck_window.Disable();
+}
+
 void Mob::CalculateNewFearpoint()
 {
+	// Holding (FearPathStuck): stay put until the hold expires. The AI calls
+	// this on every movement tick while the mob stands, so it stays cheap.
+	if (m_fear_hold_timer.Enabled()) {
+		if (!m_fear_hold_timer.Check(false)) {
+			m_FearWalkTarget  = glm::vec3(GetPosition());
+			currently_fleeing = true;
+			return;
+		}
+
+		m_fear_hold_timer.Disable();
+	}
+
 	// blind waypoint logic isn't the same as fear's.  Has a chance to run toward the player
 	// chance is very high if the player is moving, otherwise it's low
 	if (IsBlind() && !IsFeared() && GetTarget()) {
@@ -276,16 +333,23 @@ void Mob::CalculateNewFearpoint()
 	}
 
 	if (RuleB(Pathing, Fear) && zone->pathing) {
-		glm::vec3 Node;
 		int flags = PathingNotDisabled ^ PathingZoneLine;
 
-		if (IsNPC() && CastToNPC()->IsUnderwaterOnly() && !zone->IsWaterZone(GetZOffset())) {
-			Node = glm::vec3(0.0f);
-		} else {
-			Node = zone->pathing->GetRandomLocation(glm::vec3(GetX(), GetY(), GetZOffset()), flags);
-		}
+		// Searched from where the mob stands. GetZ() already carries the model
+		// offset (UpdatePathGround paths from it too); GetZOffset() alone is
+		// that offset, a few units, so the search snapped to whatever navmesh
+		// layer lies near z=0. Over a lower floor -- Silverwing on the
+		// Veeshan's Peak bridge -- every fear point was on the floor below,
+		// the walk there came back stuck, and RunToTarget took her off the edge.
+		const glm::vec3 here(GetX(), GetY(), GetZ());
+		const bool      stranded = IsNPC() && CastToNPC()->IsUnderwaterOnly() && !zone->IsWaterZone(GetZ());
 
-		if (Node.x != 0.0f || Node.y != 0.0f || Node.z != 0.0f) {
+		for (int attempt = 1; attempt <= kFearPointAttempts && !stranded; ++attempt) {
+			glm::vec3 Node = zone->pathing->GetRandomLocation(here, flags);
+			if (Node.x == 0.0f && Node.y == 0.0f && Node.z == 0.0f) {
+				break; // no navmesh under us: another roll finds none either
+			}
+
 			Node.z = GetFixedZ(Node);
 			PathfinderOptions opts;
 			opts.smooth_path = true;
@@ -295,7 +359,7 @@ void Mob::CalculateNewFearpoint()
 			auto partial = false;
 			auto stuck = false;
 			auto route = zone->pathing->FindPath(
-				glm::vec3(GetX(), GetY(), GetZOffset()),
+				here,
 				glm::vec3(Node.x, Node.y, Node.z),
 				partial,
 				stuck,
@@ -306,23 +370,42 @@ void Mob::CalculateNewFearpoint()
 			int route_count = 0;
 			bool have_los = true;
 
+			// A route that stops short ends somewhere we cannot walk to; the
+			// rest of the way would be a straight line. Roll another point.
+			if (partial || route_size == 0) {
+				LogInfo(
+					"[FearPath] [{}] fear point ({:.1f}, {:.1f}, {:.1f}) has no full route from ({:.1f}, {:.1f}, {:.1f}): attempt [{}/{}]",
+					GetCleanName(),
+					Node.x,
+					Node.y,
+					Node.z,
+					GetX(),
+					GetY(),
+					GetZ(),
+					attempt,
+					kFearPointAttempts
+				);
+				continue;
+			}
+
 			if (route_size == 2) {
 				// FindPath() often fails to compute a route in some places, so to prevent running through walls we need to check LOS on all 2 node routes
 				// size 2 route usually means FindPath() bugged out.  sometimes it returns locs outside the geometry
 				if (CheckLosFN(Node.x, Node.y, Node.z, 6.0)) {
 					LogPathingDetail("Direct route to fearpoint [{}], [{}], [{}] calculated for [{}]", last_good_loc.x, last_good_loc.y, last_good_loc.z, GetName());
+					LogInfo("[FearPath] [{}] runs to ({:.1f}, {:.1f}, {:.1f}) from ({:.1f}, {:.1f}, {:.1f}): direct, attempt [{}]", GetCleanName(), last_good_loc.x, last_good_loc.y, last_good_loc.z, GetX(), GetY(), GetZ(), attempt);
 					m_FearWalkTarget = last_good_loc;
 					currently_fleeing = true;
 					return;
 				} else {
 					LogPathingDetail("FindRoute() returned single hop route to destination without LOS: [{}], [{}], [{}] for [{}]", last_good_loc.x, last_good_loc.y, last_good_loc.z, GetName());
 				}
-				// use fallback logic if LOS fails
-			} else if (!stuck) {
+				// try another point if LOS fails
+			} else {
 				// check route for LOS failures to prevent mobs ending up outside of playable area
 				// only checking the last few hops because LOS will often fail in a valid route which can result in mobs getting undesirably trapped
 				auto iter = route.begin();
-				glm::vec3 previous_pos(GetX(), GetY(), GetZOffset());
+				glm::vec3 previous_pos = here;
 				while (iter != route.end() && have_los == true) {
 					auto &current_node = (*iter);
 					iter++;
@@ -354,6 +437,7 @@ void Mob::CalculateNewFearpoint()
 						LogPathingDetail("Using truncated route to fearpoint [{}], [{}], [{}] for [{}]; node count: [{}]; route size [{}]", last_good_loc.x, last_good_loc.y, last_good_loc.z, GetName(), route_count, route_size);
 					}
 
+					LogInfo("[FearPath] [{}] runs to ({:.1f}, {:.1f}, {:.1f}) from ({:.1f}, {:.1f}, {:.1f}): route [{}] nodes, attempt [{}]", GetCleanName(), last_good_loc.x, last_good_loc.y, last_good_loc.z, GetX(), GetY(), GetZ(), route_size, attempt);
 					m_FearWalkTarget = last_good_loc;
 					currently_fleeing = true;
 					return;
@@ -432,6 +516,7 @@ void Mob::CalculateNewFearpoint()
 	if (currently_fleeing) {
 		m_FearWalkTarget = glm::vec3(ranx, rany, ranz);
 		LogPathingDetail("Non-pathed fearpoint [{}], [{}], [{}] selected for [{}]", ranx, rany, ranz, GetName());
+		LogInfo("[FearPath] [{}] runs to ({:.1f}, {:.1f}, {:.1f}) from ({:.1f}, {:.1f}, {:.1f}): non-pathed fallback", GetCleanName(), ranx, rany, ranz, GetX(), GetY(), GetZ());
 	}
 
 	return;

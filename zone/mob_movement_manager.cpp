@@ -1499,6 +1499,15 @@ void MobMovementManager::HandleStuckBehavior(Mob *who, float x, float y, float z
 	auto eiter = _impl->Entries.find(who);
 	auto &ent = (*eiter);
 
+	// A fleeing or feared mob chose its own point, and any other will do.
+	// The straight line RunToTarget walks follows no navmesh: off a bridge or
+	// a ledge, FixZ drops the mob to the floor below. Pick another point.
+	if (who->IsRunningFromFear()) {
+		PushStopMoving(ent.second);
+		who->FearPathStuck();
+		return;
+	}
+
 	switch (sb) {
 		case RunToTarget:
 			PushMoveTo(ent.second, x, y, z, mob_movement_mode);

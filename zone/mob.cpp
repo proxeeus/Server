@@ -137,6 +137,7 @@ Mob::Mob(
 
 	targeted          = 0;
 	currently_fleeing = false;
+	m_fear_stuck_count = 0;
 
 	AI_Init();
 	SetMoving(false);
