@@ -415,6 +415,7 @@ namespace DatabaseSchema {
 			"bot_inventories",
 			"bot_owner_options",
 			"bot_raid_encounters",
+			"bot_pull_policy",
 			"bot_pet_buffs",
 			"bot_pet_inventories",
 			"bot_pets",

@@ -12289,6 +12289,30 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 		return;
 	}
 
+	// ── Destroyed from the cursor (to_slot -1) ───────────────────────────
+	// The coin is gone. The early return below skipped it, so it stayed in
+	// m_pp.*_cursor, which is persisted and shipped at the next zone-in: coin
+	// destroyed in Sebilis came back on the cursor in West Freeport
+	// (2026-10-24). EQClassic zeroes the cursor coin on any move off the
+	// cursor (client_process.cpp ProcessOP_MoveCoin).
+	if (from_slot == 0 && to_slot == -1) {
+		// All of it: the cursor holds one stack of coin, and stale figures in
+		// the other denominations (left by the bug above) came back at every
+		// zone-in otherwise (Kael 2026-10-24: gold destroyed, 400s 425c kept).
+		auto&          pp     = s.trilogy_client->GetPP();
+		const uint32_t denom  = mc->cointype1;
+		const int64_t  amount = static_cast<int64_t>(mc->amount);
+		pp.platinum_cursor = 0;
+		pp.gold_cursor     = 0;
+		pp.silver_cursor   = 0;
+		pp.copper_cursor   = 0;
+		s.trilogy_client->Save();
+		LogInfo("[TrilogyZone] MoveCoin destroy char={} denom={} amount={} (cursor p={} g={} s={} c={})",
+		        s.char_id, denom, static_cast<long long>(amount),
+		        pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor);
+		return;
+	}
+
 	// Only carried(1) <-> bank(2) transfers persist; cursor(0)/trade(3)-only moves
 	// are display/transient and handled elsewhere (trade) or ignored.
 	if (from_slot != 1 && from_slot != 2 && to_slot != 1 && to_slot != 2)
@@ -12330,6 +12354,19 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	};
 	if (from_slot == 0) adjust_cursor(-1);
 	if (to_slot   == 0) adjust_cursor(+1);
+
+	// The client moving more carried coin than the server holds means the two
+	// drifted apart earlier: some coin reached the client and not m_pp. In
+	// Sebilis (2026-10-24) the client picked up 366g / 400s / 425c against
+	// 315 / 339 / 346 here, and the floor below swallowed the difference.
+	if (from_slot == 1) {
+		const int64_t held = (denom == 0) ? pp.copper : (denom == 1) ? pp.silver : (denom == 2) ? pp.gold : pp.platinum;
+		if (amount > held) {
+			LogInfo("[TrilogyCoin] char={} moved {} of denom {} from carried, server holds {}: out of step by {}",
+			        s.char_id, static_cast<long long>(amount), denom, static_cast<long long>(held),
+			        static_cast<long long>(amount - held));
+		}
+	}
 
 	// Deduct from source (floor at 0).
 	if (from_slot == 1) {
@@ -15478,7 +15515,11 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// During zone-out the client is tearing down its connection and any A120 can
 	// cause an unexpected ARQ response that confuses the close handshake.
 	// Mob positions are ephemeral so they are never buffered — just skip entirely.
-	if (s.trilogy_client && s.trilogy_client->IsZoning()) return;
+	// No client either (zoned out, entity removed, CLOSE sent): there is nobody
+	// to show anything to. The ghost reconcile below took every spawn the
+	// client had known for gone and sent 52 despawns to the closed session,
+	// which held it open until a misleading "linkdead" (Kael 2026-10-24).
+	if (!s.trilogy_client || s.trilogy_client->IsZoning()) return;
 
 	// Rate-limit heartbeats. Idle/exploration: 250 ms (4 Hz) — matches EQClassic
 	// entity_list.SendPositionUpdates() interval and keeps the inbound packet flood
@@ -16202,8 +16243,22 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// so once they age out of v29c's staleness window they stay invisible.
 		// Event-driven culls at 600u too, so out-of-range bots need heartbeat
 		// as their sole staleness-refresh path.
+		//
+		// ...but not by it alone. The event path sends a bot's move when a
+		// movement command starts (a new path leg), and v29c gets no velocity
+		// to carry it on between updates (kVelocityWireScale=0), so a bot on
+		// one long straight run stood still on screen for all of it: a monk
+		// running out to pull showed "stuck at camp" for 16.7 s while the
+		// server had it 95 away ([Trilogy desync-pos] in_cull=1 moving=1 on
+		// every bot of a Kael raid, 2026-10-24). A refresh at most every
+		// kMovingBotRefreshMs from here fills that in; the body's own throttle
+		// (2 s idle, 200 ms in combat) bounds it further.
+		static constexpr uint64_t kMovingBotRefreshMs = 1000;
 		if (bot->IsMoving() && !bot->turning && dist_sq <= CULL_RADIUS_SQ) {
-			continue;
+			const auto lb = s.last_broadcast.find(static_cast<uint16_t>(bot->GetID()));
+			if (lb != s.last_broadcast.end() && now_ms - lb->second.sent_ms < kMovingBotRefreshMs) {
+				continue;
+			}
 		}
 
 		if (!bot->IsMoving()) {

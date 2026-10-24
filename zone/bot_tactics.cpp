@@ -25,6 +25,7 @@
 #include "data_bucket.h"
 #include "entity.h"
 #include "groups.h"
+#include "map.h"
 #include "position.h"
 #include "raids.h"
 #include "water_map.h"
@@ -36,6 +37,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -91,7 +93,10 @@ constexpr uint32 kOffTankWaitMs    = 5000;  // a fresh add is the mezzer's first
 constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
 constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
-constexpr uint32 kCampGraceMs      = 10000; // out of camp this long, no fight = moving on
+constexpr float  kCampHoldRadius   = 100.0f; // with a camp, the raid fights nothing further out (Rebuild, out_of_camp)
+constexpr uint32 kCampGraceMs      = 60000; // still walking, far off (kCampLeaveRadius) this long, no fight = travelling: no camp
+constexpr float  kCampLeaveRadius  = 300.0f; // ...that far from camp
+constexpr uint32 kCampAwayMs       = 180000; // or out of camp at all this long, no fight
 constexpr uint32 kPullRescueMs     = 8000;  // a pull this long has gone wrong
 constexpr float  kPullRescueHPRatio   = 80.0f; // ...or the puller is under this
 constexpr float  kPullRescueDamagePct = 1.0f;  // ...or losing over this % of health a second
@@ -111,7 +116,17 @@ constexpr uint32 kOwnerHoldMs      = 10 * 60 * 1000; // bots hold camp this long
 constexpr uint32 kRezRetryMs       = 60000; // the owner's rez request goes out again this often
 constexpr float  kHoldChaseRadius  = 150.0f; // holding bots do not chase further than this from camp
 constexpr float  kAutoPullRadius     = 250.0f; // default: pull what is within this of camp
-constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor
+constexpr float  kPullRadiusStep     = 100.0f; // "pull further" / "pull closer"
+constexpr float  kPullRadiusMin      = 100.0f;
+constexpr float  kPullRadiusMax      = 1000.0f;
+constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor (without a navmesh)
+constexpr float  kFixedCampRadius    = 100.0f; // auto-pull: the leader within this of camp
+constexpr uint32 kCampSettleMs       = 20000;  // ...idle there this long: the camp has settled, the bots pull
+constexpr float  kCampFollowRadius   = 150.0f; // an implicit camp follows a leader who stops at least this far off
+constexpr uint32 kPullAuditMs        = 180000; // [PullAudit] summary this often
+constexpr uint32 kPullStallMs        = 30000;  // settled, idle, nothing pulled this long: a STALL line
+constexpr float  kWalkSlack          = 1.5f;   // a mob may be this much further by its route than the radius
+constexpr uint32 kWalkCacheMs        = 30000;  // a route from camp measured again after this
 constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this close come along
 constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
 constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
@@ -125,6 +140,7 @@ constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is cal
 constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
 constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
 constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases past this from it
+constexpr uint32 kRunnerGiveUpMs     = 10000;  // a runner that long past the leash is gone: the fight is over
 constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the tank's hate...
 constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
 constexpr uint32 kSituationalCheckMs = 2000;   // breath / resist needs looked at this often
@@ -158,7 +174,10 @@ constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
 constexpr float  kRaidHealerBuffManaPct = 90.0f; // ...a raid's healers above this: their mana is the fight's CHs
 constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this much mana...
 constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
-constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
+constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for...
+constexpr float  kPullReadyCasterFloorPct = 40.0f; // ...but more than a quarter of them under this is a WAIT
+constexpr uint32 kPullReadyBuffQuietMs   = 15000; // and no GO until the last buff went out this long ago
+constexpr uint32 kPullReadySettleMs      = 20000; // nor within this long of the unit forming
 constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
 constexpr uint32 kBuffingWindowMs        = 60000; // buffs cast in this window = "still buffing"
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
@@ -168,6 +187,7 @@ constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target
 // The XP engine (BOT_AI_SENTIENT.md, 6)
 constexpr float  kLowConfidence         = 0.5f;   // under this: singles only, rest to 95%
 constexpr float  kHighConfidence        = 1.5f;   // from this: one more social is fine
+constexpr uint8  kRedPullMaxLevels      = 4;      // a confident group pulls red cons up to this many levels over the leader
 constexpr float  kMaxConfidence         = 2.0f;
 constexpr float  kCautiousReadyRatio    = 95.0f;
 constexpr float  kChainPullConfidence   = 1.0f;   // chain pulls only after easy fights
@@ -257,6 +277,73 @@ bool BetterTank(Mob* a, Mob* b)
 }
 
 // The NPC `m` is fighting, once `m` is on its hate list.
+// The mana the unit's healers want before pulling a mob of this con, under
+// 2001 regen (no rest regen) and after it. Higher after a bad fight.
+float ManaBarFor(uint32 con, bool cautious)
+{
+	const bool era = RuleB(Character, TrilogyEraRegen);
+	float bar;
+	switch (con) {
+		case ConsiderColor::Green:     bar = era ? 35.0f : 50.0f; break;
+		case ConsiderColor::LightBlue: bar = era ? 45.0f : 60.0f; break;
+		case ConsiderColor::DarkBlue:  bar = era ? 55.0f : 70.0f; break;
+		case ConsiderColor::White:     bar = era ? 70.0f : 80.0f; break;
+		case ConsiderColor::Red:       bar = era ? 90.0f : 95.0f; break;
+		default:                       bar = era ? 80.0f : 90.0f; break; // yellow
+	}
+	return std::min(100.0f, bar + (cautious ? 10.0f : 0.0f));
+}
+
+// The walk from one point to the other by the zone's navmesh; below 0 when
+// there is no full route (another floor with no way down, behind a wall).
+float WalkDistance(const glm::vec3& from, const glm::vec3& to)
+{
+	if (!zone || !zone->pathing) {
+		return glm::distance(from, to);
+	}
+
+	PathfinderOptions opts;
+	opts.smooth_path = false; // the corners are enough to measure it
+	opts.flags       = PathingNotDisabled ^ PathingZoneLine;
+
+	bool partial = false;
+	bool stuck   = false;
+	const auto route = zone->pathing->FindPath(from, to, partial, stuck, opts);
+	if (partial || route.empty()) {
+		return -1.0f;
+	}
+
+	float     len  = 0.0f;
+	glm::vec3 prev = from;
+	for (const auto& node : route) {
+		if (node.teleport) {
+			continue;
+		}
+		len += glm::distance(prev, node.pos);
+		prev = node.pos;
+	}
+	return len;
+}
+
+// A mob after one of our pullers: the pulled mob, or an add that came with
+// it. It is chasing the puller to camp, not fighting us -- not ours to go
+// out for until it gets here.
+bool ChasesOurPuller(const BotTacticsPlan& p, Mob* m)
+{
+	if (!m) {
+		return false;
+	}
+	for (Mob* c : {m->GetHateTop(), m->GetTarget()}) {
+		if (c && c->IsBot() && p.IsMember(c->GetID())) {
+			Bot* b = c->CastToBot();
+			if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 Mob* FightingTarget(Mob* m)
 {
 	if (!IsAlive(m)) {
@@ -617,6 +704,9 @@ void BotTactics::Announce(Raid* raid, Group* group, Mob* speaker, const std::str
 void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 {
 	const uint32 now = Timer::GetCurrentTime();
+	if (!p.formed_ms) {
+		p.formed_ms = now;
+	}
 
 	const Overrides* ov = nullptr;
 	if (const auto it = m_overrides.find(p.key); it != m_overrides.end()) {
@@ -646,6 +736,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				continue;
 			}
 
+			// A bot charmed by an NPC fights for it: no tank, no healer,
+			// no member until the charm ends (Bot::NPCCharmAI).
+			if (m->IsBot() && m->CastToBot()->IsCharmedByNPC()) {
+				continue;
+			}
+
 			mobs.push_back(m);
 			p.members.push_back(m->GetID());
 			p.raid_group[m->GetID()] = rm.group_number;
@@ -653,7 +749,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	}
 	else if (group) {
 		for (Mob* m : group->members) {
-			if (m) {
+			if (m && !(m->IsBot() && m->CastToBot()->IsCharmedByNPC())) {
 				mobs.push_back(m);
 				p.members.push_back(m->GetID());
 			}
@@ -792,7 +888,66 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// What the main tank is fighting; with no tank, or a tank not yet
 	// engaged, whatever a player of the unit is fighting, else whatever
 	// jumped one of the bots -- the tank then goes in too (TryTacticsAssist).
-	Mob* assist = mt ? FightingTarget(mt) : nullptr;
+	// Mobs one of our bots is bringing in (a feign-death or plain pull) that
+	// are not at camp yet. Not ours to go and fight, as the main target or
+	// as an add: the camp waits for them. Kael 2026-10-24: a guard tagged
+	// near the raid aggroed on the bots next to it, the raid went after it
+	// and the monk stopped half way to fight it.
+	std::vector<uint16> incoming;
+	{
+		Mob*            leader_prev = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+		const glm::vec3 home        = p.camp_set ? p.camp : (leader_prev ? glm::vec3(leader_prev->GetPosition()) : glm::vec3(0.0f));
+		const bool      has_home    = p.camp_set || leader_prev;
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+			Bot*   b  = m->CastToBot();
+			uint16 id = b->IsFDPulling() ? b->GetFDPullTargetID() :
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() :
+				b->GetBringingInID(); // walking it home: no longer its target
+			Mob*   t  = id ? entity_list.GetMob(id) : nullptr;
+			if (t && has_home && DistanceSquaredNoZ(glm::vec3(t->GetPosition()), home) > kCampArriveRadius * kCampArriveRadius) {
+				incoming.push_back(id);
+			}
+		}
+	}
+	// ...and whatever is chasing one of those pullers out there: the adds
+	// that came along have the player on their lists from the tag on
+	// (Mob::AddToHateList adds a bot's owner), so the raid went for them.
+	Mob*            incoming_leader = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+	const bool      incoming_home   = p.camp_set || incoming_leader;
+	const glm::vec3 incoming_at     = p.camp_set ? p.camp : (incoming_leader ? glm::vec3(incoming_leader->GetPosition()) : glm::vec3(0.0f));
+	auto is_incoming = [&](Mob* t) {
+		if (!t) {
+			return false;
+		}
+		if (std::find(incoming.begin(), incoming.end(), t->GetID()) != incoming.end()) {
+			return true;
+		}
+		return incoming_home && ChasesOurPuller(p, t) &&
+			DistanceSquaredNoZ(glm::vec3(t->GetPosition()), incoming_at) > kCampArriveRadius * kCampArriveRadius;
+	};
+	// With a camp, the raid fights at camp, nowhere else. A mob further out is
+	// not its fight -- whoever of ours it has on its list -- unless the player
+	// is swinging at it out there (then the camp goes to that fight, below).
+	// The player's target is what they ^pull, and a bot of theirs taken by
+	// it anywhere puts the player on its list (Mob::AddToHateList adds a
+	// bot's owner): "Ralban is fighting it", and the whole raid ran out to
+	// every pack a monk was working (Kael 2026-10-24, the Protectors of Zek
+	// and the Vallon Zek pack, 3 s after each feign).
+	auto out_of_camp = [&](Mob* t, Mob* m) {
+		if (!p.camp_set || !t || DistanceSquaredNoZ(glm::vec3(t->GetPosition()), p.camp) <= kCampHoldRadius * kCampHoldRadius) {
+			return false;
+		}
+		return !(m->IsClient() && m->CastToClient()->AutoAttackEnabled() && t->GetTarget() == m);
+	};
+	auto fighting = [&](Mob* m) -> Mob* {
+		Mob* t = FightingTarget(m);
+		return is_incoming(t) || out_of_camp(t, m) ? nullptr : t;
+	};
+
+	Mob* assist = mt ? fighting(mt) : nullptr;
 	for (int pass = 0; pass < 2 && !assist; ++pass) {
 		for (Mob* m : mobs) {
 			if (m->IsClient() != (pass == 0)) {
@@ -805,7 +960,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 					continue;
 				}
 			}
-			if ((assist = FightingTarget(m)) != nullptr) {
+			if ((assist = fighting(m)) != nullptr) {
 				break;
 			}
 		}
@@ -858,12 +1013,63 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 		}
 	}
 
+	// A runner nobody chases is gone once it has been past the leash a while:
+	// the fight is over -- rest, resurrect -- until it stops running or comes
+	// back. Silverwing (Veeshan's Peak 2026-10-24) fled off the bridge at 11%:
+	// the CH chain healed the tank for her for half a minute, then spun out
+	// of mana, and for two minutes nobody medded or resurrected anyone.
+	if (assist && p.camp_set) {
+		const bool far_and_running = assist->IsFleeing() &&
+			DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) > kRunnerChaseRadius * kRunnerChaseRadius;
+
+		if (!far_and_running) {
+			if (p.runner_gone_id == assist->GetID()) {
+				LogInfo("[BotTactics] unit [{:#x}] runner [{}] is back", p.key, assist->GetCleanName());
+				p.runner_gone_id = 0;
+			}
+			p.runner_far_id       = 0;
+			p.runner_far_since_ms = 0;
+		}
+		else if (p.runner_far_id != assist->GetID()) {
+			p.runner_far_id       = assist->GetID();
+			p.runner_far_since_ms = now;
+		}
+		else if (now - p.runner_far_since_ms >= kRunnerGiveUpMs) {
+			if (p.runner_gone_id != assist->GetID()) {
+				p.runner_gone_id = assist->GetID();
+				LogInfo("[BotTactics] unit [{:#x}] runner [{}] got away: fight over", p.key, assist->GetCleanName());
+				Announce(raid, group, (mt && mt->IsBot()) ? mt : first_bot, fmt::format("{} got away.", assist->GetCleanName()));
+
+				// Off every hate list of ours, so the bots can sit.
+				for (Mob* m : mobs) {
+					for (Mob* who : {m, m->GetPet()}) {
+						if (!who || who->IsClient()) {
+							continue;
+						}
+						who->RemoveFromHateList(assist);
+						if (who->GetTarget() == assist) {
+							who->SetTarget(nullptr);
+						}
+					}
+				}
+			}
+			assist = nullptr;
+		}
+	}
+
 	const uint16 old_assist = p.assist_target_id;
 	p.assist_target_id = assist ? assist->GetID() : 0;
 	if (p.assist_target_id != old_assist) {
 		p.assist_since_ms = now;
 		if (assist) {
-			LogInfo("[BotTactics] unit [{:#x}] assist [{}]", p.key, assist->GetCleanName());
+			Mob* top = assist->GetHateTop();
+			LogInfo(
+				"[BotTactics] unit [{:#x}] assist [{}] at [{:.0f}, {:.0f}], [{:.0f}] from camp, on [{}] at [{:.0f}] from camp",
+				p.key, assist->GetCleanName(), assist->GetX(), assist->GetY(),
+				p.camp_set ? std::sqrt(DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp)) : -1.0f,
+				top ? top->GetCleanName() : "nobody",
+				top && p.camp_set ? std::sqrt(DistanceSquaredNoZ(glm::vec3(top->GetPosition()), p.camp)) : -1.0f
+			);
 		}
 	}
 
@@ -952,25 +1158,64 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			// Auto-pull is opt-in and nothing said so: tell the player once.
 			if (!p.camp_hint_given && !(ov && ov->auto_pull) && leader->IsClient()) {
 				p.camp_hint_given = true;
-				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Type ^tactics pull on to let them pull for you.");
+				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Target a mob and ^pull to send a monk for it; ^setcamp then ^pull auto to let them pull on their own.");
 			}
 		}
 
 		if (p.camp_set) {
 			const bool leader_in_camp = DistanceSquaredNoZ(lpos, p.camp) <= kCampRadius * kCampRadius;
 
+			// A pull out there: the camp stays where the puller is bringing it.
+			// It moved with the player mid-pull, and the raid walked off while a
+			// monk had the Protectors of Zek on it (Kael 2026-10-24).
+			bool pull_out = !p.pull_queue.empty();
+			for (Mob* m : mobs) {
+				if (m->IsBot() && IsAlive(m)) {
+					Bot* b = m->CastToBot();
+					pull_out = pull_out || b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag();
+				}
+			}
+
 			if (!assist) {
 				p.pull_active     = false;
 				p.pull_arrived_id = 0;
 
+				// Stopped somewhere else, out of a fight: the camp comes along.
+				// Clearing toward a boss room is walk on, stop, the bots pull
+				// what is around, walk on -- nothing typed. Only a camp that
+				// a fight made moves like this, so a stop in town is no camp.
+				const bool fighting = leader->IsClient() && leader->CastToClient()->AutoAttackEnabled();
+				if (fighting || DistanceSquaredNoZ(lpos, p.leader_still_pos) > 3.0f * 3.0f) {
+					p.leader_still_pos      = lpos;
+					p.leader_still_since_ms = now;
+				}
+				const bool stopped = p.leader_still_since_ms && now - p.leader_still_since_ms >= kCampSettleMs;
+
 				if (leader_in_camp) {
 					p.camp_left_ms = 0;
+				}
+				else if (stopped && !p.camp_fixed && !pull_out && DistanceSquaredNoZ(lpos, p.camp) > kCampFollowRadius * kCampFollowRadius) {
+					p.camp         = lpos;
+					p.camp_left_ms = 0;
+					p.walk_from_camp.clear();
+					p.autopull_idle_said = false;
+					LogInfo("[BotTactics] unit [{:#x}] camp moves with [{}] to [{:.0f}, {:.0f}, {:.0f}] (stopped there)",
+						p.key, leader->GetCleanName(), lpos.x, lpos.y, lpos.z);
 				}
 				else if (!p.camp_left_ms) {
 					p.camp_left_ms = now;
 				}
-				else if (now - p.camp_left_ms > kCampGraceMs) {
-					// Walked off and found nothing to fight: moving on.
+				else if (
+					!p.camp_fixed && (
+						(now - p.camp_left_ms > kCampGraceMs && DistanceSquaredNoZ(lpos, p.camp) > kCampLeaveRadius * kCampLeaveRadius) ||
+						now - p.camp_left_ms > kCampAwayMs
+					)
+				) {
+					// Gone for good: far off, or out of camp for minutes with
+					// nothing to show for it. Walking out to look, or to pull,
+					// is not leaving: it broke camp 10 s after the leader
+					// stepped out, so nothing was ever pulled. (A camp the
+					// player fixed with ^setcamp stays.)
 					LogInfo("[BotTactics] unit [{:#x}] camp broken: [{}] moved on", p.key, leader->GetCleanName());
 					p.camp_set     = false;
 					p.camp_left_ms = 0;
@@ -993,15 +1238,26 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// endless pull: every time the leader stepped out of camp to
 				// fight it, or was feared out, the bots went back to camp to
 				// wait for it.
+				// A bot bringing it in is not holding it: that is the pull
+				// itself (Kael 2026-10-24: "arrived" on the monk 110 out, and
+				// the raid ran out to it).
 				Mob* const on        = assist->GetTarget();
-				const bool bot_holds = on && on != leader && on->IsBot() &&
+				const bool on_puller = on && on->IsBot() && (
+					on->CastToBot()->IsFDPulling() || on->CastToBot()->GetPullingFlag() || on->CastToBot()->GetReturningFlag()
+				);
+				const bool bot_holds = on && on != leader && on->IsBot() && !on_puller &&
 					std::find(mobs.begin(), mobs.end(), on) != mobs.end();
 				if (mob_in_camp || bot_holds) {
 					p.pull_arrived_id = assist->GetID();
 				}
 
-				// A feared, stunned or mezzed leader is not pulling anything.
-				const bool leader_helpless = leader->IsFeared() || leader->IsStunned() || leader->IsMezzed();
+				// A feared, stunned, mezzed or charmed leader is not pulling
+				// anything -- nor fighting: a charmed player keeps its
+				// auto-attack on, and the camp followed Silverwing's thrall
+				// into her breath (Veeshan's Peak 2026-10-24).
+				const bool leader_charmed = leader->IsCharmed();
+				const bool leader_helpless =
+					leader->IsFeared() || leader->IsStunned() || leader->IsMezzed() || leader_charmed;
 
 				// Nor is one standing there swinging at it: a puller brings the
 				// mob home, a leader in melee with it is fighting where they
@@ -1010,14 +1266,18 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// whole unit -- main tank included -- at the old spot, and only
 				// the pets went (Kael 2026-10-23: 13 "holding camp", 9 fights
 				// the tank never touched).
-				const bool leader_fighting =
+				const bool leader_fighting = !leader_charmed &&
 					leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() &&
 					DistanceSquaredNoZ(lpos, glm::vec3(assist->GetPosition())) <= kLeaderMeleeRadius * kLeaderMeleeRadius;
 				if (leader_fighting && !leader_in_camp && !mob_in_camp) {
-					p.camp            = lpos;
+					// The bots go and help either way; a fixed camp is where
+					// they come back to after.
 					p.pull_arrived_id = assist->GetID();
-					LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
-						p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+					if (!p.camp_fixed) {
+						p.camp = lpos;
+						LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
+							p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+					}
 				}
 
 				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless && !leader_fighting &&
@@ -1039,9 +1299,15 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 						p.DamagePct(leader->GetID()) > kPullRescueDamagePct
 					)
 				) {
-					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help, camp broken", p.key, assist->GetCleanName());
-					pull       = false;
-					p.camp_set = false;
+					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help{}", p.key, assist->GetCleanName(),
+						p.camp_fixed ? "" : ", camp broken");
+					pull = false;
+					if (!p.camp_fixed) {
+						p.camp_set = false;
+					}
+					else {
+						p.pull_arrived_id = assist->GetID(); // fought where it is; the camp stays
+					}
 				}
 				else if (!pull && p.pull_active) {
 					// Arrived: this mob is the camp's fight from now on. Without
@@ -1204,6 +1470,10 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 
 	AutoPull(p, raid, mobs, leader, ov);
 
+	// ---- the player's pull queue (^pull) ----
+
+	DispatchPulls(p, raid, group, mobs, leader, assist);
+
 	if (assist) {
 		for (Mob* m : mobs) {
 			if (!m->IsBot() || !IsAlive(m) || !UsesMana(m) || m->GetManaRatio() >= kOomRatio) {
@@ -1305,8 +1575,8 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	if (anchor && assist) {
 		for (const auto& e : entity_list.GetCloseMobList(anchor, 0.0f)) {
 			Mob* n = e.second;
-			if (!n || n == assist || !n->IsNPC() || !IsAlive(n)) {
-				continue;
+			if (!n || n == assist || !n->IsNPC() || !IsAlive(n) || is_incoming(n)) {
+				continue; // (on its way in with a puller: not an add yet)
 			}
 
 			Mob* top = n->GetHateTop();
@@ -1521,7 +1791,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.camp_set &&
 			assist->GetID() != p.runner_called_id &&
 			DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) > kRunnerChaseRadius * kRunnerChaseRadius &&
-			(assist->IsFleeing() || assist->GetHPRatio() < kSnareHPRatio)
+			assist->IsFleeing() // running: low health alone is not (Derakor, flee-immune, "Runner!" at 35%)
 		) {
 			p.runner_called_id = assist->GetID();
 			LogInfo("[BotTactics] unit [{:#x}] runner [{}]", p.key, assist->GetCleanName());
@@ -1743,6 +2013,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			Mob* owner = top ? top->GetOwner() : nullptr;
 			if (IsAlive(t) && !(top && (p.IsMember(top->GetID()) || (owner && p.IsMember(owner->GetID()))))) {
 				p.pull_failed[p.autopull_target_id] = now + kPullFailedMs;
+				++p.audit_failed;
 				LogInfo(
 					"[BotTactics] unit [{:#x}] pull of [{}] fell through: leaving it [{}]s",
 					p.key, t->GetCleanName(), kPullFailedMs / 1000
@@ -1763,7 +2034,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	if (!p.auto_pull || !p.camp_set || !leader || !IsAlive(leader)) {
+	if (!p.auto_pull || !leader || !IsAlive(leader)) {
 		return;
 	}
 
@@ -1771,17 +2042,99 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	// silently otherwise, and "the bots never pull" had no way to be told
 	// apart from "the bots are waiting for X".
 	auto waits = [&](const std::string& why) {
+		p.autopull_last_wait = why;
 		if (now - p.autopull_wait_log_ms >= kAutoPullWaitLogMs) {
 			p.autopull_wait_log_ms = now;
 			LogInfo("[BotTactics] unit [{:#x}] auto-pull waits: {}", p.key, why);
 		}
 	};
 
+	// ---- the leader, read from their play ----
+
+	// Idle at camp: in it, standing still, not fighting, looting or trading.
+	// The camp is where they fought and stayed; it settles after a while of
+	// that, and then the bots pull -- nothing to type (no ^setcamp, no
+	// ^pull auto: 2026-10-24, "I only stood back and pushed buttons").
+	const glm::vec3 lpos(leader->GetPosition());
+	const bool      in_camp = p.camp_set && DistanceSquaredNoZ(lpos, p.camp) <= kFixedCampRadius * kFixedCampRadius;
+	const bool      moved   = DistanceSquaredNoZ(lpos, p.leader_last_pos) > 3.0f * 3.0f;
+	p.leader_last_pos       = lpos;
+	bool busy = moved;
+	if (!busy && leader->IsClient()) {
+		Client* lc = leader->CastToClient();
+		busy = lc->AutoAttackEnabled() || (lc->trade && lc->trade->state != TradeNone);
+		for (const auto& e : entity_list.GetCorpseList()) {
+			if (busy) {
+				break;
+			}
+			busy = e.second && e.second->IsBeingLootedBy(lc);
+		}
+	}
+	if (!in_camp || busy || p.assist_target_id) {
+		p.leader_idle_since_ms = 0;
+	}
+	else if (!p.leader_idle_since_ms) {
+		p.leader_idle_since_ms = now;
+	}
+	const bool settled = p.camp_fixed || (p.leader_idle_since_ms && now - p.leader_idle_since_ms >= kCampSettleMs);
+
+	// [PullAudit]: idle, settled and at camp with nothing on the way, yet no
+	// pull -- said with the reason, so "they just stood there" is never
+	// silent. A summary every few minutes.
+	if (!p.audit_started_ms) {
+		p.audit_started_ms = now;
+	}
+	if (now - p.audit_started_ms >= kPullAuditMs) {
+		LogInfo("[PullAudit] unit [{:#x}] last {}s: pulls [{}] fell through [{}] left for the player [{}] kinds",
+			p.key, (now - p.audit_started_ms) / 1000, p.audit_pulls, p.audit_failed, p.audit_players_call.size());
+		p.audit_started_ms   = now;
+		p.audit_pulls        = 0;
+		p.audit_failed       = 0;
+		p.audit_players_call.clear();
+	}
+	if (settled && in_camp && !busy && !p.assist_target_id && !p.autopull_puller_id && p.pull_queue.empty() && !p.autopull_held) {
+		if (!p.audit_ready_since_ms) {
+			p.audit_ready_since_ms = now;
+		}
+		else if (now - p.audit_ready_since_ms >= kPullStallMs && now - p.audit_stall_said_ms >= kPullStallMs * 2) {
+			p.audit_stall_said_ms = now;
+			LogInfo("[PullAudit] unit [{:#x}] STALL [{}]s at camp with nothing pulled: {}",
+				p.key, (now - p.audit_ready_since_ms) / 1000, p.autopull_last_wait.empty() ? "no reason recorded" : p.autopull_last_wait);
+		}
+	}
+	else {
+		p.audit_ready_since_ms = 0;
+	}
+
 	if (now - p.autopull_last_try_ms < kAutoPullTryMs) {
 		return;
 	}
-	if (DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius) {
+
+	if (!p.camp_set) {
+		waits("no camp yet (it is made where the leader fights and stays)");
+		return;
+	}
+	if (p.autopull_held) {
+		waits("held: the leader said stop");
+		return;
+	}
+
+	// The player's picks first.
+	if (!p.pull_queue.empty()) {
+		return;
+	}
+
+	// Away from camp, the camp waits for them; it does not go anywhere.
+	if (!in_camp) {
 		waits(fmt::format("[{}] is away from camp", leader->GetCleanName()));
+		return;
+	}
+	if (busy) {
+		waits(fmt::format("[{}] is busy (moving, fighting, looting or trading)", leader->GetCleanName()));
+		return;
+	}
+	if (!settled) {
+		waits("the camp is settling (the leader just got here)");
 		return;
 	}
 
@@ -1857,7 +2210,11 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	const bool  era_regen  = RuleB(Character, TrilogyEraRegen);
 	const bool  cautious   = p.confidence < kLowConfidence;
 	const float hp_bar     = era_regen ? (cautious ? kEraReadyHPCautious : kEraReadyHP) : (cautious ? kCautiousReadyRatio : kReadyRatio);
-	const float mana_bar   = era_regen ? (cautious ? kEraReadyManaCautious : kEraReadyMana) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	// Mana: the bar goes with the mob that is next (ManaBarFor, checked again
+	// once it is picked), so here only the lowest of them. One 75% bar for
+	// everything held Sebilis 7 minutes on one cleric for a blue-con frog.
+	const bool  wait_set   = ov && ov->pull_wait_mana > 0.0f; // ^pull wait: the player's call
+	float       mana_bar   = wait_set ? ov->pull_wait_mana : ManaBarFor(ConsiderColor::Green, cautious);
 	Mob*        not_ready  = nullptr;
 	float       not_ready_pct = 100.0f;
 	const char* not_ready_what = "";
@@ -1925,6 +2282,9 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	for (auto it = p.pull_failed.begin(); it != p.pull_failed.end();) {
 		it = now >= it->second ? p.pull_failed.erase(it) : std::next(it);
 	}
+	for (auto it = p.walk_from_camp.begin(); it != p.walk_from_camp.end();) {
+		it = now - it->second.first > kWalkCacheMs * 4 ? p.walk_from_camp.erase(it) : std::next(it);
+	}
 
 	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
 	const uint8  ref_level  = leader->GetLevel();
@@ -1961,6 +2321,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	});
 
 	Mob*  best       = nullptr;
+	uint32 best_con   = ConsiderColor::Green;
 	float best_score = 0.0f;
 	float best_ttk   = 0.0f;
 	float best_rest  = 0.0f;
@@ -1983,14 +2344,36 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		const glm::vec3 npos(n->GetPosition());
-		if (DistanceSquaredNoZ(npos, p.camp) > radius * radius || std::fabs(npos.z - p.camp.z) > kAutoPullMaxZ) {
+		if (NeverPull(ov, n->GetNPCTypeID())) {
 			continue;
 		}
 
-		// Worth killing, and not something that kills us.
+		const glm::vec3 npos(n->GetPosition());
+		if (DistanceSquaredNoZ(npos, p.camp) > radius * radius) {
+			continue;
+		}
+		if (!zone->pathing && std::fabs(npos.z - p.camp.z) > kAutoPullMaxZ) {
+			continue; // no navmesh to measure the walk: about the same floor only
+		}
+
+		// Only what is clearly trash, raid or group: a boss, a rampager, a
+		// named one tougher than the trash is the player's call -- they
+		// engage it, the unit follows (PlayersCall, bot_pull_policy).
+		if (!PlayersCall(n, ref_level, raid != nullptr).empty()) {
+			p.audit_players_call.insert(n->GetID());
+			continue;
+		}
+
+		// Worth killing, and not something that kills us. A red one is for a
+		// group whose last fights went well (confidence: no deaths, the tank
+		// held), up to 4 levels over: a level 20 group in a 25 dungeon pulls
+		// its 23-24s once it has shown it can. A raid's trash never cons red.
 		const uint32 con = Mob::GetLevelCon(ref_level, n->GetLevel());
-		if (con == ConsiderColor::Gray || con == ConsiderColor::Red) {
+		if (con == ConsiderColor::Gray) {
+			continue;
+		}
+		if (con == ConsiderColor::Red &&
+			(raid || p.confidence < kHighConfidence || n->GetLevel() > ref_level + kRedPullMaxLevels)) {
 			continue;
 		}
 
@@ -2007,10 +2390,26 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		// The pull itself drops a target neither the puller nor the player can
-		// see (IsValidTarget): do not send for one.
-		if (!puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
+		// A plain pull drops a target neither the puller nor the player can see
+		// (IsValidTarget): do not send for one. A monk walks to it, so in a
+		// dungeon -- every mob round a corner -- it is not held to that.
+		if (!fd_puller && !puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
 			continue;
+		}
+
+		// The walk there, by navmesh: across a wall or down a shaft is not
+		// "within the radius". Measured once in a while, not every 2 s.
+		float walk = sqrtf(DistanceSquaredNoZ(npos, p.camp));
+		if (zone->pathing) {
+			auto& w = p.walk_from_camp[n->GetID()];
+			if (!w.first || now - w.first > kWalkCacheMs) {
+				w.first  = now;
+				w.second = WalkDistance(p.camp, npos);
+			}
+			if (w.second < 0.0f || w.second > radius * kWalkSlack) {
+				continue;
+			}
+			walk = w.second;
 		}
 
 		// Linked mobs that would come along: same faction, close, idle. A
@@ -2047,7 +2446,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		if (const auto it = m_mob_costs.find(n->GetNPCTypeID()); it != m_mob_costs.end()) {
 			c = &it->second;
 		}
-		const float travel = 2.0f * sqrtf(DistanceSquaredNoZ(npos, p.camp)) / kPullTravelSpeed;
+		const float travel = 2.0f * walk / kPullTravelSpeed;
 		const float ttk    = c && c->kills ? c->ttk_s :
 			p.hp_per_s > 0.0f ? static_cast<float>(n->GetMaxHP()) / p.hp_per_s : kDefaultTtkS;
 		float rest = c && c->rests ? c->downtime_s : 0.0f;
@@ -2065,7 +2464,10 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		// Risk: socials, a hard con, casters (healers most, less when we can
 		// stop them), and what this kind has cost us in deaths.
 		float risk = 1.0f + 0.15f * socials;
-		if (con == ConsiderColor::Yellow) {
+		if (con == ConsiderColor::Red) {
+			risk += 0.7f; // only when nothing easier is up
+		}
+		else if (con == ConsiderColor::Yellow) {
 			risk += 0.3f;
 		}
 		else if (con == ConsiderColor::White) {
@@ -2104,15 +2506,81 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			best_ttk     = ttk;
 			best_rest    = rest;
 			best_socials = socials;
+			best_con     = con;
 		}
 	}
 
 	if (!best) {
-		waits(fmt::format("nothing to pull within [{:.0f}] of camp (cons, faction, line of sight, links, recent failures)", radius));
+		// Nothing up that we can take: a camp waits for its spawns (a night at
+		// the Sebilis disco). When is the next one due, within the radius?
+		uint32     next_ms = 0;
+		glm::vec3  next_at(0.0f);
+		size_t     points  = 0;
+		LinkedListIterator<Spawn2*> it(zone->spawn2_list);
+		it.Reset();
+		while (it.MoreElements()) {
+			Spawn2* s = it.GetData();
+			it.Advance();
+			const glm::vec3 at(s->GetX(), s->GetY(), s->GetZ());
+			if (!s->Enabled() || DistanceSquaredNoZ(at, p.camp) > radius * radius) {
+				continue;
+			}
+			++points;
+			if (s->NPCPointerValid()) {
+				continue; // up: we saw it above and could not take it
+			}
+			const uint32 left = s->GetTimer().GetRemainingTime();
+			if (left && (!next_ms || left < next_ms)) {
+				next_ms = left;
+				next_at = at;
+			}
+		}
+
+		std::string line;
+		if (next_ms) {
+			const uint32 s = (next_ms + 999) / 1000;
+			const float  d = sqrtf(DistanceSquaredNoZ(next_at, p.camp));
+			line = s >= 60 ?
+				fmt::format("Nothing up near camp. Next pop in ~{}m {}s, {:.0f} away.", s / 60, s % 60, d) :
+				fmt::format("Nothing up near camp. Next pop in ~{}s, {:.0f} away.", s, d);
+		}
+		else {
+			line = points ?
+				fmt::format("Nothing we can take near camp ({} spawn points within {:.0f}: too high, friendly, linked or out of reach; say pull further to look further).", points, radius) :
+				fmt::format("No spawn points within {:.0f} of camp (say pull further to look further).", radius);
+		}
+		if (raid) {
+			line = "Trash: " + line;
+		}
+
+		waits(line);
+		if (!p.autopull_idle_said) {
+			p.autopull_idle_said = true;
+			Announce(raid, raid ? nullptr : puller->GetGroup(), puller, line);
+		}
 		return;
+	}
+	p.autopull_idle_said = false;
+
+	// The healers' (and puller's, tank's) mana for this one: a green frog
+	// needs far less than a yellow giant. A chain pull checked its own bar.
+	if (!chain && !wait_set) {
+		const float need = ManaBarFor(best_con, cautious);
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m) || !UsesMana(m)) {
+				continue;
+			}
+			const uint8 c      = m->GetClass();
+			const bool  healer = c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
+			if ((healer || m == puller || p.IsMainTank(m->GetID())) && m->GetManaRatio() < need) {
+				waits(fmt::format("[{}] at [{:.0f}%] mana, needs [{:.0f}%] for [{}]", m->GetCleanName(), m->GetManaRatio(), need, best->GetCleanName()));
+				return;
+			}
+		}
 	}
 
 	if (puller->TacticsStartPull(best)) {
+		++p.audit_pulls;
 		p.autopull_puller_id  = puller->GetID();
 		p.autopull_target_id  = best->GetID();
 		p.autopull_started_ms = now;
@@ -2124,6 +2592,530 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			p.key, chain ? " (chain)" : "", puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain",
 			best_socials, best_ttk, best_rest, best_score, p.confidence
 		);
+	}
+}
+
+// ============================================================
+// The player's camp and pull queue (^setcamp, ^pull)
+// ============================================================
+//
+// The player decides what is pulled -- in a raid only they know the trash
+// from the boss -- and where camp is. The bots do the legwork: the next free
+// puller takes the next mob in line, a monk feigning death on the way back
+// until it has it alone, and as many go out at once as the unit can hold.
+
+bool BotTactics::SetFixedCamp(uint32 key, const glm::vec3& at)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return false;
+	}
+
+	p->camp_set     = true;
+	p->camp_fixed   = true;
+	p->camp         = at;
+	p->camp_left_ms = 0;
+	p->pull_active  = false;
+	p->walk_from_camp.clear(); // measured from the old spot
+	p->autopull_idle_said = false;
+	LogInfo("[BotTactics] unit [{:#x}] camp fixed at [{:.0f}, {:.0f}, {:.0f}]", key, at.x, at.y, at.z);
+	return true;
+}
+
+bool BotTactics::ClearFixedCamp(uint32 key)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return false;
+	}
+
+	p->camp_fixed = false;
+	p->camp_set   = false;
+	LogInfo("[BotTactics] unit [{:#x}] fixed camp cleared", key);
+	return true;
+}
+
+namespace {
+	// A bot of the unit pulling `npc_id` right now (queued, ^fdpull or auto).
+	Bot* PullerOf(const BotTacticsPlan& p, uint16 npc_id)
+	{
+		for (uint16 id : p.members) {
+			Mob* m = entity_list.GetMob(id);
+			if (!m || !m->IsBot()) {
+				continue;
+			}
+			Bot* b = m->CastToBot();
+			if ((b->IsFDPulling() && b->GetFDPullTargetID() == npc_id) ||
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget() && b->GetTarget()->GetID() == npc_id) ||
+				(npc_id && b->GetBringingInID() == npc_id)) {
+				return b;
+			}
+		}
+		return nullptr;
+	}
+}
+
+BotTactics::PullQueueResult BotTactics::QueuePull(uint32 key, uint16 npc_id, size_t& position)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return PullQueueResult::NoPlan;
+	}
+
+	if (PullerOf(*p, npc_id)) {
+		return PullQueueResult::BeingPulled;
+	}
+
+	const auto it = std::find(p->pull_queue.begin(), p->pull_queue.end(), npc_id);
+	if (it != p->pull_queue.end()) {
+		position = static_cast<size_t>(it - p->pull_queue.begin()) + 1;
+		return PullQueueResult::AlreadyQueued;
+	}
+
+	p->pull_queue.push_back(npc_id);
+	position = p->pull_queue.size();
+	p->pull_failed.erase(npc_id); // the player asked for it again
+	return PullQueueResult::Queued;
+}
+
+size_t BotTactics::CancelPulls(uint32 key, Client* owner)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return 0;
+	}
+
+	size_t n = p->pull_queue.size();
+	p->pull_queue.clear();
+
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
+			Client* o = b->GetBotOwner() && b->GetBotOwner()->IsClient() ? b->GetBotOwner()->CastToClient() : owner;
+			if (b->IsFDPulling()) {
+				b->FDPullReset(o);
+			}
+			else {
+				b->TacticsAbortPull();
+			}
+			++n;
+		}
+	}
+
+	p->autopull_puller_id = 0;
+	p->autopull_target_id = 0;
+	return n;
+}
+
+std::vector<std::string> BotTactics::DescribePulls(uint32 key)
+{
+	std::vector<std::string> out;
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		out.emplace_back("No group or raid of bots (or its plan is not built yet: try again in a second).");
+		return out;
+	}
+
+	out.emplace_back(p->camp_fixed ?
+		fmt::format("Camp: fixed at {:.0f}, {:.0f}, {:.0f} (^setcamp clear to let it follow you).", p->camp.x, p->camp.y, p->camp.z) :
+		std::string(p->camp_set ? "Camp: made by the first fight here; it follows you (^setcamp to fix it)." : "Camp: none (^setcamp to fix one here)."));
+
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+		Bot*   b = m->CastToBot();
+		uint16 t = b->IsFDPulling() ? b->GetFDPullTargetID() :
+			((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
+		if (Mob* tm = t ? entity_list.GetMob(t) : nullptr) {
+			out.emplace_back(fmt::format(
+				"Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(),
+				b->GetFDPullState() == Bot::FDPullState::Catching ? " (catching)" :
+				b->GetFDPullState() == Bot::FDPullState::Peeling ? fmt::format(" (peeling {} off it)", NameOf(b->GetFDPeelID())).c_str() :
+				b->IsFDPulling() ? " (feign death)" : ""
+			));
+		}
+	}
+
+	if (p->pull_queue.empty()) {
+		out.emplace_back("Queue: empty (target a mob and ^pull to add it).");
+	}
+	else {
+		std::string line = "Queue:";
+		size_t      i    = 0;
+		for (uint16 id : p->pull_queue) {
+			Mob* m = entity_list.GetMob(id);
+			line += fmt::format(" {}. {}", ++i, m ? m->GetCleanName() : "(gone)");
+		}
+		out.emplace_back(line);
+	}
+	return out;
+}
+
+bool BotTactics::LeaderSays(Client* c, const std::string& message)
+{
+	if (!c) {
+		return false;
+	}
+
+	Raid*        raid  = c->GetRaid();
+	Group*       group = raid ? nullptr : c->GetGroup();
+	const uint32 key   = KeyFor(raid, group);
+	BotTacticsPlan* p  = key ? Find(key) : nullptr;
+	if (!p || !p->IsMember(c->GetID())) {
+		return false;
+	}
+
+	std::string text = Strings::ToLower(message);
+	Strings::Trim(text);
+	while (!text.empty() && (text.back() == '.' || text.back() == '!' || text.back() == '?')) {
+		text.pop_back();
+	}
+	for (const char* lead : {"bots ", "bots, ", "ok ", "ok, ", "okay ", "okay, "}) {
+		if (text.rfind(lead, 0) == 0) {
+			text = text.substr(strlen(lead));
+		}
+	}
+
+	auto one_of = [&](std::initializer_list<const char*> words) {
+		return std::any_of(words.begin(), words.end(), [&](const char* w) { return text == w; });
+	};
+
+	// Whoever answers: a monk (the puller), else the first bot.
+	Mob* speaker = nullptr;
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (m && m->IsBot() && IsAlive(m) && (!speaker || m->GetClass() == Class::Monk)) {
+			speaker = m;
+			if (m->GetClass() == Class::Monk) {
+				break;
+			}
+		}
+	}
+	auto say = [&](const std::string& msg) {
+		if (speaker) {
+			Announce(raid, group, speaker, msg);
+		}
+	};
+
+	// ---- a boss that will not split: what to do (FDPullerProcess asks) ----
+
+	const bool bring = one_of({"bring them", "bring them all", "bring all", "bring it all", "bring everything", "bring em"});
+	const bool keep  = one_of({"keep trying", "try again", "keep at it"});
+	if (bring || keep) {
+		bool asked = false;
+		for (uint16 id : p->members) {
+			Mob* m = entity_list.GetMob(id);
+			if (m && m->IsBot() && m->CastToBot()->IsFDPulling()) {
+				m->CastToBot()->TacticsSplitAnswer(bring);
+				asked = true;
+			}
+		}
+		if (asked) {
+			say(bring ? "Bringing them all." : "Still trying to split it.");
+		}
+		return asked;
+	}
+
+	// ---- the camp: set it here, or let it follow again ----
+
+	if (one_of({"camp here", "camp", "set camp", "make camp", "camp is here"})) {
+		const glm::vec3 at(c->GetPosition());
+		SetFixedCamp(key, at);
+		p->autopull_held = false;
+		say("Camp here. We pull to it until you say follow me.");
+		return true;
+	}
+	if (one_of({"follow me", "follow", "break camp", "move on", "lets go", "let's go"})) {
+		ClearFixedCamp(key);
+		say("Following you.");
+		return true;
+	}
+
+	// ---- how far the puller goes ----
+
+	{
+		float radius = kAutoPullRadius;
+		if (const auto it = m_overrides.find(key); it != m_overrides.end() && it->second.pull_radius > 0.0f) {
+			radius = it->second.pull_radius;
+		}
+		float want = 0.0f;
+		if (one_of({"pull further", "pull farther", "pull wider", "further", "farther"})) {
+			want = radius + kPullRadiusStep;
+		}
+		else if (one_of({"pull closer", "pull nearer", "closer"})) {
+			want = radius - kPullRadiusStep;
+		}
+		else {
+			const auto words = Strings::Split(text, ' ');
+			if (words.size() >= 2 && words[0] == "pull" && (words[1] == "range" || words[1] == "radius")) {
+				if (words.size() < 3 || !Strings::IsNumber(words[2])) {
+					say(fmt::format("We pull what is up within {:.0f} of camp, walking. Say pull further or pull closer.", radius));
+					return true;
+				}
+				want = Strings::ToFloat(words[2]);
+			}
+		}
+		if (want > 0.0f) {
+			want = std::clamp(want, kPullRadiusMin, kPullRadiusMax);
+			const bool on = m_overrides[key].auto_pull;
+			SetAutoPull(key, on, want);
+			SaveSettings(key, c->CharacterID());
+			if (BotTacticsPlan* q = Find(key)) {
+				q->walk_from_camp.clear();
+				q->autopull_idle_said = false;
+			}
+			say(fmt::format("We pull out to {:.0f} from camp now.", want));
+			return true;
+		}
+	}
+
+	// ---- stop ----
+
+	if (one_of({"stop", "stop pulling", "hold", "hold pulls", "no more pulls", "stop pulls"})) {
+		CancelPulls(key, c);
+		p->autopull_held = true;
+		LogInfo("[BotTactics] unit [{:#x}] [{}] said stop: pulling held", key, c->GetCleanName());
+		say("Holding. Say pull when you want more.");
+		return true;
+	}
+
+	// ---- pull ----
+
+	const bool anyway = one_of({"pull anyway", "pull it anyway", "pull that anyway", "pull now"});
+	if (!anyway && !one_of({"pull", "pull it", "pull that", "pull this", "pull him", "pull her", "pull them"})) {
+		return false;
+	}
+
+	const bool was_held = p->autopull_held;
+	p->autopull_held    = false;
+
+	Mob* t = c->GetTarget();
+	if (!t || !t->IsNPC() || t->GetOwnerID() || !IsAlive(t)) {
+		if (was_held) {
+			LogInfo("[BotTactics] unit [{:#x}] [{}] said pull: pulling again", key, c->GetCleanName());
+			say("Pulling again.");
+			return true;
+		}
+		// Nothing targeted: say so, rather than pull whatever.
+		say(p->auto_pull ? "Target what you want pulled; meanwhile we pull what is up near camp." : "Target what you want pulled.");
+		return true;
+	}
+	if (t->GetHateList().size()) {
+		say(fmt::format("{} is already fighting.", t->GetCleanName()));
+		return true;
+	}
+
+	// A boss on a raid that is not ready: say so first, as anyone would.
+	NPC* npc = t->CastToNPC();
+	if (!anyway && !PlayersCall(npc, c->GetLevel(), raid != nullptr).empty()) {
+		bool ready = false;
+		const std::string line = Readiness(*p, ready);
+		if (!ready) {
+			say(fmt::format("Not ready for {}: {} Say pull anyway to go.", npc->GetCleanName(), line));
+			return true;
+		}
+	}
+
+	size_t position = 0;
+	switch (QueuePull(key, npc->GetID(), position)) {
+		case PullQueueResult::Queued:
+			LogInfo("[BotTactics] unit [{:#x}] [{}] said pull: [{}] queued ([{}] in line)", key, c->GetCleanName(), npc->GetCleanName(), position);
+			if (position > 1) {
+				say(fmt::format("{} after the {} before it.", npc->GetCleanName(), position - 1));
+			}
+			break;
+		case PullQueueResult::AlreadyQueued:
+			say(fmt::format("{} is in line already.", npc->GetCleanName()));
+			break;
+		case PullQueueResult::BeingPulled:
+			say(fmt::format("Already on {}.", npc->GetCleanName()));
+			break;
+		default:
+			return false;
+	}
+	return true;
+}
+
+void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, const std::vector<Mob*>& mobs, Mob* leader, Mob* assist)
+{
+	if (p.pull_queue.empty()) {
+		return;
+	}
+
+	auto tell = [&](const std::string& msg) {
+		if (leader && leader->IsClient()) {
+			leader->Message(Chat::Yellow, "%s", msg.c_str());
+		}
+	};
+	auto ours = [&](Mob* m) {
+		Mob* owner = m ? m->GetOwner() : nullptr;
+		return m && (p.IsMember(m->GetID()) || (owner && p.IsMember(owner->GetID())));
+	};
+
+	// Out of line: dead, gone, or already in a fight (with us: it is coming
+	// anyway; with someone else: not ours to take).
+	for (auto it = p.pull_queue.begin(); it != p.pull_queue.end();) {
+		Mob* t = entity_list.GetMob(*it);
+		const char* why = nullptr;
+		if (!IsAlive(t) || !t->IsNPC()) {
+			why = "dead or gone";
+		}
+		else if (t->IsEngaged()) {
+			why = ours(t->GetHateTop()) ? "already fighting us" : "fighting someone else";
+		}
+		if (why) {
+			if (t) {
+				tell(fmt::format("{} is off the pull queue: {}.", t->GetCleanName(), why));
+			}
+			it = p.pull_queue.erase(it);
+			continue;
+		}
+		++it;
+	}
+
+	// As many in hand as there are tanks to hold them: the fight on now and
+	// its adds, plus what is on the way (one per mob: two monks may share one).
+	std::vector<uint16> on_the_way;
+	for (Mob* m : mobs) {
+		if (m->IsBot() && IsAlive(m)) {
+			Bot*         b  = m->CastToBot();
+			const uint16 id = b->IsFDPulling() ? b->GetFDPullTargetID() :
+				(b->GetPullingFlag() || b->GetReturningFlag()) ? (b->GetTarget() ? b->GetTarget()->GetID() : b->GetBringingInID()) : 0;
+			if ((b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) &&
+				(!id || std::find(on_the_way.begin(), on_the_way.end(), id) == on_the_way.end())) {
+				on_the_way.push_back(id);
+			}
+		}
+	}
+	size_t       in_hand = (assist ? 1 : 0) + p.adds.size() + on_the_way.size();
+	const size_t holds   = 1 + p.off_tank_ids.size();
+
+	// Free pullers, monks with feign death first (each brings a single, so
+	// several can work at once); a plain pull runs one at a time.
+	auto can_pull = [](Bot* b) {
+		return !(b->GetBotStance() == Stance::Passive || b->GetHoldFlag() || b->GetGuardFlag() || !b->GetBotOwner() ||
+			b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag() || b->IsCharmedByNPC() || b->IsFeared() ||
+			b->IsMezzed() || b->IsStunned());
+	};
+	std::vector<Bot*> monks;
+	Bot*              plain = nullptr;
+	auto plain_rank = [](uint8 c) {
+		switch (c) {
+			case Class::Ranger: return 3;
+			case Class::Bard:   return 2;
+			case Class::Rogue:  return 1;
+			default:            return 0;
+		}
+	};
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m) || !can_pull(m->CastToBot())) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetClass() == Class::Monk && b->GetSkill(EQ::skills::SkillFeignDeath) > 0) {
+			monks.push_back(b);
+		}
+		else if (plain_rank(b->GetClass()) && (!plain || plain_rank(b->GetClass()) > plain_rank(plain->GetClass()))) {
+			plain = b;
+		}
+	}
+	if (monks.empty() && !plain && p.main_tank_id) {
+		Mob* mt = entity_list.GetMob(p.main_tank_id);
+		if (mt && mt->IsBot() && IsAlive(mt) && can_pull(mt->CastToBot()) && !assist) {
+			plain = mt->CastToBot(); // nobody else: the tank goes, between fights
+		}
+	}
+
+	while (!p.pull_queue.empty() && in_hand < holds) {
+		Mob* t = entity_list.GetMob(p.pull_queue.front());
+
+		// The nearest free monk to it, else the plain puller.
+		Bot*  b      = nullptr;
+		float best_d = 0.0f;
+		for (Bot* mk : monks) {
+			const float d = DistanceSquared(mk->GetPosition(), t->GetPosition());
+			if (!b || d < best_d) {
+				b      = mk;
+				best_d = d;
+			}
+		}
+		const bool fd = b != nullptr;
+		if (!b) {
+			Client* owner = plain && plain->GetBotOwner() && plain->GetBotOwner()->IsClient() ? plain->GetBotOwner()->CastToClient() : nullptr;
+			if (!plain || (owner && owner->GetBotPulling())) {
+				break; // nobody free: it waits its turn
+			}
+			b = plain;
+		}
+
+		// In a raid a second monk goes along to catch: it waits off the mob,
+		// standing, and tags it the moment it is clear of its friends while
+		// the first one lies feigned -- then they swap (Bot::FDPullerProcess).
+		// The next nearest free one; a group keeps its one monk on its own.
+		Bot* catcher = nullptr;
+		if (fd && raid) {
+			float catch_d = 0.0f;
+			for (Bot* mk : monks) {
+				const float d = DistanceSquared(mk->GetPosition(), t->GetPosition());
+				if (mk != b && (!catcher || d < catch_d)) {
+					catcher = mk;
+					catch_d = d;
+				}
+			}
+		}
+
+		// The pull comes to where the player stands when it goes out: that is the
+		// camp from now until it is in, the raid gathers there and fights nothing
+		// further out (Rebuild, out_of_camp). Setting the camp back 220 from the
+		// target instead put it on the floor below Kael's arena, by the Vallon Zek
+		// temple, and the raid walked down into the clerics (2026-10-25).
+		if (leader) {
+			const glm::vec3 at(leader->GetPosition());
+			if (!p.camp_set || DistanceSquaredNoZ(at, p.camp) > kCampRadius * kCampRadius) {
+				p.camp         = at;
+				p.camp_set     = true;
+				p.camp_left_ms = 0;
+				p.walk_from_camp.clear();
+				LogInfo("[BotTactics] unit [{:#x}] camp at [{}] for the pull of [{}]: [{:.0f}, {:.0f}, {:.0f}]",
+					p.key, leader->GetCleanName(), t->GetCleanName(), at.x, at.y, at.z);
+			}
+		}
+
+		if (!b->TacticsStartQueuedPull(t, catcher)) {
+			break;
+		}
+		if (catcher && !catcher->TacticsStartQueuedPull(t, b, true)) {
+			b->SetFDPartnerID(0);
+			catcher = nullptr;
+		}
+
+		p.pull_queue.pop_front();
+		if (fd) {
+			monks.erase(std::find(monks.begin(), monks.end(), b));
+			if (catcher) {
+				monks.erase(std::find(monks.begin(), monks.end(), catcher));
+			}
+		}
+		else {
+			plain = nullptr;
+		}
+
+		const std::string rest = p.pull_queue.empty() ? "" : fmt::format(" {} more in line.", p.pull_queue.size());
+		Announce(raid, group, b, fmt::format(
+			"Pulling {}{}.{}", t->GetCleanName(),
+			catcher ? fmt::format(", {} catching", catcher->GetCleanName()) : fd ? ", feigning to bring it alone" : "", rest
+		));
+		LogInfo("[BotTactics] unit [{:#x}] queued pull: [{}] goes for [{}] ({}{}), [{}] left in line",
+			p.key, b->GetCleanName(), t->GetCleanName(), fd ? "FD" : "plain",
+			catcher ? fmt::format(", [{}] catching", catcher->GetCleanName()) : "", p.pull_queue.size());
+
+		++in_hand; // it counts as in hand from now on
 	}
 }
 
@@ -2154,6 +3146,14 @@ void BotTactics::AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<u
 			// The worst of the slots it fits (two ears, two wrists...).
 			for (int16 slot = EQ::invslot::EQUIPMENT_BEGIN; slot <= EQ::invslot::EQUIPMENT_END; ++slot) {
 				if (!(item->Slots & (1 << slot))) {
+					continue;
+				}
+
+				// A weapon in the off hand only for a class that dual wields
+				// (a shield is not a weapon): "Velium Long Sword (secondary)"
+				// was offered to a shadow knight four times in Kael.
+				if (slot == EQ::invslot::slotSecondary && item->IsClassCommon() && item->ItemType != EQ::item::ItemTypeShield &&
+					item->Damage > 0 && !b->CanThisClassDualWield()) {
 					continue;
 				}
 
@@ -2231,6 +3231,20 @@ bool BotTactics::ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 cast
 	return true;
 }
 
+void BotTactics::ReleaseCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return;
+	}
+
+	const uint64 claim = (static_cast<uint64>(target_id) << 32) | tag;
+	const auto   it    = p->cast_claims.find(claim);
+	if (it != p->cast_claims.end() && it->second.first == caster_id) {
+		p->cast_claims.erase(it);
+	}
+}
+
 bool BotTactics::ReloadEncounters(std::string& summary_out)
 {
 	m_encounters.clear();
@@ -2275,9 +3289,91 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 		}
 	}
 
-	summary_out = fmt::format("{} raid encounter(s) loaded", m_encounters.size());
+	// The pull policy goes with it (^tactics reload rereads both). Missing
+	// table: the rules alone decide.
+	m_pull_policy.clear();
+	auto policy = database.QueryDatabase("SELECT `npc_type_id`, `pull` FROM `bot_pull_policy`");
+	if (policy.Success()) {
+		for (auto row = policy.begin(); row != policy.end(); ++row) {
+			const uint32 id = Strings::ToUnsignedInt(row[0] ? row[0] : "0");
+			if (id) {
+				m_pull_policy[id] = Strings::ToInt(row[1] ? row[1] : "0") != 0;
+			}
+		}
+	}
+	else {
+		LogInfo("[BotTactics] bot_pull_policy is not readable (utils/sql/git/bots/optional/2026_10_24_bots_pull_policy.sql): the pull rules alone decide");
+	}
+
+	summary_out = fmt::format("{} raid encounter(s), {} pull correction(s) loaded", m_encounters.size(), m_pull_policy.size());
 	LogInfo("[BotTactics] {}", summary_out);
 	return true;
+}
+
+std::string BotTactics::PlayersCall(NPC* n, uint8 leader_level, bool raid)
+{
+	if (!n) {
+		return "nothing";
+	}
+	if (!m_encounters_loaded) {
+		std::string ignored;
+		ReloadEncounters(ignored);
+	}
+
+	if (const auto it = m_pull_policy.find(n->GetNPCTypeID()); it != m_pull_policy.end()) {
+		return it->second ? "" : "listed: the player pulls it";
+	}
+
+	if (n->IsRaidTarget()) {
+		return "raid target";
+	}
+	if (n->IsRareSpawn()) {
+		return "rare spawn";
+	}
+	if (n->GetSpecialAbility(SpecialAbility::AreaRampage)) {
+		return "area rampage";
+	}
+	if (n->GetSpecialAbility(SpecialAbility::Rampage)) {
+		return "rampage";
+	}
+	// Five levels up marks a raid boss (the VP dragons are 65 to a 60 raid's
+	// trash at 60). A group's limit is its con and its record instead
+	// (AutoPull): a level 20 group clears a level 25 dungeon.
+	if (raid && n->GetLevel() >= leader_level + 5) {
+		return "too high";
+	}
+
+	// The zone's trash: the median health of what is up with a lower-case
+	// name (EQ's naming for common mobs), measured every few minutes.
+	const uint32 now = Timer::GetCurrentTime();
+	if (!m_trash_median_ms || now - m_trash_median_ms > 300000) {
+		m_trash_median_ms = now;
+		std::vector<int64> hp;
+		for (const auto& e : entity_list.GetNPCList()) {
+			NPC* o = e.second;
+			if (!o || o->IsPet() || o->GetOwnerID() || o->GetLevel() < 10 || o->GetClass() > Class::Berserker ||
+				!std::islower(static_cast<unsigned char>(o->GetCleanName()[0]))) {
+				continue;
+			}
+			hp.push_back(o->GetMaxHP());
+		}
+		if (!hp.empty()) {
+			std::nth_element(hp.begin(), hp.begin() + hp.size() / 2, hp.end());
+			m_trash_median_hp = static_cast<float>(hp[hp.size() / 2]);
+		}
+	}
+
+	if (m_trash_median_hp > 0.0f) {
+		const float mhp   = static_cast<float>(n->GetMaxHP());
+		const bool  named = !std::islower(static_cast<unsigned char>(n->GetCleanName()[0]));
+		if (mhp > m_trash_median_hp * 2.5f) {
+			return "far tougher than the trash here";
+		}
+		if (named && mhp > m_trash_median_hp * 1.5f) {
+			return "a named one, tougher than the trash";
+		}
+	}
+	return "";
 }
 
 BotRaidEncounter BotTactics::LearnedRow(const BotEncounterObservation& o) const
@@ -2843,9 +3939,14 @@ void BotTactics::SaveSettings(uint32 key, uint32 char_id)
 
 	const auto  it = m_overrides.find(key);
 	Overrides   o  = it != m_overrides.end() ? it->second : Overrides{};
+	std::vector<std::string> never;
+	for (uint32 t : o.never_pull) {
+		never.push_back(std::to_string(t));
+	}
 	const auto  v  = fmt::format(
-		"on={};mt={};chain={};pull={};radius={:.0f}",
-		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius
+		"on={};mt={};chain={};autopull={};radius={:.0f};wait={:.0f};never={}",
+		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius,
+		o.pull_wait_mana, Strings::Join(never, ",")
 	);
 	DataBucket::SetData(fmt::format("bot_tactics_{}", char_id), v);
 	LogInfo("[BotTactics] saved settings for character [{}]: {}", char_id, v);
@@ -2876,15 +3977,58 @@ void BotTactics::LoadSettings(uint32 key, uint32 char_id)
 		else if (k == "chain") {
 			o.chain_interval_ms = Strings::ToUnsignedInt(val);
 		}
-		else if (k == "pull") {
+		else if (k == "autopull") {
 			o.auto_pull = val == "1";
 		}
 		else if (k == "radius") {
 			o.pull_radius = Strings::ToFloat(val);
 		}
+		else if (k == "wait") {
+			o.pull_wait_mana = Strings::ToFloat(val);
+		}
+		else if (k == "never") {
+			o.never_pull.clear();
+			for (const auto& t : Strings::Split(val, ',')) {
+				if (Strings::IsNumber(t)) {
+					o.never_pull.push_back(Strings::ToUnsignedInt(t));
+				}
+			}
+		}
 	}
 
 	LogInfo("[BotTactics] unit [{:#x}] settings of character [{}]: {}", key, char_id, v);
+}
+
+bool BotTactics::NeverPull(const Overrides* ov, uint32 npc_type)
+{
+	return ov && std::find(ov->never_pull.begin(), ov->never_pull.end(), npc_type) != ov->never_pull.end();
+}
+
+void BotTactics::SetPullWait(uint32 key, float mana_pct)
+{
+	m_overrides[key].pull_wait_mana = mana_pct;
+}
+
+bool BotTactics::SetNeverPull(uint32 key, uint32 npc_type, bool never)
+{
+	auto&      list = m_overrides[key].never_pull;
+	const auto it   = std::find(list.begin(), list.end(), npc_type);
+	if (never == (it != list.end())) {
+		return false;
+	}
+	if (never) {
+		list.push_back(npc_type);
+	}
+	else {
+		list.erase(it);
+	}
+	return true;
+}
+
+std::vector<uint32> BotTactics::NeverPullList(uint32 key) const
+{
+	const auto it = m_overrides.find(key);
+	return it != m_overrides.end() ? it->second.never_pull : std::vector<uint32>{};
 }
 
 void BotTactics::SetAutoPull(uint32 key, bool on, float radius)
@@ -2922,7 +4066,9 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	Mob*   lowest       = nullptr;
 	float  lowest_pct   = 101.0f;
 	uint32 eta_s        = 0;
+	int    casters      = 0;
 	int    casters_low  = 0;
+	int    casters_dry  = 0;
 
 	for (uint16 id : p.members) {
 		Mob* m = entity_list.GetMob(id);
@@ -2935,8 +4081,12 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 		const float pct    = m->GetManaRatio();
 
 		if (!healer) {
+			++casters;
 			if (pct < kPullReadyCasterManaPct) {
 				++casters_low;
+			}
+			if (pct < kPullReadyCasterFloorPct) {
+				++casters_dry;
 			}
 			continue;
 		}
@@ -2967,15 +4117,24 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	const float tank_hp = IsAlive(tank) ? tank->GetHPRatio() : 0.0f;
 	const size_t fallen = p.fallen.size();
 
-	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0;
+	// Buffs still going out: the reason mana is not climbing yet, said first.
+	const uint32 now     = Timer::GetCurrentTime();
+	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
+	const bool   buffs_out = std::any_of(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t < kPullReadyBuffQuietMs; });
+
+	// Veeshan's Peak 2026-10-24: GO came at the zone-in, before a buff went
+	// out; the buffing then took the rangers dry, and Silverwing was pulled
+	// with six casters empty. The healers are still the gate, but not while
+	// buffs are going out, nor with a quarter of the casters nearly empty.
+	// ...nor in the first moments of a new unit, before the first buff has
+	// gone out (Kael 2026-10-24: GO in the same second as ^createraid).
+	const bool settled = p.formed_ms && now - p.formed_ms >= kPullReadySettleMs;
+	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0 &&
+		!buffs_out && casters_dry * 4 <= casters && settled;
 
 	if (lowest_healer) {
 		*lowest_healer = lowest;
 	}
-
-	// Buffs still going out: the reason mana is not climbing yet, said first.
-	const uint32 now     = Timer::GetCurrentTime();
-	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
 
 	std::string line = fmt::format("{} -- ", ready ? "GO" : "WAIT");
 	if (buffing) {
@@ -3000,6 +4159,9 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	}
 	if (casters_low) {
 		line += fmt::format("; {} other casters under {:.0f}%", casters_low, kPullReadyCasterManaPct);
+	}
+	if (casters_dry * 4 > casters) {
+		line += fmt::format(" ({} of {} under {:.0f}%)", casters_dry, casters, kPullReadyCasterFloorPct);
 	}
 	return line + ".";
 }
@@ -4380,7 +5542,8 @@ void Bot::TacticsCheckLineOfSight(Mob* tar)
 	// Casters and healers stand off and cast; melee has the mob in its face.
 	const uint8 c      = GetClass();
 	const bool  caster = GetArchetype() == Archetype::Caster || c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
-	if (!tar || !caster || c == Class::Bard || !GetTacticsPlan() || m_cast_range_target_id || IsRooted()) {
+	if (!tar || !caster || c == Class::Bard || !GetTacticsPlan() || m_cast_range_target_id || IsRooted() ||
+		CastWalkGivenUp(tar->GetID())) {
 		return;
 	}
 
@@ -4674,6 +5837,13 @@ bool Bot::TacticsUnstick(const glm::vec3& goal, float dist)
 		return false;
 	}
 
+	// A goal with no ground (z -99999 from a failed height lookup) is not a
+	// place: never teleport there.
+	if (goal.z <= BEST_Z_INVALID + 1.0f) {
+		LogInfo("[BotTactics] [{}] stuck, but its goal has no ground: staying put", GetCleanName());
+		return false;
+	}
+
 	// A door, a ramp, a dock: rejoin rather than run into the wall forever.
 	Teleport(glm::vec4(goal, GetHeading()));
 	LogInfo("[BotTactics] [{}] stuck [{:.0f}] from its goal: rejoined", GetCleanName(), dist);
@@ -4699,6 +5869,11 @@ bool Bot::TacticsTellRequest(Client* from, const std::string& message)
 	const BotTacticsPlan* p = GetTacticsPlan();
 	if (GetBotOwner() != from && !(p && p->IsMember(from->GetID()))) {
 		return false;
+	}
+
+	// "pull", "stop", "bring them": the unit's, whoever is told.
+	if (bot_tactics.LeaderSays(from, message)) {
+		return true;
 	}
 
 	std::string text = Strings::ToLower(message);
@@ -5102,15 +6277,37 @@ bool Bot::TacticsSnareRunner(Mob* tar)
 		return false;
 	}
 
-	// Only a bot with a snare takes the claim.
-	if (!IsValidSpell(GetFirstBotSpellBySpellType(this, SpellType_Snare).SpellId)) {
+	// It never runs: no snare (Derakor, snared at 35% in Kael 2026-10-24).
+	if (tar->GetSpecialAbility(SpecialAbility::FleeingImmunity)) {
+		return false;
+	}
+
+	// Only a bot that can snare right now takes the claim. Out-of-mana
+	// rangers took it in turn, 5 s each, while Silverwing went from 35% to
+	// running (Veeshan's Peak 2026-10-24): the first snare that went off was
+	// cast after she fled.
+	const BotSpell snare = GetFirstBotSpellBySpellType(this, SpellType_Snare);
+	if (!IsValidSpell(snare.SpellId) || IsCasting() || GetMana() < snare.ManaCost || !CheckSpellRecastTimer(snare.SpellId)) {
+		return false;
+	}
+
+	// Dying before a snare could matter: "snares [guardian wurm] at [3]%",
+	// "[a fiery guardian] at [0]%". A runner the bots stop hitting lives
+	// longer by this measure, so one that is really getting away still is.
+	if (p->MobSecondsToDeath(tar->GetID()) < spells[snare.SpellId].cast_time / 1000.0f + 3.0f) {
 		return false;
 	}
 	if (!bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID(), kSnareClaimMs)) {
 		return false;
 	}
 
-	return AICastSpell(tar, 100, SpellType_Snare);
+	if (AICastSpell(tar, 100, SpellType_Snare)) {
+		LogInfo("[BotTactics] [{}] snares [{}] at [{:.0f}]%", GetCleanName(), tar->GetCleanName(), tar->GetHPRatio());
+		return true;
+	}
+
+	bot_tactics.ReleaseCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID());
+	return false;
 }
 
 bool Bot::TacticsTooFarFromCamp(Mob* tar)
@@ -5172,6 +6369,48 @@ bool Bot::TacticsStartPull(Mob* target)
 	return true;
 }
 
+// A pull from the player's queue (BotTactics::DispatchPulls, which says
+// what is happening). A monk feign-pulls and several may be out at once;
+// the owner's one-pull flag only gates a plain pull.
+bool Bot::TacticsStartQueuedPull(Mob* target, Bot* partner, bool catcher)
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+	if (!owner || !target || IsFDPulling() || GetPullingFlag() || GetReturningFlag()) {
+		return false;
+	}
+
+	const bool fd = GetClass() == Class::Monk && GetSkill(EQ::skills::SkillFeignDeath) > 0;
+	if (!fd && owner->GetBotPulling()) {
+		return false;
+	}
+
+	if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
+		GetPet()->WipeHateList();
+		GetPet()->SetTarget(nullptr);
+		m_previous_pet_order = GetPet()->GetPetOrder();
+		GetPet()->SetPetOrder(SPO_Guard);
+	}
+
+	InterruptSpell();
+	if (IsSitting()) {
+		Stand();
+	}
+
+	if (fd) {
+		SetFDPullTargetID(target->GetID());
+		SetFDPartnerID(partner ? partner->GetID() : 0);
+		SetFDPullState(catcher ? FDPullState::Catching : FDPullState::Tagging);
+		return true;
+	}
+
+	WipeHateList();
+	AddToHateList(target, 1);
+	SetTarget(target);
+	SetPullingFlag();
+	owner->SetBotPulling();
+	return true;
+}
+
 void Bot::TacticsAbortPull()
 {
 	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
@@ -5191,6 +6430,71 @@ void Bot::TacticsAbortPull()
 	if (HasPet()) {
 		GetPet()->SetPetOrder(m_previous_pet_order);
 	}
+}
+
+// The plan's incoming filter (Rebuild), asked live by a bot about to engage
+// something on its own -- TryAutoDefend. A bot's tag puts its owner on the
+// mob's hate list (Mob::AddToHateList: "if other is a bot, add the bots client
+// to the hate list"), and auto-defend sends every bot of that owner at
+// anything with the owner on its list: the whole raid went for each mob the
+// monks tagged, the moment they tagged it, wherever it was (Kael 2026-10-24,
+// three sessions -- the plan's assist never picked those mobs at all).
+bool Bot::TacticsIsIncoming(Mob* m)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !m || !m->IsNPC()) {
+		return false;
+	}
+
+	Mob* leader = p->camp_leader_id ? entity_list.GetMob(p->camp_leader_id) : nullptr;
+	if (!p->camp_set && !leader) {
+		return false;
+	}
+	const glm::vec3 home = p->camp_set ? p->camp : glm::vec3(leader->GetPosition());
+	if (DistanceSquaredNoZ(glm::vec3(m->GetPosition()), home) <= kCampArriveRadius * kCampArriveRadius) {
+		return false; // here: the camp's fight
+	}
+	return PullerOf(*p, m->GetID()) != nullptr || ChasesOurPuller(*p, m); // the pulled mob, or an add after the puller
+}
+
+// The raid fights at camp only (Rebuild's out_of_camp, for auto-defend): a
+// mob further out than kCampHoldRadius is not ours to go to, unless the
+// player is swinging at it there.
+bool Bot::TacticsOutOfCamp(Mob* m)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !p->camp_set || !m || DistanceSquaredNoZ(glm::vec3(m->GetPosition()), p->camp) <= kCampHoldRadius * kCampHoldRadius) {
+		return false;
+	}
+	Mob* leader = p->camp_leader_id ? entity_list.GetMob(p->camp_leader_id) : nullptr;
+	return !(leader && leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() && m->GetTarget() == leader);
+}
+
+// Anyone of the unit -- player, bot, or a pet of theirs -- within `radius` of
+// `at`, other than us: where a feign would leave the pack standing next to
+// them (FDPullerProcess, before feigning). The other monk on the pull counts
+// too: excluding it, the tagger feigned a second after the catcher peeled an
+// add, the pack stood within reach of the catcher, and the other two
+// Protectors of Zek took it -- and it ran them all into camp (Kael 2026-10-24).
+bool Bot::TacticsOursNear(const glm::vec3& at, float radius)
+{
+	const float r2   = radius * radius;
+	auto        close_by = [&](Mob* m) {
+		return m && m != this && m->GetHP() > 0 && DistanceSquared(glm::vec3(m->GetPosition()), at) <= r2;
+	};
+
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p) {
+		Mob* o = GetBotOwner();
+		return close_by(o) || (o && close_by(o->GetPet()));
+	}
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (close_by(m) || (m && close_by(m->GetPet()))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 glm::vec3 Bot::PullReturnPoint(Client* bot_owner)
@@ -5269,7 +6573,13 @@ bool Bot::TacticsCampSlot(glm::vec3& out)
 		const float     heading = 512.0f * idx / n;
 		const glm::vec4 slot    = TryMoveAlong(glm::vec4(p->camp, 0.0f), radius, heading);
 
-		m_camp_slot      = glm::vec3(slot);
+		// No ground under the slot (TryMoveAlong's GetFixedZ fails against a
+		// wall or over a drop: z -99999), or another floor: stand on the camp
+		// itself. That slot was walked to, stalled, and TacticsUnstick
+		// teleported the bot there -- under the world (Kael 2026-10-24: 28
+		// "stuck [99,6xx] from its goal", bots at z -17501 .. -74050).
+		const float dz = slot.z - p->camp.z;
+		m_camp_slot      = (dz > -15.0f && dz < 15.0f) ? glm::vec3(slot) : p->camp;
 		m_camp_slot_camp = p->camp;
 		m_camp_slot_sig  = sig;
 	}
@@ -5553,8 +6863,12 @@ const std::vector<std::pair<uint8, uint16>>& StunLadder(uint8 class_id)
 	static bool        built = false;
 	if (!built) {
 		built = true;
+		// Era ids only: the discipline exemption let Power Slam (4602) in, a
+		// spell the v29c client does not have, cast six times in 1.5 s by the
+		// main tank at a lava drake (Veeshan's Peak 2026-10-24).
 		BuildLadder(ladder, [](uint16 id) {
-			return IsEffectInSpell(id, SE_Stun) && IsDetrimentalSpell(id) && spells[id].target_type == ST_Target;
+			return id <= kEraMaxSpellId && IsEffectInSpell(id, SE_Stun) && IsDetrimentalSpell(id) &&
+				spells[id].target_type == ST_Target;
 		});
 	}
 
@@ -5688,7 +7002,8 @@ bool Bot::TacticsInterrupt(Mob* tar)
 		const uint16 id = e.second;
 		const auto&  s  = spells[id];
 		if (e.first > GetLevel() || e.first < stun_level ||
-			s.cast_time + kInterruptMinLeftMs > left || s.mana > GetMana() || dist2 > s.range * s.range) {
+			s.cast_time + kInterruptMinLeftMs > left || s.mana > GetMana() || dist2 > s.range * s.range ||
+			TacticsResistBackoff(id, caster)) { // resisted twice: it was cast again in the same second
 			continue;
 		}
 
@@ -6952,6 +8267,16 @@ bool Bot::TacticsDeathSave()
 	// it never found a spell: zero DI on any main tank in three Derakor logs.
 	const uint16 sid = BuffWithEffectFor(SE_DeathSave, GetClass(), GetLevel());
 	if (!IsValidSpell(sid) || tank->FindType(SE_DeathSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+		return false;
+	}
+
+	// Worth a 6 s cast: a raid target, a rare spawn, an encounter we have a
+	// row for (Derakor's rampage), or a fight measured to last. Any raid
+	// fight counted before: Kael 2026-10-24, ten DIs started on guards that
+	// died in 5-9 s, one landed.
+	const float ttd = p->MobSecondsToDeath(fight->GetID());
+	const bool  long_fight = ttd < 1.0e5f && ttd > spells[sid].cast_time / 1000.0f + 15.0f;
+	if (!(fight->IsRaidTarget() || fight->IsRareSpawn() || p->has_encounter || long_fight)) {
 		return false;
 	}
 	if (

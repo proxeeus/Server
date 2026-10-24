@@ -605,6 +605,31 @@ void Bot::ChangeBotArcherWeapons(bool isArcher) {
 }
 
 void Bot::Sit() {
+	// Stood up a moment ago -- to walk, to cast, to step -- so not straight
+	// back down. IsSitting() is false while moving, so the meditate check
+	// sat a walking bot, which stopped the walk, which stood it again: 6-7
+	// sit/stand pairs a bot a second at the end of a Veeshan's Peak fight
+	// (2026-10-24, 234 appearance packets in one second), after both Kael
+	// fixes. Whatever stands us, this caps it at one pair per kSitAfterStandMs.
+	constexpr uint32 kSitAfterStandMs = 2000;
+	const uint32     now              = Timer::GetCurrentTime();
+
+	// Never in the middle of a cast: Divine Intervention on the main tank was
+	// begun ten times in Kael (2026-10-24) and landed once -- the cleric sat
+	// down 2-6 s into its 6 s cast.
+	if (IsCasting() && GetClass() != Class::Bard) {
+		return;
+	}
+	if (m_stood_ms && now - m_stood_ms < kSitAfterStandMs) {
+		++m_sits_held;
+		if (now - m_sits_held_logged_ms > 10000) {
+			LogInfo("[BotAI] [{}] sit held [{}] times: stood up again within [{}] ms", GetCleanName(), m_sits_held, kSitAfterStandMs);
+			m_sits_held_logged_ms = now;
+			m_sits_held           = 0;
+		}
+		return;
+	}
+
 	if (IsMoving()) {
 		moved = false;
 		StopNavigation();
@@ -614,7 +639,7 @@ void Bot::Sit() {
 }
 
 void Bot::Stand() {
-	SetAppearance(eaStanding);
+	SetAppearance(eaStanding); // Mob::SetAppearance notes the stand for Sit()
 }
 
 bool Bot::IsSitting() const {
@@ -2225,6 +2250,102 @@ constexpr float MAX_CASTER_DISTANCE[Class::PLAYER_CLASS_COUNT] = {
 	0
 };
 
+Mob* Bot::GetNPCCharmer() const
+{
+	return m_npc_charmer_id ? entity_list.GetMob(m_npc_charmer_id) : nullptr;
+}
+
+// SE_Charm (spell_effects.cpp) has already interrupted us and wiped every
+// hate list we were on.
+void Bot::StartNPCCharm(Mob* charmer)
+{
+	m_npc_charmer_id = charmer->GetID();
+	SetTarget(nullptr);
+	StopMoving();
+	LogInfo("[BotCharm] [{}] charmed by [{}]", GetCleanName(), charmer->GetCleanName());
+}
+
+void Bot::EndNPCCharm()
+{
+	if (!m_npc_charmer_id) {
+		return;
+	}
+
+	Mob* charmer = GetNPCCharmer();
+	LogInfo("[BotCharm] [{}] free of [{}]", GetCleanName(), charmer ? charmer->GetCleanName() : "its charmer");
+	m_npc_charmer_id = 0;
+
+	// Whatever we hit while charmed is a friend again.
+	WipeHateList();
+	SetTarget(nullptr);
+	StopMoving();
+}
+
+// The charmed player's loop (Client::AI_Process): the master's target, else
+// the top of its hate; in reach, swing; out of reach, run to it; nothing to
+// fight, keep at the master's side.
+void Bot::NPCCharmAI()
+{
+	Mob* charmer = GetNPCCharmer();
+	if (!charmer || charmer->IsCorpse() || charmer->GetHP() <= 0) {
+		BuffFadeByEffect(SE_Charm);
+		EndNPCCharm(); // no charm buff left to fade (dispelled in the same tick)
+		return;
+	}
+
+	if (CheckIfIncapacitated()) {
+		return;
+	}
+
+	auto can_fight = [this](Mob* t) {
+		return t && t != this && !t->IsCorpse() && t->GetHP() > 0 && IsAttackAllowed(t);
+	};
+
+	Mob* tar = GetTarget();
+	if (!can_fight(tar)) {
+		tar = charmer->GetTarget();
+		if (!can_fight(tar)) {
+			tar = charmer->GetHateTop();
+		}
+		if (!can_fight(tar)) {
+			tar = nullptr;
+		}
+		SetTarget(tar);
+	}
+
+	if (!tar) {
+		if (DistanceSquared(m_Position, charmer->GetPosition()) > 20.0f * 20.0f) {
+			if (AI_movement_timer->Check()) {
+				RunTo(charmer->GetX(), charmer->GetY(), charmer->GetZ());
+			}
+		}
+		else if (IsMoving()) {
+			StopMoving();
+		}
+		return;
+	}
+
+	if (!CombatRange(tar)) {
+		if (AI_movement_timer->Check()) {
+			RunTo(tar->GetX(), tar->GetY(), tar->GetZ());
+		}
+		return;
+	}
+
+	if (IsMoving()) {
+		StopMoving();
+	}
+	FaceTarget(tar);
+
+	if (!TryClassAttacks(tar)) {
+		return;
+	}
+	if (!TryPrimaryWeaponAttacks(tar, GetBotItem(EQ::invslot::slotPrimary))) {
+		return;
+	}
+	TrySecondaryWeaponAttacks(tar, GetBotItem(EQ::invslot::slotSecondary));
+}
+
 void Bot::AI_Process()
 {
 
@@ -2262,6 +2383,14 @@ void Bot::AI_Process()
 	}
 
 	auto bot_group = GetGroup();
+
+	// Charmed: the charmer's fight is ours, and nothing else of ours runs
+	if (IsCharmedByNPC()) {
+		if (IsAIControlled()) {
+			NPCCharmAI();
+		}
+		return;
+	}
 
 	// Primary reasons for not processing AI
 	if (!IsAIProcessValid(bot_owner, bot_group, raid)) {
@@ -2353,8 +2482,8 @@ void Bot::AI_Process()
 		if (IsFDPulling()) { // still in FD state — skip normal AI this tick
 			return;
 		}
-		// FD state machine handed off to normal pull machinery (Retagging → Pulling transition)
-		// Fall through so the PullingFlag is processed immediately this tick
+		// The pull is over (the mob is at camp, or it was called off): fall
+		// through to the normal fight this tick
 	}
 
 	if (GetAttackFlag()) { // Push owner's target onto our hate list
@@ -2498,13 +2627,14 @@ void Bot::AI_Process()
 				return;
 			}
 
-			// Raid encounter: casters out of its reach, everyone out of its front
-			if (TacticsEncounterPositioning(tar)) {
+			// The main target is low or running: one of us snares it -- before
+			// any repositioning, which would take the turn of a caster in reach
+			if (TacticsSnareRunner(tar)) {
 				return;
 			}
 
-			// The main target is low or running: one of us snares it
-			if (TacticsSnareRunner(tar)) {
+			// Raid encounter: casters out of its reach, everyone out of its front
+			if (TacticsEncounterPositioning(tar)) {
 				return;
 			}
 
@@ -2782,7 +2912,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no line of sight at [{:.0f}]",
 			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2)
 		);
-		ClearCastRangeIntent();
+		GiveUpCastWalk(tar->GetID());
 		return false;
 	}
 
@@ -2794,7 +2924,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 			GetCleanName(), what, tar->GetCleanName()
 		);
 		m_cast_progress.Reset();
-		ClearCastRangeIntent();
+		GiveUpCastWalk(tar->GetID());
 		return false;
 	}
 
@@ -2951,6 +3081,27 @@ bool Bot::TryAutoDefend(Client* bot_owner, float leash_distance) {
 					}
 
 					auto hater = entity_list.GetMob(hater_iter.spawn_id);
+
+					// A mob one of ours is pulling has us on its list from the
+					// tag on (Bot::TacticsIsIncoming): it is not attacking anyone,
+					// it is being brought in. Leave it until it is at camp.
+					// ...and with a camp, anything out of camp: the raid fights at
+					// camp only. A pack member a monk had just feigned off took a
+					// bot on its way home, the player went on its list with it,
+					// and every bot went for it out there (Kael 2026-10-24).
+					const bool pulled = hater && TacticsIsIncoming(hater);
+					if (hater && (pulled || TacticsOutOfCamp(hater))) {
+						static std::unordered_map<uint32, uint32> held_said; // (bot, mob) -> when, so two mobs do not alternate 11000 lines
+						const uint32 key  = (static_cast<uint32>(GetID()) << 16) | hater->GetID();
+						const uint32 when = Timer::GetCurrentTime();
+						if (when - held_said[key] >= 10000) {
+							held_said[key] = when;
+							LogInfo("[BotAI] [{}] auto-defend holds: [{}] is {}", GetCleanName(), hater->GetCleanName(),
+								pulled ? "being pulled" : "out of camp");
+						}
+						continue;
+					}
+
 					if (hater && hater->CastToNPC()->IsOnHatelist(bot_owner) && !hater->IsMezzed() && DistanceSquared(hater->GetPosition(), bot_owner->GetPosition()) <= leash_distance) {
 						// This is roughly equivilent to npc attacking a client pet owner
 						AddToHateList(hater, 1);
@@ -3520,6 +3671,7 @@ bool Bot::PullingFlagChecks(Client* bot_owner) {
 	}
 	else if (GetTarget()->GetHateList().size()) {
 
+		m_bringing_in_id = GetTarget()->GetID();
 		WipeHateList();
 		SetTarget(nullptr);
 		SetPullingFlag(false);
@@ -3788,12 +3940,18 @@ bool Bot::ExecuteFeignDeath() {
 	entity_list.GetNPCList(npc_list);
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
+			// A mob immune to feign death sees through it (The Sleeper): it
+			// keeps us, as it keeps a player.
+			if (npc->GetSpecialAbility(SpecialAbility::FeignDeathImmunity)) {
+				continue;
+			}
 			if (IsFDPulling() && static_cast<uint16>(npc->GetID()) != m_fd_pull_target_id && !npc->IsPet()) {
 				m_fd_pull_add_ids.push_back(static_cast<uint16>(npc->GetID()));
 			}
 			// Forget us, not everyone: wiping the whole list made a mob that
 			// was on the group drop the tank too.
 			npc->RemoveFromHateList(this);
+			ForgetOwnerTaggedOnly(npc);
 		}
 	}
 	WipeHateList();
@@ -3849,6 +4007,12 @@ bool Bot::AddsHaveReturned() const {
 			continue;
 		}
 		if (mob->IsEngaged()) {
+			// After another monk of ours (it peeled this one off): not
+			// coming back to us, so not in the way.
+			Mob* top = mob->GetHateTop();
+			if (top && top != this && top->IsBot() && top->CastToBot()->IsFDPulling()) {
+				continue;
+			}
 			return false;
 		}
 		// Primary: add has walked far enough from the monk's feign position.
@@ -3887,6 +4051,76 @@ bool Bot::IsBeingChasedByAdds(const Mob* ignore_target) const {
 	return false;
 }
 
+// Our tag put our owner on the mob's list too, at no hate (Mob::AddToHateList:
+// "if other is a bot, add the bots client to the hate list"), and the adds
+// that joined it got the owner the same way. Feigning drops us but not them:
+// with us gone the owner was all that was left, so nothing went home -- the
+// target and every add walked to the raid together, and there was nothing to
+// split (Kael 2026-10-24: Kallis Stormcaller with the first Protector of Zek,
+// then three Protectors at once). Drop the owner as well, unless the owner
+// really fought it.
+void Bot::ForgetOwnerTaggedOnly(NPC* npc)
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+	if (!npc || !owner || !npc->IsOnHatelist(owner)) {
+		return;
+	}
+	if (npc->GetHateAmount(owner) > 0 || npc->GetDamageAmount(owner) > 0) {
+		return;
+	}
+	npc->RemoveFromHateList(owner);
+	LogInfo("[FDPull] [{}] [{}] forgets [{}] too (only on its list through our tag)", GetCleanName(), npc->GetCleanName(), owner->GetCleanName());
+}
+
+// NPC::AIYellForHelp, asked ahead of time: who of its friends would join it
+// if we tagged it now. A tagged mob calls once as it engages (AI_Event_Engaged)
+// and then every few seconds while engaged; this is the first call. Same tests,
+// same order, us as the attacker; `margin` pads each friend's assist range for
+// a friend walking our way.
+size_t Bot::FriendsThatWouldHelp(Mob* target, float margin)
+{
+	if (!target || !target->IsNPC() || !target->GetPrimaryFaction() || target->HasAssistAggro()) {
+		return 0;
+	}
+
+	const int cap = RuleI(Combat, NPCAssistCap);
+	size_t    n   = 0;
+	for (auto& close : entity_list.GetCloseMobList(target)) {
+		Mob* mob = close.second;
+		if (!mob || mob == target || mob == this || mob->IsClient() || mob->IsBot() || mob->GetHP() <= 0) {
+			continue;
+		}
+		if (mob->IsPet() && (!mob->GetOwner() || mob->GetOwner()->IsClient() || mob->GetOwner()->IsBot())) {
+			continue;
+		}
+
+		const float range = mob->GetAssistRange() + margin;
+		if (DistanceSquared(glm::vec3(target->GetPosition()), glm::vec3(mob->GetPosition())) > range * range) {
+			continue;
+		}
+		if (mob->CheckAggro(this) || !mob->GetPrimaryFaction() || mob->IsEngaged()) {
+			continue;
+		}
+		if (!(mob->GetLevel() >= 50 || mob->AlwaysAggro() || GetLevelCon(mob->GetLevel()) != ConsiderColor::Gray)) {
+			continue; // gray to us: it does not bother
+		}
+		if (mob->GetPrimaryFaction() == target->GetPrimaryFaction() && mob->IsNPC()) {
+			const auto f = zone->GetNPCFaction(mob->CastToNPC()->GetNPCFactionID());
+			if (f && f->ignore_primary_assist) {
+				continue;
+			}
+		}
+		if (target->GetReverseFactionCon(mob) > FACTION_AMIABLY || !mob->CheckLosFN(target)) {
+			continue;
+		}
+		if (target->NPCAssistCap() + static_cast<int>(n) >= cap) {
+			break;
+		}
+		++n;
+	}
+	return n;
+}
+
 void Bot::FDPullReset(Client* bot_owner) {
 	// Clear hate on both sides before standing up so the bot doesn't re-engage
 	// mobs that were aggroed during the pull, and those mobs return home cleanly.
@@ -3895,6 +4129,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
 			npc->RemoveFromHateList(this); // us only (see ExecuteFeignDeath)
+			ForgetOwnerTaggedOnly(npc);
 		}
 	}
 	WipeHateList();
@@ -3909,6 +4144,17 @@ void Bot::FDPullReset(Client* bot_owner) {
 	}
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
+	m_fd_pull_started_ms = 0;
+	m_fd_split_cycles    = 0;
+	m_fd_split_asked     = false;
+	m_fd_bring_all       = false;
+	m_fd_incoming_said   = false;
+	m_fd_partner_id      = 0;
+	m_fd_gap_wait_ms     = 0;
+	m_fd_peel_id         = 0;
+	m_fd_escape_set      = false;
+	m_fd_catch_spot_set  = false;
+	m_fd_escape_runs     = 0;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -3919,66 +4165,420 @@ void Bot::FDPullReset(Client* bot_owner) {
 void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	auto* pull_target = entity_list.GetMob(m_fd_pull_target_id);
 
+	// Every step goes to the raid / group and to the zone log: the chat alone
+	// left the Kael session of 2026-10-24 unreadable afterwards.
+	auto say = [&](const std::string& msg) {
+		LogInfo("[FDPull] [{}] {}", GetCleanName(), msg);
+		if (raid) {
+			raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
+		} else {
+			BotGroupSay(this, msg.c_str());
+		}
+	};
+
+	// The second monk says nothing of its own while it only waits: the
+	// tagger speaks for the pull.
+	const bool catching = m_fd_pull_state == FDPullState::Catching;
+
 	if (!pull_target || !pull_target->IsNPC() || pull_target->GetHP() <= 0) {
 		FDPullReset(bot_owner);
-		const char* msg = "FD pull target lost — aborting.";
-		if (raid) {
-			raid->RaidSay(msg, GetCleanName(), 0, 100);
-		} else {
-			BotGroupSay(this, msg);
+		if (!catching) {
+			say("FD pull target lost — aborting.");
 		}
 		return;
 	}
+
+	const uint32 now = Timer::GetCurrentTime();
+
+	// The other monk on this pull, while it still is on it.
+	auto partner = [&]() -> Bot* {
+		Mob* m = m_fd_partner_id ? entity_list.GetMob(m_fd_partner_id) : nullptr;
+		if (!m || !m->IsBot() || m->GetHP() <= 0) {
+			return nullptr;
+		}
+		Bot* b = m->CastToBot();
+		return b->IsFDPulling() && b->GetFDPullTargetID() == m_fd_pull_target_id ? b : nullptr;
+	};
+
+	// Two of us never give up: they take a pack apart one add at a time,
+	// however long that takes -- a raid pull on live could take hours (the
+	// user's guild split Aaryonar from its two guardians for two hours in
+	// 2001). One monk alone can split by feign only what lives apart: it
+	// leaves a pull that has not come alone in two minutes (five, a boss).
+	if (!m_fd_pull_started_ms || partner()) {
+		m_fd_pull_started_ms = now;
+	}
+	else {
+		const bool   boss    = !bot_tactics.PlayersCall(pull_target->CastToNPC(), bot_owner ? bot_owner->GetLevel() : GetLevel(), raid != nullptr).empty();
+		const uint32 give_up = boss ? FD_PULL_GIVE_UP_BOSS_MS : FD_PULL_GIVE_UP_MS;
+		if (now - m_fd_pull_started_ms > give_up) {
+			FDPullReset(bot_owner);
+			if (!catching) {
+				say(fmt::format("Couldn't get {} alone on my own. Leaving it.", pull_target->GetCleanName()));
+			}
+			return;
+		}
+	}
+
+	// The raid is fighting something at camp: nothing new comes in until it
+	// is down, or two arrive at once. (Found by forensics/fdpull_sim.pl: the
+	// catcher went for the next straggler while the last peeled add was
+	// still being fought, and two Protectors stood in camp together.)
+	auto camp_busy = [&]() {
+		const BotTacticsPlan* p = GetTacticsPlan();
+		Mob*                  a = p && p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+		return a && a->GetHP() > 0;
+	};
+
+	// Where we wait for a gap: off its aggro, or at tag range if that is longer.
+	const float tag_range_sq = GetFDTagRangeSq();
+	const float wait_dist    = std::max(FD_CATCH_STANDOFF, std::sqrt(tag_range_sq));
+
+	// On our own, back in for it after a feign, and its friends would still
+	// come with it (FriendsThatWouldHelp): they are home again, standing with
+	// it, and no feign of ours will split them. Hold off, standing, for a gap
+	// -- one walking off, a patrol passing. Two monks never wait like this:
+	// they peel the friends off (Catching, Peeling).
+	auto hold_for_gap = [&]() -> bool {
+		const size_t friends = m_fd_bring_all ? 0 : FriendsThatWouldHelp(pull_target);
+		if (!friends) {
+			if (m_fd_gap_wait_ms) {
+				LogInfo("[FDPull] [{}] {} is clear of its friends", GetCleanName(), pull_target->GetCleanName());
+			}
+			m_fd_gap_wait_ms = 0;
+			return false;
+		}
+		if (!m_fd_gap_wait_ms) {
+			m_fd_gap_wait_ms = now;
+			say(fmt::format(
+				"{} stands with {} that come with it, and I can't split them on my own: waiting for a gap.",
+				pull_target->GetCleanName(), friends
+			));
+		}
+		return true;
+	};
+	auto hold_still = [&](Mob* face) {
+		if (IsMoving()) {
+			StopMoving();
+		}
+		if (face) {
+			FaceTarget(face);
+		}
+	};
+
+	// Where to run with what we just tagged: sideways from the line to camp,
+	// not toward it. Two seconds toward camp before the feign put the feign
+	// -- and the pack, once it lost us -- next to the player: three
+	// Protectors of Zek aggroed on the raid where they stood (Kael 2026-10-24).
+	auto set_escape = [&]() {
+		const glm::vec3 back    = PullReturnPoint(bot_owner);
+		const float     to_home = CalculateHeadingToTarget(back.x, back.y);
+		const glm::vec4 from(GetX(), GetY(), GetZ(), 0.0f);
+		// Of the two sides with room to run, the one that ends further from
+		// camp (fdpull_sim.pl: the other led the pack home past the raid).
+		float best_d     = 0.0f;
+		float best_score = -1.0f;
+		for (float side : {128.0f, -128.0f}) {
+			const float     heading = FixHeading(to_home + side);
+			const glm::vec4 to      = TryMoveAlong(from, FD_ESCAPE_DIST, heading);
+			const float     d       = DistanceSquaredNoZ(glm::vec3(to), glm::vec3(from));
+			const float     score   = DistanceSquaredNoZ(glm::vec3(to), back);
+			if (d >= 30.0f * 30.0f && std::fabs(to.z - from.z) < 20.0f && score > best_score) {
+				best_d              = d;
+				best_score          = score;
+				m_fd_escape         = glm::vec3(to);
+				m_fd_escape_heading = heading;
+			}
+		}
+		if (best_d < 30.0f * 30.0f) {
+			m_fd_escape         = back; // walls both ways: toward camp after all
+			m_fd_escape_heading = to_home;
+		}
+		m_fd_escape_set      = true;
+		m_fd_escape_runs     = 0;
+	};
+
+	// How far the pack after us reaches: the furthest aggro range among them.
+	auto chaser_reach = [&]() {
+		float r = 0.0f;
+		std::list<NPC*> npc_list;
+		entity_list.GetNPCList(npc_list);
+		for (auto* npc : npc_list) {
+			if (npc && npc->IsOnHatelist(this)) {
+				r = std::max(r, npc->GetAggroRange());
+			}
+		}
+		return (r > 0.0f ? r : 70.0f) + 30.0f;
+	};
+
+	// The pack's way home from here keeps clear of ours: each mob after us
+	// walks straight back to its spawn point once we feign, and takes anyone
+	// of ours within its aggro range on the way. A feign spot clear of the
+	// raid was not enough: the Vallon Zek pack, 104 from the player, walked
+	// home past the raid and all three came in (Kael 2026-10-24;
+	// fdpull_sim.pl 3/30 runs without this, 30/30 with it).
+	auto ours_list = [&]() {
+		const BotTacticsPlan* p = GetTacticsPlan();
+		std::vector<Mob*>     ours;
+		if (p) {
+			for (uint16 id : p->members) {
+				Mob* m = entity_list.GetMob(id);
+				if (m && m != this && m->GetHP() > 0) {
+					ours.push_back(m);
+					if (m->GetPet()) {
+						ours.push_back(m->GetPet());
+					}
+				}
+			}
+		}
+		else if (bot_owner) {
+			ours.push_back(bot_owner);
+		}
+		return ours;
+	};
+	auto walk_home_clear = [&](const glm::vec3& me) {
+		const std::vector<Mob*> ours = ours_list();
+		std::list<NPC*> npc_list;
+		entity_list.GetNPCList(npc_list);
+		for (auto* npc : npc_list) {
+			if (!npc || npc->GetHP() <= 0 || !npc->IsOnHatelist(this)) {
+				continue;
+			}
+			const glm::vec3 home(npc->GetSpawnPoint());
+			const float     r  = npc->GetAggroRange() + 20.0f;
+			const float     vx = home.x - me.x;
+			const float     vy = home.y - me.y;
+			const float     l2 = vx * vx + vy * vy;
+			for (Mob* o : ours) {
+				const float px = o->GetX() - me.x;
+				const float py = o->GetY() - me.y;
+				float       u  = l2 > 0.0f ? (px * vx + py * vy) / l2 : 0.0f;
+				u              = std::clamp(u, 0.0f, 1.0f);
+				const float dx = px - u * vx;
+				const float dy = py - u * vy;
+				if (dx * dx + dy * dy <= r * r) {
+					return false;
+				}
+			}
+		}
+		return true;
+	};
+
+	// Not where the pack lives: a feign next to a spawn point leaves us lying
+	// beside that mob once it is home, and standing up there takes it again
+	// (fdpull_sim.pl: feigned 43 from a Protector's spot).
+	auto near_pack_homes = [&](const glm::vec3& at) {
+		std::list<NPC*> npc_list;
+		entity_list.GetNPCList(npc_list);
+		for (auto* npc : npc_list) {
+			if (!npc || npc->GetHP() <= 0 || !npc->IsOnHatelist(this)) {
+				continue;
+			}
+			const float r = npc->GetAggroRange() + 20.0f;
+			if (DistanceSquaredNoZ(glm::vec3(npc->GetSpawnPoint()), at) <= r * r) {
+				return true;
+			}
+		}
+		return false;
+	};
+
+	// Where to run on to. Straight sideways ran into Kael's buildings:
+	// TryMoveAlong cut every run short at the wall, and after four of them the
+	// monk feigned 51 from the raid (fdpull_sim.pl on kael.map). Of eight
+	// headings -- not straight at camp -- each cut at the first wall, the spot
+	// clear of ours whose walk home is clear too; failing that, the one
+	// furthest from ours.
+	auto pick_escape = [&](float reach) {
+		const std::vector<Mob*> ours    = ours_list();
+		const glm::vec3         back    = PullReturnPoint(bot_owner);
+		const float             to_home = CalculateHeadingToTarget(back.x, back.y);
+		const glm::vec4         from(GetX(), GetY(), GetZ(), 0.0f);
+		float                   best    = -1.0f;
+		for (int k = 1; k <= 7; ++k) {
+			const float     heading = FixHeading(to_home + 64.0f * k);
+			const glm::vec4 to      = TryMoveAlong(from, FD_ESCAPE_DIST, heading);
+			if (DistanceSquaredNoZ(glm::vec3(to), glm::vec3(from)) < 30.0f * 30.0f || std::fabs(to.z - from.z) >= 20.0f) {
+				continue;
+			}
+			const glm::vec3 at(to);
+			float           nearest = 1e9f;
+			for (Mob* o : ours) {
+				nearest = std::min(nearest, std::sqrt(DistanceSquaredNoZ(glm::vec3(o->GetPosition()), at)));
+			}
+			// Not into another mob: running on for 24 s the monk dragged
+			// Veteran Mjrlind into Kallis's pack (Kael 2026-10-25).
+			bool idle_there = false;
+			for (auto& close : entity_list.GetCloseMobList(this)) {
+				Mob* n = close.second;
+				if (!n || !n->IsNPC() || n->IsPet() || n->GetHP() <= 0 || n->IsEngaged()) {
+					continue;
+				}
+				const float r = n->GetAggroRange() + 30.0f;
+				if (DistanceSquaredNoZ(glm::vec3(n->GetPosition()), at) <= r * r) {
+					idle_there = true;
+					break;
+				}
+			}
+			const float score = (nearest > reach && !idle_there && !near_pack_homes(at) && walk_home_clear(at) ? 1e6f : 0.0f) +
+				(idle_there ? 0.0f : 1000.0f) + nearest;
+			if (score > best) {
+				best                = score;
+				m_fd_escape         = at;
+				m_fd_escape_heading = heading;
+			}
+		}
+		return best >= 0.0f;
+	};
+
+	// Tag it, and run with it (see set_escape).
+	auto tag = [&](Mob* t) {
+		InterruptSpell();
+		ExecuteFDTag(t);
+		set_escape();
+		m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+		m_fd_incoming_said = false;
+	};
+
+	// Up again after a feign: back in for it -- or, with the other monk
+	// bringing it or going for it, catch in turn.
+	auto stand_up = [&]() {
+		SetFeigned(false, this); // stands us up (Bot::SetFeigned)
+		m_fd_pull_add_ids.clear();
+		m_fd_gap_wait_ms = 0;
+		m_fd_escape_set  = false;
+		Bot*       mate = partner();
+		const auto ms   = mate ? mate->GetFDPullState() : FDPullState::None;
+		if (ms == FDPullState::Tagging || ms == FDPullState::RetagKiting || ms == FDPullState::Retagging) {
+			m_fd_pull_state = FDPullState::Catching;
+			LogInfo("[FDPull] [{}] up: [{}] is on {}, catching", GetCleanName(), mate->GetCleanName(), pull_target->GetCleanName());
+			return;
+		}
+		m_fd_pull_state = FDPullState::Retagging;
+		const size_t friends = FriendsThatWouldHelp(pull_target);
+		say(!friends ?
+			fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName()) :
+			mate ? fmt::format("Adds are home — {} still has {} with it. Next one.", pull_target->GetCleanName(), friends) :
+			fmt::format("Adds are home — going back for {}.", pull_target->GetCleanName()));
+	};
+
+	// The leader said bring them: whatever follows comes along.
+	auto chased = [&]() { return !m_fd_bring_all && IsBeingChasedByAdds(pull_target); };
+
+	// Already on someone else of ours: it is in the fight, the pull is done.
+	// Without this the monk feigned at a mob the raid had been beating for a
+	// second, and lay there through the fight.
+	// Only at camp, though: out on the way, a mob that aggroed on someone
+	// else (Kael's guards wake on whoever stands near) is still ours to bring
+	// in. Ending the pull out there left the monk fighting it half way, and
+	// the raid walked out of camp to help (Kael 2026-10-24, second session).
+	auto in_the_fight = [&]() {
+		Mob* top = pull_target->GetHateTop();
+		if (!top || top == this || m_fd_pull_state == FDPullState::FeignWait) {
+			return false;
+		}
+		// On the other monk of the pull: that is the split under way, not the
+		// raid's fight. Taken for it, the catcher let go of the target a tick
+		// after getting on it (fdpull_sim.pl).
+		if (top->IsBot() && top->CastToBot()->IsFDPulling()) {
+			return false;
+		}
+		const glm::vec3 home = PullReturnPoint(bot_owner);
+		return DistanceSquared(glm::vec3(pull_target->GetPosition()), home) <= FD_ALONE_RADIUS_SQ;
+	};
+
+	// At camp: the pull is over, the mob is the camp's fight. We keep its
+	// aggro -- the tank takes it from here -- and fight like anyone else.
+	//
+	// This used to hand off to the plain pull 80 out, which drops the mob as
+	// its target as soon as it chases (PullingFlagChecks): the plan lost sight
+	// of it as incoming, saw it on a bot and called it arrived where it stood,
+	// and the whole raid and every pet ran out of camp to it (Kael 2026-10-24,
+	// Adjutant Darggon killed ~110 out, 4 s after "Incoming").
+	auto at_camp = [&]() {
+		if (bot_owner) {
+			bot_owner->SetBotPulling(false);
+		}
+		if (HasPet()) {
+			GetPet()->SetPetOrder(m_previous_pet_order);
+		}
+		AddToHateList(pull_target, 1);
+		SetTarget(pull_target);
+		m_fd_pull_state      = FDPullState::None;
+		m_fd_pull_target_id  = 0;
+		m_fd_pull_started_ms = 0;
+		m_fd_split_cycles    = 0;
+		m_fd_split_asked     = false;
+		m_fd_bring_all       = false;
+		m_fd_incoming_said   = false;
+		m_fd_partner_id      = 0;
+		m_fd_gap_wait_ms     = 0;
+		m_fd_peel_id         = 0;
+		m_fd_escape_set      = false;
+		m_fd_pull_add_ids.clear();
+		m_fd_tag_timer.Disable();
+		m_fd_feign_check_timer.Disable();
+	};
 
 	switch (m_fd_pull_state) {
 
 	case FDPullState::Tagging: {
 		if (!m_fd_tag_timer.Enabled()) {
-			// Haven't tagged yet — move to target first
-			const float tag_range_sq = GetFDTagRangeSq();
+			// Haven't tagged yet — move to target first. Friends or not, we
+			// go: the feign is what splits them. Waiting first for a gap that
+			// static guards never give froze both monks for 20 s a pull
+			// (Kael 2026-10-24).
 			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
 			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 				return;
 			}
-			// In range and have LOS — tag the target
-			InterruptSpell();
-			ExecuteFDTag(pull_target);
-			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
-			const auto tag_msg = fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(tag_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, tag_msg.c_str());
-			}
+			tag(pull_target);
+			say(fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName()));
 		} else {
-			// After tagging: run toward owner for FD_TAG_WAIT_MS to create separation, then FD.
-			// Never FD immediately — the running distance determines how far adds must walk home
-			// before the monk re-enters their aggro range on the next approach.
+			// After tagging: run off sideways for FD_TAG_WAIT_MS (set_escape),
+			// which is the separation the adds must walk back, then see who
+			// followed.
+			if (in_the_fight()) {
+				FDPullReset(bot_owner);
+				say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
+				return;
+			}
+			if (!m_fd_escape_set) {
+				set_escape();
+			}
 			if (!m_fd_tag_timer.Check()) {
-				const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
-				RunTo(back.x, back.y, back.z);
-			} else {
-				const bool had_adds = IsBeingChasedByAdds(pull_target);
-				const bool fd_ok = ExecuteFeignDeath();
-				if (fd_ok) {
-					m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
-					m_fd_pull_state = FDPullState::FeignWait;
-					const char* fd_msg = had_adds ? "Adds incoming — feigning." : "Feigning — pulling solo.";
-					if (raid) {
-						raid->RaidSay(fd_msg, GetCleanName(), 0, 100);
-					} else {
-						BotGroupSay(this, fd_msg);
-					}
-				} else {
-					// FD failed — stay put, wait for reuse timer before retrying
-					m_fd_pull_state = FDPullState::FDCooldown;
-					if (raid) {
-						raid->RaidSay("FD failed — holding position, will retry.", GetCleanName(), 0, 100);
-					} else {
-						BotGroupSay(this, "FD failed — holding position, will retry.");
+				RunTo(m_fd_escape.x, m_fd_escape.y, m_fd_escape.z);
+			} else if (pull_target->GetSpecialAbility(SpecialAbility::FeignDeathImmunity)) {
+				// It sees through feign death: there is no splitting it.
+				m_fd_bring_all  = true;
+				m_fd_pull_state = FDPullState::RetagKiting;
+				say(fmt::format("{} sees through feign death: I can't split it. Bringing what comes.", pull_target->GetCleanName()));
+			} else if (!chased()) {
+				// Nothing came along: no feign (it made a lone mob forget us,
+				// walk home and wait to be tagged again). Kite it in.
+				m_fd_pull_state = FDPullState::RetagKiting;
+				say(fmt::format("{} came alone — bringing it in.", pull_target->GetCleanName()));
+			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && (TacticsOursNear(glm::vec3(GetPosition()), chaser_reach()) ||
+				near_pack_homes(glm::vec3(GetPosition())) || !walk_home_clear(glm::vec3(GetPosition())))) {
+				// Not here: the pack would stop on top of us, or walk home past
+				// ours, and take them once it lost us. On, somewhere clear.
+				++m_fd_escape_runs;
+				if (!pick_escape(chaser_reach())) {
+					const glm::vec4 to = TryMoveAlong(glm::vec4(GetX(), GetY(), GetZ(), 0.0f), FD_ESCAPE_DIST, m_fd_escape_heading);
+					if (std::fabs(to.z - GetZ()) < 20.0f) {
+						m_fd_escape = glm::vec3(to);
 					}
 				}
+				m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+				LogInfo("[FDPull] [{}] ours within reach of the pack: running on before feigning", GetCleanName());
+			} else if (ExecuteFeignDeath()) {
+				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+				m_fd_pull_state = FDPullState::FeignWait;
+				say(fmt::format("Adds incoming — feigning ({} on me).", 1 + m_fd_pull_add_ids.size()));
+			} else {
+				// FD failed — stay put, wait for reuse timer before retrying
+				m_fd_pull_state = FDPullState::FDCooldown;
+				say("FD failed — holding position, will retry.");
 			}
 		}
 		break;
@@ -3991,88 +4591,546 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		m_fd_feign_check_timer.Start(FD_FEIGN_CHECK_MS);
 
 		if (AddsHaveReturned()) {
-			SetFeigned(false, this);
-			m_fd_pull_state = FDPullState::Retagging;
-			const auto alone_msg = fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(alone_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, alone_msg.c_str());
+			stand_up();
+			break;
+		}
+
+		// On our own we need not wait for every add to be home: once the
+		// target is clear of them, with none of them near us, we get up and
+		// take it. (With a catcher out, the catcher does that, standing.)
+		if (!partner() && !pull_target->IsEngaged() && !FriendsThatWouldHelp(pull_target)) {
+			bool near_me = false;
+			for (uint16 id : m_fd_pull_add_ids) {
+				Mob*        add = entity_list.GetMob(id);
+				const float r   = add ? add->GetAggroRange() + 20.0f : 0.0f;
+				if (add && add->GetHP() > 0 && DistanceSquared(glm::vec3(add->GetPosition()), glm::vec3(GetPosition())) <= r * r) {
+					near_me = true;
+					break;
+				}
+			}
+			if (!near_me) {
+				LogInfo("[FDPull] [{}] {} is clear of its adds before they are home: up", GetCleanName(), pull_target->GetCleanName());
+				stand_up();
 			}
 		}
 		break;
 	}
 
 	case FDPullState::Retagging: {
-		// If adds aggro during approach, run back toward owner first then FD (same as initial tag cycle)
-		if (IsBeingChasedByAdds(pull_target)) {
+		// If adds aggro during approach, run off first then FD (same as the initial tag cycle)
+		if (chased()) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+			set_escape();
 			m_fd_pull_state = FDPullState::Tagging;
-			if (raid) {
-				raid->RaidSay("Adds aggroed on approach — running back.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "Adds aggroed on approach — running back.");
-			}
+			say("Adds aggroed on approach — running off.");
 			return;
 		}
-		const float tag_range_sq = GetFDTagRangeSq();
+		if (in_the_fight()) {
+			FDPullReset(bot_owner);
+			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
+			return;
+		}
 		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+
+		Bot* mate = partner();
+		if (mate && !m_fd_bring_all) {
+			// Its friends would still come: tag it again all the same, and the
+			// catcher peels the next one off -- once it is back from the last
+			// one and next to us.
+			if (FriendsThatWouldHelp(pull_target)) {
+				const bool ready = mate->GetFDPullState() == FDPullState::Catching && !camp_busy() &&
+					DistanceSquared(glm::vec3(mate->GetPosition()), glm::vec3(GetPosition())) <= FD_PEEL_READY_DIST * FD_PEEL_READY_DIST;
+				if (!ready) {
+					if (dist_sq > wait_dist * wait_dist) {
+						RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+					}
+					else {
+						hold_still(pull_target);
+					}
+					return;
+				}
+			}
+		}
+		else if (dist_sq <= wait_dist * wait_dist && hold_for_gap()) {
+			hold_still(pull_target);
+			return;
+		}
+
 		if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 			return;
 		}
 		// In range and have LOS — re-tag then enter kiting loop watching for re-aggro
-		InterruptSpell();
-		ExecuteFDTag(pull_target);
+		tag(pull_target);
 		m_fd_pull_state = FDPullState::RetagKiting;
-		const auto retag_msg = fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName());
-		if (raid) {
-			raid->RaidSay(retag_msg.c_str(), GetCleanName(), 0, 100);
-		} else {
-			BotGroupSay(this, retag_msg.c_str());
-		}
+		say(fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName()));
 		break;
 	}
 
 	case FDPullState::RetagKiting: {
-		if (IsBeingChasedByAdds(pull_target)) {
+		if (chased()) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
-			m_fd_pull_state = FDPullState::Tagging;
-			if (raid) {
-				raid->RaidSay("Adds re-aggroed — running back.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "Adds re-aggroed — running back.");
-			}
+			set_escape();
+			m_fd_pull_state    = FDPullState::Tagging;
+			m_fd_incoming_said = false;
+			say("Adds re-aggroed — running off.");
 			return;
 		}
 
-		const glm::vec3 back          = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
-		float           owner_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
-		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
+		const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
+		if (in_the_fight()) {
+			FDPullReset(bot_owner);
+			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
+			return;
+		}
+
+		// Done only once the mob itself is at camp, not the monk: until then
+		// the plan holds everyone at camp (BotTactics::Rebuild, incoming).
+		if (DistanceSquared(glm::vec3(pull_target->GetPosition()), back) <= FD_ARRIVED_RADIUS_SQ) {
+			LogInfo("[FDPull] [{}] {} is at camp", GetCleanName(), pull_target->GetCleanName());
+			at_camp();
+			return;
+		}
+
+		const float home_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
+		if (!m_fd_incoming_said && home_dist_sq <= FD_ALONE_RADIUS_SQ) {
+			m_fd_incoming_said = true;
+			say(fmt::format("Incoming: {}, alone!", pull_target->GetCleanName()));
+		}
+
+		// At the camp spot: wait there for it, facing it.
+		if (home_dist_sq > 5.0f * 5.0f) {
+			RunTo(back.x, back.y, back.z);
+		}
+		else {
+			hold_still(pull_target);
+		}
+		break;
+	}
+
+	case FDPullState::Catching: {
+		Bot* mate = partner();
+
+		// The tagger is off the pull: it brought it in and it is in the fight
+		// (we are done), or it died or was called off (we take over).
+		if (!mate) {
+			if (pull_target->IsEngaged()) {
+				LogInfo("[FDPull] [{}] stands down: {} is in the fight", GetCleanName(), pull_target->GetCleanName());
+				FDPullReset(bot_owner);
+				return;
+			}
+			m_fd_partner_id  = 0;
+			m_fd_gap_wait_ms = 0;
+			m_fd_pull_state  = FDPullState::Retagging;
+			say(fmt::format("Taking over {}.", pull_target->GetCleanName()));
+			return;
+		}
+
+		const auto ms = mate->GetFDPullState();
+
+		// Both of us up and waiting: one goes back in for it.
+		if (ms == FDPullState::Catching && GetID() < mate->GetID()) {
+			m_fd_gap_wait_ms = 0;
+			m_fd_pull_state  = FDPullState::Retagging;
+			LogInfo("[FDPull] [{}] both catching: going in for {}", GetCleanName(), pull_target->GetCleanName());
+			return;
+		}
+
+		// One of the pack took us -- its aggro range (70 here) is longer than
+		// our throw (50), so walking up to catch it is a tag: ours to bring in
+		// now. Left as it was, nobody brought it, and it walked into the raid
+		// (fdpull_sim.pl).
+		{
+			std::vector<uint16> pack = mate->GetFDPullAddIDs();
+			pack.push_back(pull_target->GetID());
+			for (uint16 id : pack) {
+				Mob* m = entity_list.GetMob(id);
+				if (!m || !m->IsNPC() || m->GetHP() <= 0 || m->GetHateTop() != this) {
+					continue;
+				}
+				m_fd_catch_spot_set = false;
+				if (m == pull_target) {
+					set_escape();
+					m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+					m_fd_incoming_said = false;
+					m_fd_pull_state    = FDPullState::Tagging;
+					say(fmt::format("{} is on me — I bring it.", pull_target->GetCleanName()));
+				}
+				else {
+					m_fd_peel_id         = m->GetID();
+					m_fd_peel_started_ms = now;
+					m_fd_incoming_said   = false;
+					m_fd_pull_state      = FDPullState::Peeling;
+					say(fmt::format("{} is on me — bringing it in.", m->GetCleanName()));
+				}
+				return;
+			}
+		}
+
+		const float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+
+		// The tagger lies feigned and the pack walks home: whichever of it is
+		// clear of the rest first -- the target or one of its friends -- is
+		// ours, a single. Each one brought in alone is a friend fewer. (The
+		// catcher used to wait for the target only, and did nothing while the
+		// adds strung out on their way home: Kael 2026-10-24.)
+		if (ms == FDPullState::FeignWait && !m_fd_bring_all && !camp_busy()) {
+			std::vector<uint16> pack = mate->GetFDPullAddIDs();
+			pack.push_back(pull_target->GetID());
+			Mob*  pick   = nullptr;
+			float pick_d = 0.0f;
+			for (uint16 id : pack) {
+				Mob* m = entity_list.GetMob(id);
+				if (!m || !m->IsNPC() || m->GetHP() <= 0 || m->IsEngaged()) {
+					continue;
+				}
+				const float d = DistanceSquared(glm::vec3(m->GetPosition()), glm::vec3(GetPosition()));
+				if (d > FD_CATCH_REACH * FD_CATCH_REACH || (pick && d >= pick_d) || FriendsThatWouldHelp(m)) {
+					continue;
+				}
+				pick   = m;
+				pick_d = d;
+			}
+			if (pick) {
+				m_fd_catch_spot_set = false;
+				if (pick_d > tag_range_sq || !CheckLosFN(pick)) {
+					RunTo(pick->GetX(), pick->GetY(), pick->GetZ());
+					return;
+				}
+				if (pick == pull_target) {
+					tag(pull_target);
+					m_fd_pull_state = FDPullState::Tagging;
+					say(fmt::format("{} is clear of its friends — got it.", pull_target->GetCleanName()));
+					return;
+				}
+				InterruptSpell();
+				ExecuteFDTag(pick);
+				m_fd_peel_id         = pick->GetID();
+				m_fd_peel_started_ms = now;
+				m_fd_incoming_said   = false;
+				m_fd_pull_state      = FDPullState::Peeling;
+				say(fmt::format("{} walked clear of {} — bringing it in alone.", pick->GetCleanName(), pull_target->GetCleanName()));
+				return;
+			}
+		}
+
+		// The pack is after the tagger: take one add off it. Ours alone once
+		// the tagger feigns -- the rest forget everyone and walk home -- and
+		// we bring it to camp, a single. No call for help: an add already
+		// fighting joined on the target's call (NPC::AIYellForHelp skips such
+		// assisters), and a hit without a call (iYellForHelp false) keeps it
+		// one. Every cycle the target has one friend fewer.
+		//
+		// The target first, though: that is the split. We get on its list,
+		// quietly, and run for camp; the tagger feigns once we are clear, every
+		// mob drops it, and the target -- on us now -- follows us in alone while
+		// the guards, on no one, walk home. One cycle. An add only when the
+		// target is out of our reach.
+		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate &&
+			dist_sq <= tag_range_sq && CheckLosFN(pull_target)) {
 			InterruptSpell();
-			WipeHateList();
+			FaceTarget(pull_target);
+			pull_target->AddToHateList(this, 1, 0, false);
 			AddToHateList(pull_target, 1);
-			SetTarget(pull_target);
-			SetPullingFlag();
-			bot_owner->SetBotPulling();
-			if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
-				GetPet()->WipeHateList();
-				GetPet()->SetTarget(nullptr);
-				GetPet()->SetPetOrder(SPO_Guard);
+			m_fd_catch_spot_set = false;
+			m_fd_incoming_said  = false;
+			m_fd_pull_state     = FDPullState::RetagKiting;
+			say(fmt::format("Got {} — {}, feign!", pull_target->GetCleanName(), mate->GetCleanName()));
+			return;
+		}
+		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate) {
+			Mob*  add   = nullptr;
+			float add_d = 0.0f;
+			for (auto& close : entity_list.GetCloseMobList(this)) {
+				Mob* m = close.second;
+				// Not the one that started the fight: it calls for help again
+				// every 3 s (NPC::assist_timer, primary aggro only), and peeled
+				// off it called the rest back onto us (fdpull_sim.pl).
+				if (!m || !m->IsNPC() || m->IsPet() || m == pull_target || m->GetHP() <= 0 || !m->CastToNPC()->IsOnHatelist(mate) ||
+					m->HasPrimaryAggro()) {
+					continue;
+				}
+				const float d = DistanceSquared(glm::vec3(m->GetPosition()), glm::vec3(GetPosition()));
+				if (d <= tag_range_sq && (!add || d < add_d) && CheckLosFN(m)) {
+					add   = m;
+					add_d = d;
+				}
 			}
-			m_fd_pull_state = FDPullState::None;
-			m_fd_tag_timer.Disable();
-			m_fd_feign_check_timer.Disable();
-			const auto pull_msg = fmt::format("Pulling {} solo!", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(pull_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, pull_msg.c_str());
+			if (add) {
+				InterruptSpell();
+				FaceTarget(add);
+				add->AddToHateList(this, 1, 0, false);
+				AddToHateList(add, 1);
+				m_fd_peel_id         = add->GetID();
+				m_fd_peel_started_ms = now;
+				m_fd_incoming_said   = false;
+				m_fd_pull_state      = FDPullState::Peeling;
+				m_fd_catch_spot_set  = false;
+				say(fmt::format("Peeling {} off {} — bringing it in alone.", add->GetCleanName(), pull_target->GetCleanName()));
+				return;
+			}
+		}
+
+		constexpr uint32 FD_CATCH_CHASE_MS = 6000; // the catcher runs with the pack this long to peel, then drops back
+
+	// What we are doing, every few seconds: the catcher used to say nothing
+		// at all unless it peeled or caught, and "does nothing" could not be
+		// told from "waits for X" (Kael 2026-10-25).
+		{
+			static std::unordered_map<uint16, uint32> said_at;
+			uint32& last = said_at[GetID()];
+			if (now - last >= 3000) {
+				last = now;
+				Mob*  near_add = nullptr;
+				float near_d   = 0.0f;
+				for (auto& close : entity_list.GetCloseMobList(this)) {
+					Mob* n = close.second;
+					if (!n || !n->IsNPC() || n == pull_target || n->GetHP() <= 0 || !n->CastToNPC()->IsOnHatelist(mate)) {
+						continue;
+					}
+					const float d = std::sqrt(DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition())));
+					if (!near_add || d < near_d) {
+						near_add = n;
+						near_d   = d;
+					}
+				}
+				LogInfo(
+					"[FDPull] [{}] catching: [{}] is [{}], target [{:.0f}] away ({}), nearest add [{}] [{:.0f}], camp busy [{}]",
+					GetCleanName(), mate->GetCleanName(), static_cast<int>(ms), std::sqrt(dist_sq),
+					pull_target->IsEngaged() ? "engaged" : "idle", near_add ? near_add->GetCleanName() : "none", near_d,
+					camp_busy() ? "yes" : "no"
+				);
+			}
+		}
+
+		// The pack is after the tagger: go with it, a throw short of its
+		// nearest add, to peel one (above) -- mobs that are chasing take no one
+		// by proximity. Parked at the tagger's first escape spot instead, the
+		// catcher was left behind as the tagger ran on, and never peeled.
+		//
+		// For a few seconds only: while we are with the pack the tagger will
+		// not feign (we would be standing among it when it lost the tagger),
+		// and with us on its heels it ran on for 24 s into another mob (Kael
+		// 2026-10-25). No add peeled by then: off out of its reach, toward
+		// camp, and the tagger feigns.
+		static std::unordered_map<uint16, uint32> chasing_since;
+		const bool pack_on_mate = (ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate;
+		uint32& since = chasing_since[GetID()];
+		if (!pack_on_mate) {
+			since = 0;
+		}
+		else if (!since) {
+			since = now;
+		}
+		if (pack_on_mate && now - since > FD_CATCH_CHASE_MS) {
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			RunTo(back.x, back.y, back.z);
+			return;
+		}
+		if (pack_on_mate) {
+			// After the target itself, a throw from it.
+			if (dist_sq > 40.0f * 40.0f) {
+				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+				return;
+			}
+			Mob*  chase   = nullptr;
+			float chase_d = 0.0f;
+			for (auto& close : entity_list.GetCloseMobList(this)) {
+				Mob* n = close.second;
+				if (!n || !n->IsNPC() || n->IsPet() || n == pull_target || n->GetHP() <= 0 || n->HasPrimaryAggro() ||
+					!n->CastToNPC()->IsOnHatelist(mate)) {
+					continue;
+				}
+				const float d = DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition()));
+				if (!chase || d < chase_d) {
+					chase   = n;
+					chase_d = d;
+				}
+			}
+			if (chase) {
+				if (chase_d > 40.0f * 40.0f) {
+					RunTo(chase->GetX(), chase->GetY(), chase->GetZ());
+				}
+				else {
+					hold_still(chase);
+				}
+				return;
+			}
+		}
+
+		// Never wait inside an idle mob's aggro: the guardians either side of
+		// a way in (Aaryonar's, in Veeshan's Temple) took the catcher wherever
+		// it waited for its spot (fdpull_sim.pl on templeveeshan.map). The
+		// engine's own test (Mob::CheckWillAggro: in range on x, y and z, KOS,
+		// line of sight), with a margin.
+		for (auto& close : entity_list.GetCloseMobList(this)) {
+			Mob* n = close.second;
+			if (!n || !n->IsNPC() || n->IsPet() || n->GetHP() <= 0 || n->IsEngaged()) {
+				continue;
+			}
+			const float r = n->GetAggroRange() + 15.0f;
+			if (DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition())) > r * r || std::fabs(n->GetZ() - GetZ()) > r) {
+				continue;
+			}
+			const FACTION_VALUE fv = GetReverseFactionCon(n);
+			if ((fv != FACTION_SCOWLS && fv != FACTION_THREATENINGLY && !n->AlwaysAggro()) || !n->CheckLosFN(this)) {
+				continue;
+			}
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			RunTo(back.x, back.y, back.z);
+			return;
+		}
+
+		// Where to stand. With the tagger: before its tag a step behind it;
+		// after it, a little short of where it runs (its escape, on the camp
+		// side), for the pack to come within reach of us and our way home to
+		// lead away from it. Bringing a single in: back to camp. Lying
+		// feigned: off the pack, which stands where it lost the tagger and
+		// would take us instead.
+		//
+		// The spot is taken once per tag: the tagger runs on from its escape
+		// while we are within the pack's reach (TacticsOursNear counts us), so
+		// following it would keep it running.
+		glm::vec3 esc;
+		float     esc_heading = 0.0f;
+		if (ms != FDPullState::Tagging) {
+			m_fd_catch_spot_set = false;
+		}
+		if (ms == FDPullState::Tagging && (m_fd_catch_spot_set || mate->GetFDEscape(esc, esc_heading))) {
+			if (!m_fd_catch_spot_set) {
+				const glm::vec3 back = PullReturnPoint(bot_owner);
+				glm::vec3       goal = esc;
+				glm::vec3       dir  = back - esc;
+				dir.z                = 0.0f;
+				const float     len  = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+				if (len > 1.0f) {
+					goal += dir / len * std::min(FD_CATCH_SHORT_OF_ESCAPE, len);
+				}
+				m_fd_catch_spot     = goal;
+				m_fd_catch_spot_set = true;
+			}
+			if (DistanceSquared(m_fd_catch_spot, glm::vec3(GetPosition())) > 5.0f * 5.0f) {
+				RunTo(m_fd_catch_spot.x, m_fd_catch_spot.y, m_fd_catch_spot.z);
+			}
+			else {
+				hold_still(pull_target);
+			}
+		}
+		else if (ms == FDPullState::Tagging || ms == FDPullState::Retagging) {
+			// Together: a step behind the tagger as it goes in -- but, while the
+			// target is idle, never inside its aggro (we would take it
+			// ourselves, and both of us end up on it).
+			const float     keep = pull_target->GetAggroRange() + 20.0f;
+			const glm::vec3 t(pull_target->GetPosition());
+			glm::vec3       goal(mate->GetPosition());
+			const float     mt = std::sqrt(DistanceSquaredNoZ(goal, t));
+			if (!pull_target->IsEngaged() && mt < keep && mt > 1.0f) {
+				goal = t + (goal - t) * (keep / mt);
+			}
+			if (!pull_target->IsEngaged() && dist_sq < (keep - 5.0f) * (keep - 5.0f)) {
+				const glm::vec3 back = PullReturnPoint(bot_owner);
+				RunTo(back.x, back.y, back.z);
+			}
+			else if (DistanceSquared(goal, glm::vec3(GetPosition())) > 25.0f * 25.0f) {
+				RunTo(goal.x, goal.y, goal.z);
+			}
+			else {
+				hold_still(pull_target);
+			}
+		}
+		else if (ms == FDPullState::RetagKiting) {
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			if (DistanceSquared(back, glm::vec3(GetPosition())) > 10.0f * 10.0f) {
+				RunTo(back.x, back.y, back.z);
+			}
+			else {
+				hold_still(pull_target);
+			}
+		}
+		else if (dist_sq < wait_dist * wait_dist) {
+			// Too close to it and its pack: off toward camp.
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			RunTo(back.x, back.y, back.z);
+		}
+		else if (!pull_target->IsEngaged() && dist_sq > 4.0f * wait_dist * wait_dist) {
+			// Too far to catch it once it is clear.
+			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+		}
+		else {
+			hold_still(pull_target);
+		}
+		break;
+	}
+
+	case FDPullState::Peeling: {
+		// An add we took off the pack: bring it to camp alone, then back to
+		// catching (the tagger goes in for the target again meanwhile).
+		Mob*            add  = m_fd_peel_id ? entity_list.GetMob(m_fd_peel_id) : nullptr;
+		const glm::vec3 back = PullReturnPoint(bot_owner);
+
+		auto done = [&](const char* why) {
+			LogInfo("[FDPull] [{}] peel of [{}] done: {}", GetCleanName(), add ? add->GetCleanName() : "?", why);
+			m_fd_peel_id       = 0;
+			m_fd_incoming_said = false;
+			m_fd_escape_set    = false;
+			m_fd_pull_state    = partner() ? FDPullState::Catching : FDPullState::Retagging;
+		};
+
+		if (!add || add->GetHP() <= 0) {
+			done("dead");
+			return;
+		}
+
+		const bool at_camp_now = DistanceSquared(glm::vec3(add->GetPosition()), back) <= FD_ARRIVED_RADIUS_SQ;
+		Mob*       top         = add->GetHateTop();
+		if (at_camp_now) {
+			// Here: once the raid has it off us, we go back out.
+			if (top != this) {
+				done("the raid has it");
+				return;
+			}
+			hold_still(add);
+			return;
+		}
+
+		// More of the pack after us: feign, and they all go home, this one too.
+		if (IsBeingChasedByAdds(add)) {
+			m_fd_peel_id = 0;
+			if (ExecuteFeignDeath()) {
+				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+				m_fd_pull_state = FDPullState::FeignWait;
+				say(fmt::format("{} brought friends — feigning.", add->GetCleanName()));
+			}
+			else {
+				m_fd_pull_state = FDPullState::FDCooldown;
+				say("FD failed — holding position, will retry.");
 			}
 			return;
 		}
 
-		RunTo(back.x, back.y, back.z);
+		// Not after us any more, or not for a long while: let it go.
+		if (!add->CastToNPC()->IsOnHatelist(this) || now - m_fd_peel_started_ms > FD_PEEL_GIVE_UP_MS) {
+			done("lost it");
+			return;
+		}
+
+		const float home_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
+		if (!m_fd_incoming_said && top == this && home_dist_sq <= FD_ALONE_RADIUS_SQ) {
+			m_fd_incoming_said = true;
+			say(fmt::format("Incoming: {}, alone!", add->GetCleanName()));
+		}
+
+		// To camp, and wait there for it (it chases the tagger until that one
+		// feigns, then us).
+		if (home_dist_sq > 5.0f * 5.0f) {
+			RunTo(back.x, back.y, back.z);
+		}
+		else {
+			hold_still(add);
+		}
 		break;
 	}
 
@@ -4082,22 +5140,13 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 		m_fd_reuse_timer.Disable();
-		const bool fd_ok = ExecuteFeignDeath();
-		if (fd_ok) {
+		if (ExecuteFeignDeath()) {
 			m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
 			m_fd_pull_state = FDPullState::FeignWait;
-			if (raid) {
-				raid->RaidSay("FD retry succeeded — feigning.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "FD retry succeeded — feigning.");
-			}
+			say("FD retry succeeded — feigning.");
 		} else {
 			// Still failed — ExecuteFeignDeath restarted the reuse timer; stay in FDCooldown
-			if (raid) {
-				raid->RaidSay("FD failed again — waiting.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "FD failed again — waiting.");
-			}
+			say("FD failed again — waiting.");
 		}
 		break;
 	}
@@ -9740,7 +10789,17 @@ void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	else {
 		forget_timer.Disable();
 	}
+
+	// Up again: the feign was only an appearance packet (Animation 114, see
+	// ExecuteFeignDeath), so stand where the client can see it. Without this
+	// the FD puller re-tagged and walked about lying down, and every later
+	// feign was the same packet to the client: Kael 2026-10-24, two minutes
+	// of a monk "sliding on the floor" that never seemed to feign.
+	const bool was_feigned = feigned;
 	feigned = in_feigned;
+	if (was_feigned && !in_feigned && GetHP() > 0) {
+		SetAppearance(eaStanding);
+	}
 }
 
 void Bot::Signal(int signal_id)

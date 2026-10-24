@@ -67,8 +67,10 @@
  */
 
 #include <array>
+#include <deque>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -76,7 +78,9 @@
 #include "../common/types.h"
 
 class Bot;
+class Client;
 class Group;
+class NPC;
 class Mob;
 class Raid;
 
@@ -107,6 +111,7 @@ struct BotEncounterObservation {
 
 struct BotTacticsPlan {
 	uint32 key             = 0;
+	uint32 formed_ms       = 0;      // first built: ^ready waits a moment after (the first buffs)
 	uint32 built_ms        = 0;
 	uint32 last_used_ms    = 0;
 	bool   settings_loaded = false; // the player's saved ^tactics choices read
@@ -135,6 +140,14 @@ struct BotTacticsPlan {
 	// Walking out without a fight breaks camp: bots follow again.
 	bool                camp_set       = false;
 	glm::vec3           camp           = glm::vec3(0.0f);
+	// ^setcamp: a camp the player fixed. The plan never moves or breaks it --
+	// not when the leader walks off, fights elsewhere, or a pull goes wrong.
+	bool                camp_fixed     = false;
+
+	// ^pull: the mobs the player picked, in order. Each goes to a free puller
+	// (a monk with feign death first: it brings a single), as many at once as
+	// the unit can hold (BotTactics::DispatchPulls).
+	std::deque<uint16>  pull_queue;
 
 	// Where the unit's last kill lies, kept clear for a while so the player
 	// can click the corpse (Bot::TacticsKeepOffLootSpot).
@@ -179,6 +192,26 @@ struct BotTacticsPlan {
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
 	uint32 autopull_wait_log_ms = 0;        // "auto-pull waits: ..." at most every 30s
+	bool   autopull_idle_said   = false;    // "Nothing up..." said for this lull
+	bool   autopull_held        = false;    // the leader said "stop": no pulling until they say "pull"
+	std::string autopull_last_wait;         // why the last try waited (the audit's STALL reason)
+	// The leader, idle at camp: in it, not moving, fighting, looting or
+	// trading. A camp settles once they have been, and the bots pull.
+	uint32    leader_idle_since_ms = 0;
+	glm::vec3 leader_last_pos      = glm::vec3(0.0f);
+	// ...and out of camp: standing still there since then (the camp follows).
+	uint32    leader_still_since_ms = 0;
+	glm::vec3 leader_still_pos      = glm::vec3(0.0f);
+	// [PullAudit]: what the camp's pulling did, said in the log now and then.
+	uint32 audit_started_ms   = 0;
+	uint32 audit_pulls        = 0;
+	uint32 audit_failed       = 0;
+	std::unordered_set<uint16> audit_players_call; // mobs left for the player (PlayersCall)
+	uint32 audit_ready_since_ms = 0; // idle, settled, at camp, nothing pulling: since then
+	uint32 audit_stall_said_ms  = 0;
+	// Walking distance from camp per mob (navmesh), and when it was measured;
+	// below 0: no full route. A route is a few hundred points: not every 2 s.
+	std::unordered_map<uint16, std::pair<uint32, float>> walk_from_camp;
 
 	// Between fights: a resting line once a minute, "Ready to pull" once
 	// (BotTactics::Readiness; ^tactics ready asks for it any time).
@@ -245,6 +278,9 @@ struct BotTacticsPlan {
 
 	// Runners and trains (phase 11)
 	uint16 runner_called_id = 0;   // "Runner!" said for this mob
+	uint16 runner_far_id       = 0; // the assist target, fleeing past the chase leash...
+	uint32 runner_far_since_ms = 0; // ...since then
+	uint16 runner_gone_id      = 0; // ...long enough: given up on until it turns or comes back
 	size_t adds_warned      = 0;   // "Too many!" said at this many adds this fight
 
 	// Raid encounter (phase 8): the assist target's bot_raid_encounters row
@@ -312,6 +348,8 @@ public:
 
 	// False when another caster has the same debuff (tag) in the air on target.
 	bool ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id, uint32 hold_ms);
+	// The claim back, when its cast did not go off: the next caster may try.
+	void ReleaseCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id);
 	static constexpr uint32 kClaimSlow = 0x10000; // above every spell id
 	static constexpr uint32 kClaimRez   = 0x10001; // a dead owner's corpse
 	static constexpr uint32 kClaimSnare = 0x10002; // one snare in the air per runner
@@ -332,6 +370,14 @@ public:
 	// missing table reads as empty (logged).
 	const BotRaidEncounter* EncounterFor(uint32 npc_type_id);
 	bool ReloadEncounters(std::string& summary_out);
+
+	// Why a mob is the player's to pull, or "" when the bots may pull it on
+	// their own: clearly trash. Not a raid target or rare spawn, no Rampage /
+	// Area Rampage, under the leader's level + 5, under 2.5x the zone's trash
+	// health (1.5x for a named one). bot_pull_policy corrects it per npc type.
+	// The flags alone are no use here: raid_target is 0 on Derakor, Tormax and
+	// the Veeshan's Peak dragons, and VP's trash summons as the dragons do.
+	std::string PlayersCall(NPC* n, uint8 leader_level, bool raid);
 
 	// Raid groups for these bots, roles spread evenly: healers (clerics first)
 	// one per group before any gets two, tanks (best into group 1), then
@@ -370,6 +416,33 @@ public:
 	void SetChainIntervalOverride(uint32 key, uint32 ms);           // 0 = automatic
 	void SetAutoPull(uint32 key, bool on, float radius = 0.0f);     // radius 0 = default
 
+	// ^setcamp: fix the camp here (it stays until cleared) / clear it.
+	// False when the unit has no plan yet.
+	bool SetFixedCamp(uint32 key, const glm::vec3& at);
+	bool ClearFixedCamp(uint32 key);
+
+	// ^pull: queue a mob the player picked. `position` is its place in line
+	// (1 = next). Pulled by the next free puller: a monk feigns death to
+	// bring it alone, and says so at each step.
+	enum class PullQueueResult { Queued, AlreadyQueued, BeingPulled, NoPlan };
+	PullQueueResult QueuePull(uint32 key, uint16 npc_id, size_t& position);
+	// ^pull cancel: empty the queue and call off every pull under way.
+	size_t CancelPulls(uint32 key, Client* owner);
+	// A player of the unit talking to it (group or raid chat, or a tell to
+	// one of its bots), as a raid leader does: "pull" (the target), "pull
+	// anyway", "stop", and for a boss that will not split, "bring them" /
+	// "keep trying". True when it was for the bots. They answer in chat.
+	bool LeaderSays(Client* c, const std::string& message);
+
+	// ^pull wait <mana%>: the healers' mana bar before ^pull auto pulls; 0 = default.
+	void SetPullWait(uint32 key, float mana_pct);
+	// ^pull never / allow: keep ^pull auto off this kind of mob (or not).
+	// False when nothing changed.
+	bool SetNeverPull(uint32 key, uint32 npc_type, bool never);
+	std::vector<uint32> NeverPullList(uint32 key) const;
+	// ^pull list
+	std::vector<std::string> DescribePulls(uint32 key);
+
 	// ^tactics choices survive the session: saved per character (data
 	// bucket bot_tactics_<char id>), loaded when that player's unit forms.
 	void SaveSettings(uint32 key, uint32 char_id);
@@ -386,11 +459,16 @@ private:
 		bool        disabled          = false;
 		std::string main_tank;          // clean name, lower-case
 		uint32      chain_interval_ms = 0;
-		bool        auto_pull         = false;
+		bool        auto_pull         = false;   // ^pull auto: the bots pick their own pulls. Off: they pull what you tell them
 		float       pull_radius       = 0.0f;
+		float       pull_wait_mana    = 0.0f;   // ^pull wait: the healers' mana bar for the next pull; 0 = default
+		std::vector<uint32> never_pull;         // ^pull never: npc types left alone by ^pull auto
 	};
+	static bool NeverPull(const Overrides* ov, uint32 npc_type);
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	// The ^pull queue: hand its next mobs to free pullers.
+	void DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, const std::vector<Mob*>& mobs, Mob* leader, Mob* assist);
 	// Up to `count` bots of the unit near `subject` (not it) play `anim` at
 	// it, a moment apart; count 0 = every bot within reach.
 	void QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count);
@@ -410,6 +488,9 @@ private:
 	std::unordered_map<uint32, Overrides>        m_overrides;
 	std::unordered_map<uint32, BotRaidEncounter> m_encounters;
 	bool                                         m_encounters_loaded = false;
+	std::unordered_map<uint32, bool>             m_pull_policy;          // npc type -> may the bots pull it (bot_pull_policy)
+	float                                        m_trash_median_hp = 0.0f; // this zone's, for PlayersCall...
+	uint32                                       m_trash_median_ms = 0;    // ...measured then
 	std::vector<uint8>                           m_zone_resists;
 	std::string                                  m_zone_resists_for; // zone short name they were built for
 	std::unordered_map<uint32, BotEncounterObservation> m_observed;  // npc_type_id -> what we saw

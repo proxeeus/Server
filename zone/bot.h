@@ -83,7 +83,19 @@ constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 10000;           // ms to wait after 
 constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subsequent "adds gone?" checks
 constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
 constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
-constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — owner proximity for pull handoff
+constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — camp proximity: "Incoming" is called
+constexpr float FD_ARRIVED_RADIUS_SQ     = 50.0f * 50.0f;   // distance² — the mob this close to camp: the pull is done
+constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
+constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
+constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
+constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
+constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
+constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the monk runs this far sideways (not toward camp) before feigning
+constexpr uint8  FD_ESCAPE_MAX_RUNS      = 12;              // ...and on that far again, at most this often, while ours are within the pack's reach
+constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
+constexpr float  FD_CATCH_REACH          = 200.0f;          // the catcher goes for one of the pack walked clear of the rest within this
+constexpr float  FD_PEEL_READY_DIST      = 250.0f;          // the tagger goes in again once the catcher is catching within this (anywhere round the pack)
+constexpr uint32 FD_PEEL_GIVE_UP_MS      = 45000;           // a peeled add not at camp after this is let go
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -183,6 +195,8 @@ public:
 		Retagging    = 3,  // moving back to target to re-tag
 		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
 		FDCooldown   = 5,  // FD failed — staying put until reuse timer expires, then retry
+		Catching     = 6,  // the second monk: standing off, tags the target once it is clear of its friends
+		Peeling      = 7,  // the second monk took an add off the pack: bringing it to camp alone
 	};
 
 	// Class Constructors
@@ -265,6 +279,7 @@ public:
 	void ChangeBotArcherWeapons(bool isArcher);
 	void Sit();
 	void Stand();
+	void NoteStood() { m_stood_ms = Timer::GetCurrentTime(); } // Mob::SetAppearance, any path off sitting
 	bool IsSitting() const override;
 	bool IsStanding();
 	int GetWalkspeed() { return (int)((float)_GetWalkSpeed() * 1.785714285f); } // 1.25 / 0.7 = 1.7857142857142857142857142857143
@@ -283,6 +298,10 @@ public:
 	void SetPullFlag(bool flag = true) { m_pull_flag = flag; }
 	bool GetPullingFlag() const { return m_pulling_flag; }
 	bool GetReturningFlag() const { return m_returning_flag; }
+	// The mob a plain pull is walking home: PullingFlagChecks drops it as the
+	// target once it is chasing us, so the plan cannot see it through
+	// GetTarget() any more (BotTactics::Rebuild, the incoming filter).
+	uint16 GetBringingInID() const { return m_returning_flag ? m_bringing_in_id : 0; }
 	bool GetIsUsingItemClick() { return is_using_item_click; }
 	void SetIsUsingItemClick(bool flag = true) { is_using_item_click = flag; }
 	bool UseDiscipline(uint32 spell_id, uint32 target);
@@ -903,12 +922,29 @@ public:
 	uint16 GetFDPullTargetID() const { return m_fd_pull_target_id; }
 	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
 	void FDPullerProcess(Client* bot_owner, Raid* raid);
+	// The leader's answer to "can't get it alone": bring them all, or keep trying.
+	void TacticsSplitAnswer(bool bring_all) { m_fd_bring_all = bring_all; if (!bring_all) { m_fd_split_cycles = 0; } }
 	bool ExecuteFeignDeath();
 	void ExecuteFDTag(Mob* target);
 	float GetFDTagRangeSq();
 	bool AddsHaveReturned() const;
 	bool IsBeingChasedByAdds(const Mob* ignore_target) const;
+	// Who would come with it if we tagged it now: NPC::AIYellForHelp's own
+	// tests, with us as the attacker. 0 = it comes alone.
+	size_t FriendsThatWouldHelp(Mob* target, float margin = FD_HELP_MARGIN);
+	void ForgetOwnerTaggedOnly(NPC* npc); // feigned: the owner our tag put on its list goes too
 	void FDPullReset(Client* bot_owner);
+	// Two monks on one pull (DispatchPulls, raids): one tags, the other
+	// catches -- waits nearby, standing, and tags the target the moment it
+	// is clear of its friends while the first one lies feigned.
+	uint16 GetFDPartnerID() const { return m_fd_partner_id; }
+	void SetFDPartnerID(uint16 id) { m_fd_partner_id = id; }
+	uint16 GetFDPeelID() const { return m_fd_pull_state == FDPullState::Peeling ? m_fd_peel_id : 0; }
+	// Where the tagger runs with its tag (set_escape in FDPullerProcess): the
+	// catcher waits near it for the pack.
+	bool GetFDEscape(glm::vec3& at, float& heading) const { at = m_fd_escape; heading = m_fd_escape_heading; return m_fd_escape_set; }
+	bool TacticsOursNear(const glm::vec3& at, float radius); // a unit member (or pet) other than us this close
+	const std::vector<uint16>& GetFDPullAddIDs() const { return m_fd_pull_add_ids; } // the pack that came with our last tag
 
 
 	// Movement Methods
@@ -950,6 +986,10 @@ public:
 	bool TryMoveToCast(Client* leash_owner, float leash_distance);
 	void NoteOutOfRangeCast(uint16 spell_id, const Mob* tar);
 	void ClearCastRangeIntent();
+	// Walking to cast on this target was given up a moment ago: don't start again
+	bool CastWalkGivenUp(uint16 target_id) const
+		{ return target_id == m_cast_giveup_target_id && Timer::GetCurrentTime() < m_cast_giveup_until_ms; }
+	void GiveUpCastWalk(uint16 target_id);
 	bool IsHoldingCastPosition() const { return m_cast_position_hold_ms > Timer::GetCurrentTime(); }
 
 	// Tactics (bot_tactics.cpp, docs/BOT_AI_REWORK.md phase 2+): the shared
@@ -980,6 +1020,17 @@ public:
 	void ResumeFromOwnerHold(Client* owner);
 	void EndOwnerHold();                   // time's up: leave the zone
 	void OwnerHoldAI();
+
+	// Charmed by an NPC: the bot fights for it -- its owner, the other bots
+	// and their pets included -- until the charm fades or the charmer dies.
+	// Melee only, like a charmed player (Client::AI_Process). The bot cannot
+	// be the caster's pet (GetOwner() is its player), so it keeps its own
+	// record; IsAttackAllowed reads it to put the bot on the charmer's side.
+	bool IsCharmedByNPC() const { return m_npc_charmer_id != 0; }
+	Mob* GetNPCCharmer() const;
+	void StartNPCCharm(Mob* charmer);
+	void EndNPCCharm();
+	void NPCCharmAI();
 	bool TryRezOwnerCorpse();
 	// Wipe recovery (phase 24): the owner alive, its corpse here: summon it
 	// over (necro / SK), then resurrect it for the experience
@@ -1045,8 +1096,11 @@ public:
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
 	bool TacticsStartPull(Mob* target);
+	bool TacticsStartQueuedPull(Mob* target, Bot* partner = nullptr, bool catcher = false); // ^pull queue: monks feign-pull in parallel, in pairs in raids
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
+	bool TacticsIsIncoming(Mob* m);               // one of ours is bringing it in and it is not at camp yet: nobody goes for it
+	bool TacticsOutOfCamp(Mob* m);                // with a camp: further out than the raid fights (kCampHoldRadius), and the player not swinging at it
 
 	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
 	void TacticsPetChecks();
@@ -1172,6 +1226,7 @@ private:
 	
 	Timer m_evade_timer; // can be moved to pTimers at some point
 	Timer m_auto_defend_timer;
+	uint16 m_auto_defend_held_id = 0; // TryAutoDefend: the pulled mob last left alone (logged once each)
 	Timer auto_save_timer;
 	bool m_dirtyautohaters;
 	bool m_guard_flag;
@@ -1183,6 +1238,22 @@ private:
 	bool m_returning_flag;
 	FDPullState          m_fd_pull_state;
 	uint16               m_fd_pull_target_id;
+	uint32               m_fd_pull_started_ms = 0; // the FD pull gives up after FD_PULL_GIVE_UP_MS
+	uint8                m_fd_split_cycles    = 0; // feigns with adds on this pull
+	bool                 m_fd_split_asked     = false; // asked the leader what to do
+	bool                 m_fd_bring_all       = false; // the leader said bring them: no more splitting
+	bool                 m_fd_incoming_said   = false; // "Incoming" called for this pull
+	uint16               m_fd_partner_id      = 0;     // the other monk on this pull (tagger <-> catcher)
+	uint32               m_fd_gap_wait_ms     = 0;     // since then its friends would come with it; 0 = not waiting
+	uint16               m_fd_peel_id         = 0;     // Peeling: the add we bring in
+	uint32               m_fd_peel_started_ms = 0;
+	glm::vec3            m_fd_escape          = glm::vec3(0.0f); // where we run with a tag
+	float                m_fd_escape_heading  = 0.0f;
+	bool                 m_fd_escape_set      = false;
+	uint8                m_fd_escape_runs     = 0;     // times we ran on: ours were within the pack's reach (FD_ESCAPE_MAX_RUNS)
+	glm::vec3            m_fd_catch_spot      = glm::vec3(0.0f); // Catching: where we wait for the tagger's pack, once per tag
+	bool                 m_fd_catch_spot_set  = false;
+	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;
@@ -1198,6 +1269,8 @@ private:
 	uint8  m_cast_range_priority   = 0;     // 3 heal, 2 other beneficial, 1 detrimental
 	uint32 m_cast_range_expire_ms  = 0;
 	bool   m_cast_range_moving     = false;
+	uint16 m_cast_giveup_target_id = 0;     // walking to cast on it was given up...
+	uint32 m_cast_giveup_until_ms  = 0;     // ...so no new walk to it before then
 	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
 
 	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
@@ -1210,6 +1283,10 @@ private:
 	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
 	uint32    m_encounter_reposition_ms = 0;
 	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
+	uint16    m_npc_charmer_id       = 0;   // the NPC whose charm holds us; 0 = none
+	uint32    m_stood_ms             = 0;   // last stood up from sitting (Sit waits a moment after)
+	uint32    m_sits_held            = 0;
+	uint32    m_sits_held_logged_ms  = 0;
 	uint32    m_owner_hold_check_ms  = 0;   // next look at the hold bucket for a ^recall
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back

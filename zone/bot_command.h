@@ -1805,6 +1805,8 @@ void bot_command_raid_show(Client* c, const Seperator* sep);
 void bot_command_roster_list(Client* c, const Seperator* sep);
 void bot_command_tactics(Client* c, const Seperator* sep);
 void bot_command_ready(Client* c, const Seperator* sep);
+void bot_command_setcamp(Client* c, const Seperator* sep);
+void bot_command_setcamp_apply(Client* c, const std::string& sub);
 void bot_command_party(Client* c, const Seperator* sep);
 void bot_command_raidkit(Client *c, const Seperator *sep);
 

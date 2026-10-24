@@ -37,6 +37,7 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 		c->Message(Chat::White, "usage: ^tactics pull on / off / radius -- a bot pulls whenever the camp is ready");
 		c->Message(Chat::White, "usage: ^tactics layout -- regroup the raid's bots by role (^createraid does it too)");
 		c->Message(Chat::White, "usage: ^tactics ready (or ^ready) -- one line: healer mana, time to full, main tank, fallen bots, GO or WAIT");
+		c->Message(Chat::White, "usage: ^tactics camp [clear|show] (or ^setcamp) -- fix the camp where you stand; it stays until cleared");
 		return;
 	}
 
@@ -55,6 +56,11 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 	if (arg == "ready") {
 		bot_command_ready(c, sep);
+		return;
+	}
+
+	if (arg == "camp") {
+		bot_command_setcamp_apply(c, Strings::ToLower(sep->arg[2]));
 		return;
 	}
 
@@ -176,7 +182,11 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 		bot_tactics.SetAutoPull(key, true, radius);
 		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
-		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob. ^tactics pull off to stop.");
+		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob (raids: trash only). ^pull auto off to stop.");
+		const BotTacticsPlan* p = bot_tactics.Find(key);
+		if (!p || !p->camp_fixed) {
+			c->Message(Chat::Yellow, "No fixed camp yet: ^setcamp where they should pull to.");
+		}
 		return;
 	}
 
