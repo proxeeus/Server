@@ -91,7 +91,9 @@ constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds 
 constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
 constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
 constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the monk runs this far sideways (not toward camp) before feigning
+constexpr uint8  FD_ESCAPE_MAX_RUNS      = 4;               // ...and on that far again, at most this often, while ours are within the pack's reach
 constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
+constexpr float  FD_CATCH_REACH          = 200.0f;          // the catcher goes for one of the pack walked clear of the rest within this
 constexpr float  FD_PEEL_READY_DIST      = 40.0f;           // the tagger goes in again once the catcher is back this close
 constexpr uint32 FD_PEEL_GIVE_UP_MS      = 45000;           // a peeled add not at camp after this is let go
 
@@ -941,7 +943,8 @@ public:
 	// Where the tagger runs with its tag (set_escape in FDPullerProcess): the
 	// catcher waits near it for the pack.
 	bool GetFDEscape(glm::vec3& at, float& heading) const { at = m_fd_escape; heading = m_fd_escape_heading; return m_fd_escape_set; }
-	bool TacticsOursNear(const glm::vec3& at, float radius); // a unit member (or pet) other than us and our partner this close
+	bool TacticsOursNear(const glm::vec3& at, float radius); // a unit member (or pet) other than us this close
+	const std::vector<uint16>& GetFDPullAddIDs() const { return m_fd_pull_add_ids; } // the pack that came with our last tag
 
 
 	// Movement Methods
@@ -1246,7 +1249,9 @@ private:
 	glm::vec3            m_fd_escape          = glm::vec3(0.0f); // where we run with a tag
 	float                m_fd_escape_heading  = 0.0f;
 	bool                 m_fd_escape_set      = false;
-	bool                 m_fd_escape_extended = false; // ran on once: ours were within the pack's reach
+	uint8                m_fd_escape_runs     = 0;     // times we ran on: ours were within the pack's reach (FD_ESCAPE_MAX_RUNS)
+	glm::vec3            m_fd_catch_spot      = glm::vec3(0.0f); // Catching: where we wait for the tagger's pack, once per tag
+	bool                 m_fd_catch_spot_set  = false;
 	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;

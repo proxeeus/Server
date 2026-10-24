@@ -6408,14 +6408,16 @@ bool Bot::TacticsIsIncoming(Mob* m)
 }
 
 // Anyone of the unit -- player, bot, or a pet of theirs -- within `radius` of
-// `at`, other than us and the other monk on our pull: where a feign would
-// leave the pack standing next to them (FDPullerProcess, before feigning).
+// `at`, other than us: where a feign would leave the pack standing next to
+// them (FDPullerProcess, before feigning). The other monk on the pull counts
+// too: excluding it, the tagger feigned a second after the catcher peeled an
+// add, the pack stood within reach of the catcher, and the other two
+// Protectors of Zek took it -- and it ran them all into camp (Kael 2026-10-24).
 bool Bot::TacticsOursNear(const glm::vec3& at, float radius)
 {
 	const float r2   = radius * radius;
 	auto        close_by = [&](Mob* m) {
-		return m && m != this && m->GetID() != m_fd_partner_id && m->GetHP() > 0 &&
-			DistanceSquared(glm::vec3(m->GetPosition()), at) <= r2;
+		return m && m != this && m->GetHP() > 0 && DistanceSquared(glm::vec3(m->GetPosition()), at) <= r2;
 	};
 
 	const BotTacticsPlan* p = GetTacticsPlan();

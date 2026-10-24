@@ -4144,7 +4144,8 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_gap_wait_ms     = 0;
 	m_fd_peel_id         = 0;
 	m_fd_escape_set      = false;
-	m_fd_escape_extended = false;
+	m_fd_catch_spot_set  = false;
+	m_fd_escape_runs     = 0;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -4210,6 +4211,16 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 	}
 
+	// The raid is fighting something at camp: nothing new comes in until it
+	// is down, or two arrive at once. (Found by forensics/fdpull_sim.pl: the
+	// catcher went for the next straggler while the last peeled add was
+	// still being fought, and two Protectors stood in camp together.)
+	auto camp_busy = [&]() {
+		const BotTacticsPlan* p = GetTacticsPlan();
+		Mob*                  a = p && p->assist_target_id ? entity_list.GetMob(p->assist_target_id) : nullptr;
+		return a && a->GetHP() > 0;
+	};
+
 	// Where we wait for a gap: off its aggro, or at tag range if that is longer.
 	const float tag_range_sq = GetFDTagRangeSq();
 	const float wait_dist    = std::max(FD_CATCH_STANDOFF, std::sqrt(tag_range_sq));
@@ -4270,7 +4281,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			m_fd_escape_heading = to_home;
 		}
 		m_fd_escape_set      = true;
-		m_fd_escape_extended = false;
+		m_fd_escape_runs     = 0;
 	};
 
 	// How far the pack after us reaches: the furthest aggro range among them.
@@ -4408,10 +4419,10 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				// walk home and wait to be tagged again). Kite it in.
 				m_fd_pull_state = FDPullState::RetagKiting;
 				say(fmt::format("{} came alone — bringing it in.", pull_target->GetCleanName()));
-			} else if (!m_fd_escape_extended && TacticsOursNear(glm::vec3(GetPosition()), chaser_reach())) {
+			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && TacticsOursNear(glm::vec3(GetPosition()), chaser_reach())) {
 				// Not here: the pack would stop on top of us, within reach of
 				// ours, and take them once it lost us. On, the same way.
-				m_fd_escape_extended = true;
+				++m_fd_escape_runs;
 				const glm::vec4 to   = TryMoveAlong(glm::vec4(GetX(), GetY(), GetZ(), 0.0f), FD_ESCAPE_DIST, m_fd_escape_heading);
 				if (std::fabs(to.z - GetZ()) < 20.0f) {
 					m_fd_escape = glm::vec3(to);
@@ -4485,7 +4496,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			// catcher peels the next one off -- once it is back from the last
 			// one and next to us.
 			if (FriendsThatWouldHelp(pull_target)) {
-				const bool ready = mate->GetFDPullState() == FDPullState::Catching &&
+				const bool ready = mate->GetFDPullState() == FDPullState::Catching && !camp_busy() &&
 					DistanceSquared(glm::vec3(mate->GetPosition()), glm::vec3(GetPosition())) <= FD_PEEL_READY_DIST * FD_PEEL_READY_DIST;
 				if (!ready) {
 					if (dist_sq > wait_dist * wait_dist) {
@@ -4583,18 +4594,82 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 
-		const float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-
-		// The tagger lies feigned and the target is clear of its friends: ours.
-		if (ms == FDPullState::FeignWait && !pull_target->IsEngaged() && !FriendsThatWouldHelp(pull_target)) {
-			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
-				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+		// One of the pack took us -- its aggro range (70 here) is longer than
+		// our throw (50), so walking up to catch it is a tag: ours to bring in
+		// now. Left as it was, nobody brought it, and it walked into the raid
+		// (fdpull_sim.pl).
+		{
+			std::vector<uint16> pack = mate->GetFDPullAddIDs();
+			pack.push_back(pull_target->GetID());
+			for (uint16 id : pack) {
+				Mob* m = entity_list.GetMob(id);
+				if (!m || !m->IsNPC() || m->GetHP() <= 0 || m->GetHateTop() != this) {
+					continue;
+				}
+				m_fd_catch_spot_set = false;
+				if (m == pull_target) {
+					set_escape();
+					m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+					m_fd_incoming_said = false;
+					m_fd_pull_state    = FDPullState::Tagging;
+					say(fmt::format("{} is on me — I bring it.", pull_target->GetCleanName()));
+				}
+				else {
+					m_fd_peel_id         = m->GetID();
+					m_fd_peel_started_ms = now;
+					m_fd_incoming_said   = false;
+					m_fd_pull_state      = FDPullState::Peeling;
+					say(fmt::format("{} is on me — bringing it in.", m->GetCleanName()));
+				}
 				return;
 			}
-			tag(pull_target);
-			m_fd_pull_state = FDPullState::Tagging;
-			say(fmt::format("{} is clear of its friends — got it.", pull_target->GetCleanName()));
-			return;
+		}
+
+		const float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+
+		// The tagger lies feigned and the pack walks home: whichever of it is
+		// clear of the rest first -- the target or one of its friends -- is
+		// ours, a single. Each one brought in alone is a friend fewer. (The
+		// catcher used to wait for the target only, and did nothing while the
+		// adds strung out on their way home: Kael 2026-10-24.)
+		if (ms == FDPullState::FeignWait && !m_fd_bring_all && !camp_busy()) {
+			std::vector<uint16> pack = mate->GetFDPullAddIDs();
+			pack.push_back(pull_target->GetID());
+			Mob*  pick   = nullptr;
+			float pick_d = 0.0f;
+			for (uint16 id : pack) {
+				Mob* m = entity_list.GetMob(id);
+				if (!m || !m->IsNPC() || m->GetHP() <= 0 || m->IsEngaged()) {
+					continue;
+				}
+				const float d = DistanceSquared(glm::vec3(m->GetPosition()), glm::vec3(GetPosition()));
+				if (d > FD_CATCH_REACH * FD_CATCH_REACH || (pick && d >= pick_d) || FriendsThatWouldHelp(m)) {
+					continue;
+				}
+				pick   = m;
+				pick_d = d;
+			}
+			if (pick) {
+				m_fd_catch_spot_set = false;
+				if (pick_d > tag_range_sq || !CheckLosFN(pick)) {
+					RunTo(pick->GetX(), pick->GetY(), pick->GetZ());
+					return;
+				}
+				if (pick == pull_target) {
+					tag(pull_target);
+					m_fd_pull_state = FDPullState::Tagging;
+					say(fmt::format("{} is clear of its friends — got it.", pull_target->GetCleanName()));
+					return;
+				}
+				InterruptSpell();
+				ExecuteFDTag(pick);
+				m_fd_peel_id         = pick->GetID();
+				m_fd_peel_started_ms = now;
+				m_fd_incoming_said   = false;
+				m_fd_pull_state      = FDPullState::Peeling;
+				say(fmt::format("{} walked clear of {} — bringing it in alone.", pick->GetCleanName(), pull_target->GetCleanName()));
+				return;
+			}
 		}
 
 		// The pack is after the tagger: take one add off it. Ours alone once
@@ -4603,7 +4678,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		// fighting joined on the target's call (NPC::AIYellForHelp skips such
 		// assisters), and a hit without a call (iYellForHelp false) keeps it
 		// one. Every cycle the target has one friend fewer.
-		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all &&
+		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
 			pull_target->IsEngaged() && pull_target->GetHateTop() == mate) {
 			Mob*  add   = nullptr;
 			float add_d = 0.0f;
@@ -4627,6 +4702,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				m_fd_peel_started_ms = now;
 				m_fd_incoming_said   = false;
 				m_fd_pull_state      = FDPullState::Peeling;
+				m_fd_catch_spot_set  = false;
 				say(fmt::format("Peeling {} off {} — bringing it in alone.", add->GetCleanName(), pull_target->GetCleanName()));
 				return;
 			}
@@ -4638,19 +4714,30 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		// lead away from it. Bringing a single in: back to camp. Lying
 		// feigned: off the pack, which stands where it lost the tagger and
 		// would take us instead.
+		//
+		// The spot is taken once per tag: the tagger runs on from its escape
+		// while we are within the pack's reach (TacticsOursNear counts us), so
+		// following it would keep it running.
 		glm::vec3 esc;
 		float     esc_heading = 0.0f;
-		if (ms == FDPullState::Tagging && mate->GetFDEscape(esc, esc_heading)) {
-			const glm::vec3 back = PullReturnPoint(bot_owner);
-			glm::vec3       goal = esc;
-			glm::vec3       dir  = back - esc;
-			dir.z                = 0.0f;
-			const float     len  = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-			if (len > 1.0f) {
-				goal += dir / len * std::min(FD_CATCH_SHORT_OF_ESCAPE, len);
+		if (ms != FDPullState::Tagging) {
+			m_fd_catch_spot_set = false;
+		}
+		if (ms == FDPullState::Tagging && (m_fd_catch_spot_set || mate->GetFDEscape(esc, esc_heading))) {
+			if (!m_fd_catch_spot_set) {
+				const glm::vec3 back = PullReturnPoint(bot_owner);
+				glm::vec3       goal = esc;
+				glm::vec3       dir  = back - esc;
+				dir.z                = 0.0f;
+				const float     len  = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+				if (len > 1.0f) {
+					goal += dir / len * std::min(FD_CATCH_SHORT_OF_ESCAPE, len);
+				}
+				m_fd_catch_spot     = goal;
+				m_fd_catch_spot_set = true;
 			}
-			if (DistanceSquared(goal, glm::vec3(GetPosition())) > 5.0f * 5.0f) {
-				RunTo(goal.x, goal.y, goal.z);
+			if (DistanceSquared(m_fd_catch_spot, glm::vec3(GetPosition())) > 5.0f * 5.0f) {
+				RunTo(m_fd_catch_spot.x, m_fd_catch_spot.y, m_fd_catch_spot.z);
 			}
 			else {
 				hold_still(pull_target);
