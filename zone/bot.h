@@ -90,6 +90,10 @@ constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after t
 constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
 constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
 constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
+constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the monk runs this far sideways (not toward camp) before feigning
+constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
+constexpr float  FD_PEEL_READY_DIST      = 40.0f;           // the tagger goes in again once the catcher is back this close
+constexpr uint32 FD_PEEL_GIVE_UP_MS      = 45000;           // a peeled add not at camp after this is let go
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -190,6 +194,7 @@ public:
 		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
 		FDCooldown   = 5,  // FD failed — staying put until reuse timer expires, then retry
 		Catching     = 6,  // the second monk: standing off, tags the target once it is clear of its friends
+		Peeling      = 7,  // the second monk took an add off the pack: bringing it to camp alone
 	};
 
 	// Class Constructors
@@ -932,6 +937,11 @@ public:
 	// is clear of its friends while the first one lies feigned.
 	uint16 GetFDPartnerID() const { return m_fd_partner_id; }
 	void SetFDPartnerID(uint16 id) { m_fd_partner_id = id; }
+	uint16 GetFDPeelID() const { return m_fd_pull_state == FDPullState::Peeling ? m_fd_peel_id : 0; }
+	// Where the tagger runs with its tag (set_escape in FDPullerProcess): the
+	// catcher waits near it for the pack.
+	bool GetFDEscape(glm::vec3& at, float& heading) const { at = m_fd_escape; heading = m_fd_escape_heading; return m_fd_escape_set; }
+	bool TacticsOursNear(const glm::vec3& at, float radius); // a unit member (or pet) other than us and our partner this close
 
 
 	// Movement Methods
@@ -1231,6 +1241,12 @@ private:
 	bool                 m_fd_incoming_said   = false; // "Incoming" called for this pull
 	uint16               m_fd_partner_id      = 0;     // the other monk on this pull (tagger <-> catcher)
 	uint32               m_fd_gap_wait_ms     = 0;     // since then its friends would come with it; 0 = not waiting
+	uint16               m_fd_peel_id         = 0;     // Peeling: the add we bring in
+	uint32               m_fd_peel_started_ms = 0;
+	glm::vec3            m_fd_escape          = glm::vec3(0.0f); // where we run with a tag
+	float                m_fd_escape_heading  = 0.0f;
+	bool                 m_fd_escape_set      = false;
+	bool                 m_fd_escape_extended = false; // ran on once: ours were within the pack's reach
 	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;

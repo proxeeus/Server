@@ -2702,7 +2702,9 @@ std::vector<std::string> BotTactics::DescribePulls(uint32 key)
 		if (Mob* tm = t ? entity_list.GetMob(t) : nullptr) {
 			out.emplace_back(fmt::format(
 				"Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(),
-				b->GetFDPullState() == Bot::FDPullState::Catching ? " (catching)" : b->IsFDPulling() ? " (feign death)" : ""
+				b->GetFDPullState() == Bot::FDPullState::Catching ? " (catching)" :
+				b->GetFDPullState() == Bot::FDPullState::Peeling ? fmt::format(" (peeling {} off it)", NameOf(b->GetFDPeelID())).c_str() :
+				b->IsFDPulling() ? " (feign death)" : ""
 			));
 		}
 	}
@@ -6403,6 +6405,31 @@ bool Bot::TacticsIsIncoming(Mob* m)
 		return false; // here: the camp's fight
 	}
 	return PullerOf(*p, m->GetID()) != nullptr || ChasesOurPuller(*p, m); // the pulled mob, or an add after the puller
+}
+
+// Anyone of the unit -- player, bot, or a pet of theirs -- within `radius` of
+// `at`, other than us and the other monk on our pull: where a feign would
+// leave the pack standing next to them (FDPullerProcess, before feigning).
+bool Bot::TacticsOursNear(const glm::vec3& at, float radius)
+{
+	const float r2   = radius * radius;
+	auto        close_by = [&](Mob* m) {
+		return m && m != this && m->GetID() != m_fd_partner_id && m->GetHP() > 0 &&
+			DistanceSquared(glm::vec3(m->GetPosition()), at) <= r2;
+	};
+
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p) {
+		Mob* o = GetBotOwner();
+		return close_by(o) || (o && close_by(o->GetPet()));
+	}
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (close_by(m) || (m && close_by(m->GetPet()))) {
+			return true;
+		}
+	}
+	return false;
 }
 
 glm::vec3 Bot::PullReturnPoint(Client* bot_owner)
