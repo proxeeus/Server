@@ -94,7 +94,6 @@ constexpr uint32 kMezClaimMs       = 4000;  // one mez cast in the air per add
 constexpr float  kCampRadius       = 50.0f; // leader within this of camp = in camp
 constexpr float  kCampArriveRadius = 60.0f; // a pulled mob this close has arrived
 constexpr float  kCampHoldRadius   = 100.0f; // with a camp, the raid fights nothing further out (Rebuild, out_of_camp)
-constexpr float  kPullCampMinDist  = 220.0f; // a pull goes out: the camp at least this far from its target (DispatchPulls)
 constexpr uint32 kCampGraceMs      = 60000; // still walking, far off (kCampLeaveRadius) this long, no fight = travelling: no camp
 constexpr float  kCampLeaveRadius  = 300.0f; // ...that far from camp
 constexpr uint32 kCampAwayMs       = 180000; // or out of camp at all this long, no fight
@@ -3071,47 +3070,20 @@ void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, cons
 			}
 		}
 
-		// The raid holds well back from what is pulled: no camp, or one this
-		// close, and it stood round the player 100 from Kallis's pack -- the
-		// monk found nowhere clear to feign, ran on for 24 s into another mob,
-		// and Kallis took a cleric of ours (Kael 2026-10-25). The camp goes
-		// kPullCampMinDist from the target on the player's side, where there is
-		// ground; a camp the player fixed (^setcamp) stays where it is.
-		if (!p.camp_fixed) {
-			const glm::vec3 tpos(t->GetPosition());
-			const glm::vec3 from = p.camp_set ? p.camp : (leader ? glm::vec3(leader->GetPosition()) : glm::vec3(b->GetPosition()));
-			if (!p.camp_set || DistanceSquaredNoZ(from, tpos) < kPullCampMinDist * kPullCampMinDist) {
-				glm::vec3 dir = from - tpos;
-				dir.z         = 0.0f;
-				float len     = std::sqrt(dir.x * dir.x + dir.y * dir.y);
-				if (len < 1.0f) {
-					dir = glm::vec3(b->GetPosition()) - tpos;
-					dir.z = 0.0f;
-					len   = std::max(1.0f, std::sqrt(dir.x * dir.x + dir.y * dir.y));
-				}
-				glm::vec3 at = tpos + dir / len * kPullCampMinDist;
-				at.z         = from.z;
-				bool ground  = true;
-				if (zone->HasMap()) {
-					glm::vec3   probe(at.x, at.y, at.z + 10.0f);
-					const float z = zone->zonemap->FindBestZ(probe, nullptr);
-					ground = z != BEST_Z_INVALID && std::fabs(z - from.z) < 40.0f;
-					at.z   = ground ? z : at.z;
-				}
-				if (ground) {
-					p.camp         = at;
-					p.camp_set     = true;
-					p.camp_left_ms = 0;
-					p.walk_from_camp.clear();
-					LogInfo("[BotTactics] unit [{:#x}] camp set back to [{:.0f}, {:.0f}, {:.0f}], [{:.0f}] from [{}], for its pull",
-						p.key, at.x, at.y, at.z, kPullCampMinDist, t->GetCleanName());
-				}
-				else if (!p.camp_set) {
-					p.camp     = from;
-					p.camp_set = true;
-					LogInfo("[BotTactics] unit [{:#x}] camp made at [{:.0f}, {:.0f}, {:.0f}] for the pull of [{}] (no ground further back)",
-						p.key, from.x, from.y, from.z, t->GetCleanName());
-				}
+		// The pull comes to where the player stands when it goes out: that is the
+		// camp from now until it is in, the raid gathers there and fights nothing
+		// further out (Rebuild, out_of_camp). Setting the camp back 220 from the
+		// target instead put it on the floor below Kael's arena, by the Vallon Zek
+		// temple, and the raid walked down into the clerics (2026-10-25).
+		if (leader) {
+			const glm::vec3 at(leader->GetPosition());
+			if (!p.camp_set || DistanceSquaredNoZ(at, p.camp) > kCampRadius * kCampRadius) {
+				p.camp         = at;
+				p.camp_set     = true;
+				p.camp_left_ms = 0;
+				p.walk_from_camp.clear();
+				LogInfo("[BotTactics] unit [{:#x}] camp at [{}] for the pull of [{}]: [{:.0f}, {:.0f}, {:.0f}]",
+					p.key, leader->GetCleanName(), t->GetCleanName(), at.x, at.y, at.z);
 			}
 		}
 
