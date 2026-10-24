@@ -2014,7 +2014,13 @@ void Mob::AI_Event_Engaged(Mob *attacker, bool yell_for_help)
 		return;
 	}
 
-	SetAppearance(eaStanding);
+	// A bot's posture is BotMeditate's: it sits only where nothing can reach
+	// it (TacticsSafeToSit) and stands itself otherwise. Standing it here, on
+	// every first hate entry, then sitting it again next tick, was most of the
+	// sit/stand traffic in the Temple of Veeshan (2026-10-24, 147 packets/s).
+	if (!IsBot()) {
+		SetAppearance(eaStanding);
+	}
 
 	if (IsNPC()) {
 		CastToNPC()->AIautocastspell_timer->Start(300, false);

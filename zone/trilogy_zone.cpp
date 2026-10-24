@@ -12353,6 +12353,19 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	if (from_slot == 0) adjust_cursor(-1);
 	if (to_slot   == 0) adjust_cursor(+1);
 
+	// The client moving more carried coin than the server holds means the two
+	// drifted apart earlier: some coin reached the client and not m_pp. In
+	// Sebilis (2026-10-24) the client picked up 366g / 400s / 425c against
+	// 315 / 339 / 346 here, and the floor below swallowed the difference.
+	if (from_slot == 1) {
+		const int64_t held = (denom == 0) ? pp.copper : (denom == 1) ? pp.silver : (denom == 2) ? pp.gold : pp.platinum;
+		if (amount > held) {
+			LogInfo("[TrilogyCoin] char={} moved {} of denom {} from carried, server holds {}: out of step by {}",
+			        s.char_id, static_cast<long long>(amount), denom, static_cast<long long>(held),
+			        static_cast<long long>(amount - held));
+		}
+	}
+
 	// Deduct from source (floor at 0).
 	if (from_slot == 1) {
 		switch (denom) {

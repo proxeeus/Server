@@ -8,6 +8,8 @@
 #include "../common/misc_functions.h"
 #include "../common/data_verification.h"
 
+#include <algorithm>
+#include <cmath>
 #include <vector>
 #include <deque>
 #include <map>
@@ -649,6 +651,43 @@ struct NavigateTo {
 	double navigate_to_heading;
 	double last_set_time;
 };
+
+// Walking the straight line from one point to the other: does the ground
+// under it hold, with no step down bigger than kMaxStepDown between samples
+// 5 units apart (an edge, a bridge, a pit)? Walls are not looked for --
+// walking into one is harmless -- and climbing is always allowed.
+static bool StraightLineKeepsGround(const glm::vec3& from, const glm::vec3& to)
+{
+	if (!zone || !zone->HasMap()) {
+		return true;
+	}
+
+	constexpr float kSample      = 5.0f;
+	constexpr float kMaxStepDown = 20.0f;
+	constexpr float kProbeAbove  = 15.0f;
+
+	glm::vec3   hit;
+	glm::vec3   probe(from.x, from.y, from.z + kProbeAbove);
+	float       ground = zone->zonemap->FindBestZ(probe, &hit);
+	if (ground <= BEST_Z_INVALID) {
+		return true; // nothing under us to compare against
+	}
+
+	const float dx    = to.x - from.x;
+	const float dy    = to.y - from.y;
+	const float dist  = std::sqrt(dx * dx + dy * dy);
+	const int   steps = std::max(1, static_cast<int>(dist / kSample));
+	for (int i = 1; i <= steps; ++i) {
+		const float t = static_cast<float>(i) / steps;
+		probe = glm::vec3(from.x + dx * t, from.y + dy * t, std::max(ground, from.z + (to.z - from.z) * t) + kProbeAbove);
+		const float next = zone->zonemap->FindBestZ(probe, &hit);
+		if (next <= BEST_Z_INVALID || ground - next > kMaxStepDown) {
+			return false;
+		}
+		ground = next;
+	}
+	return true;
+}
 
 struct MobMovementEntry {
 	std::deque<std::unique_ptr<IMovementCommand>> Commands;
@@ -1509,16 +1548,18 @@ void MobMovementManager::HandleStuckBehavior(Mob *who, float x, float y, float z
 		return;
 	}
 
-	// A bot takes the straight line only where the ground along it holds and
-	// no wall is in the way. Bot Cendori walked for line of sight to Silverwing
-	// on the floor below the Veeshan's Peak bridge, the path came back stuck,
-	// and RunToTarget took it off the edge.
-	if (who->IsBot() && !who->CheckCoordLosNoZLeaps(who->GetX(), who->GetY(), who->GetZ(), x, y, z, 5.0f)) {
+	// A bot takes the straight line only where the ground along it holds.
+	// Bot Cendori walked for line of sight to Silverwing on the floor below the
+	// Veeshan's Peak bridge, the path came back stuck, and RunToTarget took it
+	// off the edge. Only drops are refused: CheckCoordLosNoZLeaps also traced
+	// a line-of-sight ray, which clips every staircase, and in the Temple of
+	// Veeshan 71 bots stood at the top of the steps down to the leader.
+	if (who->IsBot() && !StraightLineKeepsGround(glm::vec3(who->GetPosition()), glm::vec3(x, y, z))) {
 		const uint32 now = Timer::GetCurrentTime();
 		if (now - ent.second.StuckLoggedMs > 5000) {
 			ent.second.StuckLoggedMs = now;
 			LogInfo(
-				"[BotAI] [{}] no way to ({:.0f}, {:.0f}, {:.0f}): the straight line drops or is walled off",
+				"[BotAI] [{}] no way to ({:.0f}, {:.0f}, {:.0f}): the straight line drops off an edge",
 				who->GetCleanName(), x, y, z
 			);
 		}

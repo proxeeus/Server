@@ -265,6 +265,7 @@ public:
 	void ChangeBotArcherWeapons(bool isArcher);
 	void Sit();
 	void Stand();
+	void NoteStood() { m_stood_ms = Timer::GetCurrentTime(); } // Mob::SetAppearance, any path off sitting
 	bool IsSitting() const override;
 	bool IsStanding();
 	int GetWalkspeed() { return (int)((float)_GetWalkSpeed() * 1.785714285f); } // 1.25 / 0.7 = 1.7857142857142857142857142857143

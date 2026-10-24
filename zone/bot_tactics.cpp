@@ -5198,6 +5198,13 @@ bool Bot::TacticsSnareRunner(Mob* tar)
 	if (!IsValidSpell(snare.SpellId) || IsCasting() || GetMana() < snare.ManaCost || !CheckSpellRecastTimer(snare.SpellId)) {
 		return false;
 	}
+
+	// Dying before a snare could matter: "snares [guardian wurm] at [3]%",
+	// "[a fiery guardian] at [0]%". A runner the bots stop hitting lives
+	// longer by this measure, so one that is really getting away still is.
+	if (p->MobSecondsToDeath(tar->GetID()) < spells[snare.SpellId].cast_time / 1000.0f + 3.0f) {
+		return false;
+	}
 	if (!bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID(), kSnareClaimMs)) {
 		return false;
 	}
@@ -5651,8 +5658,12 @@ const std::vector<std::pair<uint8, uint16>>& StunLadder(uint8 class_id)
 	static bool        built = false;
 	if (!built) {
 		built = true;
+		// Era ids only: the discipline exemption let Power Slam (4602) in, a
+		// spell the v29c client does not have, cast six times in 1.5 s by the
+		// main tank at a lava drake (Veeshan's Peak 2026-10-24).
 		BuildLadder(ladder, [](uint16 id) {
-			return IsEffectInSpell(id, SE_Stun) && IsDetrimentalSpell(id) && spells[id].target_type == ST_Target;
+			return id <= kEraMaxSpellId && IsEffectInSpell(id, SE_Stun) && IsDetrimentalSpell(id) &&
+				spells[id].target_type == ST_Target;
 		});
 	}
 
@@ -5786,7 +5797,8 @@ bool Bot::TacticsInterrupt(Mob* tar)
 		const uint16 id = e.second;
 		const auto&  s  = spells[id];
 		if (e.first > GetLevel() || e.first < stun_level ||
-			s.cast_time + kInterruptMinLeftMs > left || s.mana > GetMana() || dist2 > s.range * s.range) {
+			s.cast_time + kInterruptMinLeftMs > left || s.mana > GetMana() || dist2 > s.range * s.range ||
+			TacticsResistBackoff(id, caster)) { // resisted twice: it was cast again in the same second
 			continue;
 		}
 

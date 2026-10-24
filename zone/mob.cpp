@@ -4505,7 +4505,13 @@ void Mob::SetAppearance(EmuAppearance app, bool ignore_self) {
 	// upon zoning / events / timers etc
 	//if (_appearance == app)
 	//	return;
-	
+
+
+	// A bot stood up by any path counts for Bot::Sit's pause, not only by
+	// Bot::Stand (AI_Event_Engaged, a cast, a rez all set it directly).
+	if (IsBot() && _appearance == eaSitting && app != eaSitting) {
+		CastToBot()->NoteStood();
+	}
 
 	_appearance = app;
 

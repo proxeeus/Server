@@ -632,10 +632,7 @@ void Bot::Sit() {
 }
 
 void Bot::Stand() {
-	if (GetAppearance() == eaSitting) {
-		m_stood_ms = Timer::GetCurrentTime();
-	}
-	SetAppearance(eaStanding);
+	SetAppearance(eaStanding); // Mob::SetAppearance notes the stand for Sit()
 }
 
 bool Bot::IsSitting() const {
