@@ -841,7 +841,38 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// What the main tank is fighting; with no tank, or a tank not yet
 	// engaged, whatever a player of the unit is fighting, else whatever
 	// jumped one of the bots -- the tank then goes in too (TryTacticsAssist).
-	Mob* assist = mt ? FightingTarget(mt) : nullptr;
+	// Mobs one of our bots is bringing in (a feign-death or plain pull) that
+	// are not at camp yet. Not ours to go and fight, as the main target or
+	// as an add: the camp waits for them. Kael 2026-10-24: a guard tagged
+	// near the raid aggroed on the bots next to it, the raid went after it
+	// and the monk stopped half way to fight it.
+	std::vector<uint16> incoming;
+	{
+		Mob*            leader_prev = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+		const glm::vec3 home        = p.camp_set ? p.camp : (leader_prev ? glm::vec3(leader_prev->GetPosition()) : glm::vec3(0.0f));
+		const bool      has_home    = p.camp_set || leader_prev;
+		for (Mob* m : mobs) {
+			if (!m->IsBot() || !IsAlive(m)) {
+				continue;
+			}
+			Bot*   b  = m->CastToBot();
+			uint16 id = b->IsFDPulling() ? b->GetFDPullTargetID() :
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
+			Mob*   t  = id ? entity_list.GetMob(id) : nullptr;
+			if (t && has_home && DistanceSquaredNoZ(glm::vec3(t->GetPosition()), home) > kCampArriveRadius * kCampArriveRadius) {
+				incoming.push_back(id);
+			}
+		}
+	}
+	auto is_incoming = [&](Mob* t) {
+		return t && std::find(incoming.begin(), incoming.end(), t->GetID()) != incoming.end();
+	};
+	auto fighting = [&](Mob* m) -> Mob* {
+		Mob* t = FightingTarget(m);
+		return is_incoming(t) ? nullptr : t;
+	};
+
+	Mob* assist = mt ? fighting(mt) : nullptr;
 	for (int pass = 0; pass < 2 && !assist; ++pass) {
 		for (Mob* m : mobs) {
 			if (m->IsClient() != (pass == 0)) {
@@ -854,7 +885,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 					continue;
 				}
 			}
-			if ((assist = FightingTarget(m)) != nullptr) {
+			if ((assist = fighting(m)) != nullptr) {
 				break;
 			}
 		}
@@ -1418,8 +1449,8 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	if (anchor && assist) {
 		for (const auto& e : entity_list.GetCloseMobList(anchor, 0.0f)) {
 			Mob* n = e.second;
-			if (!n || n == assist || !n->IsNPC() || !IsAlive(n)) {
-				continue;
+			if (!n || n == assist || !n->IsNPC() || !IsAlive(n) || is_incoming(n)) {
+				continue; // (on its way in with a puller: not an add yet)
 			}
 
 			Mob* top = n->GetHateTop();

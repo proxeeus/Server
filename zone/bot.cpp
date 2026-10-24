@@ -4082,9 +4082,17 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	// Already on someone else of ours: it is in the fight, the pull is done.
 	// Without this the monk feigned at a mob the raid had been beating for a
 	// second, and lay there through the fight.
+	// Only at camp, though: out on the way, a mob that aggroed on someone
+	// else (Kael's guards wake on whoever stands near) is still ours to bring
+	// in. Ending the pull out there left the monk fighting it half way, and
+	// the raid walked out of camp to help (Kael 2026-10-24, second session).
 	auto in_the_fight = [&]() {
 		Mob* top = pull_target->GetHateTop();
-		return top && top != this && m_fd_pull_state != FDPullState::FeignWait;
+		if (!top || top == this || m_fd_pull_state == FDPullState::FeignWait) {
+			return false;
+		}
+		const glm::vec3 home = PullReturnPoint(bot_owner);
+		return DistanceSquared(glm::vec3(pull_target->GetPosition()), home) <= FD_ALONE_RADIUS_SQ;
 	};
 
 	// Bring it in: the hand-off to the plain pull, which walks it into camp.
