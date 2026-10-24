@@ -4805,6 +4805,29 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 		}
 
+		// Never wait inside an idle mob's aggro: the guardians either side of
+		// a way in (Aaryonar's, in Veeshan's Temple) took the catcher wherever
+		// it waited for its spot (fdpull_sim.pl on templeveeshan.map). The
+		// engine's own test (Mob::CheckWillAggro: in range on x, y and z, KOS,
+		// line of sight), with a margin.
+		for (auto& close : entity_list.GetCloseMobList(this)) {
+			Mob* n = close.second;
+			if (!n || !n->IsNPC() || n->IsPet() || n->GetHP() <= 0 || n->IsEngaged()) {
+				continue;
+			}
+			const float r = n->GetAggroRange() + 15.0f;
+			if (DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition())) > r * r || std::fabs(n->GetZ() - GetZ()) > r) {
+				continue;
+			}
+			const FACTION_VALUE fv = GetReverseFactionCon(n);
+			if ((fv != FACTION_SCOWLS && fv != FACTION_THREATENINGLY && !n->AlwaysAggro()) || !n->CheckLosFN(this)) {
+				continue;
+			}
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			RunTo(back.x, back.y, back.z);
+			return;
+		}
+
 		// Where to stand. With the tagger: before its tag a step behind it;
 		// after it, a little short of where it runs (its escape, on the camp
 		// side), for the pack to come within reach of us and our way home to
