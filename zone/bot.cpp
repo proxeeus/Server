@@ -3091,8 +3091,11 @@ bool Bot::TryAutoDefend(Client* bot_owner, float leash_distance) {
 					// and every bot went for it out there (Kael 2026-10-24).
 					const bool pulled = hater && TacticsIsIncoming(hater);
 					if (hater && (pulled || TacticsOutOfCamp(hater))) {
-						if (m_auto_defend_held_id != hater->GetID()) {
-							m_auto_defend_held_id = hater->GetID();
+						static std::unordered_map<uint32, uint32> held_said; // (bot, mob) -> when, so two mobs do not alternate 11000 lines
+						const uint32 key  = (static_cast<uint32>(GetID()) << 16) | hater->GetID();
+						const uint32 when = Timer::GetCurrentTime();
+						if (when - held_said[key] >= 10000) {
+							held_said[key] = when;
 							LogInfo("[BotAI] [{}] auto-defend holds: [{}] is {}", GetCleanName(), hater->GetCleanName(),
 								pulled ? "being pulled" : "out of camp");
 						}
@@ -4384,7 +4387,21 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			for (Mob* o : ours) {
 				nearest = std::min(nearest, std::sqrt(DistanceSquaredNoZ(glm::vec3(o->GetPosition()), at)));
 			}
-			const float score = (nearest > reach && walk_home_clear(at) ? 1e6f : 0.0f) + nearest;
+			// Not into another mob: running on for 24 s the monk dragged
+			// Veteran Mjrlind into Kallis's pack (Kael 2026-10-25).
+			bool idle_there = false;
+			for (auto& close : entity_list.GetCloseMobList(this)) {
+				Mob* n = close.second;
+				if (!n || !n->IsNPC() || n->IsPet() || n->GetHP() <= 0 || n->IsEngaged()) {
+					continue;
+				}
+				const float r = n->GetAggroRange() + 30.0f;
+				if (DistanceSquaredNoZ(glm::vec3(n->GetPosition()), at) <= r * r) {
+					idle_there = true;
+					break;
+				}
+			}
+			const float score = (nearest > reach && !idle_there && walk_home_clear(at) ? 1e6f : 0.0f) + (idle_there ? 0.0f : 1000.0f) + nearest;
 			if (score > best) {
 				best                = score;
 				m_fd_escape         = at;
@@ -4807,6 +4824,67 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				m_fd_pull_state      = FDPullState::Peeling;
 				m_fd_catch_spot_set  = false;
 				say(fmt::format("Peeling {} off {} — bringing it in alone.", add->GetCleanName(), pull_target->GetCleanName()));
+				return;
+			}
+		}
+
+		// What we are doing, every few seconds: the catcher used to say nothing
+		// at all unless it peeled or caught, and "does nothing" could not be
+		// told from "waits for X" (Kael 2026-10-25).
+		{
+			static std::unordered_map<uint16, uint32> said_at;
+			uint32& last = said_at[GetID()];
+			if (now - last >= 3000) {
+				last = now;
+				Mob*  near_add = nullptr;
+				float near_d   = 0.0f;
+				for (auto& close : entity_list.GetCloseMobList(this)) {
+					Mob* n = close.second;
+					if (!n || !n->IsNPC() || n == pull_target || n->GetHP() <= 0 || !n->CastToNPC()->IsOnHatelist(mate)) {
+						continue;
+					}
+					const float d = std::sqrt(DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition())));
+					if (!near_add || d < near_d) {
+						near_add = n;
+						near_d   = d;
+					}
+				}
+				LogInfo(
+					"[FDPull] [{}] catching: [{}] is [{}], target [{:.0f}] away ({}), nearest add [{}] [{:.0f}], camp busy [{}]",
+					GetCleanName(), mate->GetCleanName(), static_cast<int>(ms), std::sqrt(dist_sq),
+					pull_target->IsEngaged() ? "engaged" : "idle", near_add ? near_add->GetCleanName() : "none", near_d,
+					camp_busy() ? "yes" : "no"
+				);
+			}
+		}
+
+		// The pack is after the tagger: go with it, a throw short of its
+		// nearest add, to peel one (above) -- mobs that are chasing take no one
+		// by proximity. Parked at the tagger's first escape spot instead, the
+		// catcher was left behind as the tagger ran on, and never peeled.
+		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate) {
+			Mob*  chase   = nullptr;
+			float chase_d = 0.0f;
+			for (auto& close : entity_list.GetCloseMobList(this)) {
+				Mob* n = close.second;
+				if (!n || !n->IsNPC() || n->IsPet() || n == pull_target || n->GetHP() <= 0 || n->HasPrimaryAggro() ||
+					!n->CastToNPC()->IsOnHatelist(mate)) {
+					continue;
+				}
+				const float d = DistanceSquared(glm::vec3(n->GetPosition()), glm::vec3(GetPosition()));
+				if (!chase || d < chase_d) {
+					chase   = n;
+					chase_d = d;
+				}
+			}
+			if (chase) {
+				if (chase_d > 40.0f * 40.0f) {
+					RunTo(chase->GetX(), chase->GetY(), chase->GetZ());
+				}
+				else {
+					hold_still(chase);
+				}
 				return;
 			}
 		}
