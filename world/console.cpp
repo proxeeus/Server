@@ -20,6 +20,7 @@
 
 #include "console.h"
 #include "clientlist.h"
+#include "cliententry.h"
 #include "login_server.h"
 #include "login_server_list.h"
 #include "world_config.h"
@@ -32,6 +33,8 @@
 #include "eqemu_api_world_data_service.h"
 #include "../common/zone_store.h"
 #include <fmt/format.h>
+#include <algorithm>
+#include <cctype>
 
 extern ClientList      client_list;
 extern ZSList          zoneserver_list;
@@ -640,7 +643,7 @@ void ConsoleZoneBootup(
 				tmpname,
 				Strings::ToInt(args[0]),
 				args[1].c_str(),
-				(bool) (strcasecmp(args[1].c_str(), "static") == 0));
+				(bool) (strcasecmp(args[2].c_str(), "static") == 0)); // was args[1], the zone name: "static" never applied
 		}
 		else {
 			zoneserver_list.SOPZoneBootup(tmpname, Strings::ToInt(args[0]), args[1].c_str(), false);
@@ -1326,6 +1329,225 @@ void ConsoleWorldWideMove(
 /**
  * @param console
  */
+// ============================================================
+// Playtest admin panel (XAMPP htdocs/playtest). The panel connects from localhost,
+// which this console trusts as admin, and reads one JSON line back per command:
+// {"ok": bool, "message": "..."}.
+// ============================================================
+
+namespace {
+
+void AdminPanelReply(EQ::Net::ConsoleServerConnection *connection, bool ok, const std::string &message)
+{
+	Json::Value v;
+	v["ok"]      = ok;
+	v["message"] = message;
+
+	auto line = Json::FastWriter().write(v);
+	if (!line.empty() && line.back() == '\n') {
+		line.pop_back();
+	}
+
+	connection->SendLine(line);
+}
+
+// The character's CLE when it is in a zone right now.
+ClientListEntry *AdminPanelInZone(const std::string &name)
+{
+	auto cle = client_list.FindCharacter(name.c_str());
+	if (!cle || cle->Online() != CLE_Status::InZone || !cle->Server()) {
+		return nullptr;
+	}
+
+	return cle;
+}
+
+bool AdminPanelIsCoordinate(const std::string &s)
+{
+	return !s.empty() && Strings::IsFloat(s);
+}
+
+} // namespace
+
+// repop <zone_server_id|zone_short_name> [force]
+void ConsoleRepop(
+	EQ::Net::ConsoleServerConnection *connection,
+	const std::string &command,
+	const std::vector<std::string> &args
+)
+{
+	if (args.empty() || args[0].empty()) {
+		AdminPanelReply(connection, false, "Usage: repop <zone_server_id|zone_short_name> [force]");
+		return;
+	}
+
+	ZoneServer *zs = Strings::IsNumber(args[0]) ?
+		zoneserver_list.FindByID(Strings::ToUnsignedInt(args[0])) :
+		zoneserver_list.FindByZoneID(ZoneID(args[0].c_str()));
+	if (!zs || !zs->GetZoneID()) {
+		AdminPanelReply(connection, false, fmt::format("Zone [{}] is not running.", args[0]));
+		return;
+	}
+
+	const bool force = args.size() > 1 && Strings::ToLower(args[1]) == "force";
+
+	ServerPacket pack(ServerOP_AdminRepop, sizeof(ServerAdminRepop_Struct));
+	auto         s = reinterpret_cast<ServerAdminRepop_Struct *>(pack.pBuffer);
+	s->zone_id     = zs->GetZoneID();
+	s->instance_id = zs->GetInstanceID();
+	s->force       = force ? 1 : 0;
+	zs->SendPacket(&pack);
+
+	AdminPanelReply(
+		connection,
+		true,
+		fmt::format("{} {}.", force ? "Force-repopping" : "Repopping", ZoneLongName(zs->GetZoneID(), true))
+	);
+}
+
+// movepc <character> <zone_short_name|zone_id> <x> <y> <z>
+void ConsoleMovePC(
+	EQ::Net::ConsoleServerConnection *connection,
+	const std::string &command,
+	const std::vector<std::string> &args
+)
+{
+	if (args.size() < 5) {
+		AdminPanelReply(connection, false, "Usage: movepc <character> <zone_short_name|zone_id> <x> <y> <z>");
+		return;
+	}
+
+	auto cle = AdminPanelInZone(args[0]);
+	if (!cle) {
+		AdminPanelReply(connection, false, fmt::format("{} is not in a zone.", args[0]));
+		return;
+	}
+
+	const uint32 zone_id = Strings::IsNumber(args[1]) ? Strings::ToUnsignedInt(args[1]) : ZoneID(args[1].c_str());
+	const char  *zone    = zone_id ? ZoneName(zone_id, true) : nullptr;
+	if (!zone || !strcmp(zone, "UNKNOWN")) {
+		AdminPanelReply(connection, false, fmt::format("Unknown zone [{}].", args[1]));
+		return;
+	}
+
+	if (!AdminPanelIsCoordinate(args[2]) || !AdminPanelIsCoordinate(args[3]) || !AdminPanelIsCoordinate(args[4])) {
+		AdminPanelReply(connection, false, "x, y and z must be numbers.");
+		return;
+	}
+
+	// The zone's ServerOP_ZonePlayer handler moves the character with MovePC(GMSummon),
+	// as #summon does; adminname == name makes it the "Zoning to ..." self move.
+	ServerPacket pack(ServerOP_ZonePlayer, sizeof(ServerZonePlayer_Struct));
+	auto         s = reinterpret_cast<ServerZonePlayer_Struct *>(pack.pBuffer);
+	strn0cpy(s->adminname, cle->name(), sizeof(s->adminname));
+	strn0cpy(s->name, cle->name(), sizeof(s->name));
+	strn0cpy(s->zone, zone, sizeof(s->zone));
+	s->adminrank          = AccountStatus::Max;
+	s->ignorerestrictions = 1;
+	s->instance_id        = 0;
+	s->x_pos              = Strings::ToFloat(args[2]);
+	s->y_pos              = Strings::ToFloat(args[3]);
+	s->z_pos              = Strings::ToFloat(args[4]);
+	cle->Server()->SendPacket(&pack);
+
+	AdminPanelReply(
+		connection,
+		true,
+		fmt::format("Moving {} to {} ({:.1f}, {:.1f}, {:.1f}).", cle->name(), ZoneLongName(zone_id, true), s->x_pos, s->y_pos, s->z_pos)
+	);
+}
+
+// gmcmd <character> <self|target> <#command ...|^botcommand ...>
+// Runs the command as the character whatever its status (test characters are status 0).
+// self: the character targets itself while the command runs; target: its own target.
+void ConsoleGMCommand(
+	EQ::Net::ConsoleServerConnection *connection,
+	const std::string &command,
+	const std::vector<std::string> &args
+)
+{
+	if (args.size() < 3) {
+		AdminPanelReply(connection, false, "Usage: gmcmd <character> <self|target> <#command ...>");
+		return;
+	}
+
+	auto cle = AdminPanelInZone(args[0]);
+	if (!cle) {
+		AdminPanelReply(connection, false, fmt::format("{} is not in a zone.", args[0]));
+		return;
+	}
+
+	const auto mode = Strings::ToLower(args[1]);
+	if (mode != "self" && mode != "target") {
+		AdminPanelReply(connection, false, "The second argument is self or target.");
+		return;
+	}
+
+	const std::string cmd = Strings::Join(std::vector<std::string>(args.begin() + 2, args.end()), " ");
+	if (cmd.size() < 2 || (cmd[0] != '#' && cmd[0] != '^') || cmd.size() >= sizeof(ServerAdminCommand_Struct::command)) {
+		AdminPanelReply(connection, false, "The command starts with # or ^.");
+		return;
+	}
+
+	ServerPacket pack(ServerOP_AdminCommand, sizeof(ServerAdminCommand_Struct));
+	auto         s = reinterpret_cast<ServerAdminCommand_Struct *>(pack.pBuffer);
+	strn0cpy(s->character, cle->name(), sizeof(s->character));
+	strn0cpy(s->command, cmd.c_str(), sizeof(s->command));
+	s->self_target = mode == "self" ? 1 : 0;
+	cle->Server()->SendPacket(&pack);
+
+	AdminPanelReply(connection, true, fmt::format("{}: {}", cle->name(), cmd));
+}
+
+// testchar <ticket> <#testchar arguments>
+// The name generator lives in zone, so a running zone parses the request and sends
+// ServerOP_TestCharacter back; the outcome lands in data_buckets "admin_testchar:<ticket>".
+void ConsoleTestChar(
+	EQ::Net::ConsoleServerConnection *connection,
+	const std::string &command,
+	const std::vector<std::string> &args
+)
+{
+	if (args.size() < 2) {
+		AdminPanelReply(connection, false, "Usage: testchar <ticket> new <class> <level> [options]");
+		return;
+	}
+
+	const auto &ticket = args[0];
+	if (ticket.empty() || ticket.size() >= sizeof(ServerAdminTestCharacter_Struct::ticket) ||
+		!std::all_of(ticket.begin(), ticket.end(), [](unsigned char ch) { return std::isalnum(ch); })) {
+		AdminPanelReply(connection, false, "The ticket is 1 to 39 letters and digits.");
+		return;
+	}
+
+	const std::string rest = Strings::Join(std::vector<std::string>(args.begin() + 1, args.end()), " ");
+	if (rest.size() >= sizeof(ServerAdminTestCharacter_Struct::args)) {
+		AdminPanelReply(connection, false, "Too many arguments.");
+		return;
+	}
+
+	ZoneServer *relay = nullptr;
+	for (const auto &zs : zoneserver_list.getZoneServerList()) {
+		if (zs->GetZoneID() && !zs->IsBootingUp()) {
+			relay = zs.get();
+			break;
+		}
+	}
+
+	if (!relay) {
+		AdminPanelReply(connection, false, "No zone is running to build the character; boot one first.");
+		return;
+	}
+
+	ServerPacket pack(ServerOP_AdminTestCharacter, sizeof(ServerAdminTestCharacter_Struct));
+	auto         s = reinterpret_cast<ServerAdminTestCharacter_Struct *>(pack.pBuffer);
+	strn0cpy(s->ticket, ticket.c_str(), sizeof(s->ticket));
+	strn0cpy(s->args, rest.c_str(), sizeof(s->args));
+	relay->SendPacket(&pack);
+
+	AdminPanelReply(connection, true, fmt::format("Building through {}.", relay->GetZoneName()));
+}
+
 void RegisterConsoleFunctions(std::unique_ptr<EQ::Net::ConsoleServer>& console)
 {
 	console->RegisterLogin(std::bind(CheckLogin, std::placeholders::_1, std::placeholders::_2));
@@ -1343,7 +1565,10 @@ void RegisterConsoleFunctions(std::unique_ptr<EQ::Net::ConsoleServer>& console)
 	console->RegisterCall("iplookup", 50, "iplookup [name]", std::bind(ConsoleIpLookup, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("kick", 150, "kick [charname]", std::bind(ConsoleKick, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("lock", 150, "lock", std::bind(ConsoleLock, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	console->RegisterCall("gmcmd", 200, "gmcmd [character] [self|target] [#command] - run a command as the character (admin panel)", std::bind(ConsoleGMCommand, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("lsreconnect", 50, "LSReconnect", std::bind(ConsoleNull, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	console->RegisterCall("movepc", 200, "movepc [character] [zone_short_name] [x] [y] [z] - teleport a character (admin panel)", std::bind(ConsoleMovePC, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	console->RegisterCall("repop", 200, "repop [zone_server_id|zone_short_name] [force] (admin panel)", std::bind(ConsoleRepop, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("md5", 50, "md5", std::bind(ConsoleMd5, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("ooc", 50, "ooc [message]", std::bind(ConsoleOOC, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("ping", 50, "ping", std::bind(ConsoleNull, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
@@ -1352,6 +1577,7 @@ void RegisterConsoleFunctions(std::unique_ptr<EQ::Net::ConsoleServer>& console)
 	console->RegisterCall("setpass", 200, "setpass [account_name] [new_password]", std::bind(ConsoleSetPass, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("signalcharbyname", 50, "signalcharbyname charname ID", std::bind(ConsoleSignalCharByName, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("tell", 50, "tell [name] [message]", std::bind(ConsoleTell, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	console->RegisterCall("testchar", 200, "testchar [ticket] new [class] [level] [options] - build a test character (admin panel)", std::bind(ConsoleTestChar, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("unlock", 150, "unlock", std::bind(ConsoleUnlock, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("uptime", 50, "uptime [zone_server_id]", std::bind(ConsoleUptime, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("version", 50, "version", std::bind(ConsoleVersion, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
@@ -1360,7 +1586,7 @@ void RegisterConsoleFunctions(std::unique_ptr<EQ::Net::ConsoleServer>& console)
 	console->RegisterCall("worldshutdown", 200, "worldshutdown", std::bind(ConsoleWorldShutdown, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("wwcast", 50, "wwcast [spell_id] [min_status] [max_status] - min_status and max_status are optional", std::bind(ConsoleWorldWideCastSpell, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("wwmove", 50, "wwmove [instance_id|zone_short_name] [min_status] [max_status] -  min_status and max_status are optional, instance_id and zone_short_name are interchangeable", std::bind(ConsoleWorldWideMove, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-	console->RegisterCall("zonebootup", 150, "zonebootup [zone_server_id] [zone_short_name]", std::bind(ConsoleZoneBootup, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+	console->RegisterCall("zonebootup", 150, "zonebootup [zone_server_id] [zone_short_name] [static]", std::bind(ConsoleZoneBootup, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("zonelock", 150, "zonelock [list|lock|unlock] [zone_short_name]", std::bind(ConsoleZoneLock, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("zoneshutdown", 150, "zoneshutdown [zone_short_name or zone_server_id]", std::bind(ConsoleZoneShutdown, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 	console->RegisterCall("zonestatus", 50, "zonestatus", std::bind(ConsoleZoneStatus, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));

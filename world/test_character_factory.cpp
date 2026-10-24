@@ -63,9 +63,22 @@ std::string Field(const char *buf, size_t size)
 	return std::string(buf, strnlen(buf, size));
 }
 
-void Reply(const std::string &to, const std::string &message)
+// Who reads the replies: the GM in game, or the admin panel through its ticket.
+struct Requester {
+	std::string              name;
+	std::string              ticket;
+	std::vector<std::string> messages;
+};
+
+void Reply(Requester &to, const std::string &message)
 {
-	zoneserver_list.SendEmoteMessageRaw(to.c_str(), 0, AccountStatus::Player, Chat::White, message.c_str());
+	if (!to.name.empty()) {
+		zoneserver_list.SendEmoteMessageRaw(to.name.c_str(), 0, AccountStatus::Player, Chat::White, message.c_str());
+	}
+
+	if (!to.ticket.empty()) {
+		to.messages.push_back(message);
+	}
 }
 
 // zone/exp.cpp Client::GetEXPForLevel, without the Lua override (none in our quests).
@@ -393,9 +406,8 @@ std::vector<uint16> ClassSpells(uint8 class_id, uint8 level)
 // Request
 // ------------------------------------------------------------
 
-void DoNew(const ServerTestCharacter_Struct *req)
+bool DoNew(const ServerTestCharacter_Struct *req, Requester &to)
 {
-	const auto to       = Field(req->requester, sizeof(req->requester));
 	const auto name     = Field(req->name, sizeof(req->name));
 	const auto tier     = Strings::ToLower(Field(req->tier, sizeof(req->tier)));
 	const auto account  = Field(req->account, sizeof(req->account));
@@ -408,7 +420,7 @@ void DoNew(const ServerTestCharacter_Struct *req)
 
 	if (tier != "group" && tier != "none") {
 		Reply(to, fmt::format("Tier [{}] is not built yet. Available now: group, none.", tier));
-		return;
+		return false;
 	}
 
 	// Account
@@ -419,8 +431,14 @@ void DoNew(const ServerTestCharacter_Struct *req)
 		account_id = ResolveAccount(account, password, why, account_made);
 		if (!account_id) {
 			Reply(to, fmt::format("#testchar failed: {}.", why));
-			return;
+			return false;
 		}
+	}
+
+	// The admin panel has no account of its own to default to.
+	if (!account_id) {
+		Reply(to, "#testchar failed: choose an account.");
+		return false;
 	}
 
 	if (LiveCharacters(account_id) >= kCharacterSlots) {
@@ -432,7 +450,7 @@ void DoNew(const ServerTestCharacter_Struct *req)
 				kCharacterSlots
 			)
 		);
-		return;
+		return false;
 	}
 
 	Combination combo;
@@ -445,23 +463,23 @@ void DoNew(const ServerTestCharacter_Struct *req)
 				GetClassIDName(class_id)
 			)
 		);
-		return;
+		return false;
 	}
 
 	if (name.empty() || !database.CheckNameFilter(name) || database.IsNameUsed(name)) {
 		Reply(to, fmt::format("#testchar failed: the name [{}] is taken or not allowed.", name));
-		return;
+		return false;
 	}
 
 	if (!database.ReserveName(account_id, name)) {
 		Reply(to, fmt::format("#testchar failed: could not reserve the name [{}].", name));
-		return;
+		return false;
 	}
 
 	const uint32 char_id = database.GetCharacterID(name);
 	if (!char_id) {
 		Reply(to, fmt::format("#testchar failed: the reserved row for [{}] is missing.", name));
-		return;
+		return false;
 	}
 
 	// Profile, as HandleCharCreate builds it
@@ -505,7 +523,7 @@ void DoNew(const ServerTestCharacter_Struct *req)
 	if (!database.SaveCharacterCreate(char_id, account_id, &pp)) {
 		Reply(to, fmt::format("#testchar failed: could not save [{}] (see world log).", name));
 		database.DeleteCharacter(name);
-		return;
+		return false;
 	}
 
 	// Coin: SaveCharacterCreate does not write character_currency, and a missing
@@ -585,7 +603,7 @@ void DoNew(const ServerTestCharacter_Struct *req)
 
 	LogInfo(
 		"[TestChar] [{}] created [{}] ID [{}] account [{}] level [{}] race [{}] class [{}] zone [{}] tier [{}] worn [{}] spells [{}]",
-		to,
+		to.name.empty() ? "admin panel" : to.name,
 		name,
 		char_id,
 		account_id,
@@ -620,18 +638,23 @@ void DoNew(const ServerTestCharacter_Struct *req)
 		"Camp to character select to play it." :
 		fmt::format("Camp to character select to play it; its bots ({}) are built when it first enters the world.", bots)
 	);
+
+	return true;
 }
 
 } // namespace
 
 void TestCharacterFactory::HandleRequest(const ServerTestCharacter_Struct *req)
 {
-	const auto to = Field(req->requester, sizeof(req->requester));
+	Requester to;
+	to.name   = Field(req->requester, sizeof(req->requester));
+	to.ticket = Field(req->web_ticket, sizeof(req->web_ticket));
 
 	if (req->requester_admin < AccountStatus::GMImpossible) {
-		LogInfo("[TestChar] refused request from [{}] status [{}]", to, req->requester_admin);
+		LogInfo("[TestChar] refused request from [{}] status [{}]", to.name, req->requester_admin);
 		return;
 	}
 
-	DoNew(req);
+	const bool ok = DoNew(req, to);
+	TestCharacterKit::WriteWebResult(database, to.ticket, ok, to.messages);
 }
