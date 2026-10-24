@@ -1158,6 +1158,7 @@ int bot_command_init(void)
 		bot_command_add("raidkit", "GM: makes a ready test group or raid of bots at your level, equipped. ^raidkit group|raid[:N] [tier]", AccountStatus::GMImpossible, bot_command_raidkit) ||
 		bot_command_add("tactics","Shows your group or raid's automatic plan (main tank, off-tanks, CH chain). Overrides: mt <name|auto>, chain <seconds|auto>, on|off.", AccountStatus::Player, bot_command_tactics) ||
 		bot_command_add("ready", "One line: are your healers full enough to pull? Healer mana, time to full, main tank, fallen bots, GO or WAIT. Same as ^tactics ready.", AccountStatus::Player, bot_command_ready) ||
+		bot_command_add("setcamp", "Fixes your bots' camp where you stand; it stays until ^setcamp clear. ^setcamp show: camp, pulls, queue.", AccountStatus::Player, bot_command_setcamp) ||
 		bot_command_add("spellshow", "Text-only mirror of ^spells for clients without saylinks (Trilogy). Args: [min_level] [name-filter].", AccountStatus::Player, bot_command_spell_show) ||
 		bot_command_add("ssshow", "Text-only mirror of ^spellsettings; numbers each setting for use with ^sstoggle / ^ssdel.", AccountStatus::Player, bot_command_ss_show) ||
 		bot_command_add("sstoggle", "Toggle a spell setting by its ^ssshow row number. Args: <row> [on|off] (no arg = flip).", AccountStatus::Player, bot_command_ss_toggle) ||
@@ -2002,6 +2003,7 @@ bool helper_spell_list_fail(Client *bot_owner, bcst_list* spell_list, BCEnum::Sp
 #include "bot_commands/createraid.cpp"
 #include "bot_commands/raid_show.cpp"
 #include "bot_commands/tactics.cpp"
+#include "bot_commands/setcamp.cpp"
 #include "bot_commands/party.cpp"
 #include "bot_commands/raidkit.cpp"
 #include "bot_commands/spell_show.cpp"

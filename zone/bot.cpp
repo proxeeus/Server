@@ -4032,6 +4032,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	}
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
+	m_fd_pull_started_ms = 0;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -4049,6 +4050,24 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			raid->RaidSay(msg, GetCleanName(), 0, 100);
 		} else {
 			BotGroupSay(this, msg);
+		}
+		return;
+	}
+
+	// Two minutes and still not alone (a camp of linked mobs that never go
+	// home, a feign that keeps failing): leave it, and say so.
+	const uint32 now = Timer::GetCurrentTime();
+	if (!m_fd_pull_started_ms) {
+		m_fd_pull_started_ms = now;
+	}
+	else if (now - m_fd_pull_started_ms > FD_PULL_GIVE_UP_MS) {
+		const auto msg = fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName());
+		LogInfo("[BotTactics] [{}] FD pull of [{}] given up after [{}]s", GetCleanName(), pull_target->GetCleanName(), FD_PULL_GIVE_UP_MS / 1000);
+		FDPullReset(bot_owner);
+		if (raid) {
+			raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
+		} else {
+			BotGroupSay(this, msg.c_str());
 		}
 		return;
 	}
@@ -4183,10 +4202,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				GetPet()->SetTarget(nullptr);
 				GetPet()->SetPetOrder(SPO_Guard);
 			}
-			m_fd_pull_state = FDPullState::None;
+			m_fd_pull_state      = FDPullState::None;
+			m_fd_pull_started_ms = 0;
 			m_fd_tag_timer.Disable();
 			m_fd_feign_check_timer.Disable();
-			const auto pull_msg = fmt::format("Pulling {} solo!", pull_target->GetCleanName());
+			const auto pull_msg = fmt::format("Incoming: {}, alone!", pull_target->GetCleanName());
 			if (raid) {
 				raid->RaidSay(pull_msg.c_str(), GetCleanName(), 0, 100);
 			} else {

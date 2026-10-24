@@ -67,6 +67,7 @@
  */
 
 #include <array>
+#include <deque>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -76,6 +77,7 @@
 #include "../common/types.h"
 
 class Bot;
+class Client;
 class Group;
 class Mob;
 class Raid;
@@ -135,6 +137,14 @@ struct BotTacticsPlan {
 	// Walking out without a fight breaks camp: bots follow again.
 	bool                camp_set       = false;
 	glm::vec3           camp           = glm::vec3(0.0f);
+	// ^setcamp: a camp the player fixed. The plan never moves or breaks it --
+	// not when the leader walks off, fights elsewhere, or a pull goes wrong.
+	bool                camp_fixed     = false;
+
+	// ^pull: the mobs the player picked, in order. Each goes to a free puller
+	// (a monk with feign death first: it brings a single), as many at once as
+	// the unit can hold (BotTactics::DispatchPulls).
+	std::deque<uint16>  pull_queue;
 
 	// Where the unit's last kill lies, kept clear for a while so the player
 	// can click the corpse (Bot::TacticsKeepOffLootSpot).
@@ -375,6 +385,21 @@ public:
 	void SetChainIntervalOverride(uint32 key, uint32 ms);           // 0 = automatic
 	void SetAutoPull(uint32 key, bool on, float radius = 0.0f);     // radius 0 = default
 
+	// ^setcamp: fix the camp here (it stays until cleared) / clear it.
+	// False when the unit has no plan yet.
+	bool SetFixedCamp(uint32 key, const glm::vec3& at);
+	bool ClearFixedCamp(uint32 key);
+
+	// ^pull: queue a mob the player picked. `position` is its place in line
+	// (1 = next). Pulled by the next free puller: a monk feigns death to
+	// bring it alone, and says so at each step.
+	enum class PullQueueResult { Queued, AlreadyQueued, BeingPulled, NoPlan };
+	PullQueueResult QueuePull(uint32 key, uint16 npc_id, size_t& position);
+	// ^pull cancel: empty the queue and call off every pull under way.
+	size_t CancelPulls(uint32 key, Client* owner);
+	// ^pull list
+	std::vector<std::string> DescribePulls(uint32 key);
+
 	// ^tactics choices survive the session: saved per character (data
 	// bucket bot_tactics_<char id>), loaded when that player's unit forms.
 	void SaveSettings(uint32 key, uint32 char_id);
@@ -396,6 +421,8 @@ private:
 	};
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
+	// The ^pull queue: hand its next mobs to free pullers.
+	void DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, const std::vector<Mob*>& mobs, Mob* leader, Mob* assist);
 	// Up to `count` bots of the unit near `subject` (not it) play `anim` at
 	// it, a moment apart; count 0 = every bot within reach.
 	void QueueGestures(const std::vector<Mob*>& mobs, Mob* subject, uint8 anim, size_t count);

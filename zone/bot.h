@@ -84,6 +84,7 @@ constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subseq
 constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
 constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
 constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — owner proximity for pull handoff
+constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -1061,6 +1062,7 @@ public:
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
 	bool TacticsStartPull(Mob* target);
+	bool TacticsStartQueuedPull(Mob* target); // ^pull queue: monks feign-pull in parallel
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
 
@@ -1199,6 +1201,7 @@ private:
 	bool m_returning_flag;
 	FDPullState          m_fd_pull_state;
 	uint16               m_fd_pull_target_id;
+	uint32               m_fd_pull_started_ms = 0; // the FD pull gives up after FD_PULL_GIVE_UP_MS
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;

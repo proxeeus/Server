@@ -1022,8 +1022,9 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				else if (!p.camp_left_ms) {
 					p.camp_left_ms = now;
 				}
-				else if (now - p.camp_left_ms > kCampGraceMs) {
-					// Walked off and found nothing to fight: moving on.
+				else if (now - p.camp_left_ms > kCampGraceMs && !p.camp_fixed) {
+					// Walked off and found nothing to fight: moving on. (A camp
+					// the player fixed with ^setcamp stays.)
 					LogInfo("[BotTactics] unit [{:#x}] camp broken: [{}] moved on", p.key, leader->GetCleanName());
 					p.camp_set     = false;
 					p.camp_left_ms = 0;
@@ -1072,10 +1073,14 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 					leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() &&
 					DistanceSquaredNoZ(lpos, glm::vec3(assist->GetPosition())) <= kLeaderMeleeRadius * kLeaderMeleeRadius;
 				if (leader_fighting && !leader_in_camp && !mob_in_camp) {
-					p.camp            = lpos;
+					// The bots go and help either way; a fixed camp is where
+					// they come back to after.
 					p.pull_arrived_id = assist->GetID();
-					LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
-						p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+					if (!p.camp_fixed) {
+						p.camp = lpos;
+						LogInfo("[BotTactics] unit [{:#x}] camp moves to [{}]'s fight with [{}] at [{:.0f}, {:.0f}, {:.0f}]",
+							p.key, leader->GetCleanName(), assist->GetCleanName(), lpos.x, lpos.y, lpos.z);
+					}
 				}
 
 				bool pull = !leader_in_camp && !mob_in_camp && !leader_helpless && !leader_fighting &&
@@ -1097,9 +1102,15 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 						p.DamagePct(leader->GetID()) > kPullRescueDamagePct
 					)
 				) {
-					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help, camp broken", p.key, assist->GetCleanName());
-					pull       = false;
-					p.camp_set = false;
+					LogInfo("[BotTactics] unit [{:#x}] pull of [{}] went wrong: going to help{}", p.key, assist->GetCleanName(),
+						p.camp_fixed ? "" : ", camp broken");
+					pull = false;
+					if (!p.camp_fixed) {
+						p.camp_set = false;
+					}
+					else {
+						p.pull_arrived_id = assist->GetID(); // fought where it is; the camp stays
+					}
 				}
 				else if (!pull && p.pull_active) {
 					// Arrived: this mob is the camp's fight from now on. Without
@@ -1261,6 +1272,10 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	// ---- auto-pull (opt-in) ----
 
 	AutoPull(p, raid, mobs, leader, ov);
+
+	// ---- the player's pull queue (^pull) ----
+
+	DispatchPulls(p, raid, group, mobs, leader, assist);
 
 	if (assist) {
 		for (Mob* m : mobs) {
@@ -2182,6 +2197,290 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			p.key, chain ? " (chain)" : "", puller->GetCleanName(), best->GetCleanName(), fd_puller ? "FD" : "plain",
 			best_socials, best_ttk, best_rest, best_score, p.confidence
 		);
+	}
+}
+
+// ============================================================
+// The player's camp and pull queue (^setcamp, ^pull)
+// ============================================================
+//
+// The player decides what is pulled -- in a raid only they know the trash
+// from the boss -- and where camp is. The bots do the legwork: the next free
+// puller takes the next mob in line, a monk feigning death on the way back
+// until it has it alone, and as many go out at once as the unit can hold.
+
+bool BotTactics::SetFixedCamp(uint32 key, const glm::vec3& at)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return false;
+	}
+
+	p->camp_set     = true;
+	p->camp_fixed   = true;
+	p->camp         = at;
+	p->camp_left_ms = 0;
+	p->pull_active  = false;
+	LogInfo("[BotTactics] unit [{:#x}] camp fixed at [{:.0f}, {:.0f}, {:.0f}]", key, at.x, at.y, at.z);
+	return true;
+}
+
+bool BotTactics::ClearFixedCamp(uint32 key)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return false;
+	}
+
+	p->camp_fixed = false;
+	p->camp_set   = false;
+	LogInfo("[BotTactics] unit [{:#x}] fixed camp cleared", key);
+	return true;
+}
+
+namespace {
+	// A bot of the unit pulling `npc_id` right now (queued, ^fdpull or auto).
+	Bot* PullerOf(const BotTacticsPlan& p, uint16 npc_id)
+	{
+		for (uint16 id : p.members) {
+			Mob* m = entity_list.GetMob(id);
+			if (!m || !m->IsBot()) {
+				continue;
+			}
+			Bot* b = m->CastToBot();
+			if ((b->IsFDPulling() && b->GetFDPullTargetID() == npc_id) ||
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget() && b->GetTarget()->GetID() == npc_id)) {
+				return b;
+			}
+		}
+		return nullptr;
+	}
+}
+
+BotTactics::PullQueueResult BotTactics::QueuePull(uint32 key, uint16 npc_id, size_t& position)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return PullQueueResult::NoPlan;
+	}
+
+	if (PullerOf(*p, npc_id)) {
+		return PullQueueResult::BeingPulled;
+	}
+
+	const auto it = std::find(p->pull_queue.begin(), p->pull_queue.end(), npc_id);
+	if (it != p->pull_queue.end()) {
+		position = static_cast<size_t>(it - p->pull_queue.begin()) + 1;
+		return PullQueueResult::AlreadyQueued;
+	}
+
+	p->pull_queue.push_back(npc_id);
+	position = p->pull_queue.size();
+	p->pull_failed.erase(npc_id); // the player asked for it again
+	return PullQueueResult::Queued;
+}
+
+size_t BotTactics::CancelPulls(uint32 key, Client* owner)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return 0;
+	}
+
+	size_t n = p->pull_queue.size();
+	p->pull_queue.clear();
+
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
+			Client* o = b->GetBotOwner() && b->GetBotOwner()->IsClient() ? b->GetBotOwner()->CastToClient() : owner;
+			if (b->IsFDPulling()) {
+				b->FDPullReset(o);
+			}
+			else {
+				b->TacticsAbortPull();
+			}
+			++n;
+		}
+	}
+
+	p->autopull_puller_id = 0;
+	p->autopull_target_id = 0;
+	return n;
+}
+
+std::vector<std::string> BotTactics::DescribePulls(uint32 key)
+{
+	std::vector<std::string> out;
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		out.emplace_back("No group or raid of bots (or its plan is not built yet: try again in a second).");
+		return out;
+	}
+
+	out.emplace_back(p->camp_fixed ?
+		fmt::format("Camp: fixed at {:.0f}, {:.0f}, {:.0f} (^setcamp clear to let it follow you).", p->camp.x, p->camp.y, p->camp.z) :
+		std::string(p->camp_set ? "Camp: made by the first fight here; it follows you (^setcamp to fix it)." : "Camp: none (^setcamp to fix one here)."));
+
+	for (uint16 id : p->members) {
+		Mob* m = entity_list.GetMob(id);
+		if (!m || !m->IsBot()) {
+			continue;
+		}
+		Bot*   b = m->CastToBot();
+		uint16 t = b->IsFDPulling() ? b->GetFDPullTargetID() :
+			((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
+		if (Mob* tm = t ? entity_list.GetMob(t) : nullptr) {
+			out.emplace_back(fmt::format("Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(), b->IsFDPulling() ? " (feign death)" : ""));
+		}
+	}
+
+	if (p->pull_queue.empty()) {
+		out.emplace_back("Queue: empty (target a mob and ^pull to add it).");
+	}
+	else {
+		std::string line = "Queue:";
+		size_t      i    = 0;
+		for (uint16 id : p->pull_queue) {
+			Mob* m = entity_list.GetMob(id);
+			line += fmt::format(" {}. {}", ++i, m ? m->GetCleanName() : "(gone)");
+		}
+		out.emplace_back(line);
+	}
+	return out;
+}
+
+void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, const std::vector<Mob*>& mobs, Mob* leader, Mob* assist)
+{
+	if (p.pull_queue.empty()) {
+		return;
+	}
+
+	auto tell = [&](const std::string& msg) {
+		if (leader && leader->IsClient()) {
+			leader->Message(Chat::Yellow, "%s", msg.c_str());
+		}
+	};
+	auto ours = [&](Mob* m) {
+		Mob* owner = m ? m->GetOwner() : nullptr;
+		return m && (p.IsMember(m->GetID()) || (owner && p.IsMember(owner->GetID())));
+	};
+
+	// Out of line: dead, gone, or already in a fight (with us: it is coming
+	// anyway; with someone else: not ours to take).
+	for (auto it = p.pull_queue.begin(); it != p.pull_queue.end();) {
+		Mob* t = entity_list.GetMob(*it);
+		const char* why = nullptr;
+		if (!IsAlive(t) || !t->IsNPC()) {
+			why = "dead or gone";
+		}
+		else if (t->IsEngaged()) {
+			why = ours(t->GetHateTop()) ? "already fighting us" : "fighting someone else";
+		}
+		if (why) {
+			if (t) {
+				tell(fmt::format("{} is off the pull queue: {}.", t->GetCleanName(), why));
+			}
+			it = p.pull_queue.erase(it);
+			continue;
+		}
+		++it;
+	}
+
+	// As many in hand as there are tanks to hold them: the fight on now and
+	// its adds, plus what is on the way.
+	size_t pulling = 0;
+	for (Mob* m : mobs) {
+		if (m->IsBot() && IsAlive(m)) {
+			Bot* b = m->CastToBot();
+			if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
+				++pulling;
+			}
+		}
+	}
+	size_t       in_hand = (assist ? 1 : 0) + p.adds.size() + pulling;
+	const size_t holds   = 1 + p.off_tank_ids.size();
+
+	// Free pullers, monks with feign death first (each brings a single, so
+	// several can work at once); a plain pull runs one at a time.
+	auto can_pull = [](Bot* b) {
+		return !(b->GetBotStance() == Stance::Passive || b->GetHoldFlag() || b->GetGuardFlag() || !b->GetBotOwner() ||
+			b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag() || b->IsCharmedByNPC() || b->IsFeared() ||
+			b->IsMezzed() || b->IsStunned());
+	};
+	std::vector<Bot*> monks;
+	Bot*              plain = nullptr;
+	auto plain_rank = [](uint8 c) {
+		switch (c) {
+			case Class::Ranger: return 3;
+			case Class::Bard:   return 2;
+			case Class::Rogue:  return 1;
+			default:            return 0;
+		}
+	};
+	for (Mob* m : mobs) {
+		if (!m->IsBot() || !IsAlive(m) || !can_pull(m->CastToBot())) {
+			continue;
+		}
+		Bot* b = m->CastToBot();
+		if (b->GetClass() == Class::Monk && b->GetSkill(EQ::skills::SkillFeignDeath) > 0) {
+			monks.push_back(b);
+		}
+		else if (plain_rank(b->GetClass()) && (!plain || plain_rank(b->GetClass()) > plain_rank(plain->GetClass()))) {
+			plain = b;
+		}
+	}
+	if (monks.empty() && !plain && p.main_tank_id) {
+		Mob* mt = entity_list.GetMob(p.main_tank_id);
+		if (mt && mt->IsBot() && IsAlive(mt) && can_pull(mt->CastToBot()) && !assist) {
+			plain = mt->CastToBot(); // nobody else: the tank goes, between fights
+		}
+	}
+
+	while (!p.pull_queue.empty() && in_hand < holds) {
+		Mob* t = entity_list.GetMob(p.pull_queue.front());
+
+		// The nearest free monk to it, else the plain puller.
+		Bot*  b      = nullptr;
+		float best_d = 0.0f;
+		for (Bot* mk : monks) {
+			const float d = DistanceSquared(mk->GetPosition(), t->GetPosition());
+			if (!b || d < best_d) {
+				b      = mk;
+				best_d = d;
+			}
+		}
+		const bool fd = b != nullptr;
+		if (!b) {
+			Client* owner = plain && plain->GetBotOwner() && plain->GetBotOwner()->IsClient() ? plain->GetBotOwner()->CastToClient() : nullptr;
+			if (!plain || (owner && owner->GetBotPulling())) {
+				break; // nobody free: it waits its turn
+			}
+			b = plain;
+		}
+
+		if (!b->TacticsStartQueuedPull(t)) {
+			break;
+		}
+
+		p.pull_queue.pop_front();
+		if (fd) {
+			monks.erase(std::find(monks.begin(), monks.end(), b));
+		}
+		else {
+			plain = nullptr;
+		}
+
+		const std::string rest = p.pull_queue.empty() ? "" : fmt::format(" {} more in line.", p.pull_queue.size());
+		Announce(raid, group, b, fmt::format("Pulling {}{}.{}", t->GetCleanName(), fd ? ", feigning to bring it alone" : "", rest));
+		LogInfo("[BotTactics] unit [{:#x}] queued pull: [{}] goes for [{}] ({}), [{}] left in line",
+			p.key, b->GetCleanName(), t->GetCleanName(), fd ? "FD" : "plain", p.pull_queue.size());
+
+		++in_hand; // it counts as in hand from now on
 	}
 }
 
@@ -5274,6 +5573,47 @@ bool Bot::TacticsStartPull(Mob* target)
 	SetPullingFlag();
 	owner->SetBotPulling();
 	BotGroupSay(this, "Pulling %s.", target->GetCleanName());
+	return true;
+}
+
+// A pull from the player's queue (BotTactics::DispatchPulls, which says
+// what is happening). A monk feign-pulls and several may be out at once;
+// the owner's one-pull flag only gates a plain pull.
+bool Bot::TacticsStartQueuedPull(Mob* target)
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+	if (!owner || !target || IsFDPulling() || GetPullingFlag() || GetReturningFlag()) {
+		return false;
+	}
+
+	const bool fd = GetClass() == Class::Monk && GetSkill(EQ::skills::SkillFeignDeath) > 0;
+	if (!fd && owner->GetBotPulling()) {
+		return false;
+	}
+
+	if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
+		GetPet()->WipeHateList();
+		GetPet()->SetTarget(nullptr);
+		m_previous_pet_order = GetPet()->GetPetOrder();
+		GetPet()->SetPetOrder(SPO_Guard);
+	}
+
+	InterruptSpell();
+	if (IsSitting()) {
+		Stand();
+	}
+
+	if (fd) {
+		SetFDPullTargetID(target->GetID());
+		SetFDPullState(FDPullState::Tagging);
+		return true;
+	}
+
+	WipeHateList();
+	AddToHateList(target, 1);
+	SetTarget(target);
+	SetPullingFlag();
+	owner->SetBotPulling();
 	return true;
 }
 
