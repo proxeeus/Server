@@ -3942,6 +3942,7 @@ bool Bot::ExecuteFeignDeath() {
 			// Forget us, not everyone: wiping the whole list made a mob that
 			// was on the group drop the tank too.
 			npc->RemoveFromHateList(this);
+			ForgetOwnerTaggedOnly(npc);
 		}
 	}
 	WipeHateList();
@@ -4035,6 +4036,27 @@ bool Bot::IsBeingChasedByAdds(const Mob* ignore_target) const {
 	return false;
 }
 
+// Our tag put our owner on the mob's list too, at no hate (Mob::AddToHateList:
+// "if other is a bot, add the bots client to the hate list"), and the adds
+// that joined it got the owner the same way. Feigning drops us but not them:
+// with us gone the owner was all that was left, so nothing went home -- the
+// target and every add walked to the raid together, and there was nothing to
+// split (Kael 2026-10-24: Kallis Stormcaller with the first Protector of Zek,
+// then three Protectors at once). Drop the owner as well, unless the owner
+// really fought it.
+void Bot::ForgetOwnerTaggedOnly(NPC* npc)
+{
+	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
+	if (!npc || !owner || !npc->IsOnHatelist(owner)) {
+		return;
+	}
+	if (npc->GetHateAmount(owner) > 0 || npc->GetDamageAmount(owner) > 0) {
+		return;
+	}
+	npc->RemoveFromHateList(owner);
+	LogInfo("[FDPull] [{}] [{}] forgets [{}] too (only on its list through our tag)", GetCleanName(), npc->GetCleanName(), owner->GetCleanName());
+}
+
 // NPC::AIYellForHelp, asked ahead of time: who of its friends would join it
 // if we tagged it now. A tagged mob calls once as it engages (AI_Event_Engaged)
 // and then every few seconds while engaged; this is the first call. Same tests,
@@ -4092,6 +4114,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
 			npc->RemoveFromHateList(this); // us only (see ExecuteFeignDeath)
+			ForgetOwnerTaggedOnly(npc);
 		}
 	}
 	WipeHateList();
@@ -4178,13 +4201,12 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	const float tag_range_sq = GetFDTagRangeSq();
 	const float wait_dist    = std::max(FD_CATCH_STANDOFF, std::sqrt(tag_range_sq));
 
-	// Tagging it now would bring its friends (FriendsThatWouldHelp): hold
-	// off, standing, for a gap -- a roamer walking off, a patrol passing.
-	// The first time only for a while, then we try anyway: a feign may still
-	// split them (friends whose homes are apart). Once they are home again
-	// and still stand with it, no feign will: say so at once, rather than
-	// after three more feigns, and keep waiting.
-	auto hold_for_gap = [&](bool after_feign) -> bool {
+	// Back in for it after a feign, and its friends would still come with it
+	// (FriendsThatWouldHelp): they are home again, standing with it, and no
+	// feign will split them. Hold off, standing, for a gap -- one walking
+	// off, a patrol passing -- and say so at once rather than after three
+	// more feigns. "bring them" (m_fd_bring_all) ends the wait.
+	auto hold_for_gap = [&]() -> bool {
 		const size_t friends = m_fd_bring_all ? 0 : FriendsThatWouldHelp(pull_target);
 		if (!friends) {
 			if (m_fd_gap_wait_ms) {
@@ -4197,17 +4219,14 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			m_fd_gap_wait_ms = now;
 			LogInfo("[FDPull] [{}] {}: [{}] friends would come with it, waiting for a gap", GetCleanName(), pull_target->GetCleanName(), friends);
 		}
-		if (after_feign) {
-			if (!m_fd_split_asked) {
-				m_fd_split_asked = true;
-				say(fmt::format(
-					"{} stands with {} that would come with it. Say bring them to bring them all, or stop. I wait for a gap meanwhile.",
-					pull_target->GetCleanName(), friends
-				));
-			}
-			return true;
+		if (!m_fd_split_asked) {
+			m_fd_split_asked = true;
+			say(fmt::format(
+				"{} stands with {} that would come with it. Say bring them to bring them all, or stop. I wait for a gap meanwhile.",
+				pull_target->GetCleanName(), friends
+			));
 		}
-		return now - m_fd_gap_wait_ms < FD_GAP_WAIT_MS;
+		return true;
 	};
 	auto hold_still = [&]() {
 		if (IsMoving()) {
@@ -4289,12 +4308,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 
 	case FDPullState::Tagging: {
 		if (!m_fd_tag_timer.Enabled()) {
-			// Haven't tagged yet — move to target first
+			// Haven't tagged yet — move to target first. Friends or not, we
+			// go: the feign is what splits them. Waiting first for a gap that
+			// static guards never give froze both monks for 20 s a pull
+			// (Kael 2026-10-24).
 			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-			if (dist_sq <= wait_dist * wait_dist && hold_for_gap(false)) {
-				hold_still();
-				return;
-			}
 			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 				return;
@@ -4394,7 +4412,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
-		if (dist_sq <= wait_dist * wait_dist && hold_for_gap(true)) {
+		if (dist_sq <= wait_dist * wait_dist && hold_for_gap()) {
 			hold_still();
 			return;
 		}

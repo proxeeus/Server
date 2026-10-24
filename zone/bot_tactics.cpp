@@ -324,6 +324,25 @@ float WalkDistance(const glm::vec3& from, const glm::vec3& to)
 	return len;
 }
 
+// A mob after one of our pullers: the pulled mob, or an add that came with
+// it. It is chasing the puller to camp, not fighting us -- not ours to go
+// out for until it gets here.
+bool ChasesOurPuller(const BotTacticsPlan& p, Mob* m)
+{
+	if (!m) {
+		return false;
+	}
+	for (Mob* c : {m->GetHateTop(), m->GetTarget()}) {
+		if (c && c->IsBot() && p.IsMember(c->GetID())) {
+			Bot* b = c->CastToBot();
+			if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
 Mob* FightingTarget(Mob* m)
 {
 	if (!IsAlive(m)) {
@@ -892,8 +911,21 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			}
 		}
 	}
+	// ...and whatever is chasing one of those pullers out there: the adds
+	// that came along have the player on their lists from the tag on
+	// (Mob::AddToHateList adds a bot's owner), so the raid went for them.
+	Mob*            incoming_leader = p.camp_leader_id ? entity_list.GetMob(p.camp_leader_id) : nullptr;
+	const bool      incoming_home   = p.camp_set || incoming_leader;
+	const glm::vec3 incoming_at     = p.camp_set ? p.camp : (incoming_leader ? glm::vec3(incoming_leader->GetPosition()) : glm::vec3(0.0f));
 	auto is_incoming = [&](Mob* t) {
-		return t && std::find(incoming.begin(), incoming.end(), t->GetID()) != incoming.end();
+		if (!t) {
+			return false;
+		}
+		if (std::find(incoming.begin(), incoming.end(), t->GetID()) != incoming.end()) {
+			return true;
+		}
+		return incoming_home && ChasesOurPuller(p, t) &&
+			DistanceSquaredNoZ(glm::vec3(t->GetPosition()), incoming_at) > kCampArriveRadius * kCampArriveRadius;
 	};
 	auto fighting = [&](Mob* m) -> Mob* {
 		Mob* t = FightingTarget(m);
@@ -6370,7 +6402,7 @@ bool Bot::TacticsIsIncoming(Mob* m)
 	if (DistanceSquaredNoZ(glm::vec3(m->GetPosition()), home) <= kCampArriveRadius * kCampArriveRadius) {
 		return false; // here: the camp's fight
 	}
-	return PullerOf(*p, m->GetID()) != nullptr;
+	return PullerOf(*p, m->GetID()) != nullptr || ChasesOurPuller(*p, m); // the pulled mob, or an add after the puller
 }
 
 glm::vec3 Bot::PullReturnPoint(Client* bot_owner)

@@ -88,7 +88,6 @@ constexpr float FD_ARRIVED_RADIUS_SQ     = 50.0f * 50.0f;   // distance² — th
 constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
 constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
 constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
-constexpr uint32 FD_GAP_WAIT_MS          = 20000;           // its friends would come: wait this long for a gap before trying anyway / asking
 constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
 constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
 
@@ -926,6 +925,7 @@ public:
 	// Who would come with it if we tagged it now: NPC::AIYellForHelp's own
 	// tests, with us as the attacker. 0 = it comes alone.
 	size_t FriendsThatWouldHelp(Mob* target, float margin = FD_HELP_MARGIN);
+	void ForgetOwnerTaggedOnly(NPC* npc); // feigned: the owner our tag put on its list goes too
 	void FDPullReset(Client* bot_owner);
 	// Two monks on one pull (DispatchPulls, raids): one tags, the other
 	// catches -- waits nearby, standing, and tags the target the moment it
