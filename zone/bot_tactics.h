@@ -377,7 +377,7 @@ public:
 	// health (1.5x for a named one). bot_pull_policy corrects it per npc type.
 	// The flags alone are no use here: raid_target is 0 on Derakor, Tormax and
 	// the Veeshan's Peak dragons, and VP's trash summons as the dragons do.
-	std::string PlayersCall(NPC* n, uint8 leader_level);
+	std::string PlayersCall(NPC* n, uint8 leader_level, bool raid);
 
 	// Raid groups for these bots, roles spread evenly: healers (clerics first)
 	// one per group before any gets two, tanks (best into group 1), then

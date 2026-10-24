@@ -186,6 +186,7 @@ constexpr uint32 kLosCheckMs            = 1000;   // line of sight to the target
 // The XP engine (BOT_AI_SENTIENT.md, 6)
 constexpr float  kLowConfidence         = 0.5f;   // under this: singles only, rest to 95%
 constexpr float  kHighConfidence        = 1.5f;   // from this: one more social is fine
+constexpr uint8  kRedPullMaxLevels      = 4;      // a confident group pulls red cons up to this many levels over the leader
 constexpr float  kMaxConfidence         = 2.0f;
 constexpr float  kCautiousReadyRatio    = 95.0f;
 constexpr float  kChainPullConfidence   = 1.0f;   // chain pulls only after easy fights
@@ -286,6 +287,7 @@ float ManaBarFor(uint32 con, bool cautious)
 		case ConsiderColor::LightBlue: bar = era ? 45.0f : 60.0f; break;
 		case ConsiderColor::DarkBlue:  bar = era ? 55.0f : 70.0f; break;
 		case ConsiderColor::White:     bar = era ? 70.0f : 80.0f; break;
+		case ConsiderColor::Red:       bar = era ? 90.0f : 95.0f; break;
 		default:                       bar = era ? 80.0f : 90.0f; break; // yellow
 	}
 	return std::min(100.0f, bar + (cautious ? 10.0f : 0.0f));
@@ -2285,14 +2287,21 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		// Only what is clearly trash, raid or group: a boss, a rampager, a
 		// named one tougher than the trash is the player's call -- they
 		// engage it, the unit follows (PlayersCall, bot_pull_policy).
-		if (!PlayersCall(n, ref_level).empty()) {
+		if (!PlayersCall(n, ref_level, raid != nullptr).empty()) {
 			p.audit_players_call.insert(n->GetID());
 			continue;
 		}
 
-		// Worth killing, and not something that kills us.
+		// Worth killing, and not something that kills us. A red one is for a
+		// group whose last fights went well (confidence: no deaths, the tank
+		// held), up to 4 levels over: a level 20 group in a 25 dungeon pulls
+		// its 23-24s once it has shown it can. A raid's trash never cons red.
 		const uint32 con = Mob::GetLevelCon(ref_level, n->GetLevel());
-		if (con == ConsiderColor::Gray || con == ConsiderColor::Red) {
+		if (con == ConsiderColor::Gray) {
+			continue;
+		}
+		if (con == ConsiderColor::Red &&
+			(raid || p.confidence < kHighConfidence || n->GetLevel() > ref_level + kRedPullMaxLevels)) {
 			continue;
 		}
 
@@ -2383,7 +2392,10 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		// Risk: socials, a hard con, casters (healers most, less when we can
 		// stop them), and what this kind has cost us in deaths.
 		float risk = 1.0f + 0.15f * socials;
-		if (con == ConsiderColor::Yellow) {
+		if (con == ConsiderColor::Red) {
+			risk += 0.7f; // only when nothing easier is up
+		}
+		else if (con == ConsiderColor::Yellow) {
 			risk += 0.3f;
 		}
 		else if (con == ConsiderColor::White) {
@@ -2824,7 +2836,7 @@ bool BotTactics::LeaderSays(Client* c, const std::string& message)
 
 	// A boss on a raid that is not ready: say so first, as anyone would.
 	NPC* npc = t->CastToNPC();
-	if (!anyway && !PlayersCall(npc, c->GetLevel()).empty()) {
+	if (!anyway && !PlayersCall(npc, c->GetLevel(), raid != nullptr).empty()) {
 		bool ready = false;
 		const std::string line = Readiness(*p, ready);
 		if (!ready) {
@@ -3174,7 +3186,7 @@ bool BotTactics::ReloadEncounters(std::string& summary_out)
 	return true;
 }
 
-std::string BotTactics::PlayersCall(NPC* n, uint8 leader_level)
+std::string BotTactics::PlayersCall(NPC* n, uint8 leader_level, bool raid)
 {
 	if (!n) {
 		return "nothing";
@@ -3200,7 +3212,10 @@ std::string BotTactics::PlayersCall(NPC* n, uint8 leader_level)
 	if (n->GetSpecialAbility(SpecialAbility::Rampage)) {
 		return "rampage";
 	}
-	if (n->GetLevel() >= leader_level + 5) {
+	// Five levels up marks a raid boss (the VP dragons are 65 to a 60 raid's
+	// trash at 60). A group's limit is its con and its record instead
+	// (AutoPull): a level 20 group clears a level 25 dungeon.
+	if (raid && n->GetLevel() >= leader_level + 5) {
 		return "too high";
 	}
 

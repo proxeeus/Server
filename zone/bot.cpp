@@ -4083,7 +4083,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	}
 	else {
 		// A boss gets longer: splitting one can take several cycles.
-		const bool   boss    = !bot_tactics.PlayersCall(pull_target->CastToNPC(), bot_owner ? bot_owner->GetLevel() : GetLevel()).empty();
+		const bool   boss    = !bot_tactics.PlayersCall(pull_target->CastToNPC(), bot_owner ? bot_owner->GetLevel() : GetLevel(), raid != nullptr).empty();
 		const uint32 give_up = boss ? FD_PULL_GIVE_UP_BOSS_MS : FD_PULL_GIVE_UP_MS;
 		if (now - m_fd_pull_started_ms > give_up) {
 			FDPullReset(bot_owner);

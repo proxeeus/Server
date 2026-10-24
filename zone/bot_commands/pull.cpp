@@ -136,8 +136,7 @@ static bool bot_command_pull_queue(Client* c, const Seperator* sep)
 	// Kael (2026-10-24) with fifteen casters dry, and the raid wiped. Trash
 	// and named guards go straight in the queue; ^pull force skips this.
 	NPC* npc = target_mob->CastToNPC();
-	const bool boss = npc->IsRaidTarget() || npc->IsRareSpawn() || bot_tactics.EncounterFor(npc->GetNPCTypeID()) ||
-		npc->GetSpecialAbility(SpecialAbility::AreaRampage) || npc->GetLevel() >= c->GetLevel() + 5;
+	const bool boss = !bot_tactics.PlayersCall(npc, c->GetLevel(), raid != nullptr).empty();
 	if (boss && arg != "force") {
 		if (const BotTacticsPlan* p = bot_tactics.Find(key)) {
 			bool ready = false;
