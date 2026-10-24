@@ -186,6 +186,7 @@ void command_suspend(Client *c, const Seperator *sep);
 void command_suspendmulti(Client *c, const Seperator *sep);
 void command_takeplatinum(Client* c, const Seperator* sep);
 void command_testchar(Client *c, const Seperator *sep);
+void command_testchar_admin_panel(const std::string &ticket, const std::string &args);
 void command_task(Client *c, const Seperator *sep);
 void command_petname(Client *c, const Seperator *sep);
 void command_traindisc(Client *c, const Seperator *sep);

@@ -3,6 +3,7 @@
 
 #include "types.h"
 
+#include <string>
 #include <vector>
 
 class Database;
@@ -28,6 +29,11 @@ namespace TestCharacterKit {
 	// dual_wield: the class has Dual Wield at this level (skill_caps), which decides
 	// whether the off hand may hold a weapon.
 	std::vector<Worn> PickGroupGear(Database &db, uint8 class_id, uint16 race, uint8 level, bool dual_wield);
+
+	// The playtest admin panel (XAMPP htdocs/playtest) asks for a character through the
+	// world console and polls data_buckets key "admin_testchar:<ticket>" for the outcome:
+	// {"ok": bool, "messages": [the lines an in-game GM would have read]}. Kept an hour.
+	void WriteWebResult(Database &db, const std::string &ticket, bool ok, const std::vector<std::string> &messages);
 }
 
 #endif

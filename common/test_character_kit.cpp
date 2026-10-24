@@ -6,7 +6,9 @@
 #include "strings.h"
 #include "item_data.h"
 #include "emu_constants.h"
+#include "json/json.h"
 
+#include <ctime>
 #include <set>
 #include <string>
 
@@ -270,4 +272,30 @@ std::vector<TestCharacterKit::Worn> TestCharacterKit::PickGroupGear(
 	}
 
 	return out;
+}
+
+void TestCharacterKit::WriteWebResult(Database &db, const std::string &ticket, bool ok, const std::vector<std::string> &messages)
+{
+	if (ticket.empty()) {
+		return;
+	}
+
+	Json::Value v;
+	v["ok"]       = ok;
+	v["messages"] = Json::Value(Json::arrayValue);
+	for (const auto &m : messages) {
+		v["messages"].append(m);
+	}
+
+	const std::string key = fmt::format("admin_testchar:{}", ticket);
+
+	db.QueryDatabase(fmt::format("DELETE FROM `data_buckets` WHERE `key` = '{}'", Strings::Escape(key)));
+	db.QueryDatabase(
+		fmt::format(
+			"INSERT INTO `data_buckets` (`key`, `value`, `expires`) VALUES ('{}', '{}', {})",
+			Strings::Escape(key),
+			Strings::Escape(Json::FastWriter().write(v)),
+			static_cast<uint32>(std::time(nullptr)) + 3600
+		)
+	);
 }

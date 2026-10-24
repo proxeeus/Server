@@ -70,7 +70,7 @@ EQ::Net::WebsocketLoginStatus CheckLogin(
  */
 Json::Value ApiGetPacketStatistics(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -143,7 +143,7 @@ Json::Value ApiGetPacketStatistics(EQ::Net::WebsocketServerConnection *connectio
 
 Json::Value ApiGetOpcodeList(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -159,7 +159,7 @@ Json::Value ApiGetOpcodeList(EQ::Net::WebsocketServerConnection *connection, Jso
 
 Json::Value ApiGetNpcListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -179,6 +179,19 @@ Json::Value ApiGetNpcListDetail(EQ::Net::WebsocketServerConnection *connection, 
 		row["y"]          = npc->GetY();
 		row["z"]          = npc->GetZ();
 		row["heading"]    = npc->GetHeading();
+
+		/**
+		 * What the playtest admin panel lists
+		 */
+		row["name"]        = npc->GetName();
+		row["level"]       = npc->GetLevel();
+		row["race"]        = npc->GetRace();
+		row["class"]       = npc->GetClass();
+		row["npc_type_id"] = npc->GetNPCTypeID();
+		row["hp_ratio"]    = npc->GetHPRatio();
+		row["engaged"]     = npc->IsEngaged();
+		row["owner_id"]    = npc->GetOwnerID();
+		row["spawn2_id"]   = npc->GetSpawnPointID();
 
 		/**
 		 * Rest
@@ -253,7 +266,7 @@ Json::Value ApiGetNpcListDetail(EQ::Net::WebsocketServerConnection *connection, 
 
 Json::Value ApiGetDoorListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -297,7 +310,7 @@ Json::Value ApiGetDoorListDetail(EQ::Net::WebsocketServerConnection *connection,
 
 Json::Value ApiGetCorpseListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -337,7 +350,7 @@ Json::Value ApiGetCorpseListDetail(EQ::Net::WebsocketServerConnection *connectio
 
 Json::Value ApiGetObjectListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -373,7 +386,7 @@ Json::Value ApiGetObjectListDetail(EQ::Net::WebsocketServerConnection *connectio
 
 Json::Value ApiGetMobListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -576,9 +589,35 @@ Json::Value ApiGetMobListDetail(EQ::Net::WebsocketServerConnection *connection, 
 	return response;
 }
 
+// The playtest admin panel asks this where players stand: without the hundreds of
+// fields of get_client_list_detail, which also saves every client's task state.
+Json::Value ApiGetClientPositions(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
+{
+	if (!zone || zone->GetZoneID() == 0) {
+		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
+	}
+
+	Json::Value response(Json::arrayValue);
+	for (auto &iter : entity_list.GetClientList()) {
+		auto        client = iter.second;
+		Json::Value row;
+
+		row["id"]         = client->GetID();
+		row["clean_name"] = client->GetCleanName();
+		row["x"]          = client->GetX();
+		row["y"]          = client->GetY();
+		row["z"]          = client->GetZ();
+		row["heading"]    = client->GetHeading();
+
+		response.append(row);
+	}
+
+	return response;
+}
+
 Json::Value ApiGetClientListDetail(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -777,7 +816,7 @@ Json::Value ApiGetClientListDetail(EQ::Net::WebsocketServerConnection *connectio
 
 Json::Value ApiGetZoneAttributes(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -847,7 +886,7 @@ Json::Value ApiGetLogsysCategories(EQ::Net::WebsocketServerConnection *connectio
 
 Json::Value ApiSetLoggingLevel(EQ::Net::WebsocketServerConnection *connection, Json::Value params)
 {
-	if (zone->GetZoneID() == 0) {
+	if (!zone || zone->GetZoneID() == 0) { // an idle zone process has no zone at all
 		throw EQ::Net::WebsocketException("Zone must be loaded to invoke this call");
 	}
 
@@ -903,6 +942,7 @@ void RegisterApiService(std::unique_ptr<EQ::Net::WebsocketServer> &server)
 	server->SetMethodHandler("get_object_list_detail", &ApiGetObjectListDetail, 50);
 	server->SetMethodHandler("get_mob_list_detail", &ApiGetMobListDetail, 50);
 	server->SetMethodHandler("get_client_list_detail", &ApiGetClientListDetail, 50);
+	server->SetMethodHandler("get_client_positions", &ApiGetClientPositions, 50);
 	server->SetMethodHandler("get_zone_attributes", &ApiGetZoneAttributes, 50);
 	server->SetMethodHandler("get_logsys_categories", &ApiGetLogsysCategories, 50);
 	server->SetMethodHandler("set_logging_level", &ApiSetLoggingLevel, 50);

@@ -408,6 +408,11 @@ enum {	QSG_LFGuild_PlayerMatches = 0, QSG_LFGuild_UpdatePlayerInfo, QSG_LFGuild_
 
 #define ServerOP_CharacterSunset	0x5600 // zone -> world: #sunset request (world/character_sunset.cpp)
 #define ServerOP_TestCharacter		0x5601 // zone -> world: #testchar request (world/test_character_factory.cpp)
+// The playtest admin panel (XAMPP htdocs/playtest) drives these through world console
+// commands (world/console.cpp: repop, gmcmd, testchar).
+#define ServerOP_AdminRepop			0x5602 // world -> zone: repop one zone
+#define ServerOP_AdminCommand		0x5603 // world -> zone: run a # command as a character
+#define ServerOP_AdminTestCharacter	0x5604 // world -> zone: #testchar arguments; zone answers with ServerOP_TestCharacter
 
 enum {
 	UserToWorldStatusWorldUnavail = 0,
@@ -707,6 +712,24 @@ struct ServerTestCharacter_Struct {
 	char   account[32];           // empty = the requester's account
 	char   password[32];          // only used when the account is created
 	char   bots[16];              // "", "group", "raid" or "raid:N": built at first zone-in
+	char   web_ticket[40];        // admin panel request: the outcome goes to data_buckets (TestCharacterKit::WriteWebResult)
+};
+
+struct ServerAdminRepop_Struct {
+	uint32 zone_id;
+	uint32 instance_id;
+	uint8  force;                 // #repop force
+};
+
+struct ServerAdminCommand_Struct {
+	char  character[64];
+	char  command[512];           // "#..." run as the character, whatever its status
+	uint8 self_target;            // target the character itself while the command runs
+};
+
+struct ServerAdminTestCharacter_Struct {
+	char ticket[40];
+	char args[512];               // what follows "#testchar"
 };
 
 struct ServerLSInfo_Struct {

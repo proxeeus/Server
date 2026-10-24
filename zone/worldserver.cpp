@@ -726,6 +726,74 @@ void WorldServer::HandleMessage(uint16 opcode, const EQ::Net::Packet &p)
 		}
 		break;
 	}
+	// The playtest admin panel, through the world console (world/console.cpp).
+	case ServerOP_AdminRepop: {
+		if (pack->size < sizeof(ServerAdminRepop_Struct) || !zone || !zone->IsLoaded()) {
+			break;
+		}
+
+		auto s = reinterpret_cast<ServerAdminRepop_Struct *>(pack->pBuffer);
+		if (s->zone_id != zone->GetZoneID() || s->instance_id != zone->GetInstanceID()) {
+			break;
+		}
+
+		LogInfo("[AdminPanel] repop [{}] force [{}]", zone->GetShortName(), s->force ? "yes" : "no");
+
+		entity_list.Message(0, Chat::White, fmt::format("Zone depopped, {}repopping now.", s->force ? "forcefully " : "").c_str());
+		entity_list.ClearAreas();
+		zone->Repop(s->force != 0);
+		break;
+	}
+	case ServerOP_AdminCommand: {
+		if (pack->size < sizeof(ServerAdminCommand_Struct)) {
+			break;
+		}
+
+		auto s = reinterpret_cast<ServerAdminCommand_Struct *>(pack->pBuffer);
+		s->character[sizeof(s->character) - 1] = '\0';
+		s->command[sizeof(s->command) - 1]     = '\0';
+
+		auto c = entity_list.GetClientByName(s->character);
+		if (!c || (s->command[0] != COMMAND_CHAR && s->command[0] != BOT_COMMAND_CHAR)) {
+			break;
+		}
+
+		LogInfo("[AdminPanel] [{}] runs [{}] self_target [{}]", c->GetCleanName(), s->command, s->self_target);
+
+		// Most commands act on the target when there is one (#set level would level the
+		// mob the player is fighting), so a self-targeted one swaps it for the duration.
+		const uint16 old_target = c->GetTarget() ? c->GetTarget()->GetID() : 0;
+		if (s->self_target) {
+			c->SetTarget(c);
+		}
+
+		if (s->command[0] == BOT_COMMAND_CHAR) {
+			bot_command_dispatch(c, s->command); // bot commands keep their own access levels
+		}
+		else {
+			c->SendGMCommand(s->command, true);
+		}
+
+		if (s->self_target) {
+			c = entity_list.GetClientByName(s->character); // a command may have zoned it out
+			if (c) {
+				c->SetTarget(old_target ? entity_list.GetMob(old_target) : nullptr);
+			}
+		}
+		break;
+	}
+	case ServerOP_AdminTestCharacter: {
+		if (pack->size < sizeof(ServerAdminTestCharacter_Struct)) {
+			break;
+		}
+
+		auto s = reinterpret_cast<ServerAdminTestCharacter_Struct *>(pack->pBuffer);
+		s->ticket[sizeof(s->ticket) - 1] = '\0';
+		s->args[sizeof(s->args) - 1]     = '\0';
+
+		command_testchar_admin_panel(s->ticket, s->args);
+		break;
+	}
 	case ServerOP_KickPlayer: {
 		ServerKickPlayer_Struct* skp = (ServerKickPlayer_Struct*)pack->pBuffer;
 		Client* client;

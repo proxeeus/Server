@@ -1,23 +1,28 @@
 #include "../client.h"
 #include "../worldserver.h"
 #include "../playerbot_native.h"
+#include "../../common/test_character_kit.h"
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
+#include <functional>
+#include <string>
+#include <vector>
 
 extern WorldServer worldserver;
 
 namespace {
 
-void TestCharUsage(Client *c)
+void TestCharUsage(const std::function<void(const std::string &)> &say)
 {
-	c->Message(Chat::White, "Usage: #testchar new [class] [level] [tier] [race=..] [gender=m|f] [name=..] [account=.. [password=..]] [bots=..]");
-	c->Message(Chat::White, "  class: war clr pal rng shd dru mnk brd rog shm nec wiz mag enc (or full names)");
-	c->Message(Chat::White, "  tier: group (default: best group gear from the PlayerBot pools) | none");
-	c->Message(Chat::White, "  race: hum bar eru elf hie def hef dwf trl ogr hfl gnm iks - a legal one is picked if omitted");
-	c->Message(Chat::White, "  account: defaults to yours; created if missing (then password= is required)");
-	c->Message(Chat::White, "  bots: group (5 for the open roles) | raid (12 groups) | raid:N - built, equipped, at its first login");
-	c->Message(Chat::White, "  Example: #testchar new clr 55 group account=testa password=test bots=raid");
+	say("Usage: #testchar new [class] [level] [tier] [race=..] [gender=m|f] [name=..] [account=.. [password=..]] [bots=..]");
+	say("  class: war clr pal rng shd dru mnk brd rog shm nec wiz mag enc (or full names)");
+	say("  tier: group (default: best group gear from the PlayerBot pools) | none");
+	say("  race: hum bar eru elf hie def hef dwf trl ogr hfl gnm iks - a legal one is picked if omitted");
+	say("  account: defaults to yours; created if missing (then password= is required)");
+	say("  bots: group (5 for the open roles) | raid (12 groups) | raid:N - built, equipped, at its first login");
+	say("  Example: #testchar new clr 55 group account=testa password=test bots=raid");
 }
 
 uint8 TestCharClass(const std::string &s)
@@ -105,33 +110,39 @@ bool TestCharIsAlnum(const std::string &s)
 	return !s.empty() && std::all_of(s.begin(), s.end(), [](unsigned char ch) { return std::isalnum(ch); });
 }
 
-} // namespace
-
-// #testchar - build finished test characters offline (world/test_character_factory.cpp).
-void command_testchar(Client *c, const Seperator *sep)
+// c is the GM in game, or nullptr for the admin panel (ticket set): world then
+// answers into the panel's result bucket, as this does when it refuses.
+bool TestCharRequest(Client *c, const Seperator *sep, const std::string &ticket, std::vector<std::string> &lines)
 {
+	const auto say = [&](const std::string &m) {
+		if (c) {
+			c->Message(Chat::White, m.c_str());
+		}
+		lines.push_back(m);
+	};
+
 	if (!sep->argnum || Strings::ToLower(sep->arg[1]) != "new" || sep->argnum < 3) {
-		TestCharUsage(c);
-		return;
+		TestCharUsage(say);
+		return false;
 	}
 
 	const uint8 class_id = TestCharClass(Strings::ToLower(sep->arg[2]));
 	if (!class_id) {
-		c->Message(Chat::White, fmt::format("Unknown class [{}].", sep->arg[2]).c_str());
-		TestCharUsage(c);
-		return;
+		say(fmt::format("Unknown class [{}].", sep->arg[2]).c_str());
+		TestCharUsage(say);
+		return false;
 	}
 
 	if (!sep->IsNumber(3)) {
-		c->Message(Chat::White, "The level must be a number.");
-		return;
+		say("The level must be a number.");
+		return false;
 	}
 
 	const int max_level = RuleI(Character, MaxLevel);
 	const int level     = Strings::ToInt(sep->arg[3]);
 	if (level < 1 || level > max_level) {
-		c->Message(Chat::White, fmt::format("The level must be 1 to {}.", max_level).c_str());
-		return;
+		say(fmt::format("The level must be 1 to {}.", max_level).c_str());
+		return false;
 	}
 
 	std::string tier = "group";
@@ -156,8 +167,8 @@ void command_testchar(Client *c, const Seperator *sep)
 		if (key == "race") {
 			race = TestCharRace(Strings::ToLower(value));
 			if (!race) {
-				c->Message(Chat::White, fmt::format("Unknown race [{}].", value).c_str());
-				return;
+				say(fmt::format("Unknown race [{}].", value).c_str());
+				return false;
 			}
 		}
 		else if (key == "gender") {
@@ -178,64 +189,64 @@ void command_testchar(Client *c, const Seperator *sep)
 			const bool raid_n = bots.rfind("raid:", 0) == 0 && Strings::IsNumber(bots.substr(5)) &&
 				Strings::ToInt(bots.substr(5)) >= 2 && Strings::ToInt(bots.substr(5)) <= 12;
 			if (bots != "group" && bots != "raid" && !raid_n) {
-				c->Message(Chat::White, "bots= is group, raid (12 groups) or raid:N (N = 2..12).");
-				return;
+				say("bots= is group, raid (12 groups) or raid:N (N = 2..12).");
+				return false;
 			}
 		}
 		else {
-			c->Message(Chat::White, fmt::format("Unknown option [{}].", key).c_str());
-			TestCharUsage(c);
-			return;
+			say(fmt::format("Unknown option [{}].", key).c_str());
+			TestCharUsage(say);
+			return false;
 		}
 	}
 
 	if (!account.empty() && (!TestCharIsAlnum(account) || account.size() > 20)) {
-		c->Message(Chat::White, "An account name is 1 to 20 letters and digits (the v29c login field is 20).");
-		return;
+		say("An account name is 1 to 20 letters and digits (the v29c login field is 20).");
+		return false;
 	}
 
 	if (password.size() > 20) {
-		c->Message(Chat::White, "A password is at most 20 characters (the v29c login field is 20).");
-		return;
+		say("A password is at most 20 characters (the v29c login field is 20).");
+		return false;
 	}
 
 	if (!race) {
 		race = TestCharPickRace(class_id);
 		if (!race) {
-			c->Message(Chat::White, fmt::format("No legal race found for {}.", GetClassIDName(class_id)).c_str());
-			return;
+			say(fmt::format("No legal race found for {}.", GetClassIDName(class_id)).c_str());
+			return false;
 		}
 	}
 
 	if (gender < 0) {
-		gender = zone->random.Int(0, 1);
+		gender = zone ? zone->random.Int(0, 1) : std::rand() % 2;
 	}
 
 	if (name.empty()) {
 		name = playerbot_native.GenerateCharacterName(race, gender == 1);
 		if (name.empty()) {
-			c->Message(Chat::White, "Could not generate a name for that race; add name=<Name>.");
-			return;
+			say("Could not generate a name for that race; add name=<Name>.");
+			return false;
 		}
 	}
 	else {
 		if (!TestCharIsAlpha(name) || name.size() < 4 || name.size() > 15) {
-			c->Message(Chat::White, "A name is 4 to 15 letters.");
-			return;
+			say("A name is 4 to 15 letters.");
+			return false;
 		}
 		name[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(name[0])));
 	}
 
 	if (!worldserver.Connected()) {
-		c->Message(Chat::White, "The world server is currently disconnected.");
-		return;
+		say("The world server is currently disconnected.");
+		return false;
 	}
 
 	auto pack = new ServerPacket(ServerOP_TestCharacter, sizeof(ServerTestCharacter_Struct));
 	auto s    = reinterpret_cast<ServerTestCharacter_Struct *>(pack->pBuffer);
-	strn0cpy(s->requester, c->GetName(), sizeof(s->requester));
-	s->requester_account_id = c->AccountID();
-	s->requester_admin      = c->Admin();
+	strn0cpy(s->requester, c ? c->GetName() : "", sizeof(s->requester));
+	s->requester_account_id = c ? c->AccountID() : 0;
+	s->requester_admin      = c ? c->Admin() : static_cast<int16>(AccountStatus::Max); // world console, localhost only
 	s->class_id             = class_id;
 	s->race_id              = race;
 	s->gender               = static_cast<uint8>(gender);
@@ -245,18 +256,46 @@ void command_testchar(Client *c, const Seperator *sep)
 	strn0cpy(s->account, account.c_str(), sizeof(s->account));
 	strn0cpy(s->password, password.c_str(), sizeof(s->password));
 	strn0cpy(s->bots, bots.c_str(), sizeof(s->bots));
+	strn0cpy(s->web_ticket, ticket.c_str(), sizeof(s->web_ticket));
 	worldserver.SendPacket(pack);
 	safe_delete(pack);
 
-	c->Message(
-		Chat::White,
-		fmt::format(
-			"Building {}: level {} {} {}, tier {}...",
-			name,
-			level,
-			GetRaceIDName(race),
-			GetClassIDName(class_id),
-			tier
-		).c_str()
-	);
+	if (c) {
+		c->Message(
+			Chat::White,
+			fmt::format(
+				"Building {}: level {} {} {}, tier {}...",
+				name,
+				level,
+				GetRaceIDName(race),
+				GetClassIDName(class_id),
+				tier
+			).c_str()
+		);
+	}
+
+	return true;
+}
+
+} // namespace
+
+// #testchar - build finished test characters offline (world/test_character_factory.cpp).
+void command_testchar(Client *c, const Seperator *sep)
+{
+	std::vector<std::string> lines;
+	TestCharRequest(c, sep, "", lines);
+}
+
+// The admin panel's "testchar" world console command, relayed by world (ServerOP_AdminTestCharacter).
+void command_testchar_admin_panel(const std::string &ticket, const std::string &args)
+{
+	const std::string        message = "#testchar " + args;
+	const Seperator          sep(message.c_str(), ' ', 10, 100, true); // as command_realdispatch splits it
+	std::vector<std::string> lines;
+
+	LogInfo("[AdminPanel] testchar ticket [{}] args [{}]", ticket, args);
+
+	if (!TestCharRequest(nullptr, &sep, ticket, lines)) {
+		TestCharacterKit::WriteWebResult(database, ticket, false, lines);
+	}
 }
