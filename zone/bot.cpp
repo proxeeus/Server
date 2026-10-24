@@ -3918,6 +3918,11 @@ bool Bot::ExecuteFeignDeath() {
 	entity_list.GetNPCList(npc_list);
 	for (auto* npc : npc_list) {
 		if (npc->IsOnHatelist(this)) {
+			// A mob immune to feign death sees through it (The Sleeper): it
+			// keeps us, as it keeps a player.
+			if (npc->GetSpecialAbility(SpecialAbility::FeignDeathImmunity)) {
+				continue;
+			}
 			if (IsFDPulling() && static_cast<uint16>(npc->GetID()) != m_fd_pull_target_id && !npc->IsPet()) {
 				m_fd_pull_add_ids.push_back(static_cast<uint16>(npc->GetID()));
 			}
@@ -4040,6 +4045,9 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_pull_state     = FDPullState::None;
 	m_fd_pull_target_id = 0;
 	m_fd_pull_started_ms = 0;
+	m_fd_split_cycles    = 0;
+	m_fd_split_asked     = false;
+	m_fd_bring_all       = false;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -4073,11 +4081,19 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	if (!m_fd_pull_started_ms) {
 		m_fd_pull_started_ms = now;
 	}
-	else if (now - m_fd_pull_started_ms > FD_PULL_GIVE_UP_MS) {
-		FDPullReset(bot_owner);
-		say(fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName()));
-		return;
+	else {
+		// A boss gets longer: splitting one can take several cycles.
+		const bool   boss    = !bot_tactics.PlayersCall(pull_target->CastToNPC(), bot_owner ? bot_owner->GetLevel() : GetLevel()).empty();
+		const uint32 give_up = boss ? FD_PULL_GIVE_UP_BOSS_MS : FD_PULL_GIVE_UP_MS;
+		if (now - m_fd_pull_started_ms > give_up) {
+			FDPullReset(bot_owner);
+			say(fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName()));
+			return;
+		}
 	}
+
+	// The leader said bring them: whatever follows comes along.
+	auto chased = [&]() { return !m_fd_bring_all && IsBeingChasedByAdds(pull_target); };
 
 	// Already on someone else of ours: it is in the fight, the pull is done.
 	// Without this the monk feigned at a mob the raid had been beating for a
@@ -4110,6 +4126,9 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 		m_fd_pull_state      = FDPullState::None;
 		m_fd_pull_started_ms = 0;
+		m_fd_split_cycles    = 0;
+		m_fd_split_asked     = false;
+		m_fd_bring_all       = false;
 		m_fd_tag_timer.Disable();
 		m_fd_feign_check_timer.Disable();
 	};
@@ -4141,7 +4160,12 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			if (!m_fd_tag_timer.Check()) {
 				const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
 				RunTo(back.x, back.y, back.z);
-			} else if (!IsBeingChasedByAdds(pull_target)) {
+			} else if (pull_target->GetSpecialAbility(SpecialAbility::FeignDeathImmunity)) {
+				// It sees through feign death: there is no splitting it.
+				m_fd_bring_all  = true;
+				m_fd_pull_state = FDPullState::RetagKiting;
+				say(fmt::format("{} sees through feign death: I can't split it. Bringing what comes.", pull_target->GetCleanName()));
+			} else if (!chased()) {
 				// Nothing came along: no feign (it made a lone mob forget us,
 				// walk home and wait to be tagged again). Kite it in.
 				m_fd_pull_state = FDPullState::RetagKiting;
@@ -4150,6 +4174,16 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
 				m_fd_pull_state = FDPullState::FeignWait;
 				say(fmt::format("Adds incoming — feigning ({} on me).", 1 + m_fd_pull_add_ids.size()));
+
+				// The same adds every time (linked to it, standing on it): ask
+				// once, and keep trying until told otherwise.
+				if (++m_fd_split_cycles >= FD_SPLIT_ASK_CYCLES && !m_fd_split_asked) {
+					m_fd_split_asked = true;
+					say(fmt::format(
+						"Can't get {} alone: {} keep coming with it. Say bring them to bring them all, or stop. I keep trying meanwhile.",
+						pull_target->GetCleanName(), m_fd_pull_add_ids.size()
+					));
+				}
 			} else {
 				// FD failed — stay put, wait for reuse timer before retrying
 				m_fd_pull_state = FDPullState::FDCooldown;
@@ -4175,7 +4209,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 
 	case FDPullState::Retagging: {
 		// If adds aggro during approach, run back toward owner first then FD (same as initial tag cycle)
-		if (IsBeingChasedByAdds(pull_target)) {
+		if (chased()) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			m_fd_pull_state = FDPullState::Tagging;
 			say("Adds aggroed on approach — running back.");
@@ -4201,7 +4235,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	}
 
 	case FDPullState::RetagKiting: {
-		if (IsBeingChasedByAdds(pull_target)) {
+		if (chased()) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			m_fd_pull_state = FDPullState::Tagging;
 			say("Adds re-aggroed — running back.");

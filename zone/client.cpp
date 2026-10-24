@@ -50,6 +50,7 @@ extern volatile bool RunLoops;
 #include "command.h"
 #include "water_map.h"
 #include "bot_command.h"
+#include "bot_tactics.h"
 #include "playerbot_chat.h"
 #include "playerbot_native.h"
 #include "string_ids.h"
@@ -1320,9 +1321,17 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			strcmp(targetname, "discard") != 0 &&
 			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR;
 
+		// The player talking to their bots ("pull", "stop", "bring them"),
+		// as one talks to a group: it still goes out as chat to everyone.
+		const bool tactics_ok = RuleB(Bots, Enabled) && !is_silent &&
+			message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR;
+
 		Raid* raid = entity_list.GetRaidByClient(this);
 		if(raid) {
 			raid->RaidGroupSay((const char*) message, this, language, lang_skill);
+			if (tactics_ok && bot_tactics.LeaderSays(this, message)) {
+				break;
+			}
 			if (pbchat_ok) {
 				playerbot_chat.Overhear(this, chan_num, message, 0, language);
 			}
@@ -1334,6 +1343,9 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 			group->GroupMessage(this,language,lang_skill,(const char*) message);
 		}
 
+		if (tactics_ok && bot_tactics.LeaderSays(this, message)) {
+			break;
+		}
 		if (pbchat_ok) {
 			playerbot_chat.Overhear(this, chan_num, message, 0, language);
 		}
@@ -1343,6 +1355,12 @@ void Client::ChannelMessageReceived(uint8 chan_num, uint8 language, uint8 lang_s
 		Raid* raid = entity_list.GetRaidByClient(this);
 		if(raid){
 			raid->RaidSay((const char*) message, this, language, lang_skill);
+
+			// The raid leader's calls to the bots ("pull", "stop"): still raid chat.
+			if (RuleB(Bots, Enabled) && !is_silent && message[0] != COMMAND_CHAR && message[0] != BOT_COMMAND_CHAR &&
+				bot_tactics.LeaderSays(this, message)) {
+				break;
+			}
 
 			// PlayerBot chat ingress: every chat bot in the raid hears it.
 			if (RuleB(PlayerBotChat, ChatEnabled) && !is_silent && strcmp(targetname, "discard") != 0 &&

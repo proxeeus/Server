@@ -84,7 +84,9 @@ constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subseq
 constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
 constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
 constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — owner proximity for pull handoff
-constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left
+constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
+constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
+constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -905,6 +907,8 @@ public:
 	uint16 GetFDPullTargetID() const { return m_fd_pull_target_id; }
 	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
 	void FDPullerProcess(Client* bot_owner, Raid* raid);
+	// The leader's answer to "can't get it alone": bring them all, or keep trying.
+	void TacticsSplitAnswer(bool bring_all) { m_fd_bring_all = bring_all; if (!bring_all) { m_fd_split_cycles = 0; } }
 	bool ExecuteFeignDeath();
 	void ExecuteFDTag(Mob* target);
 	float GetFDTagRangeSq();
@@ -1202,6 +1206,9 @@ private:
 	FDPullState          m_fd_pull_state;
 	uint16               m_fd_pull_target_id;
 	uint32               m_fd_pull_started_ms = 0; // the FD pull gives up after FD_PULL_GIVE_UP_MS
+	uint8                m_fd_split_cycles    = 0; // feigns with adds on this pull
+	bool                 m_fd_split_asked     = false; // asked the leader what to do
+	bool                 m_fd_bring_all       = false; // the leader said bring them: no more splitting
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;
