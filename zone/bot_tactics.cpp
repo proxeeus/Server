@@ -884,7 +884,8 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			}
 			Bot*   b  = m->CastToBot();
 			uint16 id = b->IsFDPulling() ? b->GetFDPullTargetID() :
-				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() :
+				b->GetBringingInID(); // walking it home: no longer its target
 			Mob*   t  = id ? entity_list.GetMob(id) : nullptr;
 			if (t && has_home && DistanceSquaredNoZ(glm::vec3(t->GetPosition()), home) > kCampArriveRadius * kCampArriveRadius) {
 				incoming.push_back(id);
@@ -1172,8 +1173,14 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// endless pull: every time the leader stepped out of camp to
 				// fight it, or was feared out, the bots went back to camp to
 				// wait for it.
+				// A bot bringing it in is not holding it: that is the pull
+				// itself (Kael 2026-10-24: "arrived" on the monk 110 out, and
+				// the raid ran out to it).
 				Mob* const on        = assist->GetTarget();
-				const bool bot_holds = on && on != leader && on->IsBot() &&
+				const bool on_puller = on && on->IsBot() && (
+					on->CastToBot()->IsFDPulling() || on->CastToBot()->GetPullingFlag() || on->CastToBot()->GetReturningFlag()
+				);
+				const bool bot_holds = on && on != leader && on->IsBot() && !on_puller &&
 					std::find(mobs.begin(), mobs.end(), on) != mobs.end();
 				if (mob_in_camp || bot_holds) {
 					p.pull_arrived_id = assist->GetID();
@@ -1914,7 +1921,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov)
 {
 	const uint32 now = Timer::GetCurrentTime();
-	p.auto_pull      = !ov || ov->auto_pull;
+	p.auto_pull      = ov && ov->auto_pull;
 
 	auto find_bot = [&](uint16 id) -> Bot* {
 		for (Mob* m : mobs) {
@@ -2824,9 +2831,8 @@ bool BotTactics::LeaderSays(Client* c, const std::string& message)
 			say("Pulling again.");
 			return true;
 		}
-		// Nothing targeted: the bots pull on their own anyway; say so, rather
-		// than pull whatever.
-		say("Target what you want pulled; meanwhile we pull what is up near camp.");
+		// Nothing targeted: say so, rather than pull whatever.
+		say(p->auto_pull ? "Target what you want pulled; meanwhile we pull what is up near camp." : "Target what you want pulled.");
 		return true;
 	}
 	if (t->GetHateList().size()) {
@@ -3820,7 +3826,7 @@ void BotTactics::SaveSettings(uint32 key, uint32 char_id)
 		never.push_back(std::to_string(t));
 	}
 	const auto  v  = fmt::format(
-		"on={};mt={};chain={};pull={};radius={:.0f};wait={:.0f};never={}",
+		"on={};mt={};chain={};autopull={};radius={:.0f};wait={:.0f};never={}",
 		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius,
 		o.pull_wait_mana, Strings::Join(never, ",")
 	);
@@ -3853,7 +3859,7 @@ void BotTactics::LoadSettings(uint32 key, uint32 char_id)
 		else if (k == "chain") {
 			o.chain_interval_ms = Strings::ToUnsignedInt(val);
 		}
-		else if (k == "pull") {
+		else if (k == "autopull") {
 			o.auto_pull = val == "1";
 		}
 		else if (k == "radius") {

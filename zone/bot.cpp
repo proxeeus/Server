@@ -2482,8 +2482,8 @@ void Bot::AI_Process()
 		if (IsFDPulling()) { // still in FD state — skip normal AI this tick
 			return;
 		}
-		// FD state machine handed off to normal pull machinery (Retagging → Pulling transition)
-		// Fall through so the PullingFlag is processed immediately this tick
+		// The pull is over (the mob is at camp, or it was called off): fall
+		// through to the normal fight this tick
 	}
 
 	if (GetAttackFlag()) { // Push owner's target onto our hate list
@@ -3650,6 +3650,7 @@ bool Bot::PullingFlagChecks(Client* bot_owner) {
 	}
 	else if (GetTarget()->GetHateList().size()) {
 
+		m_bringing_in_id = GetTarget()->GetID();
 		WipeHateList();
 		SetTarget(nullptr);
 		SetPullingFlag(false);
@@ -4048,6 +4049,7 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_split_cycles    = 0;
 	m_fd_split_asked     = false;
 	m_fd_bring_all       = false;
+	m_fd_incoming_said   = false;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -4111,24 +4113,31 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		return DistanceSquared(glm::vec3(pull_target->GetPosition()), home) <= FD_ALONE_RADIUS_SQ;
 	};
 
-	// Bring it in: the hand-off to the plain pull, which walks it into camp.
-	auto bring_it_in = [&]() {
-		InterruptSpell();
-		WipeHateList();
+	// At camp: the pull is over, the mob is the camp's fight. We keep its
+	// aggro -- the tank takes it from here -- and fight like anyone else.
+	//
+	// This used to hand off to the plain pull 80 out, which drops the mob as
+	// its target as soon as it chases (PullingFlagChecks): the plan lost sight
+	// of it as incoming, saw it on a bot and called it arrived where it stood,
+	// and the whole raid and every pet ran out of camp to it (Kael 2026-10-24,
+	// Adjutant Darggon killed ~110 out, 4 s after "Incoming").
+	auto at_camp = [&]() {
+		if (bot_owner) {
+			bot_owner->SetBotPulling(false);
+		}
+		if (HasPet()) {
+			GetPet()->SetPetOrder(m_previous_pet_order);
+		}
 		AddToHateList(pull_target, 1);
 		SetTarget(pull_target);
-		SetPullingFlag();
-		bot_owner->SetBotPulling();
-		if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
-			GetPet()->WipeHateList();
-			GetPet()->SetTarget(nullptr);
-			GetPet()->SetPetOrder(SPO_Guard);
-		}
 		m_fd_pull_state      = FDPullState::None;
+		m_fd_pull_target_id  = 0;
 		m_fd_pull_started_ms = 0;
 		m_fd_split_cycles    = 0;
 		m_fd_split_asked     = false;
 		m_fd_bring_all       = false;
+		m_fd_incoming_said   = false;
+		m_fd_pull_add_ids.clear();
 		m_fd_tag_timer.Disable();
 		m_fd_feign_check_timer.Disable();
 	};
@@ -4237,25 +4246,43 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	case FDPullState::RetagKiting: {
 		if (chased()) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
-			m_fd_pull_state = FDPullState::Tagging;
+			m_fd_pull_state    = FDPullState::Tagging;
+			m_fd_incoming_said = false;
 			say("Adds re-aggroed — running back.");
 			return;
 		}
 
-		const glm::vec3 back          = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
-		float           owner_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
+		const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
 		if (in_the_fight()) {
 			FDPullReset(bot_owner);
 			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
 			return;
 		}
-		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
-			bring_it_in();
-			say(fmt::format("Incoming: {}, alone!", pull_target->GetCleanName()));
+
+		// Done only once the mob itself is at camp, not the monk: until then
+		// the plan holds everyone at camp (BotTactics::Rebuild, incoming).
+		if (DistanceSquared(glm::vec3(pull_target->GetPosition()), back) <= FD_ARRIVED_RADIUS_SQ) {
+			LogInfo("[FDPull] [{}] {} is at camp", GetCleanName(), pull_target->GetCleanName());
+			at_camp();
 			return;
 		}
 
-		RunTo(back.x, back.y, back.z);
+		const float home_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
+		if (!m_fd_incoming_said && home_dist_sq <= FD_ALONE_RADIUS_SQ) {
+			m_fd_incoming_said = true;
+			say(fmt::format("Incoming: {}, alone!", pull_target->GetCleanName()));
+		}
+
+		// At the camp spot: wait there for it, facing it.
+		if (home_dist_sq > 5.0f * 5.0f) {
+			RunTo(back.x, back.y, back.z);
+		}
+		else {
+			if (IsMoving()) {
+				StopMoving();
+			}
+			FaceTarget(pull_target);
+		}
 		break;
 	}
 

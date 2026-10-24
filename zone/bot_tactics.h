@@ -459,7 +459,7 @@ private:
 		bool        disabled          = false;
 		std::string main_tank;          // clean name, lower-case
 		uint32      chain_interval_ms = 0;
-		bool        auto_pull         = true;    // on unless the player turned it off (^pull auto off): bots pull from your play
+		bool        auto_pull         = false;   // ^pull auto: the bots pick their own pulls. Off: they pull what you tell them
 		float       pull_radius       = 0.0f;
 		float       pull_wait_mana    = 0.0f;   // ^pull wait: the healers' mana bar for the next pull; 0 = default
 		std::vector<uint32> never_pull;         // ^pull never: npc types left alone by ^pull auto

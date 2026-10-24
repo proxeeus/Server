@@ -83,7 +83,8 @@ constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 10000;           // ms to wait after 
 constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subsequent "adds gone?" checks
 constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
 constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
-constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — owner proximity for pull handoff
+constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — camp proximity: "Incoming" is called
+constexpr float FD_ARRIVED_RADIUS_SQ     = 50.0f * 50.0f;   // distance² — the mob this close to camp: the pull is done
 constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
 constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
 constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
@@ -287,6 +288,10 @@ public:
 	void SetPullFlag(bool flag = true) { m_pull_flag = flag; }
 	bool GetPullingFlag() const { return m_pulling_flag; }
 	bool GetReturningFlag() const { return m_returning_flag; }
+	// The mob a plain pull is walking home: PullingFlagChecks drops it as the
+	// target once it is chasing us, so the plan cannot see it through
+	// GetTarget() any more (BotTactics::Rebuild, the incoming filter).
+	uint16 GetBringingInID() const { return m_returning_flag ? m_bringing_in_id : 0; }
 	bool GetIsUsingItemClick() { return is_using_item_click; }
 	void SetIsUsingItemClick(bool flag = true) { is_using_item_click = flag; }
 	bool UseDiscipline(uint32 spell_id, uint32 target);
@@ -1209,6 +1214,8 @@ private:
 	uint8                m_fd_split_cycles    = 0; // feigns with adds on this pull
 	bool                 m_fd_split_asked     = false; // asked the leader what to do
 	bool                 m_fd_bring_all       = false; // the leader said bring them: no more splitting
+	bool                 m_fd_incoming_said   = false; // "Incoming" called for this pull
+	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
 	Timer                m_fd_tag_timer;
