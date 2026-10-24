@@ -2225,6 +2225,102 @@ constexpr float MAX_CASTER_DISTANCE[Class::PLAYER_CLASS_COUNT] = {
 	0
 };
 
+Mob* Bot::GetNPCCharmer() const
+{
+	return m_npc_charmer_id ? entity_list.GetMob(m_npc_charmer_id) : nullptr;
+}
+
+// SE_Charm (spell_effects.cpp) has already interrupted us and wiped every
+// hate list we were on.
+void Bot::StartNPCCharm(Mob* charmer)
+{
+	m_npc_charmer_id = charmer->GetID();
+	SetTarget(nullptr);
+	StopMoving();
+	LogInfo("[BotCharm] [{}] charmed by [{}]", GetCleanName(), charmer->GetCleanName());
+}
+
+void Bot::EndNPCCharm()
+{
+	if (!m_npc_charmer_id) {
+		return;
+	}
+
+	Mob* charmer = GetNPCCharmer();
+	LogInfo("[BotCharm] [{}] free of [{}]", GetCleanName(), charmer ? charmer->GetCleanName() : "its charmer");
+	m_npc_charmer_id = 0;
+
+	// Whatever we hit while charmed is a friend again.
+	WipeHateList();
+	SetTarget(nullptr);
+	StopMoving();
+}
+
+// The charmed player's loop (Client::AI_Process): the master's target, else
+// the top of its hate; in reach, swing; out of reach, run to it; nothing to
+// fight, keep at the master's side.
+void Bot::NPCCharmAI()
+{
+	Mob* charmer = GetNPCCharmer();
+	if (!charmer || charmer->IsCorpse() || charmer->GetHP() <= 0) {
+		BuffFadeByEffect(SE_Charm);
+		EndNPCCharm(); // no charm buff left to fade (dispelled in the same tick)
+		return;
+	}
+
+	if (CheckIfIncapacitated()) {
+		return;
+	}
+
+	auto can_fight = [this](Mob* t) {
+		return t && t != this && !t->IsCorpse() && t->GetHP() > 0 && IsAttackAllowed(t);
+	};
+
+	Mob* tar = GetTarget();
+	if (!can_fight(tar)) {
+		tar = charmer->GetTarget();
+		if (!can_fight(tar)) {
+			tar = charmer->GetHateTop();
+		}
+		if (!can_fight(tar)) {
+			tar = nullptr;
+		}
+		SetTarget(tar);
+	}
+
+	if (!tar) {
+		if (DistanceSquared(m_Position, charmer->GetPosition()) > 20.0f * 20.0f) {
+			if (AI_movement_timer->Check()) {
+				RunTo(charmer->GetX(), charmer->GetY(), charmer->GetZ());
+			}
+		}
+		else if (IsMoving()) {
+			StopMoving();
+		}
+		return;
+	}
+
+	if (!CombatRange(tar)) {
+		if (AI_movement_timer->Check()) {
+			RunTo(tar->GetX(), tar->GetY(), tar->GetZ());
+		}
+		return;
+	}
+
+	if (IsMoving()) {
+		StopMoving();
+	}
+	FaceTarget(tar);
+
+	if (!TryClassAttacks(tar)) {
+		return;
+	}
+	if (!TryPrimaryWeaponAttacks(tar, GetBotItem(EQ::invslot::slotPrimary))) {
+		return;
+	}
+	TrySecondaryWeaponAttacks(tar, GetBotItem(EQ::invslot::slotSecondary));
+}
+
 void Bot::AI_Process()
 {
 
@@ -2262,6 +2358,14 @@ void Bot::AI_Process()
 	}
 
 	auto bot_group = GetGroup();
+
+	// Charmed: the charmer's fight is ours, and nothing else of ours runs
+	if (IsCharmedByNPC()) {
+		if (IsAIControlled()) {
+			NPCCharmAI();
+		}
+		return;
+	}
 
 	// Primary reasons for not processing AI
 	if (!IsAIProcessValid(bot_owner, bot_group, raid)) {

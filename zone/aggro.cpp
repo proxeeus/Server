@@ -745,7 +745,40 @@ bool Mob::IsAttackAllowed(Mob *target, bool isSpellAttack)
 	// can't damage own pet (applies to everthing)
 	Mob *target_owner = target->GetOwner();
 	Mob *our_owner = GetOwner();
-	if(target_owner && target_owner == this)
+	const bool charmed_bot = IsBot() && CastToBot()->IsCharmedByNPC();
+	const bool charmed_by_npc = (IsClient() && our_owner && our_owner->IsNPC()) || charmed_bot;
+
+	// A bot an NPC has charmed is on the charmer's side (Bot::NPCCharmAI),
+	// not its player's. Its own side waits the charm out: no bot or pet of
+	// its player hits it (the player may). Bots hitting a charmed *player*
+	// are stopped below by "our_owner == target".
+	if (charmed_bot) {
+		our_owner = CastToBot()->GetNPCCharmer();
+	}
+	if (target->IsBot() && target->CastToBot()->IsCharmedByNPC()) {
+		if (!IsClient()) {
+			Mob* side = IsBot() ? CastToBot()->GetBotOwner() : GetOwner();
+			if (side && side->IsBot()) {
+				side = side->CastToBot()->GetBotOwner();
+			}
+			if (side && side == target->CastToBot()->GetBotOwner()) {
+				return false;
+			}
+		}
+		target_owner = target->CastToBot()->GetNPCCharmer();
+	}
+
+	// Two thralls of one charmer do not fight each other.
+	if (charmed_by_npc && our_owner && our_owner == target_owner) {
+		return false;
+	}
+
+	// ...except a player or bot an NPC has charmed: it fights for its master,
+	// its own bots and pets included. EQClassic's charmed PC swings at
+	// whatever it targets except its master (client_process.cpp:391).
+	// Without this a player charmed in a bot raid -- every bot is "his pet"
+	// -- stood idle under the Freeze appearance, which reads as a stun on v29c.
+	if(target_owner && target_owner == this && !charmed_by_npc)
 		return false;
 	else if(our_owner && our_owner == target)
 		return false;

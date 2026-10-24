@@ -813,46 +813,56 @@ bool Mob::SpellEffect(Mob* caster, uint16 spell_id, float partial, int level_ove
 					my_pet->Kill();
 				}
 
-				caster->SetPet(this);
-				SetOwnerID(caster->GetID());
-				SetPetOrder(SPO_Follow);
-				SetAppearance(eaStanding);
-				// Client has saved previous pet sit/stand - make all new pets
-				// stand and follow on charm.
-				if (caster->IsClient()) {
-					Client *cpet = caster->CastToClient();
-					cpet->SetPetCommandState(PET_BUTTON_SIT,0);
-					cpet->SetPetCommandState(PET_BUTTON_FOLLOW, 1);
-					cpet->SetPetCommandState(PET_BUTTON_GUARD, 0);
-					cpet->SetPetCommandState(PET_BUTTON_STOP, 0);
+				// A bot's GetOwner() is its player, so it cannot become the
+				// caster's pet: it keeps its own record of the charm, and only
+				// an NPC charms it (PassCharmTargetRestriction).
+				if (IsBot()) {
+					if (caster->IsNPC()) {
+						CastToBot()->StartNPCCharm(caster);
+					}
 				}
+				else {
+					caster->SetPet(this);
+					SetOwnerID(caster->GetID());
+					SetPetOrder(SPO_Follow);
+					SetAppearance(eaStanding);
+					// Client has saved previous pet sit/stand - make all new pets
+					// stand and follow on charm.
+					if (caster->IsClient()) {
+						Client *cpet = caster->CastToClient();
+						cpet->SetPetCommandState(PET_BUTTON_SIT,0);
+						cpet->SetPetCommandState(PET_BUTTON_FOLLOW, 1);
+						cpet->SetPetCommandState(PET_BUTTON_GUARD, 0);
+						cpet->SetPetCommandState(PET_BUTTON_STOP, 0);
+					}
 
-				SetPetType(petCharmed);
+					SetPetType(petCharmed);
 
-				// This was done in AddBuff, but we were not a pet yet, so
-				// the target windows didn't get updated.
-				EQApplicationPacket *outapp = MakeBuffsPacket();
-				entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, EQ::versions::maskSoDAndLater);
-				safe_delete(outapp);
+					// This was done in AddBuff, but we were not a pet yet, so
+					// the target windows didn't get updated.
+					EQApplicationPacket *outapp = MakeBuffsPacket();
+					entity_list.QueueClientsByTarget(this, outapp, false, nullptr, true, false, EQ::versions::maskSoDAndLater);
+					safe_delete(outapp);
 
-				if(caster->IsClient()){
-					auto app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
-					Charm_Struct *ps = (Charm_Struct*)app->pBuffer;
-					ps->owner_id = caster->GetID();
-					ps->pet_id = GetID();
-					ps->command = 1;
-					entity_list.QueueClients(this, app);
-					safe_delete(app);
-					SendPetBuffsToClient();
-					SendAppearancePacket(AppearanceType::Pet, caster->GetID(), true, true);
-				}
+					if(caster->IsClient()){
+						auto app = new EQApplicationPacket(OP_Charm, sizeof(Charm_Struct));
+						Charm_Struct *ps = (Charm_Struct*)app->pBuffer;
+						ps->owner_id = caster->GetID();
+						ps->pet_id = GetID();
+						ps->command = 1;
+						entity_list.QueueClients(this, app);
+						safe_delete(app);
+						SendPetBuffsToClient();
+						SendAppearancePacket(AppearanceType::Pet, caster->GetID(), true, true);
+					}
 
-				if (IsClient())
-				{
-					CastToClient()->AI_Start();
-				} else if(IsNPC()) {
-					CastToNPC()->SetPetSpellID(0);	//not a pet spell.
-					CastToNPC()->ModifyStatsOnCharm(false);
+					if (IsClient())
+					{
+						CastToClient()->AI_Start();
+					} else if(IsNPC()) {
+						CastToNPC()->SetPetSpellID(0);	//not a pet spell.
+						CastToNPC()->ModifyStatsOnCharm(false);
+					}
 				}
 
 				bool bBreak = false;
@@ -4405,6 +4415,14 @@ void Mob::BuffFadeBySlot(int slot, bool iRecalcBonuses)
 
 			case SE_Charm:
 			{
+				// A charmed bot never became the caster's pet, and its
+				// GetOwner() is its player: none of the pet teardown below
+				// applies (owner->SetPet(0) would drop the player's own pet).
+				if (IsBot()) {
+					CastToBot()->EndNPCCharm();
+					break;
+				}
+
 				if(IsNPC())
 				{
 					CastToNPC()->RestoreGuardSpotCharm();
@@ -9948,6 +9966,17 @@ bool Mob::PassCharmTargetRestriction(Mob *target) {
 		MessageString(Chat::Red, ONLY_ONE_PET);
 		LogSpells("Spell casting canceled: Can not cast charm if you have a pet.");
 		return false;
+	}
+	// A bot's GetOwner() is its player, not a master: an NPC charms it like
+	// a player (Bot::StartNPCCharm). Before this every NPC charm aimed at a
+	// bot -- most of them in a bot raid, AI charm picks GetHateRandom() --
+	// was cancelled as "a pet".
+	else if (target->IsBot() && IsNPC() && !IsPet()) {
+		if (target->CastToBot()->IsCharmedByNPC()) {
+			LogSpells("Spell casting canceled: [{}] is charmed already.", target->GetCleanName());
+			return false;
+		}
+		return true;
 	}
 	else if (target->GetOwner()) {
 		MessageString(Chat::Red, CANNOT_CHARM);

@@ -646,6 +646,12 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				continue;
 			}
 
+			// A bot charmed by an NPC fights for it: no tank, no healer,
+			// no member until the charm ends (Bot::NPCCharmAI).
+			if (m->IsBot() && m->CastToBot()->IsCharmedByNPC()) {
+				continue;
+			}
+
 			mobs.push_back(m);
 			p.members.push_back(m->GetID());
 			p.raid_group[m->GetID()] = rm.group_number;
@@ -653,7 +659,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 	}
 	else if (group) {
 		for (Mob* m : group->members) {
-			if (m) {
+			if (m && !(m->IsBot() && m->CastToBot()->IsCharmedByNPC())) {
 				mobs.push_back(m);
 				p.members.push_back(m->GetID());
 			}
@@ -1000,8 +1006,13 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 					p.pull_arrived_id = assist->GetID();
 				}
 
-				// A feared, stunned or mezzed leader is not pulling anything.
-				const bool leader_helpless = leader->IsFeared() || leader->IsStunned() || leader->IsMezzed();
+				// A feared, stunned, mezzed or charmed leader is not pulling
+				// anything -- nor fighting: a charmed player keeps its
+				// auto-attack on, and the camp followed Silverwing's thrall
+				// into her breath (Veeshan's Peak 2026-10-24).
+				const bool leader_charmed = leader->IsCharmed();
+				const bool leader_helpless =
+					leader->IsFeared() || leader->IsStunned() || leader->IsMezzed() || leader_charmed;
 
 				// Nor is one standing there swinging at it: a puller brings the
 				// mob home, a leader in melee with it is fighting where they
@@ -1010,7 +1021,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				// whole unit -- main tank included -- at the old spot, and only
 				// the pets went (Kael 2026-10-23: 13 "holding camp", 9 fights
 				// the tank never touched).
-				const bool leader_fighting =
+				const bool leader_fighting = !leader_charmed &&
 					leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() &&
 					DistanceSquaredNoZ(lpos, glm::vec3(assist->GetPosition())) <= kLeaderMeleeRadius * kLeaderMeleeRadius;
 				if (leader_fighting && !leader_in_camp && !mob_in_camp) {

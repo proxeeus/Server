@@ -980,6 +980,17 @@ public:
 	void ResumeFromOwnerHold(Client* owner);
 	void EndOwnerHold();                   // time's up: leave the zone
 	void OwnerHoldAI();
+
+	// Charmed by an NPC: the bot fights for it -- its owner, the other bots
+	// and their pets included -- until the charm fades or the charmer dies.
+	// Melee only, like a charmed player (Client::AI_Process). The bot cannot
+	// be the caster's pet (GetOwner() is its player), so it keeps its own
+	// record; IsAttackAllowed reads it to put the bot on the charmer's side.
+	bool IsCharmedByNPC() const { return m_npc_charmer_id != 0; }
+	Mob* GetNPCCharmer() const;
+	void StartNPCCharm(Mob* charmer);
+	void EndNPCCharm();
+	void NPCCharmAI();
 	bool TryRezOwnerCorpse();
 	// Wipe recovery (phase 24): the owner alive, its corpse here: summon it
 	// over (necro / SK), then resurrect it for the experience
@@ -1210,6 +1221,7 @@ private:
 	size_t    m_tactics_cursor       = 0;   // round-robin over the raid for buffs
 	uint32    m_encounter_reposition_ms = 0;
 	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
+	uint16    m_npc_charmer_id       = 0;   // the NPC whose charm holds us; 0 = none
 	uint32    m_owner_hold_check_ms  = 0;   // next look at the hold bucket for a ^recall
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back
