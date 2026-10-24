@@ -4364,6 +4364,24 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		return true;
 	};
 
+	// Not where the pack lives: a feign next to a spawn point leaves us lying
+	// beside that mob once it is home, and standing up there takes it again
+	// (fdpull_sim.pl: feigned 43 from a Protector's spot).
+	auto near_pack_homes = [&](const glm::vec3& at) {
+		std::list<NPC*> npc_list;
+		entity_list.GetNPCList(npc_list);
+		for (auto* npc : npc_list) {
+			if (!npc || npc->GetHP() <= 0 || !npc->IsOnHatelist(this)) {
+				continue;
+			}
+			const float r = npc->GetAggroRange() + 20.0f;
+			if (DistanceSquaredNoZ(glm::vec3(npc->GetSpawnPoint()), at) <= r * r) {
+				return true;
+			}
+		}
+		return false;
+	};
+
 	// Where to run on to. Straight sideways ran into Kael's buildings:
 	// TryMoveAlong cut every run short at the wall, and after four of them the
 	// monk feigned 51 from the raid (fdpull_sim.pl on kael.map). Of eight
@@ -4401,7 +4419,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 					break;
 				}
 			}
-			const float score = (nearest > reach && !idle_there && walk_home_clear(at) ? 1e6f : 0.0f) + (idle_there ? 0.0f : 1000.0f) + nearest;
+			const float score = (nearest > reach && !idle_there && !near_pack_homes(at) && walk_home_clear(at) ? 1e6f : 0.0f) +
+				(idle_there ? 0.0f : 1000.0f) + nearest;
 			if (score > best) {
 				best                = score;
 				m_fd_escape         = at;
@@ -4455,6 +4474,12 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	auto in_the_fight = [&]() {
 		Mob* top = pull_target->GetHateTop();
 		if (!top || top == this || m_fd_pull_state == FDPullState::FeignWait) {
+			return false;
+		}
+		// On the other monk of the pull: that is the split under way, not the
+		// raid's fight. Taken for it, the catcher let go of the target a tick
+		// after getting on it (fdpull_sim.pl).
+		if (top->IsBot() && top->CastToBot()->IsFDPulling()) {
 			return false;
 		}
 		const glm::vec3 home = PullReturnPoint(bot_owner);
@@ -4533,7 +4558,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				// walk home and wait to be tagged again). Kite it in.
 				m_fd_pull_state = FDPullState::RetagKiting;
 				say(fmt::format("{} came alone — bringing it in.", pull_target->GetCleanName()));
-			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && (TacticsOursNear(glm::vec3(GetPosition()), chaser_reach()) || !walk_home_clear(glm::vec3(GetPosition())))) {
+			} else if (m_fd_escape_runs < FD_ESCAPE_MAX_RUNS && (TacticsOursNear(glm::vec3(GetPosition()), chaser_reach()) ||
+				near_pack_homes(glm::vec3(GetPosition())) || !walk_home_clear(glm::vec3(GetPosition())))) {
 				// Not here: the pack would stop on top of us, or walk home past
 				// ours, and take them once it lost us. On, somewhere clear.
 				++m_fd_escape_runs;
@@ -4794,6 +4820,25 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		// fighting joined on the target's call (NPC::AIYellForHelp skips such
 		// assisters), and a hit without a call (iYellForHelp false) keeps it
 		// one. Every cycle the target has one friend fewer.
+		//
+		// The target first, though: that is the split. We get on its list,
+		// quietly, and run for camp; the tagger feigns once we are clear, every
+		// mob drops it, and the target -- on us now -- follows us in alone while
+		// the guards, on no one, walk home. One cycle. An add only when the
+		// target is out of our reach.
+		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate &&
+			dist_sq <= tag_range_sq && CheckLosFN(pull_target)) {
+			InterruptSpell();
+			FaceTarget(pull_target);
+			pull_target->AddToHateList(this, 1, 0, false);
+			AddToHateList(pull_target, 1);
+			m_fd_catch_spot_set = false;
+			m_fd_incoming_said  = false;
+			m_fd_pull_state     = FDPullState::RetagKiting;
+			say(fmt::format("Got {} — {}, feign!", pull_target->GetCleanName(), mate->GetCleanName()));
+			return;
+		}
 		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
 			pull_target->IsEngaged() && pull_target->GetHateTop() == mate) {
 			Mob*  add   = nullptr;
@@ -4886,6 +4931,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 		if (pack_on_mate) {
+			// After the target itself, a throw from it.
+			if (dist_sq > 40.0f * 40.0f) {
+				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+				return;
+			}
 			Mob*  chase   = nullptr;
 			float chase_d = 0.0f;
 			for (auto& close : entity_list.GetCloseMobList(this)) {
@@ -4970,18 +5020,21 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 		}
 		else if (ms == FDPullState::Tagging || ms == FDPullState::Retagging) {
-			// Off the target's aggro, on our side of it. Following the tagger
-			// in, the catcher took the target itself and both of us ended up on
-			// it; and after a feign the tagger may be anywhere round the pack,
-			// the way to it through the pack (fdpull_sim.pl on kael.map).
-			const float d = std::sqrt(dist_sq);
-			if (d < wait_dist - 5.0f) {
+			// Together: a step behind the tagger as it goes in -- but, while the
+			// target is idle, never inside its aggro (we would take it
+			// ourselves, and both of us end up on it).
+			const float     keep = pull_target->GetAggroRange() + 20.0f;
+			const glm::vec3 t(pull_target->GetPosition());
+			glm::vec3       goal(mate->GetPosition());
+			const float     mt = std::sqrt(DistanceSquaredNoZ(goal, t));
+			if (!pull_target->IsEngaged() && mt < keep && mt > 1.0f) {
+				goal = t + (goal - t) * (keep / mt);
+			}
+			if (!pull_target->IsEngaged() && dist_sq < (keep - 5.0f) * (keep - 5.0f)) {
 				const glm::vec3 back = PullReturnPoint(bot_owner);
 				RunTo(back.x, back.y, back.z);
 			}
-			else if (d > wait_dist + 20.0f) {
-				const glm::vec3 t(pull_target->GetPosition());
-				const glm::vec3 goal = t + (glm::vec3(GetPosition()) - t) * (wait_dist / d);
+			else if (DistanceSquared(goal, glm::vec3(GetPosition())) > 25.0f * 25.0f) {
 				RunTo(goal.x, goal.y, goal.z);
 			}
 			else {
