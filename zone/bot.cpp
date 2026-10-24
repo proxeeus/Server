@@ -4828,7 +4828,9 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			}
 		}
 
-		// What we are doing, every few seconds: the catcher used to say nothing
+		constexpr uint32 FD_CATCH_CHASE_MS = 6000; // the catcher runs with the pack this long to peel, then drops back
+
+	// What we are doing, every few seconds: the catcher used to say nothing
 		// at all unless it peeled or caught, and "does nothing" could not be
 		// told from "waits for X" (Kael 2026-10-25).
 		{
@@ -4862,8 +4864,28 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		// nearest add, to peel one (above) -- mobs that are chasing take no one
 		// by proximity. Parked at the tagger's first escape spot instead, the
 		// catcher was left behind as the tagger ran on, and never peeled.
-		if ((ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
-			pull_target->IsEngaged() && pull_target->GetHateTop() == mate) {
+		//
+		// For a few seconds only: while we are with the pack the tagger will
+		// not feign (we would be standing among it when it lost the tagger),
+		// and with us on its heels it ran on for 24 s into another mob (Kael
+		// 2026-10-25). No add peeled by then: off out of its reach, toward
+		// camp, and the tagger feigns.
+		static std::unordered_map<uint16, uint32> chasing_since;
+		const bool pack_on_mate = (ms == FDPullState::Tagging || ms == FDPullState::RetagKiting) && !m_fd_bring_all && !camp_busy() &&
+			pull_target->IsEngaged() && pull_target->GetHateTop() == mate;
+		uint32& since = chasing_since[GetID()];
+		if (!pack_on_mate) {
+			since = 0;
+		}
+		else if (!since) {
+			since = now;
+		}
+		if (pack_on_mate && now - since > FD_CATCH_CHASE_MS) {
+			const glm::vec3 back = PullReturnPoint(bot_owner);
+			RunTo(back.x, back.y, back.z);
+			return;
+		}
+		if (pack_on_mate) {
 			Mob*  chase   = nullptr;
 			float chase_d = 0.0f;
 			for (auto& close : entity_list.GetCloseMobList(this)) {

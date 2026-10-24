@@ -1525,6 +1525,19 @@ bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgain
 		return false;
 	}
 
+	// No heal or buff on a puller of ours while it is out there: a heal puts
+	// the healer on every list the puller is on (EntityList::AddHealAggro),
+	// and the whole pull came for the healer -- Kallis Stormcaller went for
+	// Azzuan, at the raid, 24 s into a monk's pull (Kael 2026-10-25). Back at
+	// camp it is healed like anyone.
+	if (tar && tar != this && tar->IsBot() && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) &&
+		IsBeneficialSpell(AIBot_spells[i].spellid)) {
+		Bot* b = tar->CastToBot();
+		if ((b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) && b->TacticsOutOfCamp(b)) {
+			return false;
+		}
+	}
+
 	// manacost has special values, -1 is no mana cost, -2 is instant cast (no mana)
 	int32 manaCost = mana_cost;
 
