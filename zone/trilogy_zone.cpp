@@ -12289,6 +12289,28 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 		return;
 	}
 
+	// ── Destroyed from the cursor (to_slot -1) ───────────────────────────
+	// The coin is gone. The early return below skipped it, so it stayed in
+	// m_pp.*_cursor, which is persisted and shipped at the next zone-in: coin
+	// destroyed in Sebilis came back on the cursor in West Freeport
+	// (2026-10-24). EQClassic zeroes the cursor coin on any move off the
+	// cursor (client_process.cpp ProcessOP_MoveCoin).
+	if (from_slot == 0 && to_slot == -1) {
+		auto&          pp     = s.trilogy_client->GetPP();
+		const uint32_t denom  = mc->cointype1;
+		const int64_t  amount = static_cast<int64_t>(mc->amount);
+		auto&          f      = (denom == 0) ? pp.copper_cursor :
+		                        (denom == 1) ? pp.silver_cursor :
+		                        (denom == 2) ? pp.gold_cursor   :
+		                                       pp.platinum_cursor;
+		f = (static_cast<int64_t>(f) > amount) ? static_cast<int32>(f - amount) : 0;
+		s.trilogy_client->Save();
+		LogInfo("[TrilogyZone] MoveCoin destroy char={} denom={} amount={} (cursor p={} g={} s={} c={})",
+		        s.char_id, denom, static_cast<long long>(amount),
+		        pp.platinum_cursor, pp.gold_cursor, pp.silver_cursor, pp.copper_cursor);
+		return;
+	}
+
 	// Only carried(1) <-> bank(2) transfers persist; cursor(0)/trade(3)-only moves
 	// are display/transient and handled elsewhere (trade) or ignored.
 	if (from_slot != 1 && from_slot != 2 && to_slot != 1 && to_slot != 2)
