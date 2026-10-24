@@ -2667,7 +2667,10 @@ std::vector<std::string> BotTactics::DescribePulls(uint32 key)
 		uint16 t = b->IsFDPulling() ? b->GetFDPullTargetID() :
 			((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
 		if (Mob* tm = t ? entity_list.GetMob(t) : nullptr) {
-			out.emplace_back(fmt::format("Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(), b->IsFDPulling() ? " (feign death)" : ""));
+			out.emplace_back(fmt::format(
+				"Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(),
+				b->GetFDPullState() == Bot::FDPullState::Catching ? " (catching)" : b->IsFDPulling() ? " (feign death)" : ""
+			));
 		}
 	}
 
@@ -2909,17 +2912,20 @@ void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, cons
 	}
 
 	// As many in hand as there are tanks to hold them: the fight on now and
-	// its adds, plus what is on the way.
-	size_t pulling = 0;
+	// its adds, plus what is on the way (one per mob: two monks may share one).
+	std::vector<uint16> on_the_way;
 	for (Mob* m : mobs) {
 		if (m->IsBot() && IsAlive(m)) {
-			Bot* b = m->CastToBot();
-			if (b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) {
-				++pulling;
+			Bot*         b  = m->CastToBot();
+			const uint16 id = b->IsFDPulling() ? b->GetFDPullTargetID() :
+				(b->GetPullingFlag() || b->GetReturningFlag()) ? (b->GetTarget() ? b->GetTarget()->GetID() : b->GetBringingInID()) : 0;
+			if ((b->IsFDPulling() || b->GetPullingFlag() || b->GetReturningFlag()) &&
+				(!id || std::find(on_the_way.begin(), on_the_way.end(), id) == on_the_way.end())) {
+				on_the_way.push_back(id);
 			}
 		}
 	}
-	size_t       in_hand = (assist ? 1 : 0) + p.adds.size() + pulling;
+	size_t       in_hand = (assist ? 1 : 0) + p.adds.size() + on_the_way.size();
 	const size_t holds   = 1 + p.off_tank_ids.size();
 
 	// Free pullers, monks with feign death first (each brings a single, so
@@ -2980,22 +2986,49 @@ void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, cons
 			b = plain;
 		}
 
-		if (!b->TacticsStartQueuedPull(t)) {
+		// In a raid a second monk goes along to catch: it waits off the mob,
+		// standing, and tags it the moment it is clear of its friends while
+		// the first one lies feigned -- then they swap (Bot::FDPullerProcess).
+		// The next nearest free one; a group keeps its one monk on its own.
+		Bot* catcher = nullptr;
+		if (fd && raid) {
+			float catch_d = 0.0f;
+			for (Bot* mk : monks) {
+				const float d = DistanceSquared(mk->GetPosition(), t->GetPosition());
+				if (mk != b && (!catcher || d < catch_d)) {
+					catcher = mk;
+					catch_d = d;
+				}
+			}
+		}
+
+		if (!b->TacticsStartQueuedPull(t, catcher)) {
 			break;
+		}
+		if (catcher && !catcher->TacticsStartQueuedPull(t, b, true)) {
+			b->SetFDPartnerID(0);
+			catcher = nullptr;
 		}
 
 		p.pull_queue.pop_front();
 		if (fd) {
 			monks.erase(std::find(monks.begin(), monks.end(), b));
+			if (catcher) {
+				monks.erase(std::find(monks.begin(), monks.end(), catcher));
+			}
 		}
 		else {
 			plain = nullptr;
 		}
 
 		const std::string rest = p.pull_queue.empty() ? "" : fmt::format(" {} more in line.", p.pull_queue.size());
-		Announce(raid, group, b, fmt::format("Pulling {}{}.{}", t->GetCleanName(), fd ? ", feigning to bring it alone" : "", rest));
-		LogInfo("[BotTactics] unit [{:#x}] queued pull: [{}] goes for [{}] ({}), [{}] left in line",
-			p.key, b->GetCleanName(), t->GetCleanName(), fd ? "FD" : "plain", p.pull_queue.size());
+		Announce(raid, group, b, fmt::format(
+			"Pulling {}{}.{}", t->GetCleanName(),
+			catcher ? fmt::format(", {} catching", catcher->GetCleanName()) : fd ? ", feigning to bring it alone" : "", rest
+		));
+		LogInfo("[BotTactics] unit [{:#x}] queued pull: [{}] goes for [{}] ({}{}), [{}] left in line",
+			p.key, b->GetCleanName(), t->GetCleanName(), fd ? "FD" : "plain",
+			catcher ? fmt::format(", [{}] catching", catcher->GetCleanName()) : "", p.pull_queue.size());
 
 		++in_hand; // it counts as in hand from now on
 	}
@@ -6254,7 +6287,7 @@ bool Bot::TacticsStartPull(Mob* target)
 // A pull from the player's queue (BotTactics::DispatchPulls, which says
 // what is happening). A monk feign-pulls and several may be out at once;
 // the owner's one-pull flag only gates a plain pull.
-bool Bot::TacticsStartQueuedPull(Mob* target)
+bool Bot::TacticsStartQueuedPull(Mob* target, Bot* partner, bool catcher)
 {
 	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
 	if (!owner || !target || IsFDPulling() || GetPullingFlag() || GetReturningFlag()) {
@@ -6280,7 +6313,8 @@ bool Bot::TacticsStartQueuedPull(Mob* target)
 
 	if (fd) {
 		SetFDPullTargetID(target->GetID());
-		SetFDPullState(FDPullState::Tagging);
+		SetFDPartnerID(partner ? partner->GetID() : 0);
+		SetFDPullState(catcher ? FDPullState::Catching : FDPullState::Tagging);
 		return true;
 	}
 

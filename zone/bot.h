@@ -88,6 +88,9 @@ constexpr float FD_ARRIVED_RADIUS_SQ     = 50.0f * 50.0f;   // distance² — th
 constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
 constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
 constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
+constexpr uint32 FD_GAP_WAIT_MS          = 20000;           // its friends would come: wait this long for a gap before trying anyway / asking
+constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
+constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -187,6 +190,7 @@ public:
 		Retagging    = 3,  // moving back to target to re-tag
 		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
 		FDCooldown   = 5,  // FD failed — staying put until reuse timer expires, then retry
+		Catching     = 6,  // the second monk: standing off, tags the target once it is clear of its friends
 	};
 
 	// Class Constructors
@@ -919,7 +923,15 @@ public:
 	float GetFDTagRangeSq();
 	bool AddsHaveReturned() const;
 	bool IsBeingChasedByAdds(const Mob* ignore_target) const;
+	// Who would come with it if we tagged it now: NPC::AIYellForHelp's own
+	// tests, with us as the attacker. 0 = it comes alone.
+	size_t FriendsThatWouldHelp(Mob* target, float margin = FD_HELP_MARGIN);
 	void FDPullReset(Client* bot_owner);
+	// Two monks on one pull (DispatchPulls, raids): one tags, the other
+	// catches -- waits nearby, standing, and tags the target the moment it
+	// is clear of its friends while the first one lies feigned.
+	uint16 GetFDPartnerID() const { return m_fd_partner_id; }
+	void SetFDPartnerID(uint16 id) { m_fd_partner_id = id; }
 
 
 	// Movement Methods
@@ -1071,7 +1083,7 @@ public:
 
 	// Auto-pull (phase 10): start / call off a pull of a mob the plan chose.
 	bool TacticsStartPull(Mob* target);
-	bool TacticsStartQueuedPull(Mob* target); // ^pull queue: monks feign-pull in parallel
+	bool TacticsStartQueuedPull(Mob* target, Bot* partner = nullptr, bool catcher = false); // ^pull queue: monks feign-pull in parallel, in pairs in raids
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
 
@@ -1215,6 +1227,8 @@ private:
 	bool                 m_fd_split_asked     = false; // asked the leader what to do
 	bool                 m_fd_bring_all       = false; // the leader said bring them: no more splitting
 	bool                 m_fd_incoming_said   = false; // "Incoming" called for this pull
+	uint16               m_fd_partner_id      = 0;     // the other monk on this pull (tagger <-> catcher)
+	uint32               m_fd_gap_wait_ms     = 0;     // since then its friends would come with it; 0 = not waiting
 	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;

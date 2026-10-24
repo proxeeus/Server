@@ -4023,6 +4023,55 @@ bool Bot::IsBeingChasedByAdds(const Mob* ignore_target) const {
 	return false;
 }
 
+// NPC::AIYellForHelp, asked ahead of time: who of its friends would join it
+// if we tagged it now. A tagged mob calls once as it engages (AI_Event_Engaged)
+// and then every few seconds while engaged; this is the first call. Same tests,
+// same order, us as the attacker; `margin` pads each friend's assist range for
+// a friend walking our way.
+size_t Bot::FriendsThatWouldHelp(Mob* target, float margin)
+{
+	if (!target || !target->IsNPC() || !target->GetPrimaryFaction() || target->HasAssistAggro()) {
+		return 0;
+	}
+
+	const int cap = RuleI(Combat, NPCAssistCap);
+	size_t    n   = 0;
+	for (auto& close : entity_list.GetCloseMobList(target)) {
+		Mob* mob = close.second;
+		if (!mob || mob == target || mob == this || mob->IsClient() || mob->IsBot() || mob->GetHP() <= 0) {
+			continue;
+		}
+		if (mob->IsPet() && (!mob->GetOwner() || mob->GetOwner()->IsClient() || mob->GetOwner()->IsBot())) {
+			continue;
+		}
+
+		const float range = mob->GetAssistRange() + margin;
+		if (DistanceSquared(glm::vec3(target->GetPosition()), glm::vec3(mob->GetPosition())) > range * range) {
+			continue;
+		}
+		if (mob->CheckAggro(this) || !mob->GetPrimaryFaction() || mob->IsEngaged()) {
+			continue;
+		}
+		if (!(mob->GetLevel() >= 50 || mob->AlwaysAggro() || GetLevelCon(mob->GetLevel()) != ConsiderColor::Gray)) {
+			continue; // gray to us: it does not bother
+		}
+		if (mob->GetPrimaryFaction() == target->GetPrimaryFaction() && mob->IsNPC()) {
+			const auto f = zone->GetNPCFaction(mob->CastToNPC()->GetNPCFactionID());
+			if (f && f->ignore_primary_assist) {
+				continue;
+			}
+		}
+		if (target->GetReverseFactionCon(mob) > FACTION_AMIABLY || !mob->CheckLosFN(target)) {
+			continue;
+		}
+		if (target->NPCAssistCap() + static_cast<int>(n) >= cap) {
+			break;
+		}
+		++n;
+	}
+	return n;
+}
+
 void Bot::FDPullReset(Client* bot_owner) {
 	// Clear hate on both sides before standing up so the bot doesn't re-engage
 	// mobs that were aggroed during the pull, and those mobs return home cleanly.
@@ -4050,6 +4099,8 @@ void Bot::FDPullReset(Client* bot_owner) {
 	m_fd_split_asked     = false;
 	m_fd_bring_all       = false;
 	m_fd_incoming_said   = false;
+	m_fd_partner_id      = 0;
+	m_fd_gap_wait_ms     = 0;
 	m_rooted_reposition_target_id = 0;
 	m_fd_pull_add_ids.clear();
 	m_fd_tag_timer.Disable();
@@ -4071,9 +4122,14 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 	};
 
+	// The catcher says nothing of its own: the tagger speaks for the pull.
+	const bool catching = m_fd_pull_state == FDPullState::Catching;
+
 	if (!pull_target || !pull_target->IsNPC() || pull_target->GetHP() <= 0) {
 		FDPullReset(bot_owner);
-		say("FD pull target lost — aborting.");
+		if (!catching) {
+			say("FD pull target lost — aborting.");
+		}
 		return;
 	}
 
@@ -4089,10 +4145,83 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		const uint32 give_up = boss ? FD_PULL_GIVE_UP_BOSS_MS : FD_PULL_GIVE_UP_MS;
 		if (now - m_fd_pull_started_ms > give_up) {
 			FDPullReset(bot_owner);
-			say(fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName()));
+			if (!catching) {
+				say(fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName()));
+			}
 			return;
 		}
 	}
+
+	// The other monk on this pull, while it still is on it.
+	auto partner = [&]() -> Bot* {
+		Mob* m = m_fd_partner_id ? entity_list.GetMob(m_fd_partner_id) : nullptr;
+		if (!m || !m->IsBot() || m->GetHP() <= 0) {
+			return nullptr;
+		}
+		Bot* b = m->CastToBot();
+		return b->IsFDPulling() && b->GetFDPullTargetID() == m_fd_pull_target_id ? b : nullptr;
+	};
+
+	// Where we wait for a gap: off its aggro, or at tag range if that is longer.
+	const float tag_range_sq = GetFDTagRangeSq();
+	const float wait_dist    = std::max(FD_CATCH_STANDOFF, std::sqrt(tag_range_sq));
+
+	// Tagging it now would bring its friends (FriendsThatWouldHelp): hold
+	// off, standing, for a gap -- a roamer walking off, a patrol passing.
+	// The first time only for a while, then we try anyway: a feign may still
+	// split them (friends whose homes are apart). Once they are home again
+	// and still stand with it, no feign will: say so at once, rather than
+	// after three more feigns, and keep waiting.
+	auto hold_for_gap = [&](bool after_feign) -> bool {
+		const size_t friends = m_fd_bring_all ? 0 : FriendsThatWouldHelp(pull_target);
+		if (!friends) {
+			if (m_fd_gap_wait_ms) {
+				LogInfo("[FDPull] [{}] {} is clear of its friends", GetCleanName(), pull_target->GetCleanName());
+			}
+			m_fd_gap_wait_ms = 0;
+			return false;
+		}
+		if (!m_fd_gap_wait_ms) {
+			m_fd_gap_wait_ms = now;
+			LogInfo("[FDPull] [{}] {}: [{}] friends would come with it, waiting for a gap", GetCleanName(), pull_target->GetCleanName(), friends);
+		}
+		if (after_feign) {
+			if (!m_fd_split_asked) {
+				m_fd_split_asked = true;
+				say(fmt::format(
+					"{} stands with {} that would come with it. Say bring them to bring them all, or stop. I wait for a gap meanwhile.",
+					pull_target->GetCleanName(), friends
+				));
+			}
+			return true;
+		}
+		return now - m_fd_gap_wait_ms < FD_GAP_WAIT_MS;
+	};
+	auto hold_still = [&]() {
+		if (IsMoving()) {
+			StopMoving();
+		}
+		FaceTarget(pull_target);
+	};
+
+	// Up again after a feign: back in for it -- or, with the other monk
+	// bringing it or going for it, catch in turn.
+	auto stand_up = [&]() {
+		SetFeigned(false, this); // stands us up (Bot::SetFeigned)
+		m_fd_pull_add_ids.clear();
+		m_fd_gap_wait_ms = 0;
+		Bot*       mate = partner();
+		const auto ms   = mate ? mate->GetFDPullState() : FDPullState::None;
+		if (ms == FDPullState::Tagging || ms == FDPullState::RetagKiting || ms == FDPullState::Retagging) {
+			m_fd_pull_state = FDPullState::Catching;
+			LogInfo("[FDPull] [{}] up: [{}] is on {}, catching", GetCleanName(), mate->GetCleanName(), pull_target->GetCleanName());
+			return;
+		}
+		m_fd_pull_state = FDPullState::Retagging;
+		say(FriendsThatWouldHelp(pull_target) ?
+			fmt::format("Adds are home — going back for {}.", pull_target->GetCleanName()) :
+			fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName()));
+	};
 
 	// The leader said bring them: whatever follows comes along.
 	auto chased = [&]() { return !m_fd_bring_all && IsBeingChasedByAdds(pull_target); };
@@ -4137,6 +4266,8 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		m_fd_split_asked     = false;
 		m_fd_bring_all       = false;
 		m_fd_incoming_said   = false;
+		m_fd_partner_id      = 0;
+		m_fd_gap_wait_ms     = 0;
 		m_fd_pull_add_ids.clear();
 		m_fd_tag_timer.Disable();
 		m_fd_feign_check_timer.Disable();
@@ -4147,8 +4278,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	case FDPullState::Tagging: {
 		if (!m_fd_tag_timer.Enabled()) {
 			// Haven't tagged yet — move to target first
-			const float tag_range_sq = GetFDTagRangeSq();
 			float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+			if (dist_sq <= wait_dist * wait_dist && hold_for_gap(false)) {
+				hold_still();
+				return;
+			}
 			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 				return;
@@ -4209,9 +4343,27 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		m_fd_feign_check_timer.Start(FD_FEIGN_CHECK_MS);
 
 		if (AddsHaveReturned()) {
-			SetFeigned(false, this); // stands us up (Bot::SetFeigned)
-			m_fd_pull_state = FDPullState::Retagging;
-			say(fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName()));
+			stand_up();
+			break;
+		}
+
+		// On our own we need not wait for every add to be home: once the
+		// target is clear of them, with none of them near us, we get up and
+		// take it. (With a catcher out, the catcher does that, standing.)
+		if (!partner() && !pull_target->IsEngaged() && !FriendsThatWouldHelp(pull_target)) {
+			bool near_me = false;
+			for (uint16 id : m_fd_pull_add_ids) {
+				Mob*        add = entity_list.GetMob(id);
+				const float r   = add ? add->GetAggroRange() + 20.0f : 0.0f;
+				if (add && add->GetHP() > 0 && DistanceSquared(glm::vec3(add->GetPosition()), glm::vec3(GetPosition())) <= r * r) {
+					near_me = true;
+					break;
+				}
+			}
+			if (!near_me) {
+				LogInfo("[FDPull] [{}] {} is clear of its adds before they are home: up", GetCleanName(), pull_target->GetCleanName());
+				stand_up();
+			}
 		}
 		break;
 	}
@@ -4229,8 +4381,11 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
 			return;
 		}
-		const float tag_range_sq = GetFDTagRangeSq();
 		float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+		if (dist_sq <= wait_dist * wait_dist && hold_for_gap(true)) {
+			hold_still();
+			return;
+		}
 		if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
 			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
 			return;
@@ -4282,6 +4437,62 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 				StopMoving();
 			}
 			FaceTarget(pull_target);
+		}
+		break;
+	}
+
+	case FDPullState::Catching: {
+		Bot* mate = partner();
+
+		// The tagger is off the pull: it brought it in and it is in the fight
+		// (we are done), or it died or was called off (we take over).
+		if (!mate) {
+			if (pull_target->IsEngaged()) {
+				LogInfo("[FDPull] [{}] stands down: {} is in the fight", GetCleanName(), pull_target->GetCleanName());
+				FDPullReset(bot_owner);
+				return;
+			}
+			m_fd_partner_id  = 0;
+			m_fd_gap_wait_ms = 0;
+			m_fd_pull_state  = FDPullState::Retagging;
+			say(fmt::format("Taking over {}.", pull_target->GetCleanName()));
+			return;
+		}
+
+		const auto ms = mate->GetFDPullState();
+
+		// Both of us up and waiting: one goes back in for it.
+		if (ms == FDPullState::Catching && GetID() < mate->GetID()) {
+			m_fd_gap_wait_ms = 0;
+			m_fd_pull_state  = FDPullState::Retagging;
+			LogInfo("[FDPull] [{}] both catching: going in for {}", GetCleanName(), pull_target->GetCleanName());
+			return;
+		}
+
+		const float dist_sq = DistanceSquared(GetPosition(), pull_target->GetPosition());
+
+		// The tagger lies feigned and the target is clear of its friends: ours.
+		if (ms == FDPullState::FeignWait && !pull_target->IsEngaged() && !FriendsThatWouldHelp(pull_target)) {
+			if (dist_sq > tag_range_sq || !CheckLosFN(pull_target)) {
+				RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+				return;
+			}
+			InterruptSpell();
+			ExecuteFDTag(pull_target);
+			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
+			m_fd_pull_state    = FDPullState::Tagging;
+			m_fd_incoming_said = false;
+			say(fmt::format("{} is clear of its friends — got it.", pull_target->GetCleanName()));
+			return;
+		}
+
+		// Otherwise wait off it, standing. Not while it chases the tagger:
+		// it would run us over.
+		if (!pull_target->IsEngaged() && dist_sq > wait_dist * wait_dist) {
+			RunTo(pull_target->GetX(), pull_target->GetY(), pull_target->GetZ());
+		}
+		else {
+			hold_still();
 		}
 		break;
 	}
