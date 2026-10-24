@@ -25,6 +25,7 @@
 #include "data_bucket.h"
 #include "entity.h"
 #include "groups.h"
+#include "map.h"
 #include "position.h"
 #include "raids.h"
 #include "water_map.h"
@@ -166,6 +167,7 @@ constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this mu
 constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for...
 constexpr float  kPullReadyCasterFloorPct = 40.0f; // ...but more than a quarter of them under this is a WAIT
 constexpr uint32 kPullReadyBuffQuietMs   = 15000; // and no GO until the last buff went out this long ago
+constexpr uint32 kPullReadySettleMs      = 20000; // nor within this long of the unit forming
 constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
 constexpr uint32 kBuffingWindowMs        = 60000; // buffs cast in this window = "still buffing"
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
@@ -655,6 +657,9 @@ void BotTactics::Announce(Raid* raid, Group* group, Mob* speaker, const std::str
 void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 {
 	const uint32 now = Timer::GetCurrentTime();
+	if (!p.formed_ms) {
+		p.formed_ms = now;
+	}
 
 	const Overrides* ov = nullptr;
 	if (const auto it = m_overrides.find(p.key); it != m_overrides.end()) {
@@ -1629,7 +1634,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			p.camp_set &&
 			assist->GetID() != p.runner_called_id &&
 			DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) > kRunnerChaseRadius * kRunnerChaseRadius &&
-			(assist->IsFleeing() || assist->GetHPRatio() < kSnareHPRatio)
+			assist->IsFleeing() // running: low health alone is not (Derakor, flee-immune, "Runner!" at 35%)
 		) {
 			p.runner_called_id = assist->GetID();
 			LogInfo("[BotTactics] unit [{:#x}] runner [{}]", p.key, assist->GetCleanName());
@@ -2649,6 +2654,14 @@ void BotTactics::AppraiseLoot(const std::vector<Mob*>& mobs, const std::vector<u
 					continue;
 				}
 
+				// A weapon in the off hand only for a class that dual wields
+				// (a shield is not a weapon): "Velium Long Sword (secondary)"
+				// was offered to a shadow knight four times in Kael.
+				if (slot == EQ::invslot::slotSecondary && item->IsClassCommon() && item->ItemType != EQ::item::ItemTypeShield &&
+					item->Damage > 0 && !b->CanThisClassDualWield()) {
+					continue;
+				}
+
 				const EQ::ItemInstance* worn    = b->GetBotItem(slot);
 				const float             current = worn ? ItemScore(b, worn->GetItem(), slot) : 0.0f;
 				const float             gain    = ItemScore(b, item, slot) - current;
@@ -3536,8 +3549,11 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	// out; the buffing then took the rangers dry, and Silverwing was pulled
 	// with six casters empty. The healers are still the gate, but not while
 	// buffs are going out, nor with a quarter of the casters nearly empty.
+	// ...nor in the first moments of a new unit, before the first buff has
+	// gone out (Kael 2026-10-24: GO in the same second as ^createraid).
+	const bool settled = p.formed_ms && now - p.formed_ms >= kPullReadySettleMs;
 	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0 &&
-		!buffs_out && casters_dry * 4 <= casters;
+		!buffs_out && casters_dry * 4 <= casters && settled;
 
 	if (lowest_healer) {
 		*lowest_healer = lowest;
@@ -5244,6 +5260,13 @@ bool Bot::TacticsUnstick(const glm::vec3& goal, float dist)
 		return false;
 	}
 
+	// A goal with no ground (z -99999 from a failed height lookup) is not a
+	// place: never teleport there.
+	if (goal.z <= BEST_Z_INVALID + 1.0f) {
+		LogInfo("[BotTactics] [{}] stuck, but its goal has no ground: staying put", GetCleanName());
+		return false;
+	}
+
 	// A door, a ramp, a dock: rejoin rather than run into the wall forever.
 	Teleport(glm::vec4(goal, GetHeading()));
 	LogInfo("[BotTactics] [{}] stuck [{:.0f}] from its goal: rejoined", GetCleanName(), dist);
@@ -5672,6 +5695,11 @@ bool Bot::TacticsSnareRunner(Mob* tar)
 		return false;
 	}
 
+	// It never runs: no snare (Derakor, snared at 35% in Kael 2026-10-24).
+	if (tar->GetSpecialAbility(SpecialAbility::FleeingImmunity)) {
+		return false;
+	}
+
 	// Only a bot that can snare right now takes the claim. Out-of-mana
 	// rangers took it in turn, 5 s each, while Silverwing went from 35% to
 	// running (Veeshan's Peak 2026-10-24): the first snare that went off was
@@ -5897,7 +5925,13 @@ bool Bot::TacticsCampSlot(glm::vec3& out)
 		const float     heading = 512.0f * idx / n;
 		const glm::vec4 slot    = TryMoveAlong(glm::vec4(p->camp, 0.0f), radius, heading);
 
-		m_camp_slot      = glm::vec3(slot);
+		// No ground under the slot (TryMoveAlong's GetFixedZ fails against a
+		// wall or over a drop: z -99999), or another floor: stand on the camp
+		// itself. That slot was walked to, stalled, and TacticsUnstick
+		// teleported the bot there -- under the world (Kael 2026-10-24: 28
+		// "stuck [99,6xx] from its goal", bots at z -17501 .. -74050).
+		const float dz = slot.z - p->camp.z;
+		m_camp_slot      = (dz > -15.0f && dz < 15.0f) ? glm::vec3(slot) : p->camp;
 		m_camp_slot_camp = p->camp;
 		m_camp_slot_sig  = sig;
 	}
@@ -7585,6 +7619,16 @@ bool Bot::TacticsDeathSave()
 	// it never found a spell: zero DI on any main tank in three Derakor logs.
 	const uint16 sid = BuffWithEffectFor(SE_DeathSave, GetClass(), GetLevel());
 	if (!IsValidSpell(sid) || tank->FindType(SE_DeathSave) || GetMana() < spells[sid].mana || TacticsHealerHoldsOptional()) {
+		return false;
+	}
+
+	// Worth a 6 s cast: a raid target, a rare spawn, an encounter we have a
+	// row for (Derakor's rampage), or a fight measured to last. Any raid
+	// fight counted before: Kael 2026-10-24, ten DIs started on guards that
+	// died in 5-9 s, one landed.
+	const float ttd = p->MobSecondsToDeath(fight->GetID());
+	const bool  long_fight = ttd < 1.0e5f && ttd > spells[sid].cast_time / 1000.0f + 15.0f;
+	if (!(fight->IsRaidTarget() || fight->IsRareSpawn() || p->has_encounter || long_fight)) {
 		return false;
 	}
 	if (

@@ -12296,14 +12296,16 @@ void TrilogyZoneServer::HandleMoveCoin(const std::string& addr, int port, Sessio
 	// (2026-10-24). EQClassic zeroes the cursor coin on any move off the
 	// cursor (client_process.cpp ProcessOP_MoveCoin).
 	if (from_slot == 0 && to_slot == -1) {
+		// All of it: the cursor holds one stack of coin, and stale figures in
+		// the other denominations (left by the bug above) came back at every
+		// zone-in otherwise (Kael 2026-10-24: gold destroyed, 400s 425c kept).
 		auto&          pp     = s.trilogy_client->GetPP();
 		const uint32_t denom  = mc->cointype1;
 		const int64_t  amount = static_cast<int64_t>(mc->amount);
-		auto&          f      = (denom == 0) ? pp.copper_cursor :
-		                        (denom == 1) ? pp.silver_cursor :
-		                        (denom == 2) ? pp.gold_cursor   :
-		                                       pp.platinum_cursor;
-		f = (static_cast<int64_t>(f) > amount) ? static_cast<int32>(f - amount) : 0;
+		pp.platinum_cursor = 0;
+		pp.gold_cursor     = 0;
+		pp.silver_cursor   = 0;
+		pp.copper_cursor   = 0;
 		s.trilogy_client->Save();
 		LogInfo("[TrilogyZone] MoveCoin destroy char={} denom={} amount={} (cursor p={} g={} s={} c={})",
 		        s.char_id, denom, static_cast<long long>(amount),
@@ -15513,7 +15515,11 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 	// During zone-out the client is tearing down its connection and any A120 can
 	// cause an unexpected ARQ response that confuses the close handshake.
 	// Mob positions are ephemeral so they are never buffered — just skip entirely.
-	if (s.trilogy_client && s.trilogy_client->IsZoning()) return;
+	// No client either (zoned out, entity removed, CLOSE sent): there is nobody
+	// to show anything to. The ghost reconcile below took every spawn the
+	// client had known for gone and sent 52 despawns to the closed session,
+	// which held it open until a misleading "linkdead" (Kael 2026-10-24).
+	if (!s.trilogy_client || s.trilogy_client->IsZoning()) return;
 
 	// Rate-limit heartbeats. Idle/exploration: 250 ms (4 Hz) — matches EQClassic
 	// entity_list.SendPositionUpdates() interval and keeps the inbound packet flood

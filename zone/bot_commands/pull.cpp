@@ -132,6 +132,24 @@ static bool bot_command_pull_queue(Client* c, const Seperator* sep)
 		return true;
 	}
 
+	// A boss is not pulled on WAIT without saying so: Derakor was ^pulled in
+	// Kael (2026-10-24) with fifteen casters dry, and the raid wiped. Trash
+	// and named guards go straight in the queue; ^pull force skips this.
+	NPC* npc = target_mob->CastToNPC();
+	const bool boss = npc->IsRaidTarget() || npc->IsRareSpawn() || bot_tactics.EncounterFor(npc->GetNPCTypeID()) ||
+		npc->GetSpecialAbility(SpecialAbility::AreaRampage) || npc->GetLevel() >= c->GetLevel() + 5;
+	if (boss && arg != "force") {
+		if (const BotTacticsPlan* p = bot_tactics.Find(key)) {
+			bool ready = false;
+			const std::string line = bot_tactics.Readiness(*p, ready);
+			if (!ready) {
+				c->Message(Chat::Yellow, "Not ready for %s: %s", npc->GetCleanName(), line.c_str());
+				c->Message(Chat::Yellow, "^pull force to pull it anyway.");
+				return true;
+			}
+		}
+	}
+
 	size_t position = 0;
 	switch (bot_tactics.QueuePull(key, target_mob->GetID(), position)) {
 		case BotTactics::PullQueueResult::Queued:

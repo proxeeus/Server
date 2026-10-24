@@ -109,6 +109,7 @@ struct BotEncounterObservation {
 
 struct BotTacticsPlan {
 	uint32 key             = 0;
+	uint32 formed_ms       = 0;      // first built: ^ready waits a moment after (the first buffs)
 	uint32 built_ms        = 0;
 	uint32 last_used_ms    = 0;
 	bool   settings_loaded = false; // the player's saved ^tactics choices read

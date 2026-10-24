@@ -613,6 +613,13 @@ void Bot::Sit() {
 	// fixes. Whatever stands us, this caps it at one pair per kSitAfterStandMs.
 	constexpr uint32 kSitAfterStandMs = 2000;
 	const uint32     now              = Timer::GetCurrentTime();
+
+	// Never in the middle of a cast: Divine Intervention on the main tank was
+	// begun ten times in Kael (2026-10-24) and landed once -- the cleric sat
+	// down 2-6 s into its 6 s cast.
+	if (IsCasting() && GetClass() != Class::Bard) {
+		return;
+	}
 	if (m_stood_ms && now - m_stood_ms < kSitAfterStandMs) {
 		++m_sits_held;
 		if (now - m_sits_held_logged_ms > 10000) {
