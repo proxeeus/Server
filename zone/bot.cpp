@@ -3081,6 +3081,18 @@ bool Bot::TryAutoDefend(Client* bot_owner, float leash_distance) {
 					}
 
 					auto hater = entity_list.GetMob(hater_iter.spawn_id);
+
+					// A mob one of ours is pulling has us on its list from the
+					// tag on (Bot::TacticsIsIncoming): it is not attacking anyone,
+					// it is being brought in. Leave it until it is at camp.
+					if (hater && TacticsIsIncoming(hater)) {
+						if (m_auto_defend_held_id != hater->GetID()) {
+							m_auto_defend_held_id = hater->GetID();
+							LogInfo("[BotAI] [{}] auto-defend holds: [{}] is being pulled", GetCleanName(), hater->GetCleanName());
+						}
+						continue;
+					}
+
 					if (hater && hater->CastToNPC()->IsOnHatelist(bot_owner) && !hater->IsMezzed() && DistanceSquared(hater->GetPosition(), bot_owner->GetPosition()) <= leash_distance) {
 						// This is roughly equivilent to npc attacking a client pet owner
 						AddToHateList(hater, 1);

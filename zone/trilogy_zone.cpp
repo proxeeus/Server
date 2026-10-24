@@ -16243,8 +16243,22 @@ void TrilogyZoneServer::SendMobHeartbeat(const std::string& addr, int port, Sess
 		// so once they age out of v29c's staleness window they stay invisible.
 		// Event-driven culls at 600u too, so out-of-range bots need heartbeat
 		// as their sole staleness-refresh path.
+		//
+		// ...but not by it alone. The event path sends a bot's move when a
+		// movement command starts (a new path leg), and v29c gets no velocity
+		// to carry it on between updates (kVelocityWireScale=0), so a bot on
+		// one long straight run stood still on screen for all of it: a monk
+		// running out to pull showed "stuck at camp" for 16.7 s while the
+		// server had it 95 away ([Trilogy desync-pos] in_cull=1 moving=1 on
+		// every bot of a Kael raid, 2026-10-24). A refresh at most every
+		// kMovingBotRefreshMs from here fills that in; the body's own throttle
+		// (2 s idle, 200 ms in combat) bounds it further.
+		static constexpr uint64_t kMovingBotRefreshMs = 1000;
 		if (bot->IsMoving() && !bot->turning && dist_sq <= CULL_RADIUS_SQ) {
-			continue;
+			const auto lb = s.last_broadcast.find(static_cast<uint16_t>(bot->GetID()));
+			if (lb != s.last_broadcast.end() && now_ms - lb->second.sent_ms < kMovingBotRefreshMs) {
+				continue;
+			}
 		}
 
 		if (!bot->IsMoving()) {

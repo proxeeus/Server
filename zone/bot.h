@@ -1086,6 +1086,7 @@ public:
 	bool TacticsStartQueuedPull(Mob* target, Bot* partner = nullptr, bool catcher = false); // ^pull queue: monks feign-pull in parallel, in pairs in raids
 	void TacticsAbortPull();
 	glm::vec3 PullReturnPoint(Client* bot_owner); // camp if there is one, else the owner
+	bool TacticsIsIncoming(Mob* m);               // one of ours is bringing it in and it is not at camp yet: nobody goes for it
 
 	// Pets (phase 12): only a tanking pet taunts; pets leave mezzed / handled adds
 	void TacticsPetChecks();
@@ -1211,6 +1212,7 @@ private:
 	
 	Timer m_evade_timer; // can be moved to pTimers at some point
 	Timer m_auto_defend_timer;
+	uint16 m_auto_defend_held_id = 0; // TryAutoDefend: the pulled mob last left alone (logged once each)
 	Timer auto_save_timer;
 	bool m_dirtyautohaters;
 	bool m_guard_flag;

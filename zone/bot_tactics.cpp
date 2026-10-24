@@ -2581,7 +2581,8 @@ namespace {
 			}
 			Bot* b = m->CastToBot();
 			if ((b->IsFDPulling() && b->GetFDPullTargetID() == npc_id) ||
-				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget() && b->GetTarget()->GetID() == npc_id)) {
+				((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget() && b->GetTarget()->GetID() == npc_id) ||
+				(npc_id && b->GetBringingInID() == npc_id)) {
 				return b;
 			}
 		}
@@ -6345,6 +6346,31 @@ void Bot::TacticsAbortPull()
 	if (HasPet()) {
 		GetPet()->SetPetOrder(m_previous_pet_order);
 	}
+}
+
+// The plan's incoming filter (Rebuild), asked live by a bot about to engage
+// something on its own -- TryAutoDefend. A bot's tag puts its owner on the
+// mob's hate list (Mob::AddToHateList: "if other is a bot, add the bots client
+// to the hate list"), and auto-defend sends every bot of that owner at
+// anything with the owner on its list: the whole raid went for each mob the
+// monks tagged, the moment they tagged it, wherever it was (Kael 2026-10-24,
+// three sessions -- the plan's assist never picked those mobs at all).
+bool Bot::TacticsIsIncoming(Mob* m)
+{
+	const BotTacticsPlan* p = GetTacticsPlan();
+	if (!p || !m || !m->IsNPC()) {
+		return false;
+	}
+
+	Mob* leader = p->camp_leader_id ? entity_list.GetMob(p->camp_leader_id) : nullptr;
+	if (!p->camp_set && !leader) {
+		return false;
+	}
+	const glm::vec3 home = p->camp_set ? p->camp : glm::vec3(leader->GetPosition());
+	if (DistanceSquaredNoZ(glm::vec3(m->GetPosition()), home) <= kCampArriveRadius * kCampArriveRadius) {
+		return false; // here: the camp's fight
+	}
+	return PullerOf(*p, m->GetID()) != nullptr;
 }
 
 glm::vec3 Bot::PullReturnPoint(Client* bot_owner)
