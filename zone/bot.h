@@ -950,6 +950,10 @@ public:
 	bool TryMoveToCast(Client* leash_owner, float leash_distance);
 	void NoteOutOfRangeCast(uint16 spell_id, const Mob* tar);
 	void ClearCastRangeIntent();
+	// Walking to cast on this target was given up a moment ago: don't start again
+	bool CastWalkGivenUp(uint16 target_id) const
+		{ return target_id == m_cast_giveup_target_id && Timer::GetCurrentTime() < m_cast_giveup_until_ms; }
+	void GiveUpCastWalk(uint16 target_id);
 	bool IsHoldingCastPosition() const { return m_cast_position_hold_ms > Timer::GetCurrentTime(); }
 
 	// Tactics (bot_tactics.cpp, docs/BOT_AI_REWORK.md phase 2+): the shared
@@ -1209,6 +1213,8 @@ private:
 	uint8  m_cast_range_priority   = 0;     // 3 heal, 2 other beneficial, 1 detrimental
 	uint32 m_cast_range_expire_ms  = 0;
 	bool   m_cast_range_moving     = false;
+	uint16 m_cast_giveup_target_id = 0;     // walking to cast on it was given up...
+	uint32 m_cast_giveup_until_ms  = 0;     // ...so no new walk to it before then
 	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
 
 	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
@@ -1222,6 +1228,9 @@ private:
 	uint32    m_encounter_reposition_ms = 0;
 	uint32    m_owner_hold_until_ms  = 0;   // holding camp for a dead owner until then; 0 = not
 	uint16    m_npc_charmer_id       = 0;   // the NPC whose charm holds us; 0 = none
+	uint32    m_stood_ms             = 0;   // last stood up from sitting (Sit waits a moment after)
+	uint32    m_sits_held            = 0;
+	uint32    m_sits_held_logged_ms  = 0;
 	uint32    m_owner_hold_check_ms  = 0;   // next look at the hold bucket for a ^recall
 	uint32    m_owner_rez_retry_ms   = 0;
 	bool      m_aggro_backoff        = false; // holding damage until the tank's lead is back

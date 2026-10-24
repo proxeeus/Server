@@ -605,6 +605,24 @@ void Bot::ChangeBotArcherWeapons(bool isArcher) {
 }
 
 void Bot::Sit() {
+	// Stood up a moment ago -- to walk, to cast, to step -- so not straight
+	// back down. IsSitting() is false while moving, so the meditate check
+	// sat a walking bot, which stopped the walk, which stood it again: 6-7
+	// sit/stand pairs a bot a second at the end of a Veeshan's Peak fight
+	// (2026-10-24, 234 appearance packets in one second), after both Kael
+	// fixes. Whatever stands us, this caps it at one pair per kSitAfterStandMs.
+	constexpr uint32 kSitAfterStandMs = 2000;
+	const uint32     now              = Timer::GetCurrentTime();
+	if (m_stood_ms && now - m_stood_ms < kSitAfterStandMs) {
+		++m_sits_held;
+		if (now - m_sits_held_logged_ms > 10000) {
+			LogInfo("[BotAI] [{}] sit held [{}] times: stood up again within [{}] ms", GetCleanName(), m_sits_held, kSitAfterStandMs);
+			m_sits_held_logged_ms = now;
+			m_sits_held           = 0;
+		}
+		return;
+	}
+
 	if (IsMoving()) {
 		moved = false;
 		StopNavigation();
@@ -614,6 +632,9 @@ void Bot::Sit() {
 }
 
 void Bot::Stand() {
+	if (GetAppearance() == eaSitting) {
+		m_stood_ms = Timer::GetCurrentTime();
+	}
 	SetAppearance(eaStanding);
 }
 
@@ -2602,13 +2623,14 @@ void Bot::AI_Process()
 				return;
 			}
 
-			// Raid encounter: casters out of its reach, everyone out of its front
-			if (TacticsEncounterPositioning(tar)) {
+			// The main target is low or running: one of us snares it -- before
+			// any repositioning, which would take the turn of a caster in reach
+			if (TacticsSnareRunner(tar)) {
 				return;
 			}
 
-			// The main target is low or running: one of us snares it
-			if (TacticsSnareRunner(tar)) {
+			// Raid encounter: casters out of its reach, everyone out of its front
+			if (TacticsEncounterPositioning(tar)) {
 				return;
 			}
 
@@ -2886,7 +2908,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 			"[BotAI] [{}] gave up moving to cast [{}] on [{}]: no line of sight at [{:.0f}]",
 			GetCleanName(), what, tar->GetCleanName(), sqrtf(dist2)
 		);
-		ClearCastRangeIntent();
+		GiveUpCastWalk(tar->GetID());
 		return false;
 	}
 
@@ -2898,7 +2920,7 @@ bool Bot::TryMoveToCast(Client* leash_owner, float leash_distance)
 			GetCleanName(), what, tar->GetCleanName()
 		);
 		m_cast_progress.Reset();
-		ClearCastRangeIntent();
+		GiveUpCastWalk(tar->GetID());
 		return false;
 	}
 

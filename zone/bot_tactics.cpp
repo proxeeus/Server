@@ -125,6 +125,7 @@ constexpr uint32 kAutoPullTimeoutMs  = 60000;  // a pull not home by then is cal
 constexpr float  kSnareHPRatio       = 35.0f;  // the main target under this: snare it before it runs
 constexpr uint32 kSnareClaimMs       = 5000;   // one snare attempt in the air
 constexpr float  kRunnerChaseRadius  = 120.0f; // with a camp, nobody chases past this from it
+constexpr uint32 kRunnerGiveUpMs     = 10000;  // a runner that long past the leash is gone: the fight is over
 constexpr int64  kAggroStopPct       = 80;     // damage stops at this % of the tank's hate...
 constexpr int64  kAggroResumePct     = 70;     // ...and starts again under this
 constexpr uint32 kSituationalCheckMs = 2000;   // breath / resist needs looked at this often
@@ -158,7 +159,9 @@ constexpr float  kCasterBuffManaPct     = 40.0f; // ...other casters above this
 constexpr float  kRaidHealerBuffManaPct = 90.0f; // ...a raid's healers above this: their mana is the fight's CHs
 constexpr float  kPullReadyHealerManaPct = 95.0f; // "GO": every healer at this much mana...
 constexpr float  kPullReadyTankHPPct     = 95.0f; // ...the main tank at this much health, nobody fallen
-constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for
+constexpr float  kPullReadyCasterManaPct = 80.0f; // other casters under this are named, not waited for...
+constexpr float  kPullReadyCasterFloorPct = 40.0f; // ...but more than a quarter of them under this is a WAIT
+constexpr uint32 kPullReadyBuffQuietMs   = 15000; // and no GO until the last buff went out this long ago
 constexpr uint32 kReadinessReportMs      = 60000; // resting: the readiness line this often
 constexpr uint32 kBuffingWindowMs        = 60000; // buffs cast in this window = "still buffing"
 constexpr int    kBuffSlotsKeptFree     = 3;     // with this few free slots left, only core buffs go on
@@ -861,6 +864,50 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 				LogInfo("[BotTactics] unit [{:#x}] only mezzed adds left: [{}] next", p.key, best->GetCleanName());
 			}
 			assist = best;
+		}
+	}
+
+	// A runner nobody chases is gone once it has been past the leash a while:
+	// the fight is over -- rest, resurrect -- until it stops running or comes
+	// back. Silverwing (Veeshan's Peak 2026-10-24) fled off the bridge at 11%:
+	// the CH chain healed the tank for her for half a minute, then spun out
+	// of mana, and for two minutes nobody medded or resurrected anyone.
+	if (assist && p.camp_set) {
+		const bool far_and_running = assist->IsFleeing() &&
+			DistanceSquaredNoZ(glm::vec3(assist->GetPosition()), p.camp) > kRunnerChaseRadius * kRunnerChaseRadius;
+
+		if (!far_and_running) {
+			if (p.runner_gone_id == assist->GetID()) {
+				LogInfo("[BotTactics] unit [{:#x}] runner [{}] is back", p.key, assist->GetCleanName());
+				p.runner_gone_id = 0;
+			}
+			p.runner_far_id       = 0;
+			p.runner_far_since_ms = 0;
+		}
+		else if (p.runner_far_id != assist->GetID()) {
+			p.runner_far_id       = assist->GetID();
+			p.runner_far_since_ms = now;
+		}
+		else if (now - p.runner_far_since_ms >= kRunnerGiveUpMs) {
+			if (p.runner_gone_id != assist->GetID()) {
+				p.runner_gone_id = assist->GetID();
+				LogInfo("[BotTactics] unit [{:#x}] runner [{}] got away: fight over", p.key, assist->GetCleanName());
+				Announce(raid, group, (mt && mt->IsBot()) ? mt : first_bot, fmt::format("{} got away.", assist->GetCleanName()));
+
+				// Off every hate list of ours, so the bots can sit.
+				for (Mob* m : mobs) {
+					for (Mob* who : {m, m->GetPet()}) {
+						if (!who || who->IsClient()) {
+							continue;
+						}
+						who->RemoveFromHateList(assist);
+						if (who->GetTarget() == assist) {
+							who->SetTarget(nullptr);
+						}
+					}
+				}
+			}
+			assist = nullptr;
 		}
 	}
 
@@ -2242,6 +2289,20 @@ bool BotTactics::ClaimCast(uint32 key, uint16 target_id, uint32 tag, uint16 cast
 	return true;
 }
 
+void BotTactics::ReleaseCast(uint32 key, uint16 target_id, uint32 tag, uint16 caster_id)
+{
+	BotTacticsPlan* p = Find(key);
+	if (!p) {
+		return;
+	}
+
+	const uint64 claim = (static_cast<uint64>(target_id) << 32) | tag;
+	const auto   it    = p->cast_claims.find(claim);
+	if (it != p->cast_claims.end() && it->second.first == caster_id) {
+		p->cast_claims.erase(it);
+	}
+}
+
 bool BotTactics::ReloadEncounters(std::string& summary_out)
 {
 	m_encounters.clear();
@@ -2933,7 +2994,9 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	Mob*   lowest       = nullptr;
 	float  lowest_pct   = 101.0f;
 	uint32 eta_s        = 0;
+	int    casters      = 0;
 	int    casters_low  = 0;
+	int    casters_dry  = 0;
 
 	for (uint16 id : p.members) {
 		Mob* m = entity_list.GetMob(id);
@@ -2946,8 +3009,12 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 		const float pct    = m->GetManaRatio();
 
 		if (!healer) {
+			++casters;
 			if (pct < kPullReadyCasterManaPct) {
 				++casters_low;
+			}
+			if (pct < kPullReadyCasterFloorPct) {
+				++casters_dry;
 			}
 			continue;
 		}
@@ -2978,15 +3045,21 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	const float tank_hp = IsAlive(tank) ? tank->GetHPRatio() : 0.0f;
 	const size_t fallen = p.fallen.size();
 
-	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0;
+	// Buffs still going out: the reason mana is not climbing yet, said first.
+	const uint32 now     = Timer::GetCurrentTime();
+	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
+	const bool   buffs_out = std::any_of(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t < kPullReadyBuffQuietMs; });
+
+	// Veeshan's Peak 2026-10-24: GO came at the zone-in, before a buff went
+	// out; the buffing then took the rangers dry, and Silverwing was pulled
+	// with six casters empty. The healers are still the gate, but not while
+	// buffs are going out, nor with a quarter of the casters nearly empty.
+	ready = healers > 0 && healers_full == healers && (!tank || tank_hp >= kPullReadyTankHPPct) && fallen == 0 &&
+		!buffs_out && casters_dry * 4 <= casters;
 
 	if (lowest_healer) {
 		*lowest_healer = lowest;
 	}
-
-	// Buffs still going out: the reason mana is not climbing yet, said first.
-	const uint32 now     = Timer::GetCurrentTime();
-	const size_t buffing = std::count_if(p.buff_cast_ms.begin(), p.buff_cast_ms.end(), [&](uint32 t) { return now - t <= kBuffingWindowMs; });
 
 	std::string line = fmt::format("{} -- ", ready ? "GO" : "WAIT");
 	if (buffing) {
@@ -3011,6 +3084,9 @@ std::string BotTactics::Readiness(const BotTacticsPlan& p, bool& ready, Mob** lo
 	}
 	if (casters_low) {
 		line += fmt::format("; {} other casters under {:.0f}%", casters_low, kPullReadyCasterManaPct);
+	}
+	if (casters_dry * 4 > casters) {
+		line += fmt::format(" ({} of {} under {:.0f}%)", casters_dry, casters, kPullReadyCasterFloorPct);
 	}
 	return line + ".";
 }
@@ -4391,7 +4467,8 @@ void Bot::TacticsCheckLineOfSight(Mob* tar)
 	// Casters and healers stand off and cast; melee has the mob in its face.
 	const uint8 c      = GetClass();
 	const bool  caster = GetArchetype() == Archetype::Caster || c == Class::Cleric || c == Class::Druid || c == Class::Shaman;
-	if (!tar || !caster || c == Class::Bard || !GetTacticsPlan() || m_cast_range_target_id || IsRooted()) {
+	if (!tar || !caster || c == Class::Bard || !GetTacticsPlan() || m_cast_range_target_id || IsRooted() ||
+		CastWalkGivenUp(tar->GetID())) {
 		return;
 	}
 
@@ -5113,15 +5190,25 @@ bool Bot::TacticsSnareRunner(Mob* tar)
 		return false;
 	}
 
-	// Only a bot with a snare takes the claim.
-	if (!IsValidSpell(GetFirstBotSpellBySpellType(this, SpellType_Snare).SpellId)) {
+	// Only a bot that can snare right now takes the claim. Out-of-mana
+	// rangers took it in turn, 5 s each, while Silverwing went from 35% to
+	// running (Veeshan's Peak 2026-10-24): the first snare that went off was
+	// cast after she fled.
+	const BotSpell snare = GetFirstBotSpellBySpellType(this, SpellType_Snare);
+	if (!IsValidSpell(snare.SpellId) || IsCasting() || GetMana() < snare.ManaCost || !CheckSpellRecastTimer(snare.SpellId)) {
 		return false;
 	}
 	if (!bot_tactics.ClaimCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID(), kSnareClaimMs)) {
 		return false;
 	}
 
-	return AICastSpell(tar, 100, SpellType_Snare);
+	if (AICastSpell(tar, 100, SpellType_Snare)) {
+		LogInfo("[BotTactics] [{}] snares [{}] at [{:.0f}]%", GetCleanName(), tar->GetCleanName(), tar->GetHPRatio());
+		return true;
+	}
+
+	bot_tactics.ReleaseCast(m_tactics_key, tar->GetID(), BotTactics::kClaimSnare, GetID());
+	return false;
 }
 
 bool Bot::TacticsTooFarFromCamp(Mob* tar)

@@ -19,6 +19,8 @@
 #include "../common/repositories/bot_spells_entries_repository.h"
 #include "../common/repositories/npc_spells_repository.h"
 
+#include <algorithm>
+
 bool Bot::AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes) {
 
 	// Bot AI
@@ -2975,11 +2977,14 @@ BotSpell Bot::GetBestBotWizardNukeSpellByTargetResists(Bot* botCaster, Mob* targ
 
 	if (botCaster && target) {
 		const int lureResisValue = -100;
-		const int maxTargetResistValue = 300;
-		bool selectLureNuke = false;
-
-		if ((target->GetMR() > maxTargetResistValue) && (target->GetCR() > maxTargetResistValue) && (target->GetFR() > maxTargetResistValue))
-			selectLureNuke = true;
+		// A lure (-300 to resist) earns its mana once even the weakest of a
+		// wizard's three elements resists like a raid mob. The old test
+		// wanted all three over 300: Silverwing's cold is 300 (fire and magic
+		// 425), so eleven Ice Spears went in and were resisted while Lure of
+		// Ice sat in the book (Veeshan's Peak 2026-10-24).
+		const int lureTargetResistFloor = 200;
+		const bool selectLureNuke =
+			std::min({target->GetMR(), target->GetCR(), target->GetFR()}) >= lureTargetResistFloor;
 
 
 		std::list<BotSpell> botSpellList = GetBotSpellsForSpellEffectAndTargetType(botCaster, SE_CurrentHP, ST_Target);
@@ -3964,7 +3969,7 @@ void Bot::NoteOutOfRangeCast(uint16 spell_id, const Mob* tar)
 	// "gave up: no line of sight at [9]", 223 times in one fight).
 	if (
 		!tar || tar == this || GetClass() == Class::Bard || !IsValidSpell(spell_id) ||
-		spells[spell_id].target_type == ST_Self
+		spells[spell_id].target_type == ST_Self || CastWalkGivenUp(tar->GetID())
 	) {
 		return;
 	}
@@ -3998,6 +4003,17 @@ void Bot::NoteOutOfRangeCast(uint16 spell_id, const Mob* tar)
 	m_cast_range_spell_id  = spell_id;
 	m_cast_range_priority  = priority;
 	m_cast_range_expire_ms = now + 4000;
+}
+
+// Without a pause the next cast check armed the same walk at once: Dindaaf
+// "gave up moving to cast [Complete Healing] on [Rabkuk]: no line of sight
+// at [5]" 25 times in 2 s (Veeshan's Peak 2026-10-24).
+void Bot::GiveUpCastWalk(uint16 target_id)
+{
+	constexpr uint32 kCastGiveUpMs = 8000;
+	m_cast_giveup_target_id = target_id;
+	m_cast_giveup_until_ms  = Timer::GetCurrentTime() + kCastGiveUpMs;
+	ClearCastRangeIntent();
 }
 
 void Bot::ClearCastRangeIntent()

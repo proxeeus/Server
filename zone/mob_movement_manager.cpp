@@ -653,6 +653,7 @@ struct NavigateTo {
 struct MobMovementEntry {
 	std::deque<std::unique_ptr<IMovementCommand>> Commands;
 	NavigateTo                                    NavTo;
+	uint32                                        StuckLoggedMs = 0; // last "no way to" line (HandleStuckBehavior)
 };
 
 void AdjustRoute(std::list<IPathfinder::IPathNode> &nodes, Mob *who)
@@ -1505,6 +1506,23 @@ void MobMovementManager::HandleStuckBehavior(Mob *who, float x, float y, float z
 	if (who->IsRunningFromFear()) {
 		PushStopMoving(ent.second);
 		who->FearPathStuck();
+		return;
+	}
+
+	// A bot takes the straight line only where the ground along it holds and
+	// no wall is in the way. Bot Cendori walked for line of sight to Silverwing
+	// on the floor below the Veeshan's Peak bridge, the path came back stuck,
+	// and RunToTarget took it off the edge.
+	if (who->IsBot() && !who->CheckCoordLosNoZLeaps(who->GetX(), who->GetY(), who->GetZ(), x, y, z, 5.0f)) {
+		const uint32 now = Timer::GetCurrentTime();
+		if (now - ent.second.StuckLoggedMs > 5000) {
+			ent.second.StuckLoggedMs = now;
+			LogInfo(
+				"[BotAI] [{}] no way to ({:.0f}, {:.0f}, {:.0f}): the straight line drops or is walled off",
+				who->GetCleanName(), x, y, z
+			);
+		}
+		PushStopMoving(ent.second);
 		return;
 	}
 

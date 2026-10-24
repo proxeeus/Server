@@ -952,6 +952,28 @@ void Mob::ProcessForcedMovement()
 			}
 		}
 
+		// No push over an edge: the wall check above stops only walls, and
+		// FixZ below drops the mob to whatever floor is under it. A push
+		// that would leave the ground more than a step below where it stands
+		// is dropped (melee push, spell knockback: Chaos Breath on the
+		// Veeshan's Peak bridge).
+		if (bPassed && zone->HasMap()) {
+			glm::vec3   hit;
+			glm::vec3   here(m_Position.x, m_Position.y, m_Position.z + 5.0f);
+			glm::vec3   there(m_Position.x + m_Delta.x, m_Position.y + m_Delta.y, m_Position.z + 5.0f);
+			const float ground_here  = zone->zonemap->FindBestZ(here, &hit);
+			const float ground_there = zone->zonemap->FindBestZ(there, &hit);
+			if (ground_here > BEST_Z_INVALID && (ground_there <= BEST_Z_INVALID || ground_there < ground_here - 20.0f)) {
+				LogInfo(
+					"[ForcedMovement] [{}] push of ({:.1f}, {:.1f}) dropped: ground [{:.1f}] -> [{:.1f}]",
+					GetCleanName(), m_Delta.x, m_Delta.y, ground_here, ground_there
+				);
+				ForcedMovement = 0;
+				m_Delta        = glm::vec4();
+				return;
+			}
+		}
+
 		if (bPassed) {
 			ForcedMovement = 0;
 			Teleport(m_Position + m_Delta);
