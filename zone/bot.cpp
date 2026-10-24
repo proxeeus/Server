@@ -4043,14 +4043,20 @@ void Bot::FDPullReset(Client* bot_owner) {
 void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 	auto* pull_target = entity_list.GetMob(m_fd_pull_target_id);
 
+	// Every step goes to the raid / group and to the zone log: the chat alone
+	// left the Kael session of 2026-10-24 unreadable afterwards.
+	auto say = [&](const std::string& msg) {
+		LogInfo("[FDPull] [{}] {}", GetCleanName(), msg);
+		if (raid) {
+			raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
+		} else {
+			BotGroupSay(this, msg.c_str());
+		}
+	};
+
 	if (!pull_target || !pull_target->IsNPC() || pull_target->GetHP() <= 0) {
 		FDPullReset(bot_owner);
-		const char* msg = "FD pull target lost — aborting.";
-		if (raid) {
-			raid->RaidSay(msg, GetCleanName(), 0, 100);
-		} else {
-			BotGroupSay(this, msg);
-		}
+		say("FD pull target lost — aborting.");
 		return;
 	}
 
@@ -4061,16 +4067,37 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		m_fd_pull_started_ms = now;
 	}
 	else if (now - m_fd_pull_started_ms > FD_PULL_GIVE_UP_MS) {
-		const auto msg = fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName());
-		LogInfo("[BotTactics] [{}] FD pull of [{}] given up after [{}]s", GetCleanName(), pull_target->GetCleanName(), FD_PULL_GIVE_UP_MS / 1000);
 		FDPullReset(bot_owner);
-		if (raid) {
-			raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
-		} else {
-			BotGroupSay(this, msg.c_str());
-		}
+		say(fmt::format("Couldn't get {} alone. Leaving it.", pull_target->GetCleanName()));
 		return;
 	}
+
+	// Already on someone else of ours: it is in the fight, the pull is done.
+	// Without this the monk feigned at a mob the raid had been beating for a
+	// second, and lay there through the fight.
+	auto in_the_fight = [&]() {
+		Mob* top = pull_target->GetHateTop();
+		return top && top != this && m_fd_pull_state != FDPullState::FeignWait;
+	};
+
+	// Bring it in: the hand-off to the plain pull, which walks it into camp.
+	auto bring_it_in = [&]() {
+		InterruptSpell();
+		WipeHateList();
+		AddToHateList(pull_target, 1);
+		SetTarget(pull_target);
+		SetPullingFlag();
+		bot_owner->SetBotPulling();
+		if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
+			GetPet()->WipeHateList();
+			GetPet()->SetTarget(nullptr);
+			GetPet()->SetPetOrder(SPO_Guard);
+		}
+		m_fd_pull_state      = FDPullState::None;
+		m_fd_pull_started_ms = 0;
+		m_fd_tag_timer.Disable();
+		m_fd_feign_check_timer.Disable();
+	};
 
 	switch (m_fd_pull_state) {
 
@@ -4087,40 +4114,31 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			InterruptSpell();
 			ExecuteFDTag(pull_target);
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
-			const auto tag_msg = fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(tag_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, tag_msg.c_str());
-			}
+			say(fmt::format("Tagging {} — watching for adds.", pull_target->GetCleanName()));
 		} else {
-			// After tagging: run toward owner for FD_TAG_WAIT_MS to create separation, then FD.
-			// Never FD immediately — the running distance determines how far adds must walk home
-			// before the monk re-enters their aggro range on the next approach.
+			// After tagging: run toward camp for FD_TAG_WAIT_MS, which is the
+			// separation the adds must walk back, then see who followed.
+			if (in_the_fight()) {
+				FDPullReset(bot_owner);
+				say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
+				return;
+			}
 			if (!m_fd_tag_timer.Check()) {
 				const glm::vec3 back = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
 				RunTo(back.x, back.y, back.z);
+			} else if (!IsBeingChasedByAdds(pull_target)) {
+				// Nothing came along: no feign (it made a lone mob forget us,
+				// walk home and wait to be tagged again). Kite it in.
+				m_fd_pull_state = FDPullState::RetagKiting;
+				say(fmt::format("{} came alone — bringing it in.", pull_target->GetCleanName()));
+			} else if (ExecuteFeignDeath()) {
+				m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
+				m_fd_pull_state = FDPullState::FeignWait;
+				say(fmt::format("Adds incoming — feigning ({} on me).", 1 + m_fd_pull_add_ids.size()));
 			} else {
-				const bool had_adds = IsBeingChasedByAdds(pull_target);
-				const bool fd_ok = ExecuteFeignDeath();
-				if (fd_ok) {
-					m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
-					m_fd_pull_state = FDPullState::FeignWait;
-					const char* fd_msg = had_adds ? "Adds incoming — feigning." : "Feigning — pulling solo.";
-					if (raid) {
-						raid->RaidSay(fd_msg, GetCleanName(), 0, 100);
-					} else {
-						BotGroupSay(this, fd_msg);
-					}
-				} else {
-					// FD failed — stay put, wait for reuse timer before retrying
-					m_fd_pull_state = FDPullState::FDCooldown;
-					if (raid) {
-						raid->RaidSay("FD failed — holding position, will retry.", GetCleanName(), 0, 100);
-					} else {
-						BotGroupSay(this, "FD failed — holding position, will retry.");
-					}
-				}
+				// FD failed — stay put, wait for reuse timer before retrying
+				m_fd_pull_state = FDPullState::FDCooldown;
+				say("FD failed — holding position, will retry.");
 			}
 		}
 		break;
@@ -4133,14 +4151,9 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		m_fd_feign_check_timer.Start(FD_FEIGN_CHECK_MS);
 
 		if (AddsHaveReturned()) {
-			SetFeigned(false, this);
+			SetFeigned(false, this); // stands us up (Bot::SetFeigned)
 			m_fd_pull_state = FDPullState::Retagging;
-			const auto alone_msg = fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(alone_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, alone_msg.c_str());
-			}
+			say(fmt::format("{} is alone — moving in to re-tag.", pull_target->GetCleanName()));
 		}
 		break;
 	}
@@ -4150,11 +4163,12 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		if (IsBeingChasedByAdds(pull_target)) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			m_fd_pull_state = FDPullState::Tagging;
-			if (raid) {
-				raid->RaidSay("Adds aggroed on approach — running back.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "Adds aggroed on approach — running back.");
-			}
+			say("Adds aggroed on approach — running back.");
+			return;
+		}
+		if (in_the_fight()) {
+			FDPullReset(bot_owner);
+			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
 			return;
 		}
 		const float tag_range_sq = GetFDTagRangeSq();
@@ -4167,12 +4181,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		InterruptSpell();
 		ExecuteFDTag(pull_target);
 		m_fd_pull_state = FDPullState::RetagKiting;
-		const auto retag_msg = fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName());
-		if (raid) {
-			raid->RaidSay(retag_msg.c_str(), GetCleanName(), 0, 100);
-		} else {
-			BotGroupSay(this, retag_msg.c_str());
-		}
+		say(fmt::format("Re-tagging {} — kiting back.", pull_target->GetCleanName()));
 		break;
 	}
 
@@ -4180,38 +4189,20 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		if (IsBeingChasedByAdds(pull_target)) {
 			m_fd_tag_timer.Start(FD_TAG_WAIT_MS);
 			m_fd_pull_state = FDPullState::Tagging;
-			if (raid) {
-				raid->RaidSay("Adds re-aggroed — running back.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "Adds re-aggroed — running back.");
-			}
+			say("Adds re-aggroed — running back.");
 			return;
 		}
 
 		const glm::vec3 back          = PullReturnPoint(bot_owner); // camp, not wherever the owner stands
 		float           owner_dist_sq = DistanceSquared(glm::vec3(GetPosition()), back);
+		if (in_the_fight()) {
+			FDPullReset(bot_owner);
+			say(fmt::format("{} is in the fight already.", pull_target->GetCleanName()));
+			return;
+		}
 		if (owner_dist_sq <= FD_ALONE_RADIUS_SQ) {
-			InterruptSpell();
-			WipeHateList();
-			AddToHateList(pull_target, 1);
-			SetTarget(pull_target);
-			SetPullingFlag();
-			bot_owner->SetBotPulling();
-			if (HasPet() && (GetClass() != Class::Enchanter || GetPet()->GetPetType() != petAnimation || GetAA(aaAnimationEmpathy) >= 1)) {
-				GetPet()->WipeHateList();
-				GetPet()->SetTarget(nullptr);
-				GetPet()->SetPetOrder(SPO_Guard);
-			}
-			m_fd_pull_state      = FDPullState::None;
-			m_fd_pull_started_ms = 0;
-			m_fd_tag_timer.Disable();
-			m_fd_feign_check_timer.Disable();
-			const auto pull_msg = fmt::format("Incoming: {}, alone!", pull_target->GetCleanName());
-			if (raid) {
-				raid->RaidSay(pull_msg.c_str(), GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, pull_msg.c_str());
-			}
+			bring_it_in();
+			say(fmt::format("Incoming: {}, alone!", pull_target->GetCleanName()));
 			return;
 		}
 
@@ -4225,22 +4216,13 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 			return;
 		}
 		m_fd_reuse_timer.Disable();
-		const bool fd_ok = ExecuteFeignDeath();
-		if (fd_ok) {
+		if (ExecuteFeignDeath()) {
 			m_fd_feign_check_timer.Start(FD_FEIGN_INITIAL_WAIT_MS);
 			m_fd_pull_state = FDPullState::FeignWait;
-			if (raid) {
-				raid->RaidSay("FD retry succeeded — feigning.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "FD retry succeeded — feigning.");
-			}
+			say("FD retry succeeded — feigning.");
 		} else {
 			// Still failed — ExecuteFeignDeath restarted the reuse timer; stay in FDCooldown
-			if (raid) {
-				raid->RaidSay("FD failed again — waiting.", GetCleanName(), 0, 100);
-			} else {
-				BotGroupSay(this, "FD failed again — waiting.");
-			}
+			say("FD failed again — waiting.");
 		}
 		break;
 	}
@@ -9883,7 +9865,17 @@ void Bot::SetFeigned(bool in_feigned, Bot* b) {
 	else {
 		forget_timer.Disable();
 	}
+
+	// Up again: the feign was only an appearance packet (Animation 114, see
+	// ExecuteFeignDeath), so stand where the client can see it. Without this
+	// the FD puller re-tagged and walked about lying down, and every later
+	// feign was the same packet to the client: Kael 2026-10-24, two minutes
+	// of a monk "sliding on the floor" that never seemed to feign.
+	const bool was_feigned = feigned;
 	feigned = in_feigned;
+	if (was_feigned && !in_feigned && GetHP() > 0) {
+		SetAppearance(eaStanding);
+	}
 }
 
 void Bot::Signal(int signal_id)
