@@ -36,6 +36,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <iterator>
@@ -111,7 +112,10 @@ constexpr uint32 kOwnerHoldMs      = 10 * 60 * 1000; // bots hold camp this long
 constexpr uint32 kRezRetryMs       = 60000; // the owner's rez request goes out again this often
 constexpr float  kHoldChaseRadius  = 150.0f; // holding bots do not chase further than this from camp
 constexpr float  kAutoPullRadius     = 250.0f; // default: pull what is within this of camp
-constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor
+constexpr float  kAutoPullMaxZ       = 60.0f;  // ...on about the same floor (without a navmesh)
+constexpr float  kFixedCampRadius    = 100.0f; // ^pull auto: the leader within this of a fixed camp
+constexpr float  kWalkSlack          = 1.5f;   // a mob may be this much further by its route than the radius
+constexpr uint32 kWalkCacheMs        = 30000;  // a route from camp measured again after this
 constexpr float  kAutoPullSocialDist = 35.0f;  // same-faction idle mobs this close come along
 constexpr uint32 kAutoPullGapMs      = 4000;   // breath between pulls
 constexpr uint32 kAutoPullTryMs      = 2000;   // look for a mob at most this often
@@ -260,6 +264,37 @@ bool BetterTank(Mob* a, Mob* b)
 }
 
 // The NPC `m` is fighting, once `m` is on its hate list.
+// The walk from one point to the other by the zone's navmesh; below 0 when
+// there is no full route (another floor with no way down, behind a wall).
+float WalkDistance(const glm::vec3& from, const glm::vec3& to)
+{
+	if (!zone || !zone->pathing) {
+		return glm::distance(from, to);
+	}
+
+	PathfinderOptions opts;
+	opts.smooth_path = false; // the corners are enough to measure it
+	opts.flags       = PathingNotDisabled ^ PathingZoneLine;
+
+	bool partial = false;
+	bool stuck   = false;
+	const auto route = zone->pathing->FindPath(from, to, partial, stuck, opts);
+	if (partial || route.empty()) {
+		return -1.0f;
+	}
+
+	float     len  = 0.0f;
+	glm::vec3 prev = from;
+	for (const auto& node : route) {
+		if (node.teleport) {
+			continue;
+		}
+		len += glm::distance(prev, node.pos);
+		prev = node.pos;
+	}
+	return len;
+}
+
 Mob* FightingTarget(Mob* m)
 {
 	if (!IsAlive(m)) {
@@ -1005,7 +1040,7 @@ void BotTactics::Rebuild(BotTacticsPlan& p, Raid* raid, Group* group)
 			// Auto-pull is opt-in and nothing said so: tell the player once.
 			if (!p.camp_hint_given && !(ov && ov->auto_pull) && leader->IsClient()) {
 				p.camp_hint_given = true;
-				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Type ^tactics pull on to let them pull for you.");
+				leader->Message(Chat::Yellow, "Your bots made camp here and wait for you to pull. Target a mob and ^pull to send a monk for it; ^setcamp then ^pull auto to let them pull on their own.");
 			}
 		}
 
@@ -1836,7 +1871,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		return;
 	}
 
-	if (!p.auto_pull || !p.camp_set || !leader || !IsAlive(leader)) {
+	if (!p.auto_pull || !leader || !IsAlive(leader)) {
 		return;
 	}
 
@@ -1853,7 +1888,22 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	if (now - p.autopull_last_try_ms < kAutoPullTryMs) {
 		return;
 	}
-	if (DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kCampRadius * kCampRadius) {
+
+	// Pulling on its own is for a camp the player chose (^setcamp): the
+	// inferred one followed the player and broke 10 s after they walked off,
+	// and auto-pull never started one pull in three zones (2026-10-24).
+	if (!p.camp_fixed) {
+		waits("no fixed camp (^setcamp where the bots should pull to)");
+		return;
+	}
+
+	// The player's picks first.
+	if (!p.pull_queue.empty()) {
+		return;
+	}
+
+	// Away from camp, the camp waits for them; it does not go anywhere.
+	if (DistanceSquaredNoZ(glm::vec3(leader->GetPosition()), p.camp) > kFixedCampRadius * kFixedCampRadius) {
 		waits(fmt::format("[{}] is away from camp", leader->GetCleanName()));
 		return;
 	}
@@ -1930,7 +1980,10 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	const bool  era_regen  = RuleB(Character, TrilogyEraRegen);
 	const bool  cautious   = p.confidence < kLowConfidence;
 	const float hp_bar     = era_regen ? (cautious ? kEraReadyHPCautious : kEraReadyHP) : (cautious ? kCautiousReadyRatio : kReadyRatio);
-	const float mana_bar   = era_regen ? (cautious ? kEraReadyManaCautious : kEraReadyMana) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	float       mana_bar   = era_regen ? (cautious ? kEraReadyManaCautious : kEraReadyMana) : (cautious ? kCautiousReadyRatio : kReadyRatio);
+	if (ov && ov->pull_wait_mana > 0.0f) {
+		mana_bar = ov->pull_wait_mana; // ^pull wait: the player's call (Nannini at 75% held Sebilis for 7 minutes)
+	}
 	Mob*        not_ready  = nullptr;
 	float       not_ready_pct = 100.0f;
 	const char* not_ready_what = "";
@@ -1998,6 +2051,9 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	for (auto it = p.pull_failed.begin(); it != p.pull_failed.end();) {
 		it = now >= it->second ? p.pull_failed.erase(it) : std::next(it);
 	}
+	for (auto it = p.walk_from_camp.begin(); it != p.walk_from_camp.end();) {
+		it = now - it->second.first > kWalkCacheMs * 4 ? p.walk_from_camp.erase(it) : std::next(it);
+	}
 
 	const float  radius     = (ov && ov->pull_radius > 0.0f) ? ov->pull_radius : kAutoPullRadius;
 	const uint8  ref_level  = leader->GetLevel();
@@ -2056,9 +2112,23 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		const glm::vec3 npos(n->GetPosition());
-		if (DistanceSquaredNoZ(npos, p.camp) > radius * radius || std::fabs(npos.z - p.camp.z) > kAutoPullMaxZ) {
+		// In a raid only trash, by EQ's own naming: a common mob's name is
+		// lower-case ("a racnar", "guardian wurm"), a named one capitalised
+		// ("Silverwing", "Hoshkar"). Raid targets and rare spawns never.
+		// Anything the player marked with ^pull never, anywhere.
+		if (raid && (n->IsRaidTarget() || n->IsRareSpawn() || !std::islower(static_cast<unsigned char>(n->GetCleanName()[0])))) {
 			continue;
+		}
+		if (NeverPull(ov, n->GetNPCTypeID())) {
+			continue;
+		}
+
+		const glm::vec3 npos(n->GetPosition());
+		if (DistanceSquaredNoZ(npos, p.camp) > radius * radius) {
+			continue;
+		}
+		if (!zone->pathing && std::fabs(npos.z - p.camp.z) > kAutoPullMaxZ) {
+			continue; // no navmesh to measure the walk: about the same floor only
 		}
 
 		// Worth killing, and not something that kills us.
@@ -2080,10 +2150,26 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 			continue;
 		}
 
-		// The pull itself drops a target neither the puller nor the player can
-		// see (IsValidTarget): do not send for one.
-		if (!puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
+		// A plain pull drops a target neither the puller nor the player can see
+		// (IsValidTarget): do not send for one. A monk walks to it, so in a
+		// dungeon -- every mob round a corner -- it is not held to that.
+		if (!fd_puller && !puller->CheckLosFN(n) && !leader->CheckLosFN(n)) {
 			continue;
+		}
+
+		// The walk there, by navmesh: across a wall or down a shaft is not
+		// "within the radius". Measured once in a while, not every 2 s.
+		float walk = sqrtf(DistanceSquaredNoZ(npos, p.camp));
+		if (zone->pathing) {
+			auto& w = p.walk_from_camp[n->GetID()];
+			if (!w.first || now - w.first > kWalkCacheMs) {
+				w.first  = now;
+				w.second = WalkDistance(p.camp, npos);
+			}
+			if (w.second < 0.0f || w.second > radius * kWalkSlack) {
+				continue;
+			}
+			walk = w.second;
 		}
 
 		// Linked mobs that would come along: same faction, close, idle. A
@@ -2120,7 +2206,7 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 		if (const auto it = m_mob_costs.find(n->GetNPCTypeID()); it != m_mob_costs.end()) {
 			c = &it->second;
 		}
-		const float travel = 2.0f * sqrtf(DistanceSquaredNoZ(npos, p.camp)) / kPullTravelSpeed;
+		const float travel = 2.0f * walk / kPullTravelSpeed;
 		const float ttk    = c && c->kills ? c->ttk_s :
 			p.hp_per_s > 0.0f ? static_cast<float>(n->GetMaxHP()) / p.hp_per_s : kDefaultTtkS;
 		float rest = c && c->rests ? c->downtime_s : 0.0f;
@@ -2181,9 +2267,56 @@ void BotTactics::AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>
 	}
 
 	if (!best) {
-		waits(fmt::format("nothing to pull within [{:.0f}] of camp (cons, faction, line of sight, links, recent failures)", radius));
+		// Nothing up that we can take: a camp waits for its spawns (a night at
+		// the Sebilis disco). When is the next one due, within the radius?
+		uint32     next_ms = 0;
+		glm::vec3  next_at(0.0f);
+		size_t     points  = 0;
+		LinkedListIterator<Spawn2*> it(zone->spawn2_list);
+		it.Reset();
+		while (it.MoreElements()) {
+			Spawn2* s = it.GetData();
+			it.Advance();
+			const glm::vec3 at(s->GetX(), s->GetY(), s->GetZ());
+			if (!s->Enabled() || DistanceSquaredNoZ(at, p.camp) > radius * radius) {
+				continue;
+			}
+			++points;
+			if (s->NPCPointerValid()) {
+				continue; // up: we saw it above and could not take it
+			}
+			const uint32 left = s->GetTimer().GetRemainingTime();
+			if (left && (!next_ms || left < next_ms)) {
+				next_ms = left;
+				next_at = at;
+			}
+		}
+
+		std::string line;
+		if (next_ms) {
+			const uint32 s = (next_ms + 999) / 1000;
+			const float  d = sqrtf(DistanceSquaredNoZ(next_at, p.camp));
+			line = s >= 60 ?
+				fmt::format("Nothing up near camp. Next pop in ~{}m {}s, {:.0f} away.", s / 60, s % 60, d) :
+				fmt::format("Nothing up near camp. Next pop in ~{}s, {:.0f} away.", s, d);
+		}
+		else {
+			line = points ?
+				fmt::format("Nothing we can take near camp ({} spawn points within {:.0f}: too high, friendly, linked or out of reach).", points, radius) :
+				fmt::format("No spawn points within {:.0f} of camp (^pull auto <radius> to look further).", radius);
+		}
+		if (raid) {
+			line = "Trash: " + line;
+		}
+
+		waits(line);
+		if (!p.autopull_idle_said) {
+			p.autopull_idle_said = true;
+			Announce(raid, raid ? nullptr : puller->GetGroup(), puller, line);
+		}
 		return;
 	}
+	p.autopull_idle_said = false;
 
 	if (puller->TacticsStartPull(best)) {
 		p.autopull_puller_id  = puller->GetID();
@@ -2221,6 +2354,8 @@ bool BotTactics::SetFixedCamp(uint32 key, const glm::vec3& at)
 	p->camp         = at;
 	p->camp_left_ms = 0;
 	p->pull_active  = false;
+	p->walk_from_camp.clear(); // measured from the old spot
+	p->autopull_idle_said = false;
 	LogInfo("[BotTactics] unit [{:#x}] camp fixed at [{:.0f}, {:.0f}, {:.0f}]", key, at.x, at.y, at.z);
 	return true;
 }
@@ -3214,9 +3349,14 @@ void BotTactics::SaveSettings(uint32 key, uint32 char_id)
 
 	const auto  it = m_overrides.find(key);
 	Overrides   o  = it != m_overrides.end() ? it->second : Overrides{};
+	std::vector<std::string> never;
+	for (uint32 t : o.never_pull) {
+		never.push_back(std::to_string(t));
+	}
 	const auto  v  = fmt::format(
-		"on={};mt={};chain={};pull={};radius={:.0f}",
-		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius
+		"on={};mt={};chain={};pull={};radius={:.0f};wait={:.0f};never={}",
+		o.disabled ? 0 : 1, o.main_tank, o.chain_interval_ms, o.auto_pull ? 1 : 0, o.pull_radius,
+		o.pull_wait_mana, Strings::Join(never, ",")
 	);
 	DataBucket::SetData(fmt::format("bot_tactics_{}", char_id), v);
 	LogInfo("[BotTactics] saved settings for character [{}]: {}", char_id, v);
@@ -3253,9 +3393,52 @@ void BotTactics::LoadSettings(uint32 key, uint32 char_id)
 		else if (k == "radius") {
 			o.pull_radius = Strings::ToFloat(val);
 		}
+		else if (k == "wait") {
+			o.pull_wait_mana = Strings::ToFloat(val);
+		}
+		else if (k == "never") {
+			o.never_pull.clear();
+			for (const auto& t : Strings::Split(val, ',')) {
+				if (Strings::IsNumber(t)) {
+					o.never_pull.push_back(Strings::ToUnsignedInt(t));
+				}
+			}
+		}
 	}
 
 	LogInfo("[BotTactics] unit [{:#x}] settings of character [{}]: {}", key, char_id, v);
+}
+
+bool BotTactics::NeverPull(const Overrides* ov, uint32 npc_type)
+{
+	return ov && std::find(ov->never_pull.begin(), ov->never_pull.end(), npc_type) != ov->never_pull.end();
+}
+
+void BotTactics::SetPullWait(uint32 key, float mana_pct)
+{
+	m_overrides[key].pull_wait_mana = mana_pct;
+}
+
+bool BotTactics::SetNeverPull(uint32 key, uint32 npc_type, bool never)
+{
+	auto&      list = m_overrides[key].never_pull;
+	const auto it   = std::find(list.begin(), list.end(), npc_type);
+	if (never == (it != list.end())) {
+		return false;
+	}
+	if (never) {
+		list.push_back(npc_type);
+	}
+	else {
+		list.erase(it);
+	}
+	return true;
+}
+
+std::vector<uint32> BotTactics::NeverPullList(uint32 key) const
+{
+	const auto it = m_overrides.find(key);
+	return it != m_overrides.end() ? it->second.never_pull : std::vector<uint32>{};
 }
 
 void BotTactics::SetAutoPull(uint32 key, bool on, float radius)

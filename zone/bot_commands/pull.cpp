@@ -33,6 +33,94 @@ static bool bot_command_pull_queue(Client* c, const Seperator* sep)
 		return true;
 	}
 
+	// ^pull auto [radius|off]: the bots pull on their own to a fixed camp.
+	if (arg == "auto") {
+		const std::string value = Strings::ToLower(sep->arg[2]);
+		if (value == "off") {
+			bot_tactics.SetAutoPull(key, false);
+			bot_tactics.SaveSettings(key, c->CharacterID());
+			c->Message(Chat::White, "Auto-pull off: the bots pull what you ^pull.");
+			return true;
+		}
+
+		float radius = 0.0f;
+		if (!value.empty() && value != "on") {
+			radius = Strings::ToFloat(value);
+			if (radius < 50.0f || radius > 1000.0f) {
+				c->Message(Chat::White, "The pull radius must be between 50 and 1000 (walking distance from camp).");
+				return true;
+			}
+		}
+
+		bot_tactics.SetAutoPull(key, true, radius);
+		bot_tactics.SaveSettings(key, c->CharacterID());
+		const BotTacticsPlan* p = bot_tactics.Find(key);
+		c->Message(
+			Chat::White, "Auto-pull on%s: the bots bring what is up within %.0f of camp (walking), one at a time, when the healers are ready.",
+			raid ? ", trash only" : "", radius > 0.0f ? radius : 250.0f
+		);
+		if (raid) {
+			c->Message(Chat::White, "In a raid: lower-case names only, never raid targets or rare spawns. ^pull never on anything else it should leave.");
+		}
+		if (!p || !p->camp_fixed) {
+			c->Message(Chat::Yellow, "No fixed camp yet: ^setcamp where they should pull to.");
+		}
+		return true;
+	}
+
+	// ^pull wait <mana%|default>: the healers' mana bar before the next pull.
+	if (arg == "wait") {
+		const std::string value = Strings::ToLower(sep->arg[2]);
+		if (value.empty() || value == "default" || value == "auto") {
+			bot_tactics.SetPullWait(key, 0.0f);
+			bot_tactics.SaveSettings(key, c->CharacterID());
+			c->Message(Chat::White, "Auto-pull waits for the default mana again.");
+			return true;
+		}
+
+		const float pct = Strings::ToFloat(value);
+		if (pct < 10.0f || pct > 100.0f) {
+			c->Message(Chat::White, "usage: ^pull wait <10-100> -- the healers' mana %% before the next pull (default: back to automatic)");
+			return true;
+		}
+		bot_tactics.SetPullWait(key, pct);
+		bot_tactics.SaveSettings(key, c->CharacterID());
+		c->Message(Chat::White, "Auto-pull waits for the healers at %.0f%% mana.", pct);
+		return true;
+	}
+
+	// ^pull never / ^pull allow (target): keep auto-pull off that kind of mob.
+	if (arg == "never" || arg == "allow") {
+		if (arg == "never" && Strings::ToLower(sep->arg[2]) == "list") {
+			const auto list = bot_tactics.NeverPullList(key);
+			if (list.empty()) {
+				c->Message(Chat::White, "Nothing is on the never-pull list.");
+				return true;
+			}
+			std::string line = "Never pulled (npc type):";
+			for (uint32 t : list) {
+				line += fmt::format(" {}", t);
+			}
+			c->Message(Chat::White, "%s", line.c_str());
+			return true;
+		}
+
+		Mob* t = c->GetTarget();
+		if (!t || !t->IsNPC() || t->GetOwnerID()) {
+			c->Message(Chat::White, "Target the kind of mob first (^pull never list: what is on it).");
+			return true;
+		}
+		const bool never = arg == "never";
+		if (bot_tactics.SetNeverPull(key, t->CastToNPC()->GetNPCTypeID(), never)) {
+			bot_tactics.SaveSettings(key, c->CharacterID());
+		}
+		c->Message(
+			Chat::White, never ? "Auto-pull leaves %s (npc type %u) alone from now on (^pull allow to undo)." :
+			"Auto-pull may take %s (npc type %u) again.", t->GetCleanName(), t->CastToNPC()->GetNPCTypeID()
+		);
+		return true;
+	}
+
 	auto target_mob = ActionableTarget::VerifyEnemy(c, BCEnum::TT_Single);
 	if (!target_mob || !target_mob->IsNPC()) {
 		c->Message(Chat::White, "Target the mob to pull (^pull list: the queue, ^pull cancel: call it off).");
@@ -76,6 +164,9 @@ void bot_command_pull(Client *c, const Seperator *sep)
 		c->Message(Chat::White, "usage: <enemy_target> %s -- queue it: the next free puller (monks first, by feign death) brings it to camp", sep->arg[0]);
 		c->Message(Chat::White, "usage: %s list -- the camp, the pulls under way and the queue", sep->arg[0]);
 		c->Message(Chat::White, "usage: %s cancel -- empty the queue and call every pull off", sep->arg[0]);
+		c->Message(Chat::White, "usage: %s auto [radius|off] -- they pull on their own to your ^setcamp (raids: trash only)", sep->arg[0]);
+		c->Message(Chat::White, "usage: %s wait <mana%%|default> -- the healers' mana before the next auto-pull", sep->arg[0]);
+		c->Message(Chat::White, "usage: <target> %s never / allow -- auto-pull leaves that kind of mob alone (never list)", sep->arg[0]);
 		return;
 	}
 

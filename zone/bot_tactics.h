@@ -189,6 +189,10 @@ struct BotTacticsPlan {
 	uint32 autopull_last_end_ms = 0;
 	uint32 autopull_last_try_ms = 0;
 	uint32 autopull_wait_log_ms = 0;        // "auto-pull waits: ..." at most every 30s
+	bool   autopull_idle_said   = false;    // "Nothing up..." said for this lull
+	// Walking distance from camp per mob (navmesh), and when it was measured;
+	// below 0: no full route. A route is a few hundred points: not every 2 s.
+	std::unordered_map<uint16, std::pair<uint32, float>> walk_from_camp;
 
 	// Between fights: a resting line once a minute, "Ready to pull" once
 	// (BotTactics::Readiness; ^tactics ready asks for it any time).
@@ -397,6 +401,12 @@ public:
 	PullQueueResult QueuePull(uint32 key, uint16 npc_id, size_t& position);
 	// ^pull cancel: empty the queue and call off every pull under way.
 	size_t CancelPulls(uint32 key, Client* owner);
+	// ^pull wait <mana%>: the healers' mana bar before ^pull auto pulls; 0 = default.
+	void SetPullWait(uint32 key, float mana_pct);
+	// ^pull never / allow: keep ^pull auto off this kind of mob (or not).
+	// False when nothing changed.
+	bool SetNeverPull(uint32 key, uint32 npc_type, bool never);
+	std::vector<uint32> NeverPullList(uint32 key) const;
 	// ^pull list
 	std::vector<std::string> DescribePulls(uint32 key);
 
@@ -418,7 +428,10 @@ private:
 		uint32      chain_interval_ms = 0;
 		bool        auto_pull         = false;
 		float       pull_radius       = 0.0f;
+		float       pull_wait_mana    = 0.0f;   // ^pull wait: the healers' mana bar for the next pull; 0 = default
+		std::vector<uint32> never_pull;         // ^pull never: npc types left alone by ^pull auto
 	};
+	static bool NeverPull(const Overrides* ov, uint32 npc_type);
 
 	void AutoPull(BotTacticsPlan& p, Raid* raid, const std::vector<Mob*>& mobs, Mob* leader, const Overrides* ov);
 	// The ^pull queue: hand its next mobs to free pullers.

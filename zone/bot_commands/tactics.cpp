@@ -182,7 +182,11 @@ void bot_command_tactics(Client* c, const Seperator* sep)
 
 		bot_tactics.SetAutoPull(key, true, radius);
 		bot_tactics.SaveSettings(key, c->CharacterID()); // kept for next session
-		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob. ^tactics pull off to stop.");
+		c->Message(Chat::White, "Auto-pull is on: once the camp is ready, a bot pulls the next mob (raids: trash only). ^pull auto off to stop.");
+		const BotTacticsPlan* p = bot_tactics.Find(key);
+		if (!p || !p->camp_fixed) {
+			c->Message(Chat::Yellow, "No fixed camp yet: ^setcamp where they should pull to.");
+		}
 		return;
 	}
 
