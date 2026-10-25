@@ -176,7 +176,8 @@ if ($mode eq 'stats') {
 
 my $n_updates = scalar @updates;
 my $kept = join(', ', map { "$_ $kept_self_good{$_}" } sort { $a <=> $b } keys %kept_self_good);
-my @top = (sort { $changed_by_col{$b} <=> $changed_by_col{$a} } keys %changed_by_col)[0 .. 11];
+my @top = grep { defined } (sort { $changed_by_col{$b} <=> $changed_by_col{$a} } keys %changed_by_col)[0 .. 11];
+$renamed //= 0;
 my $top = join("\n", map { sprintf('--     %-22s %4d', $_, $changed_by_col{$_}) } @top);
 
 print <<"HEADER";
