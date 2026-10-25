@@ -3144,6 +3144,9 @@ bool Mob::SpellFinished(uint16 spell_id, Mob *spell_target, CastingSlot slot, in
 	if (IsNPC()) {
 		CastToNPC()->AI_Event_SpellCastFinished(true, static_cast<uint16>(slot));
 	}
+	else if (IsBot()) {
+		CastToBot()->StartEraSpellRecovery(spell_id, slot);
+	}
 
 	ApplyHealthTransferDamage(this, target, spell_id);
 

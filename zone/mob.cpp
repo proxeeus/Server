@@ -5591,6 +5591,17 @@ int Mob::GetHaste()
 		cap += std::max(0, owner->GetLevel() - 39) + std::max(0, owner->GetLevel() - 60);
 	} else {
 		cap = (IsNPC() ? RuleI(NPC, NPCHasteCap) : IsBot() ? RuleI(Bots, BotsHasteCap) : IsMerc() ? RuleI(Mercs, MercsHasteCap) : 150);
+		// A bot gets the player's level ladder (Client::CalcHaste, the same as
+		// v29c's own at eqgame.exe 0x423c2b): level + 25 to 50, 85 for 51-59,
+		// the full cap from 60.  Only the level-60 cap applied, so a level 40
+		// bot could stack 100% haste where a player stops at 65.
+		if (IsBot() && !RuleB(Bots, BotsIgnoreLevelBasedHasteCaps)) {
+			if (level <= 50) {
+				cap = std::min(cap, level + 25);
+			} else if (level < 60) {
+				cap = std::min(cap, 85);
+			}
+		}
 	}
 
 	if(h > cap)

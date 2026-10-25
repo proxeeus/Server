@@ -5792,15 +5792,28 @@ void TrilogyClient::HandleMemorizeSpellOut(const EQApplicationPacket* app)
 		uint32_t reduction   = emu->reduction;
 		uint32_t cooldown_ms = (recast_ms > reduction) ? (recast_ms - reduction) : 0;
 
-		// Only grey spells with a meaningful per-spell recast beyond the GCD.
-		// The server enforces the recast check at >1000 ms (spells.cpp:1465).
-		if (cooldown_ms <= 1500) return;
+		// Every cast from a gem, not only the ones with a long recast.  This is
+		// what arms v29c's spell-bar recovery: the cast itself locks the bar for
+		// 10 s (eqgame.exe 0x41ff71, actor +0x15c), the cast-end ManaChange
+		// clears it (0x49ad8e), and only this packet re-arms it for the spell's
+		// recovery time (0x491f45, spdat +0x1b4) — the ~2.25 s between casts.
+		// Gated on recast > 1500 ms, as it was, a spell with no recast left the
+		// bar free the moment it landed, so a Trilogy player chain-cast with no
+		// recovery at all.  EQClassic sends it after every gem cast except a
+		// bard's (spells.cpp:423, `!IsBard() && slot < SLOT_ITEMSPELL`), and so
+		// does this now.  The client exempts a bard itself (class 8 at 0x491f2b
+		// clears the lockout instead); a song pulse (EnableBardMelody) keeps the
+		// old gate anyway so its gem recasts are not restarted every pulse.
+		if (IsBardSong(emu->spell_id) && cooldown_ms <= 1500) return;
 
 		// One scribing=3 per cast is the whole job.  v29c's handler (0x491e6e)
 		// starts this gem's recast timer itself — now + the spell's recast from
-		// its own spell data — and counts it down and un-greys the gem with no
-		// further packet.  It also arms the global spell-bar lockout for the
-		// spell's recovery time, so it must not be repeated for other gems.
+		// its own spell data, so a spell with none is not greyed — and counts it
+		// down and un-greys the gem with no further packet.  It also arms the
+		// global spell-bar lockout for the spell's recovery time, so it must not
+		// be repeated for other gems.  It clears the casting gem (+0x24a = -1),
+		// which is why the SetMana ManaChange that follows it in
+		// Mob::CastedSpellFinished leaves the lockout alone (0x49ad62).
 		Trilogy::structs::MemorizeSpell_Struct out{};
 		out.slot     = static_cast<int32_t>(emu->slot);
 		out.spell_id = static_cast<int32_t>(emu->spell_id);

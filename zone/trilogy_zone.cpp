@@ -18738,6 +18738,19 @@ static uint8 TrilogyDisciplineRequiredLevel(const TrilogyDisciplineEntry& e, uin
 	return (data_level > 0 && data_level < 255) ? data_level : e.client_level;
 }
 
+uint8_t TrilogyEraDisciplineLevel(uint8_t class_id, uint16_t spell_id)
+{
+	if (class_id < 1 || class_id > Class::PLAYER_CLASS_COUNT) {
+		return 255;
+	}
+	for (const auto& e : kTrilogyDisciplines) {
+		if (e.class_id == class_id && e.spell_id == spell_id) {
+			return TrilogyDisciplineRequiredLevel(e, class_id);
+		}
+	}
+	return 255;
+}
+
 // Resolve the persistent-timer slot a discipline shares.  Every classic
 // discipline carries EndurTimerIndex 1, so in practice they all land on the
 // same slot — one discipline, then a long wait, which is the classic rule.

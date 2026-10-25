@@ -28,6 +28,7 @@
 #include "map.h"
 #include "position.h"
 #include "raids.h"
+#include "trilogy_zone.h"
 #include "water_map.h"
 #include "zone.h"
 
@@ -377,7 +378,13 @@ void BuildLadder(SpellLadder& ladder, Pred pred)
 		}
 
 		for (uint8 c = 1; c <= Class::PLAYER_CLASS_COUNT; ++c) {
-			const uint8 l = spells[id].classes[c - 1];
+			// A discipline counts only where v29c has it for the class, at the
+			// level it gives it there (TrilogyEraDisciplineLevel).  By id alone
+			// the ladders took Fortune (WAR 35), Infuriate (WAR 40) and
+			// Overwhelm (MNK 45) — disciplines no v29c player has.
+			const uint8 l = spells[id].is_discipline
+				? TrilogyEraDisciplineLevel(c, static_cast<uint16>(id))
+				: spells[id].classes[c - 1];
 			if (l && l < 255) {
 				ladder[c].emplace_back(l, static_cast<uint16>(id));
 			}
@@ -411,9 +418,14 @@ uint16 DefensiveDisciplineFor(uint8 class_id, uint8 level)
 	static bool        built = false;
 	if (!built) {
 		built = true;
+		// A self discipline on the Defense skill: Defensive, Evasive, Stonestance,
+		// Voiddance, Fortitude...  This keyed on type_description_id 27, which
+		// is 0 on every row of this spell table, so the ladder was empty and no
+		// bot tank ever used one.
 		BuildLadder(ladder, [](uint16 id) {
 			const auto& s = spells[id];
-			return s.type_description_id == 27 && s.good_effect && s.skill == EQ::skills::SkillDefense;
+			return s.is_discipline && s.good_effect && s.target_type == ST_Self &&
+				s.skill == EQ::skills::SkillDefense;
 		});
 	}
 	return BestOnLadder(ladder, class_id, level);
