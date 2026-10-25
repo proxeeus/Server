@@ -1688,7 +1688,18 @@ bool Bot::LoadPet()
 		return false;
 	}
 
+	// MakePet makes nothing when the spell's pet key is not in the pets table
+	// ("Unable to find data for pet ...") -- and GetPet() was dereferenced
+	// regardless, which crashed the zone on ^spawn / ^createraid for every bot
+	// with a saved pet of that spell (Kael 2026-10-25, the skeleton keys).
+	// The saved pet is dropped; the bot summons a new one when it can.
 	MakePet(pet_spell_id, spells[pet_spell_id].teleport_zone, pet_name.c_str());
+	if (!GetPet()) {
+		LogInfo("[BotSpawn] [{}] saved pet [{}] ({}) could not be made: no pets row [{}]",
+			GetCleanName(), spells[pet_spell_id].name, pet_spell_id, spells[pet_spell_id].teleport_zone);
+		DeletePet();
+		return false;
+	}
 	if (!GetPet()->IsNPC()) {
 		DeletePet();
 		return false;

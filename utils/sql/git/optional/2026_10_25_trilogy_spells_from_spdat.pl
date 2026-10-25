@@ -119,7 +119,19 @@ while (my $line = <$tf>) {
 }
 close $tf;
 
-my (%changed_by_col, @updates, $client_n, $missing, $renamed, %kept_self_good);
+my (%changed_by_col, @updates, $client_n, $missing, $renamed, %kept_self_good, %kept_server_key);
+
+# Effects that look up teleport_zone by name in a server table: SE_SummonPet 33,
+# SE_EyeOfZomm 67, SE_NecPet 71, SE_SummonBSTPet 106, SE_Familiar 108,
+# SE_SummonHorse 113, SE_TemporaryPets 152.  Checked on both versions of the spell.
+my %NAME_KEY_EFFECT = map { $_ => 1 } (33, 67, 71, 106, 108, 113, 152);
+sub uses_server_name_key {
+	my ($c, $d) = @_;
+	for my $i (1 .. 12) {
+		return 1 if $NAME_KEY_EFFECT{$c->{"effectid$i"}} || $NAME_KEY_EFFECT{$d->{"effectid$i"}};
+	}
+	return 0;
+}
 for my $id (1 .. 2010) {
 	my $c = client_record($id) or next;
 	$client_n++;
@@ -149,6 +161,17 @@ for my $id (1 .. 2010) {
 			$kept_self_good{$id} = $c->{name};
 			next;
 		}
+		# On a pet, Eye of Zomm, horse or swarm-pet spell, teleport_zone is not
+		# shown by the client: it is the server's key into its own pets / horses /
+		# npc_types tables (MakePet, GetPoweredPetEntry).  The client file has
+		# Sony's keys there ('Skeleton241'), which this server's pets table does
+		# not hold ('skel_pet_44_'): copied, every necromancer and shadow knight
+		# skeleton spell lost its pet, and Bot::LoadPet crashed the zone on a bot
+		# with a saved one.
+		if ($col eq 'teleport_zone' && uses_server_name_key($c, $d)) {
+			$kept_server_key{$id} = $c->{name};
+			next;
+		}
 		$change->($col, $cv);
 	}
 	# The client has no limit field.  A slot that keeps its effect keeps the
@@ -170,6 +193,7 @@ if ($mode eq 'stats') {
 	printf "client records 1..2010: %d, missing in db: %d, rows to update: %d (renamed %d)\n",
 		$client_n, $missing // 0, scalar(@updates), $renamed // 0;
 	printf "goodEffect kept for self-only spells: %s\n", join(', ', map { "$_ $kept_self_good{$_}" } sort { $a <=> $b } keys %kept_self_good);
+	printf "teleport_zone kept as the server's pet/table key: %s\n", join(', ', map { "$_ $kept_server_key{$_}" } sort { $a <=> $b } keys %kept_server_key);
 	printf "%-22s %5d\n", $_, $changed_by_col{$_} for sort { $changed_by_col{$b} <=> $changed_by_col{$a} } keys %changed_by_col;
 	exit 0;
 }
@@ -230,6 +254,11 @@ $top
 --     v29c flags them detrimental, which to the client is only the icon
 --     colour, but Mob::SpellOnTarget refuses a detrimental spell on its own
 --     caster, so they would stop landing.
+--   * teleport_zone on pet, Eye of Zomm, horse and swarm-pet spells (effects
+--     33/67/71/106/108/113/152): there it is the server's key into its pets /
+--     horses / npc tables, which hold PEQ keys ('skel_pet_44_'), not Sony's
+--     ('Skeleton241').  Copying them took every skeleton pet away and crashed
+--     Bot::LoadPet.
 --   * bytes 526-529 (not matched to anything) and ids above 2010.
 --
 -- SAFE TO RE-RUN: values are absolute and each row is guarded on the name it
