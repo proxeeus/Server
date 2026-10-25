@@ -23,7 +23,7 @@
 --     spell's RECOVERY, which v29c's spell bar applies after every cast)
 --
 -- Scope: ids 1..2010 that hold a spell in the client file (1783 records).
--- Rows updated: 1254 (55 take the client's name: spelling, and
+-- Rows updated: 1253 (55 take the client's name: spelling, and
 -- the four Fireworks at 30/119/206/214, which this table had reused).  Only
 -- columns that differ are set; each UPDATE has an "old -> new" line above it.
 -- Most changed columns:
@@ -58,6 +58,11 @@
 --     v29c flags them detrimental, which to the client is only the icon
 --     colour, but Mob::SpellOnTarget refuses a detrimental spell on its own
 --     caster, so they would stop landing.
+--   * teleport_zone on pet, Eye of Zomm, horse and swarm-pet spells (effects
+--     33/67/71/106/108/113/152): there it is the server's key into its pets /
+--     horses / npc tables, which hold PEQ keys ('skel_pet_44_'), not Sony's
+--     ('Skeleton241').  Copying them took every skeleton pet away and crashed
+--     Bot::LoadPet.
 --   * bytes 526-529 (not matched to anything) and ids above 2010.
 --
 -- SAFE TO RE-RUN: values are absolute and each row is guarded on the name it
@@ -620,8 +625,8 @@ UPDATE `spells_new` SET `recast_time` = 0, `components1` = 10015, `resisttype` =
 UPDATE `spells_new` SET `recast_time` = 0, `components1` = 10015, `resisttype` = 0 WHERE `id` = 336 AND `name` = 'Minor Summoning: Water';
 -- 337 Rage: recast_time 2250->0; buffduration 190->0; mana 45->100; effect_base_value1 -5->2; effect_base_value2 1->2; max1 0->60; max2 0->51; max3 0->60; max4 0->55; formula1 103->102; formula4 107->102; effectid1 15->5; effectid4 0->6
 UPDATE `spells_new` SET `recast_time` = 0, `buffduration` = 0, `mana` = 100, `effect_base_value1` = 2, `effect_base_value2` = 2, `max1` = 60, `max2` = 51, `max3` = 60, `max4` = 55, `formula1` = 102, `formula4` = 102, `effectid1` = 5, `effectid4` = 6 WHERE `id` = 337 AND `name` = 'Rage';
--- 338 Cavorting Bones: teleport_zone 'skel_pet_1_'->'Skeleton1'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton1', `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 338 AND `name` = 'Cavorting Bones';
+-- 338 Cavorting Bones: cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 338 AND `name` = 'Cavorting Bones';
 -- 339 Coldlight: cast_on_you 'A globe of Cold Light forms in your hand.'->'A globe of cold light forms in your hand.'
 UPDATE `spells_new` SET `cast_on_you` = 'A globe of cold light forms in your hand.' WHERE `id` = 339 AND `name` = 'Coldlight';
 -- 340 Disease Cloud: max3 1->0
@@ -642,8 +647,8 @@ UPDATE `spells_new` SET `recast_time` = 0, `max3` = 0 WHERE `id` = 348 AND `name
 UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 349 AND `name` = 'Rising Dexterity';
 -- 350 Chaos Flux: effect_base_value2 1000->1
 UPDATE `spells_new` SET `effect_base_value2` = 1 WHERE `id` = 350 AND `name` = 'Chaos Flux';
--- 351 Bone Walk: teleport_zone 'skel_pet_9_'->'Skeleton108'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton108', `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 351 AND `name` = 'Bone Walk';
+-- 351 Bone Walk: cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 351 AND `name` = 'Bone Walk';
 -- 352 Deadeye: recast_time 2250->0
 UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 352 AND `name` = 'Deadeye';
 -- 355 Engulfing Darkness: cast_on_you 'You are engulfed in darkness.'->'You are engulfed by darkness.'; cast_on_other ' is engulfed in darkness.'->' is engulfed by darkness.'; max1 11->0; max2 -40->40
@@ -656,8 +661,8 @@ UPDATE `spells_new` SET `spell_fades` = 'Your strength returns.', `targettype` =
 UPDATE `spells_new` SET `buffduration` = 0 WHERE `id` = 359 AND `name` = 'Vampiric Embrace';
 -- 361 Sight Graft: goodEffect 2->1; basediff 0->25
 UPDATE `spells_new` SET `goodEffect` = 1, `basediff` = 25 WHERE `id` = 361 AND `name` = 'Sight Graft';
--- 362 Convoke Shadow: teleport_zone 'skel_pet_11_'->'Skeleton110'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton110', `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 362 AND `name` = 'Convoke Shadow';
+-- 362 Convoke Shadow: cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 362 AND `name` = 'Convoke Shadow';
 -- 364 Banshee Aura: buffdurationformula 7->9; buffduration 30->90; effect_base_value1 -8->-6; max1 0->12; components1 10024->-1; component_counts1 0->1; formula1 100->110
 UPDATE `spells_new` SET `buffdurationformula` = 9, `buffduration` = 90, `effect_base_value1` = -6, `max1` = 12, `components1` = -1, `component_counts1` = 1, `formula1` = 110 WHERE `id` = 364 AND `name` = 'Banshee Aura';
 -- 365 Infectious Cloud: cast_on_other ' starts to wretch.'->' starts to retch.'; recast_time 2250->0; effect_base_value2 -5->-20; effect_base_value3 -20->-5; max2 5->0; effectid2 0->79; effectid3 79->0
@@ -764,14 +769,14 @@ UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 436 AND `name` = 'Envenom
 UPDATE `spells_new` SET `cast_on_you` = 'Your skin blisters as poison rains down on you.' WHERE `id` = 437 AND `name` = 'Poison Storm';
 -- 439 Crystallize Mana: recast_time 2250->0
 UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 439 AND `name` = 'Crystallize Mana';
--- 440 Animate Dead: teleport_zone 'skel_pet_19_'->'Skeleton217'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton217', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 440 AND `name` = 'Animate Dead';
--- 441 Summon Dead: teleport_zone 'skel_pet_25_'->'Skeleton223'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton223', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 441 AND `name` = 'Summon Dead';
--- 442 Malignant Dead: teleport_zone 'skel_pet_33_'->'Skeleton229'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton229', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 442 AND `name` = 'Malignant Dead';
--- 443 Invoke Death: teleport_zone 'skel_pet_41_'->'Skeleton237'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton237', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 443 AND `name` = 'Invoke Death';
+-- 440 Animate Dead: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 440 AND `name` = 'Animate Dead';
+-- 441 Summon Dead: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 441 AND `name` = 'Summon Dead';
+-- 442 Malignant Dead: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 442 AND `name` = 'Malignant Dead';
+-- 443 Invoke Death: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 443 AND `name` = 'Invoke Death';
 -- 445 Lifedraw: cast_on_you 'You feel your lifeforce drain away.'->'You feel your life force drain away.'; recast_time 2250->0
 UPDATE `spells_new` SET `cast_on_you` = 'You feel your life force drain away.', `recast_time` = 0 WHERE `id` = 445 AND `name` = 'Lifedraw';
 -- 446 Siphon Life: cast_on_you 'You feel your lifeforce drain away.'->'You feel your life force drain away.'; recast_time 2250->0
@@ -848,16 +853,16 @@ UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 488 AND `name` = 'Symbol 
 UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 489 AND `name` = 'Sympathetic Aura';
 -- 490 Enveloping Roots: cast_on_other ''s feet become entwined.'->' becomes entwined in roots.'; recast_time 2250->0
 UPDATE `spells_new` SET `cast_on_other` = ' becomes entwined in roots.', `recast_time` = 0 WHERE `id` = 490 AND `name` = 'Enveloping Roots';
--- 491 Leering Corpse: teleport_zone 'skel_pet_5_'->'Skeleton104'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton104', `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 491 AND `name` = 'Leering Corpse';
--- 492 Restless Bones: teleport_zone 'skel_pet_16_'->'Skeleton214'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton214', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 492 AND `name` = 'Restless Bones';
--- 493 Haunting Corpse: teleport_zone 'skel_pet_22_'->'Skeleton220'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton220', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 493 AND `name` = 'Haunting Corpse';
--- 494 Invoke Shadow: teleport_zone 'skel_pet_29_'->'Skeleton226'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton226', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 494 AND `name` = 'Invoke Shadow';
--- 495 Cackling Bones: teleport_zone 'skel_pet_37_'->'Skeleton232'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton232', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 495 AND `name` = 'Cackling Bones';
+-- 491 Leering Corpse: cast_on_other ' rises from the dead.'->' animates an undead servant.'; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `resisttype` = 0 WHERE `id` = 491 AND `name` = 'Leering Corpse';
+-- 492 Restless Bones: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 492 AND `name` = 'Restless Bones';
+-- 493 Haunting Corpse: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 493 AND `name` = 'Haunting Corpse';
+-- 494 Invoke Shadow: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 494 AND `name` = 'Invoke Shadow';
+-- 495 Cackling Bones: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 495 AND `name` = 'Cackling Bones';
 -- 496 Lesser Summoning: Earth: recast_time 2250->0; resisttype 5->0
 UPDATE `spells_new` SET `recast_time` = 0, `resisttype` = 0 WHERE `id` = 496 AND `name` = 'Lesser Summoning: Earth';
 -- 497 Lesser Summoning: Water: recast_time 2250->0; resisttype 3->0
@@ -2058,12 +2063,12 @@ UPDATE `spells_new` SET `cast_on_you` = 'Your life force drains away at the Touc
 UPDATE `spells_new` SET `cast_on_you` = 'You are engulfed by devouring darkness.', `recast_time` = 0, `buffduration` = 13, `effect_base_value1` = -123, `max1` = 0, `max2` = 0 WHERE `id` = 1619 AND `name` = 'Devouring Darkness';
 -- 1620 Splurt: spell_fades 'Your body does not splurt.'->'Your body stops splurting.'; recast_time 2250->0; buffduration 15->16; mana 240->237; max4 -9999->0; CastingAnim 44->12; TargetAnim 13->15
 UPDATE `spells_new` SET `spell_fades` = 'Your body stops splurting.', `recast_time` = 0, `buffduration` = 16, `mana` = 237, `max4` = 0, `CastingAnim` = 12, `TargetAnim` = 15 WHERE `id` = 1620 AND `name` = 'Splurt';
--- 1621 Minion of Shadows: teleport_zone 'skel_pet_43_'->'Skeleton240'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton240', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1621 AND `name` = 'Minion of Shadows';
--- 1622 Servant of Bones: name 'Servant of Bones'->'Servent of Bones'; teleport_zone 'skel_pet_44_'->'Skeleton241'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `name` = 'Servent of Bones', `teleport_zone` = 'Skeleton241', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1622 AND `name` = 'Servant of Bones';
--- 1623 Emissary of Thule: teleport_zone 'skel_pet_47_'->'Skeleton245'; cast_on_other ' rises from the dead.'->' calls forth a servant of fear.'; recast_time 2250->0; resisttype 4->0
-UPDATE `spells_new` SET `teleport_zone` = 'Skeleton245', `cast_on_other` = ' calls forth a servant of fear.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1623 AND `name` = 'Emissary of Thule';
+-- 1621 Minion of Shadows: cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1621 AND `name` = 'Minion of Shadows';
+-- 1622 Servant of Bones: name 'Servant of Bones'->'Servent of Bones'; cast_on_other ' rises from the dead.'->' animates an undead servant.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `name` = 'Servent of Bones', `cast_on_other` = ' animates an undead servant.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1622 AND `name` = 'Servant of Bones';
+-- 1623 Emissary of Thule: cast_on_other ' rises from the dead.'->' calls forth a servant of fear.'; recast_time 2250->0; resisttype 4->0
+UPDATE `spells_new` SET `cast_on_other` = ' calls forth a servant of fear.', `recast_time` = 0, `resisttype` = 0 WHERE `id` = 1623 AND `name` = 'Emissary of Thule';
 -- 1624 Thrall of Bones: buffduration 190->0; max1 53->0
 UPDATE `spells_new` SET `buffduration` = 0, `max1` = 0 WHERE `id` = 1624 AND `name` = 'Thrall of Bones';
 -- 1625 Skin of the Shadow: buffduration 200->360; effect_base_value2 1->115; effect_base_value3 130->1; effectid1 314->12; effectid2 66->87; effectid3 87->66
@@ -2238,8 +2243,6 @@ UPDATE `spells_new` SET `you_cast` = 'You feel your life begin to drain away.', 
 UPDATE `spells_new` SET `cast_on_you` = 'Your feet become entwined.', `cast_on_other` = ' is entangled by roots.', `recast_time` = 0, `icon` = 2517, `memicon` = 2118 WHERE `id` = 1719 AND `name` = 'Engorging Roots';
 -- 1721 Unswerving Hammer of Faith: recast_time 2250->0
 UPDATE `spells_new` SET `recast_time` = 0 WHERE `id` = 1721 AND `name` = 'Unswerving Hammer of Faith';
--- 1723 Zumaik`s Animation: teleport_zone 'Animation13'->'Animation14'
-UPDATE `spells_new` SET `teleport_zone` = 'Animation14' WHERE `id` = 1723 AND `name` = 'Zumaik`s Animation';
 -- 1724 Disintegrate: cast_on_other ' has been disintegrated.'->''; max1 45->0
 UPDATE `spells_new` SET `cast_on_other` = '', `max1` = 0 WHERE `id` = 1724 AND `name` = 'Disintegrate';
 -- 1726 Sunskin: targettype 41->3
