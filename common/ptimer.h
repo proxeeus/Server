@@ -45,6 +45,7 @@ enum : int {	//values for pTimerType
 	pTimerLinkedSpellReuseStart = 28,
 	pTimerLinkedSpellReuseEnd = 48,
 	pTimerClearXTarget = 50,
+	pTimerPickPocket = 51, // Trilogy: v29c gives Pick Pockets its own reuse slot, apart from Begging
 
 	pTimerShieldAbility = 86,
 

@@ -1646,6 +1646,75 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		}
 		break;
 	}
+	case OP_PickPocket: {
+		// Client::SendPickPocketResponse — the answer every pick-pocket must get.
+		// v29c's request (eqgame.exe 0x41e9b8) raises the input-block counter
+		// [0x6e4e44]+0x94, and only the 0xad20 reply handler (0x494525) lowers
+		// it; while it is held the client refuses spell gems, memorising,
+		// scribing and /split.  This was dropped, so one pick-pocket locked all
+		// of that until a zone.
+		//
+		// The handler reads three fields and nothing else: type @9 (0 "Your
+		// attempt at stealing was unsuccessful.", 1-4 "You have stolen %d
+		// platinum/gold/silver/copper." with the coin @12 credited to its own
+		// purse, 5 an item built from the bytes @16), and lowers the counter
+		// for any value.  EQClassic's PickPockets_Struct puts type @6 and coin @8,
+		// which is the bug its own comment describes ("even if a player
+		// succeeds, the client gives the message that the pick pocket has
+		// failed").  The request names the same fields: {u32 to @0, u32 from @4,
+		// u8 skill @8, i8 type @9 = -1, u32 coin @12}, 18 bytes.
+		if (app->size < sizeof(::sPickPocket_Struct)) break;
+		const auto* pp = reinterpret_cast<const ::sPickPocket_Struct*>(app->pBuffer);
+#pragma pack(push, 1)
+		struct VPickPocketStruct {
+			uint32_t to;
+			uint32_t from;
+			uint8_t  myskill;
+			int8_t   type;
+			uint8_t  pad[2];
+			uint32_t coin;
+			uint8_t  tail[2];
+		};
+#pragma pack(pop)
+		static_assert(sizeof(VPickPocketStruct) == 18, "Trilogy pick-pocket reply must be 18 bytes");
+		// A type the handler has no case for: it only lowers the counter.  Used
+		// for an item, which NPC::PickPocket has already delivered through
+		// PutItemInInventory + SendItemPacket; type 5 would make the client build
+		// a second copy from bytes we do not have.
+		static constexpr int8_t kTrilogyPickPocketReleaseOnly = 6;
+
+		VPickPocketStruct out{};
+		out.to      = TranslateId(static_cast<uint32_t>(GetID()));
+		out.from    = TranslateId(pp->to);
+		out.myskill = static_cast<uint8_t>(std::min<uint32_t>(pp->myskill, 255));
+		out.coin    = pp->coin;
+		if (pp->type == PickPocketItem) {
+			out.type = kTrilogyPickPocketReleaseOnly;
+			out.coin = 0;
+		} else if (pp->type <= PickPocketCopper) {
+			out.type = static_cast<int8_t>(pp->type);
+		} else {
+			out.type = PickPocketFailed;
+		}
+		m_tzs->SendToSession(m_session_key, 0xad20,
+		                     reinterpret_cast<const uint8_t*>(&out),
+		                     static_cast<uint32_t>(sizeof(out)));
+
+		if (pp->type == PickPocketItem) {
+			// The client's own line for type 5, in its colour (0x10e).
+			Message(Chat::Skills, "You have stolen a %s", pp->itemname[0] ? pp->itemname : "item");
+		} else if (pp->type >= PickPocketPlatinum && pp->type <= PickPocketCopper && pp->coin) {
+			// The client has added the coin to its purse itself; keep the Tick
+			// reconciliation from adding it again (same as OP_Begging above).
+			const int32_t amt = static_cast<int32_t>(pp->coin);
+			m_tzs->AdvanceMoneyBaseline(m_session_key,
+			                            pp->type == PickPocketCopper   ? amt : 0,
+			                            pp->type == PickPocketSilver   ? amt : 0,
+			                            pp->type == PickPocketGold     ? amt : 0,
+			                            pp->type == PickPocketPlatinum ? amt : 0);
+		}
+		break;
+	}
 	case OP_RequestClientZoneChange: {
 		// Translate EQEmu's RequestClientZoneChange (Titanium) to Trilogy's OP_TeleportPC (0x4d21).
 		// The Trilogy client automatically zones or intra-zone teleports based on whether the
