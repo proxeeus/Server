@@ -3996,11 +3996,17 @@ void Client::Handle_OP_Begging(const EQApplicationPacket *app)
 		return;
 	}
 
-	if (!HasSkill(EQ::skills::SkillBegging) || !GetTarget())
+	// A beg raises the client's input-block counter (v29c: eqgame.exe 0x41e28e)
+	// and only the OP_Begging reply lowers it, so a refusal still answers, with
+	// a fail.  Returning silently froze spell gems, memorising and /split.
+	if (!HasSkill(EQ::skills::SkillBegging) || !GetTarget() ||
+		GetTarget()->GetClass() == Class::LDoNTreasure) {
+		auto outapp = new EQApplicationPacket(OP_Begging, sizeof(BeggingResponse_Struct));
+		BeggingResponse_Struct *brs = (BeggingResponse_Struct*)outapp->pBuffer;
+		brs->Result = 0;
+		FastQueuePacket(&outapp);
 		return;
-
-	if (GetTarget()->GetClass() == Class::LDoNTreasure)
-		return;
+	}
 
 	p_timers.Start(pTimerBeggingPickPocket, 8);
 
@@ -4076,6 +4082,17 @@ void Client::Handle_OP_Bind_Wound(const EQApplicationPacket *app)
 	Mob* bindmob = entity_list.GetMob(bind_in->to);
 	if (!bindmob) {
 		LogError("Bindwound on non-exsistant mob from [{}]", GetName());
+		// The request locked the client's input (v29c: both counters at
+		// eqgame.exe 0x41dbb7/0x41dbc2) until an answer comes, so answer:
+		// unlock, then "target left the zone" — BindWound's own codes.
+		auto outapp = new EQApplicationPacket(OP_Bind_Wound, sizeof(BindWound_Struct));
+		BindWound_Struct *bind_out = (BindWound_Struct *)outapp->pBuffer;
+		bind_out->to   = bind_in->to;
+		bind_out->type = 3;
+		QueuePacket(outapp);
+		bind_out->type = 5;
+		QueuePacket(outapp);
+		safe_delete(outapp);
 	} else {
 		LogDebug("BindWound in: to:\'[{}]\' from=\'[{}]\'", bindmob->GetName(), GetName());
 		BindWound(bindmob, true);
@@ -11997,22 +12014,34 @@ void Client::Handle_OP_PickPocket(const EQApplicationPacket *app)
 
 	if (!HasSkill(EQ::skills::SkillPickPockets))
 	{
+		SendPickPocketResponse(nullptr, 0, PickPocketFailed); // every request needs its answer, see SendPickPocketResponse
 		return;
 	}
 
-	if (!p_timers.Expired(&database, pTimerBeggingPickPocket, false))
+	// v29c keeps Begging and Pick Pockets on separate 10 s reuse slots (eqgame.exe
+	// 0x41d88e, [skill*4 + 0x6e0fec]; skill-table +0x20 is 10000 ms for both), so
+	// a beg followed by a pick-pocket is legitimate there.  On the shared timer
+	// it was refused, logged as a possible hack, and left the client waiting for
+	// a reply.  Other clients keep the shared timer.
+	const int pick_timer = (ClientVersion() == EQ::versions::ClientVersion::Trilogy)
+		? pTimerPickPocket : pTimerBeggingPickPocket;
+
+	if (!p_timers.Expired(&database, pick_timer, false))
 	{
 		Message(Chat::Red, "Ability recovery time not yet met.");
 		RecordPlayerEventLog(PlayerEvent::POSSIBLE_HACK, PlayerEvent::PossibleHackEvent{.message = "OP_PickPocket was sent again too quickly."});
+		SendPickPocketResponse(nullptr, 0, PickPocketFailed);
 		return;
 	}
 	PickPocket_Struct* pick_in = (PickPocket_Struct*)app->pBuffer;
 
 	Mob* victim = entity_list.GetMob(pick_in->to);
-	if (!victim)
+	if (!victim) {
+		SendPickPocketResponse(nullptr, 0, PickPocketFailed);
 		return;
+	}
 
-	p_timers.Start(pTimerBeggingPickPocket, 8);
+	p_timers.Start(pick_timer, 8);
 
 	if (victim == this) {
 		Message(Chat::White, "You catch yourself red-handed.");

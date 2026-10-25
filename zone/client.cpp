@@ -4667,7 +4667,7 @@ void Client::SendPickPocketResponse(Mob *from, uint32 amt, int type, const EQ::I
 	sPickPocket_Struct *pick_out = (sPickPocket_Struct *)outapp->pBuffer;
 	pick_out->coin = amt;
 	pick_out->from = GetID();
-	pick_out->to = from->GetID();
+	pick_out->to = from ? from->GetID() : 0; // no victim: a refusal that still owes the client its reply
 		pick_out->myskill = GetSkill(EQ::skills::SkillPickPockets);
 
 	if ((type >= PickPocketPlatinum) && (type <= PickPocketCopper) && (amt == 0))

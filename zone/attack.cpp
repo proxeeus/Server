@@ -6972,10 +6972,15 @@ void Client::SetAttackTimer()
 				//no weapon
 				ItemToUse = nullptr;
 			}
-			// Check to see if skill is valid
+			// Check to see if skill is valid.  A small throwing weapon (darts,
+			// throwing knives) is a weapon in the range slot: without the
+			// exception it timed at the hand-to-hand delay, 3.5 s and up, and
+			// ThrowingAttack refused every throw the client made at the item's
+			// own delay (2.0-2.6 s for darts) — while v29c still spent the dart.
 			else if ((ItemToUse->ItemType > EQ::item::ItemTypeLargeThrowing) &&
 				(ItemToUse->ItemType != EQ::item::ItemTypeMartial) &&
-				(ItemToUse->ItemType != EQ::item::ItemType2HPiercing)) {
+				(ItemToUse->ItemType != EQ::item::ItemType2HPiercing) &&
+				!(i == EQ::invslot::slotRange && ItemToUse->ItemType == EQ::item::ItemTypeSmallThrowing)) {
 				//no weapon
 				ItemToUse = nullptr;
 			}

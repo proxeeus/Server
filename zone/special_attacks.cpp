@@ -949,7 +949,15 @@ bool Client::RangedAttack(Mob* other, bool CanDoubleAttack) {
 
 	// Consume Ammo, unless Ammo Consumption is disabled or player has Endless Quiver
 	bool consumes_ammo = RuleB(Combat, ArcheryConsumesAmmo);
-	if (
+
+	// v29c spends its own arrow and reports it: after the shot eqgame.exe
+	// 0x4b386f decrements the stack it drew from (the ammo slot, or a matching
+	// stack in the packs once the ammo slot is down to one) and sends 0x4621
+	// with that slot, which TrilogyZoneServer deletes.  Deleting here as well
+	// cost two arrows a shot, from a slot the client may not have used.
+	if (consumes_ammo && ClientVersion() == EQ::versions::ClientVersion::Trilogy) {
+		LogCombat("Trilogy client reports its own archery ammo; not consumed here.");
+	} else if (
 		consumes_ammo &&
 		(
 			RangeItem->ExpendableArrow ||
@@ -1565,7 +1573,12 @@ void Client::ThrowingAttack(Mob* other, bool CanDoubleAttack) { //old was 51
 	DoThrowingAttackDmg(other, RangeWeapon, item, 0, 0, 0, 0, 0,ammo_slot);
 
 	// Consume Ammo, unless Ammo Consumption is disabled
-	if (RuleB(Combat, ThrowingConsumesAmmo)) {
+	if (RuleB(Combat, ThrowingConsumesAmmo) && ClientVersion() == EQ::versions::ClientVersion::Trilogy) {
+		// As in RangedAttack: v29c spends the throw itself and reports it,
+		// 0x4621 for a stack (0x4b394a) or 0x2c21 to slot -1 for a single
+		// item (0x4b3753).
+		LogCombat("Trilogy client reports its own throwing ammo; not consumed here.");
+	} else if (RuleB(Combat, ThrowingConsumesAmmo)) {
 		DeleteItemInInventory(ammo_slot, 1, true);
 		LogCombat("Consumed Throwing Ammo from slot {}.", ammo_slot);
 	} else {

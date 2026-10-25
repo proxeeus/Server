@@ -967,6 +967,20 @@ static constexpr float kTrilogyPlayerRunSpeed  = 0.70f;
 // the field comment in trilogy_structs.h and [TrilogyAirProbe] for how it was pinned.
 static constexpr uint16_t kTrilogyFullAirSupply = 45;
 
+// The client's own maximum breath, eqgame.exe 0x41ba4e: the low byte of
+// (total STA - 30), clamped to 10..100, and a flat 127 for Iksar.  Total STA is
+// 0x41b258: base + SE_STA buffs + worn items, clamped 1..255 — GetSTA().  The 45
+// above is this formula at 75 STA.  STA under 30 wraps the byte, so it lands on
+// 100, as the client does.
+static uint16_t TrilogyMaxAirSupply(Client* c)
+{
+	if (!c) return kTrilogyFullAirSupply;
+	if (c->GetBaseRace() == Race::Iksar) return 127;
+	const int sta = std::clamp(static_cast<int>(c->GetSTA()), 1, 255);
+	const uint8_t v = static_cast<uint8_t>(sta - 30);
+	return static_cast<uint16_t>(std::clamp<int>(v, 10, 100));
+}
+
 // EQEmu stores speeds as int = float × 40 (see Mob::Mob in mob.cpp:192).
 // Reverse the conversion for the Trilogy spawn wire format.
 static inline float ToTrilogySpeed(int eqemu_speed)
@@ -3763,8 +3777,38 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				// Handle_OP_FeignDeath has no size check.  Forward empty.
 				// --------------------------------------------------------------
 				case ZN_OP_FeignDeath: {
+					// What the feign looks like to everyone else.  v29c sends
+					// {u32 self, u32 last attacker (ds:0x6b6460), u8 0}
+					// (eqgame.exe 0x41d8e3), and its inbound 0xac20 handler
+					// (0x49ddf7) prints "%s has been slain by %s!" for a set
+					// flag @8, or "%s has fallen to the ground." for a clear one
+					// — the fake death and the failure.  The failure already
+					// reaches observers as STRING_FEIGNFAILED from
+					// Handle_OP_FeignDeath; the fake death never did, so a
+					// successful feign looked like nothing at all to a group
+					// mate.  Only a fresh attempt counts: the handler refuses
+					// one without the skill or inside the reuse timer.
+					const bool could_feign =
+					    s.trilogy_client->HasSkill(EQ::skills::SkillFeignDeath) &&
+					    s.trilogy_client->GetPTimers().Expired(&database, pTimerFeignDeath, false);
+
 					EQApplicationPacket pkt(OP_FeignDeath, 0);
 					s.trilogy_client->Handle_OP_FeignDeath(&pkt);
+
+					uint32_t wire_attacker = 0;
+					if (plen >= 8) memcpy(&wire_attacker, payload + 4, 4);
+					Mob* attacker = wire_attacker ? entity_list.GetMob(static_cast<uint16_t>(wire_attacker)) : nullptr;
+					if (could_feign && s.trilogy_client->GetFeigned() && attacker) {
+						const std::string line = fmt::format("{} has been slain by {}!",
+						    s.trilogy_client->GetCleanName(), attacker->GetCleanName());
+						for (auto& kv : m_sessions) {
+							Session& o = kv.second;
+							if (!o.trilogy_client || o.trilogy_client == s.trilogy_client) continue;
+							if (DistanceSquared(o.trilogy_client->GetPosition(),
+							                    s.trilogy_client->GetPosition()) > 200.0f * 200.0f) continue;
+							o.trilogy_client->Message(Chat::White, line.c_str());
+						}
+					}
 					break;
 				}
 
@@ -6392,10 +6436,11 @@ void TrilogyZoneServer::SendPlayerProfile(const std::string& addr, int port, Ses
 		// client (client_packet.cpp:1316).  A zone-in is always a fresh arrival,
 		// so full is the correct value; there is nothing to carry across.
 		//
-		// 45 is what the client itself reports at rest on dry land, captured
-		// from its own PP upload (see [TrilogyAirProbe]).  Writing more than the
-		// client's own maximum has not been tested, so we do not inflate it.
-		pp.air_supply      = kTrilogyFullAirSupply;
+		// Full is the client's own maximum, TrilogyMaxAirSupply: 45 at 75 STA,
+		// which is what its PP upload reported at rest (see [TrilogyAirProbe]),
+		// up to 100, and 127 for an Iksar.  A flat 45 started anyone with more
+		// STA, and every Iksar, short of breath after a zone line underwater.
+		pp.air_supply      = TrilogyMaxAirSupply(s.trilogy_client);
 
 		// /played fields.  The v29c client's /played handler is entirely
 		// client-side: it reads two adjacent int32s from the PP and formats
@@ -18367,6 +18412,18 @@ void TrilogyZoneServer::HandleCastSpell(const std::string& addr, int port, Sessi
 
 	LogInfo("[TrilogyZone] CastSpell: char={} slot={} spell={} target={}",
 	        s.char_name, tri->slot, spell_id, emu_target);
+
+	// Casting breaks sneak, and v29c has already done it by the time this
+	// arrives: its cast routine stands the player up (0xf520) and calls
+	// 0x4d03ce (eqgame.exe 0x41f5f6), which clears the sneak flag and prints
+	// "You stop sneaking." with no packet of its own.  Hide is cleared by the
+	// same call and reaches us as its 0xf520 type 3 echo; sneak only exists
+	// here, so it would otherwise survive, and the next Sneak press would turn
+	// it OFF while the client meant to turn it on.
+	if (s.trilogy_client->sneaking) {
+		s.trilogy_client->sneaking = false;
+		LogInfo("[TrilogyZone] CastSpell: char={} sneak broken by casting", s.char_name);
+	}
 
 	// ---- Lay on Hands / Harm Touch intercept ----
 	// v29c sends spell_id 87 (LoH) or 88 (HT) from the Ability button (slot 9).
