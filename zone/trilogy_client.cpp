@@ -1819,6 +1819,19 @@ void TrilogyClient::TranslateAndSend(const EQApplicationPacket* app)
 		Kick(fmt::format("Kicked by {}", gm_name[0] ? gm_name : "a GM"));
 		break;
 	}
+	case OP_CancelSneakHide:
+		// Client::CancelSneakHide — the hider attacked, was hit by a spell or took
+		// trap damage.  v29c's 0x5a21 handler (eqgame.exe 0x49b11e -> 0x4d03ce)
+		// reads no payload: it clears its hide flag (ds:0x6b65d8), prints "You are
+		// no longer hidden.", clears sneak (spawn +0x9f) with "You stop sneaking.",
+		// and recomputes its invisibility (0x4255ce), which sends 0xf520 type 3
+		// back.  That echo is what clears `hidden` here: it reaches
+		// Handle_OP_SpawnAppearance through HandleConnectedSpawnAppearance, the
+		// same SoF-and-earlier contract CancelSneakHide relies on.  Dropped, the
+		// client stayed hidden while everyone else could see it, and `hidden`
+		// never cleared server-side either.
+		m_tzs->SendToSession(m_session_key, 0x5a21, nullptr, 0);
+		break;
 	default:
 		// Opcodes without a Trilogy translation are silently dropped.
 		break;
@@ -3391,6 +3404,14 @@ void TrilogyClient::HandleOutgoingChannelMessage(const EQApplicationPacket* app)
 	if (!app || app->size < sizeof(::ChannelMessage_Struct)) return;
 
 	const auto* cm_in = reinterpret_cast<const ::ChannelMessage_Struct*>(app->pBuffer);
+
+	// /channel <x> off (ToggleTrilogyChannel).  Never the player's own line: a
+	// shout or gsay can come back to its sender, and turning a channel off is
+	// about not hearing others.
+	if (cm_in->chan_num < 32 && IsTrilogyChannelOff(static_cast<uint8_t>(cm_in->chan_num)) &&
+	    strncasecmp(cm_in->sender, GetName(), sizeof(cm_in->sender)) != 0) {
+		return;
+	}
 
 	// Strip SayLinks from message tail before forwarding to Trilogy client.
 	uint32_t msg_offset = static_cast<uint32_t>(sizeof(::ChannelMessage_Struct));
@@ -5945,8 +5966,102 @@ void TrilogyClient::HandleEmote(const EQApplicationPacket* app)
 	line[n] = '\0';
 	if (n == 0) return;
 
+	// /channel social off.  Handle_OP_Emote never echoes an emote to its own
+	// sender, so this only ever drops other people's.
+	if (IsTrilogyChannelOff(1)) return;
+
 	m_tzs->SendToSession(m_session_key, 0x1520,
 	                     reinterpret_cast<const uint8_t*>(line), n + 1);
+}
+
+// ============================================================
+// /channel — v29c's text-channel toggle.
+//
+// The command handler (eqgame.exe 0x4a7d99, command row 31, not GM-gated)
+// matches its argument, singular or plural, and 0x4cc908 sends the channel as
+// one byte on 0x7020:
+//
+//   social(s) 1   gsay(s) 2   shout(s) 3   auction(s) 4   ooc(s) 5
+//   tell(s) / msg(s) 7
+//
+// Anything else prints "Format to toggle text channel on/off is: channel
+// <channel>" and sends an empty 0x7120 (0x4d0bb6), which is taken here as a
+// request for the current state.  The client parses no reply to either opcode
+// and stores nothing itself, so the toggle can only be the server's: it decides
+// what reaches the client and says so in text.  The numbers are the
+// ChannelMessage chan_num values; socials are the 0x1520 emote lines.
+//
+// This is not the Options-panel filter set (0xff21, HandleServerFilter).  Those
+// are client-side filters the server mirrors only under /serverfilter on, and
+// every 0xff21 rewrites them, so a /channel toggle stored there would not last.
+// Tells have no panel option at all.
+// ============================================================
+namespace {
+struct TrilogyChannelName { uint8_t chan; const char* name; const char* what; };
+constexpr TrilogyChannelName kTrilogyChannels[] = {
+	{ 1, "social",  "socials" },
+	{ 7, "tell",    "tells" },
+	{ 2, "gsay",    "group messages" },
+	{ 3, "shout",   "shouts" },
+	{ 4, "auction", "auctions" },
+	{ 5, "ooc",     "out of character messages" },
+};
+constexpr const char* kTrilogyChannelsBucket = "trilogy_channels_off";
+
+const TrilogyChannelName* FindTrilogyChannel(uint8_t chan)
+{
+	for (const auto& c : kTrilogyChannels) {
+		if (c.chan == chan) return &c;
+	}
+	return nullptr;
+}
+} // namespace
+
+bool TrilogyClient::IsTrilogyChannelOff(uint8_t chan)
+{
+	if (!m_channels_off_loaded) {
+		m_channels_off        = Strings::ToUnsignedInt(GetBucket(kTrilogyChannelsBucket));
+		m_channels_off_loaded = true;
+	}
+	return chan < 32 && (m_channels_off & (1u << chan)) != 0;
+}
+
+void TrilogyClient::ToggleTrilogyChannel(uint8_t chan)
+{
+	const auto* c = FindTrilogyChannel(chan);
+	if (!c) {
+		LogInfo("[TrilogyChannel] char={} unknown channel {} — ignored", GetCleanName(), chan);
+		return;
+	}
+
+	const bool now_off = !IsTrilogyChannelOff(chan);
+	if (now_off) {
+		m_channels_off |= (1u << chan);
+	} else {
+		m_channels_off &= ~(1u << chan);
+	}
+
+	if (m_channels_off) {
+		SetBucket(kTrilogyChannelsBucket, std::to_string(m_channels_off));
+	} else {
+		DeleteBucket(kTrilogyChannelsBucket);
+	}
+
+	Message(Chat::Yellow, fmt::format("You will {} receive {}.",
+		now_off ? "no longer" : "now", c->what).c_str());
+	LogInfo("[TrilogyChannel] char={} {} {} (mask=0x{:x})",
+	        GetCleanName(), c->name, now_off ? "OFF" : "ON", m_channels_off);
+}
+
+void TrilogyClient::ReportTrilogyChannels()
+{
+	std::string line = "Text channels:";
+	const char* sep  = " ";
+	for (const auto& c : kTrilogyChannels) {
+		line += fmt::format("{}{} {}", sep, c.name, IsTrilogyChannelOff(c.chan) ? "OFF" : "on");
+		sep = ", ";
+	}
+	Message(Chat::Yellow, line.c_str());
 }
 
 // ============================================================

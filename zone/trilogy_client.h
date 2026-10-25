@@ -638,7 +638,20 @@ public:
 	// and causes visible jitter.
 	void MaybeResetForcedSelfPushState();
 
+	// ---- /channel (C->S 0x7020 toggle, 0x7120 status) ----
+	// v29c's /channel <social|tell|gsay|shout|auction|ooc> keeps no state of its
+	// own: it sends the channel number and expects the server to stop (or
+	// resume) delivering that channel.  Separate from the Options-panel filters
+	// (0xff21), which the client applies locally and resets on every send.
+	void ToggleTrilogyChannel(uint8_t chan);
+	void ReportTrilogyChannels();
+
 private:
+	bool IsTrilogyChannelOff(uint8_t chan);
+	// Bit (1 << chan) set = that channel is off.  Loaded from the
+	// "trilogy_channels_off" data bucket on first use so it survives zoning.
+	uint32_t m_channels_off        = 0;
+	bool     m_channels_off_loaded = false;
 
 	// EQClassic sends item delivery before the loot echo; we defer the echo
 	// until after the item packet so the client processes them in the right order.

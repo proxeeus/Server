@@ -537,6 +537,13 @@ static constexpr uint16_t ZN_OP_Jump            = 0x2020; // client -> zone: 0 B
 // server's only job is the skill-up; nothing handled it, so Safe Fall never rose.
 static constexpr uint16_t ZN_OP_SafeFallSuccess = 0xab21; // client -> zone: 0 B
 
+// 0x7020 / 0x7120 /channel.  0x7020 is 1 B, the channel to toggle (1 social,
+// 2 gsay, 3 shout, 4 auction, 5 ooc, 7 tell), sent by 0x4cc908 from the
+// /channel command (0x4a7d99).  0x7120 is 0 B, sent by 0x4d0bb6 after the usage
+// line when the argument matched nothing.  See TrilogyClient::ToggleTrilogyChannel.
+static constexpr uint16_t ZN_OP_ChannelToggle   = 0x7020; // client -> zone: 1 B
+static constexpr uint16_t ZN_OP_ChannelStatus   = 0x7120; // client -> zone: 0 B
+
 // 0x4721 OP_ClientError.  92 B.  The client reporting its OWN faults — EQClassic
 // (Common/Include/eq_opcodes.h:222) describes it as "client sents this when an
 // error client side happend i.e. a stackable item without charges sent to the
@@ -845,6 +852,7 @@ static constexpr uint16_t ZN_OP_Sacrifice     = 0xea21; // bidirectional: ask / 
 static constexpr uint16_t ZN_OP_TradeRequest = 0xd120; // client -> zone: open trade (Trade_Window_Struct: int32 fromid,toid)
 static constexpr uint16_t ZN_OP_TradeAccept  = 0xe620; // zone -> client: open trade window (Trade_Window_Struct, ids swapped)
 static constexpr uint16_t ZN_OP_TradeBusy    = 0xd620; // both: PC-trade request refused, 12 B {to, from, type}; type 0x62 not trading, 0x63 group only, else busy
+static constexpr uint16_t ZN_OP_TradeBusyTell = 0x1620; // client -> zone: 280 B {char partner[24]; char text[256]} "I'm busy right now." before a 0xdb20
 // How long a relayed PC-trade request waits for the recipient's client to answer.
 static constexpr uint64_t kTradeRequestPendingMs = 5000;
 static constexpr uint16_t ZN_OP_TradeCoins   = 0xe420; // client -> zone: coin placed in window (TradeCoin_Struct)
@@ -2839,6 +2847,13 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 				s.trilogy_client->CheckIncreaseSkill(EQ::skills::SkillSafeFall, nullptr);
 			}
 		}
+		else if (opcode == ZN_OP_ChannelToggle && s.trilogy_client) {
+			if (plen >= 1) {
+				s.trilogy_client->ToggleTrilogyChannel(payload[0]);
+			}
+		}
+		else if (opcode == ZN_OP_ChannelStatus && s.trilogy_client)
+			s.trilogy_client->ReportTrilogyChannels();
 		else if (opcode == ZN_OP_TradeRequest && s.trilogy_client)
 			HandleTradeRequest(addr, port, s, payload, plen);
 		// 0xe620 is also sent by the receiving client to ACCEPT a PC-trade request
@@ -2848,6 +2863,8 @@ void TrilogyZoneServer::OnOpcode(const std::string& addr, int port, Session& s,
 			HandleTradeAccepted(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_TradeBusy && s.trilogy_client)
 			HandleTradeBusy(addr, port, s, payload, plen);
+		else if (opcode == ZN_OP_TradeBusyTell && s.trilogy_client)
+			HandleTradeBusyTell(s, payload, plen);
 		else if (opcode == ZN_OP_TradeCoins && s.trilogy_client)
 			HandleTradeCoins(addr, port, s, payload, plen);
 		else if (opcode == ZN_OP_ClickGive && s.trilogy_client)
@@ -11059,6 +11076,42 @@ void TrilogyZoneServer::HandleTradeBusy(const std::string& /*addr*/, int /*port*
 
 	LogInfo("[TrilogyZone] PCTrade request refused by {} (type=0x{:02X}) — relayed to {}",
 	        s.char_name, payload[8], req->char_name);
+}
+
+void TrilogyZoneServer::HandleTradeBusyTell(Session& s, const uint8_t* payload, uint32_t plen)
+{
+	// The requester's half of a busy refusal.  The recipient accepted, both
+	// windows were opened (HandleTradeAccepted), and the requester's own 0xe620
+	// handler (eqgame.exe 0x49ea74) found its player busy — casting, looting, a
+	// window open, an input-block counter (+0x94 / +0xe5c) still held.  It then
+	// sends 0x1620 {char partner[24]; char text[256]} (0x49ee39, size 0x118) with
+	// the text already formatted as "<me> tells you, 'I'm busy right now.'"
+	// (0x55eee4), and right after it the 0xdb20 cancel HandleTradeCancel acts on.
+	// The text is for the partner: without it their window just closed.
+	//
+	// The line is rebuilt from the session's own name rather than relayed, so a
+	// client cannot put arbitrary words in someone else's mouth, and it only
+	// goes to the partner of the trade in progress.  An NPC trade (the server's
+	// 0xe620 opens those too) has nobody to tell.
+	if (!s.trilogy_client || plen < 24) return;
+
+	char named[25] = {};
+	memcpy(named, payload, 24);
+
+	if (!s.pc_trade_active || s.pc_trade_partner_id == 0) {
+		LogInfo("[TrilogyZone] PCTrade busy tell from {} to [{}] outside a PC trade — dropped",
+		        s.char_name, named);
+		return;
+	}
+
+	Session* partner = FindSessionByEntityId(s.pc_trade_partner_id);
+	if (!partner || !partner->trilogy_client) return;
+
+	partner->trilogy_client->Message(Chat::Tell, fmt::format(
+		"{} tells you, 'I'm busy right now.'", s.trilogy_client->GetCleanName()).c_str());
+
+	LogInfo("[TrilogyZone] PCTrade busy tell | from=[{}] to=[{}] named=[{}]",
+	        s.char_name, partner->char_name, named);
 }
 
 void TrilogyZoneServer::HandleTradeAccepted(const std::string& /*addr*/, int /*port*/, Session& s,
