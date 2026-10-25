@@ -78,24 +78,24 @@ constexpr int BotAISpellRange = 100; // TODO: Write a method that calcs what the
 constexpr int NegativeItemReuse = -1; // Unlinked timer for items
 
 // FD Pull tuning constants
-constexpr int   FD_TAG_WAIT_MS           = 2000;            // ms monk runs toward owner before FD'ing after tag
-constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 10000;           // ms to wait after FD before first "adds gone?" check
-constexpr int   FD_FEIGN_CHECK_MS        = 2000;            // ms between subsequent "adds gone?" checks
-constexpr float FD_ADD_RETREAT_DIST_SQ   = 100.0f * 100.0f; // primary: add walked this far from monk's feign position
-constexpr float FD_ADD_HOME_RADIUS_SQ    = 30.0f * 30.0f;   // fallback: add is within this dist of its own spawn
+constexpr int   FD_TAG_WAIT_MS           = 2000;            // ms after a tag, standing, before seeing who came with it
+constexpr int   FD_FEIGN_INITIAL_WAIT_MS = 2000;            // ms lying feigned before the first "can I stand?" check
+constexpr int   FD_FEIGN_CHECK_MS        = 1000;            // ms between subsequent "can I stand?" checks
 constexpr float FD_ALONE_RADIUS_SQ       = 80.0f * 80.0f;   // distance² — camp proximity: "Incoming" is called
 constexpr float FD_ARRIVED_RADIUS_SQ     = 50.0f * 50.0f;   // distance² — the mob this close to camp: the pull is done
-constexpr uint32 FD_PULL_GIVE_UP_MS      = 120000;          // a mob still not alone after this is left...
-constexpr uint32 FD_PULL_GIVE_UP_BOSS_MS = 300000;          // ...a boss after this (several split cycles)
-constexpr uint8  FD_SPLIT_ASK_CYCLES     = 3;               // feigns with adds before asking the leader
-constexpr float  FD_HELP_MARGIN          = 15.0f;           // added to a friend's assist range: it may be walking our way
-constexpr float  FD_CATCH_STANDOFF       = 90.0f;           // the catching monk waits this far from the target
-constexpr float  FD_ESCAPE_DIST          = 80.0f;           // after a tag the monk runs this far sideways (not toward camp) before feigning
-constexpr uint8  FD_ESCAPE_MAX_RUNS      = 12;              // ...and on that far again, at most this often, while ours are within the pack's reach
-constexpr float  FD_CATCH_SHORT_OF_ESCAPE = 40.0f;          // the catcher waits this far short of the tagger's escape, camp side
-constexpr float  FD_CATCH_REACH          = 200.0f;          // the catcher goes for one of the pack walked clear of the rest within this
-constexpr float  FD_PEEL_READY_DIST      = 250.0f;          // the tagger goes in again once the catcher is catching within this (anywhere round the pack)
-constexpr uint32 FD_PEEL_GIVE_UP_MS      = 45000;           // a peeled add not at camp after this is let go
+constexpr float  FD_ESCAPE_DIST          = 80.0f;           // too close to camp to feign: the monk runs this far further from it first
+constexpr uint8  FD_ESCAPE_MAX_RUNS      = 12;              // ...at most this often, then it feigns where it is
+constexpr uint8  FD_SOFT_RUNS            = 3;               // ...after this many, a spot clear of the raid will do even if we could not stand there later
+constexpr float  FD_SPOT_MARGIN          = 15.0f;           // the free monk waits this far outside every idle mob's aggro range
+constexpr float  FD_SPOT_SEARCH          = 250.0f;          // ...within this of the other monk (or the target)
+constexpr float  FD_STAND_MARGIN         = 10.0f;           // a feigned monk stands once no idle mob is within its aggro range + this
+constexpr float  FD_SOLO_MARGIN          = 15.0f;           // alone: no idle friend within its assist range + this (a monk then tags it)
+constexpr float  FD_CAMP_FIGHT_RADIUS    = 100.0f;          // the raid fights out to this from camp (= kCampHoldRadius, bot_tactics.cpp)
+constexpr uint32 FD_DRAIN_MAX_MS         = 8000;            // draining with them on us: feign after this, once out of the raid's reach...
+constexpr float  FD_DRAIN_HURT_PCT       = 60.0f;           // ...or below this much health there...
+constexpr float  FD_DRAIN_DYING_PCT      = 35.0f;           // ...or below this anywhere: a dead puller sends the pack to the raid (^fdpull: the self-feign)
+constexpr uint32 FD_PACK_ARRIVE_MS       = 5000;            // adds on the tagger: it lets them come to it this long at most, then feigns
+constexpr uint32 FD_STAND_ANYWAY_MS      = 20000;           // lying beside a mob at home this long, nobody else free: stand anyway, whatever comes is the pull
 
 // nHSND	negative Healer/Slower/Nuker/Doter
 // pH		positive Healer
@@ -188,15 +188,17 @@ public:
 	static const uint32 SPELL_TYPE_LAST = spellTypeIndexTwitch;
 	static const uint32 SPELL_TYPE_COUNT = SPELL_TYPE_LAST + 1;
 
+	// The split as it is played (forensics/fdpull_split_diff.md): the monk with
+	// adds on it drains them back toward the raid and feigns just out of its
+	// reach; each mob waits there its own time, and the one left alone is
+	// tagged and comes in single.
 	enum class FDPullState : uint8_t {
 		None         = 0,
-		Tagging      = 1,  // moving to target, tagging it, kiting back
-		FeignWait    = 2,  // feigned, waiting for physical separation
-		Retagging    = 3,  // moving back to target to re-tag
-		RetagKiting  = 4,  // re-tagged, kiting back; FD again if adds re-aggro
-		FDCooldown   = 5,  // FD failed — staying put until reuse timer expires, then retry
-		Catching     = 6,  // the second monk: standing off, tags the target once it is clear of its friends
-		Peeling      = 7,  // the second monk took an add off the pack: bringing it to camp alone
+		Tagging      = 1,  // going in to tag one of the pack, then watching who comes with it
+		FeignWait    = 2,  // feigned at the drain spot; up to tag one that stands alone, or once the free monk has pulled
+		Bringing     = 3,  // one came alone: bringing it to camp; feign if more join
+		FDCooldown   = 4,  // FD failed — staying put until reuse timer expires, then retry
+		Catching     = 5,  // free: waits off the pack; tags one that stands alone, or drains them again once all are home
 	};
 
 	// Class Constructors
@@ -922,29 +924,32 @@ public:
 	uint16 GetFDPullTargetID() const { return m_fd_pull_target_id; }
 	void SetFDPullTargetID(uint16 id) { m_fd_pull_target_id = id; }
 	void FDPullerProcess(Client* bot_owner, Raid* raid);
-	// The leader's answer to "can't get it alone": bring them all, or keep trying.
-	void TacticsSplitAnswer(bool bring_all) { m_fd_bring_all = bring_all; if (!bring_all) { m_fd_split_cycles = 0; } }
+	// The leader's answer to a boss: "bring them" (all of it), or "keep trying".
+	void TacticsSplitAnswer(bool bring_all) { m_fd_bring_all = bring_all; }
 	bool ExecuteFeignDeath();
 	void ExecuteFDTag(Mob* target);
 	float GetFDTagRangeSq();
-	bool AddsHaveReturned() const;
 	bool IsBeingChasedByAdds(const Mob* ignore_target) const;
-	// Who would come with it if we tagged it now: NPC::AIYellForHelp's own
-	// tests, with us as the attacker. 0 = it comes alone.
-	size_t FriendsThatWouldHelp(Mob* target, float margin = FD_HELP_MARGIN);
 	void ForgetOwnerTaggedOnly(NPC* npc); // feigned: the owner our tag put on its list goes too
 	void FDPullReset(Client* bot_owner);
-	// Two monks on one pull (DispatchPulls, raids): one tags, the other
-	// catches -- waits nearby, standing, and tags the target the moment it
-	// is clear of its friends while the first one lies feigned.
+	// Two monks on one pull (DispatchPulls, raids): one tags, the other is
+	// free -- it waits off the pack and, once the first lies feigned, tags
+	// whichever of the pack is closest to it. Then they swap.
 	uint16 GetFDPartnerID() const { return m_fd_partner_id; }
 	void SetFDPartnerID(uint16 id) { m_fd_partner_id = id; }
-	uint16 GetFDPeelID() const { return m_fd_pull_state == FDPullState::Peeling ? m_fd_peel_id : 0; }
-	// Where the tagger runs with its tag (set_escape in FDPullerProcess): the
-	// catcher waits near it for the pack.
-	bool GetFDEscape(glm::vec3& at, float& heading) const { at = m_fd_escape; heading = m_fd_escape_heading; return m_fd_escape_set; }
-	bool TacticsOursNear(const glm::vec3& at, float radius); // a unit member (or pet) other than us this close
-	const std::vector<uint16>& GetFDPullAddIDs() const { return m_fd_pull_add_ids; } // the pack that came with our last tag
+	uint16 GetFDBringID() const { return m_fd_pull_state == FDPullState::Bringing ? m_fd_bring_id : 0; }
+	bool HasFDTagged() const { return m_fd_pull_state == FDPullState::Tagging && m_fd_tagged; } // tagged, watching who comes
+	// ^fdpull / ^fd: the player splits (the user, 2026-10-25). The monk tags
+	// and brings whatever comes; ^fd feigns it where it is, and it stays down
+	// until ^fdpull sends it at the next one.
+	void StartManualFDPull(Mob* target); // a monk already on a pull gets up and goes for this one instead
+	bool FDManualFeign();                // ^fd: false if it is not on a pull of ours
+	void FDTell(const std::string& msg); // ^fdpull: a tell to the player (raid say carried zone-wide), and the log
+	bool IsFDManual() const { return m_fd_manual && IsFDPulling(); }
+	bool IsFDManualDown() const { return IsFDManual() && m_fd_pull_state == FDPullState::FeignWait; } // feigned (not a failed try: that one still has them on it)
+	uint32 GetFDRetryMs() const { return m_fd_pull_state == FDPullState::FDCooldown ? m_fd_reuse_timer.GetRemainingTime() : 0; } // ^fd failed: next try in
+	void FDPullNewCycle() { m_fd_pull_add_ids.clear(); } // one came in alone: the next cycle starts on the target again
+	const std::vector<uint16>& GetFDPullAddIDs() const { return m_fd_pull_add_ids; } // the pack: every add our feigns shook off this cycle
 
 
 	// Movement Methods
@@ -1238,21 +1243,29 @@ private:
 	bool m_returning_flag;
 	FDPullState          m_fd_pull_state;
 	uint16               m_fd_pull_target_id;
-	uint32               m_fd_pull_started_ms = 0; // the FD pull gives up after FD_PULL_GIVE_UP_MS
-	uint8                m_fd_split_cycles    = 0; // feigns with adds on this pull
-	bool                 m_fd_split_asked     = false; // asked the leader what to do
-	bool                 m_fd_bring_all       = false; // the leader said bring them: no more splitting
+	uint32               m_fd_pull_started_ms = 0; // for the log: how long the split took
+	uint8                m_fd_split_cycles    = 0; // feigns with adds on this pull (the log)
+	bool                 m_fd_bring_all       = false; // it sees through feign death, or the leader said bring them: no splitting
+	bool                 m_fd_manual          = false; // ^fdpull: the player splits; we tag, bring, and feign on ^fd only
 	bool                 m_fd_incoming_said   = false; // "Incoming" called for this pull
-	uint16               m_fd_partner_id      = 0;     // the other monk on this pull (tagger <-> catcher)
-	uint32               m_fd_gap_wait_ms     = 0;     // since then its friends would come with it; 0 = not waiting
-	uint16               m_fd_peel_id         = 0;     // Peeling: the add we bring in
-	uint32               m_fd_peel_started_ms = 0;
-	glm::vec3            m_fd_escape          = glm::vec3(0.0f); // where we run with a tag
-	float                m_fd_escape_heading  = 0.0f;
+	uint16               m_fd_partner_id      = 0;     // the other monk on this pull
+	uint16               m_fd_tag_id          = 0;     // Tagging: the one of the pack we go for (0 = the target)
+	bool                 m_fd_tagged          = false; // Tagging: tagged it, watching who comes (m_fd_tag_timer)
+	uint32               m_fd_tagged_ms       = 0;     // ...since then
+	uint32               m_fd_feigned_ms      = 0;     // FeignWait: since then (FD_STAND_ANYWAY_MS)
+	uint16               m_fd_bring_id        = 0;     // Bringing: the one that came alone
+	glm::vec3            m_fd_escape          = glm::vec3(0.0f); // too close to camp to feign: where we run first
 	bool                 m_fd_escape_set      = false;
-	uint8                m_fd_escape_runs     = 0;     // times we ran on: ours were within the pack's reach (FD_ESCAPE_MAX_RUNS)
-	glm::vec3            m_fd_catch_spot      = glm::vec3(0.0f); // Catching: where we wait for the tagger's pack, once per tag
+	uint32               m_fd_escape_ms       = 0;     // when it was picked (again after 7 s: stuck)
+	uint8                m_fd_escape_runs     = 0;     // times we ran further from camp (FD_ESCAPE_MAX_RUNS)
+	glm::vec3            m_fd_catch_spot      = glm::vec3(0.0f); // Catching: where we wait, off the pack
 	bool                 m_fd_catch_spot_set  = false;
+	uint32               m_fd_catch_spot_ms   = 0;     // when it was worked out (again every half second)
+	uint32               m_fd_said_ms         = 0;     // the last "what I'm doing" log line while waiting
+	glm::vec3            m_fd_drain           = glm::vec3(0.0f); // adds on us: where we drain them to before feigning
+	bool                 m_fd_drain_set       = false;
+	uint32               m_fd_drain_ms        = 0;     // since then (FD_DRAIN_MAX_MS)
+	bool                 m_fd_room_said       = false; // "too close to split" said this pull
 	uint16               m_bringing_in_id     = 0;     // a plain pull's mob, while we walk it home (GetBringingInID)
 	uint16               m_rooted_reposition_target_id;
 	std::vector<uint16>  m_fd_pull_add_ids;
