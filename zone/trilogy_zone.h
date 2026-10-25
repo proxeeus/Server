@@ -744,6 +744,9 @@ private:
 	// (trading off, group only, or busy).  Relayed to the requester.
 	void HandleTradeBusy(const std::string& addr, int port, Session& s,
 	                     const uint8_t* payload, uint32_t plen);
+	// Inbound 0x1620: the requester's client was busy when its trade window was
+	// opened and tells the partner so, just before its 0xdb20 cancel.
+	void HandleTradeBusyTell(Session& s, const uint8_t* payload, uint32_t plen);
 	void HandleTradeCoins(const std::string& addr, int port, Session& s,
 	                      const uint8_t* payload, uint32_t plen);
 	void HandleTradeGive(const std::string& addr, int port, Session& s);
