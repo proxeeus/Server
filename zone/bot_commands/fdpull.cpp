@@ -5,8 +5,9 @@
 // until ^fdpull sends it at the next one -- the mob you see standing alone.
 // The camp never moves for a pull.
 //
-//   <target> ^fdpull [monk]   pull it; no name: the monk down on your pull,
-//                             else a free monk of your group
+//   <target> ^fdpull [monk]   pull it; no name: a free monk with health to
+//                             pull (35%+), the one down on your pull first,
+//                             then your group's
 //   ^fdpull cancel            call every FD pull off (they stand up)
 //   ^fd                       the monk pulling feigns (bot_commands/fd.cpp)
 void bot_command_fdpull(Client* c, const Seperator* sep)
@@ -15,7 +16,7 @@ void bot_command_fdpull(Client* c, const Seperator* sep)
 		return;
 	if (helper_is_help_or_usage(sep->arg[1])) {
 		c->Message(Chat::White, "usage: <enemy_target> %s [monk] -- the monk tags it and brings what comes; ^fd feigns it", sep->arg[0]);
-		c->Message(Chat::White, "       no name: the monk lying feigned on your pull, else a free monk of your group");
+		c->Message(Chat::White, "       no name: a free monk above 35%% health -- the one lying feigned on your pull first, then your group's");
 		c->Message(Chat::White, "       %s cancel -- call every FD pull off", sep->arg[0]);
 		return;
 	}
@@ -82,37 +83,40 @@ void bot_command_fdpull(Client* c, const Seperator* sep)
 			return;
 		}
 	} else {
-		// The one down on your pull: you saw one come off alone.
+		// Of the free monks: one with health to pull first (not below
+		// FD_DRAIN_DYING_PCT: Sastiz, sent again at 8%, died a second after
+		// his tag, Kael 2026-10-25); of those the one down on your pull (you
+		// saw one come off alone), then your own group's, then the healthiest.
+		std::list<Bot*> sbl;
+		if (ActionableBots::PopulateSBL(c, "ownergroup", sbl, ActionableBots::ABM_OwnerGroup) != ActionableBots::ABT_None) {
+			sbl.remove(nullptr);
+		}
+		auto in_group = [&](Bot* bot) { return std::find(sbl.begin(), sbl.end(), bot) != sbl.end(); };
+		auto better   = [&](Bot* a, Bot* b) { // a before b
+			const bool ha = a->GetHPRatio() >= FD_DRAIN_DYING_PCT;
+			const bool hb = b->GetHPRatio() >= FD_DRAIN_DYING_PCT;
+			if (ha != hb) {
+				return ha;
+			}
+			if (a->IsFDManualDown() != b->IsFDManualDown()) {
+				return a->IsFDManualDown();
+			}
+			if (in_group(a) != in_group(b)) {
+				return in_group(a);
+			}
+			return a->GetHPRatio() > b->GetHPRatio();
+		};
 		for (auto* bot : all_bots) {
-			if (usable(bot) && bot->IsFDManualDown()) {
+			if (usable(bot) && free_for_it(bot) && (!monk || better(bot, monk))) {
 				monk = bot;
-				break;
-			}
-		}
-		// Else a free monk of your own group, then any of yours.
-		if (!monk) {
-			std::list<Bot*> sbl;
-			if (ActionableBots::PopulateSBL(c, "ownergroup", sbl, ActionableBots::ABM_OwnerGroup) != ActionableBots::ABT_None) {
-				sbl.remove(nullptr);
-				for (auto* bot : sbl) {
-					if (usable(bot) && free_for_it(bot)) {
-						monk = bot;
-						break;
-					}
-				}
-			}
-		}
-		if (!monk) {
-			for (auto* bot : all_bots) {
-				if (usable(bot) && free_for_it(bot)) {
-					monk = bot;
-					break;
-				}
 			}
 		}
 		if (!monk) {
 			c->Message(Chat::Red, "No free Monk bot: ^fd the one pulling, or name one ('%s <monk>').", sep->arg[0]);
 			return;
+		}
+		if (monk->GetHPRatio() < FD_DRAIN_DYING_PCT) {
+			c->Message(Chat::Yellow, "Every free monk is hurt: %s goes, at %.0f%% health.", monk->GetCleanName(), monk->GetHPRatio());
 		}
 	}
 

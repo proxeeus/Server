@@ -871,6 +871,7 @@ public:
 	void Signal(int signal_id);
 	void SendPayload(int payload_id, std::string payload_value = std::string());
 	void OwnerMessage(const std::string& message);
+	void OwnerTell(const std::string& message); // a real tell to the player who owns us (raid chatter: a raid say reached every player in the zone)
 
 	//Raid additions
 	Raid* p_raid_instance;

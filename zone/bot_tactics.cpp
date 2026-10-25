@@ -693,8 +693,16 @@ void BotTactics::Announce(Raid* raid, Group* group, Mob* speaker, const std::str
 		return;
 	}
 
+	// In a raid: a tell to the speaker's player, not a raid say -- that
+	// reached every player of the raid wherever they were in the zone (the
+	// user, 2026-10-25).
 	if (raid) {
-		raid->RaidSay(msg.c_str(), speaker->GetCleanName(), Language::CommonTongue, Language::MaxValue);
+		if (speaker->IsBot() && speaker->CastToBot()->GetBotOwner() && speaker->CastToBot()->GetBotOwner()->IsClient()) {
+			speaker->CastToBot()->OwnerTell(msg);
+		}
+		else {
+			raid->RaidSay(msg.c_str(), speaker->GetCleanName(), Language::CommonTongue, Language::MaxValue);
+		}
 	}
 	else if (group) {
 		group->GroupMessage(speaker, Language::CommonTongue, Language::MaxValue, msg.c_str());

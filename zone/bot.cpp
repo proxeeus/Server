@@ -3880,7 +3880,7 @@ void Bot::BotPullerProcess(Client* bot_owner, Raid* raid) {
 		if (pull_target) {
 			if (raid) {
 				const auto msg = fmt::format("Pulling {} to the group..", pull_target->GetCleanName());
-				raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
+				OwnerTell(msg); // not a raid say: every player of the raid heard it
 			} else {
 				BotGroupSay(
 					this,
@@ -4143,9 +4143,14 @@ void Bot::StartManualFDPull(Mob* target)
 void Bot::FDTell(const std::string& msg)
 {
 	LogInfo("[FDPull] [{}] {}", GetCleanName(), msg);
+	OwnerTell(msg);
+}
+
+void Bot::OwnerTell(const std::string& message)
+{
 	Client* owner = GetBotOwner() && GetBotOwner()->IsClient() ? GetBotOwner()->CastToClient() : nullptr;
 	if (owner) {
-		owner->ChannelMessageSend(GetCleanName(), owner->GetName(), ChatChannel_Tell, Language::CommonTongue, Language::MaxValue, "%s", msg.c_str());
+		owner->ChannelMessageSend(GetCleanName(), owner->GetName(), ChatChannel_Tell, Language::CommonTongue, Language::MaxValue, "%s", message.c_str());
 	}
 }
 
@@ -4229,7 +4234,7 @@ void Bot::FDPullerProcess(Client* bot_owner, Raid* raid) {
 		}
 		LogInfo("[FDPull] [{}] {}", GetCleanName(), msg);
 		if (raid) {
-			raid->RaidSay(msg.c_str(), GetCleanName(), 0, 100);
+			OwnerTell(msg); // not a raid say: every player of the raid heard it
 		} else {
 			BotGroupSay(this, msg.c_str());
 		}
@@ -10780,6 +10785,12 @@ void Bot::BotGroupSay(Mob* speaker, const char* msg, ...) {
 	va_end(ap);
 
 	if (speaker->IsRaidGrouped()) {
+		// In a raid, to the bot's player alone, as a tell: every player of the
+		// raid heard it, wherever they were in the zone (the user, 2026-10-25).
+		if (speaker->IsBot() && speaker->CastToBot()->GetBotOwner() && speaker->CastToBot()->GetBotOwner()->IsClient()) {
+			speaker->CastToBot()->OwnerTell(buf);
+			return;
+		}
 		Raid* r = entity_list.GetRaidByBotName(speaker->GetName());
 		if (r) {
 			for (const auto& m : r->members) {
