@@ -433,7 +433,7 @@ bool Bot::BotCastSlow(Mob* tar, uint8 botLevel, uint8 botClass, BotSpell& botSpe
 		if (casted_spell && GetClass() != Class::Bard) {
 			if (raid) {
 				const auto msg = fmt::format("Attempting to slow {}.", tar->GetCleanName());
-				raid->RaidSay(msg.c_str(), GetCleanName(), Language::CommonTongue, Language::MaxValue);
+				OwnerTell(msg); // not a raid say: every player of the raid heard it
 			}
 			else {
 				BotGroupSay(
@@ -1478,17 +1478,8 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 		LogInfo("[BotAI] [{}] mez: [{}] on [{}] (MR [{}])", GetCleanName(), spells[botSpell.SpellId].name, addMob->GetCleanName(), addMob->GetMR());
 
 		if (raid) {
-			// (message, then speaker: these were the other way round)
-			raid->RaidSay(
-				fmt::format(
-					"Attempting to mesmerize {} with {}.",
-					addMob->GetCleanName(),
-					spells[botSpell.SpellId].name
-				).c_str(),
-				GetCleanName(),
-				0,
-				100
-			);
+			// not a raid say: every player of the raid heard it
+			OwnerTell(fmt::format("Attempting to mesmerize {} with {}.", addMob->GetCleanName(), spells[botSpell.SpellId].name));
 		}
 		else {
 			BotGroupSay(

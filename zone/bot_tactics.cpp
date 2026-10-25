@@ -693,8 +693,16 @@ void BotTactics::Announce(Raid* raid, Group* group, Mob* speaker, const std::str
 		return;
 	}
 
+	// In a raid: a tell to the speaker's player, not a raid say -- that
+	// reached every player of the raid wherever they were in the zone (the
+	// user, 2026-10-25).
 	if (raid) {
-		raid->RaidSay(msg.c_str(), speaker->GetCleanName(), Language::CommonTongue, Language::MaxValue);
+		if (speaker->IsBot() && speaker->CastToBot()->GetBotOwner() && speaker->CastToBot()->GetBotOwner()->IsClient()) {
+			speaker->CastToBot()->OwnerTell(msg);
+		}
+		else {
+			raid->RaidSay(msg.c_str(), speaker->GetCleanName(), Language::CommonTongue, Language::MaxValue);
+		}
 	}
 	else if (group) {
 		group->GroupMessage(speaker, Language::CommonTongue, Language::MaxValue, msg.c_str());
@@ -2733,12 +2741,13 @@ std::vector<std::string> BotTactics::DescribePulls(uint32 key)
 		uint16 t = b->IsFDPulling() ? b->GetFDPullTargetID() :
 			((b->GetPullingFlag() || b->GetReturningFlag()) && b->GetTarget()) ? b->GetTarget()->GetID() : 0;
 		if (Mob* tm = t ? entity_list.GetMob(t) : nullptr) {
-			out.emplace_back(fmt::format(
-				"Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(),
-				b->GetFDPullState() == Bot::FDPullState::Catching ? " (catching)" :
-				b->GetFDPullState() == Bot::FDPullState::Peeling ? fmt::format(" (peeling {} off it)", NameOf(b->GetFDPeelID())).c_str() :
-				b->IsFDPulling() ? " (feign death)" : ""
-			));
+			const auto  st  = b->GetFDPullState();
+			std::string how =
+				st == Bot::FDPullState::Catching ? " (free, waiting off the pack)" :
+				st == Bot::FDPullState::FeignWait ? " (feigned)" :
+				st == Bot::FDPullState::Bringing ? fmt::format(" (bringing {} in)", NameOf(b->GetFDBringID())) :
+				b->IsFDPulling() ? " (feign death)" : "";
+			out.emplace_back(fmt::format("Pulling: {} -> {}{}.", b->GetCleanName(), tm->GetCleanName(), how));
 		}
 	}
 
@@ -3054,9 +3063,9 @@ void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, cons
 			b = plain;
 		}
 
-		// In a raid a second monk goes along to catch: it waits off the mob,
-		// standing, and tags it the moment it is clear of its friends while
-		// the first one lies feigned -- then they swap (Bot::FDPullerProcess).
+		// In a raid a second monk goes along, free: it waits just outside the
+		// pack's aggro and, once the first lies feigned, tags whichever of the
+		// pack is closest to it -- then they swap (Bot::FDPullerProcess).
 		// The next nearest free one; a group keeps its one monk on its own.
 		Bot* catcher = nullptr;
 		if (fd && raid) {
@@ -3070,22 +3079,9 @@ void BotTactics::DispatchPulls(BotTacticsPlan& p, Raid* raid, Group* group, cons
 			}
 		}
 
-		// The pull comes to where the player stands when it goes out: that is the
-		// camp from now until it is in, the raid gathers there and fights nothing
-		// further out (Rebuild, out_of_camp). Setting the camp back 220 from the
-		// target instead put it on the floor below Kael's arena, by the Vallon Zek
-		// temple, and the raid walked down into the clerics (2026-10-25).
-		if (leader) {
-			const glm::vec3 at(leader->GetPosition());
-			if (!p.camp_set || DistanceSquaredNoZ(at, p.camp) > kCampRadius * kCampRadius) {
-				p.camp         = at;
-				p.camp_set     = true;
-				p.camp_left_ms = 0;
-				p.walk_from_camp.clear();
-				LogInfo("[BotTactics] unit [{:#x}] camp at [{}] for the pull of [{}]: [{:.0f}, {:.0f}, {:.0f}]",
-					p.key, leader->GetCleanName(), t->GetCleanName(), at.x, at.y, at.z);
-			}
-		}
+		// A pull never moves the camp (the user, 2026-10-25: "don't move the camp
+		// when I order a pull, it is cumbersome" -- it overrode his ^setcamp in
+		// Kael). The pull comes to the camp he set, or the one the fights made.
 
 		if (!b->TacticsStartQueuedPull(t, catcher)) {
 			break;
@@ -6468,33 +6464,6 @@ bool Bot::TacticsOutOfCamp(Mob* m)
 	}
 	Mob* leader = p->camp_leader_id ? entity_list.GetMob(p->camp_leader_id) : nullptr;
 	return !(leader && leader->IsClient() && leader->CastToClient()->AutoAttackEnabled() && m->GetTarget() == leader);
-}
-
-// Anyone of the unit -- player, bot, or a pet of theirs -- within `radius` of
-// `at`, other than us: where a feign would leave the pack standing next to
-// them (FDPullerProcess, before feigning). The other monk on the pull counts
-// too: excluding it, the tagger feigned a second after the catcher peeled an
-// add, the pack stood within reach of the catcher, and the other two
-// Protectors of Zek took it -- and it ran them all into camp (Kael 2026-10-24).
-bool Bot::TacticsOursNear(const glm::vec3& at, float radius)
-{
-	const float r2   = radius * radius;
-	auto        close_by = [&](Mob* m) {
-		return m && m != this && m->GetHP() > 0 && DistanceSquared(glm::vec3(m->GetPosition()), at) <= r2;
-	};
-
-	const BotTacticsPlan* p = GetTacticsPlan();
-	if (!p) {
-		Mob* o = GetBotOwner();
-		return close_by(o) || (o && close_by(o->GetPet()));
-	}
-	for (uint16 id : p->members) {
-		Mob* m = entity_list.GetMob(id);
-		if (close_by(m) || (m && close_by(m->GetPet()))) {
-			return true;
-		}
-	}
-	return false;
 }
 
 glm::vec3 Bot::PullReturnPoint(Client* bot_owner)

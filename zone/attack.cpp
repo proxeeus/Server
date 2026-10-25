@@ -3466,7 +3466,16 @@ void Mob::AddToHateList(Mob* other, int64 hate /*= 0*/, int64 damage /*= 0*/, bo
 				return;
 			}
 
-			if (owner_->GetFeigned()) {
+			// Not for a monk on an FD pull: its pack must have nobody of ours but
+			// the monk, or the feign sends it elsewhere. The owner at 0 hate took
+			// the Protectors to the raid when Fany died, and passed on the heal
+			// aggro of every song the bard put on him at camp (AddHealAggro works
+			// through anyone on the list): Kallis and a Protector went for
+			// Rendarae as soon as Sastiz feigned (Kael 2026-10-25).
+			if (other_->IsFDPulling()) {
+				// nothing: the monk alone
+			}
+			else if (owner_->GetFeigned()) {
 				AddFeignMemory(owner_);
 			}
 			else if (!hate_list.IsEntOnHateList(owner_)) {
@@ -3489,7 +3498,9 @@ void Mob::AddToHateList(Mob* other, int64 hate /*= 0*/, int64 damage /*= 0*/, bo
 	} //MERC
 
 	//if I am a pet, then add pet owner if there's one
-	if (owner) { // Other is a pet, add him and it
+	// (Bot::GetOwner is the bot's player too: the same tie as above, the
+	// second way in -- skipped for a monk on an FD pull, Kael 2026-10-25.)
+	if (owner && !(other->IsBot() && other->CastToBot()->IsFDPulling())) { // Other is a pet, add him and it
 				 // EverHood 6/12/06
 				 // Can't add a feigned owner to hate list
 		if (owner->IsClient() && owner->CastToClient()->GetFeigned()) {

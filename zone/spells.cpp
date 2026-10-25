@@ -4178,6 +4178,26 @@ bool Mob::SpellOnTarget(
 		return false;
 	}
 
+	// Nothing of ours lands on a monk while it is on an FD pull: no heal, no
+	// buff, no bard's group song. Each one puts its caster on the list of
+	// every mob after the monk (EntityList::AddHealAggro, below), and the
+	// feign then sends the pack to that caster -- three Protectors of Zek went
+	// for Rendarae at the raid, her Cantana of Replenishment had reached
+	// Sastiz as he brought them in (Kael 2026-10-25). The raid's old rule:
+	// don't heal or sing on the puller. Back at camp the pull is over and it
+	// is healed like anyone.
+	if (
+		spelltar != this &&
+		spelltar->IsBot() &&
+		spelltar->CastToBot()->IsFDPulling() &&
+		IsBeneficialSpell(spell_id) &&
+		!IsResurrectionEffects(spell_id) &&
+		spellOwner && spellOwner->IsOfClientBotMerc()
+	) {
+		LogSpellsDetail("[{}] not landed on [{}]: it is on an FD pull", spell_id, spelltar->GetCleanName());
+		return false;
+	}
+
 	if (
 		IsDetrimentalSpell(spell_id) &&
 		!IsAttackAllowed(spelltar, true) &&
