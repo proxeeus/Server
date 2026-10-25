@@ -1498,6 +1498,13 @@ bool Bot::BotCastMez(Mob* tar, uint8 botLevel, bool checked_los, BotSpell& botSp
 bool Bot::AIDoSpellCast(int32 i, Mob* tar, int32 mana_cost, uint32* oDontDoAgainBefore) {
 	bool result = false;
 
+	// The spell bar is still recovering from the last cast (Bots:EraSpellRecovery,
+	// StartEraSpellRecovery).  Checked here as well as in Bot::CastSpell because
+	// this path calls Mob::CastSpell directly.  Bards are never locked.
+	if (InEraSpellRecovery()) {
+		return false;
+	}
+
 	// Resisted too often on this mob just now: leave it (TacticsNoteResist).
 	if (tar && i >= 0 && i < static_cast<int32>(AIBot_spells.size()) &&
 		IsDetrimentalSpell(AIBot_spells[i].spellid) && TacticsResistBackoff(AIBot_spells[i].spellid, tar)) {
@@ -3409,6 +3416,24 @@ uint8 Bot::GetChanceToCastBySpellType(uint32 spellType)
 // no name, icon or visual, and they are out of era anyway.
 constexpr uint32 kBotEraMaxSpellId = 2010;
 
+// Not before the level the spell table gives the class, the gate a player's
+// cast meets.  bot_spells_entries starts some spells early: the necromancer
+// list had Demi Lich at 56 (60), Asystole at 40 (44), Ignite Blood at 47 (49),
+// Lich and Drain Soul at 48 (49), and a dozen more by one to four levels; the
+// paladin Guard at 39 (49), the shaman Superior Healing at 51 (53).  A 255
+// ("this class never") is let through: the table has it for real spells of
+// several classes (ranger Firefist, shaman Spirit of Wolf, every beastlord
+// spell) that the v29c spell file gives them — a data fault for the spell
+// table rebuild, not something to take off the bots here.
+static bool BotListSpellLevelAllows(uint16 spell_id, uint8 class_id, uint8 level)
+{
+	if (!IsValidSpell(spell_id) || class_id < 1 || class_id > Class::PLAYER_CLASS_COUNT) {
+		return true;
+	}
+	const uint8 need = spells[spell_id].classes[class_id - 1];
+	return need == 0 || need >= 255 || need <= level;
+}
+
 bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	// ok, this function should load the list, and the parent list then shove them into the struct and sort
 	npc_spells_id = bot_spell_id;
@@ -3489,7 +3514,7 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 		for (auto& e : parentlist->entries) {
 			if (
 				EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid <= kBotEraMaxSpellId &&
-				e.spellid &&
+				e.spellid && BotListSpellLevelAllows(e.spellid, GetClass(), GetLevel()) &&
 				!IsSpellInBotList(spell_list, e.spellid)
 				) {
 				if (!e.bucket_name.empty() && !e.bucket_value.empty()) {
@@ -3599,7 +3624,8 @@ bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
 	}
 
 	for (auto& e : spell_list->entries) {
-		if (EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid && e.spellid <= kBotEraMaxSpellId) {
+		if (EQ::ValueWithin(GetLevel(), e.minlevel, e.maxlevel) && e.spellid && e.spellid <= kBotEraMaxSpellId &&
+			BotListSpellLevelAllows(e.spellid, GetClass(), GetLevel())) {
 			if (!e.bucket_name.empty() && !e.bucket_value.empty()) {
 				if (!CheckDataBucket(e.bucket_name, e.bucket_value, e.bucket_comparison)) {
 					continue;

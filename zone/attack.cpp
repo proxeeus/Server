@@ -4639,7 +4639,9 @@ void Mob::CommonDamage(Mob* attacker, int64 &damage, const uint16 spell_id, cons
 			else if (skill_used == EQ::skills::SkillKick &&
 					attacker->GetClass() == Class::Warrior) {
 				int stun_level = RuleI(Combat, NPCKickStunLevel);
-				if (attacker->IsClient()) {
+				// A bot warrior is a player warrior: the kick stun comes at 56,
+				// not at the NPC level 1, where every kick could interrupt a caster.
+				if (attacker->IsClient() || attacker->IsBot()) {
 					stun_level = RuleI(Combat, PCKickStunLevel);
 				}
 				can_stun = (attacker->GetLevel() >= stun_level);

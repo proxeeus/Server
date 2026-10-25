@@ -66,6 +66,13 @@ class NPC;
 // =====================================================================
 const char* TrilogyWireName(Mob* m);
 
+// The level at which a class may use a discipline in v29c, or 255 when the
+// class has no such discipline there.  The list is the client's own
+// (kTrilogyDisciplines, recovered from its /discipline parser); the level is
+// the one a player is held to (TrilogyDisciplineRequiredLevel).  Used to keep
+// bots on the disciplines a v29c player of their class has.
+uint8_t TrilogyEraDisciplineLevel(uint8_t class_id, uint16_t spell_id);
+
 class TrilogyZoneServer {
 public:
 	void SetSendFn(std::function<void(const std::string&, int, const void*, size_t)> fn);

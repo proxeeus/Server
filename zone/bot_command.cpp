@@ -86,6 +86,14 @@ public:
 				continue;
 			}
 
+			// The v29c spell file stops at 2010, the same cut the bot AI lists
+			// make (kBotEraMaxSpellId).  Built from the whole table, the command
+			// and tell lists offered the later ports, Egress, Velocity, Torpor...
+			// spells no v29c player has and the client cannot render.
+			if (spell_id > 2010) {
+				continue;
+			}
+
 			if (spells[spell_id].player_1[0] == '\0') {
 				continue;
 			}

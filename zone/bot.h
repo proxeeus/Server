@@ -410,6 +410,12 @@ public:
 
 	void AI_Bot_Event_SpellCastFinished(bool iCastSucceeded, uint16 slot);
 
+	// v29c spell-bar recovery (Bots:EraSpellRecovery): a gem cast that lands
+	// locks the bar for the spell's recovery time, as the client does for a
+	// player.  Started from Mob::SpellFinished, checked in Bot::CastSpell.
+	void StartEraSpellRecovery(uint16 spell_id, EQ::spells::CastingSlot slot);
+	bool InEraSpellRecovery() const;
+
 	// AI Methods
 	bool AICastSpell(Mob* tar, uint8 iChance, uint32 iSpellTypes);
 	bool AI_EngagedCastCheck() override;
@@ -1286,6 +1292,7 @@ private:
 	uint16 m_cast_giveup_target_id = 0;     // walking to cast on it was given up...
 	uint32 m_cast_giveup_until_ms  = 0;     // ...so no new walk to it before then
 	uint32 m_cast_position_hold_ms = 0;     // stay put (no follow, no interrupt) until then
+	uint32 m_era_spell_ready_ms    = 0;     // spell bar locked until then (StartEraSpellRecovery)
 
 	uint32 m_tactics_key = 0;               // BotTactics plan key, refreshed every AI_Process
 

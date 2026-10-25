@@ -7739,16 +7739,41 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 
 	if (ka_time) {
 
+		// Harm Touch and Lay on Hands are 72-minute abilities for a player
+		// (pTimerHarmTouch / pTimerLayHands, persisted).  knightattack_timer is
+		// an NPC Timer, armed 1 s after every spawn and never saved, so a bot had
+		// a fresh one at every zone-in, camp or ^spawn.  The reuse now lives in a
+		// per-bot data bucket that expires on the wall clock (bot_timers would
+		// not do: they store Timer::GetCurrentTime(), which is each zone
+		// process's own uptime).  While it runs, look again in a minute.
+		static constexpr const char* kKnightReuseBucket = "era_knight_ability_reuse";
+
 		switch (GetClass()) {
 			case Class::ShadowKnight: {
-				CastSpell(SPELL_NPC_HARM_TOUCH, target->GetID());
-				knightattack_timer.Start(HarmTouchReuseTime * 1000);
+				if (!GetBucket(kKnightReuseBucket).empty()) {
+					knightattack_timer.Start(60000);
+					break;
+				}
+				// The player's Harm Touch (88: magic, resist adjust +25), not the
+				// NPC one (929, resist adjust -300), which no mob ever resisted.
+				if (CastSpell(SPELL_HARM_TOUCH, target->GetID())) {
+					SetBucket(kKnightReuseBucket, "1", std::to_string(HarmTouchReuseTime));
+					knightattack_timer.Start(HarmTouchReuseTime * 1000);
+				} else {
+					knightattack_timer.Start(2000);
+				}
 
 				break;
 			}
 			case Class::Paladin: {
-				if (GetHPRatio() < 20) {
-					CastSpell(SPELL_LAY_ON_HANDS, GetID());
+				if (GetHPRatio() >= 20) {
+					knightattack_timer.Start(2000);
+				}
+				else if (!GetBucket(kKnightReuseBucket).empty()) {
+					knightattack_timer.Start(60000);
+				}
+				else if (CastSpell(SPELL_LAY_ON_HANDS, GetID())) {
+					SetBucket(kKnightReuseBucket, "1", std::to_string(LayOnHandsReuseTime));
 					knightattack_timer.Start(LayOnHandsReuseTime * 1000);
 				}
 				else {
@@ -8019,12 +8044,19 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 		TryBackstab(target,reuse);
 	}
 
-	// The v29c reuse of the ability that fired, unhasted (Bots:EraAbilityReuse).
-	// A pass that fired nothing, Frenzy (no v29c value) and the riposte
-	// backstab (reuse 0) keep the legacy timer.
+	// The v29c reuse of the ability that fired (Bots:EraAbilityReuse), hasted
+	// the way the client hastes a player's: its shared ability gate (eqgame.exe
+	// 0x4b30f3) passes the reuse through 0x4b2b65, which divides it by the summed
+	// attack-speed effect (SE 11) x 0.01 when there is one — GetHaste() here,
+	// 100 + haste, below 100 when slowed.  A pass that fired nothing, Frenzy (no
+	// v29c value) and the riposte backstab (reuse 0) keep the legacy timer.
 	uint32 era_ms = 0;
 	if (did_attack && !(IsRiposte && skill_to_use == EQ::skills::SkillBackstab)) {
 		era_ms = GetEraAbilityReuseMs(static_cast<EQ::skills::SkillType>(skill_to_use));
+		const int haste = GetHaste();
+		if (era_ms && haste > 0) {
+			era_ms = static_cast<uint32>(static_cast<uint64>(era_ms) * 100 / haste);
+		}
 	}
 
 	if (era_ms) {
@@ -8035,9 +8067,9 @@ void Bot::DoClassAttacks(Mob *target, bool IsRiposte) {
 }
 
 // eqgame.exe 0x4825b5 builds the skill records; field +0x20 is each skill's
-// reuse in ms, which the client runs itself for a player and does not
-// shorten with haste. Bots run server-side, so they get the same numbers
-// here. Slam is not a v29c skill: an ogre, troll or barbarian slam is a
+// reuse in ms, which the client runs itself for a player and shortens by
+// haste (0x4b2b65; the caller applies that). Bots run server-side, so they
+// get the same numbers here. Slam is not a v29c skill: an ogre, troll or barbarian slam is a
 // bash. Frenzy (a Berserker skill, past v29c) has no entry.
 uint32 Bot::GetEraAbilityReuseMs(EQ::skills::SkillType skill)
 {
@@ -8364,6 +8396,15 @@ bool Bot::CastSpell(
 
 		if (casting_spell_id == spell_id) {
 			ZeroCastingVars();
+		}
+
+		// The spell bar is still recovering from the last cast (see
+		// StartEraSpellRecovery).  Only gem casts wait: a discipline, an item
+		// click or an ability is not on the bar.
+		if (slot < EQ::spells::CastingSlot::MaxGems && InEraSpellRecovery()) {
+			LogSpellsDetail("Spell casting canceled: spell bar recovering for [{}] ms more",
+				m_era_spell_ready_ms - Timer::GetCurrentTime());
+			return false;
 		}
 
 		if (GetClass() != Class::Bard) {
@@ -9846,6 +9887,38 @@ void Bot::CalcBotStats(bool showtext) {
 
 	for (int sindex = 0; sindex <= EQ::skills::HIGHEST_SKILL; ++sindex) {
 		skills[sindex] = skill_caps.GetSkillCap(GetClass(), (EQ::skills::SkillType)sindex, GetLevel()).cap;
+	}
+
+	// One specialization, as for a player: Client::GetMaxSkillAfterSpecializationRules
+	// holds every school but the highest to 50.  With all five at the cap (200) a
+	// bot cast every school 11% cheaper (effects.cpp, the specialization mana
+	// reduction) with the full specialization fizzle bonus.  The school is the
+	// one a player of the class would raise: Alteration holds the heals, DoTs,
+	// lifetaps and mez; Evocation the wizard and magician nukes.
+	if (RuleB(Bots, EraSpecialization)) {
+		int primary = -1;
+		switch (GetClass()) {
+			case Class::Cleric:
+			case Class::Druid:
+			case Class::Shaman:
+			case Class::Necromancer:
+			case Class::Enchanter:
+				primary = EQ::skills::SkillSpecializeAlteration;
+				break;
+			case Class::Wizard:
+			case Class::Magician:
+				primary = EQ::skills::SkillSpecializeEvocation;
+				break;
+			default:
+				break;
+		}
+		if (primary >= 0) {
+			for (int s = EQ::skills::SkillSpecializeAbjure; s <= EQ::skills::SkillSpecializeEvocation; ++s) {
+				if (s != primary && skills[s] > 50) {
+					skills[s] = 50;
+				}
+			}
+		}
 	}
 
 	taunt_timer.Start(1000);
@@ -12074,6 +12147,34 @@ uint32 Bot::GetItemReuseRemainingTime(uint32 item_id)
 	}
 
 	return result;
+}
+
+// A v29c player casts a spell, and for its recovery time the whole spell bar is
+// grey: the cast-end MemorizeSpell scribing=3 sets actor +0x15c = now + the
+// spell's recovery (eqgame.exe 0x491f5c, spdat +0x1b4; ~2.25 s for most era
+// spells), and the client sends no cast until it passes.  A bard is exempt
+// (class 8 clears the lockout instead, 0x491f2b).  Bots never see a spell bar:
+// recovery only gated a repeat of the same spell (CalcSpellRecastTimer), so the
+// next spell went 150-300 ms after the last one landed and a bot healer or
+// nuker got about 1.75 casts for every one a player could make.
+void Bot::StartEraSpellRecovery(uint16 spell_id, EQ::spells::CastingSlot slot)
+{
+	if (!RuleB(Bots, EraSpellRecovery) || !IsValidSpell(spell_id) ||
+		slot >= EQ::spells::CastingSlot::MaxGems || GetClass() == Class::Bard) {
+		return;
+	}
+
+	const uint32 recovery = spells[spell_id].recovery_time;
+	if (recovery == 0) {
+		return;
+	}
+
+	m_era_spell_ready_ms = Timer::GetCurrentTime() + recovery;
+}
+
+bool Bot::InEraSpellRecovery() const
+{
+	return RuleB(Bots, EraSpellRecovery) && Timer::GetCurrentTime() < m_era_spell_ready_ms;
 }
 
 uint32 Bot::CalcSpellRecastTimer(uint16 spell_id)
