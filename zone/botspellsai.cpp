@@ -3421,17 +3421,19 @@ constexpr uint32 kBotEraMaxSpellId = 2010;
 // list had Demi Lich at 56 (60), Asystole at 40 (44), Ignite Blood at 47 (49),
 // Lich and Drain Soul at 48 (49), and a dozen more by one to four levels; the
 // paladin Guard at 39 (49), the shaman Superior Healing at 51 (53).  A 255
-// ("this class never") is let through: the table has it for real spells of
-// several classes (ranger Firefist, shaman Spirit of Wolf, every beastlord
-// spell) that the v29c spell file gives them — a data fault for the spell
-// table rebuild, not something to take off the bots here.
+// ("this class never") is refused as well, now that the class levels are the
+// v29c spell file's (2026_10_25_trilogy_spells_from_spdat.sql): what is left at
+// 255 on a bot list is a spell no v29c player of the class has — Harmshield
+// on the shadow knight list, Cancel Magic, Talisman of Tnarg, Furious Strength
+// and Stamina on the beastlord's.  (Before that data, real ranger and shaman
+// spells read 255, and this let them through.)
 static bool BotListSpellLevelAllows(uint16 spell_id, uint8 class_id, uint8 level)
 {
 	if (!IsValidSpell(spell_id) || class_id < 1 || class_id > Class::PLAYER_CLASS_COUNT) {
 		return true;
 	}
 	const uint8 need = spells[spell_id].classes[class_id - 1];
-	return need == 0 || need >= 255 || need <= level;
+	return need == 0 || need <= level;
 }
 
 bool Bot::AI_AddBotSpells(uint32 bot_spell_id) {
