@@ -663,6 +663,19 @@ bool BotDatabase::LoadBuffs(Bot* b)
 		++buff_count;
 	}
 
+	// Buffs come back with the ticks they had at the save (they do not run while
+	// the bot is camped), so a raid saved late in a buff cycle is rebuffed on
+	// spawn for the ones about to end.  Says how many, to tell that apart from
+	// rebuffing what is already on.
+	uint32 short_left = 0;
+	for (uint32 i = 0; i < buff_count; ++i) {
+		if (buffs[i].ticsremaining >= 0 && buffs[i].ticsremaining < 10) {
+			++short_left;
+		}
+	}
+	LogInfo("[BotSpawn] [{}] restored [{}] buff(s), [{}] with under a minute left",
+		b->GetCleanName(), buff_count, short_left);
+
 	return true;
 }
 
@@ -854,21 +867,37 @@ bool BotDatabase::LoadTimers(Bot* b)
 
 	std::vector<BotTimer_Struct> v;
 
-	BotTimer_Struct t{ };
+	// timer_value in the table is the time LEFT, in ms, when the bot was saved
+	// (SaveTimers).  In memory it is an absolute Timer::GetCurrentTime(), which
+	// counts from the start of THIS zone process, so it is rebuilt here.  It
+	// used to be stored as that absolute value: a 15-minute Divine Barrier saved
+	// in a zone up for 12 hours came back locked for 12 hours in a freshly booted
+	// one, and anything saved in a young zone came back already over.  A row in
+	// the old form reads as more time left than the recast itself, so it is
+	// capped there: at worst one full cooldown, once.  (The check that stood here
+	// tested the struct before it was filled, so it let everything through.)
+	const uint32 now = Timer::GetCurrentTime();
 
 	for (const auto& e : l) {
-		if (t.timer_value < (Timer::GetCurrentTime() + t.recast_time)) {
-			t.timer_id    = e.timer_id;
-			t.timer_value = e.timer_value;
-			t.recast_time = e.recast_time;
-			t.is_spell    = e.is_spell;
-			t.is_disc     = e.is_disc;
-			t.spell_id    = e.spell_id;
-			t.is_item     = e.is_item;
-			t.item_id     = e.item_id;
-
-			v.push_back(t);
+		uint32 left = e.timer_value;
+		if (e.recast_time > 0 && left > e.recast_time) {
+			left = e.recast_time;
 		}
+		if (left == 0) {
+			continue;
+		}
+
+		BotTimer_Struct t{ };
+		t.timer_id    = e.timer_id;
+		t.timer_value = now + left;
+		t.recast_time = e.recast_time;
+		t.is_spell    = e.is_spell;
+		t.is_disc     = e.is_disc;
+		t.spell_id    = e.spell_id;
+		t.is_item     = e.is_item;
+		t.item_id     = e.item_id;
+
+		v.push_back(t);
 	}
 
 	if (!v.empty()) {
@@ -897,15 +926,18 @@ bool BotDatabase::SaveTimers(Bot* b)
 	std::vector<BotTimersRepository::BotTimers> l;
 
 	if (!v.empty()) {
+		const uint32 now = Timer::GetCurrentTime();
+
 		for (auto & bot_timer : v) {
-			if (bot_timer.timer_value <= Timer::GetCurrentTime()) {
+			if (bot_timer.timer_value <= now) {
 				continue;
 			}
 
+			// Saved as the time left, not this process's clock (see LoadTimers).
 			auto e = BotTimersRepository::BotTimers{
 				.bot_id = b->GetBotID(),
 				.timer_id = bot_timer.timer_id,
-				.timer_value = bot_timer.timer_value,
+				.timer_value = bot_timer.timer_value - now,
 				.recast_time = bot_timer.recast_time,
 				.is_spell = bot_timer.is_spell,
 				.is_disc = bot_timer.is_disc,
